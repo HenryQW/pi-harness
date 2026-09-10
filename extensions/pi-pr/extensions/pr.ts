@@ -5,6 +5,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import { Type } from "typebox";
 import { PullRequestCiFixer, type PullRequestCiFixOptions } from "./pr-ci.ts";
@@ -18,7 +19,6 @@ import {
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
 import {
-	hasLocalCommit,
 	loadCurrentPullRequest,
 	parsePullRequestObservation,
 	pullRequestObservation,
@@ -160,7 +160,6 @@ type WorkflowContext =
 
 type PullRequestExtensionDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
-	hasLocalCommit?: typeof hasLocalCommit;
 	createPrCommandHandler?: typeof createPrCommandHandler;
 	createBranchUpdater?: (options: UpdateBranchOptions) => UpdateBranchWorkflow;
 	createPullRequestCreator?: (options: CreatePullRequestOptions) => CreateWorkflow;
@@ -254,7 +253,6 @@ export default function pullRequestExtension(
 	};
 
 	const discover = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
-	const detectLocalCommit = dependencies.hasLocalCommit ?? hasLocalCommit;
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
 	const createBranchUpdater = dependencies.createBranchUpdater ?? ((options) => new PullRequestBranchUpdater(options));
 	const createPullRequestCreator = dependencies.createPullRequestCreator ?? ((options) => new PullRequestCreator(options));
@@ -264,9 +262,15 @@ export default function pullRequestExtension(
 	const newRunId = dependencies.newRunId ?? randomUUID;
 	let context: ExtensionContext | undefined;
 	let observation: PullRequestObservation | undefined;
-	const load: typeof loadCurrentPullRequest = async (api, loadContext, inspectedLocal) => {
+	const load: typeof loadCurrentPullRequest = async (
+		api,
+		loadContext,
+		inspectedLocal,
+		_observed,
+		explicitCreationBase,
+	) => {
 		const generation = sessionGeneration;
-		const discovery = await discover(api, loadContext, inspectedLocal, observation);
+		const discovery = await discover(api, loadContext, inspectedLocal, observation, explicitCreationBase);
 		if (generation !== sessionGeneration) return discovery;
 		if (discovery.kind === "current") {
 			const current = pullRequestObservation(discovery.pullRequest);
@@ -287,7 +291,6 @@ export default function pullRequestExtension(
 	let lastBlockedIssueKey: string | undefined;
 	let delegatedWorkPending = false;
 	let pendingWorkspaceRename = false;
-	let mergeCompleted = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
 	let workflowContext: WorkflowContext | undefined;
@@ -521,8 +524,17 @@ export default function pullRequestExtension(
 		routingSpinnerFrame = 0;
 		const update = (): void => {
 			const frame = ROUTING_SPINNER_FRAMES[routingSpinnerFrame]!;
-			const themedFrame = ctx.mode === "tui" ? ctx.ui.theme.fg("accent", frame) : frame;
-			ctx.ui.setWidget(UI_KEY, [`${themedFrame} ${ROUTING_WIDGET_TEXT}`]);
+			if (ctx.mode === "tui") {
+				ctx.ui.setWidget(UI_KEY, (_tui, theme) => ({
+					invalidate() {},
+					render(width) {
+						if (width <= 0) return [];
+						return [truncateToWidth(`${theme.fg("accent", frame)} ${ROUTING_WIDGET_TEXT}`, width)];
+					},
+				}));
+				return;
+			}
+			ctx.ui.setWidget(UI_KEY, [`${frame} ${ROUTING_WIDGET_TEXT}`]);
 		};
 		update();
 		if (ctx.mode !== "tui") return;
@@ -547,7 +559,6 @@ export default function pullRequestExtension(
 	const render = (
 		ctx: ExtensionContext,
 		discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
-		localCommit: boolean,
 	): void => {
 		if (discovery.kind === "inactive") {
 			if (timer !== undefined) clearInterval(timer);
@@ -559,7 +570,7 @@ export default function pullRequestExtension(
 			reconcileWidget(ctx);
 			return;
 		}
-		const display = projectPrDisplay(discovery, localCommit);
+		const display = projectPrDisplay(discovery);
 		const footer = formatPrFooter(display, ctx.ui.theme);
 		if ((discovery.kind === "current" || discovery.kind === "blocked") && footer === undefined) {
 			throw new Error("Pull request display is missing a footer");
@@ -595,7 +606,6 @@ export default function pullRequestExtension(
 		lastBlockedIssueKey = undefined;
 		delegatedWorkPending = false;
 		pendingWorkspaceRename = false;
-		mergeCompleted = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
 		clearWorkflow(workflowContext);
@@ -642,21 +652,17 @@ export default function pullRequestExtension(
 		active = controller;
 		try {
 			let discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>;
-			let localCommit = false;
 			try {
 				discovery = await load(pi, loadContext);
 				if (controller.signal.aborted || sessionGeneration !== generation) return;
-				if (discovery.kind === "none") {
-					localCommit = !mergeCompleted && await detectLocalCommit(pi, loadContext);
-				}
 			} catch {
-				// Keep an established display. A cold Git-worktree failure gets a sanitized placeholder.
+				// Keep an established footer. A refresh failure must not leave a stale action hint.
 				if (!controller.signal.aborted && sessionGeneration === generation) {
+					displayedWidget = undefined;
+					reconcileWidget(ctx);
 					if (!displayEstablished) {
 						const unavailable = unavailablePrDisplay();
-						displayedWidget = undefined;
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
-						reconcileWidget(ctx);
 						displayEstablished = true;
 					}
 					reportRefreshFailure();
@@ -664,7 +670,7 @@ export default function pullRequestExtension(
 				return;
 			}
 			if (controller.signal.aborted || sessionGeneration !== generation) return;
-			render(ctx, discovery, localCommit);
+			render(ctx, discovery);
 			refreshFailureReported = false;
 
 			const pullRequest = discovery.kind === "current" ? discovery.pullRequest : undefined;
@@ -760,7 +766,6 @@ export default function pullRequestExtension(
 		if (!isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
-			if (GIT_COMMIT.test(command)) mergeCompleted = false;
 			await refresh().catch(reportRefreshFailure);
 		}
 	});
@@ -772,7 +777,7 @@ export default function pullRequestExtension(
 		releaseWorkflow,
 	});
 	pi.registerCommand("pr", {
-		description: "[--base=<host>/<owner>/<repository>:<ref>] — Run the current branch pull request next step",
+		description: "[--base <branch>] [instructions] — Run the current branch pull request next step",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
 			const generation = sessionGeneration;
@@ -812,7 +817,6 @@ export default function pullRequestExtension(
 				if (nextStep === "create") ctx.ui.setStatus(UI_KEY, undefined);
 				reconcileWidget(ctx);
 			} else {
-				if (nextStep === "merge") mergeCompleted = true;
 				activeInvocations.delete(invocation);
 				refreshInBackground();
 			}

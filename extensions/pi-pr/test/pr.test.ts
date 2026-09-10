@@ -22,6 +22,7 @@ type Loader = (
 	context: PullRequestLoadContext,
 	inspectedLocal?: unknown,
 	observation?: unknown,
+	explicitCreationBase?: string,
 ) => Promise<CurrentPullRequest | CurrentPullRequestDiscovery | null>;
 type EventHandler = (event: unknown, context: ExtensionContext) => Promise<void> | void;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -117,6 +118,23 @@ function currentPullRequest(overrides: {
 	};
 }
 
+function noPullRequest(ahead = 0): CurrentPullRequestDiscovery {
+	return {
+		kind: "none",
+		creationTarget: {
+			provenance: "inferred",
+			branch: "feature/pr",
+			remote: "origin",
+			ref: "feature/pr",
+			repository: "acme/project",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+		branch: { ahead },
+	};
+}
+
 function flush(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
@@ -150,7 +168,6 @@ async function withHerdrEnvironment(
 
 function harness(options: {
 	load: Loader;
-	hasLocalCommit?: () => Promise<boolean>;
 	commandHandler?: PrCommandHandler;
 	useDefaultCommandHandler?: boolean;
 	theme?: (color: string, text: string) => string;
@@ -187,25 +204,12 @@ function harness(options: {
 	};
 
 	const extensionDependencies: ExtensionDependencies = {
-		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation) => {
-			const loaded = await options.load(pi, context, inspectedLocal, observation);
+		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation, explicitCreationBase) => {
+			const loaded = await options.load(pi, context, inspectedLocal, observation, explicitCreationBase);
 			if (loaded && "kind" in loaded) return loaded;
 			if (loaded) return { kind: "current", pullRequest: loaded };
-			return {
-				kind: "none",
-				creationTarget: {
-					provenance: "inferred",
-					branch: "feature/pr",
-					remote: "origin",
-					ref: "feature/pr",
-					repository: "acme/project",
-					host: "github.com",
-					fetchSource: "git@github.com:acme/project.git",
-					remoteOid: null,
-				},
-			};
+			return noPullRequest();
 		},
-		hasLocalCommit: options.hasLocalCommit,
 		canonicalWorktree: options.canonicalWorktree,
 		newRunId: options.newRunId,
 		createBranchUpdater: options.createBranchUpdater,
@@ -775,9 +779,12 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 			fetchTracking: "none", setUpstream: "none", pullRequest: "none",
 		},
 	};
+	const receivedBases: Array<string | undefined> = [];
 	const create = harness({
-		async load() { return null; },
-		async hasLocalCommit() { return true; },
+		async load(_pi, _context, _inspectedLocal, _observation, explicitCreationBase) {
+			receivedBases.push(explicitCreationBase);
+			return noPullRequest(1);
+		},
 		useDefaultCommandHandler: true,
 		newRunId: () => routeRunId,
 		async canonicalWorktree() { return "/canonical/repo"; },
@@ -795,10 +802,11 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 	const createContext = create.context();
 	try {
 		await create.start(createContext);
-		await create.command().handler("--base=github.com/acme/project:main", createContext as ExtensionCommandContext);
+		await create.command().handler("--base release Keep the title concise.", createContext as ExtensionCommandContext);
 		await create.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, createContext);
-		assert.deepEqual(createCalls, [["prepare", "github.com/acme/project:main"]]);
-		assert.deepEqual(create.messages, [`/skill:pi-pr-create runId=${routeRunId} action=prepare`]);
+		assert.deepEqual(createCalls, [["prepare", "release"]]);
+		assert.deepEqual(receivedBases, [undefined, "release"]);
+		assert.deepEqual(create.messages, [`/skill:pi-pr-create runId=${routeRunId} action=prepare Keep the title concise.`]);
 	} finally {
 		await create.shutdown(createContext);
 	}
@@ -1037,10 +1045,10 @@ test("warns once for one blocked issue and warns again after recovery", async (t
 });
 
 test("renders the shared projection and refreshes after successful create or push", async () => {
-	const results: Array<CurrentPullRequest | null> = [
+	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery> = [
 		currentPullRequest({ conditions: { ci: "failure" } }),
 		currentPullRequest({ conditions: { ci: "running" } }),
-		null,
+		noPullRequest(1),
 	];
 	const signals: Array<AbortSignal | undefined> = [];
 	const app = harness({
@@ -1049,9 +1057,6 @@ test("renders the shared projection and refreshes after successful create or pus
 			const result = results.shift();
 			if (result === undefined) throw new Error("Unexpected pull request refresh");
 			return result;
-		},
-		async hasLocalCommit() {
-			return true;
 		},
 	});
 	const noUi = { hasUI: false, sessionManager: { getBranch: () => [] } } as unknown as ExtensionContext;
@@ -1159,7 +1164,7 @@ test("keeps the RPC widget as a plain icon-prefixed action despite a terminal th
 	}
 });
 
-test("animates and clears a native TUI routing widget at route resolution", async (t) => {
+test("animates and clears a width-aware TUI routing widget at route resolution", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const discovery = deferred<void>();
 	const interaction = deferred<void>();
@@ -1173,20 +1178,29 @@ test("animates and clears a native TUI routing widget at route resolution", asyn
 			await interaction.promise;
 			return "none";
 		},
-		theme(color, text) {
-			return `<${color}>${text}</${color}>`;
-		},
 	});
 	const ctx = app.context("tui");
+	const renderWidget = (widget: unknown, width: number): string[] => {
+		assert.equal(typeof widget, "function");
+		const component = (widget as (tui: unknown, theme: {
+			fg(color: string, text: string): string;
+		}) => { render(width: number): string[] })({}, {
+			fg(color, text) { return `<${color}>${text}</${color}>`; },
+		});
+		return component.render(width);
+	};
 
 	try {
 		await app.start(ctx);
 		const statusWrites = app.statuses.length;
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
-		assert.deepEqual(app.widgets.at(-1), widgetLine("<accent>⠋</accent> Checking pull request…"));
+		const firstWidget = app.widgets.at(-1);
+		assert.deepEqual(renderWidget(firstWidget, 0), []);
+		assert.match(renderWidget(firstWidget, 80)[0] ?? "", /<accent>⠋<\/accent> Checking pull request…/);
+		assert.ok(renderWidget(firstWidget, 8).every((line) => visibleWidth(line) <= 8));
 
 		t.mock.timers.tick(80);
-		assert.deepEqual(app.widgets.at(-1), widgetLine("<accent>⠙</accent> Checking pull request…"));
+		assert.match(renderWidget(app.widgets.at(-1), 80)[0] ?? "", /<accent>⠙<\/accent> Checking pull request…/);
 
 		discovery.resolve();
 		await flush();
@@ -1229,16 +1243,11 @@ test("uses a width-aware single-line widget component in TUI", async () => {
 	}
 });
 
-test("shows the create widget only after a local commit", async () => {
-	const localCommits = [false, true];
+test("shows the create widget only after preflight reports an ahead commit", async () => {
+	let ahead = 0;
 	const app = harness({
 		async load() {
-			return null;
-		},
-		async hasLocalCommit() {
-			const value = localCommits.shift();
-			if (value === undefined) throw new Error("Unexpected local commit check");
-			return value;
+			return noPullRequest(ahead);
 		},
 	});
 	const ctx = app.context();
@@ -1247,6 +1256,7 @@ test("shows the create widget only after a local commit", async () => {
 		await app.start(ctx);
 		assert.equal(app.widgets.at(-1), undefined);
 
+		ahead = 1;
 		await app.tool({ toolName: "bash", input: { command: "git commit -m change" }, isError: false }, ctx);
 		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 	} finally {
@@ -1325,7 +1335,7 @@ test("reports detached render failures once and resumes after recovery", async (
 	await app.shutdown(ctx);
 });
 
-test("reports lookup failures once, retains display, and resets after recovery", async (t) => {
+test("reports lookup failures once, clears stale actions, and resets after recovery", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const results: Array<CurrentPullRequest | Error> = [
 		new Error("initial lookup failed"),
@@ -1370,7 +1380,8 @@ test("reports lookup failures once, retains display, and resets after recovery",
 	});
 	assert.equal(app.notifications.length, 2);
 	assert.equal(app.statuses.length, statusWrites);
-	assert.equal(app.widgets.length, widgetWrites);
+	assert.equal(app.widgets.length, widgetWrites + 1);
+	assert.equal(app.widgets.at(-1), undefined);
 
 	await app.shutdown(ctx);
 });
@@ -1442,10 +1453,7 @@ test("session replacement stops routing animation before stale /pr completion", 
 	const app = harness({
 		async load() {
 			loads += 1;
-			return loads === 1 ? null : currentPullRequest({ conditions: { ci: "failure" } });
-		},
-		async hasLocalCommit() {
-			return true;
+			return loads === 1 ? noPullRequest(1) : currentPullRequest({ conditions: { ci: "failure" } });
 		},
 		async commandHandler() {
 			return workflow.promise;
@@ -1456,9 +1464,11 @@ test("session replacement stops routing animation before stale /pr completion", 
 
 	await app.start(firstSession);
 	const staleCommand = app.command().handler("", firstSession as ExtensionCommandContext);
-	assert.deepEqual(app.widgets.at(-1), routingWidgetLine);
+	assert.equal(typeof app.widgets.at(-1), "function");
+	const widgetWritesBeforeTick = app.widgets.length;
 	t.mock.timers.tick(80);
-	assert.deepEqual(app.widgets.at(-1), widgetLine("⠙ Checking pull request…"));
+	assert.equal(app.widgets.length, widgetWritesBeforeTick + 1);
+	assert.equal(typeof app.widgets.at(-1), "function");
 
 	await app.shutdown(firstSession);
 	const widgetWritesAfterShutdown = app.widgets.length;
@@ -1487,10 +1497,7 @@ test("does not warn for the expected published ref during PR creation", async ()
 			if (published) {
 				return { kind: "blocked", issue: { kind: "published-without-pr", remote: "origin" } };
 			}
-			return null;
-		},
-		async hasLocalCommit() {
-			return true;
+			return noPullRequest(1);
 		},
 		async commandHandler() {
 			return "create";
@@ -1524,10 +1531,7 @@ test("keeps the create hint cleared until the workflow settles", async () => {
 	const app = harness({
 		async load() {
 			loads += 1;
-			return loads === 1 ? null : currentPullRequest();
-		},
-		async hasLocalCommit() {
-			return true;
+			return loads === 1 ? noPullRequest(1) : currentPullRequest();
 		},
 		async commandHandler() {
 			await workflow.promise;
@@ -1573,10 +1577,7 @@ test("normalizes the Herdr workspace label after a create workflow settles", asy
 		const app = harness({
 			async load() {
 				loads += 1;
-				return loads === 1 ? null : currentPullRequest();
-			},
-			async hasLocalCommit() {
-				return true;
+				return loads === 1 ? noPullRequest(1) : currentPullRequest();
 			},
 			async commandHandler() {
 				return "create";
@@ -1634,15 +1635,12 @@ test("keeps one Herdr rename pending through delayed PR discovery", async () => 
 			const app = harness({
 				async load() {
 					loads += 1;
-					if (loads === 1) return null;
+					if (loads === 1) return noPullRequest(1);
 					if (loads === 2) {
 						if (scenario.delayed instanceof Error) throw scenario.delayed;
-						return scenario.delayed;
+						return noPullRequest();
 					}
 					return currentPullRequest();
-				},
-				async hasLocalCommit() {
-					return true;
 				},
 				async commandHandler() {
 					return "create";
@@ -1687,10 +1685,7 @@ test("renames once when an observed configured PR rehydrates as closed or merged
 				async load(_pi, _context, _inspectedLocal, observation) {
 					loads += 1;
 					assert.deepEqual(observation, observed);
-					return loads === 1 ? null : currentPullRequest({ lifecycle });
-				},
-				async hasLocalCommit() {
-					return true;
+					return loads === 1 ? noPullRequest(1) : currentPullRequest({ lifecycle });
 				},
 				async commandHandler() {
 					return "create";
@@ -1731,10 +1726,7 @@ test("warns without hiding the refreshed PR when Herdr labeling fails", async ()
 		const app = harness({
 			async load() {
 				loads += 1;
-				return loads === 1 ? null : currentPullRequest();
-			},
-			async hasLocalCommit() {
-				return true;
+				return loads === 1 ? noPullRequest(1) : currentPullRequest();
 			},
 			async commandHandler() {
 				return "create";
@@ -1776,10 +1768,7 @@ test("session replacement aborts Herdr labeling before stale rename or warning",
 		const app = harness({
 			async load() {
 				loads += 1;
-				return loads === 1 ? null : currentPullRequest();
-			},
-			async hasLocalCommit() {
-				return true;
+				return loads === 1 ? noPullRequest(1) : currentPullRequest();
 			},
 			async commandHandler() {
 				return "create";
@@ -1861,10 +1850,7 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 test("restores the create hint when the dispatched workflow settles without a pull request", async () => {
 	const app = harness({
 		async load() {
-			return null;
-		},
-		async hasLocalCommit() {
-			return true;
+			return noPullRequest(1);
 		},
 		async commandHandler() {
 			return "create";
@@ -1885,17 +1871,14 @@ test("restores the create hint when the dispatched workflow settles without a pu
 });
 
 test("tracks creation from the fresh command route instead of stale presentation", async () => {
-	const staleNull = deferred<CurrentPullRequest | null>();
+	const staleNull = deferred<CurrentPullRequest | CurrentPullRequestDiscovery>();
 	let staleCreateLoads = 0;
 	const staleCreate = harness({
 		async load() {
 			staleCreateLoads += 1;
-			if (staleCreateLoads === 1) return null;
+			if (staleCreateLoads === 1) return noPullRequest(1);
 			if (staleCreateLoads === 2) return staleNull.promise;
 			return currentPullRequest();
-		},
-		async hasLocalCommit() {
-			return true;
 		},
 		async commandHandler() {
 			return "none";
@@ -1915,24 +1898,21 @@ test("tracks creation from the fresh command route instead of stale presentation
 		await flush();
 		assert.equal(plain(staleCreate.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 
-		staleNull.resolve(null);
+		staleNull.resolve(noPullRequest());
 		await polling;
 		assert.equal(plain(staleCreate.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 	} finally {
 		await staleCreate.shutdown(staleCreateContext);
 	}
 
-	const stalePr = deferred<CurrentPullRequest | null>();
+	const stalePr = deferred<CurrentPullRequest | CurrentPullRequestDiscovery>();
 	let stalePullRequestLoads = 0;
 	const stalePullRequest = harness({
 		async load() {
 			stalePullRequestLoads += 1;
 			if (stalePullRequestLoads === 1) return currentPullRequest();
 			if (stalePullRequestLoads === 2) return stalePr.promise;
-			return null;
-		},
-		async hasLocalCommit() {
-			return true;
+			return noPullRequest(1);
 		},
 		async commandHandler() {
 			return "create";
@@ -1964,16 +1944,14 @@ test("tracks creation from the fresh command route instead of stale presentation
 	}
 });
 
-test("restores the create hint immediately when /pr cannot dispatch creation", async () => {
+test("restores the create hint immediately but clears it when its scheduled refresh fails", async () => {
+	const scheduledRefresh = deferred<CurrentPullRequest | CurrentPullRequestDiscovery>();
 	let loads = 0;
 	const app = harness({
 		async load() {
 			loads += 1;
-			if (loads === 1) return null;
-			throw new Error("lookup unavailable");
-		},
-		async hasLocalCommit() {
-			return true;
+			if (loads === 1) return noPullRequest(1);
+			return await scheduledRefresh.promise;
 		},
 		async commandHandler() {
 			throw new Error("dispatch failed");
@@ -1985,8 +1963,10 @@ test("restores the create hint immediately when /pr cannot dispatch creation", a
 		await app.start(ctx);
 		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /dispatch failed/);
 		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+		assert.equal(loads, 2);
+		scheduledRefresh.reject(new Error("lookup unavailable"));
 		await flush();
-		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+		assert.equal(app.widgets.at(-1), undefined);
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -1998,10 +1978,7 @@ test("out-of-order /pr results keep every active creation workflow pending", asy
 	let commands = 0;
 	const app = harness({
 		async load() {
-			return null;
-		},
-		async hasLocalCommit() {
-			return true;
+			return noPullRequest(1);
 		},
 		async commandHandler() {
 			commands += 1;
@@ -2035,10 +2012,7 @@ test("a failed second /pr keeps the active creation workflow pending", async () 
 	let commands = 0;
 	const app = harness({
 		async load() {
-			return null;
-		},
-		async hasLocalCommit() {
-			return true;
+			return noPullRequest(1);
 		},
 		async commandHandler() {
 			commands += 1;
@@ -2098,15 +2072,13 @@ test("/pr restores its hint after a command error and schedules a refresh", asyn
 	await app.shutdown(ctx);
 });
 
-test("does not offer PR creation after a successful merge when discovery returns null", async () => {
+test("requires a newly ahead commit before offering creation after a merge", async () => {
 	let loads = 0;
+	let ahead = 0;
 	const app = harness({
 		async load() {
 			loads += 1;
-			return loads === 1 ? currentPullRequest() : null;
-		},
-		async hasLocalCommit() {
-			return true;
+			return loads === 1 ? currentPullRequest() : noPullRequest(ahead);
 		},
 		async commandHandler() {
 			return "merge";
@@ -2123,6 +2095,7 @@ test("does not offer PR creation after a successful merge when discovery returns
 		assert.equal(app.statuses.at(-1), undefined);
 		assert.equal(app.widgets.at(-1), undefined);
 
+		ahead = 1;
 		await app.tool({
 			toolName: "bash",
 			input: { command: "git commit -m change" },

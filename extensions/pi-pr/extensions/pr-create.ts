@@ -5,6 +5,7 @@ import {
 	findExactHeadPullRequests,
 	loadCurrentPullRequest,
 	loadPullRequestPublication,
+	preflightPullRequestCreation,
 	readPullRequestBaseRefOid,
 	readTrackingOid,
 	readValidatedRemoteAuthority,
@@ -24,7 +25,6 @@ import {
 	readRemoteOid,
 	requiredOid,
 	requiredText,
-	resolveRepositoryFetchSource,
 	runChecked,
 	spawnBounded,
 	withWorktreeLock,
@@ -32,8 +32,6 @@ import {
 	type ExecOptions,
 } from "./pr-execution.ts";
 
-const BASE_RERUN = "Rerun /pr --base=<host>/<owner>/<repository>:<ref>";
-const MAX_REMOTE_BRANCHES = 128;
 const MAX_TITLE_BYTES = 256;
 const MAX_BODY_BYTES = 64 * 1024;
 const CREATE_AUTHORITY_QUERY = "query($baseOwner:String!,$baseName:String!,$headOwner:String!,$headName:String!){base:repository(owner:$baseOwner,name:$baseName){id nameWithOwner}head:repository(owner:$headOwner,name:$headName){id nameWithOwner owner{__typename}}createInput:__type(name:\"CreatePullRequestInput\"){inputFields{name}}}";
@@ -94,16 +92,6 @@ function line(output: string, label: string): string {
 	const values = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
 	if (values.length !== 1 || !values[0]) throw new Error(`${label} returned invalid output`);
 	return values[0];
-}
-
-function configuredValues(output: string): string[] {
-	if (output === "") return [];
-	const normalized = output.replace(/\r\n/g, "\n");
-	const values = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
-	if (values.some((value) => !value) || new Set(values).size !== values.length) {
-		throw new Error("Git configuration returned invalid values");
-	}
-	return values;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -180,14 +168,6 @@ function parseCreatedUrl(output: string, host: string, baseRepository: string): 
 	return url;
 }
 
-function parseExplicitBase(value: string): Omit<CreateBaseAuthority, "oid" | "fetchSource"> {
-	const match = /^([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+):(.+)$/.exec(value);
-	if (!match || match[2] === "." || match[2] === ".." || match[3] === "." || match[3] === "..") {
-		throw new Error(`Invalid base authority. ${BASE_RERUN}`);
-	}
-	return { host: match[1]!.toLowerCase(), repository: `${match[2]}/${match[3]}`, ref: requiredText(match[4], "base ref") };
-}
-
 function resolvedPaths(paths: readonly string[], expected: readonly string[]): string[] {
 	if (!Array.isArray(paths)) throw new TypeError("resolvedPaths must be an array");
 	const parsed = parseNulPaths(`${paths.join("\0")}${paths.length ? "\0" : ""}`, "Resolved conflict paths");
@@ -208,6 +188,7 @@ export class PullRequestCreator {
 	private readonly agentDir?: string;
 	private readonly exec: Exec;
 	private readonly load: Load;
+	private explicitBase?: string;
 
 	constructor(options: CreatePullRequestOptions) {
 		if (!options.target || options.target.remoteOid !== null && !requiredOid(options.target.remoteOid, "remote OID")) {
@@ -241,77 +222,12 @@ export class PullRequestCreator {
 	}
 
 	private async freshNone(): Promise<void> {
-		const discovery = await this.load(this.pi(), this.context());
+		const discovery = await this.load(this.pi(), this.context(), undefined, undefined, this.explicitBase);
 		if (discovery.kind !== "none" || !sameTarget(this.target, discovery.creationTarget)) {
 			throw new Error("PR creation cancelled: fresh complete discovery is no longer none");
 		}
 		const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
 		if (branch !== this.target.branch) throw new Error("PR creation cancelled: current branch changed");
-	}
-
-	private async originAuthority() {
-		return await readValidatedRemoteAuthority(this.pi(), this.context(), "origin");
-	}
-
-	private async inferBaseRef(): Promise<{ authority: Awaited<ReturnType<PullRequestCreator["originAuthority"]>>; ref: string }> {
-		const authority = await this.originAuthority();
-		await runChecked(this.exec, "git", [
-			"fetch", "--prune", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
-			authority.fetchSource, "+refs/heads/*:refs/remotes/origin/*",
-		], this.options());
-		const refs = await runChecked(this.exec, "git", [
-			"for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "refs/remotes/origin",
-		], this.options());
-		const rows = configuredValues(refs.stdout);
-		if (rows.length > MAX_REMOTE_BRANCHES) throw new Error(`${BASE_RERUN}; more than ${MAX_REMOTE_BRANCHES} base candidates exist`);
-		const originOwnsTarget = authority.host === this.target.host &&
-			authority.repository.toLowerCase() === this.target.repository.toLowerCase();
-		const candidates: Array<{ ref: string; score: number }> = [];
-		for (const row of rows) {
-			const parts = row.split("\t");
-			if (parts.length !== 3) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const prefix = "refs/remotes/origin/";
-			if (!parts[0]!.startsWith(prefix)) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const ref = parts[0]!.slice(prefix.length);
-			if (ref === "HEAD" || originOwnsTarget && ref === this.target.ref) continue;
-			if (!ref || parts[2] !== "") throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const oid = requiredOid(parts[1], "remote base OID");
-			const distance = line((await runChecked(this.exec, "git", ["rev-list", "--left-right", "--count", `HEAD...${oid}`], this.options())).stdout, "base distance");
-			const counts = /^(\d+)\s+(\d+)$/.exec(distance);
-			if (!counts) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			const score = Number(counts[1]) + Number(counts[2]);
-			if (!Number.isSafeInteger(score)) throw new Error(`Base inference is unsafe. ${BASE_RERUN}`);
-			candidates.push({ ref, score });
-		}
-		if (!candidates.length) throw new Error(`Base cannot be inferred. ${BASE_RERUN}`);
-		const minimum = Math.min(...candidates.map(({ score }) => score));
-		const nearest = candidates.filter(({ score }) => score === minimum);
-		if (nearest.length !== 1) throw new Error(`Base is ambiguous. ${BASE_RERUN}`);
-		return { authority, ref: nearest[0]!.ref };
-	}
-
-	private async resolveBase(explicit?: string): Promise<Omit<CreateBaseAuthority, "oid">> {
-		if (explicit !== undefined) {
-			const parsed = parseExplicitBase(explicit);
-			if (parsed.host !== this.target.host.toLowerCase()) {
-				throw new Error("PR creation base and head must use the same GitHub host");
-			}
-			await runChecked(this.exec, "git", ["check-ref-format", "--branch", parsed.ref], this.options());
-			return { ...parsed, fetchSource: await resolveRepositoryFetchSource(this.exec, this.options(), parsed) };
-		}
-		const configured = await runChecked(this.exec, "git", [
-			"config", "--get-all", `branch.${this.target.branch}.gh-merge-base`,
-		], this.options(), [0, 1]);
-		const values = configured.code === 1 && configured.stdout === "" ? [] : configuredValues(configured.stdout);
-		if (values.length > 1) throw new Error(`Configured base is ambiguous. ${BASE_RERUN}`);
-		if (values.length === 1) {
-			await runChecked(this.exec, "git", ["check-ref-format", "--branch", values[0]!], this.options());
-			const authority = await this.originAuthority();
-			return { ...authority, ref: values[0]! };
-		}
-		const inferred = await this.inferBaseRef();
-		await runChecked(this.exec, "git", ["check-ref-format", "--branch", inferred.ref], this.options());
-		return { ...inferred.authority, ref: inferred.ref };
 	}
 
 	private async liveBase(): Promise<string> {
@@ -346,30 +262,44 @@ export class PullRequestCreator {
 			throw new Error("PR creation prepare action was already consumed");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
+			this.explicitBase = explicitBase;
 			await this.freshNone();
-			const base = await this.resolveBase(explicitBase);
-			if (base.host !== this.target.host.toLowerCase()) {
-				throw new Error("PR creation base and head must use the same GitHub host");
+			const preflight = await preflightPullRequestCreation(
+				this.pi(),
+				this.context(),
+				this.target,
+				this.explicitBase,
+			);
+			if (preflight.ahead === 0) {
+				throw new Error("PR creation requires at least one commit ahead of the selected base");
 			}
-			const oid = await readPullRequestBaseRefOid(this.pi(), this.context(), base);
-			this.state.base = { ...base, oid };
+			const { base } = preflight;
+			this.state.base = {
+				host: base.host,
+				repository: base.repository,
+				ref: base.ref,
+				oid: base.oid,
+				fetchSource: base.fetchSource,
+			};
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", [
-				"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, oid,
+				"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, base.oid,
 			], this.options());
-			await runChecked(this.exec, "git", ["cat-file", "-e", `${oid}^{commit}`], this.options());
+			await runChecked(this.exec, "git", ["cat-file", "-e", `${base.oid}^{commit}`], this.options());
 			await this.freshNone();
-			if (await this.liveBase() !== oid) throw new Error("PR creation cancelled: base ref moved during prepare");
-			const mergeBase = requiredOid(line((await runChecked(this.exec, "git", ["merge-base", "HEAD", oid], this.options())).stdout, "merge base"), "merge base");
+			if (await readHead(this.exec, this.options()) !== preflight.head) {
+				throw new Error("PR creation cancelled: local HEAD changed during prepare");
+			}
+			if (await this.liveBase() !== base.oid) throw new Error("PR creation cancelled: base ref moved during prepare");
 			this.state.phase = "prepared";
-			return { kind: "prepared", base: { ...this.state.base }, mergeBase };
+			return { kind: "prepared", base: { ...this.state.base }, mergeBase: base.mergeBase };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
 	private async verifyMerge(originalHead: string): Promise<{ head: string; fastForward: boolean }> {
 		const base = this.state.base!;
 		const head = await readHead(this.exec, this.options());
-		const commits = line((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", "HEAD"], this.options())).stdout, "merge parents")
+		const commits = line((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", head], this.options())).stdout, "merge parents")
 			.split(" ").map((value, index) => requiredOid(value, index ? "merge parent" : "merged HEAD"));
 		if (commits[0] !== head) throw new Error("PR creation merge verification returned a different HEAD");
 		let fastForward = false;
@@ -514,7 +444,7 @@ export class PullRequestCreator {
 			}
 			return;
 		}
-		const discovery = await this.load(this.pi(), this.context());
+		const discovery = await this.load(this.pi(), this.context(), undefined, undefined, this.explicitBase);
 		if (discovery.kind === "none") {
 			if (!sameTarget(this.target, discovery.creationTarget, head)) throw new Error("Published target authority changed");
 			return;

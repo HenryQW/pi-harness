@@ -37,10 +37,14 @@ const target = {
 	remoteOid: "b".repeat(40),
 };
 
-function projectPrDisplay(input: PrDisplayInput | null, hasLocalCommit = false) {
+function projectPrDisplay(input: PrDisplayInput | null, ahead = 0) {
 	return input
-		? projectDiscoveryDisplay({ kind: "current", pullRequest: input }, hasLocalCommit)
-		: projectDiscoveryDisplay({ kind: "none", creationTarget: target }, hasLocalCommit);
+		? projectDiscoveryDisplay({ kind: "current", pullRequest: input })
+		: projectDiscoveryDisplay({
+			kind: "none",
+			creationTarget: target,
+			branch: { ahead },
+		});
 }
 const theme: PrTheme = {
 	fg(color: PrStatusColor | "text", text: string) {
@@ -88,16 +92,21 @@ test("projects normal runnable, merge, and no-action states", () => {
 	const cases: Array<{
 		name: string;
 		input: PrDisplayInput | null;
-		localCommit?: boolean;
+		ahead?: number;
 		nextStep: string;
 		footer?: string;
 		color?: PrStatusColor;
 		widget?: string;
 	}> = [
 		{
-			name: "no pull request after local commit",
+			name: "no pull request with zero ahead commits",
 			input: null,
-			localCommit: true,
+			nextStep: "none",
+		},
+		{
+			name: "no pull request with positive ahead commits",
+			input: null,
+			ahead: 1,
 			nextStep: "create",
 			widget: "Run /pr to create pull request",
 		},
@@ -192,8 +201,8 @@ test("projects normal runnable, merge, and no-action states", () => {
 		},
 	];
 
-	for (const { name, input, localCommit, nextStep, footer, color, widget } of cases) {
-		const display = projectPrDisplay(input, localCommit);
+	for (const { name, input, ahead, nextStep, footer, color, widget } of cases) {
+		const display = projectPrDisplay(input, ahead);
 		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);
@@ -340,7 +349,7 @@ test("prefixes plain actions with themed semantic icons", () => {
 		},
 		{
 			name: "accent",
-			display: projectPrDisplay(null, true),
+			display: projectPrDisplay(null, 1),
 			color: "accent",
 			icon: "●",
 			text: "Run /pr to create pull request",

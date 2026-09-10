@@ -114,7 +114,6 @@ function widgetText(input: PrDisplayInput, nextStep: NextStep): string | undefin
 
 export function projectPrDisplay(
 	discovery: PullRequestDiscovery<PrDisplayInput>,
-	hasLocalCommit = false,
 ): PrDisplay {
 	const nextStep = deriveNextStep(discovery);
 	if (discovery.kind === "inactive") return { nextStep };
@@ -132,7 +131,7 @@ export function projectPrDisplay(
 	if (discovery.kind === "none") {
 		return {
 			nextStep,
-			widget: hasLocalCommit ? "Run /pr to create pull request" : undefined,
+			widget: nextStep === "create" ? "Run /pr to create pull request" : undefined,
 		};
 	}
 

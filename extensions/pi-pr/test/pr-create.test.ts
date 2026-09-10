@@ -30,10 +30,14 @@ function target(noTarget = true): PullRequestTarget {
 	};
 }
 
-function baseOutput() {
+function none(creationTarget: PullRequestTarget) {
+	return { kind: "none" as const, creationTarget, branch: { ahead: 0 } };
+}
+
+function baseOutput(ref = "main") {
 	return JSON.stringify({ data: { repository: {
 		nameWithOwner: "acme/project",
-		ref: { name: "main", target: { oid: base } },
+		ref: { name: ref, target: { oid: base } },
 	} } });
 }
 
@@ -110,17 +114,15 @@ function createAuthorityOutput(
 	} });
 }
 
-function creator(exec: Exec, creationTarget: PullRequestTarget) {
+function creator(exec: Exec, creationTarget: PullRequestTarget, signal?: AbortSignal) {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
 	const workflow = new PullRequestCreator({
 		cwd,
 		target: creationTarget,
+		signal,
 		exec,
 		agentDir,
-		loadCurrentPullRequest: async () => ({
-			kind: "none",
-			creationTarget: { ...creationTarget, provenance: "configured", remoteOid: head },
-		}),
+		loadCurrentPullRequest: async () => none({ ...creationTarget, provenance: "configured", remoteOid: head }),
 	});
 	workflow.state.phase = "verified";
 	workflow.state.base = {
@@ -224,6 +226,36 @@ test("a successful push remains publishable when no-target upstream setup fails"
 	assert.equal(pushes, 1);
 });
 
+test("configured-target pushes never read or change upstream", async (t) => {
+	const calls: Array<[string, string[]]> = [];
+	const exec: Exec = async (command, args) => {
+		calls.push([command, [...args]]);
+		const text = args.join(" ");
+		if (command === "git" && text === "branch --show-current") return result("feature\n");
+		if (command === "gh" && args[0] === "api") return result(baseOutput());
+		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
+		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+		if (command === "git" && args[0] === "merge-base") return result();
+		if (command === "git" && args[0] === "push") return result("ok\n");
+		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
+		if (command === "git" && (args[0] === "config" || args[0] === "fetch" || args[0] === "branch")) {
+			throw new Error("configured target must not touch upstream");
+		}
+		throw new Error(`Unexpected ${command} ${text}`);
+	};
+	const app = creator(exec, target(false));
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(false));
+
+	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "config"), false);
+	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "fetch"), false);
+	assert.equal(calls.some(([command, args]) =>
+		command === "git" && args[0] === "branch" && args[1]?.startsWith("--set-upstream-to="),
+	), false);
+});
+
 test("creates an organization-owned same-repository PR with an unqualified head", async (t) => {
 	const calls: Array<{ command: string; args: string[]; stdin?: string }> = [];
 	let searches = 0;
@@ -244,7 +276,7 @@ test("creates an organization-owned same-repository PR with an unqualified head"
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
-	const app = creator(exec, target(true));
+	const app = creator(exec, target(false));
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	app.workflow.state.phase = "pushed";
 	app.workflow.state.publicationHead = head;
@@ -324,10 +356,8 @@ test("preflights and creates an organization-owned cross-repository PR through e
 		host: "github.com", repository: baseRepository, ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/upstream.git",
 	};
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
-		kind: "none",
-		creationTarget: { ...creationTarget, remoteOid: published ? head : remoteHead },
-	});
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () =>
+		none({ ...creationTarget, remoteOid: published ? head : remoteHead });
 
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
 	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url: prUrl });
@@ -379,7 +409,7 @@ test("rejects an unsupported organization cross-repository API before pushing", 
 		host: "github.com", repository: "acme/upstream", ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/upstream.git",
 	};
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({ kind: "none", creationTarget });
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(creationTarget);
 	await assert.rejects(app.workflow.push(), /cannot create an exact organization-owned cross-repository pull request/);
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false);
 });
@@ -439,10 +469,8 @@ test("keeps user-owned fork creation on gh pr create with a qualified head", asy
 		host: "github.com", repository: baseRepository, ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/upstream.git",
 	};
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
-		kind: "none",
-		creationTarget: { ...creationTarget, remoteOid: published ? head : creationTarget.remoteOid },
-	});
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () =>
+		none({ ...creationTarget, remoteOid: published ? head : creationTarget.remoteOid });
 
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
 	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url: prUrl });
@@ -459,168 +487,105 @@ test("keeps user-owned fork creation on gh pr create with a qualified head", asy
 	assert.ok(preflightIndex >= 0 && preflightIndex < pushIndex);
 });
 
-test("rejects a cross-host explicit base before repository lookup", async (t) => {
-	let commands = 0;
+test("prepare uses shared explicit, configured, and default preflight bases with captured OIDs", async (t) => {
+	const mergeBase = "d".repeat(40);
+	const cases = [
+		{ name: "explicit", explicit: "release", configured: undefined, selected: "release" },
+		{ name: "configured", explicit: undefined, configured: "release", selected: "release" },
+		{ name: "default", explicit: undefined, configured: undefined, selected: "trunk" },
+	];
+	for (const candidate of cases) {
+		const calls: Array<[string, string[]]> = [];
+		const bases: Array<string | undefined> = [];
+		const creationTarget = target(true);
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
+		t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+		const exec: Exec = async (command, args) => {
+			calls.push([command, [...args]]);
+			const text = args.join(" ");
+			if (command === "git" && text === "branch --show-current") return result("feature\n");
+			if (command === "git" && args[0] === "check-ref-format") return result(`${args[2]}\n`);
+			if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+			if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+			if (command === "git" && args[0] === "config" && args[1] === "--get-all") {
+				return candidate.configured === undefined ? result("", 1) : result(`${candidate.configured}\n`);
+			}
+			if (command === "gh" && args[0] === "repo" && args[4] === "nameWithOwner,url") return result(repositoryOutput());
+			if (command === "gh" && args[0] === "repo" && args[4] === "defaultBranchRef") {
+				return result(JSON.stringify({ defaultBranchRef: { name: "trunk" } }));
+			}
+			if (command === "git" && args[0] === "fetch") return result();
+			if (command === "git" && args[0] === "rev-parse" && args[2]?.startsWith("refs/remotes/origin/")) return result(`${base}\n`);
+			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+			if (command === "git" && args[0] === "merge-base") return result(`${mergeBase}\n`);
+			if (command === "git" && args[0] === "rev-list" && args[1] === "--count") return result("1\n");
+			if (command === "git" && args[0] === "cat-file") return result();
+			if (command === "gh" && args[0] === "api" && args[1] === "graphql") return result(baseOutput(candidate.selected));
+			throw new Error(`Unexpected ${command} ${text}`);
+		};
+		const workflow = new PullRequestCreator({
+			cwd,
+			target: creationTarget,
+			agentDir,
+			exec,
+			async loadCurrentPullRequest(...args) {
+				bases.push(args[4]);
+				return none(creationTarget);
+			},
+		});
+
+		const prepared = await workflow.prepare(candidate.explicit);
+		assert.deepEqual(prepared, {
+			kind: "prepared",
+			base: {
+				host: "github.com", repository: "acme/project", ref: candidate.selected, oid: base,
+				fetchSource: "git@github.com:acme/project.git",
+			},
+			mergeBase,
+		}, candidate.name);
+		assert.deepEqual(bases, [candidate.explicit, candidate.explicit], candidate.name);
+		assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "merge-base")?.[1], [
+			"merge-base", head, base,
+		], candidate.name);
+		assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "rev-list")?.[1], [
+			"rev-list", "--count", `${mergeBase}..${head}`,
+		], candidate.name);
+		assert.equal(calls.some(([command, args]) =>
+			command === "git" && (args[0] === "for-each-ref" || args.includes("--prune") || args.includes("--left-right"))
+		), false, candidate.name);
+	}
+});
+
+test("prepare rejects a shared preflight with no commits ahead", async (t) => {
 	const creationTarget = target(true);
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	const calls: Array<[string, string[]]> = [];
 	const workflow = new PullRequestCreator({
 		cwd,
 		target: creationTarget,
 		agentDir,
 		exec: async (command, args) => {
-			commands += 1;
-			if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
-			throw new Error("unexpected command");
+			calls.push([command, [...args]]);
+			const text = args.join(" ");
+			if (command === "git" && text === "branch --show-current") return result("feature\n");
+			if (command === "git" && args[0] === "check-ref-format") return result(`${args[2]}\n`);
+			if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+			if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+			if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+			if (command === "git" && args[0] === "fetch") return result();
+			if (command === "git" && args[0] === "rev-parse" && args[2]?.startsWith("refs/remotes/origin/")) return result(`${base}\n`);
+			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+			if (command === "git" && args[0] === "merge-base") return result(`${base}\n`);
+			if (command === "git" && args[0] === "rev-list") return result("0\n");
+			throw new Error(`Unexpected ${command} ${text}`);
 		},
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
-	});
-	await assert.rejects(workflow.prepare("ghe.example/acme/project:main"), /base and head must use the same GitHub host/);
-	assert.equal(commands, 1);
-});
-
-test("base inference skips the symbolic origin HEAD", async (t) => {
-	const creationTarget = target(true);
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const exec: Exec = async (command, args) => {
-		const text = args.join(" ");
-		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "git" && args[0] === "config") return result("", 1);
-		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "gh" && args[0] === "repo") {
-			return result(JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" }));
-		}
-		if (command === "git" && args[0] === "for-each-ref") {
-			return result(`refs/remotes/origin/HEAD\t${base}\trefs/remotes/origin/main\nrefs/remotes/origin/main\t${base}\t\n`);
-		}
-		if (command === "git" && args[0] === "rev-list") return result("1 2\n");
-		if (command === "git" && args[0] === "check-ref-format") return result("main\n");
-		if (command === "gh" && args[0] === "api") return result(baseOutput());
-		if (command === "git" && args[0] === "fetch") return result();
-		if (command === "git" && args[0] === "cat-file") return result();
-		if (command === "git" && args[0] === "merge-base") return result(`${head}\n`);
-		throw new Error(`Unexpected ${command} ${text}`);
-	};
-	const workflow = new PullRequestCreator({
-		cwd,
-		target: creationTarget,
-		agentDir,
-		exec,
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
-	});
-	const prepared = await workflow.prepare();
-	assert.equal(prepared.kind, "prepared");
-	if (prepared.kind === "prepared") assert.equal(prepared.base.ref, "main");
-});
-
-test("base inference refreshes and prunes origin before scoring live branches", async (t) => {
-	const staleOid = "d".repeat(40);
-	const creationTarget = target(true);
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const calls: Array<[string, string[]]> = [];
-	const scored: string[] = [];
-	let refreshed = false;
-	const exec: Exec = async (command, args) => {
-		calls.push([command, [...args]]);
-		const text = args.join(" ");
-		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "git" && args[0] === "config") return result("", 1);
-		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
-		if (command === "git" && args[0] === "fetch" && args.includes("--prune")) {
-			refreshed = true;
-			return result();
-		}
-		if (command === "git" && args[0] === "for-each-ref") {
-			return result(refreshed
-				? `refs/remotes/origin/main\t${base}\t\n`
-				: `refs/remotes/origin/deleted\t${staleOid}\t\nrefs/remotes/origin/main\t${base}\t\n`);
-		}
-		if (command === "git" && args[0] === "rev-list") {
-			scored.push(args[3]!);
-			if (args[3] === `HEAD...${base}`) return result("1 2\n");
-			if (args[3] === `HEAD...${staleOid}`) return result("0 0\n");
-		}
-		if (command === "git" && text === "check-ref-format --branch main") return result("main\n");
-		if (command === "gh" && args[0] === "api") return result(baseOutput());
-		if (command === "git" && args[0] === "fetch") return result();
-		if (command === "git" && args[0] === "cat-file") return result();
-		if (command === "git" && text === `merge-base HEAD ${base}`) return result(`${head}\n`);
-		throw new Error(`Unexpected ${command} ${text}`);
-	};
-	const workflow = new PullRequestCreator({
-		cwd,
-		target: creationTarget,
-		agentDir,
-		exec,
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
+		loadCurrentPullRequest: async () => none(creationTarget),
 	});
 
-	const prepared = await workflow.prepare();
-	assert.equal(prepared.kind, "prepared");
-	if (prepared.kind === "prepared") assert.equal(prepared.base.ref, "main");
-	assert.deepEqual(scored, [`HEAD...${base}`]);
-	assert.deepEqual(calls.find(([command, args]) => command === "git" && args.includes("--prune")), ["git", [
-		"fetch", "--prune", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
-		"git@github.com:acme/project.git", "+refs/heads/*:refs/remotes/origin/*",
-	]]);
-});
-
-test("base inference excludes a differently named configured push ref owned by origin", async (t) => {
-	const localRefOid = "d".repeat(40);
-	const pushRefOid = "e".repeat(40);
-	const creationTarget: PullRequestTarget = {
-		...target(false),
-		branch: "feature/local",
-		ref: "feature/published",
-		remoteOid: null,
-	};
-	const distanceRefs: string[] = [];
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const exec: Exec = async (command, args) => {
-		const text = args.join(" ");
-		if (command === "git" && text === "branch --show-current") return result("feature/local\n");
-		if (command === "git" && text === "config --get-all branch.feature/local.gh-merge-base") return result("", 1);
-		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
-		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
-		if (command === "git" && args[0] === "for-each-ref") {
-			return result(
-				`refs/remotes/origin/feature/published\t${pushRefOid}\t\n` +
-				`refs/remotes/origin/feature/local\t${localRefOid}\t\n` +
-				`refs/remotes/origin/main\t${base}\t\n`,
-			);
-		}
-		if (command === "git" && args[0] === "rev-list") {
-			const ref = args[3]!;
-			distanceRefs.push(ref);
-			if (ref === `HEAD...${localRefOid}`) return result("5 5\n");
-			if (ref === `HEAD...${base}`) return result("1 2\n");
-			throw new Error(`Unexpected base candidate ${ref}`);
-		}
-		if (command === "git" && text === "check-ref-format --branch main") return result("main\n");
-		if (command === "gh" && args[0] === "api") return result(baseOutput());
-		if (command === "git" && args[0] === "fetch") return result();
-		if (command === "git" && args[0] === "cat-file") return result();
-		if (command === "git" && text === `merge-base HEAD ${base}`) return result(`${head}\n`);
-		throw new Error(`Unexpected ${command} ${text}`);
-	};
-	const workflow = new PullRequestCreator({
-		cwd,
-		target: creationTarget,
-		agentDir,
-		exec,
-		loadCurrentPullRequest: async () => ({ kind: "none", creationTarget }),
-	});
-	const prepared = await workflow.prepare();
-	assert.equal(prepared.kind, "prepared");
-	if (prepared.kind === "prepared") assert.equal(prepared.base.ref, "main");
-	assert.deepEqual(distanceRefs, [`HEAD...${localRefOid}`, `HEAD...${base}`]);
+	await assert.rejects(workflow.prepare("main"), /at least one commit ahead/);
+	assert.equal(workflow.state.phase, "unprepared");
+	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "cat-file"), false);
 });
 
 test("a blocked conflict continuation prevents replay", async (t) => {
@@ -658,7 +623,7 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication("changed concurrently"));
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
-	const app = creator(exec, target(true));
+	const app = creator(exec, target(false));
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	app.workflow.state.phase = "pushed";
 	app.workflow.state.publicationHead = head;
@@ -690,9 +655,7 @@ test("does not push when HEAD or target authority changes after final ancestry c
 		};
 		const app = creator(exec, target(true));
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-		(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({
-			kind: "none", creationTarget: latestTarget,
-		});
+		(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(latestTarget);
 		await assert.rejects(app.workflow.push(), race === "HEAD" ? /local HEAD changed before push/ : /fresh complete discovery is no longer none/);
 		assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false, race);
 	}
