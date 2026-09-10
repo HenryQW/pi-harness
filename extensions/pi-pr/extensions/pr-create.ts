@@ -203,6 +203,7 @@ export class PullRequestCreator {
 	private readonly cwd: string;
 	private readonly target: PullRequestTarget;
 	private readonly noTarget: boolean;
+	private noTargetUpstreamConfigured = false;
 	private readonly signal?: AbortSignal;
 	private readonly agentDir?: string;
 	private readonly exec: Exec;
@@ -492,14 +493,17 @@ export class PullRequestCreator {
 				throw new Error("Published remote ref did not match captured HEAD");
 			}
 			this.state.phase = "pushed";
-			if (this.noTarget) await this.configureNoTargetUpstream(head);
+			if (this.noTarget) {
+				await this.configureNoTargetUpstream(head);
+				this.noTargetUpstreamConfigured = true;
+			}
 			return { kind: "pushed", head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
 	private async publishedAuthority(): Promise<void> {
 		const head = this.state.publicationHead!;
-		if (this.noTarget) {
+		if (this.noTarget && !this.noTargetUpstreamConfigured) {
 			const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
 			const authority = await readValidatedRemoteAuthority(this.pi(), this.context(), this.target.remote);
 			if (branch !== this.target.branch || authority.host !== this.target.host ||

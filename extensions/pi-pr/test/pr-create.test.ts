@@ -131,10 +131,11 @@ function creator(exec: Exec, creationTarget: PullRequestTarget) {
 	return { workflow, agentDir };
 }
 
-test("push uses an empty exact lease then fetches tracking and verifies upstream", async (t) => {
+test("successful no-target upstream setup revalidates a changed configured push ref", async (t) => {
 	const calls: Array<[string, string[]]> = [];
 	let tracking = false;
 	let upstream = false;
+	let discoveredTarget = target(true);
 	const exec: Exec = async (command, args) => {
 		calls.push([command, [...args]]);
 		const text = args.join(" ");
@@ -163,8 +164,10 @@ test("push uses an empty exact lease then fetches tracking and verifies upstream
 	const app = creator(exec, target(true));
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	// Push must compare against the original no-target authority, not the post-push discovery fixture.
-	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({ kind: "none", creationTarget: target(true) });
+	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({ kind: "none", creationTarget: discoveredTarget });
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	discoveredTarget = { ...target(false), ref: "renamed", remoteOid: head };
+	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /Published target authority changed/);
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "push"), ["git", [
 		"push", "--porcelain", "--force-with-lease=refs/heads/feature:", "--recurse-submodules=no", "--",
 		"git@github.com:acme/project.git", `${head}:refs/heads/feature`,
