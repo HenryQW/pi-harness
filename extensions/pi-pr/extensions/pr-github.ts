@@ -107,6 +107,10 @@ export type PullRequestCreationPreflight = {
 	ahead: number;
 };
 
+type CreationPreflightResult =
+	| { kind: "same-ref" }
+	| { kind: "distinct-ref"; preflight: PullRequestCreationPreflight };
+
 type CreationIdentity = {
 	target: PullRequestTarget;
 	head: string;
@@ -1104,19 +1108,18 @@ function parseCreationRepositoryLineage(output: string, expected: PushRepository
 	return normalizeRepository(sourceName);
 }
 
-async function assertCreationRepositoryRelation(
+async function inspectCreationRepositoryRelation(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: PullRequestTarget,
 	origin: { repository: PushRepository },
 	baseRef: string,
-): Promise<void> {
+): Promise<"same-ref" | "distinct-ref"> {
 	if (target.host !== origin.repository.host) {
 		fail("Read creation repository", "base and head hosts do not match");
 	}
 	if (normalizeRepository(target.repository) === origin.repository.normalizedName) {
-		if (target.ref === baseRef) fail("Read creation repository", "head and base refs match");
-		return;
+		return target.ref === baseRef ? "same-ref" : "distinct-ref";
 	}
 	const read = async (repository: PushRepository): Promise<string> => {
 		const [owner, name] = repository.nameWithOwner.split("/");
@@ -1133,6 +1136,7 @@ async function assertCreationRepositoryRelation(
 		host: target.host,
 	});
 	if (originSource !== targetSource) fail("Read creation repository", "base and head are unrelated");
+	return "distinct-ref";
 }
 
 function parseCreationAhead(output: string): number {
@@ -1149,7 +1153,7 @@ async function preflightCreation(
 	target: PullRequestTarget,
 	explicitBaseRef: string | undefined,
 	identity: CreationIdentity,
-): Promise<PullRequestCreationPreflight> {
+): Promise<CreationPreflightResult> {
 	const validatedTarget = validatedCreationTarget(target);
 	if (!sameCreationTarget(identity.target, validatedTarget)) {
 		fail("Read creation target", "target changed");
@@ -1160,7 +1164,8 @@ async function preflightCreation(
 		? await readConfiguredCreationBaseRef(pi, context, identity.target.branch)
 		: await validateCreationRef(pi, context, explicitBaseRef);
 	const baseRef = configuredBaseRef ?? await readDefaultCreationBaseRef(pi, context, origin);
-	await assertCreationRepositoryRelation(pi, context, identity.target, origin, baseRef);
+	const relation = await inspectCreationRepositoryRelation(pi, context, identity.target, origin, baseRef);
+	if (relation === "same-ref") return { kind: relation };
 	const trackingRef = `refs/remotes/origin/${baseRef}`;
 	await execute(pi, context, "Fetch creation base", "git", [
 		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
@@ -1180,16 +1185,19 @@ async function preflightCreation(
 		"rev-list", "--count", `${mergeBase}..${identity.head}`,
 	])).stdout);
 	return {
-		head: identity.head,
-		base: {
-			host: origin.repository.host,
-			repository: origin.repository.nameWithOwner,
-			fetchSource: origin.fetchSource,
-			ref: baseRef,
-			oid: baseOid,
-			mergeBase,
+		kind: relation,
+		preflight: {
+			head: identity.head,
+			base: {
+				host: origin.repository.host,
+				repository: origin.repository.nameWithOwner,
+				fetchSource: origin.fetchSource,
+				ref: baseRef,
+				oid: baseOid,
+				mergeBase,
+			},
+			ahead,
 		},
-		ahead,
 	};
 }
 
@@ -1200,7 +1208,9 @@ export async function preflightPullRequestCreation(
 	explicitBaseRef?: string,
 ): Promise<PullRequestCreationPreflight> {
 	const identity = await captureCreationIdentity(pi, context, target);
-	return await preflightCreation(pi, context, target, explicitBaseRef, identity);
+	const result = await preflightCreation(pi, context, target, explicitBaseRef, identity);
+	if (result.kind === "same-ref") fail("Read creation repository", "head and base refs match");
+	return result.preflight;
 }
 
 async function creationDiscovery(
@@ -1211,8 +1221,12 @@ async function creationDiscovery(
 	identity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const captured = identity ?? await captureCreationIdentity(pi, context, target);
-	const preflight = await preflightCreation(pi, context, target, explicitBaseRef, captured);
-	return { kind: "none", creationTarget: target, branch: { ahead: preflight.ahead } };
+	const result = await preflightCreation(pi, context, target, explicitBaseRef, captured);
+	return {
+		kind: "none",
+		creationTarget: target,
+		branch: { ahead: result.kind === "same-ref" ? 0 : result.preflight.ahead },
+	};
 }
 
 async function readRemoteAuthority(

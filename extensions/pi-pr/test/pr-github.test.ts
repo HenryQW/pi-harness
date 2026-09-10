@@ -869,7 +869,7 @@ test("infers one exact open pull request from a published same-name branch", asy
 	assert.ok(search?.args.includes("qualifiedName=refs/heads/feature/local"));
 });
 
-test("does not globally search a common branch with no pull request", async () => {
+test("treats the default branch with no pull request as creation-ineligible", async () => {
 	const app = harness({
 		branch: "main",
 		remote: "origin",
@@ -881,15 +881,18 @@ test("does not globally search a common branch with no pull request", async () =
 			nameWithOwner: "HenryQW/pi-harness",
 			url: "https://github.com/HenryQW/pi-harness",
 		})),
-		creationDefaultBranch: "trunk",
 	});
 
-	assert.equal((await discoverCurrentPullRequest(app.pi, app.context)).kind, "none");
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(discovery.kind, "none");
+	if (discovery.kind !== "none") return;
+	assert.equal(discovery.branch.ahead, 0);
 	const search = app.calls.find(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("associatedPullRequests("))
 	);
 	assert.ok(search?.args.includes("qualifiedName=refs/heads/main"));
 	assert.doesNotMatch(search?.args.join(" ") ?? "", /search\(query:|searchQuery=|head:/);
+	assert.equal(app.calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 });
 
 test("rejects true, malformed, and repeated remote mirror settings but allows normalized false", async () => {
