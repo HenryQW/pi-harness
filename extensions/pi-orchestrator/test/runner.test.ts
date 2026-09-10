@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -100,6 +101,7 @@ class FakeRuntime implements OrchestratorRuntime {
 	clock = 1_000;
 	main = { ...MAIN_A };
 	preflightCalls = 0;
+	preflightCwds: string[] = [];
 	materializeCalls = 0;
 	recoverCalls: Record<string, NormalizedLaunchRecord>[] = [];
 	allocationCalls: AllocationKind[] = [];
@@ -198,11 +200,12 @@ class FakeRuntime implements OrchestratorRuntime {
 		});
 	}
 
-	async preflight(input: { request: ExecuteRequest; root: string }, context: OperationContext) {
+	async preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext) {
 		this.preflightCalls += 1;
+		this.preflightCwds.push(input.cwd);
 		this.observe("preflight", context);
 		await this.preflightAction?.();
-		return { root: this.preflightRoot ?? input.root, main: { ...this.main }, launchRecords: this.launchRecords(input.request) };
+		return { root: this.preflightRoot ?? input.cwd, main: { ...this.main }, launchRecords: this.launchRecords(input.request) };
 	}
 
 	async materializeLaunchRecords(
@@ -503,8 +506,12 @@ test("existing valid, malformed, and intervening state files are never replaced"
 	{
 		const { root, runtime, runner } = await harness(t);
 		await runner.execute(request(), root);
+		const materializations = runtime.materializeCalls;
+		const allocations = runtime.allocationCalls.length;
 		await assert.rejects(runner.execute(request(), root), /already exists/);
-		assert.equal(runtime.preflightCalls, 1);
+		assert.equal(runtime.preflightCalls, 2);
+		assert.equal(runtime.materializeCalls, materializations);
+		assert.equal(runtime.allocationCalls.length, allocations);
 	}
 	{
 		const { root, runtime, store, runner } = await harness(t);
@@ -514,12 +521,17 @@ test("existing valid, malformed, and intervening state files are never replaced"
 		await assert.rejects(runner.execute(request(), root), /already exists/);
 		await assert.rejects(store.load(root, "request-one"));
 		assert.equal(await readFile(path, "utf8"), "malformed state\n");
-		assert.equal(runtime.preflightCalls, 0);
+		assert.equal(runtime.preflightCalls, 1);
+		assert.equal(runtime.materializeCalls, 0);
+		assert.equal(runtime.allocationCalls.length, 0);
 	}
 	{
 		const { root, runtime, store, runner } = await harness(t);
 		const path = store.statePath(root, "request-one");
-		runtime.preflightAction = async () => await writeFile(path, "intervening state\n");
+		runtime.preflightAction = async () => {
+			await mkdir(dirname(path), { recursive: true });
+			await writeFile(path, "intervening state\n");
+		};
 		await assert.rejects(runner.execute(request(), root), /already exists/);
 		assert.equal(await readFile(path, "utf8"), "intervening state\n");
 	}
@@ -561,6 +573,19 @@ test("preflight owns no state, while private launch materialization starts only 
 		assert.equal(runtime.allocationCalls.length, 0);
 	});
 
+	await t.test("preflight consumes the same deadline before any state or allocation", async (t) => {
+		const { root, runtime, store, runner } = await harness(t);
+		const startedAt = runtime.clock;
+		runtime.expireHook = "preflight";
+		await assert.rejects(runner.execute(request({ budgetMs: 1_000 }), root), /deadline/i);
+		assert.deepEqual(runtime.contexts.map(({ hook }) => hook), ["preflight"]);
+		assert.equal(runtime.contexts[0]!.context.deadline, startedAt + 1_000);
+		assert.equal(runtime.contexts[0]!.context.timeoutMs, 1_000);
+		await assert.rejects(store.load(root, "request-one"));
+		assert.equal(runtime.materializeCalls, 0);
+		assert.equal(runtime.allocationCalls.length, 0);
+	});
+
 	await t.test("materialization failure remains durable and fail-closed", async (t) => {
 		const { root, runtime, store, runner } = await harness(t);
 		runtime.materializeAction = async () => { throw new Error("private write failed"); };
@@ -578,14 +603,16 @@ test("preflight owns no state, while private launch materialization starts only 
 		assert.equal(runtime.allocationCalls.length, 0);
 	});
 
-	await t.test("preflight cannot redirect canonical state ownership", async (t) => {
+	await t.test("nested cwd uses only the canonical preflight Git root for state", async (t) => {
 		const { root, runtime, store, runner } = await harness(t);
-		const otherRoot = join(dirname(root), "other-workspace");
-		await mkdir(otherRoot);
-		runtime.preflightRoot = otherRoot;
-		await assert.rejects(runner.execute(request(), root), /canonical request root/);
-		await assert.rejects(store.load(root, "request-one"));
-		assert.equal(runtime.materializeCalls, 0);
+		const nested = join(root, "nested");
+		await mkdir(nested);
+		runtime.preflightRoot = realpathSync.native(root);
+		const completed = await runner.execute(request(), nested);
+		assert.equal(completed.state.root, realpathSync.native(root));
+		assert.deepEqual(runtime.preflightCwds, [realpathSync.native(nested)]);
+		assert.equal((await store.load(root, "request-one")).state.root, realpathSync.native(root));
+		await assert.rejects(store.load(nested, "request-one"));
 	});
 });
 

@@ -174,11 +174,20 @@ async function harness(t: test.TestContext) {
 		modelRegistry: { getAvailable: () => models },
 		isProjectTrusted: () => false,
 	} as unknown as ExtensionContext;
+	const resolvedCwds: string[] = [];
 	const inspectedRoots: string[] = [];
+	const preflightOrder: string[] = [];
+	let resolvedRoot: string | undefined;
 	const runtime = createRoleLaunchRuntime({
 		pi,
 		context: () => ctx,
+		resolveRoot: async (cwd) => {
+			preflightOrder.push("root");
+			resolvedCwds.push(cwd);
+			return resolvedRoot ?? await realpath(root);
+		},
 		inspectMain: async ({ root: inspected }) => {
+			preflightOrder.push("main");
 			inspectedRoots.push(inspected);
 			return { ...MAIN };
 		},
@@ -190,11 +199,14 @@ async function harness(t: test.TestContext) {
 		await mkdir(directory, { recursive: true });
 		await writeFile(join(directory, `${role.name}.md`), roleMarkdown(role));
 	}
-	return { directory, root, agentDir, orchestratorEntrypoint, models, commands, tools, events, pi, ctx, runtime, inspectedRoots, setRole };
+	return {
+		directory, root, agentDir, orchestratorEntrypoint, models, commands, tools, events, pi, ctx, runtime,
+		resolvedCwds, inspectedRoots, preflightOrder, setResolvedRoot: (value: string) => { resolvedRoot = value; }, setRole,
+	};
 }
 
 async function preflight(fixture: Awaited<ReturnType<typeof harness>>, definition = request()) {
-	return await fixture.runtime.preflight({ request: definition, root: fixture.root }, operationContext());
+	return await fixture.runtime.preflight({ request: definition, cwd: fixture.root }, operationContext());
 }
 
 function recordsByKey(records: readonly NormalizedLaunchRecord[]): Record<string, NormalizedLaunchRecord> {
@@ -227,7 +239,17 @@ test("preflight registers its Model Task and resolves each distinct Role/model c
 	assert.deepEqual(prepared.launchRecords.map(({ model }) => model), [
 		"test-provider/fast-model", "test-provider/balanced-model", "test-provider/frontier-model", "test-provider/frontier-model",
 	]);
-	assert.equal(fixture.inspectedRoots.length, 1);
+	assert.deepEqual(fixture.resolvedCwds, [fixture.root]);
+	assert.deepEqual(fixture.inspectedRoots, [await realpath(fixture.root)]);
+	assert.deepEqual(fixture.preflightOrder, ["root", "main"]);
+});
+
+test("preflight rejects a root resolver result that is not already canonical", async (t) => {
+	const fixture = await harness(t);
+	fixture.setResolvedRoot(`${await realpath(fixture.root)}/`);
+	await assert.rejects(preflight(fixture), /non-canonical path/i);
+	assert.deepEqual(fixture.preflightOrder, ["root"]);
+	assert.deepEqual(fixture.inspectedRoots, []);
 });
 
 test("effective user Role overrides supply the exact tools and prompt", async (t) => {

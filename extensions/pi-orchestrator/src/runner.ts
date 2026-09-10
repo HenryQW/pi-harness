@@ -112,7 +112,7 @@ export type VerifiedLaunch = VerifiedImplementerLaunch | VerifiedReviewerLaunch;
 export interface CoordinatorRuntime {
 	now(): number;
 	randomToken(): string;
-	preflight(input: { request: ExecuteRequest; root: string }, context: OperationContext): Promise<{
+	preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext): Promise<{
 		root: string;
 		main: WorkspaceIdentity;
 		launchRecords: LaunchRecord[];
@@ -370,17 +370,16 @@ export class OrchestratorRunner {
 		this.store = store;
 	}
 
-	async execute(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
+	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const startedAt = this.runtime.now();
 		const request = parseExecuteRequest(value);
-		root = realpathSync.native(root);
 		const deadline = startedAt + request.budgetMs;
 		const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
 		try {
-			await this.store.withLock(root, async () => await this.store.assertAvailable(root, request.id));
-			const prepared = await scope.call(async (context) => await this.runtime.preflight({ request, root }, context));
-			const preparedRoot = realpathSync.native(prepared.root);
-			if (preparedRoot !== root) throw new Error("Preflight repository root does not match the canonical request root.");
+			const canonicalCwd = realpathSync.native(cwd);
+			const prepared = await scope.call(async (context) => await this.runtime.preflight({ request, cwd: canonicalCwd }, context));
+			const root = realpathSync.native(prepared.root);
+			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
 			if (!isCleanCommitted(prepared.main)) throw new Error("Preflight Main identity must be clean and committed.");
 			const launchRecords = validateLaunchRecords(request, prepared.launchRecords);
 			return await this.store.withLock(root, async () => {

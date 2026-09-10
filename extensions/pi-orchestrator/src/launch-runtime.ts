@@ -57,6 +57,7 @@ type KnownLaunchFiles = {
 export interface LaunchRuntimeOptions {
 	pi: LaunchPi;
 	context(): ExtensionContext;
+	resolveRoot(cwd: string, context: OperationContext): Promise<string>;
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	orchestratorEntrypoint: string;
 	agentDir?: string;
@@ -568,15 +569,21 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		return [...requiredLaunchKeys(request).keys()].map((key) => normalized[key]!);
 	}
 
-	async preflight(input: { request: ExecuteRequest; root: string }, context: OperationContext): Promise<{
+	async preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext): Promise<{
 		root: string;
 		main: WorkspaceIdentity;
 		launchRecords: LaunchRecord[];
 	}> {
 		abortIfNeeded(context.signal);
-		const root = normalize(await realpath(input.root));
+		const resolvedRoot = await this.options.resolveRoot(input.cwd, context);
+		if (typeof resolvedRoot !== "string" || !isAbsolute(resolvedRoot) || resolvedRoot.includes("\0")) {
+			throw new Error("Pi Orchestrator root resolver must return an absolute canonical path.");
+		}
+		const root = normalize(await realpath(resolvedRoot));
+		if (root !== resolvedRoot) throw new Error("Pi Orchestrator root resolver returned a non-canonical path.");
 		const rootInfo = await lstat(root);
 		if (!rootInfo.isDirectory()) throw new Error("Pi Orchestrator root must be an existing local directory.");
+		abortIfNeeded(context.signal);
 		const main = await this.options.inspectMain({ root }, context);
 		const launchRecords = await this.prepareLaunchRecords(input.request, root, context);
 		return { root, main, launchRecords };
