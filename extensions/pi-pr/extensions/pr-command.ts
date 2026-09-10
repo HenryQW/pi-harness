@@ -36,11 +36,12 @@ type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage"
 export type PrCommandInvocation = {
 	sessionGeneration: number;
 	assertCurrent(): void;
+	onRouteResolved?(nextStep: NextStep): void;
 };
 export type PrCommandHandler = (
 	args: string,
 	ctx: ExtensionCommandContext,
-	invocation?: PrCommandInvocation,
+	invocation?: PrCommandInvocation | ((nextStep: NextStep) => void),
 ) => Promise<NextStep>;
 
 export type WorkflowPromptIdentity = Readonly<{
@@ -252,10 +253,13 @@ export function createPrCommandHandler(
 	const markPromptQueued = dependencies.markWorkflowPromptQueued ?? (() => {});
 	const release = dependencies.releaseWorkflow ?? (() => {});
 	return async (args, ctx, invocation) => {
+		const commandInvocation = typeof invocation === "function" ? undefined : invocation;
+		const onRouteResolved = typeof invocation === "function" ? invocation : invocation?.onRouteResolved;
 		const instructions = args.trim();
 		const discovery = await load(pi, ctx);
-		invocation?.assertCurrent();
+		commandInvocation?.assertCurrent();
 		const nextStep = deriveNextStep(discovery);
+		onRouteResolved?.(nextStep);
 		if (instructions && !(nextStep in WORKFLOWS)) {
 			throw new Error("The current /pr route does not accept instructions");
 		}
@@ -283,7 +287,7 @@ export function createPrCommandHandler(
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
 		const route = nextStep as WorkflowNextStep;
 		const reservation = workflowReservation(route, discovery, instructions);
-		await dispatchWorkflow(pi, ctx, route, reservation, invocation, reserve, markPromptQueued, release);
+		await dispatchWorkflow(pi, ctx, route, reservation, commandInvocation, reserve, markPromptQueued, release);
 		return nextStep;
 	};
 }

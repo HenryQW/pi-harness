@@ -41,6 +41,7 @@ type Exec = (
 const plain = (text: string) => text.replace(/\x1b\]8;;.*?\x1b\\/g, "");
 const widgetLine = (text: string): string[] => [text];
 const routeRunId = "11111111-1111-4111-8111-111111111111";
+const routingWidgetLine = widgetLine("⠋ Checking pull request…");
 const inheritedHerdrEnvironment = {
 	HERDR_ENV: process.env.HERDR_ENV,
 	HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
@@ -1103,6 +1104,34 @@ test("failed CI replaces review feedback in the footer on refresh", async (t) =>
 	await app.shutdown(ctx);
 });
 
+test("shows plain immediate RPC routing feedback while fresh discovery is deferred", async () => {
+	const discovery = deferred<"fix-ci">();
+	const app = harness({
+		async load() {
+			return currentPullRequest({ conditions: { ci: "failure" } });
+		},
+		async commandHandler() {
+			return discovery.promise;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		const statusWrites = app.statuses.length;
+		const command = app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.widgets.at(-1), routingWidgetLine);
+		assert.doesNotMatch((app.widgets.at(-1) as string[])[0] ?? "", /\x1b/);
+		assert.equal(app.statuses.length, statusWrites, "routing must preserve the footer");
+
+		discovery.resolve("fix-ci");
+		await command;
+		assert.equal(app.widgets.at(-1), undefined);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
 test("keeps the RPC widget as a plain icon-prefixed action despite a terminal theme", async () => {
 	const app = harness({
 		async load() {
@@ -1119,6 +1148,60 @@ test("keeps the RPC widget as a plain icon-prefixed action despite a terminal th
 		assert.notEqual(typeof app.widgets.at(-1), "function");
 		assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 		assert.doesNotMatch((app.widgets.at(-1) as string[])[0] ?? "", /\x1b/);
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("animates and clears a width-aware TUI routing component at route resolution", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const discovery = deferred<void>();
+	const interaction = deferred<void>();
+	const app = harness({
+		async load() {
+			return currentPullRequest({ conditions: { ci: "failure" } });
+		},
+		async commandHandler(_args, _ctx, onRouteResolved) {
+			await discovery.promise;
+			onRouteResolved?.("none");
+			await interaction.promise;
+			return "none";
+		},
+	});
+	const ctx = app.context("tui");
+
+	try {
+		await app.start(ctx);
+		const statusWrites = app.statuses.length;
+		const command = app.command().handler("", ctx as ExtensionCommandContext);
+		const widget = app.widgets.at(-1);
+		assert.equal(typeof widget, "function");
+		let renders = 0;
+		const component = (widget as (tui: { requestRender(): void }, theme: {
+			fg(color: string, text: string): string;
+		}) => { dispose(): void; render(width: number): string[] })({
+			requestRender() { renders += 1; },
+		}, {
+			fg(_color, text) { return `\x1b[36m${text}\x1b[0m`; },
+		});
+		assert.deepEqual(component.render(0), []);
+		assert.match(component.render(80)[0] ?? "", /⠋.*Checking pull request…/);
+		assert.ok(component.render(8).every((line) => visibleWidth(line) <= 8));
+
+		t.mock.timers.tick(80);
+		assert.equal(renders, 1);
+		assert.match(component.render(80)[0] ?? "", /⠙.*Checking pull request…/);
+
+		discovery.resolve();
+		await flush();
+		assert.equal(app.widgets.at(-1), undefined, "routing feedback clears before route interaction");
+		assert.equal(app.statuses.length, statusWrites, "routing must preserve the footer");
+		t.mock.timers.tick(160);
+		assert.equal(renders, 1, "route resolution must stop animation");
+		component.dispose();
+
+		interaction.resolve();
+		await command;
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -1356,7 +1439,8 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 	assert.equal(calls, callsAfterShutdown, "shutdown must stop later polling");
 });
 
-test("session context generation prevents stale /pr completion from mutating the current session", async () => {
+test("session replacement disposes routing animation before stale /pr completion", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
 	const workflow = deferred<"create">();
 	let loads = 0;
 	const app = harness({
@@ -1371,14 +1455,23 @@ test("session context generation prevents stale /pr completion from mutating the
 			return workflow.promise;
 		},
 	});
-	const firstSession = app.context();
+	const firstSession = app.context("tui");
 	const secondSession = app.context();
 
 	await app.start(firstSession);
 	const staleCommand = app.command().handler("", firstSession as ExtensionCommandContext);
-	assert.equal(app.widgets.at(-1), undefined);
+	const routingWidget = app.widgets.at(-1);
+	assert.equal(typeof routingWidget, "function");
+	let renders = 0;
+	(routingWidget as (tui: { requestRender(): void }, theme: {
+		fg(color: string, text: string): string;
+	}) => unknown)({ requestRender() { renders += 1; } }, { fg(_color, text) { return text; } });
+	t.mock.timers.tick(80);
+	assert.equal(renders, 1);
 
 	await app.shutdown(firstSession);
+	t.mock.timers.tick(160);
+	assert.equal(renders, 1, "shutdown must stop the stale spinner timer");
 	await app.start(secondSession);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
 	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
@@ -1458,7 +1551,7 @@ test("keeps the create hint cleared until the workflow settles", async () => {
 		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
 
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
-		assert.equal(app.widgets.at(-1), undefined, "the hint clears before the workflow completes");
+		assert.deepEqual(app.widgets.at(-1), routingWidgetLine, "routing feedback replaces the hint immediately");
 		workflow.resolve(undefined);
 		await command;
 
@@ -1750,7 +1843,7 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 		const statusWrites = app.statuses.length;
 
 		const command = app.command().handler("", ctx as ExtensionCommandContext);
-		assert.equal(app.widgets.at(-1), undefined, "the hint clears while /pr selects the route");
+		assert.deepEqual(app.widgets.at(-1), routingWidgetLine, "routing feedback replaces the hint immediately");
 		assert.equal(app.statuses.length, statusWrites, "a non-create route must not clear the footer");
 
 		workflow.resolve("fix-ci");
@@ -1929,9 +2022,11 @@ test("out-of-order /pr results keep every active creation workflow pending", asy
 		await app.start(ctx);
 		const older = app.command().handler("", ctx as ExtensionCommandContext);
 		const newer = app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.widgets.at(-1), routingWidgetLine);
 
 		second.resolve("create");
 		await newer;
+		assert.deepEqual(app.widgets.at(-1), routingWidgetLine, "the older unresolved route keeps feedback visible");
 		first.resolve("none");
 		await older;
 		await flush();
@@ -1964,7 +2059,10 @@ test("a failed second /pr keeps the active creation workflow pending", async () 
 	try {
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
-		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /second dispatch failed/);
+		const failed = app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.widgets.at(-1), routingWidgetLine);
+		await assert.rejects(failed, /second dispatch failed/);
+		assert.equal(app.widgets.at(-1), undefined, "the active workflow keeps the restored widget hidden");
 		await flush();
 		assert.equal(app.widgets.at(-1), undefined);
 
@@ -1998,7 +2096,7 @@ test("/pr restores its hint after a command error and schedules a refresh", asyn
 	assert.equal(loads, 1);
 
 	const command = app.command().handler("", ctx as ExtensionCommandContext);
-	assert.equal(app.widgets.at(-1), undefined);
+	assert.deepEqual(app.widgets.at(-1), routingWidgetLine);
 	await assert.rejects(command, /route failed/);
 	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 	await flush();

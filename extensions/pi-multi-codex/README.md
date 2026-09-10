@@ -25,6 +25,8 @@ Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`,
 
 `/codex-status` lists the new slot. It shows cached quota when available, or `unavailable` until the first successful snapshot.
 
+The footer and `/codex-status` show the five-hour reset countdown for Free, Go, and Plus tiers. They show the seven-day reset countdown for Pro Lite and other tiers.
+
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/codex-add` | command | Create the next numbered slot, then authenticate that slot. |
