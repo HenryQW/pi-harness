@@ -111,9 +111,15 @@ const SweepParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("start") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("resume") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("show"), guard: SweepGuard, id: Type.String({ minLength: 1, maxLength: 1_024 }) }, CLOSED),
-	Type.Object({ runId: RouteRunId, action: Type.Literal("record"), guard: SweepGuard, ledger: SweepLedger, ownedPaths: OwnedPaths }, CLOSED),
+	Type.Object({
+		runId: RouteRunId,
+		action: Type.Literal("record"),
+		guard: SweepGuard,
+		ledger: SweepLedger,
+		ownedPaths: Type.Optional(OwnedPaths),
+	}, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish"), guard: SweepGuard }, CLOSED),
-	Type.Object({ runId: RouteRunId, action: Type.Literal("refresh"), guard: SweepGuard, ledger: SweepLedger }, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("refresh"), guard: SweepGuard }, CLOSED),
 	Type.Object({
 		runId: RouteRunId,
 		action: Type.Literal("resolve"),
@@ -472,7 +478,7 @@ export default function pullRequestExtension(
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
 					case "publish": return await selected.workflow.publish(params.guard);
-					case "refresh": return await selected.workflow.refresh(params.guard, params.ledger);
+					case "refresh": return await selected.workflow.refresh(params.guard);
 					case "resolve": return await selected.workflow.resolve(params.guard, params.threadIds);
 					case "finalize": return await selected.workflow.finalize(params.guard, params.projection, params.checks);
 				}

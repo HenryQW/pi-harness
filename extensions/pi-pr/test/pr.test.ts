@@ -334,11 +334,18 @@ test("registers exactly four sequential tools with closed action schemas", () =>
 	for (const tool of app.tools) {
 		assert.equal(tool.executionMode, "sequential", tool.name);
 		const alternatives = (tool.parameters as unknown as {
-			anyOf: Array<{ additionalProperties?: boolean; properties: { action: { const: string } } }>;
+			anyOf: Array<{ additionalProperties?: boolean; properties: { action: { const: string } }; required?: string[] }>;
 		}).anyOf;
 		assert.deepEqual(alternatives.map(({ properties }) => properties.action.const), expected.get(tool.name), tool.name);
 		assert.ok(alternatives.every(({ additionalProperties }) => additionalProperties === false), tool.name);
 	}
+	const sweepAlternatives = (app.tools.find(({ name }) => name === "pi_pr_sweep")!.parameters as unknown as {
+		anyOf: Array<{ properties: Record<string, unknown> & { action: { const: string } }; required?: string[] }>;
+	}).anyOf;
+	const record = sweepAlternatives.find(({ properties }) => properties.action.const === "record")!;
+	const refresh = sweepAlternatives.find(({ properties }) => properties.action.const === "refresh")!;
+	assert.ok(!record.required?.includes("ownedPaths"));
+	assert.deepEqual(Object.keys(refresh.properties).sort(), ["action", "guard", "runId"]);
 });
 
 test("binds one update run to its session, worktree, route, and fresh authority", async () => {

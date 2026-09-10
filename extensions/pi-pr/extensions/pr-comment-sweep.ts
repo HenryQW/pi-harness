@@ -93,7 +93,7 @@ export type SweepStatus = {
 		finalize: AttemptState;
 	};
 };
-export type SweepPhase = "triage" | "recorded" | "published" | "refreshed" | "resolving" | "resolved";
+export type SweepPhase = "triage" | "recorded" | "published" | "refresh-pending" | "refreshed" | "resolving" | "resolved";
 
 type SweepAuthority = ReturnType<typeof authorityFromCurrent>;
 type ResolutionAttempt = {
@@ -144,9 +144,9 @@ export type PrCommentSweepRequest =
 	| { action: "start" }
 	| { action: "resume" }
 	| { action: "show"; guard: SweepRunGuard; id: string }
-	| { action: "record"; guard: SweepRunGuard; ledger: SweepLedgerEntry[]; ownedPaths: string[] }
+	| { action: "record"; guard: SweepRunGuard; ledger: SweepLedgerEntry[]; ownedPaths?: string[] }
 	| { action: "publish"; guard: SweepRunGuard }
-	| { action: "refresh"; guard: SweepRunGuard; ledger: SweepLedgerEntry[] }
+	| { action: "refresh"; guard: SweepRunGuard }
 	| { action: "resolve"; guard: SweepRunGuard; threadIds: string[] }
 	| { action: "finalize"; guard: SweepRunGuard; projection: SweepFinalProjection; checks: SweepCheck[] };
 
@@ -387,7 +387,7 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		"ledger", "ownedPaths", "publicationHead", "projection", "attempts",
 	], "sweep recovery state");
 	if (value.version !== STATE_VERSION || value.workflow !== "pi-pr-comment-sweep") throw new Error("unsupported sweep recovery state version");
-	if (!(["triage", "recorded", "published", "refreshed", "resolving", "resolved"] as unknown[]).includes(value.phase)) {
+	if (!(["triage", "recorded", "published", "refresh-pending", "refreshed", "resolving", "resolved"] as unknown[]).includes(value.phase)) {
 		throw new Error("sweep recovery phase is invalid");
 	}
 	exactKeys(value.worktree, ["id", "root"], "sweep worktree");
@@ -455,20 +455,23 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		projection,
 		attempts: { push, resolutions, finalize },
 	};
-	const isPublished = state.phase === "published" || state.phase === "refreshed" || state.phase === "resolving" || state.phase === "resolved";
-	const isRefreshed = state.phase === "refreshed" || state.phase === "resolving" || state.phase === "resolved";
-	const feedbackHead = isRefreshed ? publicationHead : original.head;
+	const isPublished = ["published", "refresh-pending", "refreshed", "resolving", "resolved"].includes(state.phase);
+	const hasFreshSnapshot = ["refresh-pending", "refreshed", "resolving", "resolved"].includes(state.phase);
+	const hasFinalProjection = ["refreshed", "resolving", "resolved"].includes(state.phase);
+	const feedbackHead = hasFreshSnapshot ? publicationHead : original.head;
 	if (!feedbackHead || !feedbackMatchesAuthority(snapshot, authority, feedbackHead)) {
 		throw new Error("feedback snapshot authority is inconsistent");
 	}
-	if ((state.phase === "triage") !== (ledger === null)) throw new Error("sweep phase and ledger coverage are inconsistent");
+	if (["triage", "refresh-pending"].includes(state.phase) !== (ledger === null)) {
+		throw new Error("sweep phase and ledger coverage are inconsistent");
+	}
 	if (isPublished !== (push.state === "applied")) throw new Error("sweep phase and push attempt are inconsistent");
 	if (push.state === "none") {
 		if (push.head !== null || publicationHead !== null) throw new Error("empty push attempt has publication data");
 	} else if (push.head === null || publicationHead !== push.head) {
 		throw new Error("push attempt head does not match publication head");
 	}
-	if (isRefreshed !== (projection !== null)) throw new Error("sweep phase and final projection are inconsistent");
+	if (hasFinalProjection !== (projection !== null)) throw new Error("sweep phase and final projection are inconsistent");
 	if (projection && (!ledger || !sameProjection(projection, buildProjection(feedback.generation, snapshot, ledger)))) {
 		throw new Error("final projection does not match feedback and ledger coverage");
 	}
@@ -839,15 +842,24 @@ export class PullRequestCommentSweep {
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	async record(guard: SweepRunGuard, ledgerInput: SweepLedgerEntry[], ownedPathsInput: string[]): Promise<SweepStatus> {
+	async record(guard: SweepRunGuard, ledgerInput: SweepLedgerEntry[], ownedPathsInput?: string[]): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (state.phase !== "triage" || state.ledger !== null) throw new Error("Comment sweep ledger was already recorded");
-			state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
-			state.ownedPaths = parseOwnedPaths(ownedPathsInput);
-			state.phase = "recorded";
+			if (state.phase === "triage" && state.ledger === null) {
+				if (ownedPathsInput === undefined) throw new Error("Initial comment sweep ledger requires ownedPaths");
+				state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
+				state.ownedPaths = parseOwnedPaths(ownedPathsInput);
+				state.phase = "recorded";
+			} else if (state.phase === "refresh-pending" && state.ledger === null) {
+				if (ownedPathsInput !== undefined) throw new Error("Refreshed comment sweep ledger cannot change ownedPaths");
+				state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
+				state.projection = buildProjection(state.feedback.generation, state.feedback.snapshot, state.ledger);
+				state.phase = "refreshed";
+			} else {
+				throw new Error("Comment sweep ledger was already recorded or is not ready");
+			}
 			await this.save(location, state);
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
@@ -903,12 +915,12 @@ export class PullRequestCommentSweep {
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	async refresh(guard: SweepRunGuard, replacementLedger: SweepLedgerEntry[]): Promise<SweepStatus> {
+	async refresh(guard: SweepRunGuard): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (!["published", "refreshed", "resolving", "resolved"].includes(state.phase) || !state.publicationHead || state.attempts.push.state !== "applied") {
+			if (!["published", "refresh-pending", "refreshed", "resolving", "resolved"].includes(state.phase) || !state.publicationHead || state.attempts.push.state !== "applied") {
 				throw new Error("Comment sweep is not ready to refresh");
 			}
 			if (state.attempts.resolutions.some(({ state: attempt }) => attempt !== "applied")) {
@@ -922,14 +934,12 @@ export class PullRequestCommentSweep {
 			const snapshot = await this.collect(state.authority, state.publicationHead);
 			await this.currentAuthority(state.authority, state.publicationHead);
 			await this.requireCleanPublication(state, state.publicationHead);
-			const ledger = exactLedger(replacementLedger, snapshot);
-			const generation = state.feedback.generation + 1;
-			this.setFeedback(state, snapshot, generation);
-			state.ledger = ledger;
-			state.projection = buildProjection(generation, snapshot, ledger);
+			this.setFeedback(state, snapshot, state.feedback.generation + 1);
+			state.ledger = null;
+			state.projection = null;
 			state.attempts.resolutions = [];
 			state.attempts.finalize = { state: "none", checks: [] };
-			state.phase = "refreshed";
+			state.phase = "refresh-pending";
 			await this.save(location, state);
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
@@ -1084,7 +1094,7 @@ export class PullRequestCommentSweep {
 			case "show": return await this.show(request.guard, request.id);
 			case "record": return await this.record(request.guard, request.ledger, request.ownedPaths);
 			case "publish": return await this.publish(request.guard);
-			case "refresh": return await this.refresh(request.guard, request.ledger);
+			case "refresh": return await this.refresh(request.guard);
 			case "resolve": return await this.resolve(request.guard, request.threadIds);
 			case "finalize": return await this.finalize(request.guard, request.projection, request.checks);
 		}

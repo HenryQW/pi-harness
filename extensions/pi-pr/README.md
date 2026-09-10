@@ -119,7 +119,11 @@ Ordinary conversation comments do not trigger a route or block a merge. Changes 
 
 The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
 
-It runs one or more existing non-destructive checks on the clean committed `HEAD` before publishing. Finalization reruns them as a later state guard.
+After publishing, `refresh` freezes the complete latest feedback and returns only IDs and kinds. Use `show` to inspect every fresh item.
+
+A second guarded `record` must cover that exact snapshot before resolution or finalization. It keeps the paths from the initial record.
+
+The sweep runs existing non-destructive checks on the clean committed `HEAD` before publishing. Finalization reruns them as a later state guard.
 
 ### Refresh
 
