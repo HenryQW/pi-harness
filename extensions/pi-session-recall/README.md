@@ -120,7 +120,7 @@ Pattern preparation reports `sync.walkComplete`, `sync.backlogRemaining`, and `s
 
 ### Retrieval safety
 
-Discovery returns no transcript content. Use its `path` and `matchMessageId` with SCROLL for targeted raw retrieval. READ and SCROLL include tool-result messages when present.
+Discovery returns short snippets from indexed user and assistant transcript text. Use a result's `path` and `matchMessageId` with SCROLL for targeted context; READ and SCROLL retrieve raw messages, including tool-result messages when present.
 
 Pattern preparation returns only non-empty user and assistant text. It never returns thinking blocks or tool-result content. Preparation keeps citation and lineage metadata when a source cannot be read.
 
