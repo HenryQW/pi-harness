@@ -266,16 +266,15 @@ interface ToolParams {
 	branchTip?: string;
 	window?: number;
 	limit?: number;
-	detail?: "adaptive" | "full";
 }
 
-const DESCRIPTION = `Search past Pi sessions locally with FTS5; returns stored messages.
+const DESCRIPTION = `Search past Pi sessions locally with FTS5; returns indexed metadata and snippets.
 
 - \`operation: "prepare-pattern-miner"\` + \`scope\`: prepare one bounded corpus and repository inventory.
 - \`query\`: discover matches. Prefer distinctive identifiers or uncommon terms; multi-word queries are AND. Use \`OR\`/\`NOT\` for Boolean queries and quotes only when exact wording is known.
 - \`sessionId\` + \`aroundMessageId\`: scroll ±\`window\`; retain \`branchTip\` across forks.
 - \`sessionId\` alone: read; no args: browse recent sessions.
-- Discovery is adaptive; use \`detail: "full"\` to hydrate every result.`;
+- Discovery returns metadata and snippets. Use a result's \`path\` and \`matchMessageId\` for a follow-up scroll.`;
 
 export default function (pi: ExtensionAPI): void {
 	// Best-effort sync at startup, deferred so the synchronous walk + SQLite
@@ -307,8 +306,7 @@ export default function (pi: ExtensionAPI): void {
 			branchTip: Type.Optional(Type.String({ description: "Branch tip entry id from a previous response — selects which branch of a forked session to scroll; aroundMessageId must lie on it." })),
 			window: Type.Optional(Type.Number({ description: "Scroll window radius, [1,20], default 5." })),
 			limit: Type.Optional(Type.Number({ description: "Max results, [1,10]. Defaults to 10 for preparation and 3 otherwise." })),
-			detail: Type.Optional(StringEnum(["adaptive", "full"] as const)),
-		}),
+		}, { additionalProperties: false }),
 		renderResult(result, { expanded }, theme) {
 			const output = result.content.find((part) => part.type === "text")?.text ?? "";
 			const styledOutput = theme.fg("toolOutput", output);
@@ -333,7 +331,7 @@ export default function (pi: ExtensionAPI): void {
 					throw new Error("scope requires operation: prepare-pattern-miner.");
 				}
 				if (rawParams.operation === "prepare-pattern-miner") {
-					const incompatible = (["query", "sessionId", "aroundMessageId", "branchTip", "window", "detail"] as const)
+					const incompatible = (["query", "sessionId", "aroundMessageId", "branchTip", "window"] as const)
 						.filter((key) => rawParams[key] !== undefined);
 					if (incompatible.length > 0) {
 						throw new Error(`prepare-pattern-miner does not accept: ${incompatible.join(", ")}.`);
@@ -365,7 +363,6 @@ export default function (pi: ExtensionAPI): void {
 					branchTip: rawParams.branchTip != null ? String(rawParams.branchTip) : undefined,
 					window: rawParams.window,
 					limit: rawParams.limit,
-					detail: rawParams.detail,
 				};
 				let sessionId = params.sessionId?.trim() || undefined;
 				const anchor = params.aroundMessageId?.trim() || undefined;
@@ -445,135 +442,40 @@ export default function (pi: ExtensionAPI): void {
 
 				// --- DISCOVERY ---
 				const limit = clamp(params.limit, 1, 10, 3);
-				const full = params.detail === "full";
 
-				// Current-session guard: suppress hits on the live branch.
-				let liveIds: Set<string> | undefined;
+				// Exclude the whole current file when the session manager provides it.
+				// A missing or failing manager leaves discovery usable without exclusion.
 				let currentSessionPath: string | undefined;
 				try {
-					currentSessionPath = ctx.sessionManager.getSessionFile();
-					liveIds = new Set(
-						ctx.sessionManager
-							.buildContextEntries()
-							.filter((e) => e.type === "message")
-							.map((e) => e.id),
-					);
+					currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
 				} catch {
-					// Guard unavailable → degrade gracefully, no suppression.
+					// Guard unavailable → continue without exclusion.
 				}
 
 				const { hits, backlogRemaining } = searchIndex(dbPath(), params.query, {
 					limit,
-					currentLiveEntryIds: liveIds,
 					currentSessionPath,
 				});
 
 				const resultQuery = params.query!.trim().slice(0, MAX_QUERY_CHARS);
-				// Reserve the complete response envelope and divide remaining space
-				// across hits so the first hydrated result cannot starve later metadata.
-				// The same warning-bearing envelope is reused for the final result so the
-				// reservation matches what is returned (and textResult's trimming keeps
-				// top-level non-array keys like syncWarning).
-				const envelope: Record<string, unknown> = {
+				const results = hits.map((hit) => ({
+					path: hit.path,
+					snippet: hit.snippet,
+					rank: hit.rank,
+					matchMessageId: hit.entryId,
+					role: hit.role,
+					timestamp: hit.timestamp,
+					cwd: hit.cwd,
+					name: hit.name,
+					startedAt: hit.startedAt,
+				}));
+				return textResult({
 					mode: "discovery",
 					query: resultQuery,
-					results: [],
+					results,
 					backlogRemaining,
 					...(syncWarning ? { syncWarning } : {}),
-				};
-				let used = JSON.stringify(envelope).length + Math.max(0, hits.length - 1);
-				const results = hits.map((hit, index) => {
-					const remaining = Math.floor((OUTPUT_CHAR_BUDGET - used) / (hits.length - index));
-					const meta = {
-						path: hit.path,
-						snippet: hit.snippet,
-						rank: hit.rank,
-						matchMessageId: hit.entryId,
-						role: hit.role,
-						timestamp: hit.timestamp,
-						cwd: hit.cwd,
-						name: hit.name,
-						startedAt: hit.startedAt,
-					};
-					const hydrateFull = full || hit.rank === 0;
-					// Every hit is sized against the cumulative remaining budget: keep
-					// as-is when it fits, else truncate to the largest uniform cap that
-					// fits across messages and bookends, else metadata-only.
-					// contentTruncated signals either case.
-					const fitOrTruncate = (
-						hitObj: Record<string, unknown>,
-						messages: WindowMessage[],
-						bookends?: { start: WindowMessage[]; end: WindowMessage[] },
-					): Record<string, unknown> => {
-						const out: Record<string, unknown> = { ...hitObj };
-						if (JSON.stringify(out).length > remaining) {
-							const pools = bookends ? [messages, bookends.start, bookends.end] : [messages];
-							const maxLen = Math.max(...pools.flatMap((a) => a.map((m) => m.content.length)), 0);
-							Object.assign(
-								out,
-								boundContent(
-									(cap) => ({
-										...hitObj,
-										messages: cap === null ? [] : truncateContent(messages, cap),
-										...(bookends && cap !== null
-											? { bookends: { start: truncateContent(bookends.start, cap), end: truncateContent(bookends.end, cap) } }
-											: bookends
-												? { bookends: { start: [], end: [] } }
-												: {}),
-										contentTruncated: true,
-									}),
-									maxLen,
-									remaining,
-								),
-							);
-						}
-						used += JSON.stringify(out).length;
-						return out;
-					};
-					const hydrationFallback = (error: unknown) =>
-						fitOrTruncate(
-							{ ...meta, detail: hydrateFull ? "full" : "compact", messages: [], bookends: { start: [], end: [] }, messagesBefore: 0, messagesAfter: 0, error: (error instanceof Error ? error.message : String(error)).slice(0, 512) },
-							[],
-						);
-					if (!hydrateFull) {
-						// Compact hits still carry the matched anchor message.
-						try {
-							const win = getWindow(hit.path, hit.entryId, 0, { userAssistantTextOnly: true });
-							// Mark when the fixed compact cap already removed content, so a
-							// hit that still fits the budget isn't mistaken for complete.
-							const overCompactCap = win.messages.some((m) => m.content.length > 2000);
-							return fitOrTruncate({ ...meta, detail: "compact", ...(overCompactCap ? { contentTruncated: true } : {}), ...(win.toolResultsOmitted ? { toolResultsOmitted: true } : {}), messages: truncateContent(win.messages, 2000), bookends: { start: [], end: [] }, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter }, win.messages);
-						} catch (error) {
-							return hydrationFallback(error);
-						}
-					}
-					try {
-						// One bounded snapshot feeds both window and branch bookends.
-						const win = getWindow(hit.path, hit.entryId, 5, full ? undefined : { userAssistantTextOnly: true });
-						// Same branch as the anchor — following the file's final leaf
-						// would attach unrelated sibling messages.
-						const bookends = { start: win.branchMessages.slice(0, 3), end: win.branchMessages.slice(-3) };
-						return fitOrTruncate(
-							{
-								...meta,
-								detail: "full" as const,
-								...(win.toolResultsOmitted ? { toolResultsOmitted: true } : {}),
-								messages: win.messages,
-								bookends,
-								messagesBefore: win.messagesBefore,
-								messagesAfter: win.messagesAfter,
-							},
-							win.messages,
-							bookends,
-						);
-					} catch (error) {
-						// Session file unreadable/moved since indexing → anchor-only.
-						return hydrationFallback(error);
-					}
 				});
-
-				const result: Record<string, unknown> = { ...envelope, results };
-				return textResult(result);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return textResult({ success: false, error: message });

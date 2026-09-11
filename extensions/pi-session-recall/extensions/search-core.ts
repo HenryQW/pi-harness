@@ -15,7 +15,7 @@ export const DEFAULT_SYNC_CAP = 50;
 const MAX_SYNC_CAP = DEFAULT_SYNC_CAP * 10;
 const MAX_TEXT_CHARS = 20000;
 const SCAN_LIMIT = 300;
-/** Best-ranked candidate retained per session after live-entry filtering. */
+/** Best-ranked candidate retained per session after SQL prefiltering. */
 const ROWS_PER_FILE = 1;
 
 const SCHEMA_SQL = `
@@ -519,19 +519,13 @@ function getBacklog(db: DatabaseSync): number {
 
 export interface SearchOptions {
 	limit?: number;
-	/** Entry ids on the current session's live branch — hits here are skipped. */
-	currentLiveEntryIds?: Set<string>;
-	/** Path of the current session file. */
+	/** Path of the current session file — the whole file is skipped. */
 	currentSessionPath?: string;
 }
 
-// Live-entry suppression happens INSIDE SQL (before ROW_NUMBER/caps) so
-// inactive matches on the current file compete only against each other, and
-// there is no pre-partition LIMIT: one verbose session cannot starve others.
-// live_filter is a per-connection TEMP table populated from SearchOptions.
-const LIVE_FILTER_SQL = `NOT EXISTS (
-  SELECT 1 FROM live_filter lf WHERE lf.path = m.path AND lf.entry_id = m.entry_id
-)`;
+// Current-session exclusion happens INSIDE SQL (before ROW_NUMBER/caps), so
+// the excluded file cannot consume the per-file rank, lineage, or scan limit.
+const CURRENT_SESSION_FILTER_SQL = "(? IS NULL OR m.path <> ?)";
 const LINEAGE_FILTER_SQL = `NOT EXISTS (
   SELECT 1 FROM ranked parent
   WHERE parent.path = r.parent_session
@@ -549,7 +543,7 @@ WITH matches AS (
          bm25(session_fts) AS score
   FROM session_fts JOIN messages m ON m.rowid = session_fts.rowid
   LEFT JOIN sessions s ON s.path = m.path
-  WHERE session_fts MATCH ? AND ${LIVE_FILTER_SQL}
+  WHERE session_fts MATCH ? AND ${CURRENT_SESSION_FILTER_SQL}
 ), ranked AS (
   SELECT *, ROW_NUMBER() OVER (PARTITION BY path ORDER BY score, rid) AS rn
   FROM matches
@@ -587,22 +581,7 @@ export function searchIndex(
 	const limit = opts?.limit ?? 3;
 	const db = openDb(dbPath);
 	try {
-		// Per-connection TEMP table of (path, entry_id) pairs to suppress —
-		// parameterized, immune to SQLite variable limits. Primary key indexes
-		// the correlated NOT EXISTS probe and dedupes inserts.
-		db.exec("CREATE TEMP TABLE IF NOT EXISTS live_filter (path TEXT NOT NULL, entry_id TEXT NOT NULL, PRIMARY KEY (path, entry_id))");
-		if (opts?.currentSessionPath && opts?.currentLiveEntryIds?.size) {
-			const ins = db.prepare("INSERT INTO live_filter(path, entry_id) VALUES (?, ?)");
-			db.exec("BEGIN");
-			try {
-				for (const id of opts.currentLiveEntryIds!) ins.run(opts.currentSessionPath!, id);
-				db.exec("COMMIT");
-			} catch (err) {
-				db.exec("ROLLBACK");
-				throw err;
-			}
-		}
-
+		const currentSessionPath = opts?.currentSessionPath ?? null;
 		const plan = buildFtsQueryPlan(query);
 		if (plan.ftsCandidates.length === 0 && !plan.forceLike) {
 			return { hits: [], backlogRemaining: getBacklog(db) };
@@ -628,7 +607,7 @@ export function searchIndex(
 			let parseFailed = false;
 			for (const cand of plan.ftsCandidates) {
 				try {
-					rows = db.prepare(BASE_SELECT).all(cand) as any;
+					rows = db.prepare(BASE_SELECT).all(cand, currentSessionPath, currentSessionPath) as any;
 					// First/raw success defines the result even with zero rows. After a
 					// parse error, an empty recovery candidate keeps trying later ones.
 					if (!parseFailed || rows.length > 0) {
@@ -652,21 +631,21 @@ export function searchIndex(
 			                   ROW_NUMBER() OVER (PARTITION BY m.path ORDER BY m.rowid DESC) AS rn,
 			                   COUNT(*) OVER (PARTITION BY m.path) AS matches
 			             FROM messages m LEFT JOIN sessions s ON s.path = m.path
-			             WHERE ${likePlan.where} AND ${LIVE_FILTER_SQL}
+			             WHERE ${likePlan.where} AND ${CURRENT_SESSION_FILTER_SQL}
 			            )
 			            SELECT path, entry_id, role, timestamp, head, tail, cwd, name, started_at
 			            FROM ranked r
 			            WHERE rn <= ${ROWS_PER_FILE}
 			              AND ${LINEAGE_FILTER_SQL}
 			            ORDER BY matches DESC, started_at DESC, path
-			            LIMIT ${SCAN_LIMIT}`).all(...likePlan.params) as any;
+			            LIMIT ${SCAN_LIMIT}`).all(...likePlan.params, currentSessionPath, currentSessionPath) as any;
 			// Snippets anchor on operand terms only — operator words like OR would
 			// otherwise match common substrings and hide the real match.
 			for (const r of rows as any[]) r.snip = likeSnippet((r as any).head ?? "", (r as any).tail ?? "", likePlan.terms);
 		}
 
-		// Live-entry and one-hop lineage suppression already happened in SQL,
-		// before the scan limit, so fork rows cannot starve unrelated matches.
+		// Current-file and one-hop lineage suppression already happened in SQL,
+		// before the scan limit, so excluded or fork rows cannot starve matches.
 		const seenFiles = new Set<string>();
 		const hits: SearchHit[] = [];
 		let rankCounter = 0;

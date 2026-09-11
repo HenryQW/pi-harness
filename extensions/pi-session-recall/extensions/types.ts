@@ -28,7 +28,7 @@ export interface PreparationSessionRow extends SessionRow {
 	lineageId: string;
 }
 
-/** One FTS discovery hit before hydration. */
+/** One metadata-only FTS discovery hit. */
 export interface SearchHit {
 	path: string;
 	entryId: string;

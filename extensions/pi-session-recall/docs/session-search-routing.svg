@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="session-search-routing-title session-search-routing-desc">
-      <title id="session-search-routing-title">session_search routing</title>
-      <desc id="session-search-routing-desc">Flowchart routing session_search requests between indexed preparation, discovery, and browse calls and direct transcript scroll and read calls.</desc>
+      <title id="session-search-routing-title">session_search progressive search and scroll</title>
+      <desc id="session-search-routing-desc">Flowchart routing progressive keyword discovery to metadata results, then using each result path and matchMessageId for direct transcript scroll.</desc>
       <defs>
         <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
         <style>
@@ -93,9 +93,9 @@
 
       <rect x="576" y="400" width="200" height="96" rx="20" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
       <text class="node-name" x="676" y="428">Discovery</text>
-      <text class="node-sub" x="676" y="452">query · lazy sync + FTS5</text>
-      <text class="node-sub" x="676" y="468">adaptive output omits tool results</text>
-      <text class="node-sub" x="676" y="484">detail:&quot;full&quot; includes tool results</text>
+      <text class="node-sub" x="676" y="452">keyword query · lazy sync + FTS5</text>
+      <text class="node-sub" x="676" y="468">metadata + snippets only</text>
+      <text class="node-sub" x="676" y="484">path + matchMessageId → SCROLL</text>
 
       <rect x="328" y="544" width="192" height="96" rx="20" fill="#f0eee9" stroke="#101828" stroke-width="1"/>
       <text class="node-name" x="424" y="572">Browse</text>
