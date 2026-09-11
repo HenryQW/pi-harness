@@ -329,30 +329,10 @@ describe("lineage + guards", () => {
 		assert.ok(hits.every((h) => !h.path.includes("lineage-cap-child")));
 	});
 
-	it("current-session guard skips live entries only in the current file", () => {
+	it("current-session exclusion skips the whole current file", () => {
 		seedDeploy();
-		const cur = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
-		const { hits } = searchIndex(dbPath, "deploy pipeline", {
-			currentSessionPath: cur,
-			currentLiveEntryIds: new Set(["u1"]),
-		});
-		for (const h of hits) {
-			assert.ok(!(h.path === cur && h.entryId === "u1"));
-		}
-	});
-
-	it("current-session guard suppresses oversized messages by their real entry id", () => {
-		const big = "x".repeat(20000);
-		const fragFile = writeFixture("--lg-frag--", "frag.jsonl", [
-			sessionHeader(),
-			msg("f1", "user", `fragmentguard unique marker ${big}`),
-		], 40000);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		const { hits } = searchIndex(dbPath, "fragmentguard unique marker", {
-			currentSessionPath: fragFile,
-			currentLiveEntryIds: new Set(["f1"]),
-		});
-		assert.ok(!hits.some((h) => h.path === fragFile), "live oversized-message hits must be suppressed");
+		const currentPath = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
+		assert.deepEqual(searchIndex(dbPath, "deploy pipeline", { currentSessionPath: currentPath }).hits, []);
 	});
 
 	it("real entry ids ending in #h/#t survive search and hydration untouched", () => {
@@ -370,23 +350,26 @@ describe("lineage + guards", () => {
 		assert.ok(w.messages.some((m) => m.entryId === "u2#h" && m.anchor === true));
 	});
 
-	it("suppressed live hit on parent does not suppress a matching child (bhGOs)", () => {
+	it("excluding a parent file leaves its matching child discoverable (bhGOs)", () => {
 		const parentFile = writeFixture("--lg-parent--", "parent.jsonl", [
 			sessionHeader(),
 			msg("p1", "user", "guardlineage shared topic in the root session"),
 		], 30000);
-		writeFixture("--lg-child--", "child.jsonl", [
+		const childFile = writeFixture("--lg-child--", "child.jsonl", [
 			sessionHeader({ parentSession: parentFile }),
 			msg("c1", "assistant", "guardlineage shared topic answered in the fork"),
 		], 31000);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		// Parent's only match is on its live branch → suppressed; child must survive.
-		const { hits } = searchIndex(dbPath, "guardlineage shared topic", {
+		// Exclusion removes the parent before lineage suppression; the child survives.
+		const childOnly = searchIndex(dbPath, "guardlineage shared topic", {
 			currentSessionPath: parentFile,
-			currentLiveEntryIds: new Set(["p1"]),
-		});
-		assert.equal(hits.length, 1);
-		assert.equal(hits[0].path.endsWith("child.jsonl"), true);
+		}).hits;
+		assert.deepEqual(childOnly.map((hit) => hit.path), [childFile]);
+		// Excluding the child leaves the parent representative available.
+		const parentOnly = searchIndex(dbPath, "guardlineage shared topic", {
+			currentSessionPath: childFile,
+		}).hits;
+		assert.deepEqual(parentOnly.map((hit) => hit.path), [parentFile]);
 	});
 
 	it("duplicate ids are first-wins across entry types", () => {
@@ -1098,24 +1081,54 @@ describe("sanitize ladder regression", () => {
 });
 
 describe("SQL prefilter + parse semantics + walk safety", () => {
-	it("live-entry prefilter lets lower-ranked historical entry on same file surface", () => {
-		const file = writeFixture("--live-guard--", "lg.jsonl", [
+	it("excludes the current FTS file before the scan limit", () => {
+		const marker = "fts-current-prelimit-marker";
+		const current = writeFixture("--fts-current--", "current.jsonl", [
 			sessionHeader(),
-			...Array.from({ length: 8 }, (_, i) => msg(`lg${i}`, "assistant", `Go livesearch unique marker instance ${i}`)),
-		], 70000);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		// Seven matches are live; the historical one must survive the per-file
-		// cap because suppression runs before ranking in both FTS and LIKE paths.
-		const opts = {
-			currentSessionPath: file,
-			currentLiveEntryIds: new Set(["lg0", "lg1", "lg2", "lg3", "lg4", "lg5", "lg6"]),
-		};
-		const ftsHits = searchIndex(dbPath, "livesearch unique marker", opts).hits;
-		assert.equal(ftsHits.length, 1);
-		assert.equal(ftsHits[0].entryId, "lg7");
-		const likeHits = searchIndex(dbPath, "Go livesearch", opts).hits;
-		assert.equal(likeHits.length, 1);
-		assert.equal(likeHits[0].entryId, "lg7");
+			msg("current", "user", marker),
+		], 100000);
+		for (let i = 0; i < 300; i++) {
+			writeFixture(`--fts-other-${i}--`, "other.jsonl", [
+				sessionHeader(),
+				msg(`other-${i}`, "user", `${marker} ${"padding ".repeat(40)}`),
+			], i);
+		}
+		const synced = syncSessions(sessionsDir, dbPath, { cap: 500 });
+		assert.equal(synced.backlogRemaining, 0);
+
+		const unfiltered = searchIndex(dbPath, marker, { limit: 301 }).hits;
+		assert.equal(unfiltered[0].path, current);
+		assert.equal(unfiltered[0].rank, 0);
+		const excluded = searchIndex(dbPath, marker, { limit: 301, currentSessionPath: current }).hits;
+		assert.equal(excluded.length, 300);
+		assert.equal(new Set(excluded.map((hit) => hit.path)).size, 300);
+		assert.ok(excluded.every((hit) => hit.path !== current));
+	});
+
+	it("excludes the current LIKE file before the scan limit", () => {
+		const current = writeFixture("--like-current--", "current.jsonl", [
+			sessionHeader(),
+			msg("current-0", "user", "Qx current match zero"),
+			msg("current-1", "assistant", "Qx current match one"),
+			msg("current-2", "user", "Qx current match two"),
+			msg("current-3", "assistant", "Qx current match three"),
+		], 100000);
+		for (let i = 0; i < 300; i++) {
+			writeFixture(`--like-other-${i}--`, "other.jsonl", [
+				sessionHeader(),
+				msg(`other-${i}`, "user", `Qx other match ${i}`),
+			], i);
+		}
+		const synced = syncSessions(sessionsDir, dbPath, { cap: 500 });
+		assert.equal(synced.backlogRemaining, 0);
+
+		const unfiltered = searchIndex(dbPath, "Qx", { limit: 301 }).hits;
+		assert.equal(unfiltered[0].path, current);
+		assert.equal(unfiltered[0].rank, 0);
+		const excluded = searchIndex(dbPath, "Qx", { limit: 301, currentSessionPath: current }).hits;
+		assert.equal(excluded.length, 300);
+		assert.equal(new Set(excluded.map((hit) => hit.path)).size, 300);
+		assert.ok(excluded.every((hit) => hit.path !== current));
 	});
 
 	it("parsed query with zero rows stays empty; malformed recovers via LIKE", () => {

@@ -14,13 +14,13 @@ pi install npm:@henryqw/pi-session-recall
 
 ## Use
 
-Start discovery with a distinctive query:
+Start a progressive search with a distinctive keyword query:
 
 ```json
 { "query": "database migration rollback" }
 ```
 
-`session_search` returns ranked sessions. The top result includes nearby messages and session bookends.
+Discovery returns ranked metadata and snippets. Use a result's `path` and `matchMessageId` to scroll for the relevant messages.
 
 Prepare a repository-scoped pattern-mining sample with one call:
 
@@ -34,12 +34,12 @@ Prepare a repository-scoped pattern-mining sample with one call:
 
 Use `scope:"all"` for cross-repository work. It still returns the corpus when repository inventory is unavailable.
 
-Use IDs from a discovery result to ask for more context:
+Use the discovery result's `path` and `matchMessageId` for a follow-up scroll:
 
 ```json
 {
-  "sessionId": "<returned sessionId>",
-  "aroundMessageId": "<returned message entryId>",
+  "sessionId": "<result path>",
+  "aroundMessageId": "<result matchMessageId>",
   "window": 10
 }
 ```
@@ -51,12 +51,12 @@ The follow-up returns up to ten messages before and after that anchor on the sel
 | `session_search` | tool | Search, inspect, or prepare a bounded mining corpus from past sessions. |
 | `pi-session-pattern-miner` | skill | Find repeated work and choose the smallest useful automation. |
 
-BM25 is a text-ranking method. Hydrated results include messages read from saved session files.
+BM25 is a text-ranking method. Discovery returns index metadata; READ and SCROLL retrieve messages from saved session files.
 
 | Mode | Call | Result |
 | --- | --- | --- |
 | Pattern preparation | `operation:"prepare-pattern-miner"` + `scope:"repository"` or `scope:"all"` | Up to ten recent lineage-unique sessions plus repository inventory. The default limit is 10. Repository scope includes exact and descendant `cwd` values, filters before the limit, and excludes the current session file. |
-| Discovery | `query` | BM25-ranked top sessions. Adaptive retrieval uses user and assistant text for windows, bookends, anchors, and counts. It omits tool-result messages and sets `toolResultsOmitted:true` when it removes one. Lower hits still include their indexed anchor. Use `detail:"full"` to hydrate every hit with tool-result messages included. |
+| Discovery | `query` | BM25-ranked metadata and snippets. Each result includes `path` and `matchMessageId` for a follow-up SCROLL. Start with keywords, then narrow the query before scrolling. |
 | Scroll | `sessionId` + `aroundMessageId` | Raw message roles, including tool results, within ±`window` ([1,20]) of the anchor. Re-anchor on the last or first message ID to scroll. Across forks, pass the previous response's `branchTip`; `aroundMessageId` only centers the window and must lie on that branch. |
 | Read | `sessionId` | Raw message roles, including tool results, from the session. Large sessions return head 20 + tail 10. Oversized content is bounded to 50k characters and marked with `contentTruncated`. |
 | Browse | no args | Recent sessions with path, name, cwd, started date, and preview. |
@@ -98,7 +98,7 @@ Inspect the current candidate files before assigning ownership. Abstain if targe
 
 ## Flow
 
-![Flowchart showing session_search routing: preparation, discovery, and browse use the index; scroll and read retrieve saved transcripts directly.](./docs/session-search-routing.svg)
+![Flowchart showing progressive keyword discovery returning path and matchMessageId for direct transcript scroll.](./docs/session-search-routing.svg)
 
 Search makes no model calls.
 
@@ -112,7 +112,7 @@ Search makes no model calls.
 
 ### Context and sync
 
-Hits inside the current session's live context are suppressed. Compacted-away or inactive-branch history stays discoverable. Forked sessions collapse into their parent when both match.
+Discovery excludes the current session file when its path is available. Forked sessions collapse into their parent when both match.
 
 Before browse, discovery, or pattern preparation, the extension lazily syncs the index from the session tree.
 
@@ -120,9 +120,9 @@ Pattern preparation reports `sync.walkComplete`, `sync.backlogRemaining`, and `s
 
 ### Retrieval safety
 
-Adaptive discovery leaves tool-result messages out of returned context. Use `detail:"full"`, READ, or SCROLL when you explicitly need them.
+Discovery returns short snippets from indexed user and assistant transcript text. Use a result's `path` and `matchMessageId` with SCROLL for targeted context; READ and SCROLL retrieve raw messages, including tool-result messages when present.
 
-Pattern preparation returns only non-empty user and assistant text. It never returns thinking blocks or tool-result content. Each session keeps citation and lineage metadata even when its hydration fails.
+Pattern preparation returns only non-empty user and assistant text. It never returns thinking blocks or tool-result content. Preparation keeps citation and lineage metadata when a source cannot be read.
 
 Historical tool output may contain secrets or other sensitive data. Raw retrieval places that output in active model context.
 
@@ -139,7 +139,7 @@ The index and transcript reads stay local. Transcripts are read in place. Return
 Pin the previous release:
 
 ```bash
-pi install npm:@henryqw/pi-session-recall@2.0.0
+pi install npm:@henryqw/pi-session-recall@2.1.1
 ```
 
 No index migration or cleanup is needed.
@@ -156,7 +156,7 @@ Session directories whose encoded path starts with `--tmp-` or `--private-tmp-` 
 
 Session files over 32 MiB are excluded from indexing and hydration. Discovery cannot newly find them.
 
-READ and SCROLL return an explicit size error. A stale discovery hit from before a file grew returns metadata with empty messages and that error.
+READ and SCROLL return an explicit size error. Discovery returns the indexed metadata even when a source file changes afterward.
 
 Pattern preparation runs one sync pass. A positive backlog or incomplete walk limits the sample and sets `sync.complete:false`. A total sync or required repository-inventory failure returns an explicit tool error.
 
@@ -164,7 +164,7 @@ Repository scope fails outside Git or when repository inventory fails. All scope
 
 Outside Git, all scope sets `inventory.available:false` with `reason:"not-a-git-repository"`. On a repository inventory error, it uses `reason:"inventory-failed"`. Cancellation always aborts the call instead of returning unavailable inventory.
 
-Preparation rejects `query`, session cursors, `window`, or `detail` in the same call. It also rejects `scope` without the operation.
+Preparation rejects `query`, session cursors, or `window` in the same call. It also rejects `scope` without the operation.
 
 Preparation output stays within 50,000 serialized characters. Inventory uses at most 10,000 characters. Its `omittedCounts` report only omitted collection entries, and `inventory.truncated` reports those omissions.
 
