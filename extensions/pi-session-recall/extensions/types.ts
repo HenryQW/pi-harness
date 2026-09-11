@@ -9,7 +9,7 @@ export interface WindowMessage {
 	role: string;
 	content: string;
 	timestamp: string;
-	/** True when this message is the anchor of a scroll/discovery window. */
+	/** True when this message is the anchor of a scroll window. */
 	anchor?: boolean;
 }
 
