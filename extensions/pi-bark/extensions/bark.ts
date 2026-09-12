@@ -31,7 +31,7 @@ export function lastAssistantText(entries: readonly SessionEntry[]): string | un
 			.map((part) => part.text)
 			.join("")
 			.trim();
-		return text || undefined;
+		if (text) return text;
 	}
 	return undefined;
 }
@@ -62,15 +62,25 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	const copy = options.copy ?? copyToClipboard;
 	const fetchImpl = options.fetch ?? globalThis.fetch;
 
-	const sendStatus = async (title: string, cwd: string): Promise<void> => {
-		const config = configStore.loadSync().value;
-		if (!config.deviceKey || !statusNotificationsEnabled(config, cwd)) return;
+	let statusPushQueue = Promise.resolve();
+	const queueStatus = (title: string, cwd: string): Promise<void> => {
+		let configSnapshot: BarkConfig;
+		try {
+			configSnapshot = configStore.loadSync().value;
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		if (!configSnapshot.deviceKey || !statusNotificationsEnabled(configSnapshot, cwd)) return Promise.resolve();
 		const sessionName = pi.getSessionName()?.trim() || "Unnamed";
-		await sendPush(config, { title, body: `Pi session: ${sessionName}` }, fetchImpl);
+		const contentSnapshot = { title, body: `Pi session: ${sessionName}` };
+		const send = () => sendPush(configSnapshot, contentSnapshot, fetchImpl);
+		const push = statusPushQueue.then(send, send);
+		statusPushQueue = push;
+		return push;
 	};
 
 	pi.on("ui_prompt_start", (_event, ctx) => {
-		void sendStatus("Pi needs input", ctx.cwd).catch((error) => {
+		void queueStatus("Pi needs input", ctx.cwd).catch((error) => {
 			console.error(`[pi-bark] ${error instanceof Error ? error.message : String(error)}`);
 		});
 	});
@@ -78,7 +88,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!ctx.isIdle()) return;
 		try {
-			await sendStatus("Pi finished", ctx.cwd);
+			await queueStatus("Pi finished", ctx.cwd);
 		} catch (error) {
 			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 		}

@@ -25,16 +25,19 @@ export type BarkConfig = {
 };
 
 export function parseServerUrl(value: string): string {
+	const input = value.trim();
 	let url: URL;
 	try {
-		url = new URL(value.trim());
+		url = new URL(input);
 	} catch {
 		throw new Error("Bark server URL must be a valid HTTP or HTTPS URL.");
 	}
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
 		throw new Error("Bark server URL must use HTTP or HTTPS.");
 	}
-	if (url.search || url.hash) throw new Error("Bark server URL must not include a query or fragment.");
+	if (input.includes("?") || input.includes("#")) {
+		throw new Error("Bark server URL must not include a query or fragment.");
+	}
 	return url.href.replace(/\/$/, "");
 }
 

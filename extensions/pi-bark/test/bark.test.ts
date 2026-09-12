@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createDecipheriv } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import barkExtension, { lastAssistantText } from "../extensions/bark.ts";
+import { parseServerUrl } from "../src/config.ts";
 
 type Context = {
 	cwd: string;
@@ -14,7 +16,10 @@ type Context = {
 };
 type Command = (args: string, ctx: Context) => Promise<void>;
 
-function assistantEntry(content: Array<{ type: "text"; text: string }>, stopReason = "stop"): SessionEntry {
+function assistantEntry(
+	content: Array<{ type: "text"; text: string } | { type: "thinking"; thinking: string }>,
+	stopReason = "stop",
+): SessionEntry {
 	return {
 		type: "message",
 		id: crypto.randomUUID(),
@@ -28,7 +33,7 @@ function harness(
 	agentDir: string,
 	fetchImpl: typeof fetch,
 	copy: (text: string) => Promise<void>,
-	sessionName = "Test session",
+	sessionName: string | (() => string | undefined) = "Test session",
 ) {
 	const commands = new Map<string, Command>();
 	const lifecycleHandlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
@@ -39,10 +44,18 @@ function harness(
 		on(name: string, handler: (event: unknown, ctx: unknown) => unknown) {
 			lifecycleHandlers.set(name, handler);
 		},
-		getSessionName: () => sessionName,
+		getSessionName: () => (typeof sessionName === "function" ? sessionName() : sessionName),
 	} as unknown as ExtensionAPI;
 	barkExtension(pi, { agentDir, fetch: fetchImpl, copy });
 	return { commands, lifecycleHandlers };
+}
+
+function runKeyGenerator(agentDir: string, ...args: string[]) {
+	const script = join(import.meta.dirname, "..", "dist", "scripts", "generate-encryption-key.js");
+	return spawnSync(process.execPath, [script, ...args], {
+		encoding: "utf8",
+		env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+	});
 }
 
 test("lastAssistantText matches /copy text selection and formatting", () => {
@@ -54,6 +67,59 @@ test("lastAssistantText matches /copy text selection and formatting", () => {
 	const aborted = assistantEntry([], "aborted");
 
 	assert.equal(lastAssistantText([older, latest, aborted]), "# Result\n\n```ts\nconst x = 1;\n```");
+	assert.equal(
+		lastAssistantText([older, assistantEntry([{ type: "thinking", thinking: "not visible" }])]),
+		"older",
+	);
+});
+
+test("server URLs preserve HTTP(S) paths and reject raw query or fragment delimiters", () => {
+	assert.equal(parseServerUrl("http://push.example.com/bark/"), "http://push.example.com/bark");
+	for (const url of [
+		"https://push.example.com/bark?",
+		"https://push.example.com/bark#",
+		"https://push.example.com/bark?token=value",
+		"https://push.example.com/bark#section",
+	]) {
+		assert.throws(() => parseServerUrl(url), /must not include a query or fragment/);
+	}
+});
+
+test("built key generator stores, protects, replaces, and disables Bark push encryption", (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-key-test-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	const configPath = join(agentDir, "config", "pi-bark", "config.json");
+
+	const generated = runKeyGenerator(agentDir);
+	assert.equal(generated.status, 0, generated.stderr);
+	const firstKey = generated.stdout.match(/^Key: (.+)$/m)?.[1];
+	assert.equal(firstKey?.length, 32);
+	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+		serverUrl: "https://api.day.app",
+		deviceKey: null,
+		encryption: {
+			algorithm: "AES256",
+			mode: "GCM",
+			padding: "noPadding",
+			key: firstKey,
+		},
+		statusNotifications: { defaultEnabled: true, cwdOverrides: {} },
+	});
+
+	const protectedRun = runKeyGenerator(agentDir);
+	assert.equal(protectedRun.status, 1);
+	assert.match(protectedRun.stderr, /already exists/);
+	assert.equal(JSON.parse(readFileSync(configPath, "utf8")).encryption.key, firstKey);
+
+	const replaced = runKeyGenerator(agentDir, "--force");
+	assert.equal(replaced.status, 0, replaced.stderr);
+	const replacementKey = replaced.stdout.match(/^Key: (.+)$/m)?.[1];
+	assert.equal(replacementKey?.length, 32);
+	assert.notEqual(replacementKey, firstKey);
+
+	const disabled = runKeyGenerator(agentDir, "--disable");
+	assert.equal(disabled.status, 0, disabled.stderr);
+	assert.equal(JSON.parse(readFileSync(configPath, "utf8")).encryption, null);
 });
 
 test("/set-bark saves config and /copyb copies then posts the exact text", async (t) => {
@@ -162,6 +228,61 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 	assert.equal(pushes.length, 5);
 	const config = JSON.parse(readFileSync(join(agentDir, "config", "pi-bark", "config.json"), "utf8"));
 	assert.deepEqual(config.statusNotifications, { defaultEnabled: true, cwdOverrides: {} });
+});
+
+test("automatic status pushes preserve event order and event-time state", async (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+
+	const pushes: Array<Record<string, string>> = [];
+	let finishFirst: ((response: Response) => void) | undefined;
+	const firstResponse = new Promise<Response>((resolve) => {
+		finishFirst = resolve;
+	});
+	let sessionName = "First session";
+	const { commands, lifecycleHandlers } = harness(
+		agentDir,
+		(async (_input: string | URL | Request, init?: RequestInit) => {
+			const payload = JSON.parse(String(init?.body)) as Record<string, string>;
+			pushes.push(payload);
+			return payload.title === "Pi needs input" ? firstResponse : new Response(null, { status: 200 });
+		}) as typeof fetch,
+		async () => {},
+		() => sessionName,
+	);
+	const ctx = {
+		cwd: join(agentDir, "project"),
+		sessionManager: { buildContextEntries: () => [] },
+		isIdle: () => true,
+		ui: { notify: () => {} },
+	};
+	await commands.get("set-bark")!("device-key", ctx);
+
+	const promptStart = lifecycleHandlers.get("ui_prompt_start");
+	const settled = lifecycleHandlers.get("agent_settled");
+	assert.ok(promptStart);
+	assert.ok(settled);
+	assert.equal(promptStart({}, ctx), undefined, "ui_prompt_start stays non-blocking");
+	await Promise.resolve();
+	assert.equal(pushes[0]?.title, "Pi needs input");
+
+	sessionName = "Settled at event";
+	const settledPush = settled({}, ctx) as Promise<void>;
+	await commands.get("bark-notifications")!("off", ctx);
+	sessionName = "Disabled at event";
+	assert.equal(promptStart({}, ctx), undefined);
+	await commands.get("bark-notifications")!("on", ctx);
+	sessionName = "Changed after events";
+	assert.equal(pushes.length, 1, "settled notification waits for the prompt push");
+
+	finishFirst?.(new Response(null, { status: 200 }));
+	await settledPush;
+	await Promise.resolve();
+	assert.equal(pushes.length, 2, "settled notification starts after the prompt push completes");
+	assert.deepEqual(pushes, [
+		{ device_key: "device-key", title: "Pi needs input", body: "Pi session: First session" },
+		{ device_key: "device-key", title: "Pi finished", body: "Pi session: Settled at event" },
+	]);
 });
 
 test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is enabled", async (t) => {
