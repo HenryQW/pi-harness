@@ -166,7 +166,7 @@ function reviewEvidence(
 		tip,
 		identityAfter: result.identityAfter,
 		verdict: result.verdict,
-		passed: result.verdict.trim() === "PASS" && sameIdentity(result.identityAfter, tip),
+		passed: result.verdict === "PASS" && sameIdentity(result.identityAfter, tip),
 		at: Date.now(),
 	};
 }
@@ -471,7 +471,32 @@ test("candidate inspection rejects zero commits, dirty bytes, and hidden index s
 	}
 });
 
-test("same-wave units use wave-base preliminary packets and integration-base authoritative packets", async (t) => {
+test("rebase accepts a freshly inspected manual repair after exact prior worker termination", async (t) => {
+	const root = await repository(t);
+	const runtime = new CheckedGitRuntime();
+	const base = await runtime.inspectMain({ root }, context());
+	const definition = task("manual-repair");
+	const allocated = await allocate(runtime, root, definition, base, "token-manual-repair1");
+	await commit(allocated.intent.worktree!.cwd, "repair.txt", "first\n");
+	const stoppedCandidate = await runtime.inspectRetainedTask({
+		root, task: definition, attempt: allocated.attempt,
+	}, context());
+	recordExactWorkerTermination(allocated.attempt, stoppedCandidate);
+	await commit(allocated.intent.worktree!.cwd, "repair.txt", "repaired\n");
+	const repairedCandidate = await runtime.inspectRetainedTask({
+		root, task: definition, attempt: allocated.attempt,
+	}, context());
+	assert.notEqual(repairedCandidate.head, allocated.attempt.termination!.candidate.head);
+	allocated.attempt.candidate = repairedCandidate;
+
+	const rebased = await runtime.rebase({
+		root, task: definition, attempt: allocated.attempt, candidate: repairedCandidate, onto: base,
+	}, context());
+	assert.equal(rebased.outcome, "ready");
+	if (rebased.outcome === "ready") assert.deepEqual(rebased.candidate, repairedCandidate);
+});
+
+test("same-wave units use one authoritative packet from each integration base", async (t) => {
 	const root = await repository(t);
 	const packets: Array<ExactReviewExecutorInput["packet"] & { patch: string; taskId?: string }> = [];
 	const seenContexts: OperationContext[] = [];
@@ -492,16 +517,6 @@ test("same-wave units use wave-base preliminary packets and integration-base aut
 	const firstCandidate = await runtime.inspectRetainedTask({ root, task: firstTask, attempt: first.attempt }, context());
 	const secondCandidate = await runtime.inspectRetainedTask({ root, task: secondTask, attempt: second.attempt }, context());
 
-	for (const [definition, attempt, candidate] of [
-		[firstTask, first.attempt, firstCandidate],
-		[secondTask, second.attempt, secondCandidate],
-	] as const) {
-		attempt.candidate = candidate;
-		await runtime.review({
-			root, scope: "task", phase: "preliminary", taskId: definition.id, attempt,
-			criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
-		}, context());
-	}
 	const firstPrepared = await prepareIntegration(runtime, root, firstTask, first.attempt, firstCandidate, base);
 	assert.equal(firstPrepared.candidate.head, firstCandidate.head, "rebase from the unchanged wave base must be a no-op");
 	const firstMain = await integrate(runtime, root, firstTask, first.attempt, firstPrepared);
@@ -509,12 +524,11 @@ test("same-wave units use wave-base preliminary packets and integration-base aut
 	assert.notEqual(secondPrepared.candidate.head, secondCandidate.head);
 	const finalMain = await integrate(runtime, root, secondTask, second.attempt, secondPrepared);
 
+	assert.equal(packets.length, 2);
 	assert.equal(packets[0]!.base, base.head);
-	assert.equal(packets[1]!.base, base.head);
-	assert.equal(packets[2]!.base, base.head);
-	assert.equal(packets[3]!.base, firstMain.head);
-	assert.match(packets[3]!.patch, /second\.txt/);
-	assert.doesNotMatch(packets[3]!.patch, /first\.txt/);
+	assert.equal(packets[1]!.base, firstMain.head);
+	assert.match(packets[1]!.patch, /second\.txt/);
+	assert.doesNotMatch(packets[1]!.patch, /first\.txt/);
 	assert.equal(finalMain.head, secondPrepared.candidate.head);
 	assert.ok(seenContexts.every((item) => item.signal instanceof AbortSignal && item.timeoutMs > 0));
 });
@@ -630,14 +644,17 @@ test("failed checks, Reviewer findings or mutation, and Main drift cannot integr
 	}, context());
 	assert.equal(failed.results[0]!.code, 7);
 	assert.ok(sameIdentity(failed.identityAfter, candidate));
+	recordExactWorkerTermination(allocated.attempt, candidate);
+	allocated.attempt.integrationBase = base;
+	allocated.attempt.integrationCandidate = candidate;
 	const findings = await runtime.review({
-		root, scope: "task", phase: "preliminary", taskId: definition.id, attempt: allocated.attempt,
+		root, scope: "task", phase: "authoritative", taskId: definition.id, attempt: allocated.attempt,
 		criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
 	}, context());
 	assert.match(findings.verdict, /Finding/);
 	reviewMode = "mutation";
 	const mutated = await runtime.review({
-		root, scope: "task", phase: "preliminary", taskId: definition.id, attempt: allocated.attempt,
+		root, scope: "task", phase: "authoritative", taskId: definition.id, attempt: allocated.attempt,
 		criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
 	}, context());
 	assert.equal(mutated.verdict, "PASS");

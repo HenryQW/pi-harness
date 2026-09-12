@@ -120,8 +120,10 @@ class FakeRuntime implements OrchestratorRuntime {
 	checkCalls: { scope: "task" | "final"; taskId?: string }[] = [];
 	reviewCalls: {
 		scope: "task" | "final";
+		phase: "authoritative" | "final";
 		taskId?: string;
 		launchKey: string;
+		workerTermination?: NonNullable<TaskAttempt["termination"]>["status"];
 		args: string[];
 		exposedPersistedFields: boolean;
 	}[] = [];
@@ -366,7 +368,9 @@ class FakeRuntime implements OrchestratorRuntime {
 			});
 		}
 		if (plan.error) throw plan.error;
-		if (plan.outcome === "blocked") return { outcome: "blocked", diagnostic: plan.diagnostic ?? "blocked" };
+		if (plan.outcome === "blocked" || plan.outcome === "not_prompted") {
+			return { outcome: plan.outcome, diagnostic: plan.diagnostic ?? plan.outcome };
+		}
 		if (plan.outcome === "unknown" || plan.outcome === "interrupted") {
 			return { outcome: plan.outcome, diagnostic: plan.diagnostic ?? plan.outcome };
 		}
@@ -398,7 +402,9 @@ class FakeRuntime implements OrchestratorRuntime {
 	async review(
 		input: {
 			scope: "task" | "final";
+			phase: "authoritative" | "final";
 			taskId?: string;
+			attempt?: TaskAttempt;
 			tip: WorkspaceIdentity;
 			verifyLaunch(): Promise<VerifiedReviewerLaunch>;
 		},
@@ -409,8 +415,10 @@ class FakeRuntime implements OrchestratorRuntime {
 		this.observe("review", context, plan.expire);
 		this.reviewCalls.push({
 			scope: input.scope,
+			phase: input.phase,
 			...(input.taskId ? { taskId: input.taskId } : {}),
 			launchKey: launch.key,
+			...(input.attempt?.termination ? { workerTermination: input.attempt.termination.status } : {}),
 			args: [...launch.args],
 			exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
 		});
@@ -668,7 +676,7 @@ test("mixed Role/model launches remain keyed and recover exactly before finaliza
 	assert.equal(completed.state.deadline, completed.state.deadlineStartedAt + completed.state.request.budgetMs);
 	assert.deepEqual(runtime.recoverCalls, [interrupted.state.launchRecords]);
 	assert.deepEqual(runtime.agentStartCalls.map(({ launchKey }) => launchKey), ["implementer/fast", "implementer/frontier"]);
-	assert.deepEqual(runtime.reviewCalls.map(({ launchKey }) => launchKey), ["reviewer/balanced", "reviewer/balanced", "reviewer/fav"]);
+	assert.deepEqual(runtime.reviewCalls.map(({ launchKey }) => launchKey), ["reviewer/balanced", "reviewer/fav"]);
 });
 
 test("verified Implementer launch immediately precedes agent start and raw args never reach host spawn", async (t) => {
@@ -689,8 +697,11 @@ test("verified Implementer launch immediately precedes agent start and raw args 
 		.filter(({ hook }) => ["verify-launch", "allocate", "worker", "review"].includes(hook))
 		.map(({ hook }) => hook), [
 			"allocate", "allocate", "allocate", "verify-launch", "allocate", "worker",
-			"verify-launch", "review", "verify-launch", "review",
+			"verify-launch", "review",
 		]);
+	assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
+		{ phase: "authoritative", workerTermination: "terminated" },
+	]);
 });
 
 test("resource drift after recovery blocks worker and Reviewer spawn hooks", async (t) => {
@@ -754,6 +765,12 @@ test("completed task and request states require exact authoritative evidence and
 	preliminaryOnly.tasks[0]!.attempts[0]!.authoritativeChecks!.phase = "preliminary";
 	assert.throws(() => parseRunState(preliminaryOnly), /authoritative/i);
 
+	const obsoletePreliminaryReview = structuredClone(valid);
+	Object.assign(obsoletePreliminaryReview.tasks[0]!.attempts[0]!, {
+		preliminaryReview: { ...obsoletePreliminaryReview.tasks[0]!.attempts[0]!.authoritativeReview, phase: "preliminary" },
+	});
+	assert.throws(() => parseRunState(obsoletePreliminaryReview), /preliminaryReview|additional/i);
+
 	const malformedCleanup = structuredClone(valid);
 	malformedCleanup.tasks[0]!.attempts[0]!.cleanup[1]!.kind = "worker_tab";
 	assert.throws(() => parseRunState(malformedCleanup), /cleanup sequence/i);
@@ -798,14 +815,19 @@ test("one absolute deadline bounds workers, checks, reviews, integration, and fi
 			assert.equal(new Set(productive.map(({ context }) => context.deadline)).size, 1);
 			assert.equal(new Set(productive.map(({ context }) => context.signal)).size, 1);
 			assert.ok(productive.every(({ context }) => context.timeoutMs > 0 && context.timeoutMs <= definition.budgetMs));
+			if (target === "worker" || target === "checks") {
+				assert.equal(result.state.tasks[0]!.attempts[0]!.termination?.status, "terminated");
+			}
 		});
 	}
 });
 
-test("a failed preliminary gate gets one correction in the same recorded worker", async (t) => {
+test("a failed preliminary check gets one correction before the single authoritative review", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	runtime.checkPlans.push({ code: 1 }, {}, {});
-	const result = await runner.execute(request(), root);
+	const result = await runner.execute(request({
+		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+	}), root);
 	assert.equal(result.state.accepted, true);
 	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial", "correction"]);
 	assert.equal(new Set(runtime.workerCalls.map(({ workerId }) => workerId)).size, 1);
@@ -815,6 +837,106 @@ test("a failed preliminary gate gets one correction in the same recorded worker"
 	assert.deepEqual(runtime.workerCalls[1]!.preCandidate, result.state.tasks[0]!.attempts[0]!.prompts[0]!.candidate);
 	assert.deepEqual(result.state.tasks[0]!.attempts[0]!.prompts.map(({ preCandidate }) => preCandidate),
 		runtime.workerCalls.map(({ preCandidate }) => preCandidate));
+	assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
+		{ phase: "authoritative", workerTermination: "terminated" },
+	]);
+});
+
+test("a settled implementation block gets one same-agent correction before checks and review", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerPlans.push({ outcome: "blocked", diagnostic: "implementation blocked" });
+	const result = await runner.execute(request({
+		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+	}), root);
+	const attempt = result.state.tasks[0]!.attempts[0]!;
+	assert.equal(result.state.accepted, true);
+	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial", "correction"]);
+	assert.equal(new Set(runtime.workerCalls.map(({ workerId }) => workerId)).size, 1);
+	assert.equal(attempt.prompts[0]!.failure, "implementation blocked");
+	assert.equal(attempt.preliminaryChecks?.passed, true);
+	assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
+		{ phase: "authoritative", workerTermination: "terminated" },
+	]);
+});
+
+test("a worker blocked before submission terminates without correction", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerPlans.push({ outcome: "not_prompted", diagnostic: "blocked before submission" });
+	const result = await runner.execute(request(), root);
+	const attempt = result.state.tasks[0]!.attempts[0]!;
+	assert.equal(result.state.tasks[0]!.status, "needs_attention");
+	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial"]);
+	assert.equal(attempt.prompts[0]!.status, "not_sent");
+	assert.equal(attempt.termination?.status, "terminated");
+	assert.equal(runtime.checkCalls.length, 0);
+	assert.equal(runtime.reviewCalls.length, 0);
+});
+
+test("task-dispatch exceptions terminate the exact worker", async (t) => {
+	await t.test("candidate inspection", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.candidateInspectionPlans.push({ error: new Error("candidate inspection lost") });
+		const result = await runner.execute(request(), root);
+		const attempt = result.state.tasks[0]!.attempts[0]!;
+		assert.equal(result.state.tasks[0]!.status, "needs_attention");
+		assert.equal(attempt.termination?.status, "terminated");
+		assert.equal(runtime.workerCalls.length, 0);
+	});
+
+	await t.test("preliminary checks", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.checkPlans.push({ error: new Error("check transport lost") });
+		const result = await runner.execute(request(), root);
+		const attempt = result.state.tasks[0]!.attempts[0]!;
+		assert.equal(result.state.tasks[0]!.status, "needs_attention");
+		assert.equal(attempt.termination?.status, "terminated");
+		assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial"]);
+		assert.equal(runtime.checkCalls.length, 1);
+		assert.equal(runtime.reviewCalls.length, 0);
+	});
+});
+
+test("a correction resumed after recovery terminates on failures", async (t) => {
+	const prepareCorrection = async () => {
+		const harnessResult = await harness(t);
+		const { root, runtime, store, runner } = harnessResult;
+		runtime.candidateInspectionPlans.push(
+			{ identity: identity("a", "refs/heads/task-a") },
+			{ identity: identity("f", "refs/heads/task-a") },
+		);
+		runtime.checkPlans.push({ code: 1 });
+		await runner.execute(request(), root);
+		const handle = await store.load(root, "request-one");
+		delete handle.state.tasks[0]!.attempts[0]!.termination;
+		handle.state.tasks[0]!.status = "needs_attention";
+		handle.state.status = "needs_attention";
+		await handle.save();
+		runtime.terminationCalls.length = 0;
+		return { ...harnessResult, handle };
+	};
+
+	await t.test("correction checks", async () => {
+		const { root, runtime, runner } = await prepareCorrection();
+		runtime.checkPlans.push({ error: new Error("correction check transport lost") });
+		const result = await runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root);
+		assert.equal(result.state.tasks[0]!.status, "needs_attention");
+		assert.equal(result.state.tasks[0]!.attempts[0]!.termination?.status, "terminated");
+		assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial", "correction"]);
+		assert.equal(runtime.terminationCalls.length, 1);
+	});
+
+	await t.test("launch recovery deadline", async () => {
+		const { root, runtime, store, runner, handle } = await prepareCorrection();
+		runtime.clock = handle.state.deadline;
+		await assert.rejects(
+			runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
+			/deadline/i,
+		);
+		const persisted = await store.load(root, "request-one");
+		assert.equal(persisted.state.tasks[0]!.attempts[0]!.termination?.status, "terminated");
+		assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial"]);
+		assert.equal(runtime.terminationCalls.length, 1);
+	});
 });
 
 test("every prompt uses a fresh exact candidate inspection and safety termination is non-productive", async (t) => {
@@ -878,10 +1000,12 @@ test("every prompt uses a fresh exact candidate inspection and safety terminatio
 	});
 });
 
-test("preliminary review drift, throws, and ambiguous verdicts terminate in attention without correction", async (t) => {
+test("authoritative task review failures enter attention after termination without correction", async (t) => {
 	const cases: [string, ReviewPlan][] = [
 		["drift", { verdict: "PASS", identityAfter: identity("f", "refs/heads/task-a") }],
 		["throw", { error: new Error("review transport lost") }],
+		["empty", { verdict: "" }],
+		["whitespace", { verdict: "PASS\n" }],
 		["ambiguity", { verdict: "UNCLEAR" }],
 	];
 	for (const [name, plan] of cases) {
@@ -891,8 +1015,21 @@ test("preliminary review drift, throws, and ambiguous verdicts terminate in atte
 			const result = await runner.execute(request({
 				tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
 			}), root);
+			const attempt = result.state.tasks[0]!.attempts[0]!;
 			assert.equal(result.state.tasks[0]!.status, "needs_attention");
-			assert.equal(result.state.tasks[0]!.attempts[0]!.termination?.status, "terminated");
+			assert.equal(attempt.termination?.status, "terminated");
+			assert.equal(attempt.preliminaryChecks?.passed, true);
+			assert.equal(attempt.authoritativeChecks?.passed, true);
+			assert.equal(runtime.rebaseCalls.length, 1);
+			assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
+				{ phase: "authoritative", workerTermination: "terminated" },
+			]);
+			assert.equal(runtime.integrationCalls.length, 0);
+			if (name === "throw") assert.equal(attempt.authoritativeReview, undefined);
+			if (name === "empty") {
+				assert.equal(attempt.authoritativeReview?.verdict, "");
+				assert.equal(attempt.authoritativeReview?.passed, false);
+			}
 			await assert.rejects(
 				runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
 				/correction is unavailable/,
@@ -902,55 +1039,24 @@ test("preliminary review drift, throws, and ambiguous verdicts terminate in atte
 	}
 });
 
-test("review crash boundaries persist attention and never become correction-eligible", async (t) => {
-	const cases: [string, ReviewPlan, "missing" | "non-pass" | "drift"][] = [
-		["passed checks awaiting or interrupted review", { error: new Error("review transport lost") }, "missing"],
-		["persisted non-PASS review", { verdict: "NEEDS_WORK" }, "non-pass"],
-		["persisted drifted review", { verdict: "PASS", identityAfter: identity("f", "refs/heads/task-a") }, "drift"],
-	];
-	for (const [name, plan, evidence] of cases) {
-		await t.test(name, async (t) => {
-			const { root, runtime, store, runner } = await harness(t);
-			runtime.reviewPlans.push(plan);
-			await runner.execute(request({
-				tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
-			}), root);
-			const handle = await store.load(root, "request-one");
-			const taskState = handle.state.tasks[0]!;
-			const attempt = taskState.attempts[0]!;
-			assert.equal(attempt.preliminaryChecks?.passed, true);
-			assert.equal(evidence === "missing", attempt.preliminaryReview === undefined);
-			if (evidence === "non-pass") {
-				assert.equal(attempt.preliminaryReview?.passed, false);
-				assert.deepEqual(attempt.preliminaryReview?.identityAfter, attempt.candidate);
-			}
-			if (evidence === "drift") {
-				assert.equal(attempt.preliminaryReview?.passed, false);
-				assert.notDeepEqual(attempt.preliminaryReview?.identityAfter, attempt.candidate);
-			}
+test("verify reruns the authoritative review on retained work without relaunching the Implementer", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.reviewPlans.push({ verdict: "NEEDS_WORK" }, { verdict: "PASS" });
+	const definition = request({
+		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+	});
+	const stopped = await runner.execute(definition, root);
+	assert.equal(stopped.state.tasks[0]!.status, "needs_attention");
+	assert.equal(stopped.state.tasks[0]!.attempts[0]!.authoritativeReview?.passed, false);
+	runtime.retainedCandidate = identity("f", "refs/heads/task-a");
 
-			delete attempt.termination;
-			handle.state.status = "running";
-			handle.state.waves[0]!.status = "dispatching";
-			taskState.status = "working";
-			taskState.failure = undefined;
-			await handle.save();
-
-			const recovered = await runner.status("request-one", root);
-			assert.equal(recovered.state.tasks[0]!.status, "needs_attention");
-			assert.equal(recovered.state.tasks[0]!.attempts[0]!.termination?.status, "unknown");
-			assert.match(recovered.state.tasks[0]!.failure!, /ambiguous boundary/);
-			await assert.rejects(
-				runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
-				/correction is unavailable/,
-			);
-			assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial"]);
-			const persisted = await store.load(root, "request-one");
-			assert.equal(persisted.state.tasks[0]!.status, "needs_attention");
-			assert.equal(persisted.state.tasks[0]!.attempts[0]!.termination?.status, "terminated");
-			assert.equal(runtime.terminationCalls.at(-1)?.workerId, "task-a-agent");
-		});
-	}
+	const completed = await runner.resume({ id: definition.id, action: "verify", taskId: "task-a" }, root);
+	assert.equal(completed.state.accepted, true);
+	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial"]);
+	assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
+		{ phase: "authoritative", workerTermination: "terminated" },
+		{ phase: "authoritative", workerTermination: "terminated" },
+	]);
 });
 
 test("verify accepts a manually repaired candidate only after recorded worker termination", async (t) => {
@@ -1265,6 +1371,18 @@ test("definitive final failure and Main drift are terminal, while exact final ev
 		const superseded = await runner.execute(request(), root);
 		assert.equal(superseded.state.status, "superseded");
 		assert.match(superseded.state.final.failure!, /drifted after final checks/);
+	});
+
+	await t.test("whitespace-padded final PASS fails", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.reviewPlans.push({ verdict: " PASS " });
+		const failed = await runner.execute(request({
+			finalJudgment: { criterion: "The whole request is correct.", modelClass: "balanced" },
+		}), root);
+		assert.equal(failed.state.status, "final_failed");
+		assert.equal(failed.state.accepted, false);
+		assert.equal(failed.state.final.review?.verdict, " PASS ");
+		assert.equal(failed.state.final.review?.passed, false);
 	});
 
 	await t.test("acceptance", async (t) => {

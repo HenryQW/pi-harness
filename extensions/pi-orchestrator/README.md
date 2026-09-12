@@ -4,6 +4,8 @@ Run durable, checked local implementation graphs from Pi Main. Independent tasks
 
 This package is the sole owner of that checked protocol. `delegate_task` remains lightweight generic delegation.
 
+![Architecture showing the guarded path from a checked request through isolated Herdr work to Main integration](./docs/orchestration-architecture.svg)
+
 ## Requirements
 
 - A clean Git worktree on an attached branch with a committed `HEAD`.
@@ -66,9 +68,11 @@ A request accepts one to eight tasks. Every task needs direct checks and an expl
 
 `dependsOn` creates later waves. Tasks in one ready wave use separate worktrees and visible Herdr workers.
 
-A worker stops before its checked candidate can integrate. Checks run directly, without a shell. Supply the command and every argument separately.
+Preliminary validation uses checks only while the worker remains available. A settled implementation block or unchanged failed check can trigger one same-agent correction.
 
-Add `judgment` only for a criterion that checks cannot decide. The Reviewer receives exact private patch evidence and must return `PASS` exactly.
+The worker then stops. The orchestrator rebases the candidate and reruns every task check directly, without a shell.
+
+Add `judgment` only for a criterion that checks cannot decide. One read-only Reviewer runs after the rebase with exact private patch evidence. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
 
 ## Durable recovery
 
@@ -76,7 +80,7 @@ State lives under `~/.pi/agent/config/pi-orchestrator/state/`, namespaced by rep
 
 Use `orchestrate_status` after interruption or when a request needs attention. Then choose one reported action:
 
-- `retry` starts a fresh attempt for one blocked task.
+- `retry` continues pre-dispatch recovery or sends one eligible correction to the same agent. It never replaces a prompted agent.
 - `verify` checks retained task work before integration or finishes pending cleanup.
 - `finalize` reruns the final gate when Main still matches the recorded identity.
 

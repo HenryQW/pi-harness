@@ -22,9 +22,10 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - Private Implementer prompts are mode `0600`. Launch records bind the effective model route and resources. Productive resume fails on drift.
 - Each task attempt owns one worktree, one Herdr workspace, one worker tab, and one agent. Allocation intent is durable before non-idempotent creation.
 - A task worker receives one initial assignment. One correction is allowed only after a settled prompt or an unchanged failed check candidate.
-- Ready tasks run in parallel. Each settled candidate gets direct checks and, when declared, an ephemeral exact Reviewer. Its Herdr worker must then stop before declared-order integration.
+- Ready tasks run in parallel. Preliminary validation uses direct checks only, then the Herdr worker must stop before declared-order integration.
+- After worker termination and rebase, task checks run again. One ephemeral exact Reviewer runs only when the task declares judgment.
 - Task and final checks are authoritative. Checks run directly from exact command and argument arrays without a shell.
-- Judgment runs only when declared. It uses pi-subagent's exact `{base, tip, patchPath}` evidence and accepts only exact `PASS`.
+- Judgment uses pi-subagent's exact `{base, tip, patchPath}` evidence and accepts only exact `PASS`.
 - Main identity is checked at each integration and final boundary. Drift fails closed and preserves recovery evidence.
 - Request state lives in `config/pi-orchestrator/state/`, outside the repository. Reads validate the strict schema and never migrate another format.
 - `orchestrate_status` may reconcile interrupted state and terminate ambiguous owned workers. It starts no productive replacement attempt.

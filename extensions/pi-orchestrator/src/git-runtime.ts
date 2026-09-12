@@ -331,14 +331,16 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (input.scope === "final") {
 			if (input.phase !== "final" || input.attempt) throw new Error("Final review received task-scoped evidence.");
 		} else {
-			if (!input.attempt || input.phase === "final") throw new Error("Task review requires exact attempt evidence.");
-			if (input.phase === "authoritative" && input.attempt.termination?.status !== "terminated") {
+			if (!input.attempt || input.phase !== "authoritative") {
+				throw new Error("Task review requires exact authoritative attempt evidence.");
+			}
+			if (input.attempt.termination?.status !== "terminated") {
 				throw new Error("Authoritative review requires exact recorded worker termination.");
 			}
-			const expectedBase = input.phase === "preliminary" ? input.attempt.waveBase : input.attempt.integrationBase;
-			const expectedTip = input.phase === "preliminary" ? input.attempt.candidate : input.attempt.integrationCandidate;
+			const expectedBase = input.attempt.integrationBase;
+			const expectedTip = input.attempt.integrationCandidate;
 			if (!expectedBase || !expectedTip || !sameIdentity(input.base, expectedBase) || !sameIdentity(input.tip, expectedTip)) {
-				throw new Error(`${input.phase} review base or tip does not match the exact persisted task evidence.`);
+				throw new Error("Authoritative review base or tip does not match the exact persisted task evidence.");
 			}
 		}
 		const cwd = await this.requireScopeIdentity({ ...input, candidate: input.tip }, context);
@@ -429,9 +431,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		candidate: WorkspaceIdentity;
 		onto: WorkspaceIdentity;
 	}, context: OperationContext): Promise<RebaseResult> {
-		if (input.attempt.termination?.status !== "terminated"
-			|| !sameIdentity(input.attempt.termination.candidate, input.candidate)) {
-			return { outcome: "blocked", failure: "Task rebase requires exact recorded worker termination on the candidate." };
+		if (input.attempt.termination?.status !== "terminated") {
+			return { outcome: "blocked", failure: "Task rebase requires exact recorded worker termination." };
 		}
 		const main = await this.inspectMain({ root: input.root }, context);
 		if (!sameIdentity(main, input.onto)) return { outcome: "drift", failure: "Main drifted before task rebase." };

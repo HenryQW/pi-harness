@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-orchestrator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run durable checked implementation task graphs for Pi.",
   "keywords": [
     "pi-package",
@@ -19,6 +19,7 @@
     "extensions",
     "src",
     "skills",
+    "docs",
     "README.md",
     "CONTEXT.md"
   ],

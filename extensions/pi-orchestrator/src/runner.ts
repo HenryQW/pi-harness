@@ -62,7 +62,7 @@ export type AllocationReconciliation =
 
 export type WorkerResult =
 	| { outcome: "candidate"; candidate: WorkspaceIdentity; diagnostic?: string }
-	| { outcome: "blocked"; diagnostic: string }
+	| { outcome: "blocked" | "not_prompted"; diagnostic: string }
 	| { outcome: "unknown" | "interrupted"; diagnostic: string };
 
 export interface CheckRunResult {
@@ -345,7 +345,7 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 
 function correctionEligible(request: TaskRequest, attempt: TaskAttempt): boolean {
 	const prompt = attempt.prompts.length === 1 ? attempt.prompts[0] : undefined;
-	if (prompt?.kind !== "initial" || prompt.status !== "settled" || attempt.termination || attempt.preliminaryReview) return false;
+	if (prompt?.kind !== "initial" || prompt.status !== "settled" || attempt.termination) return false;
 	if (!attempt.candidate) {
 		return !attempt.preliminaryChecks && Boolean(prompt.failure?.trim());
 	}
@@ -483,6 +483,16 @@ export class OrchestratorRunner {
 				if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
 				if (request.action === "retry") return await this.retry(handle, task, scope);
 				return await this.verifyRetainedTask(handle, task, scope);
+			} catch (error) {
+				if (request.action === "retry") {
+					const task = taskState(state, request.taskId);
+					const attempt = task.attempts.at(-1);
+					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+						this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
+						await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+					}
+				}
+				throw error;
 			} finally {
 				scope.close();
 			}
@@ -709,10 +719,36 @@ export class OrchestratorRunner {
 			}
 			task.status = "working";
 			await handle.save();
-			await this.driveWorker(handle, task, scope, "initial");
+			await this.driveWorkerSafely(handle, task, scope, "initial");
 		} catch (error) {
-			this.attention(task, isDeadline(error, scope) ? "The productive request deadline expired during allocation." : `Task dispatch was interrupted: ${errorText(error)}`);
-			await handle.save();
+			this.attention(task, isDeadline(error, scope) ? "The productive request deadline expired during allocation." : `Task allocation was interrupted: ${errorText(error)}`);
+			const attempt = task.attempts.at(-1);
+			if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+			} else {
+				await handle.save();
+			}
+		}
+	}
+
+	private async driveWorkerSafely(
+		handle: RunStateHandle,
+		task: TaskState,
+		scope: DeadlineScope,
+		initialKind: "initial" | "correction",
+	): Promise<void> {
+		try {
+			await this.driveWorker(handle, task, scope, initialKind);
+		} catch (error) {
+			this.attention(task, isDeadline(error, scope)
+				? "The productive request deadline expired during worker execution."
+				: `Worker execution was interrupted: ${errorText(error)}`);
+			const attempt = latestAttempt(task);
+			if (!attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+			} else {
+				await handle.save();
+			}
 		}
 	}
 
@@ -792,6 +828,13 @@ export class OrchestratorRunner {
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
+			if (worker.outcome === "not_prompted") {
+				prompt.status = "not_sent";
+				prompt.failure = bounded(worker.diagnostic);
+				this.attention(task, `Worker prompt was not submitted: ${prompt.failure}`);
+				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				return;
+			}
 			prompt.status = "settled";
 			if (worker.outcome === "blocked") {
 				failure = bounded(worker.diagnostic);
@@ -813,34 +856,6 @@ export class OrchestratorRunner {
 					failure = sameIdentity(checks.identityAfter, worker.candidate)
 						? "A declared task check failed on the recorded candidate."
 						: "A declared task check changed the recorded candidate.";
-				} else if (request.judgment) {
-					let review: ReviewEvidence;
-					try {
-						review = await this.runReview(
-							handle,
-							request.judgment.criterion,
-							attempt.waveBase,
-							worker.candidate,
-							task.judgmentLaunchKey!,
-							"preliminary",
-							scope,
-							task.taskId,
-						);
-					} catch (error) {
-						this.attention(task, `Preliminary review was ambiguous and cannot trigger correction: ${errorText(error)}`);
-						await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope);
-						return;
-					}
-					attempt.preliminaryReview = review;
-					await handle.save();
-					if (!review.passed) {
-						this.attention(task, sameIdentity(review.identityAfter, worker.candidate)
-							? "Preliminary Reviewer did not return exact PASS; correction requires deliberate verification."
-							: "Preliminary Reviewer changed the recorded candidate; correction is forbidden.");
-						await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope);
-						return;
-					}
-					failure = undefined;
 				} else {
 					failure = undefined;
 				}
@@ -1002,7 +1017,7 @@ export class OrchestratorRunner {
 			tip,
 			identityAfter: result.identityAfter,
 			verdict: bounded(result.verdict),
-			passed: result.verdict.trim() === "PASS" && sameIdentity(result.identityAfter, tip),
+			passed: result.verdict === "PASS" && sameIdentity(result.identityAfter, tip),
 			at: this.runtime.now(),
 		};
 		return evidence;
@@ -1247,7 +1262,7 @@ export class OrchestratorRunner {
 				throw new Error("The same-agent correction is unavailable or already used.");
 			}
 			task.status = "working";
-			await this.driveWorker(handle, task, scope, "correction");
+			await this.driveWorkerSafely(handle, task, scope, "correction");
 		} else {
 			if (attempt.termination || allocationByKind(attempt, "agent")) {
 				throw new Error("A promptless attempt with a terminated or potentially active saved agent cannot be retried productively.");

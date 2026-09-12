@@ -334,12 +334,6 @@ test("lazily wires one checked runtime graph, direct processes, Reviewer adapter
 		deadline: 1_321,
 	};
 	const candidateInput = { root: CANONICAL_ROOT, task: { id: "unit-one" }, attempt: { number: 1 } };
-	await harness.getHostOptions().inspectTaskCandidate(candidateInput as never, operation);
-	const inspection = harness.runnerCalls.find(({ method }) => method === "inspectTaskCandidate")!;
-	assert.equal(inspection.args[0], harness.getRuntimeOptions().git);
-	assert.equal(inspection.args[1], candidateInput);
-	assert.equal(inspection.args[2], operation);
-
 	await harness.getHostOptions().inspectInFlightTaskCandidate(candidateInput as never, operation);
 	const inFlightInspection = harness.runnerCalls.find(({ method }) => method === "inspectInFlightTaskCandidate")!;
 	assert.equal(inFlightInspection.args[0], harness.getRuntimeOptions().git);

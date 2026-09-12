@@ -23,7 +23,6 @@ import type {
 	InFlightTaskCandidateInspection,
 	InFlightTaskCandidateInspector,
 	OperationContext,
-	TaskCandidateInspector,
 	VerifiedImplementerLaunch,
 	WorkerResult,
 } from "./runner.ts";
@@ -58,7 +57,6 @@ export type HostProcessRunner = (
 ) => Promise<{ code: number; stdout: string; stderr: string; killed?: boolean }>;
 
 export interface HerdrHostRuntimeOptions {
-	inspectTaskCandidate: TaskCandidateInspector["inspectTaskCandidate"];
 	inspectInFlightTaskCandidate: InFlightTaskCandidateInspector["inspectInFlightTaskCandidate"];
 	runProcess?: HostProcessRunner;
 	killProcess?: (pid: number, signal: NodeJS.Signals) => void;
@@ -416,7 +414,6 @@ function assignment(input: {
 }
 
 export class HerdrHostRuntime implements HostRuntime {
-	private readonly inspectCandidate: TaskCandidateInspector["inspectTaskCandidate"];
 	private readonly inspectInFlightCandidate: InFlightTaskCandidateInspector["inspectInFlightTaskCandidate"];
 	private readonly execute: HostProcessRunner;
 	private readonly herdr: HerdrClient<HostProcessOptions>;
@@ -429,7 +426,6 @@ export class HerdrHostRuntime implements HostRuntime {
 	private readonly lsofCommand: string;
 
 	constructor(options: HerdrHostRuntimeOptions) {
-		this.inspectCandidate = options.inspectTaskCandidate;
 		this.inspectInFlightCandidate = options.inspectInFlightTaskCandidate;
 		this.execute = options.runProcess ?? defaultRunProcess;
 		this.herdr = createHerdrClient(this.execute);
@@ -681,7 +677,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		} catch (error) {
 			return { outcome: context.signal.aborted ? "interrupted" : "unknown", diagnostic: `Exact worker readiness is unknown: ${safeText(error)}` };
 		}
-		if (ready.status === "blocked") return { outcome: "blocked", diagnostic: await this.diagnostic(details, context, "Worker was blocked before prompt submission.") };
+		if (ready.status === "blocked") return { outcome: "not_prompted", diagnostic: await this.diagnostic(details, context, "Worker was blocked before prompt submission.") };
 		if (!SETTLED_AGENT_STATES.has(ready.status) || !ready.interactiveReady) {
 			return { outcome: "unknown", diagnostic: `Exact worker was not interactively ready: ${ready.status}.` };
 		}
@@ -1010,30 +1006,26 @@ export class HerdrHostRuntime implements HostRuntime {
 		details: AgentDetails,
 		context: OperationContext,
 	): Promise<WorkerResult> {
-		let candidate: WorkspaceIdentity;
+		let inspection: InFlightTaskCandidateInspection;
 		try {
-			candidate = await this.inspectWorkerCandidate(input, details, context);
+			inspection = await this.inspectInFlightCandidate(
+				{ root: details.worktreeCwd, task: input.task, attempt: input.attempt },
+				this.childContext(context, GIT_INSPECTION_CAP_MS),
+			);
 		} catch (error) {
 			return { outcome: "unknown", diagnostic: `Settled worker candidate inspection failed: ${safeText(error)}` };
 		}
-		if (!this.isExpectedCandidate(input, candidate)) {
+		if (!inspection.valid || !inspection.clean || !this.isExpectedCandidate(input, inspection.candidate)) {
 			return {
 				outcome: "blocked",
 				diagnostic: await this.diagnostic(details, context, "Settled worker did not produce an exact changed clean committed candidate."),
 			};
 		}
-		return { outcome: "candidate", candidate, diagnostic: await this.diagnostic(details, context, "Worker settled with a candidate.") };
-	}
-
-	private async inspectWorkerCandidate(
-		input: { task: TaskRequest; attempt: TaskAttempt },
-		details: AgentDetails,
-		context: OperationContext,
-	): Promise<WorkspaceIdentity> {
-		return await this.inspectCandidate(
-			{ root: details.worktreeCwd, task: input.task, attempt: input.attempt },
-			this.childContext(context, GIT_INSPECTION_CAP_MS),
-		);
+		return {
+			outcome: "candidate",
+			candidate: inspection.candidate,
+			diagnostic: await this.diagnostic(details, context, "Worker settled with a candidate."),
+		};
 	}
 
 	private isExpectedCandidate(

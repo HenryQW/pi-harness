@@ -120,7 +120,7 @@ type TaskCandidateInput = { root: string; task: TaskRequest; attempt: TaskAttemp
 function runtime(
 	paths: Paths,
 	script: ScriptedProcess,
-	inspectTaskCandidate: (input: TaskCandidateInput, operation: OperationContext) => Promise<WorkspaceIdentity> = async () => changedIdentity(),
+	inspectCandidate: (input: TaskCandidateInput, operation: OperationContext) => Promise<WorkspaceIdentity> = async () => changedIdentity(),
 	timing: {
 		delay?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 		now?: () => number;
@@ -128,9 +128,8 @@ function runtime(
 	} = {},
 ): HerdrHostRuntime {
 	return createHerdrHostRuntime({
-		inspectTaskCandidate,
 		inspectInFlightTaskCandidate: timing.inspectInFlightTaskCandidate ?? (async (input, operation) => ({
-			candidate: await inspectTaskCandidate(input, operation),
+			candidate: await inspectCandidate(input, operation),
 			clean: true,
 			valid: true,
 		})),
@@ -1306,6 +1305,44 @@ test("prompt submission follows exact readiness and accepts only a changed clean
 	script.done();
 });
 
+test("normal prompt accepts a changed clean candidate from real in-flight Git inspection", async (t) => {
+	const fixture = await paths(t);
+	git(fixture.root, "init", "-q", "-b", "main");
+	git(fixture.root, "config", "user.name", "Orchestrator Test");
+	git(fixture.root, "config", "user.email", "orchestrator@example.com");
+	await writeFile(join(fixture.root, "base.txt"), "base\n");
+	git(fixture.root, "add", "base.txt");
+	git(fixture.root, "commit", "-qm", "base");
+	await rm(fixture.worktree, { recursive: true });
+	git(fixture.root, "worktree", "add", "-q", "-b", "task-a", fixture.worktree);
+
+	const script = new ScriptedProcess();
+	const gitRuntime = new CheckedGitRuntime();
+	const host = runtime(fixture, script, async () => changedIdentity(), {
+		inspectInFlightTaskCandidate: gitRuntime.inspectInFlightTaskCandidate.bind(gitRuntime),
+	});
+	const { attempt } = await fullAttempt(fixture, host, script);
+	const waveBase = await gitRuntime.inspectMain({ root: fixture.root }, context());
+	attempt.waveBase = waveBase;
+	const worktree = attempt.allocations.find((intent) => intent.kind === "worktree")!.worktree!;
+	worktree.baseCommit = waveBase.head;
+	worktree.repoRoot = fixture.root;
+	const preCandidate = await gitRuntime.inspectTaskCandidate({ root: fixture.root, task, attempt }, context());
+	await writeFile(join(fixture.worktree, "candidate.txt"), "candidate\n");
+	git(fixture.worktree, "add", "candidate.txt");
+	git(fixture.worktree, "commit", "-qm", "candidate");
+
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "done", stderr: "" } },
+	);
+	const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, context());
+	assert.equal(result.outcome, "candidate");
+	assert.notEqual(result.outcome === "candidate" && result.candidate.head, preCandidate.head);
+	script.done();
+});
+
 test("delivered stall uses real in-flight Git evidence until unchanged and dirty states become changed-clean", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
@@ -1501,7 +1538,7 @@ test("blocked, unknown, timeout, malformed, missing, and interrupted agent paths
 		["blocked before prompt", [
 			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("blocked", true, { cwd: fixture.worktree }) }) },
 			{ command: "herdr", args: () => {}, result: { code: 0, stdout: "blocked", stderr: "" } },
-		], "blocked", 0],
+		], "not_prompted", 0],
 		["unknown before prompt", [{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("unknown", true, { cwd: fixture.worktree }) }) }], "unknown", 0],
 		["not interactively ready", [{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", false, { cwd: fixture.worktree }) }) }], "unknown", 0],
 		["missing agent", [{ command: "herdr", args: () => {}, result: failure("agent_not_found") }], "unknown", 0],
@@ -1557,7 +1594,6 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	const { attempt, leasePath } = await fullAttempt(fixture, base, script);
 	await privateLease(leasePath);
 	const host = createHerdrHostRuntime({
-		inspectTaskCandidate: async () => changedIdentity(),
 		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 		runProcess: script.run,
 		killProcess: (pid, signal) => { kills.push([pid, signal]); },
@@ -1600,7 +1636,6 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 			const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
 			await privateLease(leasePath);
 			const host = createHerdrHostRuntime({
-				inspectTaskCandidate: async () => changedIdentity(),
 				inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 				runProcess: script.run,
 				killProcess: (pid, signal) => { kills.push([pid, signal]); }, delay: async () => {}, now: () => 1_000,
@@ -1627,7 +1662,6 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 		result: { code: 2, stdout: "", stderr: "ambiguous" },
 	});
 	const host = createHerdrHostRuntime({
-		inspectTaskCandidate: async () => changedIdentity(),
 		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 		runProcess: script.run,
 		killProcess: (pid) => { kills.push(pid); }, delay: async () => {}, now: () => 1_000,

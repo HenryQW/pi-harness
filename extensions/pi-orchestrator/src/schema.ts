@@ -199,7 +199,7 @@ export interface AllocationIntent {
 
 export interface PromptRecord {
 	kind: "initial" | "correction";
-	status: "submitting" | "settled" | "ambiguous";
+	status: "submitting" | "not_sent" | "settled" | "ambiguous";
 	preCandidate: WorkspaceIdentity;
 	candidate?: WorkspaceIdentity;
 	failure?: string;
@@ -223,7 +223,7 @@ export interface CheckBatchEvidence {
 }
 
 export interface ReviewEvidence {
-	phase: "preliminary" | "authoritative" | "final";
+	phase: "authoritative" | "final";
 	launchKey: string;
 	criterion: string;
 	base: WorkspaceIdentity;
@@ -268,7 +268,6 @@ export interface TaskAttempt {
 	prompts: PromptRecord[];
 	candidate?: WorkspaceIdentity;
 	preliminaryChecks?: CheckBatchEvidence;
-	preliminaryReview?: ReviewEvidence;
 	termination?: WorkerTermination;
 	integrationBase?: WorkspaceIdentity;
 	integrationCandidate?: WorkspaceIdentity;
@@ -415,7 +414,7 @@ const AllocationIntentSchema = Type.Object({
 
 const PromptRecordSchema = Type.Object({
 	kind: Type.Union([Type.Literal("initial"), Type.Literal("correction")]),
-	status: Type.Union([Type.Literal("submitting"), Type.Literal("settled"), Type.Literal("ambiguous")]),
+	status: Type.Union([Type.Literal("submitting"), Type.Literal("not_sent"), Type.Literal("settled"), Type.Literal("ambiguous")]),
 	preCandidate: WorkspaceSchema,
 	candidate: Type.Optional(WorkspaceSchema),
 	failure: OptionalTextSchema,
@@ -441,7 +440,7 @@ const CheckBatchEvidenceSchema = Type.Object({
 }, { additionalProperties: false });
 
 const ReviewEvidenceSchema = Type.Object({
-	phase: Type.Union([Type.Literal("preliminary"), Type.Literal("authoritative"), Type.Literal("final")]),
+	phase: Type.Union([Type.Literal("authoritative"), Type.Literal("final")]),
 	launchKey: TextSchema,
 	criterion: TextSchema,
 	base: WorkspaceSchema,
@@ -484,7 +483,6 @@ const TaskAttemptSchema = Type.Object({
 	prompts: Type.Array(PromptRecordSchema, { maxItems: 2 }),
 	candidate: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
-	preliminaryReview: Type.Optional(ReviewEvidenceSchema),
 	termination: Type.Optional(WorkerTerminationSchema),
 	integrationBase: Type.Optional(WorkspaceSchema),
 	integrationCandidate: Type.Optional(WorkspaceSchema),
@@ -783,7 +781,7 @@ export function reviewEvidencePasses(
 	return Boolean(evidence
 		&& evidence.phase === phase
 		&& evidence.passed
-		&& evidence.verdict.trim() === "PASS"
+		&& evidence.verdict === "PASS"
 		&& evidence.criterion === criterion
 		&& evidence.launchKey === launchRecordKey
 		&& sameIdentity(evidence.base, base)

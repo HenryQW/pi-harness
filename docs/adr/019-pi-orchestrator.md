@@ -24,7 +24,7 @@ ADR 007 records the retired Auto DAG architecture. It remains historical evidenc
 
 `@henryqw/pi-subagent` owns Roles, generic `delegate_task` delegation, child launch policy, the ephemeral executor, low-level worktree helpers, and exact review-evidence APIs. Orchestrator uses those public support APIs. It does not move checked orchestration back into pi-subagent.
 
-Herdr owns the isolated worker processes. A Reviewer is created only when a task declares a judgment criterion. Direct checks remain authoritative for objective criteria.
+Herdr owns the isolated worker processes. Preliminary validation uses direct checks only. After worker termination and rebase, one Reviewer runs only when a task declares judgment. Direct checks remain authoritative for objective criteria.
 
 Version 1 stops at checked integration in the local repository. It does not push, open or manage pull requests, run swarms, or support old Auto DAG state or protocols. Old Auto DAG state is inert and must be settled before upgrade. The installer removes only the exact `npm:@henryqw/pi-auto-dag` source, and only after all selected packages install successfully.
 
