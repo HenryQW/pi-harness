@@ -129,17 +129,17 @@ The sweep runs existing non-destructive checks on the clean committed `HEAD` bef
 
 ### Refresh
 
-The footer and widget load at session start. A directory outside a Git worktree stays silent and does not start polling. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
+The footer and widget load once at session start. A directory outside a Git worktree stays silent. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
 
-They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. Active Git worktrees poll every 30 seconds. Polling updates presentation only and may be stale.
+They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. There is no periodic presentation refresh, so external changes may leave the footer and widget stale indefinitely. `/pr` reads fresh state before routing or acting and remains authoritative.
 
-The create widget stays hidden until the local branch has a commit beyond its creation point. `/pr` replaces any hint with routing feedback while it selects a route. The feedback clears before route interaction. A dispatched workflow keeps the widget hidden until the agent settles. Direct and no-action routes refresh it after completion. A failed command restores the prior hint and schedules a refresh.
+The create widget stays hidden until the local branch has a commit beyond its creation point. `/pr` replaces any hint with routing feedback while it selects a route. The feedback clears before route interaction. A dispatched workflow keeps the widget hidden until the agent settles. Direct and no-action routes refresh it after completion. A failed command restores the prior hint and schedules a refresh, except when fresh lookup hits the GitHub API quota: it shows the sanitized message `GitHub API rate limit exhausted; retry after GitHub resets it` and does not immediately retry.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
 ### Session identity
 
-The extension records one configured PR identity in the Pi session. It stores only the PR URL, number, host, head identity, and configured target identity. It does not store lifecycle, CI, review, readiness, or base state. Repeated polling does not add duplicate entries, and no repository cache file is created.
+The extension records one configured PR identity in the Pi session. It stores only the PR URL, number, host, head identity, and configured target identity. It does not store lifecycle, CI, review, readiness, or base state. Event-driven refreshes do not add duplicate entries, and no repository cache file is created.
 
 Normal discovery always runs first. If the configured remote ref was deleted, the footer and `/pr` may reload the exact observed PR URL. The current host, repository, branch, remote, ref, and local HEAD must still match the observation. Repository names use case-insensitive GitHub matching.
 
@@ -149,7 +149,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 - `/pr` accepts creation syntax only as a leading `--base BRANCH`, followed by optional creation guidance. It does not open a browser.
 - It does not run `/done` or `/sweep`.
-- Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
+- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
 - It does not rebase the local branch, overwrite concurrent remote updates, delete branches, or clean up worktrees. Creation uses exact leases plus ancestry checks; an empty lease is only an atomic absence check.
 - Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.
