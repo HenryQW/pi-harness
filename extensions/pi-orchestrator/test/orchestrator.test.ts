@@ -56,7 +56,7 @@ const EXECUTE_REQUEST: ExecuteRequest = {
 };
 
 const PRIVATE_STATE = {
-	version: 1,
+	version: 2,
 	request: EXECUTE_REQUEST,
 	root: CANONICAL_ROOT,
 	status: "needs_attention",
@@ -112,7 +112,7 @@ const PRIVATE_STATE = {
 	launchRecords: {
 		"implementer/fast": {
 			env: { SECRET_TOKEN: "PRIVATE PROCESS ENVIRONMENT" },
-			rawArgs: ["--private-command-line"],
+			args: ["--private-command-line"],
 		},
 	},
 	createdAt: 100,
@@ -307,7 +307,7 @@ async function executeTool(
 
 function expectedPublicState() {
 	return {
-		version: 1,
+		version: 2,
 		id: "request-one",
 		status: "needs_attention",
 		accepted: false,

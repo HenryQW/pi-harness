@@ -12,7 +12,7 @@ const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
  * request and launch records are checked against that same cap on load, so a
  * run cannot consume the space reserved below before productive work starts.
  *
- * The largest runtime-produced v1 state has 16 attempts (8 tasks * 2). Those
+ * The largest runtime-produced v2 state has 16 attempts (8 tasks * 2). Those
  * attempts can retain 2,112 check output streams (two task phases * 32 checks *
  * stdout/stderr, plus 32 final checks), 17 review verdicts, and 666 bounded
  * failure/resource strings. The last count allows, per attempt, 32 possible

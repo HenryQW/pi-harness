@@ -99,6 +99,14 @@ The package root exports its strict request and state schemas, runner contracts,
 
 State lives under `~/.pi/agent/config/pi-orchestrator/state/`, namespaced by repository and request ID. Do not edit state files.
 
+Each launch record names a predefined effective Role. It stores the Role, route, resource, and prompt fingerprints. It never stores the Role prompt or a prompt-file path.
+
+The orchestrator resolves the Role again on recovery and immediately before each launch. Any change blocks productive work.
+
+Pi needs a file to keep a multiline Role prompt out of process arguments. The orchestrator creates a private temporary file only at the final launch boundary. It removes the file after Herdr reports readiness or after the Reviewer exits.
+
+Task goals, requirements, checks, corrections, and review packets remain task messages. They never become Role instructions.
+
 ## Limits and recovery
 
 ### Recovery actions
@@ -110,6 +118,8 @@ Use `orchestrate_status` after interruption or when a request needs attention. T
 - `finalize` reruns the final gate when Main still matches the recorded identity.
 
 `orchestrate_abort` terminates owned workers and records an aborted request. It does not claim uncertain cleanup succeeded.
+
+The current state schema rejects older state versions. It does not migrate them or delete prompt files that another process may still use.
 
 ### Version 1 scope
 

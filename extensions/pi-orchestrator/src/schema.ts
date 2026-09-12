@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-export const RUN_STATE_VERSION = 1;
+export const RUN_STATE_VERSION = 2;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 
@@ -103,14 +103,6 @@ export interface LaunchResourceFingerprint {
 	sha256: string;
 }
 
-export interface LaunchPromptFile {
-	rawValue: string;
-	path: string;
-	mode: 0o600;
-	sha256: string;
-	finalArgs: string[];
-}
-
 /**
  * Runtime hooks are untrusted boundaries, so the added fields remain optional
  * on hook input and become required only after validateLaunchRecords succeeds.
@@ -119,22 +111,27 @@ export interface LaunchRecord {
 	key: string;
 	role: Role;
 	modelClass: ModelClass;
+	roleFingerprint?: string;
+	promptSha256?: string;
+	promptArgIndex?: number;
 	model?: string;
 	thinkingLevel?: string;
-	rawArgs?: string[];
+	args?: string[];
 	env?: Record<string, string>;
 	tools?: string[];
 	roleExtensions?: string[];
 	roleSkills?: string[];
 	resources?: LaunchResourceFingerprint[];
-	prompt?: LaunchPromptFile;
 	fingerprint: string;
 }
 
 export interface NormalizedLaunchRecord extends LaunchRecord {
+	roleFingerprint: string;
+	promptSha256: string;
+	promptArgIndex: number;
 	model: string;
 	thinkingLevel: string;
-	rawArgs: string[];
+	args: string[];
 	env: Record<string, string>;
 	tools: string[];
 	roleExtensions: string[];
@@ -147,9 +144,12 @@ function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprin
 		key: record.key,
 		role: record.role,
 		modelClass: record.modelClass,
+		roleFingerprint: record.roleFingerprint,
+		promptSha256: record.promptSha256,
+		promptArgIndex: record.promptArgIndex,
 		model: record.model,
 		thinkingLevel: record.thinkingLevel,
-		rawArgs: [...record.rawArgs],
+		args: [...record.args],
 		env: { ...record.env },
 		tools: [...record.tools],
 		roleExtensions: [...record.roleExtensions],
@@ -159,13 +159,6 @@ function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprin
 			path: resource.path,
 			sha256: resource.sha256,
 		})),
-		...(record.prompt ? { prompt: {
-			rawValue: record.prompt.rawValue,
-			path: record.prompt.path,
-			mode: record.prompt.mode,
-			sha256: record.prompt.sha256,
-			finalArgs: [...record.prompt.finalArgs],
-		} } : {}),
 	};
 }
 
@@ -319,12 +312,6 @@ export interface CleanupRecovery {
 	deadline: number;
 }
 
-export interface LaunchMaterialization {
-	status: "pending" | "materializing" | "ready" | "failed";
-	at?: number;
-	failure?: string;
-}
-
 export interface RunState {
 	version: typeof RUN_STATE_VERSION;
 	request: ExecuteRequest;
@@ -334,7 +321,6 @@ export interface RunState {
 	deadlineStartedAt: number;
 	deadline: number;
 	launchRecords: Record<string, NormalizedLaunchRecord>;
-	launchMaterialization: LaunchMaterialization;
 	status: RequestStatus;
 	tasks: TaskState[];
 	waves: WaveState[];
@@ -359,36 +345,22 @@ const LaunchResourceFingerprintSchema = Type.Object({
 	sha256: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });
 
-const LaunchPromptFileSchema = Type.Object({
-	rawValue: TextSchema,
-	path: TextSchema,
-	mode: Type.Literal(0o600),
-	sha256: Type.String({ pattern: SHA256_PATTERN }),
-	finalArgs: Type.Array(Type.String({ maxLength: 32_000 }), { minItems: 1, maxItems: 256 }),
-}, { additionalProperties: false });
-
 const LaunchRecordSchema = Type.Object({
 	key: TextSchema,
 	role: RoleSchema,
 	modelClass: ModelClassSchema,
+	roleFingerprint: Type.String({ pattern: SHA256_PATTERN }),
+	promptSha256: Type.String({ pattern: SHA256_PATTERN }),
+	promptArgIndex: Type.Integer({ minimum: 0, maximum: 256 }),
 	model: TextSchema,
 	thinkingLevel: TextSchema,
-	rawArgs: Type.Array(Type.String({ maxLength: 32_000 }), { maxItems: 256 }),
+	args: Type.Array(Type.String({ maxLength: 32_000 }), { maxItems: 256 }),
 	env: Type.Record(Type.String(), Type.String({ maxLength: 32_000 })),
 	tools: Type.Array(TextSchema, { maxItems: 128 }),
 	roleExtensions: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
 	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
 	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 1, maxItems: 256 }),
-	prompt: Type.Optional(LaunchPromptFileSchema),
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
-}, { additionalProperties: false });
-
-const LaunchMaterializationSchema = Type.Object({
-	status: Type.Union([
-		Type.Literal("pending"), Type.Literal("materializing"), Type.Literal("ready"), Type.Literal("failed"),
-	]),
-	at: Type.Optional(TimestampSchema),
-	failure: OptionalTextSchema,
 }, { additionalProperties: false });
 
 const WorktreeRecordSchema = Type.Object({
@@ -531,7 +503,6 @@ const RunStateSchema = Type.Object({
 	deadlineStartedAt: TimestampSchema,
 	deadline: TimestampSchema,
 	launchRecords: Type.Record(Type.String(), LaunchRecordSchema),
-	launchMaterialization: LaunchMaterializationSchema,
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"), Type.Literal("completed"),
 		Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
@@ -687,8 +658,16 @@ export function validateLaunchRecords(request: ExecuteRequest, records: readonly
 		}
 		requireExactLaunchText(record.model, `Launch record ${record.key} model`);
 		requireExactLaunchText(record.thinkingLevel, `Launch record ${record.key} thinking level`);
-		for (const [index, arg] of record.rawArgs.entries()) {
-			if (arg.includes("\0")) throw new Error(`Launch record ${record.key} rawArgs[${index}] contains a NUL byte.`);
+		for (const [index, arg] of record.args.entries()) {
+			if (/[\r\n\0]/.test(arg)) {
+				throw new Error(`Launch record ${record.key} args[${index}] must be a sanitized single-line value.`);
+			}
+			if (arg === "--append-system-prompt") {
+				throw new Error(`Launch record ${record.key} argv must omit Role prompt transport.`);
+			}
+		}
+		if (record.promptArgIndex > record.args.length) {
+			throw new Error(`Launch record ${record.key} prompt argv index is out of bounds.`);
 		}
 		if (Object.keys(record.env).length) throw new Error(`Launch record ${record.key} must not pass caller Role environment.`);
 		for (const [index, tool] of record.tools.entries()) requireExactLaunchText(tool, `Launch record ${record.key} tools[${index}]`);
@@ -711,28 +690,6 @@ export function validateLaunchRecords(request: ExecuteRequest, records: readonly
 		if (selectedResources.length !== record.resources.length
 			|| selectedResources.some((resourceKey) => !resourceKeys.has(resourceKey))) {
 			throw new Error(`Launch record ${record.key} resource fingerprints must match its exact Role extension and Skill paths.`);
-		}
-		if (record.role === "implementer" && !record.prompt) throw new Error(`Implementer launch record ${record.key} lacks its private prompt file.`);
-		if (record.role === "reviewer" && record.prompt) throw new Error(`Reviewer launch record ${record.key} must not use a private Implementer prompt file.`);
-		if (record.prompt) {
-			requireCanonicalPath(record.prompt.path, `Launch record ${record.key} prompt path`);
-			if (record.prompt.mode !== 0o600) throw new Error(`Launch record ${record.key} prompt file must use mode 0600.`);
-			if (!record.prompt.rawValue.trim() || record.prompt.rawValue.includes("\0")) {
-				throw new Error(`Launch record ${record.key} raw prompt must be non-empty text without NUL bytes.`);
-			}
-			const promptHash = createHash("sha256").update(record.prompt.rawValue).digest("hex");
-			if (record.prompt.sha256 !== promptHash) {
-				throw new Error(`Launch record ${record.key} prompt hash does not match its raw prompt value.`);
-			}
-			for (const [index, arg] of record.prompt.finalArgs.entries()) {
-				if (arg.includes("\0")) throw new Error(`Launch record ${record.key} finalArgs[${index}] contains a NUL byte.`);
-				if (arg === record.prompt.rawValue) {
-					throw new Error(`Launch record ${record.key} final argv must not expose its raw prompt value.`);
-				}
-			}
-			if (!record.prompt.finalArgs.includes(record.prompt.path)) {
-				throw new Error(`Launch record ${record.key} final argv must reference its private prompt path.`);
-			}
 		}
 		const normalized = structuredClone(record);
 		const { fingerprint, ...fingerprinted } = normalized;
@@ -828,33 +785,29 @@ function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest
 }
 
 export function parseRunState(value: unknown): RunState {
+	if (value && typeof value === "object" && !Array.isArray(value)
+		&& "version" in value && (value as { version?: unknown }).version !== RUN_STATE_VERSION) {
+		throw new Error(`Unsupported pi-orchestrator state version ${String((value as { version?: unknown }).version)}; expected ${RUN_STATE_VERSION}.`);
+	}
 	if (!Check(RunStateSchema, value)) {
 		const first = Errors(RunStateSchema, value)[0];
 		const detail = first ? ` at ${first.instancePath || "/"}: ${first.message}` : "";
-		throw new Error(`Unsupported or malformed pi-orchestrator v1 state${detail}.`);
+		throw new Error(`Unsupported or malformed pi-orchestrator v${RUN_STATE_VERSION} state${detail}.`);
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
 	if (state.deadlineStartedAt > state.createdAt
 		|| state.createdAt > state.updatedAt
 		|| state.deadline !== state.deadlineStartedAt + request.budgetMs) {
-		throw new Error("Malformed pi-orchestrator v1 deadline.");
-	}
-	const materialization = state.launchMaterialization;
-	if (((materialization.status === "ready" || materialization.status === "failed") && materialization.at === undefined)
-		|| (materialization.status === "failed" && !materialization.failure?.trim())
-		|| ((materialization.status === "pending" || materialization.status === "materializing")
-			&& (materialization.at !== undefined || materialization.failure !== undefined))
-		|| (materialization.status !== "failed" && materialization.failure !== undefined)) {
-		throw new Error("Malformed pi-orchestrator v1 launch materialization state.");
+		throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} deadline.`);
 	}
 	const records = validateLaunchRecords(request, Object.values(state.launchRecords));
-	if (!isDeepStrictEqual(records, state.launchRecords)) throw new Error("Malformed pi-orchestrator v1 launch record keys.");
-	if (state.tasks.length !== request.tasks.length) throw new Error("Malformed pi-orchestrator v1 task count.");
+	if (!isDeepStrictEqual(records, state.launchRecords)) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} launch record keys.`);
+	if (state.tasks.length !== request.tasks.length) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task count.`);
 	for (let index = 0; index < request.tasks.length; index += 1) {
 		const definition = request.tasks[index]!;
 		const taskState = state.tasks[index]!;
-		if (taskState.taskId !== definition.id) throw new Error("Malformed pi-orchestrator v1 task order.");
+		if (taskState.taskId !== definition.id) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task order.`);
 		if (taskState.implementerLaunchKey !== launchKey("implementer", definition.modelClass)) {
 			throw new Error(`Malformed implementer launch key for ${definition.id}.`);
 		}
@@ -923,10 +876,6 @@ export function parseRunState(value: unknown): RunState {
 		}
 		if (taskState.status === "completed") requireCompletedTaskEvidence(taskState, definition);
 	}
-	if (materialization.status !== "ready"
-		&& (state.tasks.some((task) => task.attempts.length > 0) || state.waves.length > 0 || state.final.status !== "pending" || state.accepted)) {
-		throw new Error("Productive state exists without ready launch materialization.");
-	}
 	if (state.recovery && !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
 		throw new Error("Malformed cleanup-only recovery task.");
 	}
@@ -938,7 +887,7 @@ export function parseRunState(value: unknown): RunState {
 	}
 	if (state.accepted) {
 		if (state.status !== "completed" || state.final.status !== "passed" || state.tasks.some((task) => task.status !== "completed")) {
-			throw new Error("Malformed accepted pi-orchestrator state.");
+			throw new Error(`Malformed accepted pi-orchestrator v${RUN_STATE_VERSION} state.`);
 		}
 		if (!state.final.identity || !isCleanCommitted(state.final.identity)) {
 			throw new Error("Accepted request lacks a clean final identity.");

@@ -334,6 +334,13 @@ const launch: VerifiedImplementerLaunch = {
 	fingerprint: "f".repeat(64),
 };
 
+function transientLaunch(cleanup: () => Promise<void> = async () => {}): {
+	launch: VerifiedImplementerLaunch;
+	cleanup(): Promise<void>;
+} {
+	return { launch, cleanup };
+}
+
 function lsof(path: string, stdout = "", code = stdout ? 0 : 1, pid?: number): Step {
 	return {
 		command: "lsof-test",
@@ -760,14 +767,15 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	Object.assign(tabIntent, { status: "owned", resourceId: WORKER_TAB_ID, resources: tab.outcome === "owned" ? tab.resources : undefined });
 
 	const agentIntent = await plannedIntent(host, attempt, "agent", fixture, script);
-	let verified = false;
+	let acquired = false;
+	let cleanups = 0;
 	script.push(
 		lsof(tabDetails.leasePath),
 		...startablePaneSteps(fixture),
 		{
 			command: "herdr",
 			args: (args) => {
-				assert.equal(verified, true);
+				assert.equal(acquired, true);
 				assert.deepEqual(args, [
 					"agent", "start", AGENT_NAME, "--kind", "pi", "--pane", WORKER_PANE_ID, "--",
 					...launch.args,
@@ -781,17 +789,18 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		intent: agentIntent,
 		task,
 		attempt,
-		verifyLaunch: async () => {
+		acquireLaunch: async () => {
 			assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
 				["lsof-test", "-nP", "-a", "-F", "p", "--", tabDetails.leasePath],
 				["herdr", "pane", "get", WORKER_PANE_ID],
 				["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
 			]);
-			verified = true;
-			return launch;
+			acquired = true;
+			return transientLaunch(async () => { cleanups += 1; });
 		},
 	}, context());
 	assert.deepEqual(agent, { outcome: "owned", resourceId: AGENT_NAME, resources: { paneId: WORKER_PANE_ID } });
+	assert.equal(cleanups, 1);
 	assert.equal(script.calls.some(({ command }) => command === "ps"), false, "fresh allocation must not inspect same-TTY shell helpers");
 	script.done();
 });
@@ -808,15 +817,15 @@ test("a native-invalid persisted agent name is rejected before startPiAgent", as
 	details.agentName = `O-${TOKEN}-agent`;
 	intent.details = JSON.stringify(details);
 	const callsBeforeAllocation = script.calls.length;
-	let verifications = 0;
+	let acquisitions = 0;
 
 	await assert.rejects(host.allocateHost({
 		intent,
 		task,
 		attempt,
-		verifyLaunch: async () => { verifications += 1; return launch; },
+		acquireLaunch: async () => { acquisitions += 1; return transientLaunch(); },
 	}, context()), /Agent allocation details drifted/);
-	assert.equal(verifications, 0);
+	assert.equal(acquisitions, 0);
 	assert.equal(script.calls.length, callsBeforeAllocation);
 	script.done();
 });
@@ -843,14 +852,14 @@ test("agent start accepts only omitted or null agent as an empty pane", async (t
 					result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
 				},
 			);
-			let verifications = 0;
+			let acquisitions = 0;
 			assert.equal((await host.allocateHost({
 				intent,
 				task,
 				attempt,
-				verifyLaunch: async () => { verifications += 1; return launch; },
+				acquireLaunch: async () => { acquisitions += 1; return transientLaunch(); },
 			}, context())).outcome, "owned");
-			assert.equal(verifications, 1);
+			assert.equal(acquisitions, 1);
 			assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, 1);
 			script.done();
 		});
@@ -868,14 +877,14 @@ test("agent start accepts only omitted or null agent as an empty pane", async (t
 			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 			await privateLease(leasePath);
 			script.push(lsof(leasePath), ...startablePaneSteps(fixture, {}, { agent }).slice(0, 1));
-			let verifications = 0;
+			let acquisitions = 0;
 			await assert.rejects(host.allocateHost({
 				intent,
 				task,
 				attempt,
-				verifyLaunch: async () => { verifications += 1; return launch; },
+				acquireLaunch: async () => { acquisitions += 1; return transientLaunch(); },
 			}, context()), /not empty and startable/);
-			assert.equal(verifications, 0);
+			assert.equal(acquisitions, 0);
 			assert.equal(script.calls.some(({ args }) => args[0] === "agent" && args[1] === "start"), false);
 			script.done();
 		});
@@ -933,7 +942,7 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 		intent,
 		task,
 		attempt,
-		verifyLaunch: async () => {
+		acquireLaunch: async () => {
 			assert.equal(script.calls.length, 4);
 			throw new Error("Implementer extension fingerprint drifted");
 		},
@@ -951,11 +960,53 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 	const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 	await privateLease(leasePath);
 	script.push(lsof(leasePath), ...startablePaneSteps(fixture), { command: "herdr", args: () => {}, result: failure("agent_pane_busy") });
-	assert.deepEqual(await host.allocateHost({ intent, task, attempt, verifyLaunch: async () => launch }, context()), {
+	let cleanups = 0;
+	assert.deepEqual(await host.allocateHost({
+		intent,
+		task,
+		attempt,
+		acquireLaunch: async () => transientLaunch(async () => { cleanups += 1; }),
+	}, context()), {
 		outcome: "absent",
 		failure: "herdr agent start failed: {\"error\":{\"code\":\"agent_pane_busy\"}}",
 	});
+	assert.equal(cleanups, 1);
 	assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, 1);
+	script.done();
+});
+
+test("aborted Implementer start still cleans its acquired launch", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+	attempt.allocations.pop();
+	const intent = await plannedIntent(host, attempt, "agent", fixture, script);
+	await privateLease(leasePath);
+	const controller = new AbortController();
+	const operationContext: OperationContext = {
+		signal: controller.signal,
+		deadline: 20_000,
+		timeoutMs: 19_000,
+	};
+	let cleanups = 0;
+	script.push(
+		lsof(leasePath),
+		...startablePaneSteps(fixture),
+		{
+			command: "herdr",
+			args: () => controller.abort(new Error("start aborted")),
+			result: failure("aborted", true),
+		},
+	);
+	const result = await host.allocateHost({
+		intent,
+		task,
+		attempt,
+		acquireLaunch: async () => transientLaunch(async () => { cleanups += 1; }),
+	}, operationContext);
+	assert.equal(result.outcome, "unknown");
+	assert.equal(cleanups, 1);
 	script.done();
 });
 
@@ -992,10 +1043,10 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 						: { error: new Error(boundary === "before-side-effect" ? "spawn failed" : "result lost") }),
 				});
 				if (malformed) {
-					const result = await host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { verifyLaunch: async () => launch } : {}) }, context());
+					const result = await host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { acquireLaunch: async () => transientLaunch() } : {}) }, context());
 					assert.equal(result.outcome, "unknown");
 				} else {
-					await assert.rejects(host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { verifyLaunch: async () => launch } : {}) }, context()), /spawn failed|result lost/);
+					await assert.rejects(host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { acquireLaunch: async () => transientLaunch() } : {}) }, context()), /spawn failed|result lost/);
 				}
 				intent.status = "unknown";
 				const exists = boundary !== "before-side-effect";

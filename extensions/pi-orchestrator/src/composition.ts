@@ -198,16 +198,12 @@ export class ComposedOrchestratorRuntime implements OrchestratorRuntime {
 		return this.roles.preflight(...args);
 	}
 
-	materializeLaunchRecords(...args: Parameters<CoordinatorRuntime["materializeLaunchRecords"]>): ReturnType<CoordinatorRuntime["materializeLaunchRecords"]> {
-		return this.roles.materializeLaunchRecords(...args);
-	}
-
 	recoverLaunchRecords(...args: Parameters<CoordinatorRuntime["recoverLaunchRecords"]>): ReturnType<CoordinatorRuntime["recoverLaunchRecords"]> {
 		return this.roles.recoverLaunchRecords(...args);
 	}
 
-	verifyLaunch(...args: Parameters<CoordinatorRuntime["verifyLaunch"]>): ReturnType<CoordinatorRuntime["verifyLaunch"]> {
-		return this.roles.verifyLaunch(...args);
+	acquireLaunch(...args: Parameters<CoordinatorRuntime["acquireLaunch"]>): ReturnType<CoordinatorRuntime["acquireLaunch"]> {
+		return this.roles.acquireLaunch(...args);
 	}
 
 	planHostAllocation(...args: Parameters<HostRuntime["planHostAllocation"]>): ReturnType<HostRuntime["planHostAllocation"]> {

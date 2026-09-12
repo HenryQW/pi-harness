@@ -11,15 +11,19 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - **Wave**: ready tasks whose dependencies completed. Tasks run concurrently, then integrate in declared request order.
 - **Main Identity**: exact attached branch, `HEAD`, index, and tree expected before a state-changing Git boundary.
 - **Attempt**: one task's durable allocation, prompt, candidate, checks, review, integration, and cleanup evidence.
-- **Launch Record**: effective Role, route, tools, extensions, Skills, environment, prompt metadata, and integrity fingerprint frozen before workers start.
+- **Launch Record**: prompt-free durable snapshot of one predefined effective Role, route, tools, extensions, Skills, and integrity fingerprints.
+- **Transient Launch**: one freshly resolved Role prompt in a private temporary file used only while Pi starts.
+- **Assignment**: request goal and task requirements, deliverable, checks, or correction sent as a task message rather than Role instructions.
 - **Judgment**: an explicit criterion checked by a read-only Reviewer against exact private patch evidence.
 - **Attention**: durable state that requires one deliberate retry, verify, finalize, or abort decision.
 
 ## Invariants
 
 - `orchestrate_execute` accepts one strict version-1 request with one to eight tasks. Every task has checks and an explicit model class.
-- Preflight requires one canonical clean Git Main with a committed `HEAD`. It freezes every required effective Implementer and Reviewer launch before durable work starts.
-- Private Implementer prompts are mode `0600`. Launch records bind the effective model route and resources. Productive resume fails on drift.
+- Preflight requires one canonical clean Git Main with a committed `HEAD`. It snapshots every required predefined Implementer and Reviewer Role before durable work starts.
+- Launch records contain Role and prompt hashes, never raw Role prompts or prompt paths. Productive recovery and each launch re-resolve the effective Role and fail on drift.
+- Each final launch boundary creates a unique mode `0600` Role prompt in a mode `0700` temporary directory. Implementer startup and Reviewer execution own its cleanup.
+- Assignments and exact Reviewer packets remain task messages. They never become Role definitions or Role prompt material.
 - Each task attempt owns one worktree, one Herdr workspace, one worker tab, and one agent. Allocation intent is durable before non-idempotent creation.
 - A task worker receives one initial assignment. One correction is allowed only after a settled prompt or an unchanged failed check candidate.
 - Ready tasks run in parallel. Preliminary validation uses direct checks only, then the Herdr worker must stop before declared-order integration.
@@ -27,7 +31,7 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - Task and final checks are authoritative. Checks run directly from exact command and argument arrays without a shell.
 - Judgment uses pi-subagent's exact `{base, tip, patchPath}` evidence and accepts only exact `PASS`.
 - Main identity is checked at each integration and final boundary. Drift fails closed and preserves recovery evidence.
-- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Reads validate the strict schema and never migrate another format.
+- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Reads validate the strict schema, reject old versions, and never migrate another format.
 - `orchestrate_status` may reconcile interrupted state and terminate ambiguous owned workers. It starts no productive replacement attempt.
 - `orchestrate_resume` permits only `retry`, `verify`, or `finalize`. `orchestrate_abort` terminates owned workers before recording abort.
 - Cleanup records uncertainty. The runtime never reports unknown resources as absent or force-deletes recoverable work.

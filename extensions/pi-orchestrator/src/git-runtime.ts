@@ -24,21 +24,23 @@ import {
 	type WorktreeRecord,
 	type WorkspaceIdentity,
 } from "./schema.ts";
-import type {
-	AllocationReconciliation,
-	AllocationResult,
-	CheckRunResult,
-	CommandResult,
-	GitCleanupKind,
-	GitRuntime,
-	InFlightTaskCandidateInspection,
-	InFlightTaskCandidateInspector,
-	IntegrationResult,
-	TaskCandidateInspector,
-	OperationContext,
-	RebaseResult,
-	ReviewResult,
-	VerifiedReviewerLaunch,
+import {
+	type AllocationReconciliation,
+	type AllocationResult,
+	type CheckRunResult,
+	type CommandResult,
+	type GitCleanupKind,
+	type GitRuntime,
+	type InFlightTaskCandidateInspection,
+	type InFlightTaskCandidateInspector,
+	type IntegrationResult,
+	type TaskCandidateInspector,
+	type OperationContext,
+	type RebaseResult,
+	type ReviewResult,
+	type TransientLaunchHandle,
+	type VerifiedReviewerLaunch,
+	withTransientLaunch,
 } from "./runner.ts";
 
 const GIT_OPERATION_CAP_MS = 30_000;
@@ -339,7 +341,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		verifyLaunch(): Promise<VerifiedReviewerLaunch>;
+		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult> {
 		if (!this.executeReview) throw new Error("Exact Reviewer execution is not configured.");
 		if (input.scope === "final") {
@@ -366,23 +368,34 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			tip: input.tip.head,
 			worktree: evidenceWorktree,
 		}, context.signal);
+		let reviewError: unknown;
 		try {
 			if (evidence.base !== input.base.head || evidence.tip !== input.tip.head) {
 				throw new Error("Exact review evidence resolved an unexpected base or tip.");
 			}
-			const launch = await input.verifyLaunch();
-			const reviewed = await this.executeReview({
+			const handle = await input.acquireLaunch();
+			const reviewed = await withTransientLaunch(handle, async (launch) => await this.executeReview!({
 				scope: input.scope,
 				...(input.taskId ? { taskId: input.taskId } : {}),
 				criterion: input.criterion,
 				launch,
 				cwd,
 				packet: { base: evidence.base, tip: evidence.tip, patchPath: evidence.patchPath },
-			}, context);
+			}, context));
 			const identityAfter = await this.requireScopeCurrent({ ...input, candidate: input.tip }, context);
 			return { verdict: reviewed.verdict, identityAfter };
+		} catch (error) {
+			reviewError = error;
+			throw error;
 		} finally {
-			await evidence.cleanup();
+			try {
+				await evidence.cleanup();
+			} catch (cleanupError) {
+				if (reviewError) {
+					throw new AggregateError([reviewError, cleanupError], "Reviewer execution failed and exact evidence cleanup also failed.");
+				}
+				throw cleanupError;
+			}
 		}
 	}
 

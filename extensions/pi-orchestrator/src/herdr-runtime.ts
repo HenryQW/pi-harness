@@ -21,17 +21,19 @@ import {
 	type TaskRequest,
 	type WorkspaceIdentity,
 } from "./schema.ts";
-import type {
-	AllocationReconciliation,
-	AllocationResult,
-	HostAllocationKind,
-	HostCleanupKind,
-	HostRuntime,
-	InFlightTaskCandidateInspection,
-	InFlightTaskCandidateInspector,
-	OperationContext,
-	VerifiedImplementerLaunch,
-	WorkerResult,
+import {
+	type AllocationReconciliation,
+	type AllocationResult,
+	type HostAllocationKind,
+	type HostCleanupKind,
+	type HostRuntime,
+	type InFlightTaskCandidateInspection,
+	type InFlightTaskCandidateInspector,
+	type OperationContext,
+	type TransientLaunchHandle,
+	type VerifiedImplementerLaunch,
+	withTransientLaunch,
+	type WorkerResult,
 } from "./runner.ts";
 
 const MIN_HERDR_VERSION = [0, 9, 0] as const;
@@ -558,20 +560,25 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	async allocateHost(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; verifyLaunch?: () => Promise<VerifiedImplementerLaunch> },
+		input: {
+			intent: AllocationIntent;
+			task: TaskRequest;
+			attempt: TaskAttempt;
+			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+		},
 		context: OperationContext,
 	): Promise<AllocationResult> {
 		requireIntentIdentity(input.intent, input.attempt);
 		const details = parseDetails(input.intent);
 		if (details.kind === "workspace") {
-			if (input.verifyLaunch) throw new Error("Implementer launch verification is valid only at the agent allocation boundary.");
+			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
 			return await this.allocateWorkspace(details, input.intent, input.attempt, context);
 		}
 		if (details.kind === "worker_tab") {
-			if (input.verifyLaunch) throw new Error("Implementer launch verification is valid only at the agent allocation boundary.");
+			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
 			return await this.allocateWorkerTab(details, input.intent, input.attempt, context);
 		}
-		return await this.allocateAgent(details, input.intent, input.attempt, input.verifyLaunch, context);
+		return await this.allocateAgent(details, input.intent, input.attempt, input.acquireLaunch, context);
 	}
 
 	async reconcileHostAllocation(
@@ -941,11 +948,11 @@ export class HerdrHostRuntime implements HostRuntime {
 		details: AgentDetails,
 		intent: AllocationIntent,
 		attempt: TaskAttempt,
-		verifyLaunch: (() => Promise<VerifiedImplementerLaunch>) | undefined,
+		acquireLaunch: (() => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>) | undefined,
 		context: OperationContext,
 	): Promise<AllocationResult> {
 		assertAgentDetails(details, intent, attempt);
-		if (!verifyLaunch) throw new Error("Agent start requires immediate Implementer launch verification.");
+		if (!acquireLaunch) throw new Error("Agent start requires immediate Implementer launch acquisition.");
 		this.assertLeasePath(details.leasePath, intent.token);
 		await this.assertPrivateLease(details.leasePath, false);
 		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context)).length) {
@@ -953,29 +960,31 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		await this.assertStartableAgentPane(details, context, { requireExclusiveTty: false });
 		const options = this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
-		const launch = await verifyLaunch();
-		if (launch.role !== "implementer") throw new Error("Agent start verification returned the wrong Role.");
-		if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
-		const response = await startPiAgent(this.herdr, {
-			name: details.agentName,
-			pane: details.paneId,
-			args: launch.args,
-			options,
-			shouldRetry: () => false,
+		const handle = await acquireLaunch();
+		return await withTransientLaunch(handle, async (launch) => {
+			if (launch.role !== "implementer") throw new Error("Agent start acquisition returned the wrong Role.");
+			if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
+			const response = await startPiAgent(this.herdr, {
+				name: details.agentName,
+				pane: details.paneId,
+				args: launch.args,
+				options,
+				shouldRetry: () => false,
+			});
+			if (response.code !== 0 || response.killed) {
+				const failure = safeText(herdrCommandFailure(["agent", "start"], response));
+				return hasHerdrErrorCode(response, "agent_pane_busy") && !response.killed
+					? { outcome: "absent", failure }
+					: { outcome: "unknown", failure, possibleResources: [details.agentName, details.paneId] };
+			}
+			try {
+				const agent = parseAgent(parseJsonObject(response.stdout, "Herdr agent start response"), details, ["agent_started"]);
+				if (!agent.interactiveReady || agent.status !== "idle") throw new Error("Started Herdr agent is not exactly ready and idle.");
+				return { outcome: "owned", resourceId: details.agentName, resources: { paneId: details.paneId } };
+			} catch (error) {
+				return { outcome: "unknown", failure: safeText(error), possibleResources: [details.agentName, details.paneId] };
+			}
 		});
-		if (response.code !== 0 || response.killed) {
-			const failure = safeText(herdrCommandFailure(["agent", "start"], response));
-			return hasHerdrErrorCode(response, "agent_pane_busy") && !response.killed
-				? { outcome: "absent", failure }
-				: { outcome: "unknown", failure, possibleResources: [details.agentName, details.paneId] };
-		}
-		try {
-			const agent = parseAgent(parseJsonObject(response.stdout, "Herdr agent start response"), details, ["agent_started"]);
-			if (!agent.interactiveReady || agent.status !== "idle") throw new Error("Started Herdr agent is not exactly ready and idle.");
-			return { outcome: "owned", resourceId: details.agentName, resources: { paneId: details.paneId } };
-		} catch (error) {
-			return { outcome: "unknown", failure: safeText(error), possibleResources: [details.agentName, details.paneId] };
-		}
 	}
 
 	private async reconcileDeliveredPrompt(

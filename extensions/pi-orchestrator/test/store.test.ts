@@ -24,27 +24,21 @@ function identity(): WorkspaceIdentity {
 }
 
 function launch(): NormalizedLaunchRecord {
-	const rawValue = "Implement the task.\nPreserve all evidence.";
-	const path = "/private/implementer.prompt";
 	const value: Omit<NormalizedLaunchRecord, "fingerprint"> = {
 		key: "implementer/fast",
 		role: "implementer",
 		modelClass: "fast",
+		roleFingerprint: sha256("implementer Role identity"),
+		promptSha256: sha256("private predefined Role prompt"),
+		promptArgIndex: 0,
 		model: "provider/model",
 		thinkingLevel: "high",
-		rawArgs: ["--append-system-prompt", rawValue],
+		args: [],
 		env: {},
 		tools: [],
 		roleExtensions: ["/roles/implementer.ts"],
 		roleSkills: [],
 		resources: [{ kind: "extension", path: "/roles/implementer.ts", sha256: "b".repeat(64) }],
-		prompt: {
-			rawValue,
-			path,
-			mode: 0o600,
-			sha256: sha256(rawValue),
-			finalArgs: ["--append-system-prompt", path],
-		},
 	};
 	return { ...value, fingerprint: launchRecordFingerprint(value) };
 }
@@ -52,7 +46,7 @@ function launch(): NormalizedLaunchRecord {
 function state(root: string, request: ExecuteRequest, record = launch()): RunState {
 	const main = identity();
 	return {
-		version: 1,
+		version: 2,
 		request,
 		root,
 		requestStartMain: main,
@@ -60,7 +54,6 @@ function state(root: string, request: ExecuteRequest, record = launch()): RunSta
 		deadlineStartedAt: 1,
 		deadline: 1_001,
 		launchRecords: { [record.key]: record },
-		launchMaterialization: { status: "ready", at: 1 },
 		status: "pending",
 		tasks: [{
 			taskId: request.tasks[0]!.id,
@@ -137,7 +130,7 @@ test("the store reserves capacity for escaped evidence and rejects over-bound fi
 		assert.equal(loaded.state.tasks[0]!.attempts[0]!.preliminaryChecks!.results[31]!.stderr, escaped);
 
 		const largeRecord = launch();
-		largeRecord.rawArgs = Array.from({ length: 12 }, () => "\u0001".repeat(32_000));
+		largeRecord.args = Array.from({ length: 12 }, () => "\u0001".repeat(32_000));
 		const { fingerprint: _fingerprint, ...fingerprinted } = largeRecord;
 		largeRecord.fingerprint = launchRecordFingerprint(fingerprinted);
 		await assert.rejects(
@@ -148,8 +141,14 @@ test("the store reserves capacity for escaped evidence and rejects over-bound fi
 		const malformedPath = store.statePath(root, "malformed");
 		const malformed = "{}\n";
 		await writeFile(malformedPath, malformed);
-		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v1 state/);
+		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v2 state/);
 		assert.equal(await readFile(malformedPath, "utf8"), malformed);
+
+		const oldPath = store.statePath(root, "old-state");
+		const oldState = JSON.stringify({ ...state(root, request), version: 1 });
+		await writeFile(oldPath, oldState);
+		await assert.rejects(store.load(root, "old-state"), /Unsupported pi-orchestrator state version 1; expected 2/);
+		assert.equal(await readFile(oldPath, "utf8"), oldState);
 
 		const oversizedPath = store.statePath(root, "oversized");
 		await writeFile(oversizedPath, "");

@@ -142,10 +142,8 @@ function publicNeedsAttention(state: RunState, preferredTaskId?: string) {
 		};
 	}
 	return {
-		scope: "launch" as const,
-		...(state.launchMaterialization.failure
-			? { failure: boundedPublicText(state.launchMaterialization.failure) }
-			: {}),
+		scope: "request" as const,
+		failure: "Request needs attention without a task or final failure.",
 	};
 }
 

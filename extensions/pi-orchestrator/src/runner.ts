@@ -84,7 +84,7 @@ export type IntegrationResult =
 	| { outcome: "integrated"; main: WorkspaceIdentity }
 	| { outcome: "failed" | "drift" | "unknown"; failure: string };
 
-/** A prelaunch-verified value that omits the persisted record and private Implementer prompt metadata. */
+/** A just-in-time launch whose argv contains only an ephemeral Role prompt path. */
 export interface VerifiedLaunchBase {
 	readonly key: string;
 	readonly modelClass: ModelClass;
@@ -106,6 +106,39 @@ export interface VerifiedReviewerLaunch extends VerifiedLaunchBase {
 
 export type VerifiedLaunch = VerifiedImplementerLaunch | VerifiedReviewerLaunch;
 
+export interface TransientLaunchHandle<Launch extends VerifiedLaunch = VerifiedLaunch> {
+	readonly launch: Launch;
+	cleanup(): Promise<void>;
+}
+
+/** Run one launch action and surface cleanup failure, including after action failure or abort. */
+export async function withTransientLaunch<Launch extends VerifiedLaunch, Result>(
+	handle: TransientLaunchHandle<Launch>,
+	operation: (launch: Launch) => Promise<Result>,
+): Promise<Result> {
+	let failed = false;
+	let operationError: unknown;
+	try {
+		return await operation(handle.launch);
+	} catch (error) {
+		failed = true;
+		operationError = error;
+		throw error;
+	} finally {
+		try {
+			await handle.cleanup();
+		} catch (cleanupError) {
+			if (failed) {
+				throw new AggregateError(
+					[operationError, cleanupError],
+					"Transient Role launch failed and its prompt cleanup also failed.",
+				);
+			}
+			throw cleanupError;
+		}
+	}
+}
+
 /**
  * Productive hooks may inspect or change implementation state. Every call receives
  * the same request abort signal and a timeout capped by the persisted deadline.
@@ -118,9 +151,8 @@ export interface CoordinatorRuntime {
 		main: WorkspaceIdentity;
 		launchRecords: LaunchRecord[];
 	}>;
-	materializeLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<void>;
 	recoverLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
-	verifyLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<VerifiedLaunch>;
+	acquireLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 }
 
 export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
@@ -139,8 +171,8 @@ export interface HostRuntime {
 		intent: AllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		/** Invoked only as the final asynchronous boundary before the non-idempotent agent start. */
-		verifyLaunch?: () => Promise<VerifiedImplementerLaunch>;
+		/** Invoked only after pane, lease, and startability checks at the final agent-start boundary. */
+		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
 	}, context: OperationContext): Promise<AllocationResult>;
 	reconcileHostAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
 	runWorker(input: {
@@ -214,7 +246,7 @@ export interface GitRuntime {
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		verifyLaunch(): Promise<VerifiedReviewerLaunch>;
+		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult>;
 	inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	rebase(input: {
@@ -415,7 +447,6 @@ export class OrchestratorRunner {
 					deadlineStartedAt: startedAt,
 					deadline,
 					launchRecords,
-					launchMaterialization: { status: "pending" },
 					status: "pending",
 					tasks: request.tasks.map((task) => ({
 						taskId: task.id,
@@ -431,30 +462,6 @@ export class OrchestratorRunner {
 					updatedAt: createdAt,
 				};
 				const handle = await this.store.create(state);
-				const durable = handle.state;
-				durable.launchMaterialization = { status: "materializing" };
-				durable.updatedAt = this.runtime.now();
-				await handle.save();
-				try {
-					await scope.call(async (context) => await this.runtime.materializeLaunchRecords({
-						root,
-						request,
-						records: launchRecords,
-					}, context));
-				} catch (error) {
-					durable.launchMaterialization = {
-						status: "failed",
-						at: this.runtime.now(),
-						failure: `Private launch materialization failed closed: ${errorText(error)}`,
-					};
-					durable.status = "needs_attention";
-					durable.updatedAt = this.runtime.now();
-					await handle.save();
-					return this.response(durable);
-				}
-				durable.launchMaterialization = { status: "ready", at: this.runtime.now() };
-				durable.updatedAt = this.runtime.now();
-				await handle.save();
 				return await this.run(handle, scope);
 			});
 		} finally {
@@ -471,9 +478,6 @@ export class OrchestratorRunner {
 			if (this.recoverInterrupted(state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
-			if (state.launchMaterialization.status !== "ready") {
-				throw new Error(`Pi Orchestrator request ${request.id} launch materialization is ${state.launchMaterialization.status}; productive resume is forbidden.`);
-			}
 
 			if (request.action === "verify") {
 				const task = taskState(state, request.taskId);
@@ -712,10 +716,14 @@ export class OrchestratorRunner {
 							intent,
 							task: request,
 							attempt,
-							...(kind === "agent" ? { verifyLaunch: async () => {
-								const launch = await this.runtime.verifyLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
-								if (launch.role !== "implementer") throw new Error("Implementer launch verification returned the wrong Role.");
-								return launch;
+							...(kind === "agent" ? { acquireLaunch: async () => {
+								const handle = await this.runtime.acquireLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
+								if (handle.launch.role !== "implementer") {
+									await withTransientLaunch(handle, async () => {
+										throw new Error("Implementer launch acquisition returned the wrong Role.");
+									});
+								}
+								return handle as TransientLaunchHandle<VerifiedImplementerLaunch>;
 							} } : {}),
 						}, context));
 				} catch (error) {
@@ -1034,10 +1042,14 @@ export class OrchestratorRunner {
 			criterion,
 			base,
 			tip,
-			verifyLaunch: async () => {
-				const launch = await this.runtime.verifyLaunch(record, context);
-				if (launch.role !== "reviewer") throw new Error("Reviewer launch verification returned the wrong Role.");
-				return launch;
+			acquireLaunch: async () => {
+				const handle = await this.runtime.acquireLaunch(record, context);
+				if (handle.launch.role !== "reviewer") {
+					await withTransientLaunch(handle, async () => {
+						throw new Error("Reviewer launch acquisition returned the wrong Role.");
+					});
+				}
+				return handle as TransientLaunchHandle<VerifiedReviewerLaunch>;
 			},
 		}, context));
 		const evidence: ReviewEvidence = {
@@ -1458,20 +1470,6 @@ export class OrchestratorRunner {
 	}
 
 	private recoverInterrupted(state: RunState): boolean {
-		if (state.launchMaterialization.status !== "ready") {
-			if (state.launchMaterialization.status === "pending" || state.launchMaterialization.status === "materializing") {
-				state.launchMaterialization = {
-					status: "failed",
-					at: this.runtime.now(),
-					failure: "Private launch materialization was interrupted and will not be replayed automatically.",
-				};
-				state.status = "needs_attention";
-				state.accepted = false;
-				state.updatedAt = this.runtime.now();
-				return true;
-			}
-			return false;
-		}
 		if (state.status === "pending") {
 			const ready = readyPendingTasks(state).filter((task) => task.attempts.length === 0);
 			if (!ready.length) return false;
@@ -1549,7 +1547,7 @@ export class OrchestratorRunner {
 
 	private response(state: RunState, main?: MainStatus): RunResponse {
 		const completed = state.tasks.filter((task) => task.status === "completed").length;
-		const resumable = !terminal(state) && state.launchMaterialization.status === "ready";
+		const resumable = !terminal(state);
 		const cleanupAttention = state.tasks.find((task) => task.status === "needs_attention"
 			&& task.attempts.at(-1)?.integration?.status === "integrated");
 		let continuation: ResumeRequest | undefined;
@@ -1579,7 +1577,6 @@ export class OrchestratorRunner {
 					`Main: drifted from ${main.expected.branch}@${main.expected.head} to ${main.actual.branch}@${main.actual.head}.`,
 				] : []),
 				...(main?.status === "unavailable" ? [`Main: ${main.failure}`] : []),
-				...(state.launchMaterialization.failure ? [`Launch materialization: ${state.launchMaterialization.failure}`] : []),
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
