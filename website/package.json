@@ -12,6 +12,6 @@
     "validate": "pnpm run check:installer && pnpm test && blume validate --strict"
   },
   "devDependencies": {
-    "blume": "1.6.0"
+    "blume": "1.6.3"
   }
 }
