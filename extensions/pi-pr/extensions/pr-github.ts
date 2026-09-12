@@ -66,6 +66,13 @@ export class PullRequestLoadError extends Error {
 	}
 }
 
+export class GitHubRateLimitError extends PullRequestLoadError {
+	constructor() {
+		super("GitHub API rate limit exhausted; retry after GitHub resets it");
+		this.name = "GitHubRateLimitError";
+	}
+}
+
 export type PullRequestRef = {
 	repository: string;
 	ref: string;
@@ -369,7 +376,11 @@ async function invoke(
 	return parseCommandOutput(result, action);
 }
 
-function commandFailure(action: string, result: CommandOutput): never {
+function commandFailure(action: string, result: CommandOutput, command?: string): never {
+	if (
+		command === "gh" && !result.killed && result.code !== 0 &&
+		result.stderr.includes("GraphQL: API rate limit exceeded")
+	) throw new GitHubRateLimitError();
 	fail(action, result.killed ? "command was cancelled" : `exit code ${result.code}`);
 }
 
@@ -381,7 +392,7 @@ async function execute(
 	args: string[],
 ): Promise<CommandOutput> {
 	const result = await invoke(pi, context, action, command, args);
-	if (result.killed || result.code !== 0) commandFailure(action, result);
+	if (result.killed || result.code !== 0) commandFailure(action, result, command);
 	return result;
 }
 
@@ -1265,6 +1276,7 @@ async function readRemoteAuthority(
 		) fail("Read fetch repository", "fetch and push repositories do not match");
 		return { fetchSource: pushUrl.fetchSource, repository: pushRepository };
 	} catch (error) {
+		if (error instanceof GitHubRateLimitError) throw error;
 		if (!strict && error instanceof PullRequestLoadError) return null;
 		throw error;
 	}

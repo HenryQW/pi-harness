@@ -19,6 +19,7 @@ import {
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
 import {
+	GitHubRateLimitError,
 	loadCurrentPullRequest,
 	parsePullRequestObservation,
 	pullRequestObservation,
@@ -37,7 +38,6 @@ import {
 } from "./pr-ui.ts";
 import { PullRequestBranchUpdater, type UpdateBranchOptions } from "./pr-update-branch.ts";
 
-const POLL_INTERVAL_MS = 30_000;
 const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
@@ -282,10 +282,9 @@ export default function pullRequestExtension(
 		return discovery;
 	};
 	let sessionGeneration = 0;
-	let timer: ReturnType<typeof setInterval> | undefined;
 	let active: AbortController | undefined;
 	let queued = false;
-	let refreshFailureReported = false;
+	let reportedRefreshFailure: "generic" | "quota" | undefined;
 	let displayEstablished = false;
 	let lastDiscovery: "configured" | "inferred" | "absent" | "blocked" | "inactive" | undefined;
 	let lastBlockedIssueKey: string | undefined;
@@ -561,8 +560,6 @@ export default function pullRequestExtension(
 		discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
 	): void => {
 		if (discovery.kind === "inactive") {
-			if (timer !== undefined) clearInterval(timer);
-			timer = undefined;
 			displayEstablished = true;
 			lastDiscovery = "inactive";
 			displayedWidget = undefined;
@@ -600,7 +597,7 @@ export default function pullRequestExtension(
 		context = undefined;
 		observation = undefined;
 		queued = false;
-		refreshFailureReported = false;
+		reportedRefreshFailure = undefined;
 		displayEstablished = false;
 		lastDiscovery = undefined;
 		lastBlockedIssueKey = undefined;
@@ -612,18 +609,22 @@ export default function pullRequestExtension(
 		activeInvocations.clear();
 		stopRoutingSpinner();
 		widgetKind = "presentation";
-		if (timer !== undefined) clearInterval(timer);
-		timer = undefined;
 		active?.abort();
 		active = undefined;
 	};
 
-	const reportRefreshFailure = (): void => {
+	const reportRefreshFailure = (error: unknown): void => {
 		const ctx = context;
-		if (!ctx || refreshFailureReported) return;
-		refreshFailureReported = true;
+		const category = error instanceof GitHubRateLimitError ? "quota" : "generic";
+		if (!ctx || reportedRefreshFailure === category || reportedRefreshFailure === "quota") return;
+		reportedRefreshFailure = category;
 		try {
-			ctx.ui.notify("PR status refresh failed: status unavailable", "error");
+			ctx.ui.notify(
+				error instanceof GitHubRateLimitError
+					? error.message
+					: "PR status refresh failed: status unavailable",
+				"error",
+			);
 		} catch {
 			console.error("PR status refresh failed and could not be reported");
 		}
@@ -655,7 +656,7 @@ export default function pullRequestExtension(
 			try {
 				discovery = await load(pi, loadContext);
 				if (controller.signal.aborted || sessionGeneration !== generation) return;
-			} catch {
+			} catch (error) {
 				// Keep an established footer. A refresh failure must not leave a stale action hint.
 				if (!controller.signal.aborted && sessionGeneration === generation) {
 					displayedWidget = undefined;
@@ -665,13 +666,13 @@ export default function pullRequestExtension(
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
 						displayEstablished = true;
 					}
-					reportRefreshFailure();
+					reportRefreshFailure(error);
 				}
 				return;
 			}
 			if (controller.signal.aborted || sessionGeneration !== generation) return;
 			render(ctx, discovery);
-			refreshFailureReported = false;
+			reportedRefreshFailure = undefined;
 
 			const pullRequest = discovery.kind === "current" ? discovery.pullRequest : undefined;
 			if (pendingWorkspaceRename && pullRequest?.target.provenance === "configured") {
@@ -716,14 +717,10 @@ export default function pullRequestExtension(
 
 	pi.on("session_start", async (_event, ctx) => {
 		stop();
-		const generation = sessionGeneration;
 		observation = latestObservation(ctx);
 		if (!ctx.hasUI) return;
 		context = ctx;
 		await refresh();
-		if (sessionGeneration === generation && lastDiscovery !== "inactive") {
-			timer = setInterval(refreshInBackground, POLL_INTERVAL_MS);
-		}
 	});
 
 	pi.on("session_shutdown", stop);
@@ -805,8 +802,14 @@ export default function pullRequestExtension(
 				if (sessionGeneration === generation) {
 					cancelRefresh();
 					activeInvocations.delete(invocation);
-					reconcileWidget(ctx);
-					refreshInBackground();
+					if (error instanceof GitHubRateLimitError) {
+						displayedWidget = undefined;
+						reconcileWidget(ctx);
+						reportRefreshFailure(error);
+					} else {
+						reconcileWidget(ctx);
+						refreshInBackground();
+					}
 				}
 				throw error;
 			}

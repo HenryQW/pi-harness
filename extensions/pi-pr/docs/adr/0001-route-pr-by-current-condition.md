@@ -25,7 +25,7 @@ When creation is selected, the bundled workflow honors an existing configured pu
 
 ## Boundaries
 
-Presentation polling never starts a workflow or auto-triages comments. Sessions outside a Git worktree emit no PR error or polling traffic. Other refresh failures expose a generic unavailable status rather than raw subprocess details. The router does not open a browser, invoke `/done` or `/sweep`, enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees. A single invocation never chains into another route.
+Presentation refreshes never start a workflow or auto-triage comments. Sessions outside a Git worktree emit no PR error or presentation lookup traffic. Other refresh failures expose a generic unavailable status rather than raw subprocess details. GitHub API quota failures expose only the fixed sanitized recovery message. The router does not open a browser, invoke `/done` or `/sweep`, enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees. A single invocation never chains into another route.
 
 Presentation and merge safety fetch the exact advertised PR head OID from the validated push URL. Fetches use `--no-write-fetch-head` and never read `FETCH_HEAD`. Merge safety resolves Git operation-state paths through Git, so linked worktrees also block in-progress merge, rebase, cherry-pick, revert, and sequencer operations. A pull request that GitHub reports as behind requires a base update. Passive refresh does not read branch protection, repository rulesets, or merge-method settings. Direct merge always requests squash, and GitHub rejects the mutation when repository policy does not allow it.
 
@@ -33,4 +33,4 @@ Branch update derives the exact base host and repository from the validated publ
 
 ## Consequences
 
-The public interaction stays small: one command shows or runs the current highest-priority next step. Missing configuration no longer implies absence, so creation cannot silently duplicate an existing published PR. Linking adds one explicit confirmation and rollback path. The footer and widget can briefly lag between 30-second refreshes, while `/pr` avoids acting on that stale presentation. Exact-base, non-rewriting branch updates and confirmed direct merges keep mutations bounded and observable.
+The public interaction stays small: one command shows or runs the current highest-priority next step. Missing configuration no longer implies absence, so creation cannot silently duplicate an existing published PR. Linking adds one explicit confirmation and rollback path. Event-driven presentation can remain stale indefinitely when external state changes without a native refresh event, while `/pr` reads fresh state before acting. Exact-base, non-rewriting branch updates and confirmed direct merges keep mutations bounded and observable.

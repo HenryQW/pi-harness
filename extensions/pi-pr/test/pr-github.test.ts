@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import {
+	GitHubRateLimitError,
 	linkInferredPullRequest,
 	loadCurrentPullRequest as discoverCurrentPullRequest,
 	preflightPullRequestCreation,
@@ -1819,6 +1820,50 @@ test("fails closed when the exact observed PR lookup fails", async () => {
 		discoverCurrentPullRequest(pi, context, undefined, observation()),
 		/Load observed pull request failed: exit code 1/,
 	);
+});
+
+test("classifies and sanitizes the primary GitHub API rate-limit diagnostic", async () => {
+	const secret = "https://user:password@example.test/acme/project/pull/42?token=secret";
+	const { pi, context } = harness({
+		pushRepositoryResult: result(`identifier=${secret}\n`, 1, `GraphQL: API rate limit exceeded for user ID 123 (${secret})\n`),
+	});
+
+	await assert.rejects(
+		loadCurrentPullRequest(pi, context),
+		(error: unknown) => {
+			if (!(error instanceof GitHubRateLimitError)) return false;
+			assert.equal(error.message, "GitHub API rate limit exhausted; retry after GitHub resets it");
+			assert.equal(error.name, "GitHubRateLimitError");
+			assert.doesNotMatch(error.message, /identifier|password|example\.test|123|secret/);
+			return true;
+		},
+	);
+});
+
+test("propagates GitHub API rate-limit failures during optional remote inference", async () => {
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		pushRepositoryResult: result("", 1, "GraphQL: API rate limit exceeded for user ID 123.\n"),
+	});
+
+	await assert.rejects(
+		loadCurrentPullRequest(pi, context),
+		(error: unknown) => error instanceof GitHubRateLimitError,
+	);
+});
+
+test("keeps ordinary optional remote-authority failures as a blocked target", async () => {
+	const { pi, context } = harness({
+		pushResult: result("\n"),
+		remoteNames: ["fork"],
+		pushRepositoryResult: result("", 1, "GraphQL: permission denied\n"),
+	});
+
+	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
+		kind: "blocked",
+		issue: { kind: "target-invalid" },
+	});
 });
 
 test("fails visibly when remote push-ref authority errors or is malformed", async () => {
