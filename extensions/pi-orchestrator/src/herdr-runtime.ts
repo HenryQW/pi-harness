@@ -39,7 +39,6 @@ const LEASE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
 const PROCESS_LEASE_ENV = "PI_ORCHESTRATOR_PROCESS_LEASE";
 const CORRELATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
-const FULL_AGENT_TOKEN_PATTERN = /^[0-9a-f]{16,24}$/;
 const HERDR_AGENT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 const SETTLED_AGENT_STATES = new Set(["idle", "done"]);
 
@@ -303,7 +302,7 @@ function expectedLabel(token: string, kind: "workspace" | "worker"): string {
 
 function expectedAgentName(token: string): string {
 	if (!CORRELATION_TOKEN_PATTERN.test(token)) throw new Error("Agent correlation token is invalid.");
-	const segment = FULL_AGENT_TOKEN_PATTERN.test(token)
+	const segment = token.length <= 24 && !/[^0-9a-f]/.test(token)
 		? token
 		: createHash("sha256").update(token).digest("hex").slice(0, 24);
 	const name = `o-${segment}-agent`;

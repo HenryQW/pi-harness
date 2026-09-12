@@ -409,6 +409,7 @@ test("every accepted correlation token maps to one exact native Herdr agent name
 		...[
 			"ABCDEF0123456789",
 			"persisted_TOKEN_1",
+			"a".repeat(25),
 			"a".repeat(128),
 		].map((token) => [token, createHash("sha256").update(token).digest("hex").slice(0, 24)]),
 	] as const;
