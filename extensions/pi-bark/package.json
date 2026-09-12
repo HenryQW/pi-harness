@@ -1,0 +1,55 @@
+{
+  "name": "@henryqw/pi-bark",
+  "version": "0.1.0",
+  "description": "Send Pi session status and agent output to Bark on iOS.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "bark",
+    "ios",
+    "notification"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT",
+  "files": [
+    "LICENSE",
+    "extensions",
+    "scripts",
+    "src",
+    "README.md"
+  ],
+  "bin": {
+    "pi-bark-key": "./scripts/generate-encryption-key.ts"
+  },
+  "scripts": {
+    "generate:key": "node scripts/generate-encryption-key.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/bark.ts scripts/*.ts src/*.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-harness.git",
+    "directory": "extensions/pi-bark"
+  },
+  "bugs": {
+    "url": "https://github.com/HenryQW/pi-harness/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/bark.ts"
+    ]
+  },
+  "dependencies": {
+    "@henryqw/pi-config-store": "^1.1.0"
+  }
+}
