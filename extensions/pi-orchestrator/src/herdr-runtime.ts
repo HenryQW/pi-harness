@@ -68,9 +68,13 @@ type WorkspaceDetails = {
 	kind: "workspace";
 	label: string;
 	worktreeCwd: string;
-	repoRoot: string;
+	mainRoot: string;
+	repoKey: string;
+	herdrRepoRoot: string;
 	expectedWorktreeId: string;
 };
+
+type RepositoryIdentity = Pick<WorkspaceDetails, "repoKey" | "herdrRepoRoot">;
 
 type WorkerTabDetails = {
 	kind: "worker_tab";
@@ -134,6 +138,12 @@ function exactString(value: unknown, label: string): string {
 		throw new Error(`${label} must be a non-empty exact string.`);
 	}
 	return value;
+}
+
+function exactAbsolutePath(value: unknown, label: string): string {
+	const path = exactString(value, label);
+	if (!isAbsolute(path)) throw new Error(`${label} must be an absolute path.`);
+	return path;
 }
 
 function exactKeys(value: JsonRecord, expected: readonly string[], label: string): void {
@@ -249,13 +259,15 @@ function parseDetails(intent: AllocationIntent): HostDetails {
 	}
 	if (parsed.kind !== intent.kind) throw new Error(`${intent.kind} allocation details have the wrong kind.`);
 	if (intent.kind === "workspace") {
-		exactKeys(parsed, ["kind", "label", "worktreeCwd", "repoRoot", "expectedWorktreeId"], "workspace allocation details");
+		exactKeys(parsed, ["kind", "label", "worktreeCwd", "mainRoot", "repoKey", "herdrRepoRoot", "expectedWorktreeId"], "workspace allocation details");
 		return {
 			kind: "workspace",
 			label: exactString(parsed.label, "workspace label"),
-			worktreeCwd: exactString(parsed.worktreeCwd, "workspace worktree cwd"),
-			repoRoot: exactString(parsed.repoRoot, "workspace repository root"),
-			expectedWorktreeId: exactString(parsed.expectedWorktreeId, "workspace expected worktree ID"),
+			worktreeCwd: exactAbsolutePath(parsed.worktreeCwd, "workspace worktree cwd"),
+			mainRoot: exactAbsolutePath(parsed.mainRoot, "workspace Main root"),
+			repoKey: exactAbsolutePath(parsed.repoKey, "workspace repository key"),
+			herdrRepoRoot: exactAbsolutePath(parsed.herdrRepoRoot, "workspace Herdr repository root"),
+			expectedWorktreeId: exactAbsolutePath(parsed.expectedWorktreeId, "workspace expected worktree ID"),
 		};
 	}
 	if (intent.kind === "worker_tab") {
@@ -300,7 +312,7 @@ function assertWorkspaceDetails(details: WorkspaceDetails, intent: AllocationInt
 	const worktree = worktreeIntent(attempt);
 	if (details.label !== expectedLabel(intent.token, "workspace")
 		|| details.worktreeCwd !== worktree.worktree.cwd
-		|| details.repoRoot !== worktree.worktree.repoRoot
+		|| details.mainRoot !== worktree.worktree.repoRoot
 		|| details.expectedWorktreeId !== worktree.resourceId) {
 		throw new Error("Workspace allocation details drifted from the exact owned worktree.");
 	}
@@ -455,24 +467,11 @@ export class HerdrHostRuntime implements HostRuntime {
 		const checkout = await realpath(exactString(worktree.checkout_path, "Herdr current checkout_path"));
 		if (checkout !== root) throw new Error("The current Herdr workspace checkout does not match canonical Main.");
 
-		const commonDirectoryResult = await this.execute(
-			"git",
-			["rev-parse", "--path-format=absolute", "--git-common-dir"],
-			this.processOptions(root, context, GIT_INSPECTION_CAP_MS),
-		);
-		if (commonDirectoryResult.code !== 0 || commonDirectoryResult.killed) {
-			throw new Error("Git common-directory identity probe failed.");
-		}
-		const commonDirectoryOutput = commonDirectoryResult.stdout.replace(/\r?\n$/, "");
-		if (!commonDirectoryOutput || /[\r\n\0]/.test(commonDirectoryOutput) || !isAbsolute(commonDirectoryOutput)) {
-			throw new Error("Git common-directory identity probe returned malformed output.");
-		}
-		const commonDirectory = await realpath(commonDirectoryOutput);
+		const identity = await this.repositoryIdentity(root, context);
 		const repoKey = await realpath(exactString(worktree.repo_key, "Herdr current repo_key"));
-		if (repoKey !== commonDirectory) throw new Error("The current Herdr workspace repo_key does not match Git's common directory.");
+		if (repoKey !== identity.repoKey) throw new Error("The current Herdr workspace repo_key does not match Git's common directory.");
 		const repoRoot = await realpath(exactString(worktree.repo_root, "Herdr current repo_root"));
-		const primaryRepoRoot = basename(commonDirectory) === ".git" ? dirname(commonDirectory) : commonDirectory;
-		if (repoRoot !== primaryRepoRoot) {
+		if (repoRoot !== identity.herdrRepoRoot) {
 			throw new Error("The current Herdr workspace repo_root does not match Git's primary checkout.");
 		}
 	}
@@ -486,12 +485,17 @@ export class HerdrHostRuntime implements HostRuntime {
 		const worktreeId = exactString(worktree.resourceId, "owned worktree ID");
 		if (input.owned.worktree !== worktreeId) throw new Error("Host allocation does not reference the exact owned worktree.");
 		if (input.kind === "workspace") {
+			const expectedWorktreeId = exactAbsolutePath(worktreeId, "owned worktree ID");
+			const worktreeCwd = exactAbsolutePath(worktree.worktree.cwd, "owned worktree cwd");
+			const mainRoot = exactAbsolutePath(worktree.worktree.repoRoot, "owned worktree Main root");
+			const identity = await this.repositoryIdentity(mainRoot, context);
 			return JSON.stringify({
 				kind: "workspace",
 				label: expectedLabel(input.attempt.correlationToken, "workspace"),
-				worktreeCwd: worktree.worktree.cwd,
-				repoRoot: worktree.worktree.repoRoot,
-				expectedWorktreeId: worktreeId,
+				worktreeCwd,
+				mainRoot,
+				...identity,
+				expectedWorktreeId,
 			} satisfies WorkspaceDetails);
 		}
 		const workspace = ownedIntent(input.attempt, "workspace");
@@ -551,12 +555,19 @@ export class HerdrHostRuntime implements HostRuntime {
 		const details = parseDetails(input.intent);
 		if (details.kind === "workspace") {
 			assertWorkspaceDetails(details, input.intent, input.attempt);
+			await this.assertRepositoryIdentity(details, context);
 			const response = await this.herdr.json(
 				["worktree", "list", "--cwd", details.worktreeCwd],
-				this.processOptions(details.repoRoot, context, HERDR_OPERATION_CAP_MS),
+				this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS),
 			);
 			const result = resultRecord(response, "Herdr worktree list response");
 			if (result.type !== "worktree_list" || !Array.isArray(result.worktrees)) throw new Error("Herdr worktree list response is malformed.");
+			const source = record(result.source, "Herdr worktree list source");
+			if (exactString(source.source_checkout_path, "Herdr worktree list source checkout_path") !== details.worktreeCwd
+				|| exactString(source.repo_key, "Herdr worktree list source repo_key") !== details.repoKey
+				|| exactString(source.repo_root, "Herdr worktree list source repo_root") !== details.herdrRepoRoot) {
+				throw new Error("Herdr worktree list source does not match the exact saved repository identity.");
+			}
 			const worktrees = result.worktrees.map((entry) => {
 				const item = record(entry, "Herdr listed worktree");
 				const path = exactString(item.path, "Herdr listed worktree path");
@@ -759,15 +770,18 @@ export class HerdrHostRuntime implements HostRuntime {
 				const tabIntent = ownedIntent(input.attempt, "worker_tab");
 				const workspaceIntent = ownedIntent(input.attempt, "workspace");
 				const details = parseDetails(tabIntent);
-				if (details.kind !== "worker_tab") throw new Error("Saved worker-tab identity is malformed.");
+				const workspaceDetails = parseDetails(workspaceIntent);
+				if (details.kind !== "worker_tab" || workspaceDetails.kind !== "workspace") throw new Error("Saved worker-tab identity is malformed.");
 				assertWorkerTabDetails(details, tabIntent, input.attempt);
+				assertWorkspaceDetails(workspaceDetails, workspaceIntent, input.attempt);
+				await this.assertRepositoryIdentity(workspaceDetails, context);
 				const tabId = exactString(tabIntent.resourceId, "saved worker tab ID");
 				const workspaceId = exactString(workspaceIntent.resourceId, "saved workspace ID");
 				if (tabId === details.workspaceRootTabId) throw new Error("Saved worker tab aliases the workspace root tab.");
 				if (!await this.paneAbsent(exactString(tabIntent.resources?.rootPaneId, "saved worker pane ID"), details.worktreeCwd, context)) {
 					return { outcome: "blocked", failure: "The exact saved worker pane still exists after termination." };
 				}
-				if (await this.workspaceAbsent(workspaceId, details.worktreeCwd, context)) return { outcome: "absent" };
+				if (await this.workspaceAbsent(workspaceId, workspaceDetails, context)) return { outcome: "absent" };
 				const tab = await this.getTab(tabId, details.worktreeCwd, context);
 				if (!tab) return { outcome: "absent" };
 				if (tab.workspace_id !== workspaceId || tab.label !== details.label || tab.pane_count !== 0) {
@@ -787,14 +801,12 @@ export class HerdrHostRuntime implements HostRuntime {
 			const details = parseDetails(workspaceIntent);
 			if (details.kind !== "workspace") throw new Error("Saved workspace identity is malformed.");
 			assertWorkspaceDetails(details, workspaceIntent, input.attempt);
+			await this.assertRepositoryIdentity(details, context);
 			const workspaceId = exactString(workspaceIntent.resourceId, "saved workspace ID");
-			if (await this.workspaceAbsent(workspaceId, details.worktreeCwd, context)) return { outcome: "absent" };
-			const response = await this.herdr.json(["workspace", "get", workspaceId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+			if (await this.workspaceAbsent(workspaceId, details, context)) return { outcome: "absent" };
+			const response = await this.herdr.json(["workspace", "get", workspaceId], this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 			const workspace = parseWorkspaceInfo(response, workspaceId);
-			const worktree = record(workspace.worktree, "Owned Herdr workspace worktree");
-			if (workspace.label !== details.label || worktree.checkout_path !== details.worktreeCwd || worktree.repo_root !== details.repoRoot) {
-				return { outcome: "blocked", failure: "The exact saved workspace no longer matches its owned label and checkout." };
-			}
+			this.assertWorkspaceEvidence(workspace, details);
 			const rootTabId = exactString(workspaceIntent.resources?.tabId, "saved workspace root tab ID");
 			const rootPaneId = exactString(workspaceIntent.resources?.rootPaneId, "saved workspace root pane ID");
 			const tabs = await this.listTabs(workspaceId, details.worktreeCwd, context);
@@ -804,10 +816,10 @@ export class HerdrHostRuntime implements HostRuntime {
 				|| panes[0]!.workspace_id !== workspaceId || (panes[0]!.agent !== undefined && panes[0]!.agent !== null)) {
 				return { outcome: "blocked", failure: "The exact saved workspace contains missing, mismatched, or additional resources; it was not closed." };
 			}
-			const closed = await this.herdr.exec(["workspace", "close", workspaceId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+			const closed = await this.herdr.exec(["workspace", "close", workspaceId], this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 			if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["workspace", "close"], closed)) };
 			requireOkResponse(closed.stdout, "Herdr workspace close response");
-			return await this.workspaceAbsent(workspaceId, details.worktreeCwd, context)
+			return await this.workspaceAbsent(workspaceId, details, context)
 				? { outcome: "completed" }
 				: { outcome: "blocked", failure: "The exact saved workspace still exists after close." };
 		} catch (error) {
@@ -822,8 +834,9 @@ export class HerdrHostRuntime implements HostRuntime {
 		context: OperationContext,
 	): Promise<AllocationResult> {
 		assertWorkspaceDetails(details, intent, attempt);
+		await this.assertRepositoryIdentity(details, context);
 		const args = ["worktree", "open", "--path", details.worktreeCwd, "--label", details.label, "--no-focus"];
-		const response = await this.herdr.exec(args, this.processOptions(details.repoRoot, context, HERDR_OPERATION_CAP_MS));
+		const response = await this.herdr.exec(args, this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 		if (response.code !== 0 || response.killed) {
 			return { outcome: "unknown", failure: safeText(herdrCommandFailure(args, response)), possibleResources: [details.label] };
 		}
@@ -841,8 +854,8 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (workspace.label !== details.label || workspace.focused !== false || tab.workspace_id !== workspaceId
 				|| tab.focused !== false || pane.workspace_id !== workspaceId || pane.tab_id !== tabId || pane.focused !== false
 				|| worktree.path !== details.worktreeCwd || workspaceWorktree.checkout_path !== details.worktreeCwd
-				|| workspaceWorktree.repo_root !== details.repoRoot) {
-				throw new Error("Herdr worktree open response does not prove the exact non-focused checkout.");
+				|| workspaceWorktree.repo_key !== details.repoKey || workspaceWorktree.repo_root !== details.herdrRepoRoot) {
+				throw new Error("Herdr worktree open response does not prove the exact non-focused checkout and repository.");
 			}
 			return { outcome: "owned", resourceId: workspaceId, resources: { tabId, rootPaneId } };
 		} catch (error) {
@@ -1162,14 +1175,61 @@ export class HerdrHostRuntime implements HostRuntime {
 		throw new Error("Exact saved pane presence is ambiguous.");
 	}
 
-	private async workspaceAbsent(workspaceId: string, cwd: string, context: OperationContext): Promise<boolean> {
-		const response = await this.herdr.exec(["workspace", "get", workspaceId], this.processOptions(cwd, context, HERDR_OPERATION_CAP_MS));
+	private async workspaceAbsent(workspaceId: string, details: WorkspaceDetails, context: OperationContext): Promise<boolean> {
+		const response = await this.herdr.exec(
+			["workspace", "get", workspaceId],
+			this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS),
+		);
 		if (response.code === 0 && !response.killed) {
-			parseWorkspaceInfo(parseJsonObject(response.stdout, "Herdr workspace get response"), workspaceId);
+			const workspace = parseWorkspaceInfo(parseJsonObject(response.stdout, "Herdr workspace get response"), workspaceId);
+			this.assertWorkspaceEvidence(workspace, details);
 			return false;
 		}
 		if (!response.killed && hasHerdrErrorCode(response, "workspace_not_found")) return true;
 		throw new Error("Exact saved workspace presence is ambiguous.");
+	}
+
+	private assertWorkspaceEvidence(workspace: JsonRecord, details: WorkspaceDetails): void {
+		const worktree = record(workspace.worktree, "Owned Herdr workspace worktree");
+		if (exactString(workspace.label, "Owned Herdr workspace label") !== details.label
+			|| exactString(worktree.checkout_path, "Owned Herdr workspace checkout_path") !== details.worktreeCwd
+			|| exactString(worktree.repo_key, "Owned Herdr workspace repo_key") !== details.repoKey
+			|| exactString(worktree.repo_root, "Owned Herdr workspace repo_root") !== details.herdrRepoRoot) {
+			throw new Error("The exact saved workspace no longer matches its owned label, checkout, and repository.");
+		}
+	}
+
+	private async repositoryIdentity(mainRoot: string, context: OperationContext): Promise<RepositoryIdentity> {
+		const root = exactAbsolutePath(mainRoot, "Git common-directory probe root");
+		const result = await this.execute(
+			"git",
+			["rev-parse", "--path-format=absolute", "--git-common-dir"],
+			this.processOptions(root, context, GIT_INSPECTION_CAP_MS),
+		);
+		if (result.code !== 0 || result.killed) throw new Error("Git common-directory identity probe failed.");
+		const output = result.stdout.replace(/\r?\n$/, "");
+		if (!output || /[\r\n\0]/.test(output) || !isAbsolute(output)) {
+			throw new Error("Git common-directory identity probe returned malformed output.");
+		}
+		const repoKey = await realpath(output);
+		const repoKeyInfo = await lstat(repoKey);
+		if (!repoKeyInfo.isDirectory() || basename(repoKey) !== ".git") {
+			throw new Error("Git common-directory identity does not name a real .git directory.");
+		}
+		const herdrRepoRoot = dirname(repoKey);
+		const resolvedRepoRoot = await realpath(herdrRepoRoot);
+		const repoRootInfo = await lstat(resolvedRepoRoot);
+		if (!isAbsolute(herdrRepoRoot) || resolvedRepoRoot !== herdrRepoRoot || !repoRootInfo.isDirectory()) {
+			throw new Error("Git common-directory identity does not derive an absolute existing real primary repository root.");
+		}
+		return { repoKey, herdrRepoRoot };
+	}
+
+	private async assertRepositoryIdentity(details: WorkspaceDetails, context: OperationContext): Promise<void> {
+		const identity = await this.repositoryIdentity(details.mainRoot, context);
+		if (identity.repoKey !== details.repoKey || identity.herdrRepoRoot !== details.herdrRepoRoot) {
+			throw new Error("Persisted workspace repository identity no longer matches Git.");
+		}
 	}
 
 	private processOptions(cwd: string, context: OperationContext, cap: number): HostProcessOptions {

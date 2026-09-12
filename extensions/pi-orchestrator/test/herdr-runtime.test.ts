@@ -95,7 +95,7 @@ class ScriptedProcess {
 type Paths = { directory: string; root: string; repoRoot: string; commonDirectory: string; worktree: string; leases: string };
 
 async function paths(t: test.TestContext): Promise<Paths> {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-herdr-"));
+	const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-orchestrator-herdr-")));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "main");
 	const repoRoot = join(directory, "repo");
@@ -144,7 +144,7 @@ function baseAttempt(paths: Paths): TaskAttempt {
 				path: paths.worktree,
 				cwd: paths.worktree,
 				branch: "task-a",
-				repoRoot: paths.repoRoot,
+				repoRoot: paths.root,
 				baseCommit: oid("a"),
 			},
 		}],
@@ -162,7 +162,22 @@ function owned(attempt: TaskAttempt): Partial<Record<AllocationKind, string>> {
 		.map((intent) => [intent.kind, intent.resourceId]));
 }
 
-async function plannedIntent(host: HerdrHostRuntime, attempt: TaskAttempt, kind: Exclude<AllocationKind, "worktree">): Promise<AllocationIntent> {
+function repositoryIdentityStep(paths: Paths, result: ProcessResult = { code: 0, stdout: `${paths.commonDirectory}\n`, stderr: "" }): Step {
+	return {
+		command: "git",
+		args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+		result,
+	};
+}
+
+async function plannedIntent(
+	host: HerdrHostRuntime,
+	attempt: TaskAttempt,
+	kind: Exclude<AllocationKind, "worktree">,
+	paths: Paths,
+	script: ScriptedProcess,
+): Promise<AllocationIntent> {
+	if (kind === "workspace") script.push(repositoryIdentityStep(paths));
 	const details = await host.planHostAllocation({ kind, task, attempt, owned: owned(attempt) }, context());
 	const intent: AllocationIntent = {
 		kind,
@@ -193,8 +208,9 @@ function addOwnedTab(attempt: TaskAttempt, details: string, leasePath: string): 
 	return intent;
 }
 
-async function fullAttempt(paths: Paths, host: HerdrHostRuntime): Promise<{ attempt: TaskAttempt; leasePath: string }> {
+async function fullAttempt(paths: Paths, host: HerdrHostRuntime, script: ScriptedProcess): Promise<{ attempt: TaskAttempt; leasePath: string }> {
 	const attempt = baseAttempt(paths);
+	script.push(repositoryIdentityStep(paths));
 	const workspaceDetails = await host.planHostAllocation({ kind: "workspace", task, attempt, owned: owned(attempt) }, context());
 	addOwnedWorkspace(attempt, workspaceDetails);
 	const tabDetails = await host.planHostAllocation({ kind: "worker_tab", task, attempt, owned: owned(attempt) }, context());
@@ -219,8 +235,25 @@ function workspaceInfo(paths: Paths, overrides: Record<string, unknown> = {}): R
 		workspace_id: WORKSPACE_ID,
 		label: WORKSPACE_LABEL,
 		focused: false,
-		worktree: { checkout_path: paths.worktree, repo_root: paths.repoRoot },
+		worktree: { checkout_path: paths.worktree, repo_key: paths.commonDirectory, repo_root: paths.repoRoot },
 		...overrides,
+	};
+}
+
+function worktreeListResult(
+	paths: Paths,
+	worktrees: readonly Record<string, unknown>[],
+	sourceOverrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		type: "worktree_list",
+		source: {
+			source_checkout_path: paths.worktree,
+			repo_key: paths.commonDirectory,
+			repo_root: paths.repoRoot,
+			...sourceOverrides,
+		},
+		worktrees,
 	};
 }
 
@@ -428,15 +461,177 @@ test("preflight fails closed on mismatched Herdr and Git repository identity", a
 	}
 });
 
+test("workspace identity planning rejects malformed, failed, killed, and non-primary common-directory evidence", async (t) => {
+	const fixture = await paths(t);
+	const cases: Array<{
+		name: string;
+		result?: ProcessResult;
+		mutateAttempt?: (attempt: TaskAttempt) => void;
+		error: RegExp;
+	}> = [
+		{
+			name: "relative task checkout",
+			mutateAttempt: (attempt) => {
+				attempt.allocations[0]!.resourceId = "relative-worktree";
+				attempt.allocations[0]!.worktree!.path = "relative-worktree";
+				attempt.allocations[0]!.worktree!.cwd = "relative-worktree";
+			},
+			error: /owned worktree ID must be an absolute path/,
+		},
+		{ name: "relative Main root", mutateAttempt: (attempt) => { attempt.allocations[0]!.worktree!.repoRoot = "relative-main"; }, error: /Main root must be an absolute path/ },
+		{ name: "empty output", result: { code: 0, stdout: "", stderr: "" }, error: /malformed output/ },
+		{ name: "relative output", result: { code: 0, stdout: ".git\n", stderr: "" }, error: /malformed output/ },
+		{ name: "multiple outputs", result: { code: 0, stdout: `${fixture.commonDirectory}\n${fixture.commonDirectory}\n`, stderr: "" }, error: /malformed output/ },
+		{ name: "failed probe", result: { code: 1, stdout: "", stderr: "failed" }, error: /identity probe failed/ },
+		{ name: "killed probe", result: { code: 0, killed: true, stdout: `${fixture.commonDirectory}\n`, stderr: "" }, error: /identity probe failed/ },
+		{ name: "non-.git common directory", result: { code: 0, stdout: `${fixture.root}\n`, stderr: "" }, error: /real \.git directory/ },
+	];
+	for (const candidate of cases) {
+		await t.test(candidate.name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const attempt = baseAttempt(fixture);
+			candidate.mutateAttempt?.(attempt);
+			if (candidate.result) script.push(repositoryIdentityStep(fixture, candidate.result));
+			await assert.rejects(host.planHostAllocation({
+				kind: "workspace",
+				task,
+				attempt,
+				owned: owned(attempt),
+			}, context()), candidate.error);
+			assert.equal(attempt.allocations.length, 1);
+			assert.ok(script.calls.every(({ command }) => command === "git"));
+			script.done();
+		});
+	}
+});
+
+test("workspace allocation revalidates strict persisted identity before Herdr creation", async (t) => {
+	const fixture = await paths(t);
+	const driftedRepoRoot = join(fixture.directory, "drifted-repo");
+	const driftedCommonDirectory = join(driftedRepoRoot, ".git");
+	await mkdir(driftedCommonDirectory, { recursive: true });
+	const cases: Array<{
+		name: string;
+		mutate?: (details: Record<string, unknown>) => void;
+		result?: ProcessResult;
+		error: RegExp;
+		expectsProbe: boolean;
+	}> = [
+		{ name: "relative persisted Main root", mutate: (details) => { details.mainRoot = "relative-main"; }, error: /Main root must be an absolute path/, expectsProbe: false },
+		{ name: "legacy repository-root field", mutate: (details) => { details.repoRoot = details.herdrRepoRoot; delete details.herdrRepoRoot; }, error: /unsupported or missing fields/, expectsProbe: false },
+		{ name: "drifted persisted Main root", mutate: (details) => { details.mainRoot = fixture.worktree; }, error: /drifted from the exact owned worktree/, expectsProbe: false },
+		{ name: "drifted persisted repo key", mutate: (details) => { details.repoKey = driftedCommonDirectory; }, error: /no longer matches Git/, expectsProbe: true },
+		{ name: "drifted persisted Herdr root", mutate: (details) => { details.herdrRepoRoot = driftedRepoRoot; }, error: /no longer matches Git/, expectsProbe: true },
+		{ name: "drifted Git common directory", result: { code: 0, stdout: `${driftedCommonDirectory}\n`, stderr: "" }, error: /no longer matches Git/, expectsProbe: true },
+		{ name: "malformed Git common directory", result: { code: 0, stdout: ".git\n", stderr: "" }, error: /malformed output/, expectsProbe: true },
+		{ name: "failed Git common-directory probe", result: { code: 1, stdout: "", stderr: "failed" }, error: /identity probe failed/, expectsProbe: true },
+		{ name: "killed Git common-directory probe", result: { code: 0, killed: true, stdout: `${fixture.commonDirectory}\n`, stderr: "" }, error: /identity probe failed/, expectsProbe: true },
+	];
+	for (const candidate of cases) {
+		await t.test(candidate.name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const attempt = baseAttempt(fixture);
+			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
+			const details = JSON.parse(intent.details) as Record<string, unknown>;
+			candidate.mutate?.(details);
+			intent.details = JSON.stringify(details);
+			const callsBeforeAllocation = script.calls.length;
+			if (candidate.expectsProbe) script.push(repositoryIdentityStep(fixture, candidate.result));
+			await assert.rejects(host.allocateHost({ intent, task, attempt }, context()), candidate.error);
+			const allocationCalls = script.calls.slice(callsBeforeAllocation);
+			assert.equal(allocationCalls.length, candidate.expectsProbe ? 1 : 0);
+			assert.ok(allocationCalls.every(({ command }) => command === "git"));
+			script.done();
+		});
+	}
+});
+
+test("workspace allocation from primary Main still uses the primary repository cwd", async (t) => {
+	const fixture = await paths(t);
+	const primary = { ...fixture, root: fixture.repoRoot };
+	const script = new ScriptedProcess();
+	const host = runtime(primary, script);
+	const attempt = baseAttempt(primary);
+	const intent = await plannedIntent(host, attempt, "workspace", primary, script);
+	script.push(repositoryIdentityStep(primary), {
+		command: "herdr",
+		args: ["worktree", "open", "--path", primary.worktree, "--label", WORKSPACE_LABEL, "--no-focus"],
+		result: success({
+			type: "worktree_opened",
+			already_open: false,
+			workspace: workspaceInfo(primary),
+			tab: { tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, focused: false },
+			root_pane: { pane_id: ROOT_PANE_ID, workspace_id: WORKSPACE_ID, tab_id: ROOT_TAB_ID, focused: false },
+			worktree: { path: primary.worktree },
+		}),
+	});
+	assert.equal((await host.allocateHost({ intent, task, attempt }, context())).outcome, "owned");
+	assert.deepEqual(script.calls.map(({ command, options }) => [command, options.cwd]), [
+		["git", primary.root],
+		["git", primary.root],
+		["herdr", primary.repoRoot],
+	]);
+	script.done();
+});
+
+test("workspace open evidence must bind the exact checkout, repo key, and primary root before adoption", async (t) => {
+	const fixture = await paths(t);
+	for (const [name, worktree] of [
+		["checkout", { checkout_path: fixture.root, repo_key: fixture.commonDirectory, repo_root: fixture.repoRoot }],
+		["repo key", { checkout_path: fixture.worktree, repo_key: fixture.root, repo_root: fixture.repoRoot }],
+		["repo root", { checkout_path: fixture.worktree, repo_key: fixture.commonDirectory, repo_root: fixture.root }],
+	] as const) {
+		await t.test(name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const attempt = baseAttempt(fixture);
+			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
+			script.push(repositoryIdentityStep(fixture), {
+				command: "herdr",
+				args: ["worktree", "open", "--path", fixture.worktree, "--label", WORKSPACE_LABEL, "--no-focus"],
+				result: success({
+					type: "worktree_opened",
+					already_open: false,
+					workspace: workspaceInfo(fixture, { worktree }),
+					tab: { tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, focused: false },
+					root_pane: { pane_id: ROOT_PANE_ID, workspace_id: WORKSPACE_ID, tab_id: ROOT_TAB_ID, focused: false },
+					worktree: { path: fixture.worktree },
+				}),
+			});
+			const result = await host.allocateHost({ intent, task, attempt }, context());
+			assert.equal(result.outcome, "unknown");
+			assert.match(result.outcome === "unknown" ? result.failure : "", /does not prove the exact non-focused checkout and repository/);
+			assert.equal(script.calls.filter(({ command, args }) => command === "herdr" && args[0] === "worktree" && args[1] === "open").length, 1);
+			script.done();
+		});
+	}
+});
+
 test("allocation uses token-bound non-focused resources, a mode-0600 lease, and only verified safe Pi argv", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
 	const attempt = baseAttempt(fixture);
-	const workspaceIntent = await plannedIntent(host, attempt, "workspace");
-	script.push({
+	const workspaceIntent = await plannedIntent(host, attempt, "workspace", fixture, script);
+	const workspaceDetails = JSON.parse(workspaceIntent.details) as Record<string, unknown>;
+	assert.deepEqual(workspaceDetails, {
+		kind: "workspace",
+		label: WORKSPACE_LABEL,
+		worktreeCwd: fixture.worktree,
+		mainRoot: fixture.root,
+		repoKey: await realpath(fixture.commonDirectory),
+		herdrRepoRoot: await realpath(fixture.repoRoot),
+		expectedWorktreeId: fixture.worktree,
+	});
+	script.push(repositoryIdentityStep(fixture), {
 		command: "herdr",
-		args: ["worktree", "open", "--path", fixture.worktree, "--label", WORKSPACE_LABEL, "--no-focus"],
+		args: (args, options) => {
+			assert.deepEqual(args, ["worktree", "open", "--path", fixture.worktree, "--label", WORKSPACE_LABEL, "--no-focus"]);
+			assert.equal(options.cwd, fixture.repoRoot);
+		},
+
 		result: success({
 			type: "worktree_opened", already_open: false,
 			workspace: workspaceInfo(fixture),
@@ -447,9 +642,15 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	});
 	const workspace = await host.allocateHost({ intent: workspaceIntent, task, attempt }, context());
 	assert.deepEqual(workspace, { outcome: "owned", resourceId: WORKSPACE_ID, resources: { tabId: ROOT_TAB_ID, rootPaneId: ROOT_PANE_ID } });
+	assert.notEqual(fixture.root, fixture.repoRoot);
+	assert.deepEqual(script.calls.slice(0, 3).map(({ command, options }) => [command, options.cwd]), [
+		["git", fixture.root],
+		["git", fixture.root],
+		["herdr", fixture.repoRoot],
+	]);
 	Object.assign(workspaceIntent, { status: "owned", resourceId: WORKSPACE_ID, resources: workspace.outcome === "owned" ? workspace.resources : undefined });
 
-	const tabIntent = await plannedIntent(host, attempt, "worker_tab");
+	const tabIntent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 	const tabDetails = JSON.parse(tabIntent.details) as { leasePath: string };
 	script.push({
 		command: "herdr",
@@ -468,7 +669,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	assert.equal((await stat(tabDetails.leasePath)).mode & 0o777, 0o600);
 	Object.assign(tabIntent, { status: "owned", resourceId: WORKER_TAB_ID, resources: tab.outcome === "owned" ? tab.resources : undefined });
 
-	const agentIntent = await plannedIntent(host, attempt, "agent");
+	const agentIntent = await plannedIntent(host, attempt, "agent", fixture, script);
 	let verified = false;
 	script.push(
 		lsof(tabDetails.leasePath),
@@ -517,9 +718,10 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 			const script = new ScriptedProcess();
 			const host = runtime(fixture, script);
 			const attempt = baseAttempt(fixture);
+			script.push(repositoryIdentityStep(fixture));
 			const workspaceDetails = await host.planHostAllocation({ kind: "workspace", task, attempt, owned: owned(attempt) }, context());
 			addOwnedWorkspace(attempt, workspaceDetails);
-			const intent = await plannedIntent(host, attempt, "worker_tab");
+			const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 			script.push({
 				command: "herdr",
 				args: () => {},
@@ -546,9 +748,9 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
-	const { attempt, leasePath } = await fullAttempt(fixture, host);
+	const { attempt, leasePath } = await fullAttempt(fixture, host, script);
 	attempt.allocations.pop();
-	const intent = await plannedIntent(host, attempt, "agent");
+	const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 	await privateLease(leasePath);
 	script.push(lsof(leasePath), ...startablePaneSteps(fixture));
 	await assert.rejects(host.allocateHost({
@@ -556,7 +758,7 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 		task,
 		attempt,
 		verifyLaunch: async () => {
-			assert.equal(script.calls.length, 4);
+			assert.equal(script.calls.length, 5);
 			throw new Error("Implementer extension fingerprint drifted");
 		},
 	}, context()), /fingerprint drifted/);
@@ -568,9 +770,9 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
-	const { attempt, leasePath } = await fullAttempt(fixture, host);
+	const { attempt, leasePath } = await fullAttempt(fixture, host, script);
 	attempt.allocations.pop();
-	const intent = await plannedIntent(host, attempt, "agent");
+	const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 	await privateLease(leasePath);
 	script.push(lsof(leasePath), ...startablePaneSteps(fixture), { command: "herdr", args: () => {}, result: failure("agent_pane_busy") });
 	assert.deepEqual(await host.allocateHost({ intent, task, attempt, verifyLaunch: async () => launch }, context()), {
@@ -590,6 +792,7 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				const host = runtime(fixture, script);
 				const attempt = baseAttempt(fixture);
 				if (kind !== "workspace") {
+					script.push(repositoryIdentityStep(fixture));
 					const workspaceDetails = await host.planHostAllocation({ kind: "workspace", task, attempt, owned: owned(attempt) }, context());
 					addOwnedWorkspace(attempt, workspaceDetails);
 				}
@@ -600,10 +803,11 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 					addOwnedTab(attempt, tabDetails, leasePath);
 					await privateLease(leasePath);
 				}
-				const intent = await plannedIntent(host, attempt, kind);
+				const intent = await plannedIntent(host, attempt, kind, fixture, script);
 				if (kind === "worker_tab") leasePath = (JSON.parse(intent.details) as { leasePath: string }).leasePath;
 				const malformed = boundary === "malformed-after-side-effect";
 				if (kind === "agent") script.push(lsof(leasePath!), ...startablePaneSteps(fixture));
+				if (kind === "workspace") script.push(repositoryIdentityStep(fixture));
 				script.push({
 					command: "herdr",
 					args: () => {},
@@ -620,10 +824,12 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				intent.status = "unknown";
 				const exists = boundary !== "before-side-effect";
 				if (kind === "workspace") {
-					script.push({ command: "herdr", args: ["worktree", "list", "--cwd", fixture.worktree], result: success({
-						type: "worktree_list",
-						worktrees: [{ path: fixture.worktree, label: exists ? WORKSPACE_LABEL : "task-a", open_workspace_id: exists ? WORKSPACE_ID : null }],
-					}) });
+					script.push(
+						repositoryIdentityStep(fixture),
+						{ command: "herdr", args: ["worktree", "list", "--cwd", fixture.worktree], result: success(worktreeListResult(fixture, [
+							{ path: fixture.worktree, label: exists ? WORKSPACE_LABEL : "task-a", open_workspace_id: exists ? WORKSPACE_ID : null },
+						])) },
+					);
 				} else if (kind === "worker_tab") {
 					script.push({ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({
 						type: "tab_list",
@@ -643,6 +849,76 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				script.done();
 			});
 		}
+	}
+});
+
+test("unknown workspace reconciliation revalidates persisted Git identity before Herdr evidence", async (t) => {
+	const fixture = await paths(t);
+	const driftedRepoRoot = join(fixture.directory, "reconcile-drifted-repo");
+	const driftedCommonDirectory = join(driftedRepoRoot, ".git");
+	await mkdir(driftedCommonDirectory, { recursive: true });
+	const cases: Array<{
+		name: string;
+		mutate?: (details: Record<string, unknown>) => void;
+		result?: ProcessResult;
+		error: RegExp;
+		expectsProbe: boolean;
+	}> = [
+		{ name: "drifted Main root", mutate: (details) => { details.mainRoot = fixture.worktree; }, error: /drifted from the exact owned worktree/, expectsProbe: false },
+		{ name: "drifted repo key", mutate: (details) => { details.repoKey = driftedCommonDirectory; }, error: /no longer matches Git/, expectsProbe: true },
+		{ name: "drifted Herdr root", mutate: (details) => { details.herdrRepoRoot = driftedRepoRoot; }, error: /no longer matches Git/, expectsProbe: true },
+		{ name: "drifted common directory", result: { code: 0, stdout: `${driftedCommonDirectory}\n`, stderr: "" }, error: /no longer matches Git/, expectsProbe: true },
+		{ name: "malformed common directory", result: { code: 0, stdout: ".git\n", stderr: "" }, error: /malformed output/, expectsProbe: true },
+		{ name: "failed common-directory probe", result: { code: 1, stdout: "", stderr: "failed" }, error: /identity probe failed/, expectsProbe: true },
+		{ name: "killed common-directory probe", result: { code: 0, killed: true, stdout: `${fixture.commonDirectory}\n`, stderr: "" }, error: /identity probe failed/, expectsProbe: true },
+	];
+	for (const candidate of cases) {
+		await t.test(candidate.name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const attempt = baseAttempt(fixture);
+			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
+			intent.status = "unknown";
+			const details = JSON.parse(intent.details) as Record<string, unknown>;
+			candidate.mutate?.(details);
+			intent.details = JSON.stringify(details);
+			const callsBeforeReconciliation = script.calls.length;
+			if (candidate.expectsProbe) script.push(repositoryIdentityStep(fixture, candidate.result));
+			await assert.rejects(host.reconcileHostAllocation({ intent, task, attempt }, context()), candidate.error);
+			const reconciliationCalls = script.calls.slice(callsBeforeReconciliation);
+			assert.equal(reconciliationCalls.length, candidate.expectsProbe ? 1 : 0);
+			assert.ok(reconciliationCalls.every(({ command }) => command === "git"));
+			script.done();
+		});
+	}
+});
+
+test("unknown workspace reconciliation rejects mismatched checkout and repository list evidence", async (t) => {
+	const fixture = await paths(t);
+	for (const [name, sourceOverrides] of [
+		["checkout", { source_checkout_path: fixture.root }],
+		["repo key", { repo_key: fixture.root }],
+		["repo root", { repo_root: fixture.root }],
+	] as const) {
+		await t.test(name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const attempt = baseAttempt(fixture);
+			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
+			intent.status = "unknown";
+			script.push(
+				repositoryIdentityStep(fixture),
+				{
+					command: "herdr",
+					args: ["worktree", "list", "--cwd", fixture.worktree],
+					result: success(worktreeListResult(fixture, [], sourceOverrides)),
+				},
+			);
+			await assert.rejects(host.reconcileHostAllocation({ intent, task, attempt }, context()), /does not match the exact saved repository identity/);
+			assert.equal(script.calls.at(-1)!.options.cwd, fixture.repoRoot);
+			assert.ok(script.calls.every(({ args }) => args[1] !== "open" && args[1] !== "close"));
+			script.done();
+		});
 	}
 });
 
@@ -668,9 +944,12 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			const script = new ScriptedProcess();
 			const host = runtime(fixture, script);
 			const attempt = baseAttempt(fixture);
-			const intent = await plannedIntent(host, attempt, "workspace");
+			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
 			intent.status = "unknown";
-			script.push({ command: "herdr", args: ["worktree", "list", "--cwd", fixture.worktree], result: success({ type: "worktree_list", worktrees }) });
+			script.push(
+				repositoryIdentityStep(fixture),
+				{ command: "herdr", args: ["worktree", "list", "--cwd", fixture.worktree], result: success(worktreeListResult(fixture, worktrees)) },
+			);
 			assert.equal((await host.reconcileHostAllocation({ intent, task, attempt }, context())).outcome, outcome, name);
 		}
 	});
@@ -685,9 +964,10 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			const script = new ScriptedProcess();
 			const host = runtime(fixture, script);
 			const attempt = baseAttempt(fixture);
+			script.push(repositoryIdentityStep(fixture));
 			const workspaceDetails = await host.planHostAllocation({ kind: "workspace", task, attempt, owned: owned(attempt) }, context());
 			addOwnedWorkspace(attempt, workspaceDetails);
-			const intent = await plannedIntent(host, attempt, "worker_tab");
+			const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 			intent.status = "unknown";
 			const leasePath = (JSON.parse(intent.details) as { leasePath: string }).leasePath;
 			if (holder) await privateLease(leasePath);
@@ -699,9 +979,10 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		const script = new ScriptedProcess();
 		const host = runtime(fixture, script);
 		const attempt = baseAttempt(fixture);
+		script.push(repositoryIdentityStep(fixture));
 		const workspaceDetails = await host.planHostAllocation({ kind: "workspace", task, attempt, owned: owned(attempt) }, context());
 		addOwnedWorkspace(attempt, workspaceDetails);
-		const intent = await plannedIntent(host, attempt, "worker_tab");
+		const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 		intent.status = "unknown";
 		script.push({ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({
 			type: "tab_list", tabs: [{ tab_id: ROOT_TAB_ID, workspace_id: "workspace-decoy", label: "root" }],
@@ -718,7 +999,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		] as const) {
 			const script = new ScriptedProcess();
 			const host = runtime(fixture, script);
-			const { attempt, leasePath } = await fullAttempt(fixture, host);
+			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
 			const intent = attempt.allocations.at(-1)!;
 			intent.status = "unknown";
 			delete intent.resourceId;
@@ -736,16 +1017,16 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 	await t.test("agent absence requires the secure saved lease and a startable exact pane", async () => {
 		const missingScript = new ScriptedProcess();
 		const missingHost = runtime(fixture, missingScript);
-		const missing = await fullAttempt(fixture, missingHost);
+		const missing = await fullAttempt(fixture, missingHost, missingScript);
 		const missingIntent = missing.attempt.allocations.at(-1)!;
 		missingIntent.status = "unknown";
 		delete missingIntent.resourceId;
 		assert.equal((await missingHost.reconcileHostAllocation({ intent: missingIntent, task, attempt: missing.attempt }, context())).outcome, "possible");
-		assert.equal(missingScript.calls.length, 0);
+		assert.equal(missingScript.calls.length, 1);
 
 		const partialScript = new ScriptedProcess();
 		const partialHost = runtime(fixture, partialScript);
-		const partial = await fullAttempt(fixture, partialHost);
+		const partial = await fullAttempt(fixture, partialHost, partialScript);
 		const partialIntent = partial.attempt.allocations.at(-1)!;
 		partialIntent.status = "unknown";
 		delete partialIntent.resourceId;
@@ -763,7 +1044,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 
 		const backgroundScript = new ScriptedProcess();
 		const backgroundHost = runtime(fixture, backgroundScript);
-		const background = await fullAttempt(fixture, backgroundHost);
+		const background = await fullAttempt(fixture, backgroundHost, backgroundScript);
 		const backgroundIntent = background.attempt.allocations.at(-1)!;
 		backgroundIntent.status = "unknown";
 		delete backgroundIntent.resourceId;
@@ -782,7 +1063,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 
 		const inventoryScript = new ScriptedProcess();
 		const inventoryHost = runtime(fixture, inventoryScript);
-		const inventory = await fullAttempt(fixture, inventoryHost);
+		const inventory = await fullAttempt(fixture, inventoryHost, inventoryScript);
 		const inventoryIntent = inventory.attempt.allocations.at(-1)!;
 		inventoryIntent.status = "unknown";
 		delete inventoryIntent.resourceId;
@@ -799,7 +1080,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 
 		const malformedScript = new ScriptedProcess();
 		const malformedHost = runtime(fixture, malformedScript);
-		const malformed = await fullAttempt(fixture, malformedHost);
+		const malformed = await fullAttempt(fixture, malformedHost, malformedScript);
 		const malformedIntent = malformed.attempt.allocations.at(-1)!;
 		malformedIntent.status = "unknown";
 		delete malformedIntent.resourceId;
@@ -815,7 +1096,7 @@ test("prompt submission follows exact readiness and accepts only a changed clean
 	const script = new ScriptedProcess();
 	let inspections = 0;
 	const host = runtime(fixture, script, async () => { inspections += 1; return changedIdentity(); });
-	const { attempt } = await fullAttempt(fixture, host);
+	const { attempt } = await fullAttempt(fixture, host, script);
 	script.push(
 		{ command: "herdr", args: ["agent", "wait", AGENT_NAME, "--until", "idle", "--until", "done", "--until", "blocked", "--until", "unknown", "--timeout", "19000"], result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: (args) => {
@@ -843,7 +1124,7 @@ test("delivered agent_prompt_stalled is never resent and requires a changed clea
 		await t.test(name, async () => {
 			const script = new ScriptedProcess();
 			const host = runtime(fixture, script, async () => candidate);
-			const { attempt } = await fullAttempt(fixture, host);
+			const { attempt } = await fullAttempt(fixture, host, script);
 			script.push(
 				{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
 				{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
@@ -889,9 +1170,9 @@ test("blocked, unknown, timeout, malformed, missing, and interrupted agent paths
 	] as const) {
 		await t.test(name, async () => {
 			const script = new ScriptedProcess();
-			script.push(...steps);
 			const host = runtime(fixture, script);
-			const { attempt } = await fullAttempt(fixture, host);
+			const { attempt } = await fullAttempt(fixture, host, script);
+			script.push(...steps);
 			const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 			assert.equal(result.outcome, expected);
 			assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, prompts);
@@ -917,7 +1198,7 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	const kills: Array<[number, NodeJS.Signals]> = [];
 	const delays: number[] = [];
 	const base = runtime(fixture, script);
-	const { attempt, leasePath } = await fullAttempt(fixture, base);
+	const { attempt, leasePath } = await fullAttempt(fixture, base, script);
 	await privateLease(leasePath);
 	const host = createHerdrHostRuntime({
 		inspectTaskCandidate: async () => changedIdentity(),
@@ -959,7 +1240,7 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 			const script = new ScriptedProcess();
 			const kills: Array<[number, NodeJS.Signals]> = [];
 			const seed = runtime(fixture, script);
-			const { attempt, leasePath } = await fullAttempt(fixture, seed);
+			const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
 			await privateLease(leasePath);
 			const host = createHerdrHostRuntime({
 				inspectTaskCandidate: async () => changedIdentity(), runProcess: script.run,
@@ -980,7 +1261,7 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 	const script = new ScriptedProcess();
 	const kills: number[] = [];
 	const seed = runtime(fixture, script);
-	const { attempt, leasePath } = await fullAttempt(fixture, seed);
+	const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
 	await privateLease(leasePath);
 	script.push(...terminationPrefix(fixture), {
 		command: "lsof-test", args: ["-nP", "-a", "-F", "p", "--", leasePath],
@@ -995,14 +1276,86 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 	assert.deepEqual(kills, []);
 });
 
+test("workspace cleanup revalidates persisted Git identity before any Herdr inspection or mutation", async (t) => {
+	const fixture = await paths(t);
+	const driftedRepoRoot = join(fixture.directory, "cleanup-drifted-repo");
+	const driftedCommonDirectory = join(driftedRepoRoot, ".git");
+	await mkdir(driftedCommonDirectory, { recursive: true });
+	const cases: Array<{
+		name: string;
+		mutate?: (details: Record<string, unknown>) => void;
+		result?: ProcessResult;
+		expectsProbe: boolean;
+	}> = [
+		{ name: "drifted Main root", mutate: (details) => { details.mainRoot = fixture.worktree; }, expectsProbe: false },
+		{ name: "drifted repo key", mutate: (details) => { details.repoKey = driftedCommonDirectory; }, expectsProbe: true },
+		{ name: "drifted Herdr root", mutate: (details) => { details.herdrRepoRoot = driftedRepoRoot; }, expectsProbe: true },
+		{ name: "drifted common directory", result: { code: 0, stdout: `${driftedCommonDirectory}\n`, stderr: "" }, expectsProbe: true },
+		{ name: "malformed common directory", result: { code: 0, stdout: ".git\n", stderr: "" }, expectsProbe: true },
+		{ name: "failed common-directory probe", result: { code: 1, stdout: "", stderr: "failed" }, expectsProbe: true },
+		{ name: "killed common-directory probe", result: { code: 0, killed: true, stdout: `${fixture.commonDirectory}\n`, stderr: "" }, expectsProbe: true },
+	];
+	for (const candidate of cases) {
+		await t.test(candidate.name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const { attempt } = await fullAttempt(fixture, host, script);
+			attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
+			attempt.cleanup[0]!.status = "completed";
+			const workspaceIntent = attempt.allocations.find(({ kind }) => kind === "workspace")!;
+			const details = JSON.parse(workspaceIntent.details) as Record<string, unknown>;
+			candidate.mutate?.(details);
+			workspaceIntent.details = JSON.stringify(details);
+			const callsBeforeCleanup = script.calls.length;
+			if (candidate.expectsProbe) script.push(repositoryIdentityStep(fixture, candidate.result));
+			assert.equal((await host.cleanupHost({ kind: "workspace", task, attempt }, context())).outcome, "blocked");
+			const cleanupCalls = script.calls.slice(callsBeforeCleanup);
+			assert.equal(cleanupCalls.length, candidate.expectsProbe ? 1 : 0);
+			assert.ok(cleanupCalls.every(({ command }) => command === "git"));
+			script.done();
+		});
+	}
+});
+
+test("workspace cleanup rejects mismatched checkout and repository evidence before close", async (t) => {
+	const fixture = await paths(t);
+	for (const [name, worktree] of [
+		["checkout", { checkout_path: fixture.root, repo_key: fixture.commonDirectory, repo_root: fixture.repoRoot }],
+		["repo key", { checkout_path: fixture.worktree, repo_key: fixture.root, repo_root: fixture.repoRoot }],
+		["repo root", { checkout_path: fixture.worktree, repo_key: fixture.commonDirectory, repo_root: fixture.root }],
+	] as const) {
+		await t.test(name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const { attempt } = await fullAttempt(fixture, host, script);
+			attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
+			attempt.cleanup[0]!.status = "completed";
+			script.push(
+				repositoryIdentityStep(fixture),
+				{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({
+					type: "workspace_info",
+					workspace: workspaceInfo(fixture, { worktree }),
+				}) },
+			);
+			const result = await host.cleanupHost({ kind: "workspace", task, attempt }, context());
+			assert.equal(result.outcome, "blocked");
+			assert.match(result.outcome === "blocked" ? result.failure : "", /no longer matches its owned label, checkout, and repository/);
+			assert.equal(script.calls.at(-1)!.options.cwd, fixture.repoRoot);
+			assert.ok(script.calls.every(({ args }) => !(args[0] === "workspace" && args[1] === "close")));
+			script.done();
+		});
+	}
+});
+
 test("cleanup closes only exact saved tab then workspace IDs and reports absent or blocked accurately", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
-	const { attempt } = await fullAttempt(fixture, host);
+	const { attempt } = await fullAttempt(fixture, host, script);
 	attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity(), at: 1_000 };
 
 	script.push(
+		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: success({ type: "tab_info", tab: tabInfo() }) },
@@ -1013,6 +1366,7 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 	attempt.cleanup[0]!.status = "completed";
 
 	script.push(
+		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({ type: "tab_list", tabs: [
@@ -1030,9 +1384,10 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 
 	const absentScript = new ScriptedProcess();
 	const absentHost = runtime(fixture, absentScript);
-	const absentAttempt = (await fullAttempt(fixture, absentHost)).attempt;
+	const absentAttempt = (await fullAttempt(fixture, absentHost, absentScript)).attempt;
 	absentAttempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
 	absentScript.push(
+		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
 	);
@@ -1040,21 +1395,22 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 
 	const blockedScript = new ScriptedProcess();
 	const blockedHost = runtime(fixture, blockedScript);
-	const blockedAttempt = (await fullAttempt(fixture, blockedHost)).attempt;
+	const blockedAttempt = (await fullAttempt(fixture, blockedHost, blockedScript)).attempt;
 	blockedAttempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
 	assert.deepEqual(await blockedHost.cleanupHost({ kind: "workspace", task, attempt: blockedAttempt }, context()), {
 		outcome: "blocked", failure: "Workspace cleanup must follow worker-tab reconciliation.",
 	});
-	assert.equal(blockedScript.calls.length, 0);
+	assert.equal(blockedScript.calls.length, 1);
 });
 
 test("cleanup refuses mismatched or decoy resources and ambiguous close responses", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
-	const { attempt } = await fullAttempt(fixture, host);
+	const { attempt } = await fullAttempt(fixture, host, script);
 	attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
 	script.push(
+		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: success({ type: "tab_info", tab: tabInfo({ workspace_id: "workspace-decoy" }) }) },
@@ -1067,10 +1423,11 @@ test("cleanup refuses mismatched or decoy resources and ambiguous close response
 
 	const decoyScript = new ScriptedProcess();
 	const decoyHost = runtime(fixture, decoyScript);
-	const decoyAttempt = (await fullAttempt(fixture, decoyHost)).attempt;
+	const decoyAttempt = (await fullAttempt(fixture, decoyHost, decoyScript)).attempt;
 	decoyAttempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
 	decoyAttempt.cleanup[0]!.status = "completed";
 	decoyScript.push(
+		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({ type: "tab_list", tabs: [
