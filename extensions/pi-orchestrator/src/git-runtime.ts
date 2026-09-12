@@ -144,12 +144,26 @@ const updates = input.slice(0, -1).split("\\n").map((line) => {
 	if (first < 1 || second <= first + 1 || second === line.length - 1) reject();
 	return { oldValue: line.slice(0, first), newValue: line.slice(first + 1, second), ref: line.slice(second + 1) };
 });
+if (new Set(updates.map((update) => update.ref)).size !== updates.length) reject();
+if (updates.some((update) => update.ref !== "ORIG_HEAD"
+	&& update.ref !== "AUTO_MERGE"
+	&& update.ref !== "HEAD"
+	&& !update.ref.startsWith("refs/"))) reject();
 const originalHead = updates.filter((update) => update.ref === "ORIG_HEAD");
 if (originalHead.some((update) => update.newValue !== expectedHead)) reject();
 const moving = updates.filter((update) => update.ref === "HEAD" || update.ref.startsWith("refs/"));
 if (moving.length === 0) process.exit(0);
-const expectedRef = state === "preparing" ? "HEAD" : expectedBranch;
-if (moving.length !== 1 || moving[0].oldValue !== expectedHead || moving[0].newValue !== candidateHead || moving[0].ref !== expectedRef) reject();
+function exact(update, ref) {
+	return update.ref === ref && update.oldValue === expectedHead && update.newValue === candidateHead;
+}
+const valid = state === "preparing"
+	? moving.length === 1 && exact(moving[0], "HEAD")
+	: moving.length === 1
+		? exact(moving[0], expectedBranch)
+		: moving.length === 2
+			&& moving.some((update) => exact(update, "HEAD"))
+			&& moving.some((update) => exact(update, expectedBranch));
+if (!valid) reject();
 `;
 }
 

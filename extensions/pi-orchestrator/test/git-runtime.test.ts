@@ -718,6 +718,56 @@ test("guarded fast-forward rejects candidate-ancestor Main drift before cleanup"
 	assert.ok(commands.every(([, ...args]) => args[0] !== "branch" || args[1] !== "-d"));
 });
 
+test("guarded fast-forward accepts Git 2.43 paired reference transaction", async (t) => {
+	const root = await repository(t);
+	let integrationBase: WorkspaceIdentity | undefined;
+	let integrationCandidate: WorkspaceIdentity | undefined;
+	let exercised = false;
+	const runtime = new CheckedGitRuntime({
+		runProcess: async (command, args, options) => {
+			if (command === "git" && args.includes("merge")) {
+				const hookSetting = args.find((arg) => arg.startsWith("core.hooksPath="));
+				if (!hookSetting || !integrationBase || !integrationCandidate) throw new Error("Pair regression was not prepared.");
+				const hookPath = join(hookSetting.slice("core.hooksPath=".length), "reference-transaction");
+				const invoke = (input: string) => execFileSync(process.execPath, [hookPath, "prepared"], {
+					cwd: options.cwd,
+					input,
+					encoding: "utf8",
+					stdio: ["pipe", "pipe", "pipe"],
+				});
+				const pair = [
+					`${integrationBase.head} ${integrationCandidate.head} HEAD`,
+					`${integrationBase.head} ${integrationCandidate.head} ${integrationBase.branch}`,
+				].join("\n") + "\n";
+				invoke(pair);
+				for (const invalid of [
+					`${integrationBase.head} ${integrationCandidate.head} HEAD\n${integrationBase.head} ${integrationCandidate.head} HEAD\n${integrationBase.head} ${integrationCandidate.head} ${integrationBase.branch}\n`,
+					`${integrationBase.head} ${integrationCandidate.head} HEAD\n${integrationBase.head} ${integrationCandidate.head} refs/heads/unexpected\n`,
+					`${integrationBase.head} ${integrationCandidate.head} HEAD\n`,
+					`${"0".repeat(40)} ${integrationCandidate.head} HEAD\n${integrationBase.head} ${integrationCandidate.head} ${integrationBase.branch}\n`,
+				]) assert.throws(() => invoke(invalid));
+				exercised = true;
+			}
+			return await directProcess(command, args, options);
+		},
+	});
+	const base = await runtime.inspectMain({ root }, context());
+	const definition = task("git-243-pair");
+	const allocated = await allocate(runtime, root, definition, base, "token-git-243-pair1");
+	await commit(allocated.intent.worktree!.cwd, "paired.txt", "paired\n");
+	const candidate = await runtime.inspectRetainedTask({ root, task: definition, attempt: allocated.attempt }, context());
+	const prepared = await prepareIntegration(runtime, root, definition, allocated.attempt, candidate, base);
+	integrationBase = base;
+	integrationCandidate = prepared.candidate;
+	const result = await runtime.integrate({
+		root, task: definition, attempt: allocated.attempt, expectedMain: base,
+		candidate: prepared.candidate, checks: prepared.checks,
+	}, context());
+
+	assert.equal(result.outcome, "integrated");
+	assert.equal(exercised, true);
+});
+
 test("fast-forward failure preserves Main and exact retained work", async (t) => {
 	const root = await repository(t);
 	const commands: string[][] = [];
