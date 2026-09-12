@@ -18,6 +18,7 @@ EXTENSIONS='
 @henryqw/pi-ask-question
 @henryqw/pi-auto-compact
 @henryqw/pi-auto-dag
+@henryqw/pi-bark
 @henryqw/pi-deps
 @henryqw/pi-footer
 @henryqw/pi-herdr-btw
