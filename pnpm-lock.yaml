@@ -195,7 +195,7 @@ importers:
     dependencies:
       '@earendil-works/pi-coding-agent':
         specifier: ^0.85.1
-        version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
+        version: 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
       '@henryqw/pi-config-store':
         specifier: ^1.1.0
         version: link:../../packages/pi-config-store
@@ -204,7 +204,7 @@ importers:
         version: link:../../packages/pi-herdr
       '@henryqw/pi-multi-codex':
         specifier: ^1.0.0
-        version: 1.0.5(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))
+        version: link:../pi-multi-codex
       '@henryqw/pi-subagent':
         specifier: ^16.0.0
         version: link:../pi-subagent
@@ -220,7 +220,7 @@ importers:
     devDependencies:
       '@types/node':
         specifier: ^26.4.1
-        version: 26.4.1
+        version: 26.5.0
       '@types/proper-lockfile':
         specifier: ^4.1.4
         version: 4.1.4
@@ -305,7 +305,7 @@ importers:
         version: link:../../packages/pi-config-store
       '@henryqw/pi-multi-codex':
         specifier: ^1.0.0
-        version: 1.0.5(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))
+        version: link:../pi-multi-codex
       '@henryqw/pi-task-models':
         specifier: ^5.0.0
         version: link:../pi-task-models
@@ -1165,19 +1165,6 @@ packages:
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
-
-  '@henryqw/pi-config-store@1.1.0':
-    resolution: {integrity: sha512-hKGZ1c7t7syQyZnKiBYfP4C9ATRLtplhHmMJ5CE1N3Qh0l+759l6UGZrUZ3r0CeDsz99vlRZeRNPYzUtfeMRNQ==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@earendil-works/pi-coding-agent': ^0.85.1
-
-  '@henryqw/pi-multi-codex@1.0.5':
-    resolution: {integrity: sha512-HpBd2j2qJf5vED7PBxMLtq+SS+cOP1pa+++UmPt967YYK5qpuKdAyN8IEnWacN8wB8j6+KRDhmizipWZ0rkd5Q==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@earendil-works/pi-ai': ^0.85.1
-      '@earendil-works/pi-coding-agent': ^0.85.1
 
   '@hono/node-server@2.1.1':
     resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
@@ -6518,18 +6505,6 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
-
-  '@henryqw/pi-config-store@1.1.0(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))':
-    dependencies:
-      '@earendil-works/pi-coding-agent': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
-      proper-lockfile: 4.1.2
-
-  '@henryqw/pi-multi-codex@1.0.5(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))':
-    dependencies:
-      '@earendil-works/pi-ai': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
-      '@earendil-works/pi-coding-agent': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2)
-      '@henryqw/pi-config-store': 1.1.0(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(ws@8.21.3)(zod@4.5.2))
-      proper-lockfile: 4.1.2
 
   '@hono/node-server@2.1.1(hono@4.13.5)':
     dependencies:
