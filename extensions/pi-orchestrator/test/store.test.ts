@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -78,9 +78,10 @@ function state(root: string, request: ExecuteRequest, record = launch()): RunSta
 
 test("the store reserves capacity for escaped evidence and rejects over-bound files", async () => {
 	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
-	const root = join(sandbox, "repo");
+	const plannedRoot = join(sandbox, "repo");
 	const agentDir = join(sandbox, "agent");
-	await mkdir(root);
+	await mkdir(plannedRoot);
+	const root = await realpath(plannedRoot);
 	try {
 		const checks = Array.from({ length: 32 }, (_, index) => ({ command: `check-${index}`, args: [] }));
 		const request: ExecuteRequest = {
@@ -143,6 +144,12 @@ test("the store reserves capacity for escaped evidence and rejects over-bound fi
 			store.create(state(root, { ...request, id: "large-metadata" }, largeRecord)),
 			/state exceeds 2097152 bytes/,
 		);
+
+		const malformedPath = store.statePath(root, "malformed");
+		const malformed = "{}\n";
+		await writeFile(malformedPath, malformed);
+		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v1 state/);
+		assert.equal(await readFile(malformedPath, "utf8"), malformed);
 
 		const oversizedPath = store.statePath(root, "oversized");
 		await writeFile(oversizedPath, "");

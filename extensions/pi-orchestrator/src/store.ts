@@ -8,24 +8,38 @@ import { parseRunState, type RunState } from "./schema.ts";
 
 const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
 /*
- * create() admits at most 2 MiB of immutable request and launch metadata before
- * productive work starts. After that, the v1 maxima permit 2,112 check output
- * streams (8 tasks * 2 attempts * 2 phases * 32 checks * stdout/stderr, plus
- * 32 final checks) and 17 review verdicts. Each attempt can retain one unknown
- * allocation with 32 possible resources, two prompt failures, and one each of
- * termination/integration failure; counting all four cleanup failures plus the
- * eight task and two top-level failure slots gives 666 more bounded strings.
- * The runner's bounded() retains at most 8 KiB; allowing another 128 bytes for
- * its marker or a fixed
- * error prefix, JSON's sixfold worst-case escaping puts all 2,795 strings below
- * 134 MiB. The remaining runtime-produced schema text has at most 974
- * 32,000-code-unit slots (workspace branches plus allocation details, IDs,
- * worktree fields, concrete runtime resource values, and worker IDs), or less
- * than 179 MiB after worst-case JSON escaping. Four extra copies of the 256 KiB
- * request cover repeated commands, args, and review criteria. 384 MiB therefore
- * leaves over 68 MiB for the initial state, fixed hashes/OIDs/tokens, object
- * keys, delimiters, and pretty-print whitespace. Reads stay bounded at the same
- * finite limit; the initial cap is what reserves the evidence space.
+ * create() caps the complete initial serialization at 2 MiB. The immutable
+ * request and launch records are checked against that same cap on load, so a
+ * run cannot consume the space reserved below before productive work starts.
+ *
+ * The largest runtime-produced v1 state has 16 attempts (8 tasks * 2). Those
+ * attempts can retain 2,112 check output streams (two task phases * 32 checks *
+ * stdout/stderr, plus 32 final checks), 17 review verdicts, and 666 bounded
+ * failure/resource strings. The last count allows, per attempt, 32 possible
+ * resources, one allocation failure, two prompt failures, termination and
+ * integration failures, and all four cleanup failures, plus 8 task and 2
+ * top-level failures. bounded() retains 8 KiB; another 128 bytes covers its
+ * marker and every fixed prefix. Sixfold worst-case JSON escaping therefore
+ * keeps all 2,795 bounded strings below 134 MiB.
+ *
+ * Each attempt has at most 20 other mutable text slots for identity branches
+ * and its worker ID. Runtime allocation can add at most five intents (the four
+ * kinds plus one replacement after the sole generation retry); eight text slots
+ * per intent cover its details, ID, worktree fields, and concrete resource
+ * values. Thus 16 * 60 attempt slots, 8 wave branches, and 6 final-gate branches
+ * total 974 schema strings. At 32,000 code units and six escaped bytes per code
+ * unit, they occupy less than 179 MiB. Four extra copies of the 256 KiB request
+ * cover every repeated task command/argv and review criterion, including both
+ * attempts and the final gate.
+ *
+ * These bounds plus the initial state use less than 315 MiB. At maximum schema
+ * cardinality there are 135,168 repeated argv elements; their deepest pretty
+ * indentation adds less than 32 bytes each (4.2 MiB total). Fewer than 32,000
+ * other runtime-added fields and elements need at most 256 bytes each for fixed
+ * OIDs, hashes, tokens, keys, delimiters, and indentation (7.9 MiB). The 69 MiB
+ * remainder therefore covers all structural overhead. Saves serialize and
+ * reject atomically instead of dropping valid evidence. Reads use this same
+ * finite ceiling and preserve rejected files.
  */
 const STATE_MAX_BYTES = 384 * 1024 * 1024;
 const LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
