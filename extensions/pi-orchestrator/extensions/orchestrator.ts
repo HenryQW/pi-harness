@@ -24,11 +24,16 @@ import {
 	parseExecuteRequest,
 	parseIdOnly,
 	parseResumeRequest,
+	sameIdentity,
+	type CheckBatchEvidence,
+	type ReviewEvidence,
 	type RunState,
+	type TaskAttempt,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
+const PUBLIC_EVIDENCE_MAX_BYTES = 512;
 
 export interface OrchestratorExtensionDependencies {
 	now(): number;
@@ -54,7 +59,98 @@ const DEFAULT_DEPENDENCIES: OrchestratorExtensionDependencies = {
 	orchestratorEntrypoint: fileURLToPath(import.meta.url),
 };
 
-function publicState(state: RunState) {
+function boundedPublicText(value: string): string {
+	if (Buffer.byteLength(value, "utf8") <= PUBLIC_EVIDENCE_MAX_BYTES) return value;
+	let end = Math.min(value.length, PUBLIC_EVIDENCE_MAX_BYTES);
+	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > PUBLIC_EVIDENCE_MAX_BYTES) end -= 1;
+	return `${value.slice(0, end)}\n[truncated]`;
+}
+
+function publicFailedCheck(evidence: CheckBatchEvidence | undefined) {
+	if (!evidence || evidence.passed) return undefined;
+	const result = evidence.results.find((candidate) => candidate.code !== 0 || candidate.killed)
+		?? evidence.results.at(-1);
+	return {
+		phase: evidence.phase,
+		identityChanged: !sameIdentity(evidence.candidate, evidence.identityAfter),
+		...(result ? {
+			command: boundedPublicText([result.command, ...result.args.map((arg) => JSON.stringify(arg))].join(" ")),
+			code: result.code,
+			killed: result.killed,
+			...(result.stdout ? { stdout: boundedPublicText(result.stdout) } : {}),
+			...(result.stderr ? { stderr: boundedPublicText(result.stderr) } : {}),
+		} : {}),
+	};
+}
+
+function publicFailedReview(evidence: ReviewEvidence | undefined) {
+	if (!evidence || evidence.passed) return undefined;
+	return {
+		phase: evidence.phase,
+		verdict: boundedPublicText(evidence.verdict),
+		identityChanged: !sameIdentity(evidence.tip, evidence.identityAfter),
+	};
+}
+
+function publicTaskRecovery(task: RunState["tasks"][number], attempt: TaskAttempt | undefined) {
+	const failedCheck = publicFailedCheck(
+		attempt?.authoritativeChecks?.passed === false
+			? attempt.authoritativeChecks
+			: attempt?.preliminaryChecks?.passed === false ? attempt.preliminaryChecks : undefined,
+	);
+	const failedReview = publicFailedReview(attempt?.authoritativeReview);
+	const cleanup = attempt?.cleanup
+		.filter((step) => step.status !== "completed")
+		.map((step) => ({
+			kind: step.kind,
+			status: step.status,
+			...(step.failure ? { failure: boundedPublicText(step.failure) } : {}),
+		}));
+	const worktreeCleanupPending = attempt?.cleanup.find((step) => step.kind === "worktree")?.status !== "completed";
+	const worktree = worktreeCleanupPending
+		? [...(attempt?.allocations ?? [])].reverse().find((intent) => intent.kind === "worktree"
+			&& intent.status === "owned" && intent.worktree)?.worktree
+		: undefined;
+	return {
+		scope: "task" as const,
+		taskId: task.taskId,
+		...(task.failure ? { failure: boundedPublicText(task.failure) } : {}),
+		...(worktree ? { retainedWorktree: {
+			path: boundedPublicText(worktree.path),
+			cwd: boundedPublicText(worktree.cwd),
+			branch: boundedPublicText(worktree.branch),
+		} } : {}),
+		...(failedCheck ? { failedCheck } : {}),
+		...(failedReview ? { failedReview } : {}),
+		...(cleanup?.length ? { cleanup } : {}),
+	};
+}
+
+function publicNeedsAttention(state: RunState, preferredTaskId?: string) {
+	if (state.status !== "needs_attention") return undefined;
+	const task = state.tasks.find((candidate) => candidate.status === "needs_attention" && candidate.taskId === preferredTaskId)
+		?? state.tasks.find((candidate) => candidate.status === "needs_attention");
+	if (task) return publicTaskRecovery(task, task.attempts.at(-1));
+	if (state.final.failure || state.final.checks?.passed === false || state.final.review?.passed === false) {
+		const failedCheck = publicFailedCheck(state.final.checks);
+		const failedReview = publicFailedReview(state.final.review);
+		return {
+			scope: "final" as const,
+			...(state.final.failure ? { failure: boundedPublicText(state.final.failure) } : {}),
+			...(failedCheck ? { failedCheck } : {}),
+			...(failedReview ? { failedReview } : {}),
+		};
+	}
+	return {
+		scope: "launch" as const,
+		...(state.launchMaterialization.failure
+			? { failure: boundedPublicText(state.launchMaterialization.failure) }
+			: {}),
+	};
+}
+
+function publicState(state: RunState, preferredTaskId?: string) {
+	const needsAttention = publicNeedsAttention(state, preferredTaskId);
 	return {
 		version: state.version,
 		id: state.request.id,
@@ -62,16 +158,21 @@ function publicState(state: RunState) {
 		accepted: state.accepted,
 		tasks: state.tasks.map(({ taskId, status }) => ({ taskId, status })),
 		final: { status: state.final.status },
+		...(needsAttention ? { needsAttention } : {}),
 		createdAt: state.createdAt,
 		updatedAt: state.updatedAt,
 	};
 }
 
 function toolResult(response: RunResponse) {
+	const preferredTaskId = response.continuation && "taskId" in response.continuation
+		? response.continuation.taskId
+		: undefined;
 	return {
 		content: [{ type: "text" as const, text: response.text }],
 		details: {
-			state: publicState(response.state),
+			state: publicState(response.state, preferredTaskId),
+			...(response.main ? { main: response.main } : {}),
 			...(response.continuation ? { continuation: response.continuation } : {}),
 		},
 	};
@@ -173,7 +274,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.status(params.id, root));
+			return toolResult(await getComponents().runner.status(params.id, root, signal));
 		},
 	});
 

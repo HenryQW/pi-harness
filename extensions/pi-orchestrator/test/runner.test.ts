@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import {
 	OrchestratorRunner,
+	STATUS_INSPECTION_BUDGET_MS,
 	TERMINATION_SAFETY_BUDGET_MS,
 	type AllocationReconciliation,
 	type AllocationResult,
@@ -1230,9 +1231,40 @@ test("an initial persisted pending scheduler state recovers to a no-attempt retr
 
 	const recovered = await runner.status("request-one", root);
 	assert.equal(recovered.state.tasks[0]!.status, "needs_attention");
+	assert.equal(recovered.main?.status, "current");
 	assert.deepEqual(recovered.continuation, { id: "request-one", action: "retry", taskId: "task-a" });
 	const completed = await runner.resume(recovered.continuation!, root);
 	assert.equal(completed.state.accepted, true);
+});
+
+test("status inspects Main read-only with a bounded context and suppresses drift-invalid recovery", async (t) => {
+	const { root, runtime, store, runner } = await harness(t);
+	runtime.inspectionPlans.push({ error: new Error("initial inspection unavailable") });
+	const waiting = await runner.execute(request(), root);
+	assert.deepEqual(waiting.continuation, { id: "request-one", action: "retry", taskId: "task-a" });
+	const persistedBefore = JSON.stringify((await store.load(root, "request-one")).state);
+	const statusStartedAt = runtime.clock;
+	runtime.main = identity("f");
+	const controller = new AbortController();
+	const contextStart = runtime.contexts.length;
+
+	const drifted = await runner.status("request-one", root, controller.signal);
+	assert.equal(drifted.main?.status, "drifted");
+	assert.deepEqual(drifted.main, { status: "drifted", expected: MAIN_A, actual: identity("f") });
+	assert.match(drifted.text, /Main: drifted/);
+	assert.equal(drifted.continuation, undefined);
+	assert.equal(JSON.stringify((await store.load(root, "request-one")).state), persistedBefore);
+	const statusContexts = runtime.contexts.slice(contextStart);
+	assert.deepEqual(statusContexts.map(({ hook }) => hook), ["inspect-main"]);
+	assert.equal(statusContexts[0]!.context.deadline, statusStartedAt + STATUS_INSPECTION_BUDGET_MS);
+	assert.equal(statusContexts[0]!.context.timeoutMs, STATUS_INSPECTION_BUDGET_MS);
+
+	runtime.inspectionPlans.push({ error: new Error("read failed") });
+	const unavailable = await runner.status("request-one", root);
+	assert.equal(unavailable.main?.status, "unavailable");
+	assert.match(unavailable.text, /read-only Main inspection failed: read failed/i);
+	assert.equal(unavailable.continuation, undefined);
+	assert.equal(JSON.stringify((await store.load(root, "request-one")).state), persistedBefore);
 });
 
 test("cleanup accepts only explicit completed or absent outcomes", async (t) => {
@@ -1261,20 +1293,24 @@ test("cleanup-only verify finishes exact cleanup after expiry without productive
 	const attempt = interrupted.state.tasks[0]!.attempts[0]!;
 	assert.equal(attempt.integration?.status, "integrated");
 	assert.deepEqual(attempt.cleanup.map(({ status }) => status), ["completed", "pending", "pending", "pending"]);
+	assert.deepEqual(interrupted.continuation, { id: "request-one", action: "verify", taskId: "task-a" });
 	const beforeProductive = productiveCallCount(runtime);
 
-	const cleaned = await runner.resume({ id: "request-one", action: "verify", taskId: "task-a" }, root);
+	const cleaned = await runner.resume(interrupted.continuation!, root);
 	assert.equal(cleaned.state.tasks[0]!.status, "completed");
 	assert.equal(cleaned.state.accepted, false);
 	assert.equal(cleaned.state.final.status, "pending");
 	assert.ok(cleaned.state.tasks[0]!.attempts[0]!.cleanup.every(({ status }) => status === "completed"));
 	assert.equal(productiveCallCount(runtime), beforeProductive);
 	assert.equal(cleaned.state.recovery, undefined);
-	assert.deepEqual(cleaned.continuation, { id: "request-one", action: "finalize" });
+	assert.equal(cleaned.continuation, undefined);
 
 	const expiredDeadline = cleaned.state.deadline;
 	const continuationContextIndex = runtime.contexts.length;
-	await assert.rejects(runner.resume(cleaned.continuation!, root), /deadline is exhausted/);
+	await assert.rejects(
+		runner.resume({ id: "request-one", action: "finalize" }, root),
+		/deadline is exhausted/,
+	);
 	assert.equal(runtime.contexts.length, continuationContextIndex);
 	assert.equal((await store.load(root, "request-one")).state.deadline, expiredDeadline);
 	assert.equal(cleaned.state.deadline, cleaned.state.deadlineStartedAt + cleaned.state.request.budgetMs);
@@ -1288,18 +1324,39 @@ test("cleanup-only verify exposes a runnable pending-wave continuation without p
 	});
 	const interrupted = await runner.execute(definition, root);
 	runtime.clock = interrupted.state.deadline;
+	runtime.main = identity("f");
+	const expiredStatus = await runner.status("request-one", root);
+	assert.equal(expiredStatus.main?.status, "drifted");
+	assert.deepEqual(expiredStatus.continuation, { id: "request-one", action: "verify", taskId: "task-a" });
 	const beforeProductive = productiveCallCount(runtime);
 
-	const cleaned = await runner.resume({ id: "request-one", action: "verify", taskId: "task-a" }, root);
+	const cleaned = await runner.resume(expiredStatus.continuation!, root);
 	assert.equal(productiveCallCount(runtime), beforeProductive);
 	assert.equal(cleaned.state.tasks[1]!.status, "needs_attention");
-	assert.deepEqual(cleaned.continuation, { id: "request-one", action: "retry", taskId: "task-b" });
+	assert.equal(cleaned.continuation, undefined);
 
 	const expiredDeadline = cleaned.state.deadline;
 	const continuationContextIndex = runtime.contexts.length;
-	await assert.rejects(runner.resume(cleaned.continuation!, root), /deadline is exhausted/);
+	await assert.rejects(
+		runner.resume({ id: "request-one", action: "retry", taskId: "task-b" }, root),
+		/deadline is exhausted/,
+	);
 	assert.equal(runtime.contexts.length, continuationContextIndex);
 	assert.equal((await store.load(root, "request-one")).state.deadline, expiredDeadline);
+});
+
+test("expired status suppresses productive verify continuations", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.reviewPlans.push({ verdict: "NEEDS_WORK" });
+	const waiting = await runner.execute(request({
+		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+	}), root);
+	assert.deepEqual(waiting.continuation, { id: "request-one", action: "verify", taskId: "task-a" });
+	runtime.clock = waiting.state.deadline;
+
+	const expired = await runner.status("request-one", root);
+	assert.equal(expired.main?.status, "current");
+	assert.equal(expired.continuation, undefined);
 });
 
 test("cleanup-only verify exposes a retained same-wave peer for later verification", async (t) => {

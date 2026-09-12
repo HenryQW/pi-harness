@@ -27,6 +27,18 @@ import {
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CANONICAL_ROOT = "/canonical/repository";
+const RECORDED_MAIN = {
+	branch: "refs/heads/main",
+	head: "a".repeat(40),
+	index: "a".repeat(40),
+	tree: "a".repeat(40),
+};
+const CURRENT_MAIN = {
+	branch: "refs/heads/main",
+	head: "b".repeat(40),
+	index: "b".repeat(40),
+	tree: "b".repeat(40),
+};
 
 const EXECUTE_REQUEST: ExecuteRequest = {
 	id: "request-one",
@@ -52,7 +64,49 @@ const PRIVATE_STATE = {
 	tasks: [{
 		taskId: "unit-one",
 		status: "needs_attention",
-		attempts: [{ prompts: [{ task: "PRIVATE IMPLEMENTER PROMPT" }] }],
+		failure: "The task needs a deliberate recovery decision.",
+		attempts: [{
+			prompts: [{ task: "PRIVATE IMPLEMENTER PROMPT" }],
+			allocations: [{
+				kind: "worktree",
+				status: "owned",
+				resourceId: "/tmp/pi-task",
+				worktree: {
+					path: "/tmp/pi-task",
+					cwd: "/tmp/pi-task",
+					branch: "orchestrator/unit-one",
+					repoRoot: CANONICAL_ROOT,
+					baseCommit: "a".repeat(40),
+				},
+			}],
+			preliminaryChecks: {
+				phase: "preliminary",
+				candidate: RECORDED_MAIN,
+				identityAfter: RECORDED_MAIN,
+				passed: false,
+				results: [{
+					command: "node",
+					args: ["--test", "focused.test.ts"],
+					code: 1,
+					killed: false,
+					stdout: "",
+					stderr: "focused check failed",
+				}],
+			},
+			authoritativeReview: {
+				phase: "authoritative",
+				tip: RECORDED_MAIN,
+				identityAfter: RECORDED_MAIN,
+				passed: false,
+				verdict: "NEEDS_WORK",
+			},
+			cleanup: [
+				{ kind: "worker_tab", status: "completed" },
+				{ kind: "workspace", status: "pending", failure: "workspace still busy" },
+				{ kind: "worktree", status: "pending" },
+				{ kind: "branch", status: "pending" },
+			],
+		}],
 	}],
 	final: { status: "pending" },
 	launchRecords: {
@@ -160,7 +214,10 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 		},
 		async status(...args: unknown[]) {
 			runnerCalls.push({ method: "status", args });
-			return response("status");
+			return {
+				...response("status"),
+				main: { status: "drifted" as const, expected: RECORDED_MAIN, actual: CURRENT_MAIN },
+			};
 		},
 		async resume(...args: unknown[]) {
 			runnerCalls.push({ method: "resume", args });
@@ -256,6 +313,34 @@ function expectedPublicState() {
 		accepted: false,
 		tasks: [{ taskId: "unit-one", status: "needs_attention" }],
 		final: { status: "pending" },
+		needsAttention: {
+			scope: "task",
+			taskId: "unit-one",
+			failure: "The task needs a deliberate recovery decision.",
+			retainedWorktree: {
+				path: "/tmp/pi-task",
+				cwd: "/tmp/pi-task",
+				branch: "orchestrator/unit-one",
+			},
+			failedCheck: {
+				phase: "preliminary",
+				identityChanged: false,
+				command: "node \"--test\" \"focused.test.ts\"",
+				code: 1,
+				killed: false,
+				stderr: "focused check failed",
+			},
+			failedReview: {
+				phase: "authoritative",
+				verdict: "NEEDS_WORK",
+				identityChanged: false,
+			},
+			cleanup: [
+				{ kind: "workspace", status: "pending", failure: "workspace still busy" },
+				{ kind: "worktree", status: "pending" },
+				{ kind: "branch", status: "pending" },
+			],
+		},
 		createdAt: 100,
 		updatedAt: 200,
 	};
@@ -377,6 +462,34 @@ test("lazily wires one checked runtime graph, direct processes, Reviewer adapter
 	assert.doesNotMatch(JSON.stringify(result.details), /PRIVATE|prompt|rawArgs|SECRET_TOKEN|command-line/i);
 });
 
+test("public recovery evidence stays bounded and omits private durable state", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	state.tasks[0]!.attempts[0]!.preliminaryChecks!.results[0]!.stderr = `${"界".repeat(1_000)}UNEXPOSED_TAIL`;
+	const harness = createHarness({
+		createRunner() {
+			return {
+				async execute() {
+					return { text: "bounded recovery", state };
+				},
+			} as never;
+		},
+	});
+	const result = await executeTool(
+		namedTool(harness, "orchestrate_execute"),
+		EXECUTE_REQUEST,
+		new AbortController().signal,
+		context(CANONICAL_ROOT),
+	);
+	const details = result.details as {
+		state: { needsAttention: { failedCheck: { stderr: string }; retainedWorktree: { cwd: string } } };
+	};
+	assert.ok(Buffer.byteLength(details.state.needsAttention.failedCheck.stderr, "utf8") < 600);
+	assert.match(details.state.needsAttention.failedCheck.stderr, /\[truncated\]$/);
+	assert.equal(details.state.needsAttention.retainedWorktree.cwd, "/tmp/pi-task");
+	assert.doesNotMatch(JSON.stringify(result.details), /UNEXPOSED_TAIL|PRIVATE|prompt|rawArgs|SECRET_TOKEN|command-line/i);
+	assert.ok(Buffer.byteLength(JSON.stringify(result.details), "utf8") < 8 * 1024);
+});
+
 test("execute keeps raw cwd while lookup actions use canonical root, bounded context, and signals", async () => {
 	const harness = createHarness();
 	const nestedCwd = "/canonical/repository/nested/deeper";
@@ -402,12 +515,18 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 		{ signal: signals[3], timeoutMs: 5_000, deadline: 6_000 },
 	]);
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method !== "execute"), [
-		{ method: "status", args: ["request-one", CANONICAL_ROOT] },
+		{ method: "status", args: ["request-one", CANONICAL_ROOT, signals[1]] },
 		{ method: "resume", args: [resumeRequest, CANONICAL_ROOT, signals[2]] },
 		{ method: "abort", args: ["request-one", CANONICAL_ROOT, signals[3]] },
 	]);
 	assert.deepEqual(execute.content, [{ type: "text", text: "bounded execute result" }]);
-	assert.deepEqual(status, { content: [{ type: "text", text: "bounded status result" }], details: { state: expectedPublicState() } });
+	assert.deepEqual(status, {
+		content: [{ type: "text", text: "bounded status result" }],
+		details: {
+			state: expectedPublicState(),
+			main: { status: "drifted", expected: RECORDED_MAIN, actual: CURRENT_MAIN },
+		},
+	});
 	assert.deepEqual(resume, {
 		content: [{ type: "text", text: "bounded resume result" }],
 		details: { state: expectedPublicState(), continuation: { id: "request-one", action: "finalize" } },

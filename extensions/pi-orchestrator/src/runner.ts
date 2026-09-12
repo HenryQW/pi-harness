@@ -36,6 +36,7 @@ import { FileRunStore, type RunStateHandle } from "./store.ts";
 const EVIDENCE_MAX_BYTES = 8 * 1024;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
+export const STATUS_INSPECTION_BUDGET_MS = 5_000;
 const ALLOCATION_KINDS: readonly AllocationKind[] = ["worktree", "workspace", "worker_tab", "agent"];
 
 export interface OperationContext {
@@ -240,9 +241,14 @@ export interface GitRuntime {
 
 export interface OrchestratorRuntime extends CoordinatorRuntime, HostRuntime {}
 
+export type MainStatus =
+	| { status: "current" | "drifted"; expected: WorkspaceIdentity; actual: WorkspaceIdentity }
+	| { status: "unavailable"; expected: WorkspaceIdentity; failure: string };
+
 export interface RunResponse {
 	text: string;
 	state: RunState;
+	main?: MainStatus;
 	continuation?: ResumeRequest;
 }
 
@@ -523,13 +529,34 @@ export class OrchestratorRunner {
 		});
 	}
 
-	async status(id: string, root: string): Promise<RunResponse> {
+	async status(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		root = realpathSync.native(root);
 		return await this.store.withLock(root, async () => {
 			const handle = await this.store.load(root, id);
 			if (this.recoverInterrupted(handle.state)) await handle.save();
-			await this.terminateAmbiguousPromptWorkers(handle);
-			return this.response(handle.state);
+			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
+			const deadline = this.runtime.now() + STATUS_INSPECTION_BUDGET_MS;
+			const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
+			try {
+				let main: MainStatus;
+				try {
+					const actual = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: handle.state.root }, context));
+					main = {
+						status: sameIdentity(actual, handle.state.main) ? "current" : "drifted",
+						expected: handle.state.main,
+						actual,
+					};
+				} catch (error) {
+					main = {
+						status: "unavailable",
+						expected: handle.state.main,
+						failure: `Read-only Main inspection failed: ${errorText(error)}`,
+					};
+				}
+				return this.response(handle.state, main);
+			} finally {
+				scope.close();
+			}
 		});
 	}
 
@@ -1516,32 +1543,45 @@ export class OrchestratorRunner {
 		task.failure = bounded(failure);
 	}
 
-	private response(state: RunState): RunResponse {
+	private response(state: RunState, main?: MainStatus): RunResponse {
 		const completed = state.tasks.filter((task) => task.status === "completed").length;
-		const attention = state.tasks.find((task) => task.status === "needs_attention");
+		const resumable = !terminal(state) && state.launchMaterialization.status === "ready";
+		const cleanupAttention = state.tasks.find((task) => task.status === "needs_attention"
+			&& task.attempts.at(-1)?.integration?.status === "integrated");
 		let continuation: ResumeRequest | undefined;
-		if (!terminal(state) && completed === state.tasks.length
-			&& (state.final.status === "pending" || state.final.status === "interrupted")) {
-			continuation = { id: state.request.id, action: "finalize" };
-		} else if (!terminal(state) && attention?.attempts.length === 0) {
-			continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
-		} else if (!terminal(state) && attention?.attempts.at(-1)?.integration?.status === "integrated") {
-			continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
-		} else if (!terminal(state)
-			&& attention?.attempts.at(-1)?.termination?.status === "terminated"
-			&& attention.attempts.at(-1)?.integration?.status !== "unknown") {
-			continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
+		if (resumable && cleanupAttention) {
+			continuation = { id: state.request.id, action: "verify", taskId: cleanupAttention.taskId };
+		} else if (resumable && this.runtime.now() < state.deadline && (!main || main.status === "current")) {
+			const attention = state.tasks.find((task) => task.status === "needs_attention");
+			if (completed === state.tasks.length
+				&& (state.final.status === "pending" || state.final.status === "interrupted")) {
+				continuation = { id: state.request.id, action: "finalize" };
+			} else if (attention?.attempts.length === 0) {
+				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
+			} else if (attention?.attempts.at(-1)?.termination?.status === "terminated"
+				&& attention.attempts.at(-1)?.integration?.status !== "unknown") {
+				continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
+			}
 		}
+		const attention = continuation && "taskId" in continuation
+			? taskState(state, continuation.taskId)
+			: state.tasks.find((task) => task.status === "needs_attention");
 		return {
 			text: bounded([
 				`Pi Orchestrator ${state.request.id}: ${state.status}.`,
 				`Tasks: ${completed}/${state.tasks.length} completed. Accepted: ${state.accepted}.`,
+				...(main?.status === "current" ? ["Main: current at the recorded exact identity."] : []),
+				...(main?.status === "drifted" ? [
+					`Main: drifted from ${main.expected.branch}@${main.expected.head} to ${main.actual.branch}@${main.actual.head}.`,
+				] : []),
+				...(main?.status === "unavailable" ? [`Main: ${main.failure}`] : []),
 				...(state.launchMaterialization.failure ? [`Launch materialization: ${state.launchMaterialization.failure}`] : []),
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
 			].join("\n")),
 			state,
+			...(main ? { main } : {}),
 			...(continuation ? { continuation } : {}),
 		};
 	}
