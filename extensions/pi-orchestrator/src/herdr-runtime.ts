@@ -20,6 +20,8 @@ import type {
 	HostAllocationKind,
 	HostCleanupKind,
 	HostRuntime,
+	InFlightTaskCandidateInspection,
+	InFlightTaskCandidateInspector,
 	OperationContext,
 	TaskCandidateInspector,
 	VerifiedImplementerLaunch,
@@ -32,6 +34,7 @@ const HERDR_OPERATION_CAP_MS = 30_000;
 const LSOF_OPERATION_CAP_MS = 3_000;
 const PROCESS_INSPECTION_CAP_MS = 3_000;
 const GIT_INSPECTION_CAP_MS = 30_000;
+const STALLED_PROMPT_POLL_MS = 250;
 const OUTPUT_LIMIT = 1024 * 1024;
 const DIAGNOSTIC_LIMIT = 8 * 1024;
 const ASSIGNMENT_LIMIT = 96 * 1024;
@@ -56,6 +59,7 @@ export type HostProcessRunner = (
 
 export interface HerdrHostRuntimeOptions {
 	inspectTaskCandidate: TaskCandidateInspector["inspectTaskCandidate"];
+	inspectInFlightTaskCandidate: InFlightTaskCandidateInspector["inspectInFlightTaskCandidate"];
 	runProcess?: HostProcessRunner;
 	killProcess?: (pid: number, signal: NodeJS.Signals) => void;
 	delay?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
@@ -413,6 +417,7 @@ function assignment(input: {
 
 export class HerdrHostRuntime implements HostRuntime {
 	private readonly inspectCandidate: TaskCandidateInspector["inspectTaskCandidate"];
+	private readonly inspectInFlightCandidate: InFlightTaskCandidateInspector["inspectInFlightTaskCandidate"];
 	private readonly execute: HostProcessRunner;
 	private readonly herdr: HerdrClient<HostProcessOptions>;
 	private readonly kill: (pid: number, signal: NodeJS.Signals) => void;
@@ -425,6 +430,7 @@ export class HerdrHostRuntime implements HostRuntime {
 
 	constructor(options: HerdrHostRuntimeOptions) {
 		this.inspectCandidate = options.inspectTaskCandidate;
+		this.inspectInFlightCandidate = options.inspectInFlightTaskCandidate;
 		this.execute = options.runProcess ?? defaultRunProcess;
 		this.herdr = createHerdrClient(this.execute);
 		this.kill = options.killProcess ?? ((pid, signal) => process.kill(pid, signal));
@@ -681,23 +687,16 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 
 		const text = assignment({ task: input.task, kind: input.kind, worktreeCwd: details.worktreeCwd, ...(input.failure ? { failure: input.failure } : {}) });
+		const promptOptions = this.processOptions(details.worktreeCwd, context);
 		const promptArgs = [
 			"agent", "prompt", details.agentName, text, "--wait",
 			"--until", "idle", "--until", "done", "--until", "blocked",
-			"--timeout", String(this.callTimeout(context, HERDR_OPERATION_CAP_MS)),
+			"--timeout", String(promptOptions.timeoutMs),
 		];
-		const prompted = await this.herdr.exec(promptArgs, this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+		const prompted = await this.herdr.exec(promptArgs, promptOptions);
 		if (prompted.code !== 0 || prompted.killed) {
 			if (!prompted.killed && !context.signal.aborted && hasHerdrErrorCode(prompted, "agent_prompt_stalled")) {
-				let settled;
-				try {
-					settled = await this.waitForSettledAgent(details, context);
-				} catch (error) {
-					return { outcome: "unknown", diagnostic: `Delivered stalled prompt could not be reconciled: ${safeText(error)}` };
-				}
-				if (settled.status === "blocked") return { outcome: "blocked", diagnostic: await this.diagnostic(details, context, "Delivered stalled prompt settled as blocked.") };
-				if (!SETTLED_AGENT_STATES.has(settled.status)) return { outcome: "unknown", diagnostic: `Delivered stalled prompt did not settle: ${settled.status}.` };
-				return await this.candidateResult(input, details, context, true);
+				return await this.reconcileDeliveredPrompt(input, details, context);
 			}
 			return {
 				outcome: prompted.killed || context.signal.aborted ? "interrupted" : "unknown",
@@ -712,7 +711,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		if (settled.status === "blocked") return { outcome: "blocked", diagnostic: await this.diagnostic(details, context, "Worker settled as blocked.") };
 		if (!SETTLED_AGENT_STATES.has(settled.status)) return { outcome: "unknown", diagnostic: `Worker prompt did not return a settled state: ${settled.status}.` };
-		return await this.candidateResult(input, details, context, false);
+		return await this.candidateResult(input, details, context);
 	}
 
 	async terminateWorker(
@@ -946,35 +945,123 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 	}
 
+	private async reconcileDeliveredPrompt(
+		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
+		details: AgentDetails,
+		context: OperationContext,
+	): Promise<WorkerResult> {
+		for (;;) {
+			let lifecycle;
+			try {
+				lifecycle = await this.waitForAgentLifecycle(details, context, true);
+			} catch (error) {
+				return {
+					outcome: this.contextInterrupted(context) ? "interrupted" : "unknown",
+					diagnostic: `Delivered stalled prompt lifecycle is unknown: ${safeText(error)}`,
+				};
+			}
+
+			let inspection: InFlightTaskCandidateInspection;
+			try {
+				inspection = await this.inspectInFlightCandidate(
+					{ root: details.worktreeCwd, task: input.task, attempt: input.attempt },
+					this.childContext(context, GIT_INSPECTION_CAP_MS),
+				);
+			} catch (error) {
+				return {
+					outcome: this.contextInterrupted(context) ? "interrupted" : "unknown",
+					diagnostic: `Delivered stalled prompt candidate inspection failed: ${safeText(error)}`,
+				};
+			}
+			if (this.contextInterrupted(context)) {
+				return { outcome: "interrupted", diagnostic: "Delivered stalled prompt reconciliation was interrupted." };
+			}
+
+			if (lifecycle.status === "blocked") {
+				return { outcome: "blocked", diagnostic: await this.diagnostic(details, context, "Delivered stalled prompt settled as blocked.") };
+			}
+			if (lifecycle.status === "unknown") {
+				return { outcome: "unknown", diagnostic: "Delivered stalled prompt lifecycle is unknown." };
+			}
+			if (SETTLED_AGENT_STATES.has(lifecycle.status)
+				&& inspection.valid
+				&& inspection.clean
+				&& this.isExpectedCandidate(input, inspection.candidate)) {
+				return {
+					outcome: "candidate",
+					candidate: inspection.candidate,
+					diagnostic: await this.diagnostic(details, context, "Delivered stalled prompt settled with a candidate."),
+				};
+			}
+
+			try {
+				await this.delay(STALLED_PROMPT_POLL_MS, context.signal);
+			} catch (error) {
+				return {
+					outcome: this.contextInterrupted(context) ? "interrupted" : "unknown",
+					diagnostic: `Delivered stalled prompt polling failed: ${safeText(error)}`,
+				};
+			}
+		}
+	}
+
 	private async candidateResult(
 		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
 		details: AgentDetails,
 		context: OperationContext,
-		stalled: boolean,
 	): Promise<WorkerResult> {
 		let candidate: WorkspaceIdentity;
 		try {
-			candidate = await this.inspectCandidate(
-				{ root: details.worktreeCwd, task: input.task, attempt: input.attempt },
-				this.childContext(context, GIT_INSPECTION_CAP_MS),
-			);
+			candidate = await this.inspectWorkerCandidate(input, details, context);
 		} catch (error) {
 			return { outcome: "unknown", diagnostic: `Settled worker candidate inspection failed: ${safeText(error)}` };
 		}
-		const expectedBranch = `refs/heads/${worktreeIntent(input.attempt).worktree.branch}`;
-		if (!isCleanCommitted(candidate) || candidate.branch !== expectedBranch || candidate.head === input.preCandidate.head) {
-			const diagnostic = await this.diagnostic(details, context, "Settled worker did not produce an exact changed clean committed candidate.");
-			return stalled ? { outcome: "unknown", diagnostic } : { outcome: "blocked", diagnostic };
+		if (!this.isExpectedCandidate(input, candidate)) {
+			return {
+				outcome: "blocked",
+				diagnostic: await this.diagnostic(details, context, "Settled worker did not produce an exact changed clean committed candidate."),
+			};
 		}
-		return { outcome: "candidate", candidate, diagnostic: await this.diagnostic(details, context, stalled ? "Delivered stalled prompt settled with a candidate." : "Worker settled with a candidate.") };
+		return { outcome: "candidate", candidate, diagnostic: await this.diagnostic(details, context, "Worker settled with a candidate.") };
+	}
+
+	private async inspectWorkerCandidate(
+		input: { task: TaskRequest; attempt: TaskAttempt },
+		details: AgentDetails,
+		context: OperationContext,
+	): Promise<WorkspaceIdentity> {
+		return await this.inspectCandidate(
+			{ root: details.worktreeCwd, task: input.task, attempt: input.attempt },
+			this.childContext(context, GIT_INSPECTION_CAP_MS),
+		);
+	}
+
+	private isExpectedCandidate(
+		input: { attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
+		candidate: WorkspaceIdentity,
+	): boolean {
+		const expectedBranch = `refs/heads/${worktreeIntent(input.attempt).worktree.branch}`;
+		return isCleanCommitted(candidate) && candidate.branch === expectedBranch && candidate.head !== input.preCandidate.head;
 	}
 
 	private async waitForSettledAgent(details: AgentDetails, context: OperationContext): Promise<{ status: string; interactiveReady: boolean }> {
+		return await this.waitForAgentLifecycle(details, context, false);
+	}
+
+	private async waitForAgentLifecycle(
+		details: AgentDetails,
+		context: OperationContext,
+		includeWorking: boolean,
+	): Promise<{ status: string; interactiveReady: boolean }> {
+		const options = includeWorking
+			? this.processOptions(details.worktreeCwd, context)
+			: this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
 		const response = await this.herdr.json([
 			"agent", "wait", details.agentName,
-			"--until", "idle", "--until", "done", "--until", "blocked", "--until", "unknown",
-			"--timeout", String(this.callTimeout(context, HERDR_OPERATION_CAP_MS)),
-		], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+			"--until", "idle", "--until", "done", "--until", "blocked",
+			...(includeWorking ? ["--until", "working"] : []),
+			"--until", "unknown", "--timeout", String(options.timeoutMs),
+		], options);
 		return parseAgent(response, details, ["agent_info"]);
 	}
 
@@ -1245,7 +1332,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 	}
 
-	private processOptions(cwd: string, context: OperationContext, cap: number): HostProcessOptions {
+	private processOptions(cwd: string, context: OperationContext, cap = Number.POSITIVE_INFINITY): HostProcessOptions {
 		context.signal.throwIfAborted();
 		return { cwd, signal: context.signal, timeoutMs: this.callTimeout(context, cap) };
 	}
@@ -1258,6 +1345,10 @@ export class HerdrHostRuntime implements HostRuntime {
 		const remaining = Math.min(context.timeoutMs, context.deadline - this.now(), cap);
 		if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("Operation deadline is exhausted.");
 		return Math.max(1, Math.floor(remaining));
+	}
+
+	private contextInterrupted(context: OperationContext): boolean {
+		return context.signal.aborted || context.deadline <= this.now();
 	}
 }
 

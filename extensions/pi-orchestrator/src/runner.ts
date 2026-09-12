@@ -166,6 +166,19 @@ export interface TaskCandidateInspector {
 	inspectTaskCandidate(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 }
 
+export interface InFlightTaskCandidateInspection {
+	candidate: WorkspaceIdentity;
+	clean: boolean;
+	valid: boolean;
+}
+
+export interface InFlightTaskCandidateInspector {
+	inspectInFlightTaskCandidate(
+		input: { root: string; task: TaskRequest; attempt: TaskAttempt },
+		context: OperationContext,
+	): Promise<InFlightTaskCandidateInspection>;
+}
+
 export interface GitRuntime {
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {

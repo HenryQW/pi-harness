@@ -110,6 +110,7 @@ export function registerOrchestratorExtension(
 		});
 		const host = dependencies.createHostRuntime({
 			inspectTaskCandidate: git.inspectTaskCandidate.bind(git),
+			inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git),
 			runProcess,
 		});
 		const runtime = dependencies.createRuntime({

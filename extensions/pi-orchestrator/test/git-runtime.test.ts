@@ -389,6 +389,46 @@ test("pre-prompt inspection proves exact owned worktree identity and fails close
 	});
 });
 
+test("in-flight candidate inspection reports transient states without relaxing worktree identity fences", async (t) => {
+	const root = await repository(t);
+	const runtime = new CheckedGitRuntime();
+	const definition = task("in-flight");
+	const base = await runtime.inspectMain({ root }, context());
+	const allocated = await allocate(runtime, root, definition, base, "token-in-flight-0001");
+	assert.equal(allocated.result.outcome, "owned");
+	const worktree = allocated.intent.worktree!;
+	const input = { root, task: definition, attempt: allocated.attempt };
+
+	const unchanged = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.equal(unchanged.candidate.head, base.head);
+	assert.equal(unchanged.clean, true);
+	assert.equal(unchanged.valid, true);
+
+	await writeFile(join(worktree.cwd, "candidate.txt"), "dirty\n");
+	const dirty = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.equal(dirty.candidate.head, base.head);
+	assert.equal(dirty.clean, false);
+	assert.equal(dirty.valid, true);
+
+	await rm(join(worktree.cwd, "candidate.txt"));
+	git(worktree.cwd, "checkout", "-qb", "unexpected-in-flight");
+	const wrongBranch = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.equal(wrongBranch.candidate.branch, "refs/heads/unexpected-in-flight");
+	assert.equal(wrongBranch.clean, true);
+	assert.equal(wrongBranch.valid, false);
+
+	git(worktree.cwd, "checkout", "-q", worktree.branch);
+	await commit(worktree.cwd, "candidate.txt", "candidate\n");
+	const changed = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.notEqual(changed.candidate.head, base.head);
+	assert.equal(changed.clean, true);
+	assert.equal(changed.valid, true);
+
+	git(root, "worktree", "remove", "--force", worktree.path);
+	await mkdir(worktree.path, { recursive: true });
+	await assert.rejects(runtime.inspectInFlightTaskCandidate(input, context()), /not registered/);
+});
+
 test("initialized, uninitialized, and worker-added gitlinks are rejected", async (t) => {
 	const source = await repository(t);
 	const root = await repository(t);

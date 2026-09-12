@@ -31,6 +31,8 @@ import type {
 	CommandResult,
 	GitCleanupKind,
 	GitRuntime,
+	InFlightTaskCandidateInspection,
+	InFlightTaskCandidateInspector,
 	IntegrationResult,
 	TaskCandidateInspector,
 	OperationContext,
@@ -183,7 +185,7 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
+export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, InFlightTaskCandidateInspector {
 	private readonly execute: DirectProcessRunner;
 	private readonly executeReview?: ExactReviewExecutor;
 
@@ -388,6 +390,32 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
 			throw new Error(`Task ${input.task.id} initial prompt no longer starts from its recorded wave base.`);
 		}
 		return candidate;
+	}
+
+	async inspectInFlightTaskCandidate(
+		input: { root: string; task: TaskRequest; attempt: TaskAttempt },
+		context: OperationContext,
+	): Promise<InFlightTaskCandidateInspection> {
+		const worktree = await this.requireTaskWorktree(input.root, input.task, input.attempt, context);
+		const inspected = await this.inspectInFlightWorkspace(worktree.cwd, context);
+		const expectedBranch = `refs/heads/${worktree.branch}`;
+		const branchTip = inspected.candidate.branch === expectedBranch
+			? await this.branchTip(worktree.cwd, worktree.branch, context)
+			: undefined;
+		const descendsFromBase = await this.isAncestor(
+			input.attempt.waveBase.head,
+			inspected.candidate.head,
+			worktree.cwd,
+			context,
+		);
+		return {
+			candidate: inspected.candidate,
+			clean: inspected.clean,
+			valid: inspected.supported
+				&& inspected.candidate.branch === expectedBranch
+				&& branchTip === inspected.candidate.head
+				&& descendsFromBase,
+		};
 	}
 
 	async inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity> {
@@ -606,14 +634,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
 		context: OperationContext,
 		requireChange = true,
 	): Promise<WorkspaceIdentity> {
-		const worktree = worktreeIntent(attempt).worktree;
-		if (worktree.baseCommit !== attempt.waveBase.head) {
-			throw new Error(`Task ${task.id} worktree was not created from its recorded wave base.`);
-		}
-		if (await realpath(worktree.path) !== worktree.path) throw new Error(`Task ${task.id} worktree path changed.`);
-		if (!(await this.registeredWorktreePaths(root, context)).includes(worktree.path)) {
-			throw new Error(`Task ${task.id} worktree is not registered in the recorded repository.`);
-		}
+		const worktree = await this.requireTaskWorktree(root, task, attempt, context);
 		const identity = await this.inspectWorkspace(worktree.cwd, true, context);
 		if (identity.branch !== `refs/heads/${worktree.branch}`) throw new Error(`Task ${task.id} moved off its owned branch.`);
 		const branch = await this.branchTip(worktree.cwd, worktree.branch, context);
@@ -628,6 +649,45 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
 			if (!Number.isSafeInteger(count) || count < 1) throw new Error(`Task ${task.id} has no committed change from its recorded base.`);
 		}
 		return identity;
+	}
+
+	private async requireTaskWorktree(
+		root: string,
+		task: Pick<TaskRequest, "id">,
+		attempt: TaskAttempt,
+		context: OperationContext,
+	): Promise<WorktreeRecord> {
+		const worktree = worktreeIntent(attempt).worktree;
+		if (worktree.baseCommit !== attempt.waveBase.head) {
+			throw new Error(`Task ${task.id} worktree was not created from its recorded wave base.`);
+		}
+		if (await realpath(worktree.path) !== worktree.path) throw new Error(`Task ${task.id} worktree path changed.`);
+		if (!(await this.registeredWorktreePaths(root, context)).includes(worktree.path)) {
+			throw new Error(`Task ${task.id} worktree is not registered in the recorded repository.`);
+		}
+		return worktree;
+	}
+
+	private async inspectInFlightWorkspace(
+		cwd: string,
+		context: OperationContext,
+	): Promise<{ candidate: WorkspaceIdentity; clean: boolean; supported: boolean }> {
+		const branch = oneLine(await this.requireGit(["symbolic-ref", "--quiet", "HEAD"], cwd, context), "branch reference");
+		const head = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd, context), "HEAD");
+		const hadGitlinks = await this.hasGitlinks(cwd, context);
+		const inspection = await inspectWorktreeDirty(cwd, this.gitRunner(context));
+		if (inspection.failure) throw new Error(`Worktree inspection failed: ${inspection.failure}`);
+		const index = oid(await this.requireGit(["write-tree"], cwd, context), "index tree");
+		const tree = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{tree}"], cwd, context), "HEAD tree");
+		const hasGitlinks = hadGitlinks || await this.hasGitlinks(cwd, context);
+		const finalBranch = oneLine(await this.requireGit(["symbolic-ref", "--quiet", "HEAD"], cwd, context), "branch reference");
+		const finalHead = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd, context), "HEAD");
+		if (branch !== finalBranch || head !== finalHead) throw new Error("Git workspace changed during in-flight identity inspection.");
+		return {
+			candidate: { branch, head, index, tree },
+			clean: !inspection.dirty,
+			supported: !hasGitlinks,
+		};
 	}
 
 	private async inspectWorkspace(cwd: string, strictIgnored: boolean, context: OperationContext): Promise<WorkspaceIdentity> {
@@ -657,9 +717,13 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector {
 		return { branch, head, index, tree };
 	}
 
-	private async assertNoGitlinks(cwd: string, context: OperationContext): Promise<void> {
+	private async hasGitlinks(cwd: string, context: OperationContext): Promise<boolean> {
 		const index = await this.requireGit(["ls-files", "--stage", "-z"], cwd, context);
-		if (index.split("\0").some((entry) => entry.startsWith("160000 "))) {
+		return index.split("\0").some((entry) => entry.startsWith("160000 "));
+	}
+
+	private async assertNoGitlinks(cwd: string, context: OperationContext): Promise<void> {
+		if (await this.hasGitlinks(cwd, context)) {
 			throw new Error("Pi Orchestrator does not support Git repositories containing mode-160000 gitlinks.");
 		}
 	}

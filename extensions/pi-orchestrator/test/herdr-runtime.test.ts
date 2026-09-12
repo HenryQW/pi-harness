@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import {
 	createHerdrHostRuntime,
 	type HerdrHostRuntime,
 	type HostProcessOptions,
 	type HostProcessRunner,
 } from "../src/herdr-runtime.ts";
-import type { OperationContext, VerifiedImplementerLaunch } from "../src/runner.ts";
+import type { InFlightTaskCandidateInspection, OperationContext, VerifiedImplementerLaunch } from "../src/runner.ts";
 import type {
 	AllocationIntent,
 	AllocationKind,
@@ -41,6 +43,10 @@ const changedIdentity = (): WorkspaceIdentity => ({
 	index: oid("b"),
 	tree: oid("b"),
 });
+
+function git(cwd: string, ...args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
 
 const task: TaskRequest = {
 	id: "task-a",
@@ -109,17 +115,29 @@ async function paths(t: test.TestContext): Promise<Paths> {
 
 let randomSequence = 0;
 
+type TaskCandidateInput = { root: string; task: TaskRequest; attempt: TaskAttempt };
+
 function runtime(
 	paths: Paths,
 	script: ScriptedProcess,
-	inspectTaskCandidate: (input: unknown, operation: OperationContext) => Promise<WorkspaceIdentity> = async () => changedIdentity(),
+	inspectTaskCandidate: (input: TaskCandidateInput, operation: OperationContext) => Promise<WorkspaceIdentity> = async () => changedIdentity(),
+	timing: {
+		delay?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+		now?: () => number;
+		inspectInFlightTaskCandidate?: (input: TaskCandidateInput, operation: OperationContext) => Promise<InFlightTaskCandidateInspection>;
+	} = {},
 ): HerdrHostRuntime {
 	return createHerdrHostRuntime({
 		inspectTaskCandidate,
+		inspectInFlightTaskCandidate: timing.inspectInFlightTaskCandidate ?? (async (input, operation) => ({
+			candidate: await inspectTaskCandidate(input, operation),
+			clean: true,
+			valid: true,
+		})),
 		runProcess: script.run,
 		killProcess: () => {},
-		delay: async () => {},
-		now: () => 1_000,
+		delay: timing.delay ?? (async () => {}),
+		now: timing.now ?? (() => 1_000),
 		randomId: () => (++randomSequence).toString(16).padStart(32, "0"),
 		env: { HERDR_ENV: "1", HERDR_PANE_ID: "pane-current" },
 		leaseDirectory: paths.leases,
@@ -1265,46 +1283,216 @@ test("prompt submission follows exact readiness and accepts only a changed clean
 	let inspections = 0;
 	const host = runtime(fixture, script, async () => { inspections += 1; return changedIdentity(); });
 	const { attempt } = await fullAttempt(fixture, host, script);
+	const operation = { ...context(), deadline: 101_000, timeoutMs: 90_000 };
 	script.push(
-		{ command: "herdr", args: ["agent", "wait", AGENT_NAME, "--until", "idle", "--until", "done", "--until", "blocked", "--until", "unknown", "--timeout", "19000"], result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
-		{ command: "herdr", args: (args) => {
+		{ command: "herdr", args: (args, options) => {
+			assert.equal(args.at(-1), "30000");
+			assert.equal(options.timeoutMs, 30_000);
+		}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: (args, options) => {
 			assert.deepEqual(args.slice(0, 3), ["agent", "prompt", AGENT_NAME]);
 			assert.match(args[3]!, /Task: task-a/);
 			assert.match(args[3]!, new RegExp(fixture.worktree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-			assert.deepEqual(args.slice(4), ["--wait", "--until", "idle", "--until", "done", "--until", "blocked", "--timeout", "19000"]);
+			assert.deepEqual(args.slice(4), ["--wait", "--until", "idle", "--until", "done", "--until", "blocked", "--timeout", "90000"]);
+			assert.equal(options.timeoutMs, 90_000);
+			assert.ok(options.timeoutMs > 30_000 && options.timeoutMs <= operation.deadline - 1_000);
 		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "terminal diagnostic", stderr: "" } },
 	);
-	const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
 	assert.equal(result.outcome, "candidate");
 	assert.equal(inspections, 1);
 	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 	script.done();
 });
 
-test("delivered agent_prompt_stalled is never resent and requires a changed clean candidate", async (t) => {
+test("delivered stall uses real in-flight Git evidence until unchanged and dirty states become changed-clean", async (t) => {
 	const fixture = await paths(t);
-	for (const [name, candidate, outcome] of [
-		["changed", changedIdentity(), "candidate"],
-		["unchanged", baseIdentity(), "unknown"],
-		["dirty", { ...changedIdentity(), index: oid("c") }, "unknown"],
+	git(fixture.root, "init", "-q", "-b", "main");
+	git(fixture.root, "config", "user.name", "Orchestrator Test");
+	git(fixture.root, "config", "user.email", "orchestrator@example.com");
+	await writeFile(join(fixture.root, "base.txt"), "base\n");
+	git(fixture.root, "add", "base.txt");
+	git(fixture.root, "commit", "-qm", "base");
+	await rm(fixture.worktree, { recursive: true });
+	git(fixture.root, "worktree", "add", "-q", "-b", "task-a", fixture.worktree);
+
+	const script = new ScriptedProcess();
+	const gitRuntime = new CheckedGitRuntime();
+	let now = 1_000;
+	const delays: number[] = [];
+	const host = runtime(
+		fixture,
+		script,
+		gitRuntime.inspectTaskCandidate.bind(gitRuntime),
+		{
+			now: () => now,
+			inspectInFlightTaskCandidate: gitRuntime.inspectInFlightTaskCandidate.bind(gitRuntime),
+			delay: async (milliseconds) => {
+				delays.push(milliseconds);
+				now += 1_000;
+				if (delays.length === 1) {
+					await writeFile(join(fixture.worktree, "candidate.txt"), "dirty\n");
+				} else {
+					git(fixture.worktree, "add", "candidate.txt");
+					git(fixture.worktree, "commit", "-qm", "candidate");
+				}
+			},
+		},
+	);
+	const { attempt } = await fullAttempt(fixture, host, script);
+	const waveBase = await gitRuntime.inspectMain({ root: fixture.root }, context());
+	attempt.waveBase = waveBase;
+	const worktree = attempt.allocations.find((intent) => intent.kind === "worktree")!.worktree!;
+	worktree.baseCommit = waveBase.head;
+	worktree.repoRoot = fixture.root;
+	const preCandidate = await gitRuntime.inspectTaskCandidate({ root: fixture.root, task, attempt }, context());
+	const operation = { ...context(), deadline: 101_000, timeoutMs: 90_000 };
+	const lifecycle = (status: "idle" | "done", timeoutMs: number): Step => ({
+		command: "herdr",
+		args: (args, options) => {
+			assert.deepEqual(args.slice(-6), ["--until", "working", "--until", "unknown", "--timeout", String(timeoutMs)]);
+			assert.equal(options.timeoutMs, timeoutMs);
+			assert.ok(timeoutMs > 30_000 && timeoutMs <= operation.deadline - now);
+		},
+		result: success({ type: "agent_info", agent: agentInfo(status, true, { cwd: fixture.worktree }) }),
+	});
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: (args, options) => {
+			assert.equal(args.at(-1), "90000");
+			assert.equal(options.timeoutMs, 90_000);
+			now = 12_000;
+		}, result: failure("agent_prompt_stalled") },
+		lifecycle("idle", 89_000),
+		lifecycle("done", 88_000),
+		lifecycle("done", 87_000),
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "diagnostic", stderr: "" } },
+	);
+	const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, operation);
+	assert.equal(result.outcome, "candidate");
+	assert.notEqual(result.outcome === "candidate" && result.candidate.head, preCandidate.head);
+	assert.deepEqual(delays, [250, 250]);
+	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+	script.done();
+});
+
+test("delivered stall treats working dirty state as transient and exact blocked as blocked", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const delays: number[] = [];
+	let inspections = 0;
+	const host = runtime(
+		fixture,
+		script,
+		async () => changedIdentity(),
+		{
+			delay: async (milliseconds) => { delays.push(milliseconds); },
+			inspectInFlightTaskCandidate: async () => {
+				inspections += 1;
+				return { candidate: { ...changedIdentity(), index: oid("c") }, clean: false, valid: true };
+			},
+		},
+	);
+	const { attempt } = await fullAttempt(fixture, host, script);
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("blocked", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: { code: 0, stdout: "blocked", stderr: "" } },
+	);
+	const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	assert.equal(result.outcome, "blocked");
+	assert.equal(inspections, 2);
+	assert.deepEqual(delays, [250]);
+	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+	script.done();
+});
+
+test("delivered stall fails closed on missing, malformed, mismatched, or uninspectable evidence", async (t) => {
+	const fixture = await paths(t);
+	for (const [name, lifecycle, inspectionFailure] of [
+		["missing agent", failure("agent_not_found"), undefined],
+		["malformed lifecycle", { code: 0, stdout: "{", stderr: "" }, undefined],
+		["mismatched agent", success({ type: "agent_info", agent: agentInfo("idle", true, { name: "agent-decoy", cwd: fixture.worktree }) }), undefined],
+		["candidate inspection failure", success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }), new Error("inspection failed")],
 	] as const) {
 		await t.test(name, async () => {
 			const script = new ScriptedProcess();
-			const host = runtime(fixture, script, async () => candidate);
+			const host = runtime(fixture, script, async () => changedIdentity(), {
+				inspectInFlightTaskCandidate: async () => {
+					if (inspectionFailure) throw inspectionFailure;
+					return { candidate: changedIdentity(), clean: true, valid: true };
+				},
+			});
 			const { attempt } = await fullAttempt(fixture, host, script);
 			script.push(
 				{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
 				{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
-				{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
-				{ command: "herdr", args: () => {}, result: { code: 0, stdout: "diagnostic", stderr: "" } },
+				{ command: "herdr", args: () => {}, result: lifecycle },
 			);
 			const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
-			assert.equal(result.outcome, outcome);
+			assert.equal(result.outcome, "unknown");
 			assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 			script.done();
 		});
 	}
+});
+
+test("delivered stall polling is interrupted by its request deadline or abort signal", async (t) => {
+	const fixture = await paths(t);
+
+	await t.test("deadline", async () => {
+		const script = new ScriptedProcess();
+		let now = 1_000;
+		const host = runtime(
+			fixture,
+			script,
+			async () => changedIdentity(),
+			{
+				now: () => now,
+				delay: async () => { now = 5_000; },
+				inspectInFlightTaskCandidate: async () => ({ candidate: baseIdentity(), clean: true, valid: true }),
+			},
+		);
+		const { attempt } = await fullAttempt(fixture, host, script);
+		const operation = { ...context(), deadline: 5_000, timeoutMs: 4_000 };
+		script.push(
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+			{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		);
+		const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+		assert.equal(result.outcome, "interrupted");
+		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+		script.done();
+	});
+
+	await t.test("abort", async () => {
+		const script = new ScriptedProcess();
+		const controller = new AbortController();
+		const host = runtime(
+			fixture,
+			script,
+			async () => changedIdentity(),
+			{
+				delay: async (_milliseconds, signal) => { controller.abort(); signal.throwIfAborted(); },
+				inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: false, valid: true }),
+			},
+		);
+		const { attempt } = await fullAttempt(fixture, host, script);
+		const operation: OperationContext = { signal: controller.signal, deadline: 20_000, timeoutMs: 19_000 };
+		script.push(
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+			{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		);
+		const result = await host.runWorker({ task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+		assert.equal(result.outcome, "interrupted");
+		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+		script.done();
+	});
 });
 
 test("blocked, unknown, timeout, malformed, missing, and interrupted agent paths fail closed", async (t) => {
@@ -1370,6 +1558,7 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	await privateLease(leasePath);
 	const host = createHerdrHostRuntime({
 		inspectTaskCandidate: async () => changedIdentity(),
+		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 		runProcess: script.run,
 		killProcess: (pid, signal) => { kills.push([pid, signal]); },
 		delay: async (milliseconds) => { delays.push(milliseconds); },
@@ -1411,7 +1600,9 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 			const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
 			await privateLease(leasePath);
 			const host = createHerdrHostRuntime({
-				inspectTaskCandidate: async () => changedIdentity(), runProcess: script.run,
+				inspectTaskCandidate: async () => changedIdentity(),
+				inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
+				runProcess: script.run,
 				killProcess: (pid, signal) => { kills.push([pid, signal]); }, delay: async () => {}, now: () => 1_000,
 				env: {}, leaseDirectory: fixture.leases, lsofCommand: "lsof-test",
 			});
@@ -1436,7 +1627,9 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 		result: { code: 2, stdout: "", stderr: "ambiguous" },
 	});
 	const host = createHerdrHostRuntime({
-		inspectTaskCandidate: async () => changedIdentity(), runProcess: script.run,
+		inspectTaskCandidate: async () => changedIdentity(),
+		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
+		runProcess: script.run,
 		killProcess: (pid) => { kills.push(pid); }, delay: async () => {}, now: () => 1_000,
 		env: {}, leaseDirectory: fixture.leases, lsofCommand: "lsof-test",
 	});

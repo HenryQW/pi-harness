@@ -141,6 +141,14 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 			runnerCalls.push({ method: "inspectTaskCandidate", args: [this, input, operation] });
 			return { branch: "refs/heads/task", head: "1".repeat(40), index: "2".repeat(40), tree: "2".repeat(40) };
 		},
+		async inspectInFlightTaskCandidate(this: unknown, input: unknown, operation: OperationContext) {
+			runnerCalls.push({ method: "inspectInFlightTaskCandidate", args: [this, input, operation] });
+			return {
+				candidate: { branch: "refs/heads/task", head: "1".repeat(40), index: "2".repeat(40), tree: "2".repeat(40) },
+				clean: true,
+				valid: true,
+			};
+		},
 	};
 	const host = { marker: "herdr-host" };
 	const runtime = { marker: "composed-runtime" };
@@ -331,6 +339,12 @@ test("lazily wires one checked runtime graph, direct processes, Reviewer adapter
 	assert.equal(inspection.args[0], harness.getRuntimeOptions().git);
 	assert.equal(inspection.args[1], candidateInput);
 	assert.equal(inspection.args[2], operation);
+
+	await harness.getHostOptions().inspectInFlightTaskCandidate(candidateInput as never, operation);
+	const inFlightInspection = harness.runnerCalls.find(({ method }) => method === "inspectInFlightTaskCandidate")!;
+	assert.equal(inFlightInspection.args[0], harness.getRuntimeOptions().git);
+	assert.equal(inFlightInspection.args[1], candidateInput);
+	assert.equal(inFlightInspection.args[2], operation);
 
 	const processSignal = new AbortController().signal;
 	assert.deepEqual(await harness.getProcessRunner()("git", ["status", "--short"], {
