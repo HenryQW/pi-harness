@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
@@ -38,6 +38,9 @@ const ASSIGNMENT_LIMIT = 96 * 1024;
 const LEASE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
 const PROCESS_LEASE_ENV = "PI_ORCHESTRATOR_PROCESS_LEASE";
+const CORRELATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
+const FULL_AGENT_TOKEN_PATTERN = /^[0-9a-f]{16,24}$/;
+const HERDR_AGENT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 const SETTLED_AGENT_STATES = new Set(["idle", "done"]);
 
 export interface HostProcessOptions {
@@ -299,7 +302,13 @@ function expectedLabel(token: string, kind: "workspace" | "worker"): string {
 }
 
 function expectedAgentName(token: string): string {
-	return `pi-orchestrator-${token}-agent`;
+	if (!CORRELATION_TOKEN_PATTERN.test(token)) throw new Error("Agent correlation token is invalid.");
+	const segment = FULL_AGENT_TOKEN_PATTERN.test(token)
+		? token
+		: createHash("sha256").update(token).digest("hex").slice(0, 24);
+	const name = `o-${segment}-agent`;
+	if (!HERDR_AGENT_NAME_PATTERN.test(name)) throw new Error("Agent correlation token cannot produce a valid Herdr name.");
+	return name;
 }
 
 function requireIntentIdentity(intent: AllocationIntent, attempt: TaskAttempt): void {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,13 +19,13 @@ import type {
 	WorkspaceIdentity,
 } from "../src/schema.ts";
 
-const TOKEN = "token-1234567890abcdef";
+const TOKEN = "0123456789abcdef01234567";
 const WORKSPACE_ID = "workspace-owned";
 const ROOT_TAB_ID = "tab-root";
 const ROOT_PANE_ID = "pane-root";
 const WORKER_TAB_ID = "tab-worker";
 const WORKER_PANE_ID = "pane-worker";
-const AGENT_NAME = `pi-orchestrator-${TOKEN}-agent`;
+const AGENT_NAME = `o-${TOKEN}-agent`;
 const WORKSPACE_LABEL = `pi-orchestrator-${TOKEN}-workspace`;
 const WORKER_LABEL = `pi-orchestrator-${TOKEN}-worker`;
 const oid = (character: string): string => character.repeat(40);
@@ -126,17 +127,17 @@ function runtime(
 	});
 }
 
-function baseAttempt(paths: Paths): TaskAttempt {
+function baseAttempt(paths: Paths, token = TOKEN): TaskAttempt {
 	return {
 		number: 1,
 		waveNumber: 1,
 		waveBase: baseIdentity("refs/heads/main"),
-		correlationToken: TOKEN,
+		correlationToken: token,
 		allocationGeneration: 1,
 		allocations: [{
 			kind: "worktree",
 			generation: 1,
-			token: TOKEN,
+			token,
 			details: "prepared",
 			status: "owned",
 			resourceId: paths.worktree,
@@ -182,7 +183,7 @@ async function plannedIntent(
 	const intent: AllocationIntent = {
 		kind,
 		generation: attempt.allocationGeneration,
-		token: TOKEN,
+		token: attempt.correlationToken,
 		details,
 		status: "allocating",
 	};
@@ -192,7 +193,7 @@ async function plannedIntent(
 
 function addOwnedWorkspace(attempt: TaskAttempt, details: string): AllocationIntent {
 	const intent: AllocationIntent = {
-		kind: "workspace", generation: attempt.allocationGeneration, token: TOKEN, details,
+		kind: "workspace", generation: attempt.allocationGeneration, token: attempt.correlationToken, details,
 		status: "owned", resourceId: WORKSPACE_ID, resources: { tabId: ROOT_TAB_ID, rootPaneId: ROOT_PANE_ID },
 	};
 	attempt.allocations.push(intent);
@@ -201,7 +202,7 @@ function addOwnedWorkspace(attempt: TaskAttempt, details: string): AllocationInt
 
 function addOwnedTab(attempt: TaskAttempt, details: string, leasePath: string): AllocationIntent {
 	const intent: AllocationIntent = {
-		kind: "worker_tab", generation: attempt.allocationGeneration, token: TOKEN, details,
+		kind: "worker_tab", generation: attempt.allocationGeneration, token: attempt.correlationToken, details,
 		status: "owned", resourceId: WORKER_TAB_ID, resources: { rootPaneId: WORKER_PANE_ID, leasePath },
 	};
 	attempt.allocations.push(intent);
@@ -217,11 +218,20 @@ async function fullAttempt(paths: Paths, host: HerdrHostRuntime, script: Scripte
 	const leasePath = (JSON.parse(tabDetails) as { leasePath: string }).leasePath;
 	addOwnedTab(attempt, tabDetails, leasePath);
 	const agentDetails = await host.planHostAllocation({ kind: "agent", task, attempt, owned: owned(attempt) }, context());
+	const agentName = (JSON.parse(agentDetails) as { agentName: string }).agentName;
 	attempt.allocations.push({
-		kind: "agent", generation: attempt.allocationGeneration, token: TOKEN, details: agentDetails,
-		status: "owned", resourceId: AGENT_NAME, resources: { paneId: WORKER_PANE_ID },
+		kind: "agent", generation: attempt.allocationGeneration, token: attempt.correlationToken, details: agentDetails,
+		status: "owned", resourceId: agentName, resources: { paneId: WORKER_PANE_ID },
 	});
 	return { attempt, leasePath };
+}
+
+async function plannedAgentName(paths: Paths, host: HerdrHostRuntime, token: string): Promise<string> {
+	const attempt = baseAttempt(paths, token);
+	addOwnedWorkspace(attempt, "persisted workspace details");
+	addOwnedTab(attempt, "persisted worker-tab details", join(paths.leases, token, `${"a".repeat(32)}.lease`));
+	const details = await host.planHostAllocation({ kind: "agent", task, attempt, owned: owned(attempt) }, context());
+	return (JSON.parse(details) as { agentName: string }).agentName;
 }
 
 async function privateLease(path: string): Promise<void> {
@@ -388,6 +398,36 @@ function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: 
 		},
 	];
 }
+
+test("every accepted correlation token maps to one exact native Herdr agent name", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const tokenCases = [
+		[TOKEN, TOKEN],
+		["abcdef0123456789", "abcdef0123456789"],
+		...[
+			"ABCDEF0123456789",
+			"persisted_TOKEN_1",
+			"a".repeat(128),
+		].map((token) => [token, createHash("sha256").update(token).digest("hex").slice(0, 24)]),
+	] as const;
+
+	for (const [token, segment] of tokenCases) {
+		const expected = `o-${segment}-agent`;
+		assert.equal(await plannedAgentName(fixture, host, token), expected);
+		assert.equal(await plannedAgentName(fixture, host, token), expected, `mapping must be deterministic for ${token}`);
+		assert.match(expected, /^[a-z][a-z0-9_-]{0,31}$/);
+		assert.ok(expected.length <= 32);
+	}
+	assert.equal(await plannedAgentName(fixture, host, TOKEN), AGENT_NAME);
+	assert.equal(AGENT_NAME.length, 32);
+
+	for (const token of ["a".repeat(15), "a".repeat(129), "invalid_token_123!"]) {
+		await assert.rejects(plannedAgentName(fixture, host, token), /correlation token is invalid/);
+	}
+	assert.equal(script.calls.length, 0);
+});
 
 test("preflight accepts linked Main only after Herdr capabilities and current-workspace identity", async (t) => {
 	const fixture = await paths(t);
@@ -710,6 +750,31 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	}, context());
 	assert.deepEqual(agent, { outcome: "owned", resourceId: AGENT_NAME, resources: { paneId: WORKER_PANE_ID } });
 	assert.equal(script.calls.some(({ command }) => command === "ps"), false, "fresh allocation must not inspect same-TTY shell helpers");
+	script.done();
+});
+
+test("a native-invalid persisted agent name is rejected before startPiAgent", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt } = await fullAttempt(fixture, host, script);
+	const intent = attempt.allocations.at(-1)!;
+	intent.status = "allocating";
+	delete intent.resourceId;
+	const details = JSON.parse(intent.details) as { agentName: string };
+	details.agentName = `O-${TOKEN}-agent`;
+	intent.details = JSON.stringify(details);
+	const callsBeforeAllocation = script.calls.length;
+	let verifications = 0;
+
+	await assert.rejects(host.allocateHost({
+		intent,
+		task,
+		attempt,
+		verifyLaunch: async () => { verifications += 1; return launch; },
+	}, context()), /Agent allocation details drifted/);
+	assert.equal(verifications, 0);
+	assert.equal(script.calls.length, callsBeforeAllocation);
 	script.done();
 });
 
@@ -1058,9 +1123,10 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		await assert.rejects(host.reconcileHostAllocation({ intent, task, attempt }, context()), /escaped.*workspace scope/);
 	});
 
-	await t.test("agent matches any saved identity field while unrelated agents are ignored", async () => {
+	await t.test("agent orphan lookup matches exact saved names and parent IDs while ignoring near-name decoys", async () => {
 		for (const [agents, holder, outcome] of [
 			[[agentInfo("idle", true, { name: "decoy", pane_id: "pane-decoy", tab_id: "tab-decoy", cwd: fixture.worktree })], false, "absent"],
+			[[agentInfo("idle", true, { name: `${AGENT_NAME}-decoy`, pane_id: "pane-decoy", tab_id: "tab-decoy", cwd: fixture.worktree })], false, "absent"],
 			[[agentInfo("idle", true, { pane_id: "pane-decoy", tab_id: "tab-decoy", cwd: fixture.worktree })], false, "possible"],
 			[[agentInfo("idle", true, { name: "unnamed", cwd: fixture.worktree })], false, "possible"],
 			[[], true, "possible"],

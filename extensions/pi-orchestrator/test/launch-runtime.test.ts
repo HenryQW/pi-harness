@@ -218,6 +218,13 @@ function refingerprint(record: NormalizedLaunchRecord): NormalizedLaunchRecord {
 	return { ...value, fingerprint: launchRecordFingerprint(value) };
 }
 
+test("default correlation tokens contain 96 bits as 24 lowercase hex characters", async (t) => {
+	const fixture = await harness(t);
+	const token = fixture.runtime.randomToken();
+	assert.match(token, /^[0-9a-f]{24}$/);
+	assert.equal(Buffer.from(token, "hex").byteLength, 12);
+});
+
 test("preflight registers its Model Task and resolves each distinct Role/model class once", async (t) => {
 	const fixture = await harness(t);
 	const discovered: unknown[] = [];

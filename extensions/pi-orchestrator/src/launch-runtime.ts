@@ -523,7 +523,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 	}
 
 	randomToken(): string {
-		return this.options.randomToken?.() ?? randomBytes(16).toString("hex");
+		return this.options.randomToken?.() ?? randomBytes(12).toString("hex");
 	}
 
 	private async prepareLaunchRecords(
