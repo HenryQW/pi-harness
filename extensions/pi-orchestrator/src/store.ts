@@ -6,7 +6,28 @@ import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically
 import { lock } from "proper-lockfile";
 import { parseRunState, type RunState } from "./schema.ts";
 
-const STATE_MAX_BYTES = 2 * 1024 * 1024;
+const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
+/*
+ * create() admits at most 2 MiB of immutable request and launch metadata before
+ * productive work starts. After that, the v1 maxima permit 2,112 check output
+ * streams (8 tasks * 2 attempts * 2 phases * 32 checks * stdout/stderr, plus
+ * 32 final checks) and 17 review verdicts. Each attempt can retain one unknown
+ * allocation with 32 possible resources, two prompt failures, and one each of
+ * termination/integration failure; counting all four cleanup failures plus the
+ * eight task and two top-level failure slots gives 666 more bounded strings.
+ * The runner's bounded() retains at most 8 KiB; allowing another 128 bytes for
+ * its marker or a fixed
+ * error prefix, JSON's sixfold worst-case escaping puts all 2,795 strings below
+ * 134 MiB. The remaining runtime-produced schema text has at most 974
+ * 32,000-code-unit slots (workspace branches plus allocation details, IDs,
+ * worktree fields, concrete runtime resource values, and worker IDs), or less
+ * than 179 MiB after worst-case JSON escaping. Four extra copies of the 256 KiB
+ * request cover repeated commands, args, and review criteria. 384 MiB therefore
+ * leaves over 68 MiB for the initial state, fixed hashes/OIDs/tokens, object
+ * keys, delimiters, and pretty-print whitespace. Reads stay bounded at the same
+ * finite limit; the initial cap is what reserves the evidence space.
+ */
+const STATE_MAX_BYTES = 384 * 1024 * 1024;
 const LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
 
 function isMissing(error: unknown): boolean {
@@ -38,13 +59,29 @@ async function canonicalPlannedPath(path: string): Promise<string> {
 	}
 }
 
-function serialize(state: RunState): string {
+function serialize(state: RunState, maxBytes = STATE_MAX_BYTES): string {
 	const validated = parseRunState(structuredClone(state));
 	const contents = `${JSON.stringify(validated, null, 2)}\n`;
-	if (Buffer.byteLength(contents, "utf8") > STATE_MAX_BYTES) {
-		throw new Error(`pi-orchestrator state exceeds ${STATE_MAX_BYTES} bytes.`);
+	if (Buffer.byteLength(contents, "utf8") > maxBytes) {
+		throw new Error(`pi-orchestrator state exceeds ${maxBytes} bytes.`);
 	}
 	return contents;
+}
+
+function assertPersistedBaseCapacity(state: RunState): void {
+	const contents = JSON.stringify({
+		version: state.version,
+		request: state.request,
+		root: state.root,
+		requestStartMain: state.requestStartMain,
+		deadlineStartedAt: state.deadlineStartedAt,
+		deadline: state.deadline,
+		launchRecords: state.launchRecords,
+		createdAt: state.createdAt,
+	}, null, 2);
+	if (Buffer.byteLength(contents, "utf8") > INITIAL_STATE_MAX_BYTES) {
+		throw new Error(`pi-orchestrator state exceeds ${INITIAL_STATE_MAX_BYTES} bytes.`);
+	}
 }
 
 export class RunStateHandle {
@@ -135,7 +172,7 @@ export class FileRunStore {
 		const path = this.statePath(state.root, state.request.id);
 		await this.assertSafeDestination(state.root, path);
 		await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-		const contents = serialize(state);
+		const contents = serialize(state, INITIAL_STATE_MAX_BYTES);
 		let file: Awaited<ReturnType<typeof open>> | undefined;
 		try {
 			file = await open(path, "wx", 0o600);
@@ -155,6 +192,9 @@ export class FileRunStore {
 		const path = this.statePath(root, id);
 		let raw: string;
 		try {
+			if ((await lstat(path)).size > STATE_MAX_BYTES) {
+				throw new Error(`Text file exceeds ${STATE_MAX_BYTES} bytes: ${path}`);
+			}
 			raw = await readTextFileBounded(path, STATE_MAX_BYTES);
 		} catch (error) {
 			if (error instanceof Error && error.message === `Text file exceeds ${STATE_MAX_BYTES} bytes: ${path}`) {
@@ -163,6 +203,7 @@ export class FileRunStore {
 			throw error;
 		}
 		const state = parseRunState(JSON.parse(raw));
+		assertPersistedBaseCapacity(state);
 		if (state.root !== realpathSync.native(root) || state.request.id !== id) {
 			throw new Error("pi-orchestrator state identity does not match its repository and filename.");
 		}
