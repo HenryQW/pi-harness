@@ -61,18 +61,47 @@ function loadRoleTools(processLease: string | undefined): { events: string[]; to
 	}
 }
 
-test("process lease activates the role-tools hook with the exact Bash prefix", async (t) => {
+test("process lease survives caller fd 9 reuse in descendants", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-subagent-lease-"));
 	t.after(() => rm(dir, { recursive: true, force: true }));
 	const lease = join(dir, "lease");
+	const callerLock = join(dir, "caller.lock");
+	const probe = join(dir, "probe.mjs");
 	await writeFile(lease, "");
 	await chmod(lease, 0o600);
+	await writeFile(probe, `import { fstatSync, statSync } from "node:fs";
+const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
+const lease = statSync(process.env.${PI_ORCHESTRATOR_PROCESS_LEASE});
+const callerLock = statSync(process.env.PI_SUBAGENT_CALLER_LOCK);
+if (!sameFile(fstatSync(9), callerLock)) throw new Error("caller fd 9 was not preserved");
+for (let fd = 10; fd < 256; fd++) {
+	try {
+		if (sameFile(fstatSync(fd), lease)) process.exit(0);
+	} catch (error) {
+		if (error.code !== "EBADF") throw error;
+	}
+}
+throw new Error("process lease descriptor was not inherited");
+`);
 	const extension = loadRoleTools(lease);
 	assert.equal(extension.events.filter((event) => event === "tool_call").length, 1);
 	assert.ok(extension.toolCall);
-	const bash = { type: "tool_call", toolCallId: "bash", toolName: "bash", input: { command: "printf ready" } };
+	const bash = {
+		type: "tool_call",
+		toolCallId: "bash",
+		toolName: "bash",
+		input: { command: 'exec 9>"$PI_SUBAGENT_CALLER_LOCK"\n"$PI_SUBAGENT_NODE" "$PI_SUBAGENT_LEASE_PROBE"' },
+	};
 	extension.toolCall(bash);
-	assert.equal(bash.input.command, 'exec 9>>"$PI_ORCHESTRATOR_PROCESS_LEASE"\nprintf ready');
+	execFileSync(process.platform === "darwin" ? "/bin/zsh" : "bash", ["-c", bash.input.command], {
+		env: {
+			...process.env,
+			[PI_ORCHESTRATOR_PROCESS_LEASE]: lease,
+			PI_SUBAGENT_CALLER_LOCK: callerLock,
+			PI_SUBAGENT_LEASE_PROBE: probe,
+			PI_SUBAGENT_NODE: process.execPath,
+		},
+	});
 	const read = { type: "tool_call", toolCallId: "read", toolName: "read", input: { path: "file.txt" } };
 	extension.toolCall(read);
 	assert.deepEqual(read.input, { path: "file.txt" });
