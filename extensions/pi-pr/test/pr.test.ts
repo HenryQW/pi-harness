@@ -820,6 +820,7 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 		async canonicalWorktree() { return "/canonical/repo"; },
 		createCommentSweep() {
 			return {
+				async recoveryLaunchAction() { return "start" as const; },
 				async start() { sweepCalls.push("start"); return { phase: "triage" }; },
 			} as never;
 		},
@@ -856,6 +857,95 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 		assert.deepEqual(ciCalls, ["collect", "publish"]);
 	} finally {
 		await ci.shutdown(ciContext);
+	}
+});
+
+test("fresh /pr sweep runs rotate route IDs and resume package recovery after settlement", async () => {
+	const firstRunId = routeRunId;
+	const secondRunId = "22222222-2222-4222-8222-222222222222";
+	const runIds = [firstRunId, secondRunId];
+	const authority = currentPullRequest({ conditions: { unresolvedThreads: 1 } });
+	const inspections: string[] = [];
+	const actions: string[] = [];
+	let recoveryExists = false;
+	let loads = 0;
+	let runIndex = 0;
+	const app = harness({
+		async load() { loads += 1; return authority; },
+		useDefaultCommandHandler: true,
+		newRunId: () => runIds[runIndex++]!,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createCommentSweep(options) {
+			assert.equal(options.cwd, "/canonical/repo");
+			assert.equal(options.authority, authority);
+			return {
+				async recoveryLaunchAction() {
+					const action = recoveryExists ? "resume" : "start";
+					inspections.push(action);
+					return action;
+				},
+				async start() {
+					actions.push("start");
+					recoveryExists = true;
+					return { phase: "triage" };
+				},
+				async resume() {
+					actions.push("resume");
+					return { phase: "triage" };
+				},
+			} as never;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [
+			`/skill:pi-pr-comment-sweep runId=${firstRunId} action=start`,
+		]);
+		await app.callTool("pi_pr_sweep", { runId: firstRunId, action: "start" }, ctx);
+		await app.settle(ctx);
+		await assert.rejects(
+			app.callTool("pi_pr_sweep", { runId: firstRunId, action: "resume" }, ctx),
+			/run \/pr/,
+		);
+
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [
+			`/skill:pi-pr-comment-sweep runId=${firstRunId} action=start`,
+			`/skill:pi-pr-comment-sweep runId=${secondRunId} action=resume`,
+		]);
+		await assert.rejects(
+			app.callTool("pi_pr_sweep", { runId: firstRunId, action: "resume" }, ctx),
+			/wrong or stale/,
+		);
+		await app.callTool("pi_pr_sweep", { runId: secondRunId, action: "resume" }, ctx);
+		assert.deepEqual(inspections, ["start", "resume"]);
+		assert.deepEqual(actions, ["start", "resume"]);
+		assert.equal(loads, 4, "each /pr must run fresh discovery");
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("direct workflow tools without a route tell the caller to run /pr", async () => {
+	const app = harness({ async load() { return { kind: "inactive" }; } });
+	const ctx = app.context();
+	const calls = [
+		["pi_pr_update_branch", { runId: routeRunId, action: "merge" }],
+		["pi_pr_create", { runId: routeRunId, action: "prepare" }],
+		["pi_pr_sweep", { runId: routeRunId, action: "start" }],
+		["pi_pr_fix_ci", { runId: routeRunId, action: "collect" }],
+	] as const;
+
+	for (const [tool, params] of calls) {
+		await assert.rejects(app.callTool(tool, params, ctx), (error: unknown) => {
+			assert(error instanceof Error);
+			assert.match(error.message, /run \/pr/);
+			assert.doesNotMatch(error.message, /\/sweep/);
+			return true;
+		});
 	}
 });
 

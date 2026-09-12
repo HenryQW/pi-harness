@@ -213,6 +213,19 @@ function ledger(status: SweepStatus): SweepLedgerEntry[] {
 	return status.feedback.map(({ id, kind }) => ({ id, kind, disposition: "addressed", note: "verified" }));
 }
 
+test("a real sweep start persists recovery and read-only launch inspection chooses resume", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+
+	assert.equal(await workflow.recoveryLaunchAction(), "start");
+	await workflow.start();
+	const recoveryPath = await workflow.recoveryPath();
+	const recovery = readFileSync(recoveryPath, "utf8");
+	assert.equal(await workflow.recoveryLaunchAction(), "resume");
+	assert.equal(readFileSync(recoveryPath, "utf8"), recovery);
+});
+
 test("runs exact coverage, guarded publication, fresh resolution, checks, and final projection end to end", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
@@ -381,7 +394,19 @@ test("resume rejects another route authority in the same worktree without mutati
 		pause: async () => {},
 	});
 
-	await assert.rejects(mismatched.resume(), /supplied route authority/);
+	await assert.rejects(mismatched.recoveryLaunchAction(), (error: unknown) => {
+		assert(error instanceof Error);
+		assert.match(error.message, /freshly discovered route authority/);
+		assert.ok(error.message.includes(recoveryPath));
+		return true;
+	});
+	assert.equal(readFileSync(recoveryPath, "utf8"), recovery);
+	await assert.rejects(mismatched.resume(), (error: unknown) => {
+		assert(error instanceof Error);
+		assert.match(error.message, /supplied route authority/);
+		assert.ok(error.message.includes(recoveryPath));
+		return true;
+	});
 	assert.equal(readFileSync(recoveryPath, "utf8"), recovery);
 	assert.deepEqual({
 		push: app.world.pushCalls,
@@ -520,15 +545,48 @@ test("an unknown finalization result remains terminal after resume", async (t) =
 	assert.equal(app.world.checkCalls, 1);
 });
 
-test("malformed and oversized recovery are preserved and block start", async (t) => {
-	for (const contents of ["{malformed\n", "x".repeat(SWEEP_RECOVERY_MAX_BYTES + 1)]) {
+test("invalid recovery blocks launch and stays byte-for-byte preserved", async (t) => {
+	const cases: Array<{ name: string; contents(valid: string): string; blocker: RegExp }> = [
+		{ name: "malformed", contents: () => "{malformed\n", blocker: /Malformed comment sweep recovery/ },
+		{ name: "oversized", contents: () => "x".repeat(SWEEP_RECOVERY_MAX_BYTES + 1), blocker: /exceeds 1048576 bytes/ },
+		{
+			name: "obsolete",
+			contents: (valid) => {
+				const state = JSON.parse(valid);
+				state.version = 0;
+				return `${JSON.stringify(state)}\n`;
+			},
+			blocker: /unsupported sweep recovery state version/,
+		},
+		{
+			name: "wrong worktree",
+			contents: (valid) => {
+				const state = JSON.parse(valid);
+				state.worktree.root = "/another/worktree";
+				return `${JSON.stringify(state)}\n`;
+			},
+			blocker: /belongs to another worktree/,
+		},
+	];
+
+	for (const candidate of cases) {
 		const app = fixture();
 		t.after(app.cleanup);
 		const workflow = app.workflow();
+		await workflow.start();
 		const path = await workflow.recoveryPath();
+		const contents = candidate.contents(readFileSync(path, "utf8"));
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, contents);
-		await assert.rejects(workflow.start(), /preserved|exceeds/);
-		assert.equal(readFileSync(path, "utf8"), contents);
+
+		await assert.rejects(workflow.recoveryLaunchAction(), (error: unknown) => {
+			assert(error instanceof Error);
+			assert.match(error.message, candidate.blocker, candidate.name);
+			assert.ok(error.message.includes(path), candidate.name);
+			return true;
+		});
+		assert.equal(readFileSync(path, "utf8"), contents, candidate.name);
+		await assert.rejects(workflow.start(), candidate.blocker, candidate.name);
+		assert.equal(readFileSync(path, "utf8"), contents, candidate.name);
 	}
 });

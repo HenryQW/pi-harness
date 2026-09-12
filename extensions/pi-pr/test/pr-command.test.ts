@@ -13,6 +13,12 @@ const nextHead = "b".repeat(40);
 const baseHead = "c".repeat(40);
 const DEFAULT_HOST = "github.com";
 const workflowRunId = "11111111-1111-4111-8111-111111111111";
+const workflowActions = {
+	create: "prepare",
+	"update-branch": "merge",
+	sweep: "start",
+	"fix-ci": "collect",
+} as const;
 
 function noPullRequest(): Extract<CurrentPullRequestDiscovery, { kind: "none" }> {
 	return {
@@ -70,6 +76,7 @@ type HarnessOptions = {
 	pushReference?: string;
 	remoteNames?: string[];
 	sendError?: Error;
+	reservationAction?: "start" | "resume";
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -280,7 +287,10 @@ function harness(options: HarnessOptions) {
 			async reserveWorkflow(reservation) {
 				events.push("reserve");
 				reservations.push(reservation);
-				return workflowRunId;
+				return {
+					runId: workflowRunId,
+					action: options.reservationAction ?? workflowActions[reservation.route],
+				};
 			},
 			releaseWorkflow(runId) {
 				events.push("release");
@@ -365,6 +375,21 @@ test("routes one package workflow without opening a browser or chaining", async 
 		assert.equal(mutationCalls(app.calls).length, 0, route.name);
 		assert.equal(app.calls.some(({ args }) => args.includes("--web")), false, route.name);
 	}
+});
+
+test("dispatches the launch action returned by the fresh reservation", async () => {
+	const app = harness({
+		states: [{ reviewDecision: "CHANGES_REQUESTED" }],
+		commands: [packageCommand("skill:pi-pr-comment-sweep")],
+		reservationAction: "resume",
+	});
+
+	await app.handler("", app.context);
+
+	assert.deepEqual(app.messages, [{
+		content: `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=resume`,
+		options: { expandPromptTemplates: true },
+	}]);
 });
 
 test("names and confirms an inferred target before linking it", async () => {
@@ -457,7 +482,7 @@ test("parses a leading branch base before discovery and sends only remaining cre
 		},
 		async reserveWorkflow(reservation) {
 			reservations.push(reservation);
-			return workflowRunId;
+			return { runId: workflowRunId, action: "prepare" };
 		},
 	});
 

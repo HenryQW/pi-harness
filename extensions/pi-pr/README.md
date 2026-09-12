@@ -70,7 +70,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
 | GitHub Actions job failed | Run the CI fix workflow when the same local prerequisite holds. |
 | External check or commit status failed | Show `CI failed` as a no-action blocker. |
-| Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
+| Changes requested or unresolved review threads | Start or resume the package comment sweep when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and squash-merge if confirmed. |
 
@@ -89,6 +89,10 @@ Multiple candidate remotes, multiple matching PRs, OID mismatches, and unsafe Gi
 The creation workflow repeats destination, remote OID, PR, and configuration checks immediately before pushing. It pushes to the saved validated URL, not a mutable remote name. Every push uses the saved remote OID as an exact lease. Existing refs must also be ancestors of the captured local OID. A missing ref uses an empty lease as a create-only compare-and-swap.
 
 Each helper workflow receives a random run ID and its first action. The run stays bound to one session, canonical worktree, route, and fresh authority. Helper calls from another run, session, worktree, or route fail.
+
+For comment sweeps, `/pr` checks the package recovery file without changing it. It selects `start` when recovery is absent. It selects `resume` only when valid recovery matches the fresh route authority. Invalid recovery stays unchanged and blocks dispatch with its path and reason.
+
+Direct skill or `pi_pr_*` tool calls cannot create route authority. Run `/pr` to reserve a fresh route.
 
 Only one helper run can exist at a time. Most runs expire when the agent settles. A create or branch-update conflict stays available for one user-guided continuation, then expires after that continuation settles. Session replacement and shutdown forget the run without aborting or cleaning a pending merge.
 
@@ -149,7 +153,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 - `/pr` accepts creation syntax only as a leading `--base BRANCH`, followed by optional creation guidance. It does not open a browser.
 - It does not run `/done` or `/sweep`.
-- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
+- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep starts or resumes only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
 - It does not rebase the local branch, overwrite concurrent remote updates, delete branches, or clean up worktrees. Creation uses exact leases plus ancestry checks; an empty lease is only an atomic absence check.
 - Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.
