@@ -835,7 +835,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	): Promise<AllocationResult> {
 		assertWorkspaceDetails(details, intent, attempt);
 		await this.assertRepositoryIdentity(details, context);
-		const args = ["worktree", "open", "--path", details.worktreeCwd, "--label", details.label, "--no-focus"];
+		const args = ["worktree", "open", "--cwd", details.herdrRepoRoot, "--path", details.worktreeCwd, "--label", details.label, "--no-focus"];
 		const response = await this.herdr.exec(args, this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 		if (response.code !== 0 || response.killed) {
 			return { outcome: "unknown", failure: safeText(herdrCommandFailure(args, response)), possibleResources: [details.label] };

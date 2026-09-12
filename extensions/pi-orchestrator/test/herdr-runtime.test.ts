@@ -557,7 +557,7 @@ test("workspace allocation from primary Main still uses the primary repository c
 	const intent = await plannedIntent(host, attempt, "workspace", primary, script);
 	script.push(repositoryIdentityStep(primary), {
 		command: "herdr",
-		args: ["worktree", "open", "--path", primary.worktree, "--label", WORKSPACE_LABEL, "--no-focus"],
+		args: ["worktree", "open", "--cwd", primary.repoRoot, "--path", primary.worktree, "--label", WORKSPACE_LABEL, "--no-focus"],
 		result: success({
 			type: "worktree_opened",
 			already_open: false,
@@ -590,7 +590,7 @@ test("workspace open evidence must bind the exact checkout, repo key, and primar
 			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
 			script.push(repositoryIdentityStep(fixture), {
 				command: "herdr",
-				args: ["worktree", "open", "--path", fixture.worktree, "--label", WORKSPACE_LABEL, "--no-focus"],
+				args: ["worktree", "open", "--cwd", fixture.repoRoot, "--path", fixture.worktree, "--label", WORKSPACE_LABEL, "--no-focus"],
 				result: success({
 					type: "worktree_opened",
 					already_open: false,
@@ -628,7 +628,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	script.push(repositoryIdentityStep(fixture), {
 		command: "herdr",
 		args: (args, options) => {
-			assert.deepEqual(args, ["worktree", "open", "--path", fixture.worktree, "--label", WORKSPACE_LABEL, "--no-focus"]);
+			assert.deepEqual(args, ["worktree", "open", "--cwd", fixture.repoRoot, "--path", fixture.worktree, "--label", WORKSPACE_LABEL, "--no-focus"]);
 			assert.equal(options.cwd, fixture.repoRoot);
 		},
 
