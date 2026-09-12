@@ -317,7 +317,6 @@ function lsof(path: string, stdout = "", code = stdout ? 0 : 1, pid?: number): S
 function startablePaneSteps(
 	paths: Paths,
 	processOverrides: Record<string, unknown> = {},
-	paneProcessIds: readonly number[] = [501],
 	paneOverrides: Record<string, unknown> = {},
 ): Step[] {
 	const shellPid = 501;
@@ -345,12 +344,18 @@ function startablePaneSteps(
 				...processOverrides,
 			},
 		}) },
-		{
-			command: "ps",
-			args: ["-axo", "pid=,tty="],
-			result: { code: 0, stdout: `1 ??\n${paneProcessIds.map((pid) => `${pid} ttys042`).join("\n")}\n`, stderr: "" },
-		},
 	];
+}
+
+function ttyInventory(
+	paneProcessIds: readonly number[] = [501],
+	result?: ProcessResult,
+): Step {
+	return {
+		command: "ps",
+		args: ["-axo", "pid=,tty="],
+		result: result ?? { code: 0, stdout: `1 ??\n${paneProcessIds.map((pid) => `${pid} ttys042`).join("\n")}\n`, stderr: "" },
+	};
 }
 
 function currentWorkspaceResult(paths: Paths, worktreeOverrides: Record<string, unknown> = {}): ProcessResult {
@@ -694,17 +699,17 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		task,
 		attempt,
 		verifyLaunch: async () => {
-			assert.deepEqual(script.calls.slice(-4).map(({ command, args }) => [command, ...args]), [
+			assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
 				["lsof-test", "-nP", "-a", "-F", "p", "--", tabDetails.leasePath],
 				["herdr", "pane", "get", WORKER_PANE_ID],
 				["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
-				["ps", "-axo", "pid=,tty="],
 			]);
 			verified = true;
 			return launch;
 		},
 	}, context());
 	assert.deepEqual(agent, { outcome: "owned", resourceId: AGENT_NAME, resources: { paneId: WORKER_PANE_ID } });
+	assert.equal(script.calls.some(({ command }) => command === "ps"), false, "fresh allocation must not inspect same-TTY shell helpers");
 	script.done();
 });
 
@@ -723,7 +728,7 @@ test("agent start accepts only omitted or null agent as an empty pane", async (t
 			await privateLease(leasePath);
 			script.push(
 				lsof(leasePath),
-				...startablePaneSteps(fixture, {}, [501], { agent }),
+				...startablePaneSteps(fixture, {}, { agent }),
 				{
 					command: "herdr",
 					args: () => {},
@@ -754,7 +759,7 @@ test("agent start accepts only omitted or null agent as an empty pane", async (t
 			attempt.allocations.pop();
 			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 			await privateLease(leasePath);
-			script.push(lsof(leasePath), ...startablePaneSteps(fixture, {}, [501], { agent }).slice(0, 1));
+			script.push(lsof(leasePath), ...startablePaneSteps(fixture, {}, { agent }).slice(0, 1));
 			let verifications = 0;
 			await assert.rejects(host.allocateHost({
 				intent,
@@ -821,7 +826,7 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 		task,
 		attempt,
 		verifyLaunch: async () => {
-			assert.equal(script.calls.length, 5);
+			assert.equal(script.calls.length, 4);
 			throw new Error("Implementer extension fingerprint drifted");
 		},
 	}, context()), /fingerprint drifted/);
@@ -905,7 +910,7 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 					script.push({ command: "herdr", args: ["agent", "list"], result: success({
 						type: "agent_list",
 						agents: exists ? [agentInfo("idle", true, { cwd: fixture.worktree })] : [],
-					}) }, lsof(leasePath!), ...(exists ? [] : startablePaneSteps(fixture)));
+					}) }, lsof(leasePath!), ...(exists ? [] : [...startablePaneSteps(fixture), ttyInventory()]));
 				}
 				const reconciled = await host.reconcileHostAllocation({ intent, task, attempt }, context());
 				assert.equal(reconciled.outcome, exists ? "possible" : "absent");
@@ -1070,7 +1075,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			script.push(
 				{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents }) },
 				lsof(leasePath, holder ? "p83\n" : ""),
-				...(outcome === "absent" ? startablePaneSteps(fixture) : []),
+				...(outcome === "absent" ? [...startablePaneSteps(fixture), ttyInventory()] : []),
 			);
 			assert.equal((await host.reconcileHostAllocation({ intent, task, attempt }, context())).outcome, outcome);
 			script.done();
@@ -1100,7 +1105,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			...startablePaneSteps(fixture, {
 				foreground_process_group_id: 777,
 				foreground_processes: [{ pid: 777, name: "node", cwd: fixture.worktree }],
-			}).slice(0, 2),
+			}),
 		);
 		assert.equal((await partialHost.reconcileHostAllocation({ intent: partialIntent, task, attempt: partial.attempt }, context())).outcome, "possible");
 		partialScript.done();
@@ -1115,31 +1120,64 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		backgroundScript.push(
 			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
 			lsof(background.leasePath),
-			...startablePaneSteps(fixture, {}, [501, 777]),
+			...startablePaneSteps(fixture),
+			ttyInventory([501, 777]),
 		);
 		assert.equal(
 			(await backgroundHost.reconcileHostAllocation({ intent: backgroundIntent, task, attempt: background.attempt }, context())).outcome,
 			"possible",
 			"an unregistered background Pi on the exact pane must block retry even while its shell is idle",
 		);
+		assert.equal(backgroundScript.calls.filter(({ command }) => command === "ps").length, 1);
 		backgroundScript.done();
 
-		const inventoryScript = new ScriptedProcess();
-		const inventoryHost = runtime(fixture, inventoryScript);
-		const inventory = await fullAttempt(fixture, inventoryHost, inventoryScript);
-		const inventoryIntent = inventory.attempt.allocations.at(-1)!;
-		inventoryIntent.status = "unknown";
-		delete inventoryIntent.resourceId;
-		await privateLease(inventory.leasePath);
-		const malformedPaneSteps = startablePaneSteps(fixture);
-		malformedPaneSteps[2]!.result = { code: 0, stdout: "unsupported inventory", stderr: "" };
-		inventoryScript.push(
+		for (const [name, inventoryResult] of [
+			["malformed inventory", { code: 0, stdout: "unsupported inventory", stderr: "" }],
+			["failed inventory", { code: 1, stdout: "", stderr: "failed" }],
+			["killed inventory", { code: 124, killed: true, stdout: "501 ttys042\n", stderr: "" }],
+			["detached shell TTY", { code: 0, stdout: "1 ??\n501 ?\n", stderr: "" }],
+		] as const) {
+			const inventoryScript = new ScriptedProcess();
+			const inventoryHost = runtime(fixture, inventoryScript);
+			const inventory = await fullAttempt(fixture, inventoryHost, inventoryScript);
+			const inventoryIntent = inventory.attempt.allocations.at(-1)!;
+			inventoryIntent.status = "unknown";
+			delete inventoryIntent.resourceId;
+			await privateLease(inventory.leasePath);
+			inventoryScript.push(
+				{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
+				lsof(inventory.leasePath),
+				...startablePaneSteps(fixture),
+				ttyInventory([], inventoryResult),
+			);
+			assert.equal(
+				(await inventoryHost.reconcileHostAllocation({ intent: inventoryIntent, task, attempt: inventory.attempt }, context())).outcome,
+				"possible",
+				name,
+			);
+			assert.equal(inventoryScript.calls.filter(({ command }) => command === "ps").length, 1, name);
+			inventoryScript.done();
+		}
+
+		const exclusiveScript = new ScriptedProcess();
+		const exclusiveHost = runtime(fixture, exclusiveScript);
+		const exclusive = await fullAttempt(fixture, exclusiveHost, exclusiveScript);
+		const exclusiveIntent = exclusive.attempt.allocations.at(-1)!;
+		exclusiveIntent.status = "unknown";
+		delete exclusiveIntent.resourceId;
+		await privateLease(exclusive.leasePath);
+		exclusiveScript.push(
 			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
-			lsof(inventory.leasePath),
-			...malformedPaneSteps,
+			lsof(exclusive.leasePath),
+			...startablePaneSteps(fixture),
+			ttyInventory(),
 		);
-		assert.equal((await inventoryHost.reconcileHostAllocation({ intent: inventoryIntent, task, attempt: inventory.attempt }, context())).outcome, "possible");
-		inventoryScript.done();
+		assert.equal(
+			(await exclusiveHost.reconcileHostAllocation({ intent: exclusiveIntent, task, attempt: exclusive.attempt }, context())).outcome,
+			"absent",
+		);
+		assert.equal(exclusiveScript.calls.filter(({ command }) => command === "ps").length, 1);
+		exclusiveScript.done();
 
 		const malformedScript = new ScriptedProcess();
 		const malformedHost = runtime(fixture, malformedScript);

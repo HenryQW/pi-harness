@@ -632,7 +632,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (possible.length) {
 				return { outcome: "possible", failure: "A possible prior agent allocation or lease holder remains; it was not adopted or touched.", possibleResources: possible };
 			}
-			await this.assertStartableAgentPane(details, context);
+			await this.assertStartableAgentPane(details, context, { requireExclusiveTty: true });
 			return { outcome: "absent" };
 		} catch (error) {
 			return {
@@ -911,7 +911,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context)).length) {
 			throw new Error("Agent start requires an empty exact process lease.");
 		}
-		await this.assertStartableAgentPane(details, context);
+		await this.assertStartableAgentPane(details, context, { requireExclusiveTty: false });
 		const options = this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
 		const launch = await verifyLaunch();
 		if (launch.role !== "implementer") throw new Error("Agent start verification returned the wrong Role.");
@@ -983,7 +983,11 @@ export class HerdrHostRuntime implements HostRuntime {
 		return prefix;
 	}
 
-	private async assertStartableAgentPane(details: AgentDetails, context: OperationContext): Promise<void> {
+	private async assertStartableAgentPane(
+		details: AgentDetails,
+		context: OperationContext,
+		options: { requireExclusiveTty: boolean },
+	): Promise<void> {
 		const paneResponse = await this.herdr.json(
 			["pane", "get", details.paneId],
 			this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
@@ -1019,8 +1023,9 @@ export class HerdrHostRuntime implements HostRuntime {
 			throw new Error("The exact saved agent pane foreground process is not its owned idle shell.");
 		}
 		exactString(shell.name, "Herdr agent pane shell name");
+		if (!options.requireExclusiveTty) return;
 
-		// Herdr's foreground list excludes background jobs, so inventory every process on the shell's controlling TTY.
+		// Herdr's foreground list excludes background jobs, so recovery inventories every process on the shell's controlling TTY.
 		const inventory = await this.execute(
 			"ps",
 			["-axo", "pid=,tty="],
