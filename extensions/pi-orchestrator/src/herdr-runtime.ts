@@ -995,7 +995,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			|| exactString(pane.tab_id, "Herdr agent pane tab ID") !== details.tabId
 			|| exactString(pane.workspace_id, "Herdr agent pane workspace ID") !== details.workspaceId
 			|| pane.cwd !== details.worktreeCwd || pane.foreground_cwd !== details.worktreeCwd
-			|| pane.agent !== null || pane.agent_status !== "unknown") {
+			|| (pane.agent !== undefined && pane.agent !== null) || pane.agent_status !== "unknown") {
 			throw new Error("The exact saved agent pane is not empty and startable in its owned worktree.");
 		}
 

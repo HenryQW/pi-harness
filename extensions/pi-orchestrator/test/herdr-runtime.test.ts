@@ -318,6 +318,7 @@ function startablePaneSteps(
 	paths: Paths,
 	processOverrides: Record<string, unknown> = {},
 	paneProcessIds: readonly number[] = [501],
+	paneOverrides: Record<string, unknown> = {},
 ): Step[] {
 	const shellPid = 501;
 	return [
@@ -331,6 +332,7 @@ function startablePaneSteps(
 				foreground_cwd: paths.worktree,
 				agent: null,
 				agent_status: "unknown",
+				...paneOverrides,
 			},
 		}) },
 		{ command: "herdr", args: ["pane", "process-info", "--pane", WORKER_PANE_ID], result: success({
@@ -704,6 +706,67 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	}, context());
 	assert.deepEqual(agent, { outcome: "owned", resourceId: AGENT_NAME, resources: { paneId: WORKER_PANE_ID } });
 	script.done();
+});
+
+test("agent start accepts only omitted or null agent as an empty pane", async (t) => {
+	const fixture = await paths(t);
+	for (const [name, agent] of [
+		["omitted", undefined],
+		["null", null],
+	] as const) {
+		await t.test(name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+			attempt.allocations.pop();
+			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
+			await privateLease(leasePath);
+			script.push(
+				lsof(leasePath),
+				...startablePaneSteps(fixture, {}, [501], { agent }),
+				{
+					command: "herdr",
+					args: () => {},
+					result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
+				},
+			);
+			let verifications = 0;
+			assert.equal((await host.allocateHost({
+				intent,
+				task,
+				attempt,
+				verifyLaunch: async () => { verifications += 1; return launch; },
+			}, context())).outcome, "owned");
+			assert.equal(verifications, 1);
+			assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, 1);
+			script.done();
+		});
+	}
+
+	for (const [name, agent] of [
+		["empty string", ""],
+		["object", {}],
+	] as const) {
+		await t.test(name, async () => {
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+			attempt.allocations.pop();
+			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
+			await privateLease(leasePath);
+			script.push(lsof(leasePath), ...startablePaneSteps(fixture, {}, [501], { agent }).slice(0, 1));
+			let verifications = 0;
+			await assert.rejects(host.allocateHost({
+				intent,
+				task,
+				attempt,
+				verifyLaunch: async () => { verifications += 1; return launch; },
+			}, context()), /not empty and startable/);
+			assert.equal(verifications, 0);
+			assert.equal(script.calls.some(({ args }) => args[0] === "agent" && args[1] === "start"), false);
+			script.done();
+		});
+	}
 });
 
 test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and mismatched panes", async (t) => {
