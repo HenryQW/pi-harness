@@ -10,6 +10,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { Value } from "typebox/value";
 import { searchIndex } from "../extensions/search-core.ts";
 import { MAX_SESSION_FILE_BYTES } from "../extensions/transcript.ts";
 
@@ -32,6 +33,7 @@ after(() => {
 interface CapturedTool {
 	name: string;
 	description: string;
+	parameters: unknown;
 	promptSnippet?: string;
 	promptGuidelines?: string[];
 	execute: (...args: unknown[]) => Promise<{ content: { type: string; text: string }[]; details: unknown }>;
@@ -138,6 +140,17 @@ function msg(parentId: string | null, role: string, text: string): object {
 let msgCount = 0;
 
 describe("session_search entry point", () => {
+	it("registers a strict parameter schema", async () => {
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-schema`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		const schema = tool.parameters as Record<string, unknown>;
+		assert.equal(schema.additionalProperties, false);
+		assert.equal(Value.Check(schema as any, { query: "x" }), true);
+		assert.equal(Value.Check(schema as any, { query: "x", detail: "full" }), false);
+	});
+
 	it("previews the last five visual result lines and expands to the full response", async () => {
 		const pi = makePi();
 		const { default: register } = await import("../extensions/session-recall.ts");
@@ -203,7 +216,8 @@ describe("session_search entry point", () => {
 		assert.ok(browseResult.sessions[0].preview.length > 0);
 		assert.deepEqual((browse.details as { mode: string }).mode, "browse");
 
-		// Discovery: query hits session A top-ranked with full hydration.
+		// Discovery returns only indexed metadata and snippets. Its path and
+		// matchMessageId identify the follow-up scroll target.
 		const disc = await tool.execute("t2", { query: "auth refactor" }, undefined, undefined, ctx);
 		const discResult = JSON.parse(disc.content[0].text);
 		assert.equal(discResult.mode, "discovery");
@@ -211,11 +225,8 @@ describe("session_search entry point", () => {
 		const top = discResult.results[0];
 		assert.equal(top.path, s1);
 		assert.ok(top.snippet.includes("[") || top.snippet.length > 0);
-		assert.equal(top.detail, "full");
-		assert.ok(top.messages.some((m: { anchor?: boolean }) => m.anchor));
-		assert.equal(top.bookends.start[0]?.role, "user");
-		assert.equal(typeof top.messagesBefore, "number");
-		assert.equal(top.toolResultsOmitted, undefined);
+		assert.equal(top.matchMessageId, "e01");
+		assert.deepEqual(Object.keys(top).sort(), ["cwd", "matchMessageId", "path", "rank", "role", "snippet", "startedAt", "timestamp"]);
 
 		// Read mode via sessionId.
 		const read = await tool.execute("t3", { sessionId: s1 }, undefined, undefined, ctx);
@@ -238,76 +249,28 @@ describe("session_search entry point", () => {
 		assert.equal(scrollResult.messagesBefore, 2);
 	});
 
-	it("adaptive discovery filters tool results while explicit retrieval stays raw", async () => {
+	it("READ and SCROLL preserve raw tool-result messages", async () => {
 		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-adaptive-filter`);
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-raw-retrieval`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
-
-		const lines: object[] = [
-			{ type: "session", version: 3, id: "adaptive-filter", timestamp: "2026-02-01T00:00:00.000Z", cwd: "/tmp" },
-		];
-		let parentId: string | null = null;
-		for (let i = 1; i <= 13; i++) {
-			if (i === 7) {
-				lines.push({
-					type: "message",
-					id: "tool-large",
-					parentId,
-					timestamp: "2026-02-01T00:06:30.000Z",
-					message: { role: "toolResult", content: [{ type: "text", text: "sensitive raw output " + "x".repeat(12_000) }] },
-				});
-				parentId = "tool-large";
-			}
-			const id = `v${String(i).padStart(2, "0")}`;
-			lines.push({
-				type: "message",
-				id,
-				parentId,
-				timestamp: `2026-02-01T00:${String(i).padStart(2, "0")}:00.000Z`,
-				message: {
-					role: i % 2 ? "user" : "assistant",
-					content: [{ type: "text", text: i === 7 ? "adaptive visible anchor narwhal" : `visible message ${i}` }],
-				},
-			});
-			parentId = id;
-		}
-		const session = writeSession("adaptive-filter/session.jsonl", lines);
-		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-adaptive-filter`);
+		const session = writeSession("raw-retrieval/session.jsonl", [
+			{ type: "session", version: 3, id: "raw-retrieval", timestamp: "2026-02-01T00:00:00.000Z", cwd: "/tmp" },
+			{ type: "message", id: "u1", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "text", text: "request" }] } },
+			{ type: "message", id: "tool1", parentId: "u1", timestamp: "t2", message: { role: "toolResult", content: [{ type: "text", text: "raw tool output" }] } },
+			{ type: "message", id: "a1", parentId: "tool1", timestamp: "t3", message: { role: "assistant", content: [{ type: "text", text: "response" }] } },
+		]);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-raw-retrieval`);
 		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
 
-		for (const params of [
-			{ query: "adaptive visible anchor narwhal" },
-			{ query: "adaptive visible anchor narwhal", detail: "adaptive" },
-		]) {
-			const response = await tool.execute("adaptive", params, undefined, undefined, { sessionManager: {} });
-			const parsed = JSON.parse(response.content[0].text);
-			const hit = parsed.results[0];
-			assert.equal(hit.path, session);
-			assert.equal(hit.toolResultsOmitted, true);
-			assert.deepEqual(hit.messages.map((m: { entryId: string }) => m.entryId), ["v02", "v03", "v04", "v05", "v06", "v07", "v08", "v09", "v10", "v11", "v12"]);
-			assert.deepEqual(hit.messages.filter((m: { anchor?: boolean }) => m.anchor).map((m: { entryId: string }) => m.entryId), ["v07"]);
-			assert.deepEqual(hit.bookends.start.map((m: { entryId: string }) => m.entryId), ["v01", "v02", "v03"]);
-			assert.deepEqual(hit.bookends.end.map((m: { entryId: string }) => m.entryId), ["v11", "v12", "v13"]);
-			assert.equal(hit.messagesBefore, 6);
-			assert.equal(hit.messagesAfter, 6);
-			assert.ok(hit.messages.every((m: { role: string }) => m.role === "user" || m.role === "assistant"));
-		}
+		const read = JSON.parse((await tool.execute("read-raw", { sessionId: session }, undefined, undefined, { sessionManager: {} })).content[0].text);
+		assert.equal(read.messages.find((message: { entryId: string }) => message.entryId === "tool1").role, "toolResult");
+		assert.equal(read.messages.find((message: { entryId: string }) => message.entryId === "tool1").content, "raw tool output");
 
-		const full = JSON.parse((await tool.execute("full", { query: "adaptive visible anchor narwhal", detail: "full" }, undefined, undefined, { sessionManager: {} })).content[0].text).results[0];
-		assert.equal(full.toolResultsOmitted, undefined);
-		assert.equal(full.messages.find((m: { entryId: string }) => m.entryId === "tool-large").content.length, 12_021);
-		assert.equal(full.messagesBefore, 7);
-		assert.equal(full.messagesAfter, 6);
-
-		const read = JSON.parse((await tool.execute("read", { sessionId: session }, undefined, undefined, { sessionManager: {} })).content[0].text);
-		assert.equal(read.totalMessages, 14);
-		assert.equal(read.messages.find((m: { entryId: string }) => m.entryId === "tool-large").content.length, 12_021);
-
-		const scroll = JSON.parse((await tool.execute("scroll", { sessionId: session, aroundMessageId: "v07", window: 5 }, undefined, undefined, { sessionManager: {} })).content[0].text);
-		assert.equal(scroll.messages.find((m: { entryId: string }) => m.entryId === "tool-large").content.length, 12_021);
-		assert.equal(scroll.messagesBefore, 7);
-		assert.equal(scroll.messagesAfter, 6);
+		const scroll = JSON.parse((await tool.execute("scroll-raw", { sessionId: session, aroundMessageId: "a1", window: 1 }, undefined, undefined, { sessionManager: {} })).content[0].text);
+		const toolMessage = scroll.messages.find((message: { entryId: string }) => message.entryId === "tool1");
+		assert.equal(toolMessage.role, "toolResult");
+		assert.equal(toolMessage.content, "raw tool output");
 	});
 
 	it("SCROLL keeps position and branch as separate cursors", async () => {
@@ -358,13 +321,12 @@ describe("session_search entry point", () => {
 		assert.ok(parsed.messages.every((m: { content: string }) => m.content.length < 10_000));
 	});
 
-	it("SCROLL and DISCOVERY bound oversized content to the output budget (PR #135)", async () => {
+	it("SCROLL bounds oversized content to the output budget (PR #135)", async () => {
 		const pi = makePi();
 		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-bound`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
 
-		// SCROLL over a window with a multi-hundred-kB paste.
 		msgCount = 1;
 		const sBig = writeSession("e/session-e.jsonl", [
 			{ type: "session", version: 3, id: "se", timestamp: "2026-01-05T00:00:00.000Z", cwd: "/Users/tester/proj" },
@@ -376,67 +338,6 @@ describe("session_search entry point", () => {
 		assert.equal(scrollParsed.mode, "scroll");
 		assert.equal(scrollParsed.branchTip, "e06", "branch tip exposed as scroll cursor");
 		assert.equal(scrollParsed.contentTruncated, true);
-
-		// Discovery with detail=full: every hit sized against the cumulative budget.
-		for (const dir of ["f1", "f2", "f3"]) {
-			msgCount = 1;
-			writeSession(`${dir}/session.jsonl`, [
-				{ type: "session", version: 3, id: dir, timestamp: "2026-01-06T00:00:00.000Z", cwd: "/Users/tester/proj" },
-				...Array.from({ length: 4 }, (_, i) => msg(i === 0 ? null : `e${String(i).padStart(2, "0")}`, i % 2 ? "assistant" : "user", `capybara ${"z".repeat(30_000)}`)),
-			]);
-		}
-		const disc = await tool.execute("td", { query: "capybara", limit: 3, detail: "full" }, undefined, undefined, { sessionManager: {} });
-		assert.ok(disc.content[0].text.length <= 50_000, "complete serialized DISCOVERY must respect the 50k budget");
-		const discParsed = JSON.parse(disc.content[0].text);
-		assert.equal(discParsed.results.length, 3);
-		assert.ok(discParsed.results.some((r: { contentTruncated?: boolean }) => r.contentTruncated), "later hits truncated against cumulative budget");
-	});
-
-	it("discovery full hit derives window and bookends from one snapshot read", async () => {
-		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-single-snapshot`);
-		const pi = makePi();
-		mod.default(pi as never);
-		const tool = (pi as any).tool as CapturedTool;
-		msgCount = 1;
-		// Hit anchors on branch A (e04/e05) while the file's final leaf sits on branch B.
-		const target = writeSession("single-snapshot/session.jsonl", [
-			{ type: "session", version: 3, id: "ss1", timestamp: "2026-01-09T00:00:00.000Z", cwd: "/tmp" },
-			msg(null, "user", "shared root quoll"), // e01
-			msg("e01", "assistant", "shared middle quoll"), // e02
-			msg("e02", "user", "shared tail quoll"), // e03
-			msg("e03", "assistant", "branch A marker wombat token"), // e04
-			msg("e04", "user", "branch A tail wombat"), // e05
-			msg("e03", "assistant", "branch B sibling"), // e06 leaf branch
-			msg("e06", "user", "branch B tail"), // e07 leaf
-		]);
-		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-single-snapshot`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
-
-		// Pre-synced walk skips unchanged files via stat fingerprinting, so any
-		// further read of the transcript must come from hydration itself.
-		const realOpenSync = fs.openSync.bind(fs) as typeof fs.openSync;
-		let opens = 0;
-		fs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
-			if (args[0] === target) opens++;
-			return realOpenSync(...args);
-		}) as typeof fs.openSync;
-		let hit: { bookends: { start: { entryId: string }[]; end: { entryId: string }[] }; messages: { entryId: string }[]; messagesBefore: number; messagesAfter: number };
-		try {
-			const response = await tool.execute("single-snapshot", { query: "branch A marker wombat token" }, undefined, undefined, {
-				sessionManager: {},
-			});
-			const parsed = JSON.parse(response.content[0].text);
-			hit = parsed.results.find((r: { path: string }) => r.path === target);
-		} finally {
-			fs.openSync = realOpenSync;
-		}
-		assert.ok(hit, "expected the forked session to match");
-		assert.equal(opens, 1, "full hit must hydrate from exactly one transcript snapshot read");
-		// Bookends come from the anchor's branch (same array as the window), not
-		// the file's final leaf on branch B.
-		assert.deepEqual(hit.bookends.start.map((m) => m.entryId), ["e01", "e02", "e03"]);
-		assert.deepEqual(hit.bookends.end.map((m) => m.entryId), ["e03", "e04", "e05"]);
-		assert.ok(hit.messages.every((m: { entryId: string }) => ["e01", "e02", "e03", "e04", "e05"].includes(m.entryId)), "window stays on the anchor's branch");
 	});
 
 	it("truncateContent never splits surrogate pairs at head/tail cut points", async () => {
@@ -502,80 +403,52 @@ describe("session_search entry point", () => {
 		}
 	});
 
-	it("compact discovery hits carry the anchor message (bhGOn)", async () => {
-		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-compact`);
+	it("discovery returns metadata and tolerates missing session managers", async () => {
+		clearRecallState();
 		const pi = makePi();
-		mod.default(pi as never);
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-metadata-discovery`);
+		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
-		msgCount = 1;
-		writeSession("c/session-c.jsonl", [
-			{ type: "session", version: 3, id: "s3", timestamp: "2026-01-03T00:00:00.000Z", cwd: "/Users/tester/proj" },
-			msg(null, "user", "compacts anchor unique zebra topic"),
-			msg("e01", "assistant", "zebra reply"),
+		const target = writeSession("metadata-discovery/target.jsonl", [
+			{ type: "session", version: 3, id: "metadata-discovery", timestamp: "2026-02-02T00:00:00.000Z", cwd: "/tmp" },
+			{ type: "message", id: "match", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "text", text: "metadata-only discovery marker" }] } },
+			{ type: "message", id: "raw", parentId: "match", timestamp: "t2", message: { role: "toolResult", content: [{ type: "text", text: "raw discovery secret" }] } },
 		]);
-		writeSession("c/session-c2.jsonl", [
-			{ type: "session", version: 3, id: "s4", timestamp: "2026-01-03T01:00:00.000Z", cwd: "/Users/tester/proj" },
-			msg(null, "user", "another zebra topic conversation"),
-		]);
-		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-compact`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
-		const res = await tool.execute("t7", { query: "zebra topic", limit: 2 }, undefined, undefined, {
-			sessionManager: {},
-		});
-		const parsed = JSON.parse(res.content[0].text);
-		assert.ok(parsed.results.length >= 2);
-		const compact = parsed.results.find((r: { detail: string }) => r.detail === "compact");
-		assert.ok(compact, "expected a compact hit with limit 2");
-		assert.equal(compact.messages.length, 1);
-		assert.match(compact.messages[0].content, /zebra topic/);
-	});
-
-	it("compact discovery preserves a match from the tail of oversized content", async () => {
-		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-compact-tail`);
-		const pi = makePi();
-		mod.default(pi as never);
-		const tool = (pi as any).tool as CapturedTool;
-		msgCount = 1;
-		const target = writeSession("compact-tail/target.jsonl", [
-			{ type: "session", version: 3, id: "compact-tail-target", timestamp: "2026-01-08T00:00:00.000Z", cwd: "/tmp" },
-			msg(null, "user", `${"head ".repeat(5000)}amber-tail-citation`),
-		]);
-		writeSession("compact-tail/short.jsonl", [
-			{ type: "session", version: 3, id: "compact-tail-short", timestamp: "2026-01-08T00:00:01.000Z", cwd: "/tmp" },
-			msg(null, "user", "amber-tail-citation"),
-		]);
-		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-compact-tail`);
+		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-metadata-discovery`);
 		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
 
-		const response = await tool.execute("compact-tail", { query: "amber-tail-citation", limit: 2 }, undefined, undefined, {
-			sessionManager: {},
-		});
-		const parsed = JSON.parse(response.content[0].text);
-		const hit = parsed.results.find((r: { path: string }) => r.path === target);
-		assert.ok(hit, "expected the oversized target session to be discovered");
-		assert.equal(hit.detail, "compact");
-		assert.match(hit.messages[0].content, /amber-tail-citation/);
-	});
-
-	it("discovery preserves an indexed hit and reports oversized hydration failure", async () => {
-		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}-oversized-hydration`);
-		const pi = makePi();
-		mod.default(pi as never);
-		const tool = (pi as any).tool as CapturedTool;
-		msgCount = 1;
-		const session = writeSession("oversized-hydration/session.jsonl", [
-			{ type: "session", version: 3, id: "oversized-hydration", timestamp: "2026-01-08T00:00:00.000Z", cwd: "/tmp" },
-			msg(null, "user", "sparse hydration ceiling platypus"),
-		]);
-		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-oversized-hydration`);
-		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
-		fs.truncateSync(session, MAX_SESSION_FILE_BYTES + 1);
-
-		const response = await tool.execute("oversized", { query: "sparse hydration ceiling platypus" }, undefined, undefined, { sessionManager: {} });
-		const hit = JSON.parse(response.content[0].text).results[0];
-		assert.equal(hit.path, session);
-		assert.deepEqual(hit.messages, []);
-		assert.match(hit.error, /session file exceeds 32 MiB snapshot limit/);
+		const realOpenSync = fs.openSync.bind(fs) as typeof fs.openSync;
+		let targetOpens = 0;
+		fs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+			if (args[0] === target) targetOpens++;
+			return realOpenSync(...args);
+		}) as typeof fs.openSync;
+		try {
+			for (const sessionManager of [
+				{},
+				{ getSessionFile: () => { throw new Error("session manager unavailable"); } },
+			]) {
+				const response = await tool.execute("metadata", { query: "metadata-only discovery marker" }, undefined, undefined, { sessionManager });
+				const parsed = JSON.parse(response.content[0].text);
+				const hit = parsed.results.find((result: { path: string }) => result.path === target);
+				assert.ok(hit);
+				assert.equal(hit.matchMessageId, "match");
+				assert.equal("messages" in hit, false);
+				assert.equal("bookends" in hit, false);
+				assert.doesNotMatch(response.content[0].text, /raw discovery secret/);
+			}
+		} finally {
+			fs.openSync = realOpenSync;
+		}
+		assert.equal(targetOpens, 0, "discovery must not hydrate an already indexed hit");
+		const excluded = JSON.parse((await tool.execute(
+			"metadata-excluded",
+			{ query: "metadata-only discovery marker" },
+			undefined,
+			undefined,
+			{ sessionManager: { getSessionFile: () => target } },
+		)).content[0].text);
+		assert.equal(excluded.results.some((result: { path: string }) => result.path === target), false);
 	});
 
 	it("incomplete walk / failed lazy sync surface as warnings over stale data", async () => {
@@ -878,7 +751,6 @@ describe("session_search entry point", () => {
 				{ aroundMessageId: "x" },
 				{ branchTip: "x" },
 				{ window: 2 },
-				{ detail: "full" },
 			];
 			for (const conflict of conflicts) {
 				const parsed = JSON.parse((await tool.execute("invalid", { operation: "prepare-pattern-miner", scope: "all", ...conflict }, undefined, undefined, context)).content[0].text);

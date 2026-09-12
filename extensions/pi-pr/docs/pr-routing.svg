@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="pr-routing-title pr-routing-desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="pr-routing-title pr-routing-desc">
       <title id="pr-routing-title">How /pr picks one route</title>
       <desc id="pr-routing-desc">The /pr command creates a pull request when needed, gates branch update, feedback sweep, and CI repair on a clean worktree with local HEAD equal to the PR head, and permits direct merge when clean local HEAD is equal to or behind the PR head.</desc>
       <defs>

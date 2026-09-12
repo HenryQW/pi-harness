@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+	loadCurrentPullRequest as discoverCurrentPullRequest,
+	type CurrentPullRequestDiscovery,
+} from "../extensions/pr-github.ts";
 import { createPrCommandHandler } from "../extensions/pr-command.ts";
 
 const cwd = "/repo";
@@ -8,6 +12,24 @@ const localHead = "a".repeat(40);
 const nextHead = "b".repeat(40);
 const baseHead = "c".repeat(40);
 const DEFAULT_HOST = "github.com";
+const workflowRunId = "11111111-1111-4111-8111-111111111111";
+
+function noPullRequest(): Extract<CurrentPullRequestDiscovery, { kind: "none" }> {
+	return {
+		kind: "none",
+		creationTarget: {
+			provenance: "configured",
+			branch: "feature/pr",
+			remote: "fork",
+			ref: "feature/pr",
+			repository: "acme/project",
+			host: DEFAULT_HOST,
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+		branch: { ahead: 1 },
+	};
+}
 
 type PullRequestSpec = {
 	id?: string;
@@ -23,12 +45,6 @@ type PullRequestSpec = {
 	mergeStateStatus?: "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE";
 	reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
 	statusCheckRollup?: unknown[];
-	methods?: {
-		mergeCommitAllowed: boolean;
-		rebaseMergeAllowed: boolean;
-		squashMergeAllowed: boolean;
-		viewerDefaultMergeMethod: "MERGE" | "REBASE" | "SQUASH";
-	};
 };
 
 type CommandSpec = {
@@ -53,9 +69,20 @@ type HarnessOptions = {
 	unresolvedThreads?: number[];
 	pushReference?: string;
 	remoteNames?: string[];
+	sendError?: Error;
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
+
+function actionsCheck(overrides: Record<string, unknown>) {
+	return {
+		__typename: "CheckRun",
+		workflowName: "CI",
+		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
+		status: "COMPLETED",
+		...overrides,
+	};
+}
 
 function pullRequest(overrides: PullRequestSpec = {}) {
 	const host = overrides.host ?? DEFAULT_HOST;
@@ -73,7 +100,7 @@ function pullRequest(overrides: PullRequestSpec = {}) {
 		mergeable: overrides.mergeable ?? "MERGEABLE",
 		mergeStateStatus: overrides.mergeStateStatus ?? "CLEAN",
 		reviewDecision: overrides.reviewDecision ?? "APPROVED",
-		statusCheckRollup: overrides.statusCheckRollup ?? [{ conclusion: "SUCCESS" }],
+		statusCheckRollup: overrides.statusCheckRollup ?? [actionsCheck({ conclusion: "SUCCESS" })],
 	};
 }
 
@@ -118,6 +145,8 @@ function harness(options: HarnessOptions) {
 	const messages: Array<{ content: string; options: unknown }> = [];
 	const notifications: Array<{ message: string; type: string }> = [];
 	const confirmations: Array<{ title: string; message: string }> = [];
+	const reservations: unknown[] = [];
+	const releases: string[] = [];
 	const events: string[] = [];
 	let stateIndex = 0;
 	let statusIndex = 0;
@@ -159,10 +188,6 @@ function harness(options: HarnessOptions) {
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				return result(JSON.stringify(active ? pullRequest(active) : null));
 			}
-			if (
-				command === "gh" &&
-				args.join(" ") === `api --hostname ${active?.host ?? DEFAULT_HOST} --paginate --slurp -H Accept: application/vnd.github+json -H X-GitHub-Api-Version: 2022-11-28 repos/${active?.baseRepository ?? "acme/project"}/rules/branches/${encodeURIComponent(active?.baseRefName ?? "main")}`
-			) return result("[[]]");
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 				if (query.includes("associatedPullRequests(")) {
@@ -188,24 +213,10 @@ function harness(options: HarnessOptions) {
 						},
 					} } }));
 				}
-				if (query.includes("branchProtectionRule")) {
-					return result(JSON.stringify({ data: { repository: {
-						nameWithOwner: active?.baseRepository ?? "acme/project",
-						ref: { name: active?.baseRefName ?? "main", branchProtectionRule: null },
-					} } }));
-				}
 				if (query.includes("mergePullRequest")) {
 					events.push("merge");
 					return result(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: pullRequest(active ?? {}).id, state: "MERGED" } } } }));
 				}
-			}
-			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
-				return result(JSON.stringify(active?.methods ?? {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: true,
-					squashMergeAllowed: true,
-					viewerDefaultMergeMethod: "MERGE",
-				}));
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return result(options.statuses?.[statusIndex++] ?? options.status ?? "");
@@ -235,6 +246,8 @@ function harness(options: HarnessOptions) {
 			sourceInfo: { origin: command.origin },
 		})),
 		sendUserMessage(content: string, messageOptions: unknown) {
+			events.push("send");
+			if (options.sendError) throw options.sendError;
 			messages.push({ content, options: messageOptions });
 		},
 	} as unknown as Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
@@ -249,18 +262,38 @@ function harness(options: HarnessOptions) {
 				return options.confirmed ?? true;
 			},
 			notify(message: string, type?: string) {
+				events.push("notify");
 				notifications.push({ message, type: type ?? "info" });
 			},
 		},
 	} as unknown as ExtensionCommandContext;
 	return {
 		pi,
-		handler: createPrCommandHandler(pi),
+		handler: createPrCommandHandler(pi, {
+			async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
+				if (options.states[stateIndex] === null) {
+					events.push("load");
+					return noPullRequest();
+				}
+				return await discoverCurrentPullRequest(...args);
+			},
+			async reserveWorkflow(reservation) {
+				events.push("reserve");
+				reservations.push(reservation);
+				return workflowRunId;
+			},
+			releaseWorkflow(runId) {
+				events.push("release");
+				releases.push(runId);
+			},
+		}),
 		context,
 		calls,
 		messages,
 		notifications,
 		confirmations,
+		reservations,
+		releases,
 		events,
 	};
 }
@@ -271,36 +304,63 @@ function mutationCalls(calls: Call[]): Call[] {
 	);
 }
 
-const routes: Array<{ name: string; state: PullRequestSpec | null; command: string }> = [
-	{ name: "create", state: null, command: "skill:pi-pr-create" },
+const routes: Array<{ name: string; state: PullRequestSpec | null; command: string; action: string }> = [
+	{ name: "create", state: null, command: "skill:pi-pr-create", action: "prepare" },
 	{
 		name: "branch update outranks feedback and CI",
 		state: {
 			mergeable: "CONFLICTING",
 			mergeStateStatus: "DIRTY",
 			reviewDecision: "CHANGES_REQUESTED",
-			statusCheckRollup: [{ conclusion: "FAILURE" }],
+			statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })],
 		},
 		command: "skill:pi-pr-update-branch",
+		action: "merge",
 	},
 	{
 		name: "CI repair outranks review sweep",
-		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
+		state: { reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] },
 		command: "skill:pi-pr-fix-ci",
+		action: "collect",
 	},
 	{
 		name: "CI repair outranks waiting",
-		state: { reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [{ conclusion: "FAILURE" }] },
+		state: { reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] },
 		command: "skill:pi-pr-fix-ci",
+		action: "collect",
+	},
+	{
+		name: "review feedback",
+		state: { reviewDecision: "CHANGES_REQUESTED" },
+		command: "skill:pi-pr-comment-sweep",
+		action: "start",
 	},
 ];
+
+test("signals route resolution before dispatch, notification, confirmation, or mutation", async () => {
+	const create = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
+	await create.handler("", create.context, () => create.events.push("route"));
+	assert.deepEqual(create.events, ["load", "route", "reserve", "send"]);
+
+	const noAction = harness({ states: [{ state: "MERGED" }] });
+	await noAction.handler("", noAction.context, () => noAction.events.push("route"));
+	assert.deepEqual(noAction.events, ["load", "route", "notify"]);
+
+	const merge = harness({ states: [{}, {}] });
+	await merge.handler("", merge.context, () => merge.events.push("route"));
+	assert.deepEqual(merge.events, ["load", "route", "confirm", "load", "merge"]);
+});
 
 test("routes one package workflow without opening a browser or chaining", async () => {
 	for (const route of routes) {
 		const app = harness({ states: [route.state], commands: [packageCommand(route.command)] });
 		await app.handler("", app.context);
 
-		assert.deepEqual(app.messages, [{ content: `/${route.command}`, options: { expandPromptTemplates: true } }], route.name);
+		assert.deepEqual(app.messages, [{
+			content: `/${route.command} runId=${workflowRunId} action=${route.action}`,
+			options: { expandPromptTemplates: true },
+		}], route.name);
+		assert.equal(app.reservations.length, 1, route.name);
 		assert.equal(app.confirmations.length, 0, route.name);
 		assert.equal(mutationCalls(app.calls).length, 0, route.name);
 		assert.equal(app.calls.some(({ args }) => args.includes("--web")), false, route.name);
@@ -354,7 +414,7 @@ test("does not dispatch mutating workflows when the worktree is dirty or local H
 	const conditions: Array<{ name: string; state: PullRequestSpec }> = [
 		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } },
 		{ name: "comment sweep", state: { reviewDecision: "CHANGES_REQUESTED" } },
-		{ name: "CI fix", state: { statusCheckRollup: [{ conclusion: "FAILURE" }] } },
+		{ name: "CI fix", state: { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] } },
 	];
 	for (const route of conditions) {
 		const dirty = harness({ states: [route.state], status: " M file.ts\n" });
@@ -381,19 +441,116 @@ test("dispatches a workflow as a follow-up only while the agent is busy", async 
 	await app.handler("", app.context);
 
 	assert.deepEqual(app.messages, [{
-		content: "/skill:pi-pr-create",
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
 		options: { deliverAs: "followUp", expandPromptTemplates: true },
 	}]);
 });
 
-test("forwards trimmed instructions to the selected workflow", async () => {
+test("parses a leading branch base before discovery and sends only remaining creation guidance", async () => {
 	const app = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
+	const reservations: unknown[] = [];
+	let explicitBase: string | undefined;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest(...args) {
+			explicitBase = args[4];
+			return noPullRequest();
+		},
+		async reserveWorkflow(reservation) {
+			reservations.push(reservation);
+			return workflowRunId;
+		},
+	});
 
-	await app.handler("  keep the title under 50 characters  ", app.context);
+	await handler("  --base release/2026  Keep the title concise.  ", app.context);
+	assert.equal(explicitBase, "release/2026");
+	assert.deepEqual(reservations, [{
+		route: "create",
+		target: noPullRequest().creationTarget,
+		base: "release/2026",
+	}]);
 	assert.deepEqual(app.messages, [{
-		content: "/skill:pi-pr-create keep the title under 50 characters",
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare Keep the title concise.`,
 		options: { expandPromptTemplates: true },
 	}]);
+});
+
+test("rejects a missing leading base value before discovery", async () => {
+	const app = harness({ states: [null] });
+	let loads = 0;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest() {
+			loads += 1;
+			return noPullRequest();
+		},
+	});
+
+	for (const input of ["--base", "  --base \t\n"]) {
+		await assert.rejects(handler(input, app.context), /--base requires a branch/, input);
+	}
+	await assert.rejects(handler("--base=release", app.context), /base syntax is --base <branch>/);
+	assert.equal(loads, 0);
+});
+
+test("rejects a branch base outside creation without running creation preflight", async () => {
+	const app = harness({ states: [{ state: "MERGED" }] });
+	let explicitBase: string | undefined;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest(...args) {
+			explicitBase = args[4];
+			return await discoverCurrentPullRequest(...args);
+		},
+	});
+
+	await assert.rejects(handler("--base release", app.context), /accepted only for pull request creation/);
+	assert.equal(explicitBase, "release");
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), false);
+});
+
+test("rejects instructions for non-create helper routes before reservation", async () => {
+	const app = harness({
+		states: [{ statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
+		commands: [packageCommand("skill:pi-pr-fix-ci")],
+	});
+
+	await assert.rejects(app.handler("rerun the job", app.context), /helper route does not accept instructions/);
+	assert.deepEqual(app.reservations, []);
+	assert.deepEqual(app.messages, []);
+});
+
+test("checks command generation after discovery and reservation and immediately before send", async () => {
+	for (const failAt of [1, 2, 3]) {
+		const app = harness({
+			states: [null],
+			commands: [packageCommand("skill:pi-pr-create")],
+		});
+		let checks = 0;
+
+		await assert.rejects(app.handler("", app.context, Object.assign(() => {}, {
+			sessionGeneration: 7,
+			assertCurrent() {
+				checks += 1;
+				if (checks === failAt) throw new Error("session replaced");
+			},
+		})), /session replaced/, `generation check ${failAt}`);
+		assert.deepEqual(app.messages, [], `generation check ${failAt}`);
+		assert.equal(app.reservations.length, failAt === 1 ? 0 : 1, `generation check ${failAt}`);
+		assert.deepEqual(app.releases, failAt === 1 ? [] : [workflowRunId], `generation check ${failAt}`);
+	}
+});
+
+test("rolls back exactly the new reservation when prompt dispatch fails", async () => {
+	const app = harness({
+		states: [null],
+		commands: [packageCommand("skill:pi-pr-create")],
+		sendError: new Error("send failed"),
+	});
+
+	await assert.rejects(app.handler("", app.context), /send failed/);
+	assert.deepEqual(app.events, ["load", "reserve", "send", "release"]);
+	assert.deepEqual(app.releases, [workflowRunId]);
+	assert.deepEqual(app.messages, []);
 });
 
 test("rejects instructions when the current route handles the action directly", async () => {
@@ -430,7 +587,13 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 		{ name: "merged", state: { state: "MERGED" }, message: "PR #42 is merged; no action needed", type: "info" },
 		{ name: "closed", state: { state: "CLOSED" }, message: "PR #42 is closed; no action needed", type: "info" },
 		{ name: "draft", state: { isDraft: true }, message: "PR #42 is draft; no action available", type: "warning" },
-		{ name: "CI running", state: { statusCheckRollup: [{ state: "IN_PROGRESS" }] }, message: "PR #42 is waiting for CI", type: "warning" },
+		{
+			name: "unsupported CI failure",
+			state: { statusCheckRollup: [{ __typename: "StatusContext", context: "legacy", state: "ERROR" }] },
+			message: "PR #42 has a failed CI check that cannot run the CI fix workflow",
+			type: "warning",
+		},
+		{ name: "CI running", state: { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] }, message: "PR #42 is waiting for CI", type: "warning" },
 		{ name: "review pending", state: { reviewDecision: "REVIEW_REQUIRED" }, message: "PR #42 is waiting for review", type: "warning" },
 		{ name: "merge policy pending", state: { mergeStateStatus: "BLOCKED" }, message: "PR #42 is blocked by merge policy", type: "warning" },
 		{ name: "dirty worktree", state: {}, status: " M file.ts\n", message: "PR #42 is blocked by a dirty worktree", type: "warning" },
@@ -495,7 +658,7 @@ test("cancels a confirmed merge when post-inspection authority is absent, differ
 		},
 		{
 			name: "optional check fails",
-			states: [{}, { statusCheckRollup: [{ conclusion: "FAILURE" }] }],
+			states: [{}, { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
 			error: /no longer merge-ready/,
 		},
 		{
@@ -579,33 +742,15 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 	const host = "github.example.test";
 	const app = harness({
 		states: [
-			{
-				id: "PR_kwDOExample",
-				host,
-				methods: {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: false,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "MERGE",
-				},
-			},
-			{
-				id: "PR_kwDOExample",
-				host,
-				methods: {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: false,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "MERGE",
-				},
-			},
+			{ id: "PR_kwDOExample", host },
+			{ id: "PR_kwDOExample", host },
 		],
 	});
 	assert.equal(await app.handler("", app.context), "merge");
 
 	assert.deepEqual(app.confirmations, [{
 		title: "Merge PR #42?",
-		message: "Method: merge.",
+		message: "Method: squash.",
 	}]);
 	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
 	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
@@ -638,40 +783,8 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 			"-F",
 			`expectedHeadOid=${localHead}`,
 			"-F",
-			"mergeMethod=MERGE",
+			"mergeMethod=SQUASH",
 		],
 	}]);
 	assert.equal(app.calls.some(({ args }) => args.includes("--web")), false);
-});
-
-test("cancels a confirmed merge when the fresh merge method changes", async () => {
-	const app = harness({
-		states: [
-			{
-				methods: {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: false,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "MERGE",
-				},
-			},
-			{
-				methods: {
-					mergeCommitAllowed: false,
-					rebaseMergeAllowed: true,
-					squashMergeAllowed: false,
-					viewerDefaultMergeMethod: "REBASE",
-				},
-			},
-		],
-		ancestry: "behind",
-	});
-
-	await assert.rejects(app.handler("", app.context), /merge method changed from merge to rebase/);
-	assert.deepEqual(app.confirmations, [{
-		title: "Merge PR #42?",
-		message: "Method: merge.",
-	}]);
-	assert.deepEqual(app.events, ["load", "confirm", "load"]);
-	assert.equal(mutationCalls(app.calls).length, 0);
 });

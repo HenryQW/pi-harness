@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import {
-	hasLocalCommit,
 	linkInferredPullRequest,
 	loadCurrentPullRequest as discoverCurrentPullRequest,
+	preflightPullRequestCreation,
 	PullRequestLoadError,
 } from "../extensions/pr-github.ts";
 
@@ -19,12 +19,14 @@ async function loadCurrentPullRequest(
 	if (discovery.kind === "none" || discovery.kind === "inactive") return null;
 	throw new PullRequestLoadError(`Discovery blocked: ${discovery.issue.kind}`);
 }
-import { derivePullRequestNextStep } from "../extensions/pr-routing.ts";
+import { derivePullRequestNextStep, type PullRequestTarget } from "../extensions/pr-routing.ts";
 
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
 const BASE_HEAD = "c".repeat(40);
 const LIVE_BASE_HEAD = "d".repeat(40);
+const LINK_LOCK_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-pr-link-agent-"));
+after(() => rmSync(LINK_LOCK_AGENT_DIR, { recursive: true, force: true }));
 
 type CommandCall = {
 	command: string;
@@ -41,7 +43,6 @@ type HarnessOptions = {
 	listResults?: ReturnType<typeof result>[];
 	pullRequestResult?: ReturnType<typeof result>;
 	localHead?: string;
-	localHeadAfterRulesetRead?: string;
 	pushResult?: ReturnType<typeof result>;
 	pushReference?: string;
 	refCheckResult?: ReturnType<typeof result>;
@@ -59,11 +60,7 @@ type HarnessOptions = {
 	remoteHeadResult?: ReturnType<typeof result>;
 	threads?: string;
 	baseRefResult?: ReturnType<typeof result>;
-	policyResult?: ReturnType<typeof result>;
 	baseRefTargetOid?: string;
-	requiresStrictStatusChecks?: boolean | null;
-	rulesetResult?: ReturnType<typeof result>;
-	methods?: Record<string, unknown>;
 	status?: string;
 	stateResult?: ReturnType<typeof result>;
 	gitStateCwd?: string;
@@ -71,9 +68,16 @@ type HarnessOptions = {
 	verifyResult?: ReturnType<typeof result>;
 	ancestry?: "behind" | "ahead" | "diverged";
 	ancestryResult?: ReturnType<typeof result>;
+	configResults?: Record<string, ReturnType<typeof result>>;
+	creationBaseOid?: string;
+	creationMergeBase?: string;
+	creationAhead?: string;
+	creationFetchResult?: ReturnType<typeof result>;
+	creationDefaultBranch?: string;
+	repositoryApiResults?: Record<string, ReturnType<typeof result>>;
 };
 
-const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
+const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed });
 
 function runGit(cwd: string, args: string[]) {
 	const command = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -90,6 +94,11 @@ function git(cwd: string, ...args: string[]): string {
 	assert.equal(command.code, 0, `${args.join(" ")} failed: ${command.stderr}`);
 	return command.stdout.trim();
 }
+
+const LINK_LOCK_REPOSITORY = mkdtempSync(join(tmpdir(), "pi-pr-link-repository-"));
+after(() => rmSync(LINK_LOCK_REPOSITORY, { recursive: true, force: true }));
+mkdirSync(join(LINK_LOCK_REPOSITORY, "test"));
+git(LINK_LOCK_REPOSITORY, "init", "--initial-branch=main");
 
 function reviewThreadPage(nodes: unknown[], hasNextPage = false) {
 	return {
@@ -117,32 +126,6 @@ function baseRefOutput(targetOid = BASE_HEAD): string {
 			},
 		},
 	});
-}
-
-function baseBranchPolicyOutput(requiresStrictStatusChecks: boolean | null): string {
-	return JSON.stringify({
-		data: {
-			repository: {
-				nameWithOwner: "acme/project",
-				ref: {
-					name: "main",
-					branchProtectionRule: requiresStrictStatusChecks === null
-						? null
-						: { requiresStrictStatusChecks },
-				},
-			},
-		},
-	});
-}
-
-function rulesetOutput(...pages: unknown[][]): string {
-	return JSON.stringify(pages);
-}
-
-function rulesetPolicyOutput(...pages: boolean[]): string {
-	return rulesetOutput(...pages.map((strict) => strict
-		? [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: true } }]
-		: []));
 }
 
 function searchIdentity(candidate: Record<string, unknown>): Record<string, unknown> {
@@ -211,6 +194,19 @@ function candidateSearchOutput(
 	));
 }
 
+function actionsCheck(overrides: Record<string, unknown> = {}) {
+	return {
+		__typename: "CheckRun",
+		workflowName: "CI",
+		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
+		...overrides,
+	};
+}
+
+function statusContext(overrides: Record<string, unknown> = {}) {
+	return { __typename: "StatusContext", ...overrides };
+}
+
 function pullRequest(overrides: Record<string, unknown> = {}) {
 	return {
 		id: "PR_kwDOExample",
@@ -243,6 +239,22 @@ function observation(overrides: Record<string, unknown> = {}) {
 		...overrides,
 	};
 }
+
+function creationTarget(overrides: Partial<PullRequestTarget> = {}): PullRequestTarget {
+	return {
+		provenance: "configured",
+		branch: "feature/local",
+		remote: "origin",
+		ref: "feature/pr",
+		repository: "acme/project",
+		host: "github.com",
+		fetchSource: "git@github.com:acme/project.git",
+		remoteOid: REMOTE_HEAD,
+		...overrides,
+	};
+}
+
+const forkOrigin = { pushUrls: { origin: "git@github.com:acme/fork.git" } };
 
 function harness(options: HarnessOptions = {}) {
 	const calls: CommandCall[] = [];
@@ -282,11 +294,16 @@ function harness(options: HarnessOptions = {}) {
 					: options.fetchUrls?.[requestedRemote] ?? (requestedRemote === remote ? options.fetchUrl : undefined) ?? defaultUrl;
 				return result(`${requestedUrl}\n`);
 			}
-			if (command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "nameWithOwner,url") {
-				if (options.pushRepositoryResult) return options.pushRepositoryResult;
+			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
 				const [host, owner, name, ...rest] = (args[2] ?? "").split("/");
 				if (!host || !owner || !name || rest.length) throw new Error(`Unexpected repository locator: ${args[2]}`);
-				return result(JSON.stringify({ nameWithOwner: `${owner}/${name}`, url: `https://${host}/${owner}/${name}` }));
+				if (args[4] === "nameWithOwner,url") {
+					if (options.pushRepositoryResult) return options.pushRepositoryResult;
+					return result(JSON.stringify({ nameWithOwner: `${owner}/${name}`, url: `https://${host}/${owner}/${name}` }));
+				}
+				if (args[4] === "defaultBranchRef") {
+					return result(JSON.stringify({ defaultBranchRef: { name: options.creationDefaultBranch ?? "main" } }));
+				}
 			}
 			if (command === "git" && args[0] === "ls-remote") {
 				if (options.remoteHeadResult) return options.remoteHeadResult;
@@ -301,6 +318,8 @@ function harness(options: HarnessOptions = {}) {
 			}
 			if (command === "git" && args[0] === "config") {
 				const key = args.at(-1) ?? "";
+				const configuredResult = options.configResults?.[key];
+				if (configuredResult) return configuredResult;
 				const values = options.configValues?.[key] ?? [];
 				if (values.length === 0) return result("", 1);
 				if (args.includes("--type=bool")) {
@@ -312,6 +331,33 @@ function harness(options: HarnessOptions = {}) {
 					return normalized.includes(null) ? result("", 128) : result(`${normalized.join("\n")}\n`);
 				}
 				return result(`${values.join("\n")}\n`);
+			}
+			if (
+				command === "git" && args[0] === "fetch" &&
+				args.slice(1, 5).join(" ") === "--no-write-fetch-head --no-tags --no-recurse-submodules --"
+			) return options.creationFetchResult ?? result();
+			if (
+				command === "git" && args[0] === "rev-parse" && args[1] === "--verify" &&
+				args[2]?.startsWith("refs/remotes/origin/") && args[2]?.endsWith("^{commit}")
+			) return result(`${options.creationBaseOid ?? BASE_HEAD}\n`);
+			if (command === "git" && args[0] === "merge-base" && args[1] !== "--is-ancestor") {
+				return result(`${options.creationMergeBase ?? BASE_HEAD}\n`);
+			}
+			if (command === "git" && args[0] === "rev-list" && args[1] === "--count") {
+				return result(`${options.creationAhead ?? "1"}\n`);
+			}
+			if (command === "gh" && args[0] === "api" && args[1] === "--hostname") {
+				const endpoint = args.at(-1) ?? "";
+				if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
+					const configuredResult = options.repositoryApiResults?.[endpoint];
+					if (configuredResult) return configuredResult;
+					const [, owner, name] = endpoint.split("/");
+					return result(JSON.stringify({
+						full_name: `${owner}/${name}`,
+						html_url: `https://github.com/${owner}/${name}`,
+						source: null,
+					}));
+				}
 			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				if (options.pullRequestResult) return options.pullRequestResult;
@@ -339,13 +385,6 @@ function harness(options: HarnessOptions = {}) {
 				if (query.includes("target{oid}")) {
 					return options.baseRefResult ?? result(baseRefOutput(options.baseRefTargetOid));
 				}
-				if (query.includes("branchProtectionRule")) {
-					return options.policyResult ?? result(baseBranchPolicyOutput(options.requiresStrictStatusChecks ?? null));
-				}
-			}
-			if (command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main") {
-				if (options.localHeadAfterRulesetRead) localHead = options.localHeadAfterRulesetRead;
-				return options.rulesetResult ?? result(rulesetPolicyOutput(false));
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
 				return options.gitStateCwd ? runGit(options.gitStateCwd, args) : result(options.status ?? "");
@@ -369,14 +408,6 @@ function harness(options: HarnessOptions = {}) {
 				if (ancestry === "ahead" && left === REMOTE_HEAD && right === localHead) return result();
 				return result("", 1);
 			}
-			if (command === "gh" && args.join(" ") === "repo view github.com/acme/project --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod") {
-				return result(JSON.stringify(options.methods ?? {
-					mergeCommitAllowed: true,
-					rebaseMergeAllowed: true,
-					squashMergeAllowed: true,
-					viewerDefaultMergeMethod: "SQUASH",
-				}));
-			}
 			throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
 		},
 	} as unknown as Parameters<typeof loadCurrentPullRequest>[0];
@@ -395,6 +426,8 @@ async function linkHarness(failures: {
 	closeBeforeFinalVerification?: boolean;
 	initialTrackingOid?: string;
 	moveRemoteBeforeFetchTo?: string;
+	loseFetchResponse?: boolean;
+	loseUpstreamResponse?: boolean;
 } = {}) {
 	const candidate = pullRequest({ headRefName: "feature/local" });
 	const app = harness({
@@ -406,6 +439,7 @@ async function linkHarness(failures: {
 	assert.equal(initial.kind, "current");
 	if (initial.kind !== "current") throw new Error("Expected inferred pull request");
 	assert.equal(initial.pullRequest.target.provenance, "inferred");
+	app.context.cwd = LINK_LOCK_REPOSITORY;
 	app.calls.length = 0;
 
 	const originalExec = app.pi.exec.bind(app.pi);
@@ -463,10 +497,10 @@ async function linkHarness(failures: {
 		}
 		if (command === "git" && args[0] === "fetch" && args.at(-1)?.endsWith(`:${trackingRef}`)) {
 			record();
-			assert.equal(args.at(-1), `${REMOTE_HEAD}:${trackingRef}`);
+			assert.equal(args.at(-1), `+${REMOTE_HEAD}:${trackingRef}`);
 			movedRemoteHead = failures.moveRemoteBeforeFetchTo ?? null;
 			trackingOid = REMOTE_HEAD;
-			return result();
+			return failures.loseFetchResponse ? result("", 0, "", true) : result();
 		}
 		if (movedRemoteHead && command === "git" && args[0] === "ls-remote") {
 			record();
@@ -477,7 +511,7 @@ async function linkHarness(failures: {
 			config.set("branch.feature/local.remote", ["fork"]);
 			config.set("branch.feature/local.merge", ["refs/heads/feature/local"]);
 			linked = true;
-			return result();
+			return failures.loseUpstreamResponse ? result("", 0, "", true) : result();
 		}
 		if (command === "git" && args[0] === "update-ref") {
 			record();
@@ -502,34 +536,6 @@ async function linkHarness(failures: {
 	return { ...app, inferred: initial.pullRequest, config, getTrackingOid: () => trackingOid };
 }
 
-test("detects commits added after local branch creation", async (t) => {
-	const repository = mkdtempSync(join(tmpdir(), "pi-pr-local-commit-"));
-	t.after(() => rmSync(repository, { recursive: true, force: true }));
-	git(repository, "init", "-b", "main");
-	git(repository, "config", "user.name", "Pi PR Test");
-	git(repository, "config", "user.email", "pi-pr@example.com");
-	writeFileSync(join(repository, "tracked.txt"), "base\n");
-	git(repository, "add", "tracked.txt");
-	git(repository, "commit", "-m", "base");
-	git(repository, "switch", "-c", "feature");
-
-	const pi = {
-		exec: async (command: string, args: string[]) => {
-			assert.equal(command, "git");
-			return runGit(repository, args);
-		},
-	} as unknown as Parameters<typeof hasLocalCommit>[0];
-	const context = {
-		cwd: repository,
-		signal: new AbortController().signal,
-	} as Parameters<typeof hasLocalCommit>[1];
-
-	assert.equal(await hasLocalCommit(pi, context), false);
-	writeFileSync(join(repository, "tracked.txt"), "changed\n");
-	git(repository, "commit", "-am", "change");
-	assert.equal(await hasLocalCommit(pi, context), true);
-});
-
 test("discovers an upstream PR from repository-scoped ref associations", async () => {
 	const foreign = pullRequest({
 		number: 41,
@@ -540,7 +546,10 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 		mergeable: "CONFLICTING",
 		mergeStateStatus: "DIRTY",
 		reviewDecision: "CHANGES_REQUESTED",
-		statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }, { state: "IN_PROGRESS" }],
+		statusCheckRollup: [
+			actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" }),
+			statusContext({ state: "IN_PROGRESS" }),
+		],
 	});
 	const { pi, context, calls } = harness({
 		candidates: [foreign, matching],
@@ -584,10 +593,6 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 			fetchSource: "git@github.com:acme/fork.git",
 			remoteOid: REMOTE_HEAD,
 		},
-		merge: {
-			allowedMergeMethods: ["merge", "rebase", "squash"],
-			viewerDefaultMergeMethod: "squash",
-		},
 	});
 
 	const search = calls.find(({ command, args }) =>
@@ -623,8 +628,6 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 	assert.ok(threads?.args.includes("--slurp"));
 	assert.equal(threads?.args.includes("--jq"), false);
 	assert.doesNotMatch(threads?.args.join(" ") ?? "", /comments/);
-	const mergeSettings = calls.find(({ command, args }) => command === "gh" && args[0] === "repo" && args[2] === "github.com/acme/project");
-	assert.ok(mergeSettings?.args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod"));
 	const fetch = calls.find(({ command, args }) => command === "git" && args[0] === "fetch");
 	assert.deepEqual(fetch?.args, [
 		"fetch",
@@ -640,6 +643,16 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 		assert.equal(call.options?.timeout, 10_000);
 		assert.equal(call.options?.signal, context.signal);
 	}
+});
+
+test("loads an open PR without repository policy lookups", async () => {
+	const app = harness();
+
+	const loaded = await loadCurrentPullRequest(app.pi, app.context);
+	assert.equal(loaded?.number, 42);
+	assert.equal(app.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), false);
+	assert.equal(app.calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
+	assert.equal(app.calls.some(({ args }) => args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod")), false);
 });
 
 test("resolves the current base ref target instead of the pull request base snapshot", async () => {
@@ -668,22 +681,6 @@ test("uses inspected local safety without reopening the fetch window", async () 
 	assert.ok(loaded);
 	assert.deepEqual(loaded.local, { worktree: "clean", head: "equal" });
 	assert.equal(calls.some(({ command, args }) => command === "git" && ["status", "fetch", "cat-file", "merge-base"].includes(args[0] ?? "")), false);
-});
-
-test("routes from the local HEAD sampled after remote policy reads", async () => {
-	const { pi, context, calls } = harness({
-		localHead: REMOTE_HEAD,
-		localHeadAfterRulesetRead: LOCAL_HEAD,
-		ancestry: "ahead",
-	});
-
-	const loaded = await loadCurrentPullRequest(pi, context);
-	assert.ok(loaded);
-	assert.equal(loaded.local.head, "ahead");
-	assert.equal(derivePullRequestNextStep(loaded), "none");
-	const policyRead = calls.findIndex(({ command, args }) => command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main");
-	const headRead = calls.findIndex(({ command, args }) => command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}");
-	assert.ok(policyRead >= 0 && headRead > policyRead);
 });
 
 test("batches complete ref-associated pull requests beyond 100 and loads only the exact candidate", async () => {
@@ -872,7 +869,7 @@ test("infers one exact open pull request from a published same-name branch", asy
 	assert.ok(search?.args.includes("qualifiedName=refs/heads/feature/local"));
 });
 
-test("does not globally search a common branch with no pull request", async () => {
+test("treats the default branch with no pull request as creation-ineligible", async () => {
 	const app = harness({
 		branch: "main",
 		remote: "origin",
@@ -886,12 +883,16 @@ test("does not globally search a common branch with no pull request", async () =
 		})),
 	});
 
-	assert.equal((await discoverCurrentPullRequest(app.pi, app.context)).kind, "none");
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(discovery.kind, "none");
+	if (discovery.kind !== "none") return;
+	assert.equal(discovery.branch.ahead, 0);
 	const search = app.calls.find(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("associatedPullRequests("))
 	);
 	assert.ok(search?.args.includes("qualifiedName=refs/heads/main"));
 	assert.doesNotMatch(search?.args.join(" ") ?? "", /search\(query:|searchQuery=|head:/);
+	assert.equal(app.calls.some(({ command, args }) => command === "git" && args[0] === "fetch"), false);
 });
 
 test("rejects true, malformed, and repeated remote mirror settings but allows normalized false", async () => {
@@ -995,7 +996,7 @@ test("blocks a published ref without a PR and an inferred OID mismatch", async (
 });
 
 test("offers creation only after validating origin and finding no published ref", async () => {
-	const { pi, context } = harness({
+	const { pi, context, calls } = harness({
 		pushResult: result("\n"),
 		remote: "origin",
 		remoteNames: ["origin"],
@@ -1015,7 +1016,13 @@ test("offers creation only after validating origin and finding no published ref"
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
+		branch: { ahead: 1 },
 	});
+	assert.equal(calls.some(({ command }) => command === process.execPath), false);
+	assert.deepEqual(calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		"git@github.com:acme/project.git", "+refs/heads/main:refs/remotes/origin/main",
+	]);
 
 	const invalid = harness({
 		pushResult: result("\n"),
@@ -1050,9 +1057,290 @@ test("offers creation only after validating origin and finding no published ref"
 	}
 });
 
+test("prioritizes a current pull request before an explicit creation preflight", async () => {
+	const app = harness();
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
+
+	assert.equal(discovery.kind, "current");
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+});
+
+test("uses an explicit creation branch for discovery ahead routing", async () => {
+	const app = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		creationAhead: "2",
+	});
+
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
+	assert.deepEqual(discovery.kind === "none" ? discovery.branch : undefined, { ahead: 2 });
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch release"
+	), true);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "defaultBranchRef"
+	), false);
+	assert.deepEqual(app.calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		"git@github.com:acme/project.git", "+refs/heads/release:refs/remotes/origin/release",
+	]);
+});
+
+test("preflights an explicit creation base from captured OIDs", async () => {
+	const baseOid = "e".repeat(40);
+	const mergeBase = "f".repeat(40);
+	const app = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		creationBaseOid: baseOid,
+		creationMergeBase: mergeBase,
+		creationAhead: "2",
+	});
+	const preflight = await preflightPullRequestCreation(app.pi, app.context, creationTarget(), "release");
+
+	assert.deepEqual(preflight, {
+		head: LOCAL_HEAD,
+		base: {
+			host: "github.com",
+			repository: "acme/project",
+			fetchSource: "git@github.com:acme/project.git",
+			ref: "release",
+			oid: baseOid,
+			mergeBase,
+		},
+		ahead: 2,
+	});
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "gh" && args.join(" ") === "repo view github.com/acme/project --json defaultBranchRef"
+	), false);
+	assert.deepEqual(app.calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		"git@github.com:acme/project.git", "+refs/heads/release:refs/remotes/origin/release",
+	]);
+	assert.ok(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === `merge-base ${LOCAL_HEAD} ${baseOid}`
+	));
+	assert.ok(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === `rev-list --count ${mergeBase}..${LOCAL_HEAD}`
+	));
+});
+
+test("rediscovers an unpublished branch before link configuration or creation preflight", async () => {
+	const options: HarnessOptions = {
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		candidates: [pullRequest({
+			headRepository: { nameWithOwner: "acme/project" },
+			headRefName: "feature/local",
+			headRefOid: REMOTE_HEAD,
+		})],
+	};
+	const app = harness(options);
+	const originalExec = app.pi.exec.bind(app.pi);
+	let remoteReads = 0;
+	app.pi.exec = async (command: string, args: string[], commandOptions?: CommandCall["options"]) => {
+		if (command === "git" && args[0] === "ls-remote" && args.at(-1) === "refs/heads/feature/local") {
+			app.calls.push({ command, args, options: commandOptions });
+			remoteReads += 1;
+			if (remoteReads === 2) options.remoteHead = REMOTE_HEAD;
+			return remoteReads === 1
+				? result("", 2)
+				: result(`${REMOTE_HEAD}\trefs/heads/feature/local\n`);
+		}
+		return await originalExec(command, args, commandOptions);
+	};
+
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(discovery.kind, "current");
+	const remoteReadIndexes = app.calls.flatMap(({ command, args }, index) =>
+		command === "git" && args[0] === "ls-remote" ? [index] : []
+	);
+	const firstConfigIndex = app.calls.findIndex(({ command, args }) => command === "git" && args[0] === "config");
+	assert.equal(remoteReads, 2);
+	assert.equal(remoteReadIndexes.length, 2);
+	assert.ok(firstConfigIndex > remoteReadIndexes[1]!);
+	assert.equal(app.calls.some(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	), false);
+	assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+});
+
+test("uses a configured base or the strict positional repository default", async () => {
+	const configured = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		configValues: { "branch.feature/local.gh-merge-base": ["release"] },
+	});
+	const configuredPreflight = await preflightPullRequestCreation(configured.pi, configured.context, creationTarget());
+	assert.equal(configuredPreflight.base.ref, "release");
+	const branchCheck = configured.calls.findIndex(({ command, args }) =>
+		command === "git" && args.join(" ") === "check-ref-format --branch feature/local"
+	);
+	const configRead = configured.calls.findIndex(({ command, args }) =>
+		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
+	);
+	assert.ok(branchCheck >= 0 && branchCheck < configRead);
+	assert.equal(configured.calls.some(({ command, args }) =>
+		command === "gh" && args.join(" ") === "repo view github.com/acme/project --json defaultBranchRef"
+	), false);
+
+	const defaulted = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		creationDefaultBranch: "trunk",
+	});
+	const defaultedPreflight = await preflightPullRequestCreation(defaulted.pi, defaulted.context, creationTarget());
+	assert.equal(defaultedPreflight.base.ref, "trunk");
+	assert.deepEqual(defaulted.calls.find(({ command, args }) =>
+		command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "defaultBranchRef"
+	)?.args, ["repo", "view", "github.com/acme/project", "--json", "defaultBranchRef"]);
+});
+
+test("accepts an absent creation base config only as empty exit 1", async () => {
+	for (const configResult of [
+		result("release\n", 1),
+		result("", 1, "configuration failed\n"),
+		result("", 2),
+	]) {
+		const app = harness({
+			remote: "origin",
+			pushUrl: "git@github.com:acme/project.git",
+			configResults: { "branch.feature/local.gh-merge-base": configResult },
+		});
+		await assert.rejects(
+			preflightPullRequestCreation(app.pi, app.context, creationTarget()),
+			/Read creation base configuration failed: exit code/,
+		);
+		assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+	}
+
+	const invalidRef = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		refCheckResult: result("rewritten\n"),
+	});
+	await assert.rejects(
+		preflightPullRequestCreation(invalidRef.pi, invalidRef.context, creationTarget(), "release"),
+		/Validate creation base failed: ref changed/,
+	);
+	assert.equal(invalidRef.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+});
+
+test("rejects noncanonical creation ahead counts", async () => {
+	for (const ahead of ["01", "1.0", "-1", "9007199254740992"]) {
+		const app = harness({
+			remote: "origin",
+			pushUrl: "git@github.com:acme/project.git",
+			creationAhead: ahead,
+		});
+		await assert.rejects(
+			preflightPullRequestCreation(app.pi, app.context, creationTarget(), "release"),
+			/Count creation commits failed: invalid ahead count/,
+			ahead,
+		);
+	}
+});
+
+test("guards creation branch and repository relation before qualified base fetch", async () => {
+	const branchChanged = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		branchResult: result("other\n"),
+	});
+	await assert.rejects(
+		preflightPullRequestCreation(branchChanged.pi, branchChanged.context, creationTarget(), "release"),
+		/Read creation branch failed: branch changed/,
+	);
+	assert.equal(branchChanged.calls.some(({ command, args }) => command === "git" && args[0] === "config"), false);
+	assert.equal(branchChanged.calls.some(({ command, args }) => command === "git" && args[0] === "remote"), false);
+
+	const hostMismatch = harness({ remote: "origin", pushUrl: "git@github.com:acme/project.git" });
+	await assert.rejects(
+		preflightPullRequestCreation(hostMismatch.pi, hostMismatch.context, creationTarget({ host: "ghe.example" }), "release"),
+		/base and head hosts do not match/,
+	);
+	assert.equal(hostMismatch.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+
+	const sameRef = harness({ remote: "origin", pushUrl: "git@github.com:acme/project.git" });
+	await assert.rejects(
+		preflightPullRequestCreation(sameRef.pi, sameRef.context, creationTarget({ ref: "main" }), "main"),
+		/head and base refs match/,
+	);
+	assert.equal(sameRef.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+
+	const originRepository = result(JSON.stringify({
+		full_name: "acme/project",
+		html_url: "https://github.com/acme/project",
+		source: null,
+	}));
+	const unrelated = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		repositoryApiResults: {
+			"repos/acme/project": originRepository,
+			"repos/acme/fork": result(JSON.stringify({
+				full_name: "acme/fork",
+				html_url: "https://github.com/acme/fork",
+				source: { full_name: "acme/unrelated" },
+			})),
+		},
+	});
+	await assert.rejects(
+		preflightPullRequestCreation(unrelated.pi, unrelated.context, creationTarget({
+			remote: "fork",
+			repository: "acme/fork",
+			fetchSource: "git@github.com:acme/fork.git",
+		}), "release"),
+		/base and head are unrelated/,
+	);
+	assert.equal(unrelated.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
+
+	const related = harness({
+		remote: "origin",
+		pushUrl: "git@github.com:acme/project.git",
+		repositoryApiResults: {
+			"repos/acme/project": originRepository,
+			"repos/acme/fork": result(JSON.stringify({
+				full_name: "acme/fork",
+				html_url: "https://github.com/acme/fork",
+				source: { full_name: "acme/project" },
+			})),
+		},
+	});
+	await preflightPullRequestCreation(related.pi, related.context, creationTarget({
+		remote: "fork",
+		repository: "acme/fork",
+		fetchSource: "git@github.com:acme/fork.git",
+	}), "release");
+	const lineageReads = related.calls.flatMap(({ command, args }, index) =>
+		command === "gh" && args[0] === "api" && args.at(-1)?.startsWith("repos/") ? [index] : []
+	);
+	const fetchIndex = related.calls.findIndex(({ command, args }) => command === "git" && args.includes("--"));
+	assert.equal(lineageReads.length, 2);
+	assert.ok(lineageReads.every((index) => index < fetchIndex));
+});
+
 test("links an inferred target only after fresh verification", async () => {
 	const app = await linkHarness();
-	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred);
+	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR });
 
 	assert.equal(linked.target.provenance, "configured");
 	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["fork"]);
@@ -1070,9 +1358,51 @@ test("links an inferred target only after fresh verification", async () => {
 		"--no-tags",
 		"--no-recurse-submodules",
 		"git@github.com:acme/fork.git",
-		`${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
+		`+${REMOTE_HEAD}:refs/remotes/fork/feature/local`,
 	]);
-	assert.equal(fetch?.args.includes("--force"), false);
+});
+
+test("forces a pinned non-fast-forward tracking replacement before linking", async () => {
+	const previousTrackingOid = "f".repeat(40);
+	const app = await linkHarness({ initialTrackingOid: previousTrackingOid });
+	const linked = await linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR });
+
+	assert.equal(linked.target.provenance, "configured");
+	assert.equal(app.getTrackingOid(), REMOTE_HEAD);
+	const fetch = app.calls.find(({ command, args }) =>
+		command === "git" && args.at(-1)?.endsWith(":refs/remotes/fork/feature/local")
+	);
+	assert.equal(fetch?.args.at(-1), `+${REMOTE_HEAD}:refs/remotes/fork/feature/local`);
+});
+
+test("serializes simultaneous links for the same worktree", async () => {
+	const app = await linkHarness();
+	const originalExec = app.pi.exec.bind(app.pi);
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	let enter!: () => void;
+	const entered = new Promise<void>((resolve) => { enter = resolve; });
+	let firstFetch = true;
+	app.pi.exec = async (command: string, args: string[], options?: CommandCall["options"]) => {
+		if (firstFetch && command === "git" && args[0] === "fetch") {
+			firstFetch = false;
+			enter();
+			await held;
+		}
+		return await originalExec(command, args, options);
+	};
+	const first = linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR });
+	await entered;
+	const subdirectoryContext = { ...app.context, cwd: join(app.context.cwd, "test") };
+	try {
+		await assert.rejects(
+			linkInferredPullRequest(app.pi, subdirectoryContext, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
+			/Another pi-pr mutation is active/,
+		);
+	} finally {
+		release();
+	}
+	await first;
 });
 
 test("cancels linking when the remote becomes a mirror after discovery", async () => {
@@ -1080,7 +1410,7 @@ test("cancels linking when the remote becomes a mirror after discovery", async (
 	app.config.set("remote.fork.mirror", ["true"]);
 
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch cancelled: inferred pull request context changed/,
 	);
 	assert.equal(app.config.has("branch.feature/local.remote"), false);
@@ -1096,17 +1426,37 @@ test("cancels and rolls back when the remote moves between precheck and fetch", 
 	});
 
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed: configured pull request does not match inferred target/,
 	);
 	assert.equal(app.getTrackingOid(), originalTrackingOid);
 	assert.equal(app.config.size, 0);
 });
 
+test("rolls back a tracking ref after a lost fetch response", async () => {
+	const app = await linkHarness({ loseFetchResponse: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
+		/Fetch branch tracking ref failed/,
+	);
+	assert.equal(app.getTrackingOid(), null);
+	assert.equal(app.config.size, 0);
+});
+
+test("rolls back upstream and tracking state after a lost upstream response", async () => {
+	const app = await linkHarness({ loseUpstreamResponse: true });
+	await assert.rejects(
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
+		/Set branch upstream failed/,
+	);
+	assert.equal(app.getTrackingOid(), null);
+	assert.equal(app.config.size, 0);
+});
+
 test("rolls back upstream and tracking state when final link verification fails", async () => {
 	const app = await linkHarness({ failFinalLookup: true });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Find pull requests failed: exit code 1/,
 	);
 
@@ -1118,7 +1468,7 @@ test("rolls back upstream and tracking state when final link verification fails"
 test("removes its fetched tracking ref when post-fetch verification errors", async () => {
 	const app = await linkHarness({ failPostFetchRead: true });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Read remote-tracking ref failed: exit code 128/,
 	);
 	assert.equal(app.getTrackingOid(), null);
@@ -1129,7 +1479,7 @@ test("does not overwrite a concurrent tracking-ref update during rollback", asyn
 	const concurrentOid = "e".repeat(40);
 	const app = await linkHarness({ concurrentTrackingOid: concurrentOid });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed and rollback was incomplete/,
 	);
 	assert.equal(app.getTrackingOid(), concurrentOid);
@@ -1139,7 +1489,7 @@ test("does not overwrite a concurrent tracking-ref update during rollback", asyn
 test("does not erase a concurrent branch-config update during rollback", async () => {
 	const app = await linkHarness({ failFinalLookup: true, concurrentConfigValue: "other" });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed and rollback was incomplete/,
 	);
 	assert.deepEqual(app.config.get("branch.feature/local.remote"), ["other"]);
@@ -1150,7 +1500,7 @@ test("does not erase a concurrent branch-config update during rollback", async (
 test("rolls back when the inferred pull request closes before final verification", async () => {
 	const app = await linkHarness({ closeBeforeFinalVerification: true });
 	await assert.rejects(
-		linkInferredPullRequest(app.pi, app.context, app.inferred),
+		linkInferredPullRequest(app.pi, app.context, app.inferred, { agentDir: LINK_LOCK_AGENT_DIR }),
 		/Link branch failed: configured pull request does not match inferred target/,
 	);
 	assert.equal(app.config.size, 0);
@@ -1296,7 +1646,7 @@ test("ignores the same head ref in an unrelated repository", async () => {
 		url: "https://github.com/acme/unrelated/pull/42",
 		headRepository: { nameWithOwner: "acme/unrelated" },
 	});
-	const { pi, context, calls } = harness({ candidates: [unrelated] });
+	const { pi, context, calls } = harness({ candidates: [unrelated], ...forkOrigin });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 0);
@@ -1355,7 +1705,6 @@ test("retains a just-merged PR by its exact remote push-ref OID when local HEAD 
 	assert.equal(loaded.local.worktree, "dirty");
 	assert.equal(loaded.local.head, "behind");
 	assert.equal(loaded.conditions.unresolvedThreads, 0);
-	assert.equal(loaded.merge, null);
 	assert.equal(calls.some(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && !args.some((arg) => arg.includes("associatedPullRequests("))
 	), false);
@@ -1396,7 +1745,7 @@ test("fails for ambiguous historical PRs matching the remote push ref", async ()
 
 test("does not fall back to local HEAD when the remote push ref is absent", async () => {
 	const historical = pullRequest({ state: "CLOSED", headRefOid: LOCAL_HEAD });
-	const { pi, context, calls } = harness({ candidates: [historical], remoteHead: null });
+	const { pi, context, calls } = harness({ candidates: [historical], remoteHead: null, ...forkOrigin });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	const search = calls.find(({ command, args }) =>
@@ -1449,7 +1798,7 @@ test("ignores stale observations when configured target or local HEAD identity d
 	];
 	for (const mismatch of mismatches) {
 		const merged = pullRequest({ state: "MERGED" });
-		const { pi, context, calls } = harness({ candidates: [merged], localHead: REMOTE_HEAD, remoteHead: null });
+		const { pi, context, calls } = harness({ candidates: [merged], localHead: REMOTE_HEAD, remoteHead: null, ...forkOrigin });
 		const discovery = await discoverCurrentPullRequest(pi, context, undefined, mismatch.value);
 		assert.equal(discovery.kind, "none", mismatch.name);
 		assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 0, mismatch.name);
@@ -1484,7 +1833,7 @@ test("fails visibly when remote push-ref authority errors or is malformed", asyn
 
 test("returns null only when no current-branch PR matches", async () => {
 	const stale = pullRequest({ state: "CLOSED", headRefOid: LOCAL_HEAD });
-	const { pi, context, calls } = harness({ candidates: [stale] });
+	const { pi, context, calls } = harness({ candidates: [stale], ...forkOrigin });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
@@ -1512,7 +1861,7 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 
 	const malformed = harness({
-		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "BROKEN" }] })],
+		candidates: [pullRequest({ statusCheckRollup: [statusContext({ state: "BROKEN" })] })],
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(malformed.pi, malformed.context),
@@ -1520,7 +1869,9 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 
 	const contradictory = harness({
-		candidates: [pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", status: "IN_PROGRESS" }] })],
+		candidates: [pullRequest({
+			statusCheckRollup: [actionsCheck({ conclusion: "SUCCESS", status: "IN_PROGRESS" })],
+		})],
 	});
 	await assert.rejects(
 		loadCurrentPullRequest(contradictory.pi, contradictory.context),
@@ -1553,14 +1904,50 @@ test("fails rather than treating command errors, malformed data, or ambiguity as
 	);
 });
 
+test("routes only diagnosable failed GitHub Actions checks through the CI fixer", async (t) => {
+	await t.test("stale Actions check", async () => {
+		const { pi, context } = harness({
+			localHead: REMOTE_HEAD,
+			candidates: [pullRequest({
+				statusCheckRollup: [actionsCheck({ conclusion: "STALE", status: "COMPLETED" })],
+			})],
+		});
+		const loaded = await loadCurrentPullRequest(pi, context);
+		assert.ok(loaded);
+		assert.equal(loaded.conditions.ci, "failure");
+		assert.equal(derivePullRequestNextStep(loaded), "fix-ci");
+	});
+
+	for (const candidate of [
+		statusContext({ context: "legacy", state: "ERROR", targetUrl: "https://ci.example.test/build/1" }),
+		actionsCheck({
+			conclusion: "FAILURE",
+			status: "COMPLETED",
+			workflowName: "",
+			detailsUrl: "https://ci.example.test/check/1",
+		}),
+	]) {
+		await t.test(candidate.__typename === "StatusContext" ? "failed legacy status" : "failed external-app check", async () => {
+			const { pi, context } = harness({
+				localHead: REMOTE_HEAD,
+				candidates: [pullRequest({ statusCheckRollup: [candidate] })],
+			});
+			const loaded = await loadCurrentPullRequest(pi, context);
+			assert.ok(loaded);
+			assert.equal(loaded.conditions.ci, "failure-blocked");
+			assert.equal(derivePullRequestNextStep(loaded), "none");
+		});
+	}
+});
+
 test("normalizes empty gh review and check fields without accepting empty records", async () => {
 	const normalized = harness({
 		candidates: [pullRequest({
 			reviewDecision: "",
 			statusCheckRollup: [
-				{ conclusion: "", status: "QUEUED" },
-				{ conclusion: "SUCCESS", state: "", status: "COMPLETED" },
-				{ conclusion: "", state: "IN_PROGRESS", status: "" },
+				actionsCheck({ conclusion: "", status: "QUEUED" }),
+				actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" }),
+				statusContext({ state: "IN_PROGRESS" }),
 			],
 		})],
 	});
@@ -1572,8 +1959,8 @@ test("normalizes empty gh review and check fields without accepting empty record
 
 	for (const candidate of [
 		pullRequest({ reviewDecision: "DISMISSED" }),
-		pullRequest({ statusCheckRollup: [{ conclusion: "", state: "", status: "" }] }),
-		pullRequest({ statusCheckRollup: [{ conclusion: "SUCCESS", state: "FAILURE" }] }),
+		pullRequest({ statusCheckRollup: [{ __typename: "CheckRun", conclusion: "", status: "" }] }),
+		pullRequest({ statusCheckRollup: [actionsCheck({ conclusion: "SUCCESS", status: "FAILURE" })] }),
 	]) {
 		const invalid = harness({ candidates: [candidate] });
 		await assert.rejects(loadCurrentPullRequest(invalid.pi, invalid.context), /invalid reviewDecision|invalid statusCheckRollup/);
@@ -1597,192 +1984,38 @@ test("rejects partial review-thread data when any paginated GraphQL page has err
 	);
 });
 
-test("requires a base update for strict legacy protection or an applicable strict ruleset", async () => {
-	const cases = [
-		{ name: "legacy only", legacy: true, rulesets: rulesetPolicyOutput(false), required: true },
-		{ name: "ruleset only", legacy: null, rulesets: rulesetPolicyOutput(true), required: true },
-		{ name: "later ruleset page", legacy: null, rulesets: rulesetPolicyOutput(false, true), required: true },
-		{ name: "neither", legacy: null, rulesets: rulesetPolicyOutput(false), required: false },
-	] as const;
-	for (const candidate of cases) {
-		const app = harness({
-			candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
-			requiresStrictStatusChecks: candidate.legacy,
-			rulesetResult: result(candidate.rulesets),
-		});
-		const loaded = await loadCurrentPullRequest(app.pi, app.context);
-		assert.ok(loaded);
-		assert.equal(loaded.conditions.baseUpdateRequired, candidate.required, candidate.name);
-		assert.equal(loaded.conditions.policy, candidate.required ? "pending" : "ready", candidate.name);
-		const legacy = app.calls.find(({ command, args }) =>
-			command === "gh" && args.some((arg) => arg.includes("branchProtectionRule"))
-		);
-		assert.ok(legacy, candidate.name);
-		assert.ok(legacy.args.includes("owner=acme"), candidate.name);
-		assert.ok(legacy.args.includes("name=project"), candidate.name);
-		assert.ok(legacy.args.includes("qualifiedName=refs/heads/main"), candidate.name);
-		const rulesets = app.calls.find(({ command, args }) =>
-			command === "gh" && args.at(-1) === "repos/acme/project/rules/branches/main"
-		);
-		assert.ok(rulesets?.args.includes("--hostname"), candidate.name);
-		assert.ok(rulesets?.args.includes("github.com"), candidate.name);
-		assert.ok(rulesets?.args.includes("--paginate"), candidate.name);
-		assert.ok(rulesets?.args.includes("--slurp"), candidate.name);
-	}
+test("requires a base update whenever GitHub reports the PR behind", async () => {
+	const app = harness({ candidates: [pullRequest({ mergeStateStatus: "BEHIND" })] });
 
-	const blocked = harness({ candidates: [pullRequest({ mergeStateStatus: "BLOCKED" })] });
-	const blockedPullRequest = await loadCurrentPullRequest(blocked.pi, blocked.context);
-	assert.ok(blockedPullRequest);
-	assert.equal(blockedPullRequest.conditions.baseUpdateRequired, false);
-	assert.equal(blockedPullRequest.conditions.policy, "pending");
-	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
-	assert.equal(blocked.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), true);
+	const loaded = await loadCurrentPullRequest(app.pi, app.context);
+	assert.ok(loaded);
+	assert.equal(loaded.conditions.baseUpdateRequired, true);
+	assert.equal(loaded.conditions.policy, "pending");
 });
 
-test("fails visibly when either base branch authority fails or is malformed", async () => {
-	const cases: Array<{
-		name: string;
-		baseRefResult?: ReturnType<typeof result>;
-		policyResult?: ReturnType<typeof result>;
-		rulesetResult?: ReturnType<typeof result>;
-		error: RegExp;
-	}> = [
+test("fails visibly when current base branch authority fails or is malformed", async () => {
+	const cases = [
+		{ name: "query failure", output: result("", 1), error: /Read base ref failed: exit code 1/ },
 		{
-			name: "base ref query failure",
-			baseRefResult: result("", 1),
-			error: /Read base ref failed: exit code 1/,
-		},
-		{
-			name: "base ref GraphQL denial",
-			baseRefResult: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
+			name: "GraphQL denial",
+			output: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
 			error: /Read base ref failed: GitHub GraphQL returned errors/,
 		},
 		{
-			name: "malformed base ref authority",
-			baseRefResult: result(JSON.stringify({ data: { repository: null } })),
+			name: "malformed authority",
+			output: result(JSON.stringify({ data: { repository: null } })),
 			error: /Read base ref failed: invalid GitHub CLI output/,
 		},
 		{
-			name: "malformed base target OID",
-			baseRefResult: result(baseRefOutput("not-an-oid")),
+			name: "malformed target OID",
+			output: result(baseRefOutput("not-an-oid")),
 			error: /Read base ref failed: invalid target OID/,
 		},
-		{
-			name: "legacy query failure",
-			policyResult: result("", 1),
-			error: /Read base branch policy failed: exit code 1/,
-		},
-		{
-			name: "legacy GraphQL denial",
-			policyResult: result(JSON.stringify({ data: { repository: null }, errors: [{ type: "FORBIDDEN" }] })),
-			error: /Read base branch policy failed: GitHub GraphQL returned errors/,
-		},
-		{
-			name: "malformed legacy authority",
-			policyResult: result(JSON.stringify({ data: { repository: null } })),
-			error: /Read base branch policy failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "ruleset authorization failure",
-			rulesetResult: result("", 1),
-			error: /Read base branch rulesets failed: exit code 1/,
-		},
-		{
-			name: "malformed ruleset page collection",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(JSON.stringify([[], {}])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "malformed status rule on a valid page",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(JSON.stringify([[{ type: "required_status_checks", parameters: {} }]])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "malformed pull request rule",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(rulesetOutput([{ type: "pull_request", parameters: {} }])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-		{
-			name: "unsupported pull request merge method",
-			policyResult: result(baseBranchPolicyOutput(true)),
-			rulesetResult: result(rulesetOutput([{ type: "pull_request", parameters: { allowed_merge_methods: ["octopus"] } }])),
-			error: /Read base branch rulesets failed: invalid GitHub CLI output/,
-		},
-	];
+	] as const;
 	for (const candidate of cases) {
-		const { pi, context } = harness({
-			candidates: [pullRequest({ mergeStateStatus: "BEHIND" })],
-			baseRefResult: candidate.baseRefResult,
-			policyResult: candidate.policyResult,
-			rulesetResult: candidate.rulesetResult,
-		});
-		await assert.rejects(loadCurrentPullRequest(pi, context), candidate.error, candidate.name);
+		const app = harness({ baseRefResult: candidate.output });
+		await assert.rejects(loadCurrentPullRequest(app.pi, app.context), candidate.error, candidate.name);
 	}
-});
-
-test("intersects repository merge methods with every applicable pull-request rule", async () => {
-	const restricted = harness({
-		rulesetResult: result(rulesetOutput(
-			[{ type: "pull_request", parameters: { allowed_merge_methods: ["merge", "squash"] } }],
-			[{ type: "pull_request", parameters: { allowed_merge_methods: ["rebase", "squash"] } }],
-		)),
-	});
-	const loaded = await loadCurrentPullRequest(restricted.pi, restricted.context);
-	assert.ok(loaded);
-	assert.deepEqual(loaded.merge, {
-		allowedMergeMethods: ["squash"],
-		viewerDefaultMergeMethod: "squash",
-	});
-
-	const repositoryRestricted = harness({
-		methods: {
-			mergeCommitAllowed: true,
-			rebaseMergeAllowed: true,
-			squashMergeAllowed: false,
-			viewerDefaultMergeMethod: "REBASE",
-		},
-		rulesetResult: result(rulesetOutput([
-			{ type: "pull_request", parameters: { allowed_merge_methods: ["rebase", "squash"] } },
-		])),
-	});
-	const repositoryLoaded = await loadCurrentPullRequest(repositoryRestricted.pi, repositoryRestricted.context);
-	assert.ok(repositoryLoaded);
-	assert.deepEqual(repositoryLoaded.merge, {
-		allowedMergeMethods: ["rebase"],
-		viewerDefaultMergeMethod: "rebase",
-	});
-
-	const empty = harness({
-		methods: {
-			mergeCommitAllowed: true,
-			rebaseMergeAllowed: false,
-			squashMergeAllowed: false,
-			viewerDefaultMergeMethod: "MERGE",
-		},
-		rulesetResult: result(rulesetOutput([
-			{ type: "pull_request", parameters: { allowed_merge_methods: ["squash"] } },
-		])),
-	});
-	await assert.rejects(
-		loadCurrentPullRequest(empty.pi, empty.context),
-		/Read merge methods failed: repository and applicable rules allow no common merge method/,
-	);
-
-	const invalidDefault = harness({
-		methods: {
-			mergeCommitAllowed: true,
-			rebaseMergeAllowed: true,
-			squashMergeAllowed: false,
-			viewerDefaultMergeMethod: "SQUASH",
-		},
-	});
-	await assert.rejects(
-		loadCurrentPullRequest(invalidDefault.pi, invalidDefault.context),
-		/Read merge methods failed: viewerDefaultMergeMethod is not allowed/,
-	);
 });
 
 test("classifies clean and in-progress Git operations in a linked worktree", async (t) => {

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-footer",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Show concise repository, branch, and usage details in the Pi footer.",
   "keywords": [
     "pi-package",
@@ -24,7 +24,6 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.85.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@earendil-works/pi-tui": "^0.85.1"
   },

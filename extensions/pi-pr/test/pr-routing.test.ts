@@ -36,6 +36,7 @@ function deriveNextStep(pullRequest: PullRequest | null): NextStep {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
+		branch: { ahead: 1 },
 	});
 }
 
@@ -61,8 +62,10 @@ test("routes exactly one highest-priority next step", () => {
 		{ name: "conflict precedes feedback and CI", pullRequest: pullRequest({ conditions: { conflict: true, changesRequested: true, ci: "failure" } }), expected: "update-branch" },
 		{ name: "changes requested routes to sweep", pullRequest: pullRequest({ conditions: { changesRequested: true } }), expected: "sweep" },
 		{ name: "unresolved threads route to sweep", pullRequest: pullRequest({ conditions: { unresolvedThreads: 2 } }), expected: "sweep" },
-		{ name: "CI failure precedes feedback", pullRequest: pullRequest({ conditions: { changesRequested: true, unresolvedThreads: 2, ci: "failure" } }), expected: "fix-ci" },
-		{ name: "CI failure precedes waiting", pullRequest: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending" } }), expected: "fix-ci" },
+		{ name: "diagnosable CI failure precedes feedback", pullRequest: pullRequest({ conditions: { changesRequested: true, unresolvedThreads: 2, ci: "failure" } }), expected: "fix-ci" },
+		{ name: "diagnosable CI failure precedes waiting", pullRequest: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending" } }), expected: "fix-ci" },
+		{ name: "unsupported CI failure blocks the fixer and feedback", pullRequest: pullRequest({ conditions: { changesRequested: true, ci: "failure-blocked" } }), expected: "none" },
+		{ name: "unsupported CI failure blocks merge", pullRequest: pullRequest({ conditions: { ci: "failure-blocked" } }), expected: "none" },
 		{ name: "running CI waits", pullRequest: pullRequest({ conditions: { ci: "running" } }), expected: "none" },
 		{ name: "pending review waits", pullRequest: pullRequest({ conditions: { ci: "success", review: "pending" } }), expected: "none" },
 		{ name: "pending policy waits", pullRequest: pullRequest({ conditions: { policy: "pending" } }), expected: "none" },
@@ -72,6 +75,25 @@ test("routes exactly one highest-priority next step", () => {
 	for (const { name, pullRequest: candidate, expected } of cases) {
 		assert.equal(deriveNextStep(candidate), expected, name);
 	}
+});
+
+test("requires an ahead commit before routing creation", () => {
+	const creation = {
+		kind: "none" as const,
+		creationTarget: {
+			provenance: "inferred" as const,
+			branch: "feature",
+			remote: "origin",
+			ref: "feature",
+			repository: "acme/project",
+			host: "github.com",
+			fetchSource: "git@github.com:acme/project.git",
+			remoteOid: null,
+		},
+		branch: { ahead: 0 },
+	};
+	assert.equal(deriveDiscoveryNextStep(creation), "none");
+	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, ahead: 1 } }), "create");
 });
 
 test("routes discovery states without mutating ambiguous targets", () => {

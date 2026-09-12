@@ -5,6 +5,7 @@ import type {
 import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
+import { withWorktreeLock } from "./pr-execution.ts";
 import type {
 	CiStatus,
 	LocalMergeSafety,
@@ -14,7 +15,6 @@ import type {
 	PullRequestLifecycle,
 	PullRequestTarget,
 	ReviewReadiness,
-	PolicyReadiness,
 } from "./pr-routing.ts";
 
 const EXEC_TIMEOUT_MS = 10_000;
@@ -22,10 +22,10 @@ const PR_DISCOVERY_PAGE_SIZE = 100;
 const PR_DISCOVERY_CAP = 1_000;
 const PR_DISCOVERY_MAX_PAGES = PR_DISCOVERY_CAP / PR_DISCOVERY_PAGE_SIZE;
 const PR_FIELDS = "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
+const PR_PUBLICATION_FIELDS = "number,url,state,baseRefName,headRefName,headRefOid,headRepository,title,body";
 const PR_DISCOVERY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!,$endCursor:String){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name associatedPullRequests(first:100,after:$endCursor){totalCount edges{cursor node{__typename number url state baseRepository{nameWithOwner}headRepository{nameWithOwner}headRefName headRefOid}}pageInfo{hasNextPage startCursor endCursor}}}}}";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
-const BASE_BRANCH_POLICY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name branchProtectionRule{requiresStrictStatusChecks}}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const FAILED_CHECK_STATES = new Set([
 	"ACTION_REQUIRED",
@@ -58,7 +58,6 @@ const MERGE_STATE_VALUES = new Set([
 	"UNSTABLE",
 ]);
 const REVIEW_DECISION_VALUES = new Set(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"]);
-const MERGE_METHODS: MergeMethod[] = ["merge", "rebase", "squash"];
 
 export class PullRequestLoadError extends Error {
 	constructor(message: string) {
@@ -73,13 +72,6 @@ export type PullRequestRef = {
 	oid: string;
 };
 
-export type MergeMethod = "merge" | "rebase" | "squash";
-
-export type PullRequestMerge = {
-	allowedMergeMethods: MergeMethod[];
-	viewerDefaultMergeMethod: MergeMethod;
-};
-
 export type CurrentPullRequest = PullRequest & {
 	id: string;
 	number: number;
@@ -90,7 +82,6 @@ export type CurrentPullRequest = PullRequest & {
 	head: PullRequestRef;
 	headFetchSource: string;
 	target: PullRequestTarget;
-	merge: PullRequestMerge | null;
 };
 
 export type CurrentPullRequestDiscovery = PullRequestDiscovery<CurrentPullRequest>;
@@ -102,6 +93,28 @@ export type PullRequestObservation = {
 };
 
 export type PullRequestLoadContext = Pick<ExtensionContext, "cwd" | "signal">;
+
+export type PullRequestCreationPreflight = {
+	head: string;
+	base: {
+		host: string;
+		repository: string;
+		fetchSource: string;
+		ref: string;
+		oid: string;
+		mergeBase: string;
+	};
+	ahead: number;
+};
+
+type CreationPreflightResult =
+	| { kind: "same-ref" }
+	| { kind: "distinct-ref"; preflight: PullRequestCreationPreflight };
+
+type CreationIdentity = {
+	target: PullRequestTarget;
+	head: string;
+};
 
 type CommandOutput = {
 	stdout: string;
@@ -149,7 +162,7 @@ type LinkConfiguration = {
 	mirror: string[];
 };
 
-type SearchPullRequest = {
+export type PullRequestCandidate = {
 	number: number;
 	url: URL;
 	lifecycle: PullRequestLifecycle;
@@ -157,6 +170,37 @@ type SearchPullRequest = {
 	headRepository: string | null;
 	headRef: string;
 	headOid: string;
+};
+
+type SearchPullRequest = PullRequestCandidate;
+
+export type PullRequestPublication = {
+	number: number;
+	url: URL;
+	lifecycle: PullRequestLifecycle;
+	base: { repository: string; ref: string };
+	head: PullRequestRef;
+	title: string;
+	body: string;
+};
+
+export type ValidatedRemoteAuthority = {
+	fetchSource: string;
+	host: string;
+	repository: string;
+};
+
+export type BranchUpstreamTarget = {
+	branch: string;
+	remote: string;
+	ref: string;
+	fetchSource: string;
+	remoteOid: string;
+};
+
+export type BranchUpstreamConfiguration = {
+	remote: string[];
+	merge: string[];
 };
 
 type SearchSelection =
@@ -174,9 +218,9 @@ type SearchPage = {
 	endCursor: string | null;
 };
 
-type RulesetBranchPolicy = {
-	requiresStrictStatusChecks: boolean;
-	allowedMergeMethods: MergeMethod[] | null;
+type CheckState = {
+	state: string;
+	diagnosableFailure: boolean;
 };
 
 type ListedPullRequest = {
@@ -190,7 +234,7 @@ type ListedPullRequest = {
 	mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 	mergeStateStatus: "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE";
 	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
-	checkStates: string[];
+	checkStates: CheckState[];
 };
 
 function fail(action: string, reason: string): never {
@@ -297,6 +341,12 @@ function parseCommandOutput(value: unknown, action: string): CommandOutput {
 		!Number.isSafeInteger(code) || code < 0 || typeof killed !== "boolean"
 	) fail(action, "invalid command result");
 	return { stdout, stderr, code, killed };
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+	const actual = Object.keys(value).sort();
+	const expected = [...keys].sort();
+	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
 async function invoke(
@@ -536,27 +586,64 @@ function checkOutcome(state: string): "failure" | "success" | "running" {
 	return "running";
 }
 
-function checkState(value: unknown): string {
-	if (!isRecord(value)) fail("Find pull requests", "invalid statusCheckRollup");
-	const conclusion = optionalCheckState(value, "conclusion");
-	const state = optionalCheckState(value, "state");
-	const status = optionalCheckState(value, "status");
-	const states = [conclusion, state, status].filter((value): value is string => value !== null);
+function canonicalPositiveDecimal(value: string): boolean {
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 && String(parsed) === value;
+}
+
+function isActionsJobUrl(value: unknown, pullRequestUrl: URL, repository: string): boolean {
+	if (typeof value !== "string" || !value) return false;
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return false;
+	}
+	if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash ||
+		url.hostname.toLowerCase() !== pullRequestUrl.hostname.toLowerCase()) return false;
+	const parts = url.pathname.split("/").filter(Boolean);
+	const expected = repository.split("/");
+	return parts.length === 7 && expected.length === 2 &&
+		parts[0]!.toLowerCase() === expected[0]!.toLowerCase() &&
+		parts[1]!.toLowerCase() === expected[1]!.toLowerCase() &&
+		parts[2] === "actions" && parts[3] === "runs" && canonicalPositiveDecimal(parts[4]!) &&
+		parts[5] === "job" && canonicalPositiveDecimal(parts[6]!);
+}
+
+function isDiagnosableActionsCheck(check: Record<string, unknown>, pullRequestUrl: URL, repository: string): boolean {
+	const workflowName = check.workflowName;
+	return typeof workflowName === "string" && !!workflowName && workflowName.trim() === workflowName &&
+		!/\p{Cc}/u.test(workflowName) && isActionsJobUrl(check.detailsUrl, pullRequestUrl, repository);
+}
+
+function checkState(value: unknown, pullRequestUrl: URL, repository: string): CheckState {
+	if (!isRecord(value) || (value.__typename !== "CheckRun" && value.__typename !== "StatusContext")) {
+		return fail("Find pull requests", "invalid statusCheckRollup");
+	}
+	const conclusion = value.__typename === "CheckRun" ? optionalCheckState(value, "conclusion") : null;
+	const state = value.__typename === "StatusContext" ? optionalCheckState(value, "state") : null;
+	const status = value.__typename === "CheckRun" ? optionalCheckState(value, "status") : null;
+	const states = [conclusion, state, status].filter((candidate): candidate is string => candidate !== null);
 	if (!states.length) fail("Find pull requests", "invalid statusCheckRollup");
 
 	// COMPLETED describes a check run's lifecycle; its conclusion gives the outcome.
-	const outcomes = states.filter((value) => value !== "COMPLETED").map(checkOutcome);
+	const outcomes = states.filter((candidate) => candidate !== "COMPLETED").map(checkOutcome);
 	if (
 		new Set(outcomes).size > 1 ||
 		(states.includes("COMPLETED") && outcomes.includes("running"))
 	) fail("Find pull requests", "invalid statusCheckRollup");
-	return conclusion ?? state ?? status ?? fail("Find pull requests", "invalid statusCheckRollup");
+	const selected = conclusion ?? state ?? status ?? fail("Find pull requests", "invalid statusCheckRollup");
+	return {
+		state: selected,
+		diagnosableFailure: FAILED_CHECK_STATES.has(selected) && value.__typename === "CheckRun" &&
+			isDiagnosableActionsCheck(value, pullRequestUrl, repository),
+	};
 }
 
-function checkStates(value: unknown): string[] {
+function checkStates(value: unknown, pullRequestUrl: URL, repository: string): CheckState[] {
 	if (value === null) return [];
 	if (!Array.isArray(value)) fail("Find pull requests", "invalid statusCheckRollup");
-	return value.map(checkState);
+	return value.map((check) => checkState(check, pullRequestUrl, repository));
 }
 
 function listedPullRequest(value: unknown): ListedPullRequest | null {
@@ -589,7 +676,7 @@ function listedPullRequest(value: unknown): ListedPullRequest | null {
 		mergeable: mergeable(value.mergeable),
 		mergeStateStatus: mergeStateStatus(value.mergeStateStatus),
 		reviewDecision: reviewDecision(value.reviewDecision),
-		checkStates: checkStates(value.statusCheckRollup),
+		checkStates: checkStates(value.statusCheckRollup, parsedUrl.url, parsedUrl.repository),
 	};
 }
 
@@ -634,7 +721,7 @@ function searchPullRequest(value: unknown, host: string): SearchPullRequest {
 	};
 }
 
-function parseSearchPage(output: string, pushTarget: PushTarget): SearchPage | null {
+function parseSearchPage(output: string, pushTarget: Pick<PushTarget, "repository" | "ref">): SearchPage | null {
 	const page = parseJson(output, "Find pull requests");
 	if (!isRecord(page)) fail("Find pull requests", "invalid GitHub CLI output");
 	if (page.errors !== undefined) {
@@ -718,6 +805,37 @@ function parseLoadedPullRequest(output: string, expectedUrl: URL): ListedPullReq
 	return candidate;
 }
 
+function parsePullRequestPublication(output: string, expectedUrl: URL): PullRequestPublication {
+	const value = parseJson(output, "Read pull request publication");
+	if (!isRecord(value) || !isRecord(value.headRepository)) {
+		fail("Read pull request publication", "invalid GitHub CLI output");
+	}
+	const number = value.number;
+	if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) {
+		fail("Read pull request publication", "invalid number");
+	}
+	const parsedUrl = parsePullRequestUrl(value.url, number);
+	if (parsedUrl.url.href !== expectedUrl.href) {
+		fail("Read pull request publication", "response does not match candidate url");
+	}
+	return {
+		number,
+		url: parsedUrl.url,
+		lifecycle: lifecycle(value.state),
+		base: {
+			repository: parsedUrl.repository,
+			ref: text(value.baseRefName, "Read pull request publication", "baseRefName"),
+		},
+		head: {
+			repository: repositoryName(value.headRepository.nameWithOwner, "Read pull request publication", "headRepository.nameWithOwner"),
+			ref: text(value.headRefName, "Read pull request publication", "headRefName"),
+			oid: oid(value.headRefOid, "Read pull request publication", "headRefOid"),
+		},
+		title: text(value.title, "Read pull request publication", "title"),
+		body: typeof value.body === "string" ? value.body : fail("Read pull request publication", "invalid body"),
+	};
+}
+
 function selectPullRequest(
 	candidates: ListedPullRequest[],
 	pushTarget: PushTarget,
@@ -745,20 +863,25 @@ function selectPullRequest(
 	return historical[0] ?? null;
 }
 
-function ciStatus(states: string[]): CiStatus {
-	if (!states.length) return "none";
+function ciStatus(checks: CheckState[]): CiStatus {
+	if (!checks.length) return "none";
+	let failed = false;
 	let running = false;
-	for (const state of states) {
-		if (FAILED_CHECK_STATES.has(state)) return "failure";
-		if (!SUCCESSFUL_CHECK_STATES.has(state)) running = true;
+	for (const check of checks) {
+		if (FAILED_CHECK_STATES.has(check.state)) {
+			if (!check.diagnosableFailure) return "failure-blocked";
+			failed = true;
+		} else if (!SUCCESSFUL_CHECK_STATES.has(check.state)) {
+			running = true;
+		}
 	}
+	if (failed) return "failure";
 	return running ? "running" : "success";
 }
 
 function conditions(
 	candidate: ListedPullRequest,
 	unresolvedThreads: number,
-	requiresStrictStatusChecks: boolean,
 ): PullRequestConditions {
 	if (
 		(candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "DIRTY") ||
@@ -768,19 +891,17 @@ function conditions(
 		? "pending"
 		: "ready";
 	const behind = candidate.mergeStateStatus === "BEHIND";
-	const policy: PolicyReadiness = candidate.mergeable === "MERGEABLE" &&
-		(candidate.mergeStateStatus === "CLEAN" || (behind && !requiresStrictStatusChecks))
-		? "ready"
-		: "pending";
 	return {
 		draft: candidate.isDraft,
-		baseUpdateRequired: behind && requiresStrictStatusChecks,
+		baseUpdateRequired: behind,
 		conflict: candidate.mergeable === "CONFLICTING" || candidate.mergeStateStatus === "DIRTY",
 		changesRequested: candidate.reviewDecision === "CHANGES_REQUESTED",
 		unresolvedThreads,
 		ci: ciStatus(candidate.checkStates),
 		review,
-		policy,
+		policy: candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "CLEAN"
+			? "ready"
+			: "pending",
 	};
 }
 
@@ -821,7 +942,10 @@ function parseUnresolvedReviewThreads(output: string): number {
 	return total;
 }
 
-function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
+function parseBaseRefAuthority(
+	output: string,
+	expected: { repository: string; ref: string },
+): string {
 	const value = parseJson(output, "Read base ref");
 	if (!isRecord(value)) fail("Read base ref", "invalid GitHub CLI output");
 	if (value.errors !== undefined) {
@@ -834,106 +958,14 @@ function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
 	}
 	if (
 		normalizeRepository(repositoryName(repository.nameWithOwner, "Read base ref", "repository")) !==
-		normalizeRepository(candidate.base.repository) ||
-		text(repository.ref.name, "Read base ref", "ref") !== candidate.base.ref
+		normalizeRepository(expected.repository) ||
+		text(repository.ref.name, "Read base ref", "ref") !== expected.ref
 	) fail("Read base ref", "response does not match pull request base");
 	return oid(repository.ref.target.oid, "Read base ref", "target OID");
 }
 
-function parseLegacyBaseBranchPolicy(output: string, candidate: ListedPullRequest): boolean {
-	const value = parseJson(output, "Read base branch policy");
-	if (!isRecord(value)) fail("Read base branch policy", "invalid GitHub CLI output");
-	if (value.errors !== undefined) {
-		if (!Array.isArray(value.errors)) fail("Read base branch policy", "invalid GitHub CLI output");
-		if (value.errors.length) fail("Read base branch policy", "GitHub GraphQL returned errors");
-	}
-	const repository = isRecord(value.data) ? value.data.repository : undefined;
-	if (!isRecord(repository) || !isRecord(repository.ref)) {
-		fail("Read base branch policy", "invalid GitHub CLI output");
-	}
-	if (
-		normalizeRepository(repositoryName(repository.nameWithOwner, "Read base branch policy", "repository")) !==
-		normalizeRepository(candidate.base.repository) ||
-		text(repository.ref.name, "Read base branch policy", "ref") !== candidate.base.ref
-	) fail("Read base branch policy", "response does not match pull request base");
-	const rule = repository.ref.branchProtectionRule;
-	if (rule === null) return false;
-	if (!isRecord(rule) || typeof rule.requiresStrictStatusChecks !== "boolean") {
-		fail("Read base branch policy", "invalid GitHub CLI output");
-	}
-	return rule.requiresStrictStatusChecks;
-}
-
-function parseRulesetBaseBranchPolicy(output: string): RulesetBranchPolicy {
-	const pages = parseJson(output, "Read base branch rulesets");
-	if (!Array.isArray(pages) || !pages.length) fail("Read base branch rulesets", "invalid GitHub CLI output");
-	let requiresStrictStatusChecks = false;
-	let allowedMergeMethods: Set<MergeMethod> | null = null;
-	for (const page of pages) {
-		if (!Array.isArray(page)) fail("Read base branch rulesets", "invalid GitHub CLI output");
-		for (const rule of page) {
-			if (!isRecord(rule)) fail("Read base branch rulesets", "invalid GitHub CLI output");
-			const type = text(rule.type, "Read base branch rulesets", "rule type");
-			if (type === "required_status_checks") {
-				if (!isRecord(rule.parameters) || typeof rule.parameters.strict_required_status_checks_policy !== "boolean") {
-					fail("Read base branch rulesets", "invalid GitHub CLI output");
-				}
-				requiresStrictStatusChecks ||= rule.parameters.strict_required_status_checks_policy;
-			}
-			if (type === "pull_request") {
-				if (!isRecord(rule.parameters) || !Array.isArray(rule.parameters.allowed_merge_methods)) {
-					fail("Read base branch rulesets", "invalid GitHub CLI output");
-				}
-				const methods = rule.parameters.allowed_merge_methods;
-				if (
-					methods.some((method) => typeof method !== "string" || !MERGE_METHODS.includes(method as MergeMethod)) ||
-					new Set(methods).size !== methods.length
-				) fail("Read base branch rulesets", "invalid GitHub CLI output");
-				const restriction = new Set<MergeMethod>(methods as MergeMethod[]);
-				allowedMergeMethods = allowedMergeMethods === null
-					? restriction
-					: new Set<MergeMethod>([...allowedMergeMethods].filter((method: MergeMethod) => restriction.has(method)));
-			}
-		}
-	}
-	return {
-		requiresStrictStatusChecks,
-		allowedMergeMethods: allowedMergeMethods === null
-			? null
-			: MERGE_METHODS.filter((method) => allowedMergeMethods.has(method)),
-	};
-}
-
-function parseMergeMethodSettings(output: string, rulesetMethods: MergeMethod[] | null): PullRequestMerge {
-	const value = parseJson(output, "Read merge methods");
-	if (!isRecord(value)) fail("Read merge methods", "invalid GitHub CLI output");
-	const { mergeCommitAllowed, rebaseMergeAllowed, squashMergeAllowed } = value;
-	if (
-		typeof mergeCommitAllowed !== "boolean" || typeof rebaseMergeAllowed !== "boolean" ||
-		typeof squashMergeAllowed !== "boolean"
-	) fail("Read merge methods", "invalid GitHub CLI output");
-	let allowedMergeMethods: MergeMethod[] = [];
-	if (mergeCommitAllowed) allowedMergeMethods.push("merge");
-	if (rebaseMergeAllowed) allowedMergeMethods.push("rebase");
-	if (squashMergeAllowed) allowedMergeMethods.push("squash");
-	if (!allowedMergeMethods.length) fail("Read merge methods", "repository allows no merge method");
-	const viewerDefaultMergeMethod = value.viewerDefaultMergeMethod === "MERGE"
-		? "merge"
-		: value.viewerDefaultMergeMethod === "REBASE"
-		? "rebase"
-		: value.viewerDefaultMergeMethod === "SQUASH"
-		? "squash"
-		: fail("Read merge methods", "invalid viewerDefaultMergeMethod");
-	if (!allowedMergeMethods.includes(viewerDefaultMergeMethod)) {
-		fail("Read merge methods", "viewerDefaultMergeMethod is not allowed");
-	}
-	if (rulesetMethods !== null) {
-		allowedMergeMethods = allowedMergeMethods.filter((method) => rulesetMethods.includes(method));
-	}
-	if (!allowedMergeMethods.length) {
-		fail("Read merge methods", "repository and applicable rules allow no common merge method");
-	}
-	return { allowedMergeMethods, viewerDefaultMergeMethod };
+function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
+	return parseBaseRefAuthority(output, candidate.base);
 }
 
 export async function hasLocalCommit(
@@ -957,6 +989,244 @@ export async function hasLocalCommit(
 	const commits = entries.map((entry) => oid(entry, "Read branch history", "commit"));
 	// ponytail: reflog expiry can hide old branch history; resolve the PR base if this becomes observable.
 	return commits[0] !== commits.at(-1);
+}
+
+function validatedCreationTarget(target: PullRequestTarget): PullRequestTarget {
+	if (!isRecord(target)) fail("Read creation target", "invalid target");
+	if (target.provenance !== "configured" && target.provenance !== "inferred") {
+		fail("Read creation target", "invalid provenance");
+	}
+	return {
+		provenance: target.provenance,
+		branch: text(target.branch, "Read creation target", "branch"),
+		remote: text(target.remote, "Read creation target", "remote"),
+		ref: text(target.ref, "Read creation target", "ref"),
+		repository: repositoryName(target.repository, "Read creation target", "repository"),
+		host: text(target.host, "Read creation target", "host").toLowerCase(),
+		fetchSource: text(target.fetchSource, "Read creation target", "fetch source"),
+		remoteOid: target.remoteOid === null ? null : oid(target.remoteOid, "Read creation target", "remote OID"),
+	};
+}
+
+function sameCreationTarget(left: PullRequestTarget, right: PullRequestTarget): boolean {
+	return left.provenance === right.provenance && left.branch === right.branch &&
+		left.remote === right.remote && left.ref === right.ref &&
+		normalizeRepository(left.repository) === normalizeRepository(right.repository) &&
+		left.host === right.host && left.fetchSource === right.fetchSource && left.remoteOid === right.remoteOid;
+}
+
+async function validateCreationRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	ref: string,
+): Promise<string> {
+	const requested = text(ref, "Validate creation base", "ref");
+	const checked = singleLine(
+		(await execute(pi, context, "Validate creation base", "git", ["check-ref-format", "--branch", requested])).stdout,
+		"Validate creation base",
+		"ref",
+	);
+	if (checked !== requested) fail("Validate creation base", "ref changed");
+	return requested;
+}
+
+async function captureCreationIdentity(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+): Promise<CreationIdentity> {
+	const validatedTarget = validatedCreationTarget(target);
+	const branch = singleLine(
+		(await execute(pi, context, "Read creation branch", "git", ["branch", "--show-current"])).stdout,
+		"Read creation branch",
+		"branch",
+	);
+	if (branch !== validatedTarget.branch) fail("Read creation branch", "branch changed");
+	await validateCreationRef(pi, context, branch);
+	const head = oid(singleLine(
+		(await execute(pi, context, "Read creation HEAD", "git", ["rev-parse", "--verify", "HEAD^{commit}"])).stdout,
+		"Read creation HEAD",
+		"OID",
+	), "Read creation HEAD", "OID");
+	return { target: validatedTarget, head };
+}
+
+async function readConfiguredCreationBaseRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	branch: string,
+): Promise<string | null> {
+	const result = await invoke(pi, context, "Read creation base configuration", "git", [
+		"config", "--get-all", `branch.${branch}.gh-merge-base`,
+	]);
+	if (result.killed) commandFailure("Read creation base configuration", result);
+	if (result.code === 1 && result.stdout === "" && result.stderr === "") return null;
+	if (result.code !== 0) commandFailure("Read creation base configuration", result);
+	if (result.stderr !== "") fail("Read creation base configuration", "unexpected diagnostic");
+	const values = lines(result.stdout, "Read creation base configuration", "base ref");
+	if (values.length !== 1) fail("Read creation base configuration", "multiple base refs");
+	return await validateCreationRef(pi, context, values[0]!);
+}
+
+function parseDefaultCreationBaseRef(output: string): string {
+	const value = parseJson(output, "Read creation default branch");
+	if (!isRecord(value) || !hasExactKeys(value, ["defaultBranchRef"]) || !isRecord(value.defaultBranchRef) ||
+		!hasExactKeys(value.defaultBranchRef, ["name"])) {
+		fail("Read creation default branch", "invalid GitHub CLI output");
+	}
+	return text(value.defaultBranchRef.name, "Read creation default branch", "default branch ref");
+}
+
+async function readDefaultCreationBaseRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	origin: { repository: PushRepository },
+): Promise<string> {
+	const result = await execute(pi, context, "Read creation default branch", "gh", [
+		"repo", "view", `${origin.repository.host}/${origin.repository.nameWithOwner}`, "--json", "defaultBranchRef",
+	]);
+	if (result.stderr !== "") fail("Read creation default branch", "unexpected diagnostic");
+	return await validateCreationRef(pi, context, parseDefaultCreationBaseRef(result.stdout));
+}
+
+function parseCreationRepositoryLineage(output: string, expected: PushRepository): string {
+	const value = parseJson(output, "Read creation repository");
+	if (!isRecord(value)) fail("Read creation repository", "invalid GitHub CLI output");
+	const fullName = repositoryName(value.full_name, "Read creation repository", "full_name");
+	const url = parseHttpUrl(value.html_url, "Read creation repository", "html_url");
+	if (
+		normalizeRepository(fullName) !== expected.normalizedName || url.protocol !== "https:" || url.port ||
+		url.hostname.toLowerCase() !== expected.host || url.pathname.toLowerCase() !== `/${expected.normalizedName}`
+	) fail("Read creation repository", "response does not match repository");
+	const source = value.source;
+	if (source !== undefined && source !== null && !isRecord(source)) {
+		fail("Read creation repository", "invalid source");
+	}
+	const sourceName = source === undefined || source === null
+		? fullName
+		: repositoryName(source.full_name, "Read creation repository", "source.full_name");
+	return normalizeRepository(sourceName);
+}
+
+async function inspectCreationRepositoryRelation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	origin: { repository: PushRepository },
+	baseRef: string,
+): Promise<"same-ref" | "distinct-ref"> {
+	if (target.host !== origin.repository.host) {
+		fail("Read creation repository", "base and head hosts do not match");
+	}
+	if (normalizeRepository(target.repository) === origin.repository.normalizedName) {
+		return target.ref === baseRef ? "same-ref" : "distinct-ref";
+	}
+	const read = async (repository: PushRepository): Promise<string> => {
+		const [owner, name] = repository.nameWithOwner.split("/");
+		const result = await execute(pi, context, "Read creation repository", "gh", [
+			"api", "--hostname", origin.repository.host, `repos/${owner}/${name}`,
+		]);
+		if (result.stderr !== "") fail("Read creation repository", "unexpected diagnostic");
+		return parseCreationRepositoryLineage(result.stdout, repository);
+	};
+	const originSource = await read(origin.repository);
+	const targetSource = await read({
+		nameWithOwner: target.repository,
+		normalizedName: normalizeRepository(target.repository),
+		host: target.host,
+	});
+	if (originSource !== targetSource) fail("Read creation repository", "base and head are unrelated");
+	return "distinct-ref";
+}
+
+function parseCreationAhead(output: string): number {
+	const value = singleLine(output, "Count creation commits", "ahead count");
+	if (!/^(?:0|[1-9][0-9]*)$/.test(value)) fail("Count creation commits", "invalid ahead count");
+	const ahead = Number(value);
+	if (!Number.isSafeInteger(ahead) || ahead < 0) fail("Count creation commits", "invalid ahead count");
+	return ahead;
+}
+
+async function preflightCreation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef: string | undefined,
+	identity: CreationIdentity,
+): Promise<CreationPreflightResult> {
+	const validatedTarget = validatedCreationTarget(target);
+	if (!sameCreationTarget(identity.target, validatedTarget)) {
+		fail("Read creation target", "target changed");
+	}
+	const origin = await readRemoteAuthority(pi, context, "origin", true);
+	if (!origin) fail("Read creation repository", "origin is unavailable");
+	const configuredBaseRef = explicitBaseRef === undefined
+		? await readConfiguredCreationBaseRef(pi, context, identity.target.branch)
+		: await validateCreationRef(pi, context, explicitBaseRef);
+	const baseRef = configuredBaseRef ?? await readDefaultCreationBaseRef(pi, context, origin);
+	const relation = await inspectCreationRepositoryRelation(pi, context, identity.target, origin, baseRef);
+	if (relation === "same-ref") return { kind: relation };
+	const trackingRef = `refs/remotes/origin/${baseRef}`;
+	await execute(pi, context, "Fetch creation base", "git", [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
+		origin.fetchSource, `+refs/heads/${baseRef}:${trackingRef}`,
+	]);
+	const baseOid = oid(singleLine(
+		(await execute(pi, context, "Read creation base", "git", ["rev-parse", "--verify", `${trackingRef}^{commit}`])).stdout,
+		"Read creation base",
+		"OID",
+	), "Read creation base", "OID");
+	const mergeBase = oid(singleLine(
+		(await execute(pi, context, "Find creation merge base", "git", ["merge-base", identity.head, baseOid])).stdout,
+		"Find creation merge base",
+		"OID",
+	), "Find creation merge base", "OID");
+	const ahead = parseCreationAhead((await execute(pi, context, "Count creation commits", "git", [
+		"rev-list", "--count", `${mergeBase}..${identity.head}`,
+	])).stdout);
+	return {
+		kind: relation,
+		preflight: {
+			head: identity.head,
+			base: {
+				host: origin.repository.host,
+				repository: origin.repository.nameWithOwner,
+				fetchSource: origin.fetchSource,
+				ref: baseRef,
+				oid: baseOid,
+				mergeBase,
+			},
+			ahead,
+		},
+	};
+}
+
+export async function preflightPullRequestCreation(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef?: string,
+): Promise<PullRequestCreationPreflight> {
+	const identity = await captureCreationIdentity(pi, context, target);
+	const result = await preflightCreation(pi, context, target, explicitBaseRef, identity);
+	if (result.kind === "same-ref") fail("Read creation repository", "head and base refs match");
+	return result.preflight;
+}
+
+async function creationDiscovery(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: PullRequestTarget,
+	explicitBaseRef: string | undefined,
+	identity?: CreationIdentity,
+): Promise<CurrentPullRequestDiscovery> {
+	const captured = identity ?? await captureCreationIdentity(pi, context, target);
+	const result = await preflightCreation(pi, context, target, explicitBaseRef, captured);
+	return {
+		kind: "none",
+		creationTarget: target,
+		branch: { ahead: result.kind === "same-ref" ? 0 : result.preflight.ahead },
+	};
 }
 
 async function readRemoteAuthority(
@@ -1000,6 +1270,20 @@ async function readRemoteAuthority(
 	}
 }
 
+export async function readValidatedRemoteAuthority(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	remote: string,
+): Promise<ValidatedRemoteAuthority> {
+	const authority = await readRemoteAuthority(pi, context, text(remote, "Read push remotes", "remote"), true);
+	if (!authority) fail("Read push target", "invalid remote authority");
+	return {
+		fetchSource: authority.fetchSource,
+		host: authority.repository.host,
+		repository: authority.repository.nameWithOwner,
+	};
+}
+
 async function readRemoteHeadOid(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1037,6 +1321,22 @@ async function readConfigValues(
 		if (error instanceof PullRequestLoadError) return null;
 		throw error;
 	}
+}
+
+export async function readBranchUpstreamConfiguration(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	branch: string,
+): Promise<BranchUpstreamConfiguration> {
+	const checkedBranch = text(branch, "Read branch upstream", "branch");
+	const [remote, merge] = await Promise.all([
+		readConfigValues(pi, context, `branch.${checkedBranch}.remote`),
+		readConfigValues(pi, context, `branch.${checkedBranch}.merge`),
+	]);
+	if (remote === null || merge === null) {
+		throw new Error("Read branch upstream failed: invalid Git configuration");
+	}
+	return { remote, merge };
 }
 
 async function readBooleanConfigValues(
@@ -1293,64 +1593,23 @@ async function readBaseRefOid(
 	return parseBaseRefOid(result.stdout, candidate);
 }
 
-async function readLegacyBaseBranchPolicy(
+export async function readPullRequestBaseRefOid(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	candidate: ListedPullRequest,
-): Promise<boolean> {
-	const [owner, name] = candidate.base.repository.split("/");
-	const result = await execute(pi, context, "Read base branch policy", "gh", [
-		"api",
-		"graphql",
-		"--hostname",
-		candidate.url.hostname,
-		"-f",
-		`query=${BASE_BRANCH_POLICY_QUERY}`,
-		"-F",
-		`owner=${owner}`,
-		"-F",
-		`name=${name}`,
-		"-F",
-		`qualifiedName=refs/heads/${candidate.base.ref}`,
+	authority: { host: string; repository: string; ref: string },
+): Promise<string> {
+	const host = text(authority.host, "Read base ref", "host").toLowerCase();
+	const repository = repositoryName(authority.repository, "Read base ref", "repository");
+	const ref = text(authority.ref, "Read base ref", "ref");
+	const [owner, name] = repository.split("/");
+	const result = await execute(pi, context, "Read base ref", "gh", [
+		"api", "graphql", "--hostname", host,
+		"-f", `query=${BASE_REF_QUERY}`,
+		"-F", `owner=${owner}`,
+		"-F", `name=${name}`,
+		"-F", `qualifiedName=refs/heads/${ref}`,
 	]);
-	return parseLegacyBaseBranchPolicy(result.stdout, candidate);
-}
-
-async function readRulesetBaseBranchPolicy(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	candidate: ListedPullRequest,
-): Promise<RulesetBranchPolicy> {
-	const [owner, name] = candidate.base.repository.split("/");
-	const result = await execute(pi, context, "Read base branch rulesets", "gh", [
-		"api",
-		"--hostname",
-		candidate.url.hostname,
-		"--paginate",
-		"--slurp",
-		"-H",
-		"Accept: application/vnd.github+json",
-		"-H",
-		"X-GitHub-Api-Version: 2022-11-28",
-		`repos/${owner}/${name}/rules/branches/${encodeURIComponent(candidate.base.ref)}`,
-	]);
-	return parseRulesetBaseBranchPolicy(result.stdout);
-}
-
-async function readMergeMethods(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	candidate: ListedPullRequest,
-	rulesetMethods: MergeMethod[] | null,
-): Promise<PullRequestMerge> {
-	const result = await execute(pi, context, "Read merge methods", "gh", [
-		"repo",
-		"view",
-		`${candidate.url.hostname}/${candidate.base.repository}`,
-		"--json",
-		"mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod",
-	]);
-	return parseMergeMethodSettings(result.stdout, rulesetMethods);
+	return parseBaseRefAuthority(result.stdout, { repository, ref });
 }
 
 async function loadPullRequestDetails(
@@ -1371,17 +1630,7 @@ async function loadPullRequestDetails(
 	const liveBaseOid = candidate.lifecycle === "open"
 		? await readBaseRefOid(pi, context, candidate)
 		: null;
-	const rulesetPolicy = candidate.lifecycle === "open"
-		? await readRulesetBaseBranchPolicy(pi, context, candidate)
-		: null;
-	const legacyStrict = candidate.lifecycle === "open" && candidate.mergeStateStatus === "BEHIND"
-		? await readLegacyBaseBranchPolicy(pi, context, candidate)
-		: false;
-	const requiresStrictStatusChecks = legacyStrict || (rulesetPolicy?.requiresStrictStatusChecks ?? false);
-	const pullRequestConditions = conditions(candidate, unresolvedThreads, requiresStrictStatusChecks);
-	const merge = candidate.lifecycle === "open"
-		? await readMergeMethods(pi, context, candidate, rulesetPolicy?.allowedMergeMethods ?? null)
-		: null;
+	const pullRequestConditions = conditions(candidate, unresolvedThreads);
 	const inspected = inspectedLocal ?? await inspectLocalMergeSafety({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
@@ -1406,7 +1655,6 @@ async function loadPullRequestDetails(
 		head: candidate.head,
 		headFetchSource: pushTarget.fetchSource,
 		target: publicTarget(pushTarget),
-		merge,
 	};
 }
 
@@ -1449,35 +1697,28 @@ async function loadObservedPullRequest(
 	return loadPullRequestDetails(pi, context, candidate, pushTarget, inspectedLocal);
 }
 
-async function searchPullRequests(
+async function enumerateSearchPullRequests(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	pushTarget: PushTarget,
-): Promise<SearchSelection> {
-	const [owner, name] = pushTarget.repository.nameWithOwner.split("/");
+	target: Pick<PushTarget, "repository" | "ref">,
+): Promise<SearchPullRequest[] | null> {
+	const [owner, name] = target.repository.nameWithOwner.split("/");
 	const candidates: SearchPullRequest[] = [];
 	const cursors = new Set<string>();
 	let totalCount: number | null = null;
 	let endCursor: string | null = null;
 	for (let pageIndex = 0; pageIndex < PR_DISCOVERY_MAX_PAGES; pageIndex += 1) {
 		const args = [
-			"api",
-			"graphql",
-			"--hostname",
-			pushTarget.repository.host,
-			"-f",
-			`query=${PR_DISCOVERY_QUERY}`,
-			"-F",
-			`owner=${owner}`,
-			"-F",
-			`name=${name}`,
-			"-F",
-			`qualifiedName=refs/heads/${pushTarget.ref}`,
+			"api", "graphql", "--hostname", target.repository.host,
+			"-f", `query=${PR_DISCOVERY_QUERY}`,
+			"-F", `owner=${owner}`,
+			"-F", `name=${name}`,
+			"-F", `qualifiedName=refs/heads/${target.ref}`,
 		];
 		if (endCursor !== null) args.push("-F", `endCursor=${endCursor}`);
 		const result = await execute(pi, context, "Find pull requests", "gh", args);
-		const page = parseSearchPage(result.stdout, pushTarget);
-		if (page === null) return pushTarget.remoteHeadOid === null ? { kind: "none" } : { kind: "target-invalid" };
+		const page = parseSearchPage(result.stdout, target);
+		if (page === null) return null;
 		if (totalCount !== null && page.totalCount !== totalCount) {
 			fail("Find pull requests", "inconsistent search result pages");
 		}
@@ -1495,25 +1736,58 @@ async function searchPullRequests(
 		}
 		const hasMore = candidates.length < totalCount;
 		if (page.hasNextPage !== hasMore) fail("Find pull requests", "incomplete search results");
-		if (!hasMore) {
-			const selected = selectSearchPullRequest(candidates, pushTarget);
-			if (selected.kind !== "candidate") return selected;
-			const loaded = await execute(pi, context, "Find pull requests", "gh", [
-				"pr",
-				"view",
-				selected.candidate.url.href,
-				"--json",
-				PR_FIELDS,
-			]);
-			return {
-				...selected,
-				pullRequest: parseLoadedPullRequest(loaded.stdout, selected.candidate.url),
-			};
-		}
+		if (!hasMore) return candidates;
 		if (page.endCursor === null) fail("Find pull requests", "invalid search pageInfo");
 		endCursor = page.endCursor;
 	}
 	return fail("Find pull requests", "GitHub pull request result cap reached");
+}
+
+export async function findExactHeadPullRequests(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: { host: string; repository: string; ref: string },
+): Promise<PullRequestCandidate[]> {
+	const host = text(target.host, "Find pull requests", "host").toLowerCase();
+	const repository = repositoryName(target.repository, "Find pull requests", "head repository");
+	const ref = text(target.ref, "Find pull requests", "head ref");
+	const candidates = await enumerateSearchPullRequests(pi, context, {
+		repository: { host, nameWithOwner: repository, normalizedName: normalizeRepository(repository) },
+		ref,
+	});
+	if (candidates === null) return fail("Find pull requests", "published head ref is unavailable");
+	return candidates.filter((candidate) =>
+		candidate.lifecycle === "open" && candidate.headRepository !== null &&
+		normalizeRepository(candidate.headRepository) === normalizeRepository(repository) && candidate.headRef === ref
+	);
+}
+
+export async function loadPullRequestPublication(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	url: URL,
+): Promise<PullRequestPublication> {
+	const loaded = await execute(pi, context, "Read pull request publication", "gh", [
+		"pr", "view", url.href, "--json", PR_PUBLICATION_FIELDS,
+	]);
+	return parsePullRequestPublication(loaded.stdout, url);
+}
+
+async function searchPullRequests(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	pushTarget: PushTarget,
+): Promise<SearchSelection> {
+	const candidates = await enumerateSearchPullRequests(pi, context, pushTarget);
+	if (candidates === null) {
+		return pushTarget.remoteHeadOid === null ? { kind: "none" } : { kind: "target-invalid" };
+	}
+	const selected = selectSearchPullRequest(candidates, pushTarget);
+	if (selected.kind !== "candidate") return selected;
+	const loaded = await execute(pi, context, "Find pull requests", "gh", [
+		"pr", "view", selected.candidate.url.href, "--json", PR_FIELDS,
+	]);
+	return { ...selected, pullRequest: parseLoadedPullRequest(loaded.stdout, selected.candidate.url) };
 }
 
 export async function loadCurrentPullRequest(
@@ -1521,6 +1795,18 @@ export async function loadCurrentPullRequest(
 	context: PullRequestLoadContext,
 	inspectedLocal?: LocalMergeSafety,
 	observed?: unknown,
+	explicitCreationBase?: string,
+): Promise<CurrentPullRequestDiscovery> {
+	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase);
+}
+
+async function loadCurrentPullRequestInternal(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	inspectedLocal: LocalMergeSafety | undefined,
+	observed: unknown,
+	explicitCreationBase: string | undefined,
+	creationIdentity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
 	if (read.kind === "inactive") return { kind: "inactive" };
@@ -1541,10 +1827,18 @@ export async function loadCurrentPullRequest(
 			};
 		}
 		if (inferred.kind === "none") {
+			const target = publicTarget(inferred.target);
+			if (creationIdentity === undefined) {
+				const captured = await captureCreationIdentity(pi, context, target);
+				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase, captured);
+			}
+			if (!sameCreationTarget(creationIdentity.target, validatedCreationTarget(target))) {
+				fail("Read creation target", "target changed");
+			}
 			if (!canLinkTarget(await readLinkConfiguration(pi, context, inferred.target), inferred.target)) {
 				return { kind: "blocked", issue: { kind: "link-configuration", remote: inferred.target.remote } };
 			}
-			return { kind: "none", creationTarget: publicTarget(inferred.target) };
+			return await creationDiscovery(pi, context, target, explicitCreationBase, creationIdentity);
 		}
 		pushTarget = inferred.target;
 	} else {
@@ -1641,7 +1935,10 @@ export async function loadCurrentPullRequest(
 			}
 			throw error;
 		}
-		if (candidate === null) return { kind: "none", creationTarget: publicTarget(pushTarget) };
+		if (candidate === null) {
+			if (creationIdentity !== undefined) fail("Read creation target", "target changed");
+			return await creationDiscovery(pi, context, publicTarget(pushTarget), explicitCreationBase);
+		}
 	}
 
 	return {
@@ -1682,7 +1979,7 @@ function sameLinkedPullRequest(inferred: CurrentPullRequest, configured: Current
 		inferred.target.remoteOid === configured.target.remoteOid;
 }
 
-async function readTrackingOid(
+export async function readTrackingOid(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	trackingRef: string,
@@ -1694,6 +1991,46 @@ async function readTrackingOid(
 	if (result.code === 1 && result.stdout === "") return null;
 	if (result.code !== 0) commandFailure("Read remote-tracking ref", result);
 	return oid(singleLine(result.stdout, "Read remote-tracking ref", "OID"), "Read remote-tracking ref", "OID");
+}
+
+export function branchTrackingRef(target: Pick<BranchUpstreamTarget, "remote" | "ref">): string {
+	return `refs/remotes/${text(target.remote, "Read push remotes", "remote")}/${text(target.ref, "Read push target", "push ref")}`;
+}
+
+export async function fetchBranchTrackingRef(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: BranchUpstreamTarget,
+): Promise<void> {
+	await execute(pi, context, "Fetch branch tracking ref", "git", [
+		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules",
+		target.fetchSource, `+${target.remoteOid}:${branchTrackingRef(target)}`,
+	]);
+}
+
+export async function setBranchUpstream(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: BranchUpstreamTarget,
+): Promise<void> {
+	await execute(pi, context, "Set branch upstream", "git", [
+		"branch", `--set-upstream-to=${target.remote}/${target.ref}`, "--", target.branch,
+	]);
+}
+
+export async function verifyBranchUpstream(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: BranchUpstreamTarget,
+): Promise<void> {
+	const trackingOid = await readTrackingOid(pi, context, branchTrackingRef(target));
+	if (trackingOid !== target.remoteOid) throw new Error("Branch tracking ref does not match published OID");
+	const configuredTarget = optionalPushReference((await execute(pi, context, "Verify push target", "git", [
+		"for-each-ref", "--format=%(push:short)", `refs/heads/${target.branch}`,
+	])).stdout);
+	if (configuredTarget !== `${target.remote}/${target.ref}`) {
+		throw new Error("Configured push target does not match published branch");
+	}
 }
 
 async function restoreConfigValue(
@@ -1725,6 +2062,46 @@ async function restoreConfigValue(
 	}
 }
 
+function sameConfigValues(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export async function restoreBranchUpstreamConfiguration(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	target: Pick<BranchUpstreamTarget, "branch" | "remote" | "ref">,
+	original: BranchUpstreamConfiguration,
+): Promise<void> {
+	let incomplete = false;
+	for (const [key, expected, values] of [
+		[`branch.${target.branch}.remote`, target.remote, original.remote],
+		[`branch.${target.branch}.merge`, `refs/heads/${target.ref}`, original.merge],
+	] as const) {
+		try {
+			const current = await readConfigValues(pi, context, key);
+			if (current === null) incomplete = true;
+			else if (sameConfigValues(current, values)) continue;
+			else if (current.length === 1 && current[0] === expected) {
+				await restoreConfigValue(pi, context, key, expected, values);
+			} else incomplete = true;
+		} catch {
+			incomplete = true;
+		}
+	}
+	for (const [key, values] of [
+		[`branch.${target.branch}.remote`, original.remote],
+		[`branch.${target.branch}.merge`, original.merge],
+	] as const) {
+		try {
+			const current = await readConfigValues(pi, context, key);
+			if (current === null || !sameConfigValues(current, values)) incomplete = true;
+		} catch {
+			incomplete = true;
+		}
+	}
+	if (incomplete) throw new Error("Restore branch upstream failed and rollback was incomplete");
+}
+
 async function restoreLinkState(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1732,32 +2109,39 @@ async function restoreLinkState(
 	configuration: LinkConfiguration,
 	trackingRef: string,
 	trackingOid: string | null,
-	upstreamMutated: boolean,
-	fetchedOid: string | undefined,
+	upstreamAttempted: boolean,
+	fetchAttempted: boolean,
 ): Promise<void> {
 	let incomplete = false;
-	if (upstreamMutated) {
+	if (upstreamAttempted) {
 		for (const [key, expected, original] of [
 			[`branch.${target.branch}.remote`, target.remote, configuration.upstreamRemote],
 			[`branch.${target.branch}.merge`, `refs/heads/${target.ref}`, configuration.upstreamMerge],
 		] as const) {
 			try {
-				await restoreConfigValue(pi, context, key, expected, original);
+				const current = await readConfigValues(pi, context, key);
+				if (current === null) incomplete = true;
+				else if (sameConfigValues(current, original)) continue;
+				else if (current.length === 1 && current[0] === expected) {
+					await restoreConfigValue(pi, context, key, expected, original);
+				} else incomplete = true;
 			} catch {
 				incomplete = true;
 			}
 		}
 	}
-	if (fetchedOid !== undefined) {
+	if (fetchAttempted) {
 		try {
 			const currentTrackingOid = await readTrackingOid(pi, context, trackingRef);
-			if (currentTrackingOid !== fetchedOid) {
-				incomplete = true;
-			} else {
-				const args = trackingOid === null
-					? ["update-ref", "-d", trackingRef, currentTrackingOid]
-					: ["update-ref", trackingRef, trackingOid, currentTrackingOid];
-				await execute(pi, context, "Restore remote-tracking ref", "git", args);
+			if (currentTrackingOid !== trackingOid) {
+				if (target.remoteHeadOid === null || currentTrackingOid !== target.remoteHeadOid) {
+					incomplete = true;
+				} else {
+					const args = trackingOid === null
+						? ["update-ref", "-d", trackingRef, target.remoteHeadOid]
+						: ["update-ref", trackingRef, trackingOid, target.remoteHeadOid];
+					await execute(pi, context, "Restore remote-tracking ref", "git", args);
+				}
 			}
 		} catch {
 			incomplete = true;
@@ -1770,90 +2154,84 @@ export async function linkInferredPullRequest(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	inferred: CurrentPullRequest,
+	options: { agentDir?: string } = {},
 ): Promise<CurrentPullRequest> {
 	if (inferred.target.provenance !== "inferred" || inferred.lifecycle !== "open") {
 		throw new Error("Link branch failed: pull request is not an open inferred target");
 	}
-	const freshDiscovery = await loadCurrentPullRequest(pi, context);
-	if (
-		freshDiscovery.kind !== "current" ||
-		freshDiscovery.pullRequest.target.provenance !== "inferred" ||
-		!samePullRequestSnapshot(inferred, freshDiscovery.pullRequest)
-	) throw new Error("Link branch cancelled: inferred pull request context changed");
-	inferred = freshDiscovery.pullRequest;
-	const target: PushTarget = {
-		provenance: "inferred",
-		branch: inferred.target.branch,
-		remote: inferred.target.remote,
-		ref: inferred.target.ref,
-		fetchSource: inferred.target.fetchSource,
-		remoteHeadOid: inferred.target.remoteOid,
-		repository: {
-			nameWithOwner: inferred.target.repository,
-			normalizedName: normalizeRepository(inferred.target.repository),
-			host: inferred.target.host,
-		},
-	};
-	const linkConfiguration = await readLinkConfiguration(pi, context, target);
-	if (target.remoteHeadOid === null || !linkConfiguration || !canLinkTarget(linkConfiguration, target)) {
-		throw new Error("Link branch cancelled: target configuration changed");
-	}
-	const pushReference = optionalPushReference((await execute(pi, context, "Read push target", "git", [
-		"for-each-ref", "--format=%(push:short)", `refs/heads/${target.branch}`,
-	])).stdout);
-	if (pushReference !== null) throw new Error("Link branch cancelled: push target is no longer empty");
-	const remoteHeadOid = await readRemoteHeadOid(pi, context, target.fetchSource, target.ref);
-	if (remoteHeadOid !== target.remoteHeadOid) throw new Error("Link branch cancelled: remote ref changed");
-
-	const trackingRef = `refs/remotes/${target.remote}/${target.ref}`;
-	const trackingOid = await readTrackingOid(pi, context, trackingRef);
-	let fetchedOid: string | undefined;
-	let upstreamMutated = false;
-	try {
-		await execute(pi, context, "Fetch inferred branch", "git", [
-			"fetch",
-			"--no-write-fetch-head",
-			"--no-tags",
-			"--no-recurse-submodules",
-			target.fetchSource,
-			`${target.remoteHeadOid}:${trackingRef}`,
-		]);
-		fetchedOid = target.remoteHeadOid;
-		const verifiedFetchedOid = (await readTrackingOid(pi, context, trackingRef)) ?? undefined;
-		if (verifiedFetchedOid !== fetchedOid) {
-			throw new Error("Link branch cancelled: fetched remote ref changed");
+	return await withWorktreeLock(context.cwd, async () => {
+		const freshDiscovery = await loadCurrentPullRequest(pi, context);
+		if (
+			freshDiscovery.kind !== "current" ||
+			freshDiscovery.pullRequest.target.provenance !== "inferred" ||
+			!samePullRequestSnapshot(inferred, freshDiscovery.pullRequest)
+		) throw new Error("Link branch cancelled: inferred pull request context changed");
+		inferred = freshDiscovery.pullRequest;
+		const target: PushTarget = {
+			provenance: "inferred",
+			branch: inferred.target.branch,
+			remote: inferred.target.remote,
+			ref: inferred.target.ref,
+			fetchSource: inferred.target.fetchSource,
+			remoteHeadOid: inferred.target.remoteOid,
+			repository: {
+				nameWithOwner: inferred.target.repository,
+				normalizedName: normalizeRepository(inferred.target.repository),
+				host: inferred.target.host,
+			},
+		};
+		const linkConfiguration = await readLinkConfiguration(pi, context, target);
+		if (target.remoteHeadOid === null || !linkConfiguration || !canLinkTarget(linkConfiguration, target)) {
+			throw new Error("Link branch cancelled: target configuration changed");
 		}
-		await execute(pi, context, "Set branch upstream", "git", [
-			"branch", `--set-upstream-to=${target.remote}/${target.ref}`, "--", target.branch,
-		]);
-		upstreamMutated = true;
-		const configuredTarget = optionalPushReference((await execute(pi, context, "Verify push target", "git", [
+		const pushReference = optionalPushReference((await execute(pi, context, "Read push target", "git", [
 			"for-each-ref", "--format=%(push:short)", `refs/heads/${target.branch}`,
 		])).stdout);
-		if (configuredTarget !== `${target.remote}/${target.ref}`) {
-			throw new Error("Link branch failed: configured push target does not match inferred target");
-		}
-		const discovery = await loadCurrentPullRequest(pi, context);
-		if (discovery.kind !== "current" || !sameLinkedPullRequest(inferred, discovery.pullRequest)) {
-			throw new Error("Link branch failed: configured pull request does not match inferred target");
-		}
-		return discovery.pullRequest;
-	} catch (error) {
-		const rollbackContext = { cwd: context.cwd, signal: new AbortController().signal };
+		if (pushReference !== null) throw new Error("Link branch cancelled: push target is no longer empty");
+		const remoteHeadOid = await readRemoteHeadOid(pi, context, target.fetchSource, target.ref);
+		if (remoteHeadOid !== target.remoteHeadOid) throw new Error("Link branch cancelled: remote ref changed");
+
+		const trackingRef = `refs/remotes/${target.remote}/${target.ref}`;
+		const trackingOid = await readTrackingOid(pi, context, trackingRef);
+		let fetchAttempted = false;
+		let upstreamAttempted = false;
 		try {
-			await restoreLinkState(
-				pi,
-				rollbackContext,
-				target,
-				linkConfiguration,
-				trackingRef,
-				trackingOid,
-				upstreamMutated,
-				fetchedOid,
-			);
-		} catch {
-			throw new Error("Link branch failed and rollback was incomplete");
+			const upstreamTarget: BranchUpstreamTarget = {
+				branch: target.branch,
+				remote: target.remote,
+				ref: target.ref,
+				fetchSource: target.fetchSource,
+				remoteOid: target.remoteHeadOid,
+			};
+			fetchAttempted = true;
+			await fetchBranchTrackingRef(pi, context, upstreamTarget);
+			const verifiedFetchedOid = await readTrackingOid(pi, context, trackingRef);
+			if (verifiedFetchedOid !== target.remoteHeadOid) throw new Error("Link branch cancelled: fetched remote ref changed");
+			upstreamAttempted = true;
+			await setBranchUpstream(pi, context, upstreamTarget);
+			await verifyBranchUpstream(pi, context, upstreamTarget);
+			const discovery = await loadCurrentPullRequest(pi, context);
+			if (discovery.kind !== "current" || !sameLinkedPullRequest(inferred, discovery.pullRequest)) {
+				throw new Error("Link branch failed: configured pull request does not match inferred target");
+			}
+			return discovery.pullRequest;
+		} catch (error) {
+			const rollbackContext = { cwd: context.cwd, signal: new AbortController().signal };
+			try {
+				await restoreLinkState(
+					pi,
+					rollbackContext,
+					target,
+					linkConfiguration,
+					trackingRef,
+					trackingOid,
+					upstreamAttempted,
+					fetchAttempted,
+				);
+			} catch {
+				throw new Error("Link branch failed and rollback was incomplete");
+			}
+			throw error;
 		}
-		throw error;
-	}
+	}, { agentDir: options.agentDir, signal: context.signal });
 }

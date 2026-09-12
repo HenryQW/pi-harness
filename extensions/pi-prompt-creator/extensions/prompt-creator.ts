@@ -32,7 +32,7 @@ const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const DISALLOWED_MARKDOWN_CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 const READY_WIDGET = "Prompt ready — /promptor";
 const FAILURE_WIDGET = "Prompt analysis failed — /promptor";
-const REFINEMENT_GUIDANCE = "Refine this candidate conversationally with the user. When the user approves it, Main must emit only the complete Final Prompt Draft. Then save that full reply through /promptor.";
+const REFINEMENT_GUIDANCE = "Refine this candidate conversationally with the user. When the user approves it, Main must emit only the complete Final Prompt Draft. Then run /promptor save to use the suggested name, or /promptor save <name>.";
 
 export const DRAFT_TASK = {
 	id: "pi-prompt-creator/draft",
@@ -278,8 +278,6 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	let configWarned = false;
 	let inputCount = 0;
 	let branchGeneration = 0;
-	let closed = false;
-	let analysisRan = false;
 	let candidate: PromptCandidate | undefined;
 	let candidateNameHint: string | undefined;
 	let reviewBoundary: ReviewBoundary | undefined;
@@ -295,11 +293,10 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, [FAILURE_WIDGET]);
 	};
 	const isCurrent = (run: ActiveRun) =>
-		!closed && activeRun === run && branchGeneration === run.branchGeneration && !run.controller.signal.aborted;
+		activeRun === run && branchGeneration === run.branchGeneration && !run.controller.signal.aborted;
 	const resetBranch = (ctx: ExtensionContext) => {
 		branchGeneration += 1;
 		inputCount = 0;
-		analysisRan = false;
 		candidate = undefined;
 		candidateNameHint = undefined;
 		reviewBoundary = undefined;
@@ -311,10 +308,23 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		maxTurns: 3,
 		timeout: { idleMs: 2 * 60_000, maxMs: 5 * 60_000 },
 	});
+	const showCandidate = (ctx: ExtensionContext) => {
+		if (!candidate) return;
+		const shown = candidate;
+		const boundaryId = ctx.sessionManager.getLeafId();
+		candidate = undefined;
+		candidateNameHint = shown.name;
+		clearWidget(ctx);
+		pi.sendMessage({
+			customType: CANDIDATE_MESSAGE_TYPE,
+			content: candidateMessage(shown),
+			display: true,
+		}, { triggerTurn: false });
+		reviewBoundary = boundaryId ? { entryId: boundaryId } : undefined;
+	};
 	const startAnalysis = (ctx: ExtensionContext, manual: boolean) => {
 		if (ctx.mode !== "tui" || activeRun || candidate) return;
 		if (manual) automaticConsumed = true;
-		analysisRan = true;
 		failure = false;
 		candidateNameHint = undefined;
 		const payload = analysisPayload(pi, ctx);
@@ -353,7 +363,8 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			}
 			candidate = drafted;
 			candidateNameHint = drafted.name;
-			ctx.ui.setWidget(WIDGET_KEY, [READY_WIDGET]);
+			if (manual) showCandidate(ctx);
+			else ctx.ui.setWidget(WIDGET_KEY, [READY_WIDGET]);
 		}).catch(() => {
 			if (isCurrent(run)) showFailure(ctx);
 		}).finally(() => {
@@ -363,13 +374,13 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 
 	const saveLatestDraft = async (
 		draft: string,
+		requestedName: string | undefined,
 		expectedReview: ReviewBoundary,
 		expectedBranch: number,
 		ctx: ExtensionCommandContext,
 	) => {
-		const requested = await ctx.ui.input("Prompt name", candidateNameHint ?? "my-prompt");
-		if (requested === undefined || expectedBranch !== branchGeneration || reviewBoundary !== expectedReview) return;
-		const name = requested.trim();
+		if (expectedBranch !== branchGeneration || reviewBoundary !== expectedReview) return;
+		const name = requestedName ?? candidateNameHint ?? "";
 		if (!isPromptName(name)) {
 			ctx.ui.notify(`Use lowercase kebab-case starting with a letter, up to ${MAX_NAME_CHARS} characters.`, "warning");
 			return;
@@ -398,7 +409,6 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	};
 
 	pi.on("session_start", (_event, ctx) => {
-		closed = false;
 		activeRun?.controller.abort(new Error("Prompt Creator session changed."));
 		activeRun = undefined;
 		resetBranch(ctx);
@@ -442,44 +452,59 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 
 	pi.on("session_tree", (_event, ctx) => resetBranch(ctx));
 	pi.on("session_shutdown", (_event, ctx) => {
-		closed = true;
-		branchGeneration += 1;
-		candidate = undefined;
-		candidateNameHint = undefined;
-		reviewBoundary = undefined;
-		failure = false;
-		inputCount = 0;
-		clearWidget(ctx);
+		resetBranch(ctx);
 		activeRun?.controller.abort(new Error("Prompt Creator shut down."));
 		activeRun = undefined;
 	});
 
 	pi.registerCommand("promptor", {
-		description: "Analyze this conversation and manage prompt candidates",
-		handler: async (_args, ctx) => {
+		description: "Analyze prompts, show a ready candidate, or save with /promptor save [name]",
+		getArgumentCompletions: (prefix) => {
+			const commands = ["analyze", "dismiss", "save", "automatic on", "automatic off"];
+			const matches = commands.filter((command) => command.startsWith(prefix));
+			return matches.length ? matches.map((command) => ({ value: command, label: command })) : null;
+		},
+		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/promptor requires the interactive TUI.", "warning");
 				return;
 			}
-			const menuBranch = branchGeneration;
+			const commandBranch = branchGeneration;
 			const review = reviewBoundary;
 			const draft = latestAssistantDraft(ctx, review);
-			const analyze = analysisRan ? "Analyze again" : "Analyze now";
-			const toggle = automatic ? "Automatic Off" : "Automatic On";
-			const choices = [
-				...(!activeRun && !candidate ? [analyze] : []),
-				toggle,
-				...(candidate ? ["Show candidate", "Dismiss candidate"] : []),
-				...(draft ? ["Save latest Main draft"] : []),
-			];
-			const selected = await ctx.ui.select("Prompt Creator", choices);
-			if (!selected || menuBranch !== branchGeneration) return;
-			if (selected === analyze) {
-				startAnalysis(ctx, true);
+			const [action = "", ...values] = args.trim().split(/\s+/);
+			if (!action) {
+				if (candidate) showCandidate(ctx);
+				else if (activeRun) ctx.ui.notify("Prompt analysis is already running.", "info");
+				else if (draft) ctx.ui.notify("Run /promptor save to create the reviewed prompt.", "info");
+				else startAnalysis(ctx, true);
 				return;
 			}
-			if (selected === toggle) {
-				const next = !automatic;
+			if (action === "analyze" && values.length === 0) {
+				if (candidate) ctx.ui.notify("Show or dismiss the pending candidate first.", "warning");
+				else if (activeRun) ctx.ui.notify("Prompt analysis is already running.", "info");
+				else startAnalysis(ctx, true);
+				return;
+			}
+			if (action === "dismiss" && values.length === 0) {
+				if (!candidate) ctx.ui.notify("No prompt candidate is waiting.", "warning");
+				else {
+					candidate = undefined;
+					candidateNameHint = undefined;
+					clearWidget(ctx);
+				}
+				return;
+			}
+			if (action === "save" && values.length <= 1) {
+				if (!draft || !review) {
+					ctx.ui.notify("No reviewed Main draft is ready to save.", "warning");
+					return;
+				}
+				await saveLatestDraft(draft, values[0], review, commandBranch, ctx);
+				return;
+			}
+			if (action === "automatic" && values.length === 1 && (values[0] === "on" || values[0] === "off")) {
+				const next = values[0] === "on";
 				try {
 					await configStore.save({ automatic: next, inputThreshold });
 					automatic = next;
@@ -489,29 +514,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 				}
 				return;
 			}
-			if (selected === "Show candidate" && candidate) {
-				const shown = candidate;
-				const boundaryId = ctx.sessionManager.getLeafId();
-				candidate = undefined;
-				candidateNameHint = shown.name;
-				clearWidget(ctx);
-				pi.sendMessage({
-					customType: CANDIDATE_MESSAGE_TYPE,
-					content: candidateMessage(shown),
-					display: true,
-				}, { triggerTurn: false });
-				reviewBoundary = boundaryId ? { entryId: boundaryId } : undefined;
-				return;
-			}
-			if (selected === "Dismiss candidate" && candidate) {
-				candidate = undefined;
-				candidateNameHint = undefined;
-				clearWidget(ctx);
-				return;
-			}
-			if (selected === "Save latest Main draft" && draft && review) {
-				await saveLatestDraft(draft, review, menuBranch, ctx);
-			}
+			ctx.ui.notify("Use /promptor, /promptor analyze, /promptor dismiss, /promptor save [name], or /promptor automatic <on|off>.", "warning");
 		},
 	});
 }

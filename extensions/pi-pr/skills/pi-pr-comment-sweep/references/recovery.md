@@ -1,50 +1,28 @@
-# Sweep Recovery
+# Sweep recovery
 
-Read only for resume or PR-head mismatch.
+The workflow owns one versioned recovery file for each canonical worktree:
 
-## Checkpoint
-
-Only ignored `.context/progress.md` may change under `.context/`. Keep one JSON
-line under `## PR comment sweep`; never stage it:
-
-```json
-{"workflow":"pi-pr-comment-sweep","pr":"URL","snapshot":"/tmp/file","final_snapshot":null,"head":"SHA","phase":"triage","owned":[],"ledger":{},"checks":[],"commit":null,"pushed":false,"resolved":[]}
+```text
+<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json
 ```
 
-Use phases `triage`, `editing`, `validated`, `committed`, `pushed`, or `resolved`.
-Update after each phase. Keep ledger evidence and validation results terse. Edit
-only fields changed by that phase; do not replace the whole JSON line. Keep
-repository-relative owned paths, commit SHA, push state, and resolved IDs.
+The file is private, bounded to 1 MiB, and replaced atomically. It contains the
+frozen PR authority, original head and lease, complete feedback, exact ledger,
+owned paths, and mutation attempts.
 
-Resume only when workflow and PR match, snapshot exists and names that PR, local
-`HEAD` equals `head`, and tracked dirty paths equal `owned`. Skip completed
-phases and continue with next one. Stop on missing, malformed, or conflicting
-state; never absorb unknown changes. Commands requiring a clean tree remain
-blocked until tracked work is committed or otherwise restored by user.
+Use `resume` when this file exists. Resume checks the canonical worktree, local
+changes, PR linkage, and remote head. It reconciles an attempted push or thread
+resolution before issuing a new epoch and run ID. Calls from the old run then
+fail.
 
-## Adopt PR head
+A completed post-publish `refresh` stores the new complete snapshot before any
+replacement ledger. Recovery keeps that snapshot in `refresh-pending`, with its
+new generation and fingerprint. Its status exposes only item IDs and kinds.
+Use `show` with the resumed guard to inspect each frozen item. Then use `record`
+without `ownedPaths` to supply exact complete coverage for that snapshot.
+Resolution and finalization remain blocked until this record succeeds.
 
-Only exact user words **“Adopt PR head”** authorize this path. Inspect
-`gh pr view "$PR" --json url,headRepository,headRefName,headRefOid`. Validate the
-PR URL, full head OID, and ref. Choose exactly one push URL whose normalized
-GitHub host/owner/repository matches `headRepository`. Run:
-
-```bash
-git fetch --no-write-fetch-head --no-tags "$PUSH_URL" "$PR_HEAD_SHA"
-git cat-file -e "$PR_HEAD_SHA^{commit}"
-git log --oneline HEAD.."$PR_HEAD_SHA"
-git diff --stat HEAD.."$PR_HEAD_SHA"
-git merge-base --is-ancestor HEAD "$PR_HEAD_SHA"
-STATUS=$(git status --porcelain=v1 --untracked-files=all) || exit 1
-test -z "$STATUS" || exit 1
-for STATE in MERGE_HEAD rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD sequencer; do
-  STATE_PATH=$(git rev-parse --git-path "$STATE") || exit 1
-  test -n "$STATE_PATH" && test ! -e "$STATE_PATH" || exit 1
-done
-git merge --ff-only "$PR_HEAD_SHA"
-```
-
-Run the clean-tree and Git-operation checks immediately before the fast-forward.
-Stop on an absent object, divergence, dirty tracked or untracked state, an active
-Git operation, or an ambiguous push URL. Never stash, reset, or clean. Re-run
-target verification and initial fetch after fast-forward.
+Malformed or oversized recovery is preserved and blocks the workflow. Never
+repair, move, replace, or delete it automatically. An unknown mutation is never
+replayed. If reconciliation cannot prove its exact result, stop and report the
+state path and blocker.
