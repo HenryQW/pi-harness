@@ -284,7 +284,7 @@ export default function pullRequestExtension(
 	let sessionGeneration = 0;
 	let active: AbortController | undefined;
 	let queued = false;
-	let refreshFailureReported = false;
+	let reportedRefreshFailure: "generic" | "quota" | undefined;
 	let displayEstablished = false;
 	let lastDiscovery: "configured" | "inferred" | "absent" | "blocked" | "inactive" | undefined;
 	let lastBlockedIssueKey: string | undefined;
@@ -597,7 +597,7 @@ export default function pullRequestExtension(
 		context = undefined;
 		observation = undefined;
 		queued = false;
-		refreshFailureReported = false;
+		reportedRefreshFailure = undefined;
 		displayEstablished = false;
 		lastDiscovery = undefined;
 		lastBlockedIssueKey = undefined;
@@ -615,8 +615,9 @@ export default function pullRequestExtension(
 
 	const reportRefreshFailure = (error: unknown): void => {
 		const ctx = context;
-		if (!ctx || refreshFailureReported) return;
-		refreshFailureReported = true;
+		const category = error instanceof GitHubRateLimitError ? "quota" : "generic";
+		if (!ctx || reportedRefreshFailure === category || reportedRefreshFailure === "quota") return;
+		reportedRefreshFailure = category;
 		try {
 			ctx.ui.notify(
 				error instanceof GitHubRateLimitError
@@ -671,7 +672,7 @@ export default function pullRequestExtension(
 			}
 			if (controller.signal.aborted || sessionGeneration !== generation) return;
 			render(ctx, discovery);
-			refreshFailureReported = false;
+			reportedRefreshFailure = undefined;
 
 			const pullRequest = discovery.kind === "current" ? discovery.pullRequest : undefined;
 			if (pendingWorkspaceRename && pullRequest?.target.provenance === "configured") {

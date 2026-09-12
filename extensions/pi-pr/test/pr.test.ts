@@ -1380,12 +1380,13 @@ test("reports lookup failures once, clears stale actions, and resets after recov
 	await app.shutdown(ctx);
 });
 
-test("reports a sanitized rate-limit failure, clears its stale action, and does not retry /pr", async () => {
+test("reports generic then sanitized rate-limit failures, clears its stale action, and does not retry /pr", async () => {
 	let loads = 0;
 	const app = harness({
 		async load() {
 			loads += 1;
 			if (loads === 1) return currentPullRequest({ conditions: { ci: "failure" } });
+			if (loads === 2) throw new Error("native refresh failed");
 			throw new GitHubRateLimitError();
 		},
 		useDefaultCommandHandler: true,
@@ -1395,20 +1396,37 @@ test("reports a sanitized rate-limit failure, clears its stale action, and does 
 	await app.start(ctx);
 	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	assert.deepEqual(app.notifications, [{
+		message: "PR status refresh failed: status unavailable",
+		type: "error",
+	}]);
+	assert.equal(app.widgets.at(-1), undefined);
+
 	await assert.rejects(
 		app.command().handler("", ctx as ExtensionCommandContext),
 		(error: unknown) => error instanceof GitHubRateLimitError,
 	);
-	assert.equal(loads, 2);
-	assert.deepEqual(app.notifications, [{
-		message: "GitHub API rate limit exhausted; retry after GitHub resets it",
-		type: "error",
-	}]);
-	assert.doesNotMatch(app.notifications[0]?.message ?? "", /secret|password|token/i);
+	assert.equal(loads, 3);
+	assert.deepEqual(app.notifications, [
+		{
+			message: "PR status refresh failed: status unavailable",
+			type: "error",
+		},
+		{
+			message: "GitHub API rate limit exhausted; retry after GitHub resets it",
+			type: "error",
+		},
+	]);
+	assert.equal(
+		app.notifications.filter(({ message }) => message === "GitHub API rate limit exhausted; retry after GitHub resets it").length,
+		1,
+	);
+	assert.doesNotMatch(app.notifications.at(-1)?.message ?? "", /secret|password|token/i);
 	assert.equal(app.widgets.at(-1), undefined, "a rate-limited /pr must clear the stale action");
 
 	await flush();
-	assert.equal(loads, 2, "a rate-limited /pr must not schedule an immediate refresh");
+	assert.equal(loads, 3, "a rate-limited /pr must not schedule an immediate refresh");
 	await app.shutdown(ctx);
 });
 
