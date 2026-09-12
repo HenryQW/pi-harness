@@ -804,7 +804,11 @@ export class HerdrHostRuntime implements HostRuntime {
 				const details = parseDetails(tabIntent);
 				const workspaceDetails = parseDetails(workspaceIntent);
 				if (details.kind !== "worker_tab" || workspaceDetails.kind !== "workspace") throw new Error("Saved worker-tab identity is malformed.");
+				requireIntentIdentity(tabIntent, input.attempt);
 				assertWorkerTabDetails(details, tabIntent, input.attempt);
+				const leasePath = exactString(tabIntent.resources?.leasePath, "saved worker lease path");
+				if (details.leasePath !== leasePath) throw new Error("Saved worker lease path drifted from its owned resource.");
+				this.assertLeasePath(leasePath, input.attempt.correlationToken);
 				assertWorkspaceDetails(workspaceDetails, workspaceIntent, input.attempt);
 				await this.assertRepositoryIdentity(workspaceDetails, context);
 				const tabId = exactString(tabIntent.resourceId, "saved worker tab ID");
@@ -827,7 +831,7 @@ export class HerdrHostRuntime implements HostRuntime {
 						return { outcome: "blocked", failure: "The exact saved worker tab still exists after close." };
 					}
 				}
-				await this.removeLeaseArtifacts(details, tabIntent.token, paneId, tabId, context);
+				await this.removeLeaseArtifacts(details, input.attempt.correlationToken, paneId, tabId, context);
 				return tab ? { outcome: "completed" } : { outcome: "absent" };
 			}
 

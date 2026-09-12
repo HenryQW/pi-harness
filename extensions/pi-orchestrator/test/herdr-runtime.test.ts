@@ -1901,6 +1901,72 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 	assert.equal(blockedScript.calls.length, 1);
 });
 
+test("lease cleanup preserves artifacts on schema-valid persisted identity drift", async (t) => {
+	const cases: Array<{
+		name: string;
+		failure: RegExp;
+		drift: (intent: AllocationIntent, paths: Paths, leasePath: string) => string;
+	}> = [
+		{
+			name: "worker-tab token differs from the attempt token",
+			failure: /allocation intent does not match the task attempt/,
+			drift: (intent, paths) => {
+				const token = "fedcba9876543210fedcba98";
+				const leasePath = join(paths.leases, token, `${"e".repeat(32)}.lease`);
+				const details = JSON.parse(intent.details) as { label: string; leasePath: string };
+				intent.token = token;
+				intent.resources!.leasePath = leasePath;
+				details.label = `pi-orchestrator-${token}-worker`;
+				details.leasePath = leasePath;
+				intent.details = JSON.stringify(details);
+				return leasePath;
+			},
+		},
+		{
+			name: "details lease path differs from the owned resource path",
+			failure: /lease path drifted from its owned resource/,
+			drift: (intent, _paths, leasePath) => {
+				const driftedLeasePath = join(dirname(leasePath), `${"e".repeat(32)}.lease`);
+				const details = JSON.parse(intent.details) as { leasePath: string };
+				details.leasePath = driftedLeasePath;
+				intent.details = JSON.stringify(details);
+				return driftedLeasePath;
+			},
+		},
+	];
+
+	for (const candidate of cases) {
+		await t.test(candidate.name, async (t) => {
+			const fixture = await paths(t);
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+			attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
+			const tabIntent = attempt.allocations.find((intent) => intent.kind === "worker_tab")!;
+			const artifactPath = candidate.drift(tabIntent, fixture, leasePath);
+			await privateLease(artifactPath);
+			const callsBeforeCleanup = script.calls.length;
+			script.push(
+				repositoryIdentityStep(fixture),
+				{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+				{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
+				{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: failure("tab_not_found") },
+				lsof(artifactPath),
+				lsof(artifactPath),
+				{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+				{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: failure("tab_not_found") },
+			);
+
+			const result = await host.cleanupHost({ kind: "worker_tab", task, attempt }, context());
+			assert.equal(result.outcome, "blocked");
+			assert.match(result.outcome === "blocked" ? result.failure : "", candidate.failure);
+			assert.ok((await stat(artifactPath)).isFile());
+			assert.ok((await stat(dirname(artifactPath))).isDirectory());
+			assert.equal(script.calls.length, callsBeforeCleanup);
+		});
+	}
+});
+
 test("lease cleanup preserves artifacts when holders or exact resource absence are uncertain", async (t) => {
 	await t.test("late holder", async (t) => {
 		const fixture = await paths(t);
