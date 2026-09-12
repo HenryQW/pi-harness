@@ -140,7 +140,7 @@ const FixCiParameters = Type.Union([
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "merge" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "merge" | "continue" | "push" | "publish">;
-type SweepWorkflow = Pick<PullRequestCommentSweep, "start" | "resume" | "show" | "record" | "publish" | "refresh" | "resolve" | "finalize">;
+type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
 
 type WorkflowContextBase = {
@@ -337,7 +337,7 @@ export default function pullRequestExtension(
 						loadCurrentPullRequest: load,
 					}),
 				};
-				break;
+				return { runId, action: "merge" };
 			case "create":
 				workflowContext = {
 					...common,
@@ -350,9 +350,9 @@ export default function pullRequestExtension(
 						loadCurrentPullRequest: load,
 					}),
 				};
-				break;
-			case "sweep":
-				workflowContext = {
+				return { runId, action: "prepare" };
+			case "sweep": {
+				const selected: Extract<WorkflowContext, { route: "sweep" }> = {
 					...common,
 					route: "sweep",
 					workflow: createCommentSweep({
@@ -362,7 +362,17 @@ export default function pullRequestExtension(
 						loadCurrentPullRequest: load,
 					}),
 				};
-				break;
+				workflowContext = selected;
+				try {
+					const action = await selected.workflow.recoveryLaunchAction();
+					invocation.assertCurrent();
+					if (workflowContext !== selected) throw new Error("PR workflow session changed during recovery inspection");
+					return { runId, action };
+				} catch (error) {
+					clearWorkflow(selected);
+					throw error;
+				}
+			}
 			case "fix-ci":
 				workflowContext = {
 					...common,
@@ -374,9 +384,8 @@ export default function pullRequestExtension(
 						loadCurrentPullRequest: load,
 					}),
 				};
-				break;
+				return { runId, action: "collect" };
 		}
-		return common.runId;
 	};
 
 	const markWorkflowPromptQueued: NonNullable<PrCommandDependencies["markWorkflowPromptQueued"]> = (identity, queued) => {
@@ -403,7 +412,7 @@ export default function pullRequestExtension(
 	) => {
 		signal?.throwIfAborted();
 		const selected = workflowContext;
-		if (!selected) throw new Error("No PR workflow is active");
+		if (!selected) throw new Error("No PR workflow is active; run /pr to discover and reserve the current route");
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);

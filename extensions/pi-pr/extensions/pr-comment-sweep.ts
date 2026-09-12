@@ -231,6 +231,16 @@ function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHe
 		current.target.remoteOid === remoteHead;
 }
 
+function recoveryMatchesRouteAuthority(state: SweepState, suppliedAuthority: SweepAuthority): boolean {
+	const permittedHeads = new Set<string>();
+	if (state.attempts.push.state !== "applied") permittedHeads.add(state.original.lease);
+	if (
+		(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
+		state.publicationHead
+	) permittedHeads.add(state.publicationHead);
+	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head));
+}
+
 function feedbackMatchesAuthority(snapshot: FeedbackSnapshot, authority: SweepAuthority, head: string): boolean {
 	const current = snapshot.pullRequest;
 	return current.id === authority.id && current.number === authority.number && current.url === authority.url &&
@@ -575,6 +585,17 @@ export class PullRequestCommentSweep {
 		return (await this.location()).path;
 	}
 
+	async recoveryLaunchAction(): Promise<"start" | "resume"> {
+		if (!this.suppliedAuthority) throw new Error("Comment sweep recovery inspection requires route authority");
+		const location = await this.location();
+		const state = await this.loadIfPresent(location);
+		if (!state) return "start";
+		if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
+			throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match freshly discovered route authority`);
+		}
+		return "resume";
+	}
+
 	private async loadState(location: Awaited<ReturnType<PullRequestCommentSweep["location"]>>): Promise<SweepState> {
 		const raw = await readTextFileBounded(location.path, SWEEP_RECOVERY_MAX_BYTES, { signal: this.signal });
 		let value: unknown;
@@ -789,17 +810,10 @@ export class PullRequestCommentSweep {
 	async resume(): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			if (!this.suppliedAuthority) throw new Error("Comment sweep resume requires route authority");
-			const suppliedAuthority = this.suppliedAuthority;
 			const location = await this.location();
 			const state = await this.loadState(location);
-			const permittedHeads = new Set<string>();
-			if (state.attempts.push.state !== "applied") permittedHeads.add(state.original.lease);
-			if (
-				(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
-				state.publicationHead
-			) permittedHeads.add(state.publicationHead);
-			if (![...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head))) {
-				throw new Error("Comment sweep recovery does not match supplied route authority");
+			if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
+				throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
 			}
 			await this.reconcile(state);
 			state.attempts.resolutions = state.attempts.resolutions.filter(({ state: attempt }) => attempt !== "blocked");

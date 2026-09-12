@@ -9,9 +9,10 @@ Use the package-owned comment-sweep workflow. It exposes these closed actions:
 `start`, `resume`, `show`, `record`, `publish`, `refresh`, `resolve`, and
 `finalize`.
 
-1. Call `start` for a fresh current-branch pull request. Call `resume` only for
-   saved work. Never replace or delete blocked recovery state by hand. See
-   [Sweep recovery](references/recovery.md).
+1. Use the `start` or `resume` action supplied by `/pr`. `/pr` checks saved work
+   and chooses the action. Do not change it. Direct skill or tool calls cannot
+   create route authority; run `/pr` instead. Never replace or delete blocked
+   recovery state by hand. See [Sweep recovery](references/recovery.md).
 2. Use `show` for one feedback ID at a time. Inspect every conversation
    comment, review, thread, and thread comment. Follow
    [Thread triage](references/thread-triage.md).
