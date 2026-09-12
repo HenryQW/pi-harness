@@ -4,16 +4,7 @@ Run durable, checked local implementation graphs from Pi Main. Independent tasks
 
 This package is the sole owner of that checked protocol. `delegate_task` remains lightweight generic delegation.
 
-![Architecture showing the guarded path from a checked request through isolated Herdr work to Main integration](./docs/orchestration-architecture.svg)
-
-## Requirements
-
-- A clean Git worktree on an attached branch with a committed `HEAD`.
-- Herdr `0.9.0` or newer, with protocol version 22 or newer.
-- Configured Pi task-model profiles for every requested model class.
-- `@henryqw/pi-subagent` 16 or newer for Role launch, execution, worktrees, and exact review evidence.
-
-## Upgrade from Auto DAG
+## Install
 
 Settle every unfinished Auto DAG run before upgrading. Old Auto DAG state is inert. Pi Orchestrator does not read or migrate it.
 
@@ -27,19 +18,35 @@ pi install npm:@henryqw/pi-subagent
 pi install npm:@henryqw/pi-orchestrator
 ```
 
-## Choose a tool
+### Requirements
 
-| Surface | Purpose |
-| --- | --- |
-| `orchestrate_execute` | Start one durable checked task graph. |
-| `orchestrate_status` | Read one request and report workspace drift. |
-| `orchestrate_resume` | Retry, verify, or finalize an unfinished request. |
-| `orchestrate_abort` | Stop workers and abort an unfinished request. |
-| `pi-orchestrator` | Guide Main to choose generic delegation or checked orchestration. |
+- Use a clean Git worktree on an attached branch with a committed `HEAD`.
+- Use Herdr `0.9.0` or newer, with protocol version 22 or newer. Run `herdr --version` to verify the installed version.
+- Configure Pi task-model profiles for every requested model class. Run `/task-models` to verify the profiles.
+- Use `@henryqw/pi-subagent` 16 or newer for Role launch, execution, worktrees, and exact review evidence.
+
+## Works with
+
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Required | Provides Role launch, execution, worktrees, and exact review evidence. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides configured profiles for every requested model class. |
+
+## Use
+
+Call `orchestrate_execute` with a bounded request. It runs the graph through checked integration in the local repository.
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `orchestrate_execute` | tool | Start one durable checked task graph. |
+| `orchestrate_status` | tool | Read one request and report workspace drift. |
+| `orchestrate_resume` | tool | Retry, verify, or finalize an unfinished request. |
+| `orchestrate_abort` | tool | Stop workers and abort an unfinished request. |
+| `pi-orchestrator` | skill | Guide Main to choose generic delegation or checked orchestration. |
 
 Use `delegate_task` for lightweight generic delegation. Use `orchestrate_*` when implementation needs durable state, checks, dependencies, integration, or recovery.
 
-## Start a request
+### Start a request
 
 ```json
 {
@@ -64,6 +71,16 @@ Use `delegate_task` for lightweight generic delegation. Use `orchestrate_*` when
 }
 ```
 
+## Flow
+
+The graph runs ready tasks in waves. Independent tasks run in parallel. Dependencies run in later waves.
+
+The architecture diagram shows the guarded path from the checked request through isolated Herdr work, direct checks, optional review, and Main integration.
+
+![Architecture showing the guarded path from a checked request through isolated Herdr work to Main integration](./docs/orchestration-architecture.svg)
+
+### Execution and review
+
 A request accepts one to eight tasks. Every task needs direct checks and an explicit model class.
 
 `dependsOn` creates later waves. Tasks in one ready wave use separate worktrees and visible Herdr workers.
@@ -74,9 +91,17 @@ The worker then stops. The orchestrator rebases the candidate and reruns every t
 
 Add `judgment` only for a criterion that checks cannot decide. One read-only Reviewer runs after the rebase with exact private patch evidence. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
 
-## Durable recovery
+## API
+
+The package root exports its strict request and state schemas, runner contracts, checked Git runtime, Herdr host runtime, and composition helpers. The Pi entry point is `extensions/orchestrator.ts`.
+
+## State and storage
 
 State lives under `~/.pi/agent/config/pi-orchestrator/state/`, namespaced by repository and request ID. Do not edit state files.
+
+## Limits and recovery
+
+### Recovery actions
 
 Use `orchestrate_status` after interruption or when a request needs attention. Then choose one reported action:
 
@@ -86,12 +111,8 @@ Use `orchestrate_status` after interruption or when a request needs attention. T
 
 `orchestrate_abort` terminates owned workers and records an aborted request. It does not claim uncertain cleanup succeeded.
 
-## Version 1 scope
+### Version 1 scope
 
 Version 1 stops after checked integration in the local repository. It does not push, open or manage pull requests, run swarms, or support old protocols and state.
 
 It does not use outboxes, delivery hosts, receipts, or broad transport machinery.
-
-## Package API
-
-The package root exports its strict request and state schemas, runner contracts, checked Git runtime, Herdr host runtime, and composition helpers. The Pi entry point is `extensions/orchestrator.ts`.
