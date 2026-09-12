@@ -129,7 +129,13 @@ export default function roleTools(pi: ExtensionAPI): void {
 	if (processLease !== undefined) {
 		pi.on("tool_call", (event) => {
 			if (!isToolCallEventType("bash", event)) return;
-			event.input.command = `exec {__pi_subagent_process_lease_fd}>>"$${PI_ORCHESTRATOR_PROCESS_LEASE}"\n${event.input.command}`;
+			event.input.command = `__pi_subagent_process_lease_fd=10
+while : 2>/dev/null <&"$__pi_subagent_process_lease_fd" || : 2>/dev/null >&"$__pi_subagent_process_lease_fd"; do
+	__pi_subagent_process_lease_fd=$((__pi_subagent_process_lease_fd + 1))
+done
+eval 'exec '"$__pi_subagent_process_lease_fd"'>>"$${PI_ORCHESTRATOR_PROCESS_LEASE}"' || exit $?
+unset __pi_subagent_process_lease_fd
+${event.input.command}`;
 		});
 	}
 	if (!budget) return;

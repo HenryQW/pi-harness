@@ -69,12 +69,14 @@ test("process lease survives caller fd 9 reuse in descendants", async (t) => {
 	const probe = join(dir, "probe.mjs");
 	await writeFile(lease, "");
 	await chmod(lease, 0o600);
-	await writeFile(probe, `import { fstatSync, statSync } from "node:fs";
+	await writeFile(probe, `import { fstatSync, readdirSync, statSync } from "node:fs";
 const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
 const lease = statSync(process.env.${PI_ORCHESTRATOR_PROCESS_LEASE});
 const callerLock = statSync(process.env.PI_SUBAGENT_CALLER_LOCK);
 if (!sameFile(fstatSync(9), callerLock)) throw new Error("caller fd 9 was not preserved");
-for (let fd = 10; fd < 256; fd++) {
+for (const entry of readdirSync("/dev/fd")) {
+	const fd = Number(entry);
+	if (!Number.isInteger(fd) || fd < 10) continue;
 	try {
 		if (sameFile(fstatSync(fd), lease)) process.exit(0);
 	} catch (error) {
@@ -93,7 +95,7 @@ throw new Error("process lease descriptor was not inherited");
 		input: { command: 'exec 9>"$PI_SUBAGENT_CALLER_LOCK"\n"$PI_SUBAGENT_NODE" "$PI_SUBAGENT_LEASE_PROBE"' },
 	};
 	extension.toolCall(bash);
-	execFileSync(process.platform === "darwin" ? "/bin/zsh" : "bash", ["-c", bash.input.command], {
+	execFileSync("/bin/bash", ["-c", bash.input.command], {
 		env: {
 			...process.env,
 			[PI_ORCHESTRATOR_PROCESS_LEASE]: lease,
