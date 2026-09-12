@@ -121,7 +121,7 @@ test("composed runtime delegates every Coordinator and Host method unchanged", a
 	assert.equal(runtime.now(), 123);
 	assert.equal(runtime.randomToken(), "token-1234567890");
 	const verifyLaunch = async () => REVIEWER_LAUNCH;
-	const input = { marker: "input", verifyLaunch };
+	const input = Object.freeze({ marker: "input", goal: "Keep this immutable goal unchanged.", verifyLaunch });
 	const context = operationContext();
 	for (const method of ["preflight", "materializeLaunchRecords", "recoverLaunchRecords", "verifyLaunch"] as const) {
 		const returned = await (runtime[method] as (...args: any[]) => Promise<unknown>)(input, context);
@@ -142,6 +142,8 @@ test("composed runtime delegates every Coordinator and Host method unchanged", a
 	assert.ok(calls.slice(2).every(({ args }) => args[0] === input && args[1] === context));
 	assert.equal(calls.find(({ method }) => method === "allocateHost")!.args[0], input);
 	assert.equal((calls.find(({ method }) => method === "allocateHost")!.args[0] as typeof input).verifyLaunch, verifyLaunch);
+	assert.equal((calls.find(({ method }) => method === "planHostAllocation")!.args[0] as typeof input).goal, input.goal);
+	assert.equal((calls.find(({ method }) => method === "runWorker")!.args[0] as typeof input).goal, input.goal);
 });
 
 test("role preflight inspection runs Herdr before checked Git with the resolved root", async () => {

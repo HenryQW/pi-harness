@@ -106,6 +106,7 @@ class FakeRuntime implements OrchestratorRuntime {
 	materializeCalls = 0;
 	recoverCalls: Record<string, NormalizedLaunchRecord>[] = [];
 	allocationCalls: AllocationKind[] = [];
+	allocationPlanGoals: string[] = [];
 	reconciliationCalls: AllocationKind[] = [];
 	agentStartCalls: {
 		launchKey: string;
@@ -113,6 +114,7 @@ class FakeRuntime implements OrchestratorRuntime {
 		exposedPersistedFields: boolean;
 	}[] = [];
 	workerCalls: {
+		goal: string;
 		taskId: string;
 		workerId: string;
 		kind: "initial" | "correction";
@@ -144,6 +146,7 @@ class FakeRuntime implements OrchestratorRuntime {
 	terminationPlans: TerminationPlan[] = [];
 	retainedCandidate?: WorkspaceIdentity;
 	allocationFailure?: { kind: AllocationKind; error?: Error; result?: AllocationResult };
+	allocationPlanError?: Error;
 	allocationResources: Partial<Record<AllocationKind, Record<string, string>>> = {};
 	reconciliation: AllocationReconciliation = { outcome: "absent" };
 	preflightAction?: () => Promise<void>;
@@ -269,10 +272,12 @@ class FakeRuntime implements OrchestratorRuntime {
 	}
 
 	async planHostAllocation(
-		input: { kind: Exclude<AllocationKind, "worktree">; task: TaskRequest; attempt: TaskAttempt },
+		input: { readonly goal: ExecuteRequest["goal"]; kind: Exclude<AllocationKind, "worktree">; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
 	): Promise<string> {
 		this.observe("plan-allocation", context);
+		this.allocationPlanGoals.push(input.goal);
+		if (this.allocationPlanError) throw this.allocationPlanError;
 		return `${input.task.id}/${input.kind}/${input.attempt.allocationGeneration}`;
 	}
 
@@ -344,6 +349,7 @@ class FakeRuntime implements OrchestratorRuntime {
 
 	async runWorker(
 		input: {
+			readonly goal: ExecuteRequest["goal"];
 			task: TaskRequest;
 			attempt: TaskAttempt;
 			workerId: string;
@@ -355,6 +361,7 @@ class FakeRuntime implements OrchestratorRuntime {
 		const plan = this.workerPlans.shift() ?? {};
 		this.observe("worker", context, plan.expire);
 		this.workerCalls.push({
+			goal: input.goal,
 			taskId: input.task.id,
 			workerId: input.workerId,
 			kind: input.kind,
@@ -625,6 +632,21 @@ test("preflight owns no state, while private launch materialization starts only 
 	});
 });
 
+test("host planning rejection stops after the exact worktree without allocating or prompting", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	const goal = "Keep the request goal in every worker assignment.";
+	runtime.allocationPlanError = new Error("Worker assignment exceeds 98304 bytes.");
+	const stopped = await runner.execute(request({ goal }), root);
+	const attempt = stopped.state.tasks[0]!.attempts[0]!;
+
+	assert.equal(stopped.state.tasks[0]!.status, "needs_attention");
+	assert.deepEqual(attempt.allocations.map(({ kind, status }) => ({ kind, status })), [{ kind: "worktree", status: "owned" }]);
+	assert.deepEqual(runtime.allocationCalls, ["worktree"]);
+	assert.deepEqual(runtime.allocationPlanGoals, [goal]);
+	assert.equal(runtime.workerCalls.length, 0);
+	assert.equal(attempt.prompts.length, 0);
+});
+
 test("owned allocation metadata is persisted exactly without adopting possible resources", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	runtime.allocationResources = {
@@ -825,12 +847,18 @@ test("one absolute deadline bounds workers, checks, reviews, integration, and fi
 
 test("a failed preliminary check gets one correction before the single authoritative review", async (t) => {
 	const { root, runtime, runner } = await harness(t);
+	const goal = "Keep this immutable goal in both assignments.";
 	runtime.checkPlans.push({ code: 1 }, {}, {});
 	const result = await runner.execute(request({
+		goal,
 		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
 	}), root);
 	assert.equal(result.state.accepted, true);
-	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial", "correction"]);
+	assert.deepEqual(runtime.allocationPlanGoals, [goal, goal, goal]);
+	assert.deepEqual(runtime.workerCalls.map(({ kind, goal: assignmentGoal }) => ({ kind, goal: assignmentGoal })), [
+		{ kind: "initial", goal },
+		{ kind: "correction", goal },
+	]);
 	assert.equal(new Set(runtime.workerCalls.map(({ workerId }) => workerId)).size, 1);
 	assert.equal(runtime.allocationCalls.filter((kind) => kind === "agent").length, 1);
 	assert.equal(runtime.candidateInspectionCalls.length, 2);

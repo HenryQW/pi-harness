@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
@@ -13,7 +13,14 @@ import {
 	type HerdrClient,
 	type HerdrExecResult,
 } from "@henryqw/pi-herdr";
-import { isCleanCommitted, type AllocationIntent, type TaskAttempt, type TaskRequest, type WorkspaceIdentity } from "./schema.ts";
+import {
+	isCleanCommitted,
+	type AllocationIntent,
+	type ExecuteRequest,
+	type TaskAttempt,
+	type TaskRequest,
+	type WorkspaceIdentity,
+} from "./schema.ts";
 import type {
 	AllocationReconciliation,
 	AllocationResult,
@@ -386,6 +393,7 @@ function requireOkResponse(stdout: string, label: string): void {
 }
 
 function assignment(input: {
+	readonly goal: ExecuteRequest["goal"];
 	task: TaskRequest;
 	kind: "initial" | "correction";
 	worktreeCwd: string;
@@ -394,6 +402,8 @@ function assignment(input: {
 	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
 	const text = [
 		`Task: ${input.task.id}`,
+		"Goal:",
+		input.goal,
 		`Worktree: ${input.worktreeCwd}`,
 		`Integrated dependencies: ${input.task.dependsOn.length ? input.task.dependsOn.join(", ") : "none"}`,
 		"",
@@ -487,7 +497,13 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	async planHostAllocation(
-		input: { kind: HostAllocationKind; task: TaskRequest; attempt: TaskAttempt; owned: Partial<Record<AllocationIntent["kind"], string>> },
+		input: {
+			readonly goal: ExecuteRequest["goal"];
+			kind: HostAllocationKind;
+			task: TaskRequest;
+			attempt: TaskAttempt;
+			owned: Partial<Record<AllocationIntent["kind"], string>>;
+		},
 		context: OperationContext,
 	): Promise<string> {
 		context.signal.throwIfAborted();
@@ -497,6 +513,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		if (input.kind === "workspace") {
 			const expectedWorktreeId = exactAbsolutePath(worktreeId, "owned worktree ID");
 			const worktreeCwd = exactAbsolutePath(worktree.worktree.cwd, "owned worktree cwd");
+			assignment({ goal: input.goal, task: input.task, kind: "initial", worktreeCwd });
 			const mainRoot = exactAbsolutePath(worktree.worktree.repoRoot, "owned worktree Main root");
 			const identity = await this.repositoryIdentity(mainRoot, context);
 			return JSON.stringify({
@@ -655,6 +672,7 @@ export class HerdrHostRuntime implements HostRuntime {
 
 	async runWorker(
 		input: {
+			readonly goal: ExecuteRequest["goal"];
 			task: TaskRequest;
 			attempt: TaskAttempt;
 			workerId: string;
@@ -671,6 +689,18 @@ export class HerdrHostRuntime implements HostRuntime {
 		if (input.workerId !== intent.resourceId || input.workerId !== details.agentName) {
 			throw new Error("Worker prompt does not target the exact saved agent.");
 		}
+		let text: string;
+		try {
+			text = assignment({
+				goal: input.goal,
+				task: input.task,
+				kind: input.kind,
+				worktreeCwd: details.worktreeCwd,
+				...(input.failure ? { failure: input.failure } : {}),
+			});
+		} catch (error) {
+			return { outcome: "not_prompted", diagnostic: `Worker assignment was not submitted: ${safeText(error)}` };
+		}
 		let ready;
 		try {
 			ready = await this.waitForSettledAgent(details, context);
@@ -682,7 +712,6 @@ export class HerdrHostRuntime implements HostRuntime {
 			return { outcome: "unknown", diagnostic: `Exact worker was not interactively ready: ${ready.status}.` };
 		}
 
-		const text = assignment({ task: input.task, kind: input.kind, worktreeCwd: details.worktreeCwd, ...(input.failure ? { failure: input.failure } : {}) });
 		const promptOptions = this.processOptions(details.worktreeCwd, context);
 		const promptArgs = [
 			"agent", "prompt", details.agentName, text, "--wait",
@@ -781,21 +810,25 @@ export class HerdrHostRuntime implements HostRuntime {
 				const tabId = exactString(tabIntent.resourceId, "saved worker tab ID");
 				const workspaceId = exactString(workspaceIntent.resourceId, "saved workspace ID");
 				if (tabId === details.workspaceRootTabId) throw new Error("Saved worker tab aliases the workspace root tab.");
-				if (!await this.paneAbsent(exactString(tabIntent.resources?.rootPaneId, "saved worker pane ID"), details.worktreeCwd, context)) {
+				const paneId = exactString(tabIntent.resources?.rootPaneId, "saved worker pane ID");
+				if (!await this.paneAbsent(paneId, details.worktreeCwd, context)) {
 					return { outcome: "blocked", failure: "The exact saved worker pane still exists after termination." };
 				}
-				if (await this.workspaceAbsent(workspaceId, workspaceDetails, context)) return { outcome: "absent" };
+				const workspaceIsAbsent = await this.workspaceAbsent(workspaceId, workspaceDetails, context);
 				const tab = await this.getTab(tabId, details.worktreeCwd, context);
-				if (!tab) return { outcome: "absent" };
-				if (tab.workspace_id !== workspaceId || tab.label !== details.label || tab.pane_count !== 0) {
-					return { outcome: "blocked", failure: "The exact saved worker tab no longer matches its owned empty tab identity." };
+				if (tab) {
+					if (workspaceIsAbsent || tab.workspace_id !== workspaceId || tab.label !== details.label || tab.pane_count !== 0) {
+						return { outcome: "blocked", failure: "The exact saved worker tab no longer matches its owned empty tab identity." };
+					}
+					const closed = await this.herdr.exec(["tab", "close", tabId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+					if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["tab", "close"], closed)) };
+					requireOkResponse(closed.stdout, "Herdr tab close response");
+					if (await this.getTab(tabId, details.worktreeCwd, context)) {
+						return { outcome: "blocked", failure: "The exact saved worker tab still exists after close." };
+					}
 				}
-				const closed = await this.herdr.exec(["tab", "close", tabId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
-				if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["tab", "close"], closed)) };
-				requireOkResponse(closed.stdout, "Herdr tab close response");
-				return await this.getTab(tabId, details.worktreeCwd, context) === undefined
-					? { outcome: "completed" }
-					: { outcome: "blocked", failure: "The exact saved worker tab still exists after close." };
+				await this.removeLeaseArtifacts(details, tabIntent.token, paneId, tabId, context);
+				return tab ? { outcome: "completed" } : { outcome: "absent" };
 			}
 
 			const workerCleanup = input.attempt.cleanup.find((step) => step.kind === "worker_tab");
@@ -1140,12 +1173,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		this.assertLeasePath(path, token);
 		const directory = resolve(this.leaseDirectory, token);
 		await mkdir(directory, { recursive: true, mode: DIRECTORY_MODE });
-		for (const checked of [this.leaseDirectory, directory]) {
-			const info = await lstat(checked);
-			if (info.isSymbolicLink() || !info.isDirectory() || (info.mode & 0o077) !== 0) {
-				throw new Error(`Process lease directory must be a private non-symlink directory: ${checked}`);
-			}
-		}
+		await this.assertPrivateLeaseDirectories(path, false);
 		let file;
 		try {
 			file = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, LEASE_MODE);
@@ -1154,6 +1182,62 @@ export class HerdrHostRuntime implements HostRuntime {
 			await file?.close();
 		}
 		await this.assertPrivateLease(path, false);
+	}
+
+	private async removeLeaseArtifacts(
+		details: WorkerTabDetails,
+		token: string,
+		paneId: string,
+		tabId: string,
+		context: OperationContext,
+	): Promise<void> {
+		this.assertLeasePath(details.leasePath, token);
+		await this.assertPrivateLeaseDirectories(details.leasePath, true);
+		const leaseWasPresent = await this.assertPrivateLease(details.leasePath, true);
+		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true)).length) {
+			throw new Error("Exact process lease still has a holder during cleanup.");
+		}
+		await this.delay(50, context.signal);
+		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true)).length) {
+			throw new Error("Exact process lease did not remain empty for two consecutive cleanup scans.");
+		}
+		if (!await this.paneAbsent(paneId, details.worktreeCwd, context)) {
+			throw new Error("The exact saved worker pane reappeared before lease cleanup.");
+		}
+		if (await this.getTab(tabId, details.worktreeCwd, context)) {
+			throw new Error("The exact saved worker tab reappeared before lease cleanup.");
+		}
+		const directoryPresent = await this.assertPrivateLeaseDirectories(details.leasePath, true);
+		if (leaseWasPresent) {
+			if (!directoryPresent) throw new Error("Exact process lease directory disappeared during cleanup.");
+			await this.assertPrivateLease(details.leasePath, false);
+			await unlink(details.leasePath);
+		} else if (await this.assertPrivateLease(details.leasePath, true)) {
+			throw new Error("Exact process lease appeared during cleanup.");
+		}
+		if (!directoryPresent) return;
+		try {
+			await rmdir(dirname(details.leasePath));
+		} catch (error) {
+			if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+		}
+	}
+
+	private async assertPrivateLeaseDirectories(path: string, allowMissing: boolean): Promise<boolean> {
+		for (const checked of [this.leaseDirectory, dirname(path)]) {
+			let info;
+			try {
+				info = await lstat(checked);
+			} catch (error) {
+				if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") return false;
+				throw new Error(`Process lease directory cannot be inspected: ${checked}`, { cause: error });
+			}
+			const uid = process.getuid?.();
+			if (info.isSymbolicLink() || !info.isDirectory() || (info.mode & 0o077) !== 0 || (uid !== undefined && info.uid !== uid)) {
+				throw new Error(`Process lease directory must be a private current-user non-symlink directory: ${checked}`);
+			}
+		}
+		return true;
 	}
 
 	private assertLeasePath(path: string, token: string): void {

@@ -129,6 +129,7 @@ export type GitCleanupKind = Extract<CleanupKind, "worktree" | "branch">;
 
 export interface HostRuntime {
 	planHostAllocation(input: {
+		readonly goal: ExecuteRequest["goal"];
 		kind: HostAllocationKind;
 		task: TaskRequest;
 		attempt: TaskAttempt;
@@ -143,6 +144,7 @@ export interface HostRuntime {
 	}, context: OperationContext): Promise<AllocationResult>;
 	reconcileHostAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
 	runWorker(input: {
+		readonly goal: ExecuteRequest["goal"];
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		workerId: string;
@@ -674,6 +676,7 @@ export class OrchestratorRunner {
 				const details = kind === "worktree"
 					? "Awaiting exact pi-subagent worktree preparation."
 					: await scope.call(async (context) => await this.runtime.planHostAllocation({
+						goal: state.request.goal,
 						kind,
 						task: request,
 						attempt,
@@ -834,6 +837,7 @@ export class OrchestratorRunner {
 			let worker: WorkerResult;
 			try {
 				worker = await scope.call(async (context) => await this.runtime.runWorker({
+					goal: state.request.goal,
 					task: request,
 					attempt,
 					workerId,
