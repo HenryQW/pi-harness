@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
@@ -453,9 +453,27 @@ export class HerdrHostRuntime implements HostRuntime {
 		const workspace = parseWorkspaceInfo(workspaceResponse, workspaceId);
 		const worktree = record(workspace.worktree, "Herdr current workspace worktree");
 		const checkout = await realpath(exactString(worktree.checkout_path, "Herdr current checkout_path"));
+		if (checkout !== root) throw new Error("The current Herdr workspace checkout does not match canonical Main.");
+
+		const commonDirectoryResult = await this.execute(
+			"git",
+			["rev-parse", "--path-format=absolute", "--git-common-dir"],
+			this.processOptions(root, context, GIT_INSPECTION_CAP_MS),
+		);
+		if (commonDirectoryResult.code !== 0 || commonDirectoryResult.killed) {
+			throw new Error("Git common-directory identity probe failed.");
+		}
+		const commonDirectoryOutput = commonDirectoryResult.stdout.replace(/\r?\n$/, "");
+		if (!commonDirectoryOutput || /[\r\n\0]/.test(commonDirectoryOutput) || !isAbsolute(commonDirectoryOutput)) {
+			throw new Error("Git common-directory identity probe returned malformed output.");
+		}
+		const commonDirectory = await realpath(commonDirectoryOutput);
+		const repoKey = await realpath(exactString(worktree.repo_key, "Herdr current repo_key"));
+		if (repoKey !== commonDirectory) throw new Error("The current Herdr workspace repo_key does not match Git's common directory.");
 		const repoRoot = await realpath(exactString(worktree.repo_root, "Herdr current repo_root"));
-		if (checkout !== root || repoRoot !== root) {
-			throw new Error("The current Herdr workspace checkout and repository must both match canonical Main.");
+		const primaryRepoRoot = basename(commonDirectory) === ".git" ? dirname(commonDirectory) : commonDirectory;
+		if (repoRoot !== primaryRepoRoot) {
+			throw new Error("The current Herdr workspace repo_root does not match Git's primary checkout.");
 		}
 	}
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -92,17 +92,18 @@ class ScriptedProcess {
 	done(): void { assert.deepEqual(this.steps, []); }
 }
 
-type Paths = { directory: string; root: string; repoRoot: string; worktree: string; leases: string };
+type Paths = { directory: string; root: string; repoRoot: string; commonDirectory: string; worktree: string; leases: string };
 
 async function paths(t: test.TestContext): Promise<Paths> {
 	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-herdr-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "main");
 	const repoRoot = join(directory, "repo");
+	const commonDirectory = join(repoRoot, ".git");
 	const worktree = join(directory, "worktree");
 	const leases = join(directory, "leases");
-	await Promise.all([mkdir(root), mkdir(repoRoot), mkdir(worktree)]);
-	return { directory, root, repoRoot, worktree, leases };
+	await Promise.all([mkdir(root), mkdir(commonDirectory, { recursive: true }), mkdir(worktree)]);
+	return { directory, root, repoRoot, commonDirectory, worktree, leases };
 }
 
 let randomSequence = 0;
@@ -317,6 +318,21 @@ function startablePaneSteps(
 	];
 }
 
+function currentWorkspaceResult(paths: Paths, worktreeOverrides: Record<string, unknown> = {}): ProcessResult {
+	return success({
+		type: "workspace_info",
+		workspace: {
+			workspace_id: "workspace-current",
+			worktree: {
+				checkout_path: paths.root,
+				repo_key: paths.commonDirectory,
+				repo_root: paths.repoRoot,
+				...worktreeOverrides,
+			},
+		},
+	});
+}
+
 function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: running\nversion: 0.9.0\nendpoint_compatible: yes\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"): Step[] {
 	return [
 		{ command: "herdr", args: ["--version"], result: { code: 0, stdout: "herdr 0.9.0\n", stderr: "" } },
@@ -324,19 +340,23 @@ function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: 
 		{ command: "herdr", args: ["api", "schema", "--json"], result: { code: 0, stdout: JSON.stringify(schemaValue), stderr: "" } },
 		{ command: "lsof-test", args: ["-v"], result: { code: 0, stdout: "lsof 4.99", stderr: "" } },
 		{ command: "herdr", args: ["pane", "get", "pane-current"], result: success({ type: "pane_info", pane: { pane_id: "pane-current", workspace_id: "workspace-current" } }) },
-		{ command: "herdr", args: ["workspace", "get", "workspace-current"], result: success({
-			type: "workspace_info",
-			workspace: { workspace_id: "workspace-current", worktree: { checkout_path: paths.root, repo_root: paths.root } },
-		}) },
+		{ command: "herdr", args: ["workspace", "get", "workspace-current"], result: currentWorkspaceResult(paths) },
+		{
+			command: "git",
+			args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+			result: { code: 0, stdout: `${paths.commonDirectory}\n`, stderr: "" },
+		},
 	];
 }
 
-test("preflight proves the Herdr 0.9/protocol-22 capability floor before allocation side effects", async (t) => {
+test("preflight accepts linked Main only after Herdr capabilities and current-workspace identity", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
+	const operation = context();
 	script.push(...preflightSteps(fixture));
-	await runtime(fixture, script).preflightHost({ root: fixture.root }, context());
+	await runtime(fixture, script).preflightHost({ root: fixture.root }, operation);
 	script.done();
+	assert.notEqual(fixture.root, fixture.repoRoot);
 	assert.deepEqual(script.calls.map(({ command, args }) => [command, ...args]), [
 		["herdr", "--version"],
 		["herdr", "status", "server"],
@@ -344,7 +364,13 @@ test("preflight proves the Herdr 0.9/protocol-22 capability floor before allocat
 		["lsof-test", "-v"],
 		["herdr", "pane", "get", "pane-current"],
 		["herdr", "workspace", "get", "workspace-current"],
+		["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
 	]);
+	assert.deepEqual(script.calls.at(-1)!.options, {
+		cwd: await realpath(fixture.root),
+		signal: operation.signal,
+		timeoutMs: operation.timeoutMs,
+	});
 
 	for (const [name, mutate, error] of [
 		["old client", (steps: Step[]) => { steps[0]!.result!.stdout = "herdr 0.8.9\n"; }, /client version/],
@@ -362,6 +388,7 @@ test("preflight proves the Herdr 0.9/protocol-22 capability floor before allocat
 			stderr: "",
 		}; }, /env support/],
 		["missing lsof", (steps: Step[]) => { steps[3]!.result = { code: 1, stdout: "", stderr: "missing" }; }, /Native lsof/],
+		["malformed current workspace", (steps: Step[]) => { steps[5]!.result = success({ type: "wrong" }); }, /workspace response has the wrong type/],
 	] as const) {
 		await t.test(name, async () => {
 			const candidate = new ScriptedProcess();
@@ -369,7 +396,34 @@ test("preflight proves the Herdr 0.9/protocol-22 capability floor before allocat
 			mutate(steps);
 			candidate.push(...steps);
 			await assert.rejects(runtime(fixture, candidate).preflightHost({ root: fixture.root }, context()), error);
+			assert.equal(candidate.calls.some(({ command }) => command === "git"), false);
 			assert.ok(candidate.calls.every(({ args }) => args[0] !== "worktree" && args[0] !== "tab" && args[0] !== "agent"));
+		});
+	}
+});
+
+test("preflight fails closed on mismatched Herdr and Git repository identity", async (t) => {
+	const fixture = await paths(t);
+	for (const [name, mutate, error, expectsGit] of [
+		["checkout mismatch", (steps: Step[]) => { steps[5]!.result = currentWorkspaceResult(fixture, { checkout_path: fixture.worktree }); }, /checkout does not match/, false],
+		["repo_key mismatch", (steps: Step[]) => { steps[5]!.result = currentWorkspaceResult(fixture, { repo_key: fixture.root }); }, /repo_key does not match/, true],
+		["repo_root mismatch", (steps: Step[]) => { steps[5]!.result = currentWorkspaceResult(fixture, { repo_root: fixture.root }); }, /repo_root does not match/, true],
+		["empty Git output", (steps: Step[]) => { steps[6]!.result = { code: 0, stdout: "", stderr: "" }; }, /malformed output/, true],
+		["relative Git output", (steps: Step[]) => { steps[6]!.result = { code: 0, stdout: ".git\n", stderr: "" }; }, /malformed output/, true],
+		["multiple Git outputs", (steps: Step[]) => { steps[6]!.result = { code: 0, stdout: `${fixture.commonDirectory}\n${fixture.commonDirectory}\n`, stderr: "" }; }, /malformed output/, true],
+		["failed Git", (steps: Step[]) => { steps[6]!.result = { code: 1, stdout: "", stderr: "failure" }; }, /identity probe failed/, true],
+		["killed Git", (steps: Step[]) => { steps[6]!.result = { code: 0, killed: true, stdout: `${fixture.commonDirectory}\n`, stderr: "" }; }, /identity probe failed/, true],
+	] as const) {
+		await t.test(name, async () => {
+			const script = new ScriptedProcess();
+			const steps = preflightSteps(fixture);
+			mutate(steps);
+			script.push(...steps);
+			await assert.rejects(runtime(fixture, script).preflightHost({ root: fixture.root }, context()), error);
+			const gitCalls = script.calls.filter(({ command }) => command === "git");
+			assert.equal(gitCalls.length, expectsGit ? 1 : 0);
+			if (expectsGit) assert.equal(script.calls.at(-1)!.command, "git");
+			assert.ok(script.calls.every(({ args }) => args[0] !== "worktree" && args[0] !== "tab" && args[0] !== "agent"));
 		});
 	}
 });
