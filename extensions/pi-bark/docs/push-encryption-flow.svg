@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="push-encryption-flow-title push-encryption-flow-desc">
+      <title id="push-encryption-flow-title">How pi-bark encrypts every push</title>
+      <desc id="push-encryption-flow-desc">Architecture diagram showing copyb messages and automatic Pi status events entering one shared sender. When the config contains a custom key, every push uses AES256-GCM with a fresh 12-byte IV before Bark forwards the ciphertext to the app for local decryption.</desc>
+      <defs>
+        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
+        <style>
+          .eyebrow { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .heading { fill: #101828; font: 400 28px 'Instrument Serif', serif; }
+          .intro { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }
+          .zone { fill: #e6e4de; stroke: #101828; stroke-opacity: .14; stroke-width: 1; }
+          .zone-label { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .boundary { fill: none; stroke: #1d4ed8; stroke-opacity: .50; stroke-width: 1; stroke-dasharray: 4 4; }
+          .boundary-label { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; letter-spacing: .12em; }
+          .node-mask { fill: #f0eee9; }
+          .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+          .node-input { fill: #4c5665; fill-opacity: .10; stroke: #6a7282; stroke-width: 1; }
+          .node-store { fill: #101828; fill-opacity: .05; stroke: #4c5665; stroke-width: 1; }
+          .node-external { fill: #101828; fill-opacity: .03; stroke: #101828; stroke-opacity: .30; stroke-width: 1; }
+          .node-focal { fill: #1d4ed8; fill-opacity: .08; stroke: #1d4ed8; stroke-width: 1.2; }
+          .tag { fill: none; stroke: #101828; stroke-opacity: .34; stroke-width: .8; }
+          .tag-focal { fill: none; stroke: #1d4ed8; stroke-opacity: .55; stroke-width: .8; }
+          .tag-text { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .08em; text-anchor: middle; }
+          .tag-text-focal { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; letter-spacing: .08em; text-anchor: middle; }
+          .name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .sub { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
+          .sub-focal { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; text-anchor: middle; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#push-encryption-arrow); }
+          .edge-secure { fill: none; stroke: #1d4ed8; stroke-width: 1.2; marker-end: url(#push-encryption-arrow-accent); }
+          .label-mask { fill: #f0eee9; }
+          .label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .04em; text-anchor: middle; }
+          .label-secure { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; letter-spacing: .04em; text-anchor: middle; }
+          .legend-title { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .legend-text { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; }
+        </style>
+        <marker id="push-encryption-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#4c5665"/>
+        </marker>
+        <marker id="push-encryption-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="push-encryption-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <text class="eyebrow" x="40" y="48">ARCHITECTURE · PI-BARK</text>
+      <text class="heading" x="40" y="84">One encryption path for every Bark push</text>
+      <text class="intro" x="40" y="112">A configured key applies to manual output and automatic status notifications.</text>
+
+      <!-- Local trust zone and encrypted transport boundary -->
+      <rect class="zone" x="40" y="152" width="816" height="416" rx="8"/>
+      <rect class="label-mask" x="52" y="156" width="80" height="16" rx="2"/>
+      <text class="zone-label" x="60" y="168">LOCAL PI</text>
+
+      <line class="boundary" x1="880" y1="176" x2="880" y2="544"/>
+      <rect class="label-mask" x="892" y="180" width="240" height="16" rx="2"/>
+      <text class="boundary-label" x="900" y="192">CIPHERTEXT LEAVES PI</text>
+
+      <!-- Connectors are drawn before nodes -->
+      <path class="edge" d="M252 248 H292 Q300 248 300 256 V308 Q300 316 308 316 H352"/>
+      <path class="edge" d="M252 400 H304 Q312 400 312 392 V372 Q312 364 320 364 H352"/>
+      <line class="edge" x1="452" y1="452" x2="452" y2="396"/>
+      <line class="edge-secure" x1="552" y1="340" x2="648" y2="340"/>
+      <line class="edge-secure" x1="848" y1="340" x2="920" y2="340"/>
+      <line class="edge-secure" x1="1060" y1="340" x2="1100" y2="340"/>
+
+      <!-- Connector labels -->
+      <rect class="label-mask" x="464" y="416" width="72" height="12" rx="2"/>
+      <text class="label" x="500" y="424">LOAD EACH PUSH</text>
+
+      <rect class="label-mask" x="568" y="320" width="64" height="12" rx="2"/>
+      <text class="label-secure" x="600" y="328">KEY PRESENT</text>
+
+      <rect class="label-mask" x="856" y="320" width="56" height="12" rx="2"/>
+      <text class="label-secure" x="884" y="328">POST /PUSH</text>
+
+      <!-- Opaque node masks -->
+      <rect class="node-mask" x="72" y="208" width="180" height="80" rx="6"/>
+      <rect class="node-mask" x="72" y="360" width="180" height="80" rx="6"/>
+      <rect class="node-mask" x="352" y="284" width="200" height="112" rx="6"/>
+      <rect class="node-mask" x="352" y="452" width="200" height="80" rx="6"/>
+      <rect class="node-mask" x="648" y="284" width="200" height="112" rx="6"/>
+      <rect class="node-mask" x="920" y="284" width="140" height="112" rx="6"/>
+      <rect class="node-mask" x="1100" y="284" width="140" height="112" rx="6"/>
+
+      <!-- Inputs -->
+      <rect class="node-input" x="72" y="208" width="180" height="80" rx="6"/>
+      <rect class="tag" x="84" y="220" width="56" height="16" rx="2"/>
+      <text class="tag-text" x="112" y="232">COMMAND</text>
+      <text class="name" x="162" y="256">/copyb</text>
+      <text class="sub" x="162" y="276">LAST AGENT MESSAGE</text>
+
+      <rect class="node-input" x="72" y="360" width="180" height="80" rx="6"/>
+      <rect class="tag" x="84" y="372" width="48" height="16" rx="2"/>
+      <text class="tag-text" x="108" y="384">EVENT</text>
+      <text class="name" x="162" y="408">Pi status</text>
+      <text class="sub" x="162" y="428">NEEDS INPUT · FINISHED</text>
+
+      <!-- Shared sender and config -->
+      <rect class="node" x="352" y="284" width="200" height="112" rx="6"/>
+      <rect class="tag" x="364" y="296" width="48" height="16" rx="2"/>
+      <text class="tag-text" x="388" y="308">SHARED</text>
+      <text class="name" x="452" y="340">Push sender</text>
+      <text class="sub" x="452" y="364">ONE PATH FOR EVERY PUSH</text>
+      <text class="sub" x="452" y="380">DEVICE KEY + CONTENT</text>
+
+      <rect class="node-store" x="352" y="452" width="200" height="80" rx="6"/>
+      <rect class="tag" x="364" y="464" width="48" height="16" rx="2"/>
+      <text class="tag-text" x="388" y="476">CONFIG</text>
+      <text class="name" x="452" y="500">pi-bark config</text>
+      <text class="sub" x="452" y="520">DEVICE KEY · CUSTOM KEY</text>
+
+      <!-- Encryption focal point -->
+      <rect class="node-focal" x="648" y="284" width="200" height="112" rx="6"/>
+      <rect class="tag-focal" x="660" y="296" width="56" height="16" rx="2"/>
+      <text class="tag-text-focal" x="688" y="308">ENCRYPT</text>
+      <text class="name" x="748" y="340">AES256-GCM</text>
+      <text class="sub-focal" x="748" y="364">FRESH 12-BYTE IV</text>
+      <text class="sub-focal" x="748" y="380">AUTH TAG APPENDED</text>
+
+      <!-- External delivery -->
+      <rect class="node-external" x="920" y="284" width="140" height="112" rx="6"/>
+      <rect class="tag" x="932" y="296" width="48" height="16" rx="2"/>
+      <text class="tag-text" x="956" y="308">SERVER</text>
+      <text class="name" x="990" y="340">Bark server</text>
+      <text class="sub" x="990" y="364">FORWARDS ONLY</text>
+      <text class="sub" x="990" y="380">CANNOT READ CONTENT</text>
+
+      <rect class="node" x="1100" y="284" width="140" height="112" rx="6"/>
+      <rect class="tag" x="1112" y="296" width="32" height="16" rx="2"/>
+      <text class="tag-text" x="1128" y="308">APP</text>
+      <text class="name" x="1170" y="340">Bark App</text>
+      <text class="sub" x="1170" y="364">MATCHING 32-BYTE KEY</text>
+      <text class="sub" x="1170" y="380">DECRYPTS LOCALLY</text>
+
+      <!-- Legend -->
+      <line x1="40" y1="616" x2="1240" y2="616" stroke="#101828" stroke-opacity=".14" stroke-width=".8"/>
+      <text class="legend-title" x="40" y="652">LEGEND</text>
+      <line x1="144" y1="648" x2="184" y2="648" stroke="#4c5665" stroke-width="1.2" marker-end="url(#push-encryption-arrow)"/>
+      <text class="legend-text" x="196" y="652">LOCAL CONTENT</text>
+      <line x1="344" y1="648" x2="384" y2="648" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#push-encryption-arrow-accent)"/>
+      <text class="legend-text" x="396" y="652">ENCRYPTED CONTENT</text>
+      <rect x="568" y="640" width="16" height="16" rx="4" fill="#1d4ed8" fill-opacity=".08" stroke="#1d4ed8" stroke-width="1"/>
+      <text class="legend-text" x="596" y="652">ENCRYPTION BOUNDARY</text>
+    </svg>

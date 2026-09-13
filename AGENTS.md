@@ -52,6 +52,8 @@ This repository is a pnpm workspace monorepo. Each public package under `extensi
 
 ## Documentation fast path
 
+Repository diagrams follow `docs/diagram-style.md`.
+
 Every `README.md` is for people:
 
 - Use simple English.

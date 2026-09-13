@@ -84,15 +84,7 @@ These settings do not affect `/copyb`. CWD overrides live in pi-bark's global co
 
 ## Flow
 
-```mermaid
-flowchart LR
-    copy["/copyb"] --> clipboard["Clipboard"]
-    copy --> bark["pi-bark"]
-    status["Pi status event"] --> bark
-    bark --> request["Bark V2 /push request"]
-    request --> server["Bark server"]
-    server --> app["Bark App"]
-```
+![Architecture showing copyb and Pi status notifications entering one shared sender, using AES256-GCM, passing ciphertext through the Bark server, and decrypting locally in the Bark App.](./docs/push-encryption-flow.svg)
 
 ## Config
 
@@ -107,39 +99,55 @@ Package-owned: `~/.pi/agent/config/pi-bark/config.json`
 
 ### Push encryption
 
-Push encryption is optional. It prevents the Bark server and Apple Push Notification service from reading the push content.
+Push encryption is optional. It prevents the Bark server and Apple Push Notification service from reading push content.
 
-Generate and store a Custom Encryption Key:
+Once configured, pi-bark encrypts every push it sends. This includes `/copyb` and both automatic status notifications.
 
-```bash
-npx @henryqw/pi-bark
-```
+#### Set up encryption
 
-The script prints the generated key once. Enter these exact settings in **Bark App → Push Encryption**:
+1. Configure your Bark Device Key with `/set-bark`.
+2. Generate and save a Custom Encryption Key:
 
-| Setting | Value |
-| --- | --- |
-| Algorithm | `AES256` |
-| Mode | `GCM` |
-| Padding | `noPadding` |
-| Key | The generated 32-character key |
+   ```bash
+   npx --yes --package=@henryqw/pi-bark -- pi-bark-key
+   ```
 
-Do not paste script output into shared logs. The Custom Encryption Key can decrypt your push content.
+   `npx` temporarily downloads the package and runs its `pi-bark-key` executable. The command saves the key to pi-bark's config and prints it once.
 
-When enabled, pi-bark encrypts the JSON push content with a fresh 12-character IV. This includes status titles and session names. It sends `device_key`, `ciphertext`, and `iv` to the Bark server.
+3. Open **Bark App → Push Encryption**.
+4. Enter these settings:
+
+   | Setting | Value |
+   | --- | --- |
+   | Algorithm | `AES256` |
+   | Mode | `GCM` |
+   | Padding | `noPadding` |
+   | Key | The generated 32-character key |
+
+   The generated ASCII key is 32 characters and 32 bytes.
+
+5. If Bark requires an IV, enter any 12 ASCII characters, such as `000000000000`.
+6. Save the Bark settings.
+7. Run `/copyb` in Pi. Bark should show the exact last agent message instead of `Decryption Failed`.
+
+The saved IV is only a placeholder for older Bark versions. pi-bark creates a fresh 12-byte IV for each push and sends it with the ciphertext. Bark uses that per-push IV instead of the saved value.
+
+Do not paste the command output into shared logs. The Custom Encryption Key can decrypt your push content.
 
 The GCM authentication tag is appended to the ciphertext before Base64 encoding, as Bark requires.
 
-The script protects an existing Custom Encryption Key. Replace it only when you intend to update the Bark App too:
+#### Replace or disable the key
+
+The command refuses to overwrite an existing key. Replace it only when you also update the Bark App:
 
 ```bash
-npx @henryqw/pi-bark --force
+npx --yes --package=@henryqw/pi-bark -- pi-bark-key --force
 ```
 
 Disable push encryption in pi-bark with:
 
 ```bash
-npx @henryqw/pi-bark --disable
+npx --yes --package=@henryqw/pi-bark -- pi-bark-key --disable
 ```
 
 Disable Push Encryption in the Bark App too. Otherwise its settings no longer match pi-bark.
