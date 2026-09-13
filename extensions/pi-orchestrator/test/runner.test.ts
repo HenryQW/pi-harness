@@ -11,6 +11,9 @@ import {
 	TERMINATION_SAFETY_BUDGET_MS,
 	type AllocationReconciliation,
 	type AllocationResult,
+	type HostAllocationKind,
+	type HostAllocationResult,
+	type WorktreeAllocationResult,
 	type CheckRunResult,
 	type CommandResult,
 	type IntegrationResult,
@@ -18,13 +21,16 @@ import {
 	type OrchestratorRuntime,
 	type RebaseResult,
 	type ReviewResult,
+	type TransientLaunchHandle,
 	type VerifiedImplementerLaunch,
-	type VerifiedLaunch,
 	type VerifiedReviewerLaunch,
+	withTransientLaunch,
 	type WorkerResult,
 } from "../src/runner.ts";
 import {
 	launchRecordFingerprint,
+	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
+	MAX_POSSIBLE_RESOURCES,
 	parseRunState,
 	requiredLaunchKeys,
 	type AllocationIntent,
@@ -35,9 +41,12 @@ import {
 	type LaunchRecord,
 	type ModelClass,
 	type NormalizedLaunchRecord,
-	type WorktreeRecord,
+	type HostAllocationIntent,
+	type HostAllocationPlan,
 	type TaskAttempt,
 	type TaskRequest,
+	type WorktreeAllocationIntent,
+	type WorktreeAllocationPlan,
 	type WorkspaceIdentity,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
@@ -88,6 +97,10 @@ type WorkerPlan = {
 };
 type CheckPlan = {
 	code?: number;
+	killed?: boolean;
+	stdout?: string;
+	stderr?: string;
+	results?: CommandResult[];
 	identityAfter?: WorkspaceIdentity;
 	error?: Error;
 	expire?: boolean;
@@ -103,7 +116,6 @@ class FakeRuntime implements OrchestratorRuntime {
 	main = { ...MAIN_A };
 	preflightCalls = 0;
 	preflightCwds: string[] = [];
-	materializeCalls = 0;
 	recoverCalls: Record<string, NormalizedLaunchRecord>[] = [];
 	allocationCalls: AllocationKind[] = [];
 	allocationPlanGoals: string[] = [];
@@ -130,7 +142,8 @@ class FakeRuntime implements OrchestratorRuntime {
 		args: string[];
 		exposedPersistedFields: boolean;
 	}[] = [];
-	verificationCalls: string[] = [];
+	acquisitionCalls: string[] = [];
+	transientCleanupCalls: string[] = [];
 	terminationCalls: { workerId: string; candidate: WorkspaceIdentity }[] = [];
 	rebaseCalls: { taskId: string; onto: WorkspaceIdentity }[] = [];
 	integrationCalls: string[] = [];
@@ -147,12 +160,14 @@ class FakeRuntime implements OrchestratorRuntime {
 	retainedCandidate?: WorkspaceIdentity;
 	allocationFailure?: { kind: AllocationKind; error?: Error; result?: AllocationResult };
 	allocationPlanError?: Error;
-	allocationResources: Partial<Record<AllocationKind, Record<string, string>>> = {};
-	reconciliation: AllocationReconciliation = { outcome: "absent" };
+	allocationResources: {
+		workspace?: { workspaceId: string; rootTabId: string; rootPaneId: string };
+		worker_tab?: { tabId: string; paneId: string };
+	} = {};
+	reconciliation: { outcome: "absent" } | { outcome: "possible"; failure: string; possibleResources?: string[] } = { outcome: "absent" };
 	preflightAction?: () => Promise<void>;
 	preflightRoot?: string;
-	materializeAction?: () => Promise<void>;
-	verifyLaunchAction?: (record: NormalizedLaunchRecord) => Promise<void>;
+	acquireLaunchAction?: (record: NormalizedLaunchRecord) => Promise<void>;
 	workerBarrierSize = 0;
 	expireHook?: string;
 	private barrierResolvers: (() => void)[] = [];
@@ -175,32 +190,24 @@ class FakeRuntime implements OrchestratorRuntime {
 		return [...requiredLaunchKeys(input).entries()].map(([key, route]) => {
 			const extensionPath = `/roles/${route.role}-${route.modelClass}.ts`;
 			const skillPath = `/skills/${route.role}.md`;
-			const rawPrompt = `Implement with ${route.modelClass}.\nUse the exact request.`;
-			const rawArgs = ["--model", `${route.modelClass}-model`, "--thinking", "high", "--append-system-prompt", rawPrompt];
-			const promptPath = `/private/${key.replace("/", "-")}.prompt`;
-			const finalArgs = [...rawArgs];
-			finalArgs[finalArgs.length - 1] = promptPath;
+			const roleSkills = route.role === "implementer" ? [skillPath] : [];
 			const record: Omit<NormalizedLaunchRecord, "fingerprint"> = {
 				key,
 				...route,
+				roleFingerprint: sha256(`${route.role}/${route.modelClass} predefined Role`),
+				promptSha256: sha256(`${route.role}/${route.modelClass} predefined Role prompt`),
+				promptArgIndex: 4,
 				model: `${route.modelClass}-model`,
 				thinkingLevel: "high",
-				rawArgs,
+				args: ["--model", `${route.modelClass}-model`, "--thinking", "high"],
 				env: {},
 				tools: route.role === "implementer" ? ["read", "edit"] : ["read"],
 				roleExtensions: [extensionPath],
-				roleSkills: [skillPath],
+				roleSkills,
 				resources: [
 					{ kind: "extension", path: extensionPath, sha256: "1".repeat(64) },
-					{ kind: "skill", path: skillPath, sha256: "2".repeat(64) },
+					...roleSkills.map((path) => ({ kind: "skill" as const, path, sha256: "2".repeat(64) })),
 				],
-				...(route.role === "implementer" ? { prompt: {
-					rawValue: rawPrompt,
-					path: promptPath,
-					mode: 0o600 as const,
-					sha256: sha256(rawPrompt),
-					finalArgs,
-				} } : {}),
 			};
 			return { ...record, fingerprint: launchRecordFingerprint(record) };
 		});
@@ -214,15 +221,6 @@ class FakeRuntime implements OrchestratorRuntime {
 		return { root: this.preflightRoot ?? input.cwd, main: { ...this.main }, launchRecords: this.launchRecords(input.request) };
 	}
 
-	async materializeLaunchRecords(
-		_input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> },
-		context: OperationContext,
-	): Promise<void> {
-		this.materializeCalls += 1;
-		this.observe("materialize-launches", context);
-		await this.materializeAction?.();
-	}
-
 	async recoverLaunchRecords(
 		input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> },
 		context: OperationContext,
@@ -232,22 +230,30 @@ class FakeRuntime implements OrchestratorRuntime {
 		return Object.values(input.records).map((record) => structuredClone(record));
 	}
 
-	async verifyLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<VerifiedLaunch> {
-		this.observe("verify-launch", context);
-		this.verificationCalls.push(record.key);
-		await this.verifyLaunchAction?.(record);
+	async acquireLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<TransientLaunchHandle> {
+		this.observe("acquire-launch", context);
+		this.acquisitionCalls.push(record.key);
+		await this.acquireLaunchAction?.(record);
+		const promptPath = `/tmp/ephemeral-role-${this.acquisitionCalls.length}`;
+		const args = [...record.args];
+		args.splice(record.promptArgIndex, 0, "--append-system-prompt", promptPath);
 		const common = {
 			key: record.key,
 			modelClass: record.modelClass,
 			model: record.model,
 			thinkingLevel: record.thinkingLevel,
+			args,
 			env: { ...record.env },
 			tools: [...record.tools],
 			fingerprint: record.fingerprint,
 		};
-		return record.role === "implementer"
-			? { ...common, role: "implementer", args: [...record.prompt!.finalArgs] }
-			: { ...common, role: "reviewer", args: [...record.rawArgs] };
+		const launch = record.role === "implementer"
+			? { ...common, role: "implementer" as const }
+			: { ...common, role: "reviewer" as const };
+		return {
+			launch,
+			cleanup: async () => { this.transientCleanupCalls.push(record.key); },
+		};
 	}
 
 	async inspectMain(_input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity> {
@@ -274,11 +280,31 @@ class FakeRuntime implements OrchestratorRuntime {
 	async planHostAllocation(
 		input: { readonly goal: ExecuteRequest["goal"]; kind: Exclude<AllocationKind, "worktree">; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
-	): Promise<string> {
+	): Promise<HostAllocationPlan> {
 		this.observe("plan-allocation", context);
 		this.allocationPlanGoals.push(input.goal);
 		if (this.allocationPlanError) throw this.allocationPlanError;
-		return `${input.task.id}/${input.kind}/${input.attempt.allocationGeneration}`;
+		const worktree = input.attempt.allocations.find((allocation): allocation is WorktreeAllocationIntent => allocation.kind === "worktree")?.worktree;
+		if (!worktree) throw new Error("missing worktree plan");
+		if (input.kind === "workspace") return {
+			kind: "workspace", label: `${input.task.id}-workspace`, worktreeCwd: worktree.cwd,
+			mainRoot: worktree.repoRoot, repoKey: worktree.repoRoot, herdrRepoRoot: worktree.repoRoot,
+		};
+		const workspace = input.attempt.allocations.find((allocation) => allocation.kind === "workspace");
+		if (!workspace || workspace.kind !== "workspace" || !workspace.workspaceId || !workspace.rootTabId || !workspace.rootPaneId) {
+			throw new Error("missing workspace allocation");
+		}
+		if (input.kind === "worker_tab") return {
+			kind: "worker_tab", label: `${input.task.id}-worker`, workspaceId: workspace.workspaceId,
+			workspaceRootTabId: workspace.rootTabId, workspaceRootPaneId: workspace.rootPaneId,
+			worktreeCwd: worktree.cwd, leasePath: `/tmp/${input.attempt.correlationToken}.lease`,
+		};
+		const tab = input.attempt.allocations.find((allocation) => allocation.kind === "worker_tab");
+		if (!tab || tab.kind !== "worker_tab" || !tab.tabId || !tab.paneId) throw new Error("missing worker tab allocation");
+		return {
+			kind: "agent", agentName: `${input.task.id}-agent`, workspaceId: workspace.workspaceId,
+			tabId: tab.tabId, paneId: tab.paneId, worktreeCwd: worktree.cwd, leasePath: tab.leasePath,
+		};
 	}
 
 	private allocation(input: { intent: { kind: AllocationKind }; task: TaskRequest }, context: OperationContext): AllocationResult {
@@ -290,60 +316,70 @@ class FakeRuntime implements OrchestratorRuntime {
 			if (failure.error) throw failure.error;
 			return failure.result!;
 		}
-		return {
-			outcome: "owned",
-			resourceId: `${input.task.id}-${input.intent.kind}`,
-			...(this.allocationResources[input.intent.kind]
-				? { resources: structuredClone(this.allocationResources[input.intent.kind]) }
-				: {}),
+		if (input.intent.kind === "workspace") return {
+			kind: "workspace", outcome: "owned",
+			...(this.allocationResources.workspace ?? {
+				workspaceId: `${input.task.id}-workspace`, rootTabId: `${input.task.id}-root-tab`, rootPaneId: `${input.task.id}-root-pane`,
+			}),
 		};
+		if (input.intent.kind === "worker_tab") return {
+			kind: "worker_tab", outcome: "owned",
+			...(this.allocationResources.worker_tab ?? { tabId: `${input.task.id}-worker-tab`, paneId: `${input.task.id}-worker-pane` }),
+		};
+		return { kind: input.intent.kind, outcome: "owned" };
 	}
 
 	async allocateWorktree(
-		input: { root: string; intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; onPrepared(worktree: WorktreeRecord): Promise<void> },
+		input: { root: string; intent: WorktreeAllocationIntent; task: TaskRequest; attempt: TaskAttempt; onPrepared(worktree: WorktreeAllocationPlan): Promise<void> },
 		context: OperationContext,
-	): Promise<AllocationResult> {
-		const planned: WorktreeRecord = {
-			path: `${input.task.id}-worktree`, cwd: `${input.task.id}-worktree`, branch: input.task.id,
-			repoRoot: "fake-root", baseCommit: input.attempt.waveBase.head,
+	): Promise<WorktreeAllocationResult> {
+		const planned: WorktreeAllocationPlan = {
+			path: `/fake/${input.task.id}-worktree`, cwd: `/fake/${input.task.id}-worktree`, branch: input.task.id,
+			repoRoot: "/fake", baseCommit: input.attempt.waveBase.head,
 		};
 		await input.onPrepared(planned);
-		return this.allocation(input, context);
+		return this.allocation(input, context) as WorktreeAllocationResult;
 	}
 
 	async allocateHost(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; verifyLaunch?: () => Promise<VerifiedImplementerLaunch> },
+		input: {
+			intent: HostAllocationIntent;
+			task: TaskRequest;
+			attempt: TaskAttempt;
+			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+		},
 		context: OperationContext,
-	): Promise<AllocationResult> {
-		if (input.intent.kind === "agent") {
-			if (!input.verifyLaunch) throw new Error("missing Implementer launch verification");
-			const launch = await input.verifyLaunch();
+	): Promise<HostAllocationResult> {
+		if (input.intent.kind !== "agent") return this.allocation(input, context) as HostAllocationResult;
+		if (!input.acquireLaunch) throw new Error("missing Implementer launch acquisition");
+		const handle = await input.acquireLaunch();
+		return await withTransientLaunch(handle, async (launch) => {
 			this.agentStartCalls.push({
 				launchKey: launch.key,
 				args: [...launch.args],
 				exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
 			});
-		}
-		return this.allocation(input, context);
+			return this.allocation(input, context) as HostAllocationResult;
+		});
 	}
 
-	private reconcile(input: { intent: { kind: AllocationKind } }, context: OperationContext): AllocationReconciliation {
+	private reconcile<Kind extends AllocationKind>(input: { intent: { kind: Kind } }, context: OperationContext): AllocationReconciliation<Kind> {
 		this.observe("reconcile-allocation", context);
 		this.reconciliationCalls.push(input.intent.kind);
-		return this.reconciliation;
+		return { ...this.reconciliation, kind: input.intent.kind } as AllocationReconciliation<Kind>;
 	}
 
 	async reconcileWorktreeAllocation(
-		input: { root: string; intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		input: { root: string; intent: WorktreeAllocationIntent; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
-	): Promise<AllocationReconciliation> {
+	): Promise<AllocationReconciliation<"worktree">> {
 		return this.reconcile(input, context);
 	}
 
 	async reconcileHostAllocation(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
-	): Promise<AllocationReconciliation> {
+	): Promise<AllocationReconciliation<HostAllocationKind>> {
 		return this.reconcile(input, context);
 	}
 
@@ -398,11 +434,12 @@ class FakeRuntime implements OrchestratorRuntime {
 		this.checkCalls.push({ scope: input.scope, ...(input.taskId ? { taskId: input.taskId } : {}) });
 		if (plan.mutateMain) this.main = { ...plan.mutateMain };
 		if (plan.error) throw plan.error;
-		const results: CommandResult[] = input.checks.map((check) => ({
+		const results: CommandResult[] = plan.results ?? input.checks.map((check) => ({
 			...check,
 			code: plan.code ?? 0,
-			stdout: "",
-			stderr: plan.code ? "failed" : "",
+			killed: plan.killed,
+			stdout: plan.stdout ?? "",
+			stderr: plan.stderr ?? (plan.code ? "failed" : ""),
 		}));
 		return { results, identityAfter: plan.identityAfter ?? { ...input.candidate } };
 	}
@@ -414,24 +451,26 @@ class FakeRuntime implements OrchestratorRuntime {
 			taskId?: string;
 			attempt?: TaskAttempt;
 			tip: WorkspaceIdentity;
-			verifyLaunch(): Promise<VerifiedReviewerLaunch>;
+			acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
 		},
 		context: OperationContext,
 	): Promise<ReviewResult> {
 		const plan = this.reviewPlans.shift() ?? {};
-		const launch = await input.verifyLaunch();
-		this.observe("review", context, plan.expire);
-		this.reviewCalls.push({
-			scope: input.scope,
-			phase: input.phase,
-			...(input.taskId ? { taskId: input.taskId } : {}),
-			launchKey: launch.key,
-			...(input.attempt?.termination ? { workerTermination: input.attempt.termination.status } : {}),
-			args: [...launch.args],
-			exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
+		const handle = await input.acquireLaunch();
+		return await withTransientLaunch(handle, async (launch) => {
+			this.observe("review", context, plan.expire);
+			this.reviewCalls.push({
+				scope: input.scope,
+				phase: input.phase,
+				...(input.taskId ? { taskId: input.taskId } : {}),
+				launchKey: launch.key,
+				...(input.attempt?.termination ? { workerTermination: input.attempt.termination.status } : {}),
+				args: [...launch.args],
+				exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
+			});
+			if (plan.error) throw plan.error;
+			return { verdict: plan.verdict ?? "PASS", identityAfter: plan.identityAfter ?? { ...input.tip } };
 		});
-		if (plan.error) throw plan.error;
-		return { verdict: plan.verdict ?? "PASS", identityAfter: plan.identityAfter ?? { ...input.tip } };
 	}
 
 	async terminateWorker(
@@ -522,11 +561,11 @@ test("existing valid, malformed, and intervening state files are never replaced"
 	{
 		const { root, runtime, runner } = await harness(t);
 		await runner.execute(request(), root);
-		const materializations = runtime.materializeCalls;
 		const allocations = runtime.allocationCalls.length;
+		const acquisitions = runtime.acquisitionCalls.length;
 		await assert.rejects(runner.execute(request(), root), /already exists/);
 		assert.equal(runtime.preflightCalls, 2);
-		assert.equal(runtime.materializeCalls, materializations);
+		assert.equal(runtime.acquisitionCalls.length, acquisitions);
 		assert.equal(runtime.allocationCalls.length, allocations);
 	}
 	{
@@ -538,7 +577,7 @@ test("existing valid, malformed, and intervening state files are never replaced"
 		await assert.rejects(store.load(root, "request-one"));
 		assert.equal(await readFile(path, "utf8"), "malformed state\n");
 		assert.equal(runtime.preflightCalls, 1);
-		assert.equal(runtime.materializeCalls, 0);
+		assert.equal(runtime.acquisitionCalls.length, 0);
 		assert.equal(runtime.allocationCalls.length, 0);
 	}
 	{
@@ -553,7 +592,7 @@ test("existing valid, malformed, and intervening state files are never replaced"
 	}
 });
 
-test("preflight owns no state, while private launch materialization starts only after exclusive creation", async (t) => {
+test("preflight owns no state and final launch acquisition starts only after exclusive creation", async (t) => {
 	await t.test("ordered success", async (t) => {
 		const { root, runtime, store, runner } = await harness(t);
 		const startedAt = runtime.clock;
@@ -561,23 +600,22 @@ test("preflight owns no state, while private launch materialization starts only 
 			await assert.rejects(store.load(root, "request-one"));
 			runtime.clock += 250;
 		};
-		runtime.materializeAction = async () => {
+		runtime.acquireLaunchAction = async () => {
 			const persisted = await store.load(root, "request-one");
-			assert.equal(persisted.state.launchMaterialization.status, "materializing");
-			assert.equal(persisted.state.tasks[0]!.attempts.length, 0);
-			assert.equal(runtime.allocationCalls.length, 0);
+			const attempt = persisted.state.tasks[0]!.attempts[0]!;
+			assert.equal(attempt.allocations.at(-1)!.kind, "agent");
+			assert.equal(attempt.allocations.at(-1)!.status, "allocating");
+			assert.deepEqual(runtime.allocationCalls, ["worktree", "workspace", "worker_tab"]);
 		};
 
 		const completed = await runner.execute(request(), root);
-		assert.equal(completed.state.launchMaterialization.status, "ready");
-		assert.ok(completed.state.launchMaterialization.at !== undefined);
 		assert.equal(completed.state.deadlineStartedAt, startedAt);
 		assert.equal(completed.state.createdAt, startedAt + 250);
 		assert.equal(completed.state.deadline, startedAt + completed.state.request.budgetMs);
 		assert.ok(runtime.contexts.findIndex(({ hook }) => hook === "preflight")
-			< runtime.contexts.findIndex(({ hook }) => hook === "materialize-launches"));
-		assert.ok(runtime.contexts.findIndex(({ hook }) => hook === "materialize-launches")
-			< runtime.contexts.findIndex(({ hook }) => hook === "allocate"));
+			< runtime.contexts.findIndex(({ hook }) => hook === "acquire-launch"));
+		assert.ok(runtime.contexts.findIndex(({ hook }) => hook === "acquire-launch")
+			< runtime.contexts.map(({ hook }) => hook).lastIndexOf("allocate"));
 	});
 
 	await t.test("preflight failure creates nothing", async (t) => {
@@ -585,7 +623,7 @@ test("preflight owns no state, while private launch materialization starts only 
 		runtime.preflightAction = async () => { throw new Error("Herdr unavailable"); };
 		await assert.rejects(runner.execute(request(), root), /Herdr unavailable/);
 		await assert.rejects(store.load(root, "request-one"));
-		assert.equal(runtime.materializeCalls, 0);
+		assert.equal(runtime.acquisitionCalls.length, 0);
 		assert.equal(runtime.allocationCalls.length, 0);
 	});
 
@@ -598,25 +636,19 @@ test("preflight owns no state, while private launch materialization starts only 
 		assert.equal(runtime.contexts[0]!.context.deadline, startedAt + 1_000);
 		assert.equal(runtime.contexts[0]!.context.timeoutMs, 1_000);
 		await assert.rejects(store.load(root, "request-one"));
-		assert.equal(runtime.materializeCalls, 0);
+		assert.equal(runtime.acquisitionCalls.length, 0);
 		assert.equal(runtime.allocationCalls.length, 0);
 	});
 
-	await t.test("materialization failure remains durable and fail-closed", async (t) => {
+	await t.test("launch acquisition failure remains durable and fail-closed", async (t) => {
 		const { root, runtime, store, runner } = await harness(t);
-		runtime.materializeAction = async () => { throw new Error("private write failed"); };
+		runtime.acquireLaunchAction = async () => { throw new Error("ephemeral launch failed"); };
 		const failed = await runner.execute(request(), root);
 		assert.equal(failed.state.status, "needs_attention");
-		assert.equal(failed.state.launchMaterialization.status, "failed");
-		assert.match(failed.state.launchMaterialization.failure!, /private write failed/);
-		assert.equal(runtime.allocationCalls.length, 0);
-		const persisted = await store.load(root, "request-one");
-		assert.equal(persisted.state.launchMaterialization.status, "failed");
-		await assert.rejects(
-			runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
-			/materialization is failed/,
-		);
-		assert.equal(runtime.allocationCalls.length, 0);
+		assert.match(failed.state.tasks[0]!.failure!, /ephemeral launch failed/);
+		assert.equal(runtime.workerCalls.length, 0);
+		assert.equal(runtime.acquisitionCalls.length, 1);
+		assert.doesNotMatch(JSON.stringify((await store.load(root, "request-one")).state), /append-system-prompt|ephemeral-role/);
 	});
 
 	await t.test("nested cwd uses only the canonical preflight Git root for state", async (t) => {
@@ -650,15 +682,20 @@ test("host planning rejection stops after the exact worktree without allocating 
 test("owned allocation metadata is persisted exactly without adopting possible resources", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	runtime.allocationResources = {
-		workspace: { workspaceId: "workspace-7", rootPaneId: "pane-root-9" },
+		workspace: { workspaceId: "workspace-7", rootTabId: "tab-root-8", rootPaneId: "pane-root-9" },
 		worker_tab: { tabId: "tab-11", paneId: "pane-worker-13" },
-		agent: { processId: "agent-process-17" },
 	};
 	const completed = await runner.execute(request(), root);
 	const allocations = completed.state.tasks[0]!.attempts[0]!.allocations;
-	assert.deepEqual(allocations.find(({ kind }) => kind === "workspace")?.resources, runtime.allocationResources.workspace);
-	assert.deepEqual(allocations.find(({ kind }) => kind === "worker_tab")?.resources, runtime.allocationResources.worker_tab);
-	assert.deepEqual(allocations.find(({ kind }) => kind === "agent")?.resources, runtime.allocationResources.agent);
+	const workspace = allocations.find((allocation) => allocation.kind === "workspace");
+	const workerTab = allocations.find((allocation) => allocation.kind === "worker_tab");
+	assert.ok(workspace?.kind === "workspace");
+	assert.ok(workerTab?.kind === "worker_tab");
+	assert.deepEqual(
+		{ workspaceId: workspace.workspaceId, rootTabId: workspace.rootTabId, rootPaneId: workspace.rootPaneId },
+		runtime.allocationResources.workspace,
+	);
+	assert.deepEqual({ tabId: workerTab.tabId, paneId: workerTab.paneId }, runtime.allocationResources.worker_tab);
 });
 
 test("ready tasks dispatch in parallel, then integrate in declared dependency-wave order", async (t) => {
@@ -702,7 +739,7 @@ test("mixed Role/model launches remain keyed and recover exactly before finaliza
 	assert.deepEqual(runtime.reviewCalls.map(({ launchKey }) => launchKey), ["reviewer/balanced", "reviewer/fav"]);
 });
 
-test("verified Implementer launch immediately precedes agent start and raw args never reach host spawn", async (t) => {
+test("JIT Role acquisition immediately precedes each launch and durable argv never reaches spawn", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	const definition = request({
 		tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
@@ -710,17 +747,25 @@ test("verified Implementer launch immediately precedes agent start and raw args 
 	const result = await runner.execute(definition, root);
 	const implementer = result.state.launchRecords["implementer/fast"]!;
 	const reviewer = result.state.launchRecords["reviewer/balanced"]!;
+	const spawned = [...runtime.agentStartCalls, ...runtime.reviewCalls];
 
-	assert.deepEqual(runtime.agentStartCalls.map(({ args }) => args), [implementer.prompt!.finalArgs]);
-	assert.ok(runtime.agentStartCalls.every(({ args, exposedPersistedFields }) =>
-		!exposedPersistedFields && !args.includes(implementer.prompt!.rawValue)));
-	assert.ok(runtime.reviewCalls.every(({ args, exposedPersistedFields }) =>
-		!exposedPersistedFields && JSON.stringify(args) === JSON.stringify(reviewer.rawArgs)));
+	assert.deepEqual(runtime.acquisitionCalls, [implementer.key, reviewer.key]);
+	assert.deepEqual(runtime.transientCleanupCalls, runtime.acquisitionCalls);
+	assert.ok(spawned.every(({ args, exposedPersistedFields }) => {
+		const index = args.indexOf("--append-system-prompt");
+		return !exposedPersistedFields
+			&& index === args.lastIndexOf("--append-system-prompt")
+			&& index >= 0
+			&& /^\/tmp\/ephemeral-role-\d+$/.test(args[index + 1] ?? "")
+			&& !JSON.stringify(result.state).includes(args[index + 1]!);
+	}));
+	assert.ok(!implementer.args.includes("--append-system-prompt"));
+	assert.ok(!reviewer.args.includes("--append-system-prompt"));
 	assert.deepEqual(runtime.contexts
-		.filter(({ hook }) => ["verify-launch", "allocate", "worker", "review"].includes(hook))
+		.filter(({ hook }) => ["acquire-launch", "allocate", "worker", "review"].includes(hook))
 		.map(({ hook }) => hook), [
-			"allocate", "allocate", "allocate", "verify-launch", "allocate", "worker",
-			"verify-launch", "review",
+			"allocate", "allocate", "allocate", "acquire-launch", "allocate", "worker",
+			"acquire-launch", "review",
 		]);
 	assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
 		{ phase: "authoritative", workerTermination: "terminated" },
@@ -734,18 +779,18 @@ test("resource drift after recovery blocks worker and Reviewer spawn hooks", asy
 		await runner.execute(request(), root);
 		runtime.contexts.length = 0;
 		runtime.recoverCalls.length = 0;
-		runtime.verificationCalls.length = 0;
-		runtime.verifyLaunchAction = async (record) => {
+		runtime.acquisitionCalls.length = 0;
+		runtime.acquireLaunchAction = async (record) => {
 			if (record.role === "implementer") throw new Error("Implementer extension fingerprint drifted");
 		};
 
 		const stopped = await runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root);
 		assert.equal(stopped.state.tasks[0]!.status, "needs_attention");
 		assert.equal(runtime.recoverCalls.length, 1);
-		assert.deepEqual(runtime.verificationCalls, ["implementer/fast"]);
+		assert.deepEqual(runtime.acquisitionCalls, ["implementer/fast"]);
 		assert.equal(runtime.workerCalls.length, 0);
 		assert.ok(runtime.contexts.findIndex(({ hook }) => hook === "recover-launches")
-			< runtime.contexts.findIndex(({ hook }) => hook === "verify-launch"));
+			< runtime.contexts.findIndex(({ hook }) => hook === "acquire-launch"));
 	});
 
 	await t.test("Reviewer", async (t) => {
@@ -756,18 +801,18 @@ test("resource drift after recovery blocks worker and Reviewer spawn hooks", asy
 		assert.equal(runtime.reviewCalls.length, 0);
 		runtime.contexts.length = 0;
 		runtime.recoverCalls.length = 0;
-		runtime.verificationCalls.length = 0;
-		runtime.verifyLaunchAction = async (record) => {
+		runtime.acquisitionCalls.length = 0;
+		runtime.acquireLaunchAction = async (record) => {
 			if (record.role === "reviewer") throw new Error("Reviewer extension fingerprint drifted");
 		};
 
 		const stopped = await runner.resume({ id: "request-one", action: "finalize" }, root);
 		assert.equal(stopped.state.final.status, "interrupted");
 		assert.equal(runtime.recoverCalls.length, 1);
-		assert.deepEqual(runtime.verificationCalls, ["reviewer/balanced"]);
+		assert.deepEqual(runtime.acquisitionCalls, ["reviewer/balanced"]);
 		assert.equal(runtime.reviewCalls.length, 0);
 		assert.ok(runtime.contexts.findIndex(({ hook }) => hook === "recover-launches")
-			< runtime.contexts.findIndex(({ hook }) => hook === "verify-launch"));
+			< runtime.contexts.findIndex(({ hook }) => hook === "acquire-launch"));
 	});
 });
 
@@ -799,7 +844,7 @@ test("completed task and request states require exact authoritative evidence and
 	assert.throws(() => parseRunState(malformedCleanup), /cleanup sequence/i);
 
 	const wrongWorktreeBase = structuredClone(valid);
-	wrongWorktreeBase.tasks[0]!.attempts[0]!.allocations[0]!.worktree!.baseCommit = oid("f");
+	(wrongWorktreeBase.tasks[0]!.attempts[0]!.allocations[0] as WorktreeAllocationIntent).worktree!.baseCommit = oid("f");
 	assert.throws(() => parseRunState(wrongWorktreeBase), /worktree.*wave base/i);
 
 	const dirtyFinal = structuredClone(valid);
@@ -869,6 +914,144 @@ test("a failed preliminary check gets one correction before the single authorita
 	assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
 		{ phase: "authoritative", workerTermination: "terminated" },
 	]);
+});
+
+test("durable check evidence keeps exact identity while retaining output only on one failed-batch diagnostic", async (t) => {
+	const checks: CheckCommand[] = [
+		{ command: "check-one", args: ["--one"] },
+		{ command: "check-two", args: ["--two"] },
+		{ command: "check-three", args: ["--three"] },
+	];
+	const definition = request({ tasks: [{ ...task("task-a"), checks }], finalChecks: checks });
+
+	await t.test("successful batches discard all output", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.checkPlans.push(
+			{ stdout: "preliminary stdout", stderr: "preliminary stderr" },
+			{ stdout: "authoritative stdout", stderr: "authoritative stderr" },
+			{ stdout: "final stdout", stderr: "final stderr" },
+		);
+		const completed = await runner.execute(definition, root);
+		const attempt = completed.state.tasks[0]!.attempts[0]!;
+		for (const batch of [attempt.preliminaryChecks!, attempt.authoritativeChecks!, completed.state.final.checks!]) {
+			assert.equal(batch.passed, true);
+			assert.deepEqual(batch.candidate, batch.identityAfter);
+			assert.deepEqual(batch.results.map(({ command, args, code, killed, stdout, stderr }) => ({ command, args, code, killed, stdout, stderr })),
+				checks.map(({ command, args }) => ({ command, args, code: 0, killed: false, stdout: "", stderr: "" })));
+		}
+	});
+
+	await t.test("the first failed or killed command alone retains bounded output", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		const oversized = "界".repeat(MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+		runtime.checkPlans.push({}, {
+			results: [
+				{ ...checks[0]!, code: 0, killed: false, stdout: "discard one", stderr: "discard one" },
+				{ ...checks[1]!, code: 0, killed: true, stdout: oversized, stderr: oversized },
+				{ ...checks[2]!, code: 1, killed: false, stdout: "discard three", stderr: "discard three" },
+			],
+		});
+		const failed = await runner.execute(definition, root);
+		const batch = failed.state.tasks[0]!.attempts[0]!.authoritativeChecks!;
+		assert.equal(batch.passed, false);
+		assert.deepEqual(batch.candidate, batch.identityAfter);
+		assert.deepEqual(batch.results.map(({ command, args, code, killed }) => ({ command, args, code, killed })), [
+			{ ...checks[0]!, code: 0, killed: false },
+			{ ...checks[1]!, code: 0, killed: true },
+			{ ...checks[2]!, code: 1, killed: false },
+		]);
+		assert.deepEqual(batch.results.map(({ stdout, stderr }) => ({ stdout, stderr })), [
+			{ stdout: "", stderr: "" },
+			{ stdout: batch.results[1]!.stdout, stderr: batch.results[1]!.stderr },
+			{ stdout: "", stderr: "" },
+		]);
+		assert.ok(batch.results[1]!.stdout.endsWith("[truncated]"));
+		assert.ok(Buffer.byteLength(batch.results[1]!.stdout, "utf8") <= MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+		assert.ok(Buffer.byteLength(batch.results[1]!.stderr, "utf8") <= MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+	});
+
+	await t.test("identity drift retains only the final command output", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.checkPlans.push({}, {}, { stdout: "drift stdout", stderr: "drift stderr", identityAfter: identity("f") });
+		const superseded = await runner.execute(definition, root);
+		const batch = superseded.state.final.checks!;
+		assert.equal(batch.passed, false);
+		assert.notDeepEqual(batch.candidate, batch.identityAfter);
+		assert.deepEqual(batch.results.map(({ stdout, stderr }) => ({ stdout, stderr })), [
+			{ stdout: "", stderr: "" },
+			{ stdout: "", stderr: "" },
+			{ stdout: "drift stdout", stderr: "drift stderr" },
+		]);
+	});
+});
+
+test("runtime diagnostics, verdicts, and reconciliation evidence are bounded before persistence", async (t) => {
+	const oversized = "界".repeat(MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+	const assertBounded = (value: string): void => {
+		assert.ok(Buffer.byteLength(value, "utf8") <= MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+		assert.ok(value.endsWith("[truncated]"));
+	};
+
+	await t.test("worker diagnostic and Reviewer verdict", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.workerPlans.push({ outcome: "blocked", diagnostic: oversized });
+		runtime.reviewPlans.push({ verdict: oversized });
+		const result = await runner.execute(request({
+			tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+		}), root);
+		const attempt = result.state.tasks[0]!.attempts[0]!;
+		assertBounded(attempt.prompts[0]!.failure!);
+		assertBounded(attempt.authoritativeReview!.verdict);
+		assert.equal(result.state.accepted, false);
+	});
+
+	await t.test("termination and cleanup failures", async (t) => {
+		const terminated = await harness(t);
+		terminated.runtime.terminationPlans.push({ outcome: "unknown", failure: oversized });
+		const terminationResult = await terminated.runner.execute(request(), terminated.root);
+		assertBounded(terminationResult.state.tasks[0]!.attempts[0]!.termination!.failure!);
+
+		const cleaned = await harness(t);
+		cleaned.runtime.cleanupPlans.push({ outcome: "blocked", failure: oversized });
+		const cleanupResult = await cleaned.runner.execute(request(), cleaned.root);
+		assertBounded(cleanupResult.state.tasks[0]!.attempts[0]!.cleanup[0]!.failure!);
+	});
+
+	await t.test("possible reconciliation resources", async (t) => {
+		const { root, runtime, store, runner } = await harness(t);
+		runtime.allocationFailure = { kind: "agent", error: new Error("lost result") };
+		await runner.execute(request(), root);
+		runtime.reconciliation = {
+			outcome: "possible",
+			failure: oversized,
+			possibleResources: Array.from({ length: MAX_POSSIBLE_RESOURCES + 9 }, (_, index) => `${index}-${oversized}`),
+		};
+		await assert.rejects(
+			runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
+			/was not adopted or closed/,
+		);
+		const intent = (await store.load(root, "request-one")).state.tasks[0]!.attempts[0]!.allocations.at(-1)!;
+		assertBounded(intent.failure!);
+		assert.equal(intent.possibleResources?.length, MAX_POSSIBLE_RESOURCES);
+		assertBounded(intent.possibleResources![0]!);
+		assert.match(intent.possibleResources!.at(-1)!, /additional possible resources were omitted; cleanup remains blocked/);
+		assert.equal(intent.status, "unknown");
+	});
+
+	await t.test("oversized exact resource identities fail closed instead of being truncated", async (t) => {
+		const { root, runtime, store, runner } = await harness(t);
+		runtime.allocationResources.workspace = {
+			workspaceId: oversized,
+			rootTabId: "root-tab",
+			rootPaneId: "root-pane",
+		};
+		const result = await runner.execute(request(), root);
+		assert.equal(result.state.status, "needs_attention");
+		const intent = (await store.load(root, "request-one")).state.tasks[0]!.attempts[0]!.allocations.at(-1)!;
+		assert.equal(intent.kind, "workspace");
+		assert.equal(intent.status, "allocating");
+		assert.equal("workspaceId" in intent, false);
+	});
 });
 
 test("a settled implementation block gets one same-agent correction before checks and review", async (t) => {
@@ -1120,7 +1303,7 @@ test("an interrupted prompt enters attention and is never replayed", async (t) =
 	assert.equal(attempt.prompts[0]!.status, "ambiguous");
 	assert.equal(attempt.termination?.status, "terminated");
 	assert.deepEqual(runtime.terminationCalls, [{
-		workerId: attempt.allocations.find(({ kind }) => kind === "agent")!.resourceId!,
+		workerId: attempt.allocations.find((allocation) => allocation.kind === "agent")!.agentName,
 		candidate: attempt.prompts[0]!.preCandidate,
 	}]);
 	await assert.rejects(

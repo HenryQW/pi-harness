@@ -784,7 +784,7 @@ export default function pullRequestExtension(
 		releaseWorkflow,
 	});
 	pi.registerCommand("pr", {
-		description: "[--base <branch>] [instructions] — Run the current branch pull request next step",
+		description: "[--feedback | --base <branch> [instructions]] — Run the current branch pull request next step",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
 			const generation = sessionGeneration;

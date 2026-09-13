@@ -860,11 +860,11 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 	}
 });
 
-test("fresh /pr sweep runs rotate route IDs and resume package recovery after settlement", async () => {
+test("fresh explicit feedback sweeps rotate route IDs and resume package recovery after settlement", async () => {
 	const firstRunId = routeRunId;
 	const secondRunId = "22222222-2222-4222-8222-222222222222";
 	const runIds = [firstRunId, secondRunId];
-	const authority = currentPullRequest({ conditions: { unresolvedThreads: 1 } });
+	const authority = currentPullRequest();
 	const inspections: string[] = [];
 	const actions: string[] = [];
 	let recoveryExists = false;
@@ -900,7 +900,7 @@ test("fresh /pr sweep runs rotate route IDs and resume package recovery after se
 
 	try {
 		await app.start(ctx);
-		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.command().handler("--feedback", ctx as ExtensionCommandContext);
 		assert.deepEqual(app.messages, [
 			`/skill:pi-pr-comment-sweep runId=${firstRunId} action=start`,
 		]);
@@ -911,7 +911,7 @@ test("fresh /pr sweep runs rotate route IDs and resume package recovery after se
 			/run \/pr/,
 		);
 
-		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.command().handler("--feedback", ctx as ExtensionCommandContext);
 		assert.deepEqual(app.messages, [
 			`/skill:pi-pr-comment-sweep runId=${firstRunId} action=start`,
 			`/skill:pi-pr-comment-sweep runId=${secondRunId} action=resume`,

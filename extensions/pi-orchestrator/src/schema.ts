@@ -1,16 +1,18 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
 export const RUN_STATE_VERSION = 1;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
+export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
+export const MAX_POSSIBLE_RESOURCES = 32;
 
 export const MODEL_CLASSES = ["fast", "balanced", "frontier", "fav"] as const;
-export type ModelClass = (typeof MODEL_CLASSES)[number];
-export type Role = "implementer" | "reviewer";
+export type ModelClass = Static<typeof ModelClassSchema>;
+export type Role = Static<typeof RoleSchema>;
 
 const ID_PATTERN = "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$";
 const OID_PATTERN = "^(?:[0-9a-f]{40}|[0-9a-f]{64})$";
@@ -18,7 +20,8 @@ const SHA256_PATTERN = "^[0-9a-f]{64}$";
 const TOKEN_PATTERN = "^[A-Za-z0-9_-]{16,128}$";
 const IdSchema = Type.String({ minLength: 1, maxLength: 80, pattern: ID_PATTERN });
 const TextSchema = Type.String({ minLength: 1, maxLength: 32_000 });
-const OptionalTextSchema = Type.Optional(Type.String({ maxLength: 32_000 }));
+const RuntimeTextSchema = Type.String({ minLength: 1, maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES });
+const OptionalRuntimeTextSchema = Type.Optional(Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }));
 const TimestampSchema = Type.Integer({ minimum: 0 });
 const ModelClassSchema = Type.Union([
 	Type.Literal("fast"),
@@ -65,91 +68,35 @@ export const ResumeRequestSchema = Type.Union([
 	Type.Object({ id: IdSchema, action: Type.Literal("finalize") }, { additionalProperties: false }),
 ]);
 
-export type IdOnly = { id: string };
-export type CheckCommand = { command: string; args: string[] };
-export type Judgment = { criterion: string; modelClass: ModelClass };
-export type TaskRequest = {
-	id: string;
-	modelClass: ModelClass;
-	requirements: string;
-	deliverable: string;
-	dependsOn: string[];
-	checks: CheckCommand[];
-	judgment?: Judgment;
-};
-export type ExecuteRequest = {
-	id: string;
-	goal: string;
-	budgetMs: number;
-	tasks: TaskRequest[];
-	finalChecks: CheckCommand[];
-	finalJudgment?: Judgment;
-};
-export type ResumeRequest =
-	| { id: string; action: "retry"; taskId: string }
-	| { id: string; action: "verify"; taskId: string }
-	| { id: string; action: "finalize" };
+export type IdOnly = Static<typeof IdOnlySchema>;
+export type CheckCommand = Static<typeof CheckCommandSchema>;
+export type Judgment = Static<typeof JudgmentSchema>;
+export type TaskRequest = Static<typeof TaskRequestSchema>;
+export type ExecuteRequest = Static<typeof ExecuteRequestSchema>;
+export type ResumeRequest = Static<typeof ResumeRequestSchema>;
 
-export interface WorkspaceIdentity {
-	branch: string;
-	head: string;
-	index: string;
-	tree: string;
-}
-
-export interface LaunchResourceFingerprint {
-	kind: "skill" | "extension";
-	path: string;
-	sha256: string;
-}
-
-export interface LaunchPromptFile {
-	rawValue: string;
-	path: string;
-	mode: 0o600;
-	sha256: string;
-	finalArgs: string[];
-}
+export type WorkspaceIdentity = Static<typeof WorkspaceSchema>;
+export type LaunchResourceFingerprint = Static<typeof LaunchResourceFingerprintSchema>;
+export type NormalizedLaunchRecord = Static<typeof LaunchRecordSchema>;
 
 /**
- * Runtime hooks are untrusted boundaries, so the added fields remain optional
+ * Runtime hooks are untrusted boundaries, so normalized fields remain optional
  * on hook input and become required only after validateLaunchRecords succeeds.
  */
-export interface LaunchRecord {
-	key: string;
-	role: Role;
-	modelClass: ModelClass;
-	model?: string;
-	thinkingLevel?: string;
-	rawArgs?: string[];
-	env?: Record<string, string>;
-	tools?: string[];
-	roleExtensions?: string[];
-	roleSkills?: string[];
-	resources?: LaunchResourceFingerprint[];
-	prompt?: LaunchPromptFile;
-	fingerprint: string;
-}
-
-export interface NormalizedLaunchRecord extends LaunchRecord {
-	model: string;
-	thinkingLevel: string;
-	rawArgs: string[];
-	env: Record<string, string>;
-	tools: string[];
-	roleExtensions: string[];
-	roleSkills: string[];
-	resources: LaunchResourceFingerprint[];
-}
+export type LaunchRecord = Partial<NormalizedLaunchRecord>
+	& Pick<NormalizedLaunchRecord, "key" | "role" | "modelClass" | "fingerprint">;
 
 function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprint">): object {
 	return {
 		key: record.key,
 		role: record.role,
 		modelClass: record.modelClass,
+		roleFingerprint: record.roleFingerprint,
+		promptSha256: record.promptSha256,
+		promptArgIndex: record.promptArgIndex,
 		model: record.model,
 		thinkingLevel: record.thinkingLevel,
-		rawArgs: [...record.rawArgs],
+		args: [...record.args],
 		env: { ...record.env },
 		tools: [...record.tools],
 		roleExtensions: [...record.roleExtensions],
@@ -159,13 +106,6 @@ function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprin
 			path: resource.path,
 			sha256: resource.sha256,
 		})),
-		...(record.prompt ? { prompt: {
-			rawValue: record.prompt.rawValue,
-			path: record.prompt.path,
-			mode: record.prompt.mode,
-			sha256: record.prompt.sha256,
-			finalArgs: [...record.prompt.finalArgs],
-		} } : {}),
 	};
 }
 
@@ -173,181 +113,109 @@ export function launchRecordFingerprint(record: Omit<NormalizedLaunchRecord, "fi
 	return createHash("sha256").update(JSON.stringify(launchFingerprintValue(record))).digest("hex");
 }
 
-export type AllocationKind = "worktree" | "workspace" | "worker_tab" | "agent";
-export type AllocationStatus = "allocating" | "owned" | "absent" | "unknown";
+const AllocationLifecycleFields = {
+	generation: Type.Integer({ minimum: 1, maximum: 2 }),
+	token: Type.String({ pattern: TOKEN_PATTERN }),
+	status: Type.Union([
+		Type.Literal("allocating"), Type.Literal("owned"), Type.Literal("absent"), Type.Literal("unknown"),
+	]),
+	possibleResources: Type.Optional(Type.Array(RuntimeTextSchema, { maxItems: MAX_POSSIBLE_RESOURCES })),
+	failure: OptionalRuntimeTextSchema,
+};
 
-export interface WorktreeRecord {
-	path: string;
-	cwd: string;
-	branch: string;
-	repoRoot: string;
-	baseCommit: string;
-}
+const WorktreeRecordSchema = Type.Object({
+	path: RuntimeTextSchema,
+	cwd: RuntimeTextSchema,
+	branch: RuntimeTextSchema,
+	repoRoot: RuntimeTextSchema,
+	baseCommit: Type.String({ pattern: OID_PATTERN }),
+}, { additionalProperties: false });
 
-export interface AllocationIntent {
-	kind: AllocationKind;
-	generation: number;
-	token: string;
-	details: string;
-	status: AllocationStatus;
-	resourceId?: string;
-	worktree?: WorktreeRecord;
-	possibleResources?: string[];
-	resources?: Record<string, string>;
-	failure?: string;
-}
+const WorktreeAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("worktree"),
+	...AllocationLifecycleFields,
+	worktree: Type.Optional(WorktreeRecordSchema),
+}, { additionalProperties: false });
 
-export interface PromptRecord {
-	kind: "initial" | "correction";
-	status: "submitting" | "not_sent" | "settled" | "ambiguous";
-	preCandidate: WorkspaceIdentity;
-	candidate?: WorkspaceIdentity;
-	failure?: string;
-	at: number;
-}
+const WorkspaceAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("workspace"),
+	...AllocationLifecycleFields,
+	label: RuntimeTextSchema,
+	worktreeCwd: RuntimeTextSchema,
+	mainRoot: RuntimeTextSchema,
+	repoKey: RuntimeTextSchema,
+	herdrRepoRoot: RuntimeTextSchema,
+	workspaceId: Type.Optional(RuntimeTextSchema),
+	rootTabId: Type.Optional(RuntimeTextSchema),
+	rootPaneId: Type.Optional(RuntimeTextSchema),
+}, { additionalProperties: false });
 
-export interface CommandEvidence extends CheckCommand {
-	code: number;
-	killed: boolean;
-	stdout: string;
-	stderr: string;
-}
+const WorkerTabAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("worker_tab"),
+	...AllocationLifecycleFields,
+	label: RuntimeTextSchema,
+	workspaceId: RuntimeTextSchema,
+	workspaceRootTabId: RuntimeTextSchema,
+	workspaceRootPaneId: RuntimeTextSchema,
+	worktreeCwd: RuntimeTextSchema,
+	leasePath: RuntimeTextSchema,
+	tabId: Type.Optional(RuntimeTextSchema),
+	paneId: Type.Optional(RuntimeTextSchema),
+}, { additionalProperties: false });
 
-export interface CheckBatchEvidence {
-	phase: "preliminary" | "authoritative" | "final";
-	candidate: WorkspaceIdentity;
-	identityAfter: WorkspaceIdentity;
-	results: CommandEvidence[];
-	passed: boolean;
-	at: number;
-}
+const AgentAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("agent"),
+	...AllocationLifecycleFields,
+	agentName: RuntimeTextSchema,
+	workspaceId: RuntimeTextSchema,
+	tabId: RuntimeTextSchema,
+	paneId: RuntimeTextSchema,
+	worktreeCwd: RuntimeTextSchema,
+	leasePath: RuntimeTextSchema,
+}, { additionalProperties: false });
 
-export interface ReviewEvidence {
-	phase: "authoritative" | "final";
-	launchKey: string;
-	criterion: string;
-	base: WorkspaceIdentity;
-	tip: WorkspaceIdentity;
-	identityAfter: WorkspaceIdentity;
-	verdict: string;
-	passed: boolean;
-	at: number;
-}
+export const AllocationIntentSchema = Type.Union([
+	WorktreeAllocationIntentSchema,
+	WorkspaceAllocationIntentSchema,
+	WorkerTabAllocationIntentSchema,
+	AgentAllocationIntentSchema,
+]);
 
-export interface WorkerTermination {
-	status: "terminating" | "terminated" | "unknown";
-	workerId: string;
-	candidate: WorkspaceIdentity;
-	at?: number;
-	failure?: string;
-}
-
-export interface IntegrationRecord {
-	status: "integrating" | "integrated" | "failed" | "unknown";
-	expectedMain: WorkspaceIdentity;
-	candidate: WorkspaceIdentity;
-	mainAfter?: WorkspaceIdentity;
-	failure?: string;
-}
+export type WorktreeRecord = Static<typeof WorktreeRecordSchema>;
+export type WorktreeAllocationIntent = Static<typeof WorktreeAllocationIntentSchema>;
+export type WorkspaceAllocationIntent = Static<typeof WorkspaceAllocationIntentSchema>;
+export type WorkerTabAllocationIntent = Static<typeof WorkerTabAllocationIntentSchema>;
+export type AgentAllocationIntent = Static<typeof AgentAllocationIntentSchema>;
+export type AllocationIntent = Static<typeof AllocationIntentSchema>;
+export type AllocationKind = AllocationIntent["kind"];
+export type AllocationStatus = AllocationIntent["status"];
+export type WorktreeAllocationPlan = WorktreeRecord;
+export type WorkspaceAllocationPlan = Pick<WorkspaceAllocationIntent, "kind" | "label" | "worktreeCwd" | "mainRoot" | "repoKey" | "herdrRepoRoot">;
+export type WorkerTabAllocationPlan = Pick<WorkerTabAllocationIntent, "kind" | "label" | "workspaceId" | "workspaceRootTabId" | "workspaceRootPaneId" | "worktreeCwd" | "leasePath">;
+export type AgentAllocationPlan = Pick<AgentAllocationIntent, "kind" | "agentName" | "workspaceId" | "tabId" | "paneId" | "worktreeCwd" | "leasePath">;
+export type HostAllocationIntent = WorkspaceAllocationIntent | WorkerTabAllocationIntent | AgentAllocationIntent;
+export type HostAllocationPlan = WorkspaceAllocationPlan | WorkerTabAllocationPlan | AgentAllocationPlan;
+export type PromptRecord = Static<typeof PromptRecordSchema>;
+export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
+export type CheckBatchEvidence = Static<typeof CheckBatchEvidenceSchema>;
+export type ReviewEvidence = Static<typeof ReviewEvidenceSchema>;
+export type WorkerTermination = Static<typeof WorkerTerminationSchema>;
+export type IntegrationRecord = Static<typeof IntegrationRecordSchema>;
 
 export const CLEANUP_KINDS = ["worker_tab", "workspace", "worktree", "branch"] as const;
-export type CleanupKind = (typeof CLEANUP_KINDS)[number];
-export interface CleanupStep {
-	kind: CleanupKind;
-	status: "pending" | "running" | "completed";
-	failure?: string;
-}
-
-export interface TaskAttempt {
-	number: number;
-	waveNumber: number;
-	waveBase: WorkspaceIdentity;
-	correlationToken: string;
-	allocationGeneration: number;
-	allocations: AllocationIntent[];
-	prompts: PromptRecord[];
-	candidate?: WorkspaceIdentity;
-	preliminaryChecks?: CheckBatchEvidence;
-	termination?: WorkerTermination;
-	integrationBase?: WorkspaceIdentity;
-	integrationCandidate?: WorkspaceIdentity;
-	authoritativeChecks?: CheckBatchEvidence;
-	authoritativeReview?: ReviewEvidence;
-	integration?: IntegrationRecord;
-	cleanup: CleanupStep[];
-}
-
-export type TaskStatus =
-	| "pending"
-	| "allocating"
-	| "working"
-	| "ready_to_integrate"
-	| "integrating"
-	| "cleanup"
-	| "completed"
-	| "needs_attention";
-
-export interface TaskState {
-	taskId: string;
-	status: TaskStatus;
-	implementerLaunchKey: string;
-	judgmentLaunchKey?: string;
-	attempts: TaskAttempt[];
-	failure?: string;
-}
-
-export interface WaveState {
-	number: number;
-	base: WorkspaceIdentity;
-	taskIds: string[];
-	status: "dispatching" | "integrating" | "completed" | "needs_attention";
-}
-
-export interface FinalGateState {
-	status: "pending" | "running" | "interrupted" | "passed" | "final_failed" | "superseded";
-	identity?: WorkspaceIdentity;
-	checks?: CheckBatchEvidence;
-	review?: ReviewEvidence;
-	failure?: string;
-}
-
-export type RequestStatus = "pending" | "running" | "needs_attention" | "completed" | "final_failed" | "superseded" | "aborted";
-
-export interface CleanupRecovery {
-	kind: "cleanup_only";
-	taskId: string;
-	deadline: number;
-}
-
-export interface LaunchMaterialization {
-	status: "pending" | "materializing" | "ready" | "failed";
-	at?: number;
-	failure?: string;
-}
-
-export interface RunState {
-	version: typeof RUN_STATE_VERSION;
-	request: ExecuteRequest;
-	root: string;
-	requestStartMain: WorkspaceIdentity;
-	main: WorkspaceIdentity;
-	deadlineStartedAt: number;
-	deadline: number;
-	launchRecords: Record<string, NormalizedLaunchRecord>;
-	launchMaterialization: LaunchMaterialization;
-	status: RequestStatus;
-	tasks: TaskState[];
-	waves: WaveState[];
-	final: FinalGateState;
-	recovery?: CleanupRecovery;
-	accepted: boolean;
-	acceptedAt?: number;
-	createdAt: number;
-	updatedAt: number;
-}
+export type CleanupStep = Static<typeof CleanupStepSchema>;
+export type CleanupKind = CleanupStep["kind"];
+export type TaskAttempt = Static<typeof TaskAttemptSchema>;
+export type TaskState = Static<typeof TaskStateSchema>;
+export type TaskStatus = TaskState["status"];
+export type WaveState = Static<typeof WaveStateSchema>;
+export type FinalGateState = Static<typeof FinalGateSchema>;
+export type RunState = Static<typeof RunStateSchema>;
+export type RequestStatus = RunState["status"];
+export type CleanupRecovery = NonNullable<RunState["recovery"]>;
 
 const WorkspaceSchema = Type.Object({
-	branch: TextSchema,
+	branch: RuntimeTextSchema,
 	head: Type.String({ pattern: OID_PATTERN }),
 	index: Type.String({ pattern: OID_PATTERN }),
 	tree: Type.String({ pattern: OID_PATTERN }),
@@ -359,57 +227,22 @@ const LaunchResourceFingerprintSchema = Type.Object({
 	sha256: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });
 
-const LaunchPromptFileSchema = Type.Object({
-	rawValue: TextSchema,
-	path: TextSchema,
-	mode: Type.Literal(0o600),
-	sha256: Type.String({ pattern: SHA256_PATTERN }),
-	finalArgs: Type.Array(Type.String({ maxLength: 32_000 }), { minItems: 1, maxItems: 256 }),
-}, { additionalProperties: false });
-
 const LaunchRecordSchema = Type.Object({
 	key: TextSchema,
 	role: RoleSchema,
 	modelClass: ModelClassSchema,
+	roleFingerprint: Type.String({ pattern: SHA256_PATTERN }),
+	promptSha256: Type.String({ pattern: SHA256_PATTERN }),
+	promptArgIndex: Type.Integer({ minimum: 0, maximum: 256 }),
 	model: TextSchema,
 	thinkingLevel: TextSchema,
-	rawArgs: Type.Array(Type.String({ maxLength: 32_000 }), { maxItems: 256 }),
+	args: Type.Array(Type.String({ maxLength: 32_000 }), { maxItems: 256 }),
 	env: Type.Record(Type.String(), Type.String({ maxLength: 32_000 })),
 	tools: Type.Array(TextSchema, { maxItems: 128 }),
 	roleExtensions: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
 	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
 	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 1, maxItems: 256 }),
-	prompt: Type.Optional(LaunchPromptFileSchema),
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
-}, { additionalProperties: false });
-
-const LaunchMaterializationSchema = Type.Object({
-	status: Type.Union([
-		Type.Literal("pending"), Type.Literal("materializing"), Type.Literal("ready"), Type.Literal("failed"),
-	]),
-	at: Type.Optional(TimestampSchema),
-	failure: OptionalTextSchema,
-}, { additionalProperties: false });
-
-const WorktreeRecordSchema = Type.Object({
-	path: TextSchema,
-	cwd: TextSchema,
-	branch: TextSchema,
-	repoRoot: TextSchema,
-	baseCommit: Type.String({ pattern: OID_PATTERN }),
-}, { additionalProperties: false });
-
-const AllocationIntentSchema = Type.Object({
-	kind: Type.Union([Type.Literal("worktree"), Type.Literal("workspace"), Type.Literal("worker_tab"), Type.Literal("agent")]),
-	generation: Type.Integer({ minimum: 1, maximum: 2 }),
-	token: Type.String({ pattern: TOKEN_PATTERN }),
-	details: TextSchema,
-	status: Type.Union([Type.Literal("allocating"), Type.Literal("owned"), Type.Literal("absent"), Type.Literal("unknown")]),
-	resourceId: Type.Optional(TextSchema),
-	worktree: Type.Optional(WorktreeRecordSchema),
-	possibleResources: Type.Optional(Type.Array(TextSchema, { maxItems: 32 })),
-	resources: Type.Optional(Type.Record(Type.String(), TextSchema)),
-	failure: OptionalTextSchema,
 }, { additionalProperties: false });
 
 const PromptRecordSchema = Type.Object({
@@ -417,7 +250,7 @@ const PromptRecordSchema = Type.Object({
 	status: Type.Union([Type.Literal("submitting"), Type.Literal("not_sent"), Type.Literal("settled"), Type.Literal("ambiguous")]),
 	preCandidate: WorkspaceSchema,
 	candidate: Type.Optional(WorkspaceSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 	at: TimestampSchema,
 }, { additionalProperties: false });
 
@@ -426,8 +259,8 @@ const CommandEvidenceSchema = Type.Object({
 	args: Type.Array(Type.String({ maxLength: 16_000 }), { maxItems: 128 }),
 	code: Type.Integer(),
 	killed: Type.Boolean(),
-	stdout: Type.String({ maxLength: 32_000 }),
-	stderr: Type.String({ maxLength: 32_000 }),
+	stdout: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
+	stderr: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
 }, { additionalProperties: false });
 
 const CheckBatchEvidenceSchema = Type.Object({
@@ -446,17 +279,17 @@ const ReviewEvidenceSchema = Type.Object({
 	base: WorkspaceSchema,
 	tip: WorkspaceSchema,
 	identityAfter: WorkspaceSchema,
-	verdict: Type.String({ maxLength: 32_000 }),
+	verdict: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
 	passed: Type.Boolean(),
 	at: TimestampSchema,
 }, { additionalProperties: false });
 
 const WorkerTerminationSchema = Type.Object({
 	status: Type.Union([Type.Literal("terminating"), Type.Literal("terminated"), Type.Literal("unknown")]),
-	workerId: TextSchema,
+	workerId: RuntimeTextSchema,
 	candidate: WorkspaceSchema,
 	at: Type.Optional(TimestampSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const IntegrationRecordSchema = Type.Object({
@@ -464,13 +297,15 @@ const IntegrationRecordSchema = Type.Object({
 	expectedMain: WorkspaceSchema,
 	candidate: WorkspaceSchema,
 	mainAfter: Type.Optional(WorkspaceSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const CleanupStepSchema = Type.Object({
-	kind: Type.Union(CLEANUP_KINDS.map((kind) => Type.Literal(kind))),
+	kind: Type.Union([
+		Type.Literal("worker_tab"), Type.Literal("workspace"), Type.Literal("worktree"), Type.Literal("branch"),
+	]),
 	status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed")]),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const TaskAttemptSchema = Type.Object({
@@ -479,7 +314,7 @@ const TaskAttemptSchema = Type.Object({
 	waveBase: WorkspaceSchema,
 	correlationToken: Type.String({ pattern: TOKEN_PATTERN }),
 	allocationGeneration: Type.Integer({ minimum: 1, maximum: 2 }),
-	allocations: Type.Array(AllocationIntentSchema, { maxItems: 8 }),
+	allocations: Type.Array(AllocationIntentSchema, { maxItems: 5 }),
 	prompts: Type.Array(PromptRecordSchema, { maxItems: 2 }),
 	candidate: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
@@ -501,7 +336,7 @@ const TaskStateSchema = Type.Object({
 	implementerLaunchKey: TextSchema,
 	judgmentLaunchKey: Type.Optional(TextSchema),
 	attempts: Type.Array(TaskAttemptSchema, { maxItems: 2 }),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const WaveStateSchema = Type.Object({
@@ -519,7 +354,7 @@ const FinalGateSchema = Type.Object({
 	identity: Type.Optional(WorkspaceSchema),
 	checks: Type.Optional(CheckBatchEvidenceSchema),
 	review: Type.Optional(ReviewEvidenceSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const RunStateSchema = Type.Object({
@@ -531,7 +366,6 @@ const RunStateSchema = Type.Object({
 	deadlineStartedAt: TimestampSchema,
 	deadline: TimestampSchema,
 	launchRecords: Type.Record(Type.String(), LaunchRecordSchema),
-	launchMaterialization: LaunchMaterializationSchema,
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"), Type.Literal("completed"),
 		Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
@@ -687,8 +521,16 @@ export function validateLaunchRecords(request: ExecuteRequest, records: readonly
 		}
 		requireExactLaunchText(record.model, `Launch record ${record.key} model`);
 		requireExactLaunchText(record.thinkingLevel, `Launch record ${record.key} thinking level`);
-		for (const [index, arg] of record.rawArgs.entries()) {
-			if (arg.includes("\0")) throw new Error(`Launch record ${record.key} rawArgs[${index}] contains a NUL byte.`);
+		for (const [index, arg] of record.args.entries()) {
+			if (/[\r\n\0]/.test(arg)) {
+				throw new Error(`Launch record ${record.key} args[${index}] must be a sanitized single-line value.`);
+			}
+			if (arg === "--append-system-prompt") {
+				throw new Error(`Launch record ${record.key} argv must omit Role prompt transport.`);
+			}
+		}
+		if (record.promptArgIndex > record.args.length) {
+			throw new Error(`Launch record ${record.key} prompt argv index is out of bounds.`);
 		}
 		if (Object.keys(record.env).length) throw new Error(`Launch record ${record.key} must not pass caller Role environment.`);
 		for (const [index, tool] of record.tools.entries()) requireExactLaunchText(tool, `Launch record ${record.key} tools[${index}]`);
@@ -711,28 +553,6 @@ export function validateLaunchRecords(request: ExecuteRequest, records: readonly
 		if (selectedResources.length !== record.resources.length
 			|| selectedResources.some((resourceKey) => !resourceKeys.has(resourceKey))) {
 			throw new Error(`Launch record ${record.key} resource fingerprints must match its exact Role extension and Skill paths.`);
-		}
-		if (record.role === "implementer" && !record.prompt) throw new Error(`Implementer launch record ${record.key} lacks its private prompt file.`);
-		if (record.role === "reviewer" && record.prompt) throw new Error(`Reviewer launch record ${record.key} must not use a private Implementer prompt file.`);
-		if (record.prompt) {
-			requireCanonicalPath(record.prompt.path, `Launch record ${record.key} prompt path`);
-			if (record.prompt.mode !== 0o600) throw new Error(`Launch record ${record.key} prompt file must use mode 0600.`);
-			if (!record.prompt.rawValue.trim() || record.prompt.rawValue.includes("\0")) {
-				throw new Error(`Launch record ${record.key} raw prompt must be non-empty text without NUL bytes.`);
-			}
-			const promptHash = createHash("sha256").update(record.prompt.rawValue).digest("hex");
-			if (record.prompt.sha256 !== promptHash) {
-				throw new Error(`Launch record ${record.key} prompt hash does not match its raw prompt value.`);
-			}
-			for (const [index, arg] of record.prompt.finalArgs.entries()) {
-				if (arg.includes("\0")) throw new Error(`Launch record ${record.key} finalArgs[${index}] contains a NUL byte.`);
-				if (arg === record.prompt.rawValue) {
-					throw new Error(`Launch record ${record.key} final argv must not expose its raw prompt value.`);
-				}
-			}
-			if (!record.prompt.finalArgs.includes(record.prompt.path)) {
-				throw new Error(`Launch record ${record.key} final argv must reference its private prompt path.`);
-			}
 		}
 		const normalized = structuredClone(record);
 		const { fingerprint, ...fingerprinted } = normalized;
@@ -759,6 +579,42 @@ function sameCheck(left: CheckCommand, right: CheckCommand): boolean {
 	return left.command === right.command
 		&& left.args.length === right.args.length
 		&& left.args.every((arg, index) => arg === right.args[index]);
+}
+
+type PreparedWorktreeAllocation = WorktreeAllocationIntent & { worktree: WorktreeRecord };
+
+function hasWorktreePlan(allocation: WorktreeAllocationIntent): allocation is PreparedWorktreeAllocation {
+	return allocation.worktree !== undefined;
+}
+
+function requireExactAllocationText(value: string, field: string): void {
+	if (!value.trim() || value.trim() !== value || value.includes("\0")) {
+		throw new Error(`${field} must be exact non-empty text.`);
+	}
+}
+
+function requireAbsoluteAllocationPath(value: string, field: string): void {
+	requireExactAllocationText(value, field);
+	if (!isAbsolute(value)) throw new Error(`${field} must be an absolute path.`);
+}
+
+function validateCheckBatchEvidence(evidence: CheckBatchEvidence, checks: readonly CheckCommand[], field: string): void {
+	if (evidence.results.length !== checks.length
+		|| evidence.results.some((result, index) => !sameCheck(result, checks[index]!))) {
+		throw new Error(`${field} does not retain every exact declared command and argv.`);
+	}
+	const commandsPassed = evidence.results.every((result) => result.code === 0 && !result.killed);
+	const identityMatches = sameIdentity(evidence.candidate, evidence.identityAfter);
+	if (evidence.passed !== (commandsPassed && identityMatches)) {
+		throw new Error(`${field} has an inconsistent pass result.`);
+	}
+	let diagnosticIndex = evidence.passed
+		? -1
+		: evidence.results.findIndex((result) => result.code !== 0 || result.killed);
+	if (diagnosticIndex < 0 && commandsPassed && !identityMatches) diagnosticIndex = evidence.results.length - 1;
+	if (evidence.results.some((result, index) => index !== diagnosticIndex && (result.stdout !== "" || result.stderr !== ""))) {
+		throw new Error(`${field} retains non-diagnostic command output.`);
+	}
 }
 
 export function checkBatchPasses(evidence: CheckBatchEvidence | undefined, checks: readonly CheckCommand[], candidate: WorkspaceIdentity): boolean {
@@ -791,8 +647,10 @@ export function reviewEvidencePasses(
 
 function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest): void {
 	const attempt = taskState.attempts.at(-1);
-	const worktree = [...(attempt?.allocations ?? [])].reverse().find((allocation) => allocation.kind === "worktree" && allocation.status === "owned");
-	if (!worktree?.worktree || worktree.resourceId !== worktree.worktree.path) {
+	const worktree = [...(attempt?.allocations ?? [])].reverse().find(
+		(allocation): allocation is WorktreeAllocationIntent => allocation.kind === "worktree" && allocation.status === "owned",
+	);
+	if (!worktree || !hasWorktreePlan(worktree)) {
 		throw new Error(`Completed task ${request.id} lacks an exact owned worktree record.`);
 	}
 	if (!attempt?.candidate || !attempt.integrationCandidate || !attempt.integrationBase) {
@@ -828,33 +686,29 @@ function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest
 }
 
 export function parseRunState(value: unknown): RunState {
+	if (value && typeof value === "object" && !Array.isArray(value)
+		&& "version" in value && (value as { version?: unknown }).version !== RUN_STATE_VERSION) {
+		throw new Error(`Unsupported pi-orchestrator state version ${String((value as { version?: unknown }).version)}; expected ${RUN_STATE_VERSION}.`);
+	}
 	if (!Check(RunStateSchema, value)) {
 		const first = Errors(RunStateSchema, value)[0];
 		const detail = first ? ` at ${first.instancePath || "/"}: ${first.message}` : "";
-		throw new Error(`Unsupported or malformed pi-orchestrator v1 state${detail}.`);
+		throw new Error(`Unsupported or malformed pi-orchestrator v${RUN_STATE_VERSION} state${detail}.`);
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
 	if (state.deadlineStartedAt > state.createdAt
 		|| state.createdAt > state.updatedAt
 		|| state.deadline !== state.deadlineStartedAt + request.budgetMs) {
-		throw new Error("Malformed pi-orchestrator v1 deadline.");
-	}
-	const materialization = state.launchMaterialization;
-	if (((materialization.status === "ready" || materialization.status === "failed") && materialization.at === undefined)
-		|| (materialization.status === "failed" && !materialization.failure?.trim())
-		|| ((materialization.status === "pending" || materialization.status === "materializing")
-			&& (materialization.at !== undefined || materialization.failure !== undefined))
-		|| (materialization.status !== "failed" && materialization.failure !== undefined)) {
-		throw new Error("Malformed pi-orchestrator v1 launch materialization state.");
+		throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} deadline.`);
 	}
 	const records = validateLaunchRecords(request, Object.values(state.launchRecords));
-	if (!isDeepStrictEqual(records, state.launchRecords)) throw new Error("Malformed pi-orchestrator v1 launch record keys.");
-	if (state.tasks.length !== request.tasks.length) throw new Error("Malformed pi-orchestrator v1 task count.");
+	if (!isDeepStrictEqual(records, state.launchRecords)) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} launch record keys.`);
+	if (state.tasks.length !== request.tasks.length) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task count.`);
 	for (let index = 0; index < request.tasks.length; index += 1) {
 		const definition = request.tasks[index]!;
 		const taskState = state.tasks[index]!;
-		if (taskState.taskId !== definition.id) throw new Error("Malformed pi-orchestrator v1 task order.");
+		if (taskState.taskId !== definition.id) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task order.`);
 		if (taskState.implementerLaunchKey !== launchKey("implementer", definition.modelClass)) {
 			throw new Error(`Malformed implementer launch key for ${definition.id}.`);
 		}
@@ -862,6 +716,14 @@ export function parseRunState(value: unknown): RunState {
 		if (taskState.judgmentLaunchKey !== judgmentKey) throw new Error(`Malformed Reviewer launch key for ${definition.id}.`);
 		for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
 			if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed attempt order for ${definition.id}.`);
+			if (attempt.preliminaryChecks) {
+				if (attempt.preliminaryChecks.phase !== "preliminary") throw new Error(`Malformed preliminary check phase for ${definition.id}.`);
+				validateCheckBatchEvidence(attempt.preliminaryChecks, definition.checks, `Preliminary checks for ${definition.id}`);
+			}
+			if (attempt.authoritativeChecks) {
+				if (attempt.authoritativeChecks.phase !== "authoritative") throw new Error(`Malformed authoritative check phase for ${definition.id}.`);
+				validateCheckBatchEvidence(attempt.authoritativeChecks, definition.checks, `Authoritative checks for ${definition.id}`);
+			}
 			if (attempt.prompts[0]?.kind === "correction" || (attempt.prompts[1] && attempt.prompts[1].kind !== "correction")) {
 				throw new Error(`Malformed correction history for ${definition.id}.`);
 			}
@@ -878,54 +740,116 @@ export function parseRunState(value: unknown): RunState {
 			if (attempt.cleanup.some((step, cleanupIndex) => step.kind !== CLEANUP_KINDS[cleanupIndex])) {
 				throw new Error(`Malformed cleanup sequence for ${definition.id}.`);
 			}
+			if (attempt.allocations.filter((allocation) => allocation.status === "unknown").length > 1) {
+				throw new Error(`Attempt for ${definition.id} has more than one ambiguous allocation result.`);
+			}
 			for (const allocation of attempt.allocations) {
-				if (allocation.kind !== "worktree" && allocation.worktree) {
-					throw new Error(`Malformed worktree metadata for ${definition.id}.`);
-				}
-				if (allocation.worktree?.baseCommit !== undefined && allocation.worktree.baseCommit !== attempt.waveBase.head) {
-					throw new Error(`Worktree metadata for ${definition.id} does not match its recorded wave base.`);
-				}
-				if (allocation.status === "owned") {
-					if (!allocation.resourceId
-						|| !allocation.resourceId.trim()
-						|| allocation.resourceId.trim() !== allocation.resourceId
-						|| allocation.resourceId.includes("\0")) {
-						throw new Error(`Owned ${allocation.kind} allocation for ${definition.id} lacks an exact resource ID.`);
-					}
-				} else if (allocation.resourceId || allocation.resources) {
-					throw new Error(`Unowned ${allocation.kind} allocation for ${definition.id} must not claim resources.`);
+				if (allocation.token !== attempt.correlationToken) {
+					throw new Error(`${allocation.kind} allocation for ${definition.id} has the wrong correlation token.`);
 				}
 				if (allocation.status === "unknown") {
 					if (!allocation.failure?.trim()) throw new Error(`Unknown ${allocation.kind} allocation for ${definition.id} lacks a failure.`);
-					if (allocation.possibleResources) {
-						for (const resource of allocation.possibleResources) {
-							if (!resource.trim() || resource.trim() !== resource || resource.includes("\0")) {
-								throw new Error(`Unknown ${allocation.kind} allocation for ${definition.id} has malformed possible resources.`);
-							}
-						}
+					for (const resource of allocation.possibleResources ?? []) {
+						requireExactAllocationText(resource, `Unknown ${allocation.kind} allocation possible resource`);
 					}
 				} else if (allocation.possibleResources) {
 					throw new Error(`Only unknown allocations may record possible resources for ${definition.id}.`);
 				}
-				if (allocation.resources) {
-					for (const [key, value] of Object.entries(allocation.resources)) {
-						if (!key.trim() || key.trim() !== key || key.includes("\0")
-							|| !value.trim() || value.trim() !== value || value.includes("\0")) {
-							throw new Error(`Owned ${allocation.kind} allocation for ${definition.id} has malformed resource metadata.`);
+
+				if (allocation.kind === "worktree") {
+					if (allocation.status === "owned" && !hasWorktreePlan(allocation)) {
+						throw new Error(`Owned worktree allocation for ${definition.id} lacks exact plan fields.`);
+					}
+					if (hasWorktreePlan(allocation)) {
+						requireAbsoluteAllocationPath(allocation.worktree.path, `Worktree allocation path for ${definition.id}`);
+						requireAbsoluteAllocationPath(allocation.worktree.cwd, `Worktree allocation cwd for ${definition.id}`);
+						requireAbsoluteAllocationPath(allocation.worktree.repoRoot, `Worktree allocation repository root for ${definition.id}`);
+						requireExactAllocationText(allocation.worktree.branch, `Worktree allocation branch for ${definition.id}`);
+						if (allocation.worktree.path !== allocation.worktree.cwd) throw new Error(`Worktree path and cwd for ${definition.id} must match exactly.`);
+						if (allocation.worktree.baseCommit !== attempt.waveBase.head) {
+							throw new Error(`Worktree plan for ${definition.id} does not match its recorded wave base.`);
 						}
 					}
+					continue;
 				}
-				if (allocation.kind === "worktree" && allocation.status === "owned"
-					&& (!allocation.worktree || allocation.resourceId !== allocation.worktree.path)) {
-					throw new Error(`Owned worktree allocation for ${definition.id} lacks exact metadata.`);
+
+				const worktree = attempt.allocations.find((candidate): candidate is PreparedWorktreeAllocation =>
+					candidate.kind === "worktree" && candidate.status === "owned" && hasWorktreePlan(candidate));
+				if (!worktree) throw new Error(`${allocation.kind} allocation for ${definition.id} lacks its exact owned worktree parent.`);
+				if (allocation.kind === "workspace") {
+					for (const [field, value] of Object.entries({
+						label: allocation.label, worktreeCwd: allocation.worktreeCwd, mainRoot: allocation.mainRoot,
+						repoKey: allocation.repoKey, herdrRepoRoot: allocation.herdrRepoRoot,
+					})) requireExactAllocationText(value, `Workspace allocation ${field} for ${definition.id}`);
+					for (const [field, value] of Object.entries({
+						worktreeCwd: allocation.worktreeCwd, mainRoot: allocation.mainRoot,
+						repoKey: allocation.repoKey, herdrRepoRoot: allocation.herdrRepoRoot,
+					})) requireAbsoluteAllocationPath(value, `Workspace allocation ${field} for ${definition.id}`);
+					if (allocation.worktreeCwd !== worktree.worktree.cwd || allocation.mainRoot !== worktree.worktree.repoRoot) {
+						throw new Error(`Workspace allocation for ${definition.id} drifted from its exact worktree parent.`);
+					}
+					const results = [allocation.workspaceId, allocation.rootTabId, allocation.rootPaneId];
+					if (allocation.status === "owned" && results.some((value) => value === undefined)) {
+						throw new Error(`Owned workspace allocation for ${definition.id} lacks exact result fields.`);
+					}
+					if (allocation.status !== "owned" && results.some((value) => value !== undefined)) {
+						throw new Error(`Unowned workspace allocation for ${definition.id} must not claim result fields.`);
+					}
+					for (const value of results) if (value !== undefined) requireExactAllocationText(value, `Workspace allocation result for ${definition.id}`);
+					continue;
+				}
+
+				const workspace = attempt.allocations.find(
+					(candidate): candidate is WorkspaceAllocationIntent => candidate.kind === "workspace" && candidate.status === "owned",
+				);
+				if (!workspace?.workspaceId || !workspace.rootTabId || !workspace.rootPaneId) {
+					throw new Error(`${allocation.kind} allocation for ${definition.id} lacks its exact owned workspace parent.`);
+				}
+				if (allocation.kind === "worker_tab") {
+					for (const [field, value] of Object.entries({
+						label: allocation.label, workspaceId: allocation.workspaceId,
+						workspaceRootTabId: allocation.workspaceRootTabId, workspaceRootPaneId: allocation.workspaceRootPaneId,
+						worktreeCwd: allocation.worktreeCwd, leasePath: allocation.leasePath,
+					})) requireExactAllocationText(value, `Worker-tab allocation ${field} for ${definition.id}`);
+					if (allocation.workspaceId !== workspace.workspaceId
+						|| allocation.workspaceRootTabId !== workspace.rootTabId
+						|| allocation.workspaceRootPaneId !== workspace.rootPaneId
+						|| allocation.worktreeCwd !== worktree.worktree.cwd) {
+						throw new Error(`Worker-tab allocation for ${definition.id} drifted from its exact parents.`);
+					}
+					const results = [allocation.tabId, allocation.paneId];
+					if (allocation.status === "owned" && results.some((value) => value === undefined)) {
+						throw new Error(`Owned worker-tab allocation for ${definition.id} lacks exact result fields.`);
+					}
+					if (allocation.status !== "owned" && results.some((value) => value !== undefined)) {
+						throw new Error(`Unowned worker-tab allocation for ${definition.id} must not claim result fields.`);
+					}
+					for (const value of results) if (value !== undefined) requireExactAllocationText(value, `Worker-tab allocation result for ${definition.id}`);
+					continue;
+				}
+
+				const workerTab = attempt.allocations.find(
+					(candidate): candidate is WorkerTabAllocationIntent => candidate.kind === "worker_tab" && candidate.status === "owned",
+				);
+				if (!workerTab?.tabId || !workerTab.paneId) throw new Error(`Agent allocation for ${definition.id} lacks its exact owned worker-tab parent.`);
+				for (const [field, value] of Object.entries({
+					agentName: allocation.agentName, workspaceId: allocation.workspaceId, tabId: allocation.tabId,
+					paneId: allocation.paneId, worktreeCwd: allocation.worktreeCwd, leasePath: allocation.leasePath,
+				})) requireExactAllocationText(value, `Agent allocation ${field} for ${definition.id}`);
+				if (allocation.workspaceId !== workspace.workspaceId
+					|| allocation.tabId !== workerTab.tabId
+					|| allocation.paneId !== workerTab.paneId
+					|| allocation.worktreeCwd !== worktree.worktree.cwd
+					|| allocation.leasePath !== workerTab.leasePath) {
+					throw new Error(`Agent allocation for ${definition.id} drifted from its exact parents.`);
 				}
 			}
 		}
 		if (taskState.status === "completed") requireCompletedTaskEvidence(taskState, definition);
 	}
-	if (materialization.status !== "ready"
-		&& (state.tasks.some((task) => task.attempts.length > 0) || state.waves.length > 0 || state.final.status !== "pending" || state.accepted)) {
-		throw new Error("Productive state exists without ready launch materialization.");
+	if (state.final.checks) {
+		if (state.final.checks.phase !== "final") throw new Error("Malformed final check phase.");
+		validateCheckBatchEvidence(state.final.checks, request.finalChecks, "Final checks");
 	}
 	if (state.recovery && !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
 		throw new Error("Malformed cleanup-only recovery task.");
@@ -938,7 +862,7 @@ export function parseRunState(value: unknown): RunState {
 	}
 	if (state.accepted) {
 		if (state.status !== "completed" || state.final.status !== "passed" || state.tasks.some((task) => task.status !== "completed")) {
-			throw new Error("Malformed accepted pi-orchestrator state.");
+			throw new Error(`Malformed accepted pi-orchestrator v${RUN_STATE_VERSION} state.`);
 		}
 		if (!state.final.identity || !isCleanCommitted(state.final.identity)) {
 			throw new Error("Accepted request lacks a clean final identity.");

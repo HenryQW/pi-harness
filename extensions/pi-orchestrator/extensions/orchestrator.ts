@@ -29,6 +29,7 @@ import {
 	type ReviewEvidence,
 	type RunState,
 	type TaskAttempt,
+	type WorktreeAllocationIntent,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
 
@@ -108,8 +109,9 @@ function publicTaskRecovery(task: RunState["tasks"][number], attempt: TaskAttemp
 		}));
 	const worktreeCleanupPending = attempt?.cleanup.find((step) => step.kind === "worktree")?.status !== "completed";
 	const worktree = worktreeCleanupPending
-		? [...(attempt?.allocations ?? [])].reverse().find((intent) => intent.kind === "worktree"
-			&& intent.status === "owned" && intent.worktree)?.worktree
+		? [...(attempt?.allocations ?? [])].reverse().find(
+			(intent): intent is WorktreeAllocationIntent => intent.kind === "worktree" && intent.status === "owned" && Boolean(intent.worktree),
+		)?.worktree
 		: undefined;
 	return {
 		scope: "task" as const,
@@ -142,10 +144,8 @@ function publicNeedsAttention(state: RunState, preferredTaskId?: string) {
 		};
 	}
 	return {
-		scope: "launch" as const,
-		...(state.launchMaterialization.failure
-			? { failure: boundedPublicText(state.launchMaterialization.failure) }
-			: {}),
+		scope: "request" as const,
+		failure: "Request needs attention without a task or final failure.",
 	};
 }
 

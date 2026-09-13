@@ -14,9 +14,17 @@ import {
 } from "../src/herdr-runtime.ts";
 import type { InFlightTaskCandidateInspection, OperationContext, VerifiedImplementerLaunch } from "../src/runner.ts";
 import type {
-	AllocationIntent,
 	AllocationKind,
+	AgentAllocationIntent,
+	AgentAllocationPlan,
+	HostAllocationIntent,
+	HostAllocationPlan,
 	TaskAttempt,
+	WorkerTabAllocationIntent,
+	WorkerTabAllocationPlan,
+	WorktreeAllocationIntent,
+	WorkspaceAllocationIntent,
+	WorkspaceAllocationPlan,
 	TaskRequest,
 	WorkspaceIdentity,
 } from "../src/schema.ts";
@@ -156,9 +164,7 @@ function baseAttempt(paths: Paths, token = TOKEN): TaskAttempt {
 			kind: "worktree",
 			generation: 1,
 			token,
-			details: "prepared",
 			status: "owned",
-			resourceId: paths.worktree,
 			worktree: {
 				path: paths.worktree,
 				cwd: paths.worktree,
@@ -175,12 +181,6 @@ function baseAttempt(paths: Paths, token = TOKEN): TaskAttempt {
 	};
 }
 
-function owned(attempt: TaskAttempt): Partial<Record<AllocationKind, string>> {
-	return Object.fromEntries(attempt.allocations
-		.filter((intent) => intent.status === "owned" && intent.resourceId)
-		.map((intent) => [intent.kind, intent.resourceId]));
-}
-
 function repositoryIdentityStep(paths: Paths, result: ProcessResult = { code: 0, stdout: `${paths.commonDirectory}\n`, stderr: "" }): Step {
 	return {
 		command: "git",
@@ -189,39 +189,42 @@ function repositoryIdentityStep(paths: Paths, result: ProcessResult = { code: 0,
 	};
 }
 
-async function plannedIntent(
+type HostKind = Exclude<AllocationKind, "worktree">;
+type HostIntentOfKind<Kind extends HostKind> = Extract<HostAllocationIntent, { kind: Kind }>;
+
+async function plannedIntent<Kind extends HostKind>(
 	host: HerdrHostRuntime,
 	attempt: TaskAttempt,
-	kind: Exclude<AllocationKind, "worktree">,
+	kind: Kind,
 	paths: Paths,
 	script: ScriptedProcess,
-): Promise<AllocationIntent> {
+): Promise<HostIntentOfKind<Kind>> {
 	if (kind === "workspace") script.push(repositoryIdentityStep(paths));
-	const details = await host.planHostAllocation({ goal: GOAL, kind, task, attempt, owned: owned(attempt) }, context());
-	const intent: AllocationIntent = {
-		kind,
+	const plan = await host.planHostAllocation({ goal: GOAL, kind, task, attempt }, context());
+	assert.equal(plan.kind, kind);
+	const intent = {
+		...plan,
 		generation: attempt.allocationGeneration,
 		token: attempt.correlationToken,
-		details,
-		status: "allocating",
+		status: "allocating" as const,
+	} as HostIntentOfKind<Kind>;
+	attempt.allocations.push(intent);
+	return intent;
+}
+
+function addOwnedWorkspace(attempt: TaskAttempt, plan: WorkspaceAllocationPlan): WorkspaceAllocationIntent {
+	const intent: WorkspaceAllocationIntent = {
+		...plan, generation: attempt.allocationGeneration, token: attempt.correlationToken,
+		status: "owned", workspaceId: WORKSPACE_ID, rootTabId: ROOT_TAB_ID, rootPaneId: ROOT_PANE_ID,
 	};
 	attempt.allocations.push(intent);
 	return intent;
 }
 
-function addOwnedWorkspace(attempt: TaskAttempt, details: string): AllocationIntent {
-	const intent: AllocationIntent = {
-		kind: "workspace", generation: attempt.allocationGeneration, token: attempt.correlationToken, details,
-		status: "owned", resourceId: WORKSPACE_ID, resources: { tabId: ROOT_TAB_ID, rootPaneId: ROOT_PANE_ID },
-	};
-	attempt.allocations.push(intent);
-	return intent;
-}
-
-function addOwnedTab(attempt: TaskAttempt, details: string, leasePath: string): AllocationIntent {
-	const intent: AllocationIntent = {
-		kind: "worker_tab", generation: attempt.allocationGeneration, token: attempt.correlationToken, details,
-		status: "owned", resourceId: WORKER_TAB_ID, resources: { rootPaneId: WORKER_PANE_ID, leasePath },
+function addOwnedTab(attempt: TaskAttempt, plan: WorkerTabAllocationPlan): WorkerTabAllocationIntent {
+	const intent: WorkerTabAllocationIntent = {
+		...plan, generation: attempt.allocationGeneration, token: attempt.correlationToken,
+		status: "owned", tabId: WORKER_TAB_ID, paneId: WORKER_PANE_ID,
 	};
 	attempt.allocations.push(intent);
 	return intent;
@@ -230,26 +233,31 @@ function addOwnedTab(attempt: TaskAttempt, details: string, leasePath: string): 
 async function fullAttempt(paths: Paths, host: HerdrHostRuntime, script: ScriptedProcess): Promise<{ attempt: TaskAttempt; leasePath: string }> {
 	const attempt = baseAttempt(paths);
 	script.push(repositoryIdentityStep(paths));
-	const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt, owned: owned(attempt) }, context());
-	addOwnedWorkspace(attempt, workspaceDetails);
-	const tabDetails = await host.planHostAllocation({ goal: GOAL, kind: "worker_tab", task, attempt, owned: owned(attempt) }, context());
-	const leasePath = (JSON.parse(tabDetails) as { leasePath: string }).leasePath;
-	addOwnedTab(attempt, tabDetails, leasePath);
-	const agentDetails = await host.planHostAllocation({ goal: GOAL, kind: "agent", task, attempt, owned: owned(attempt) }, context());
-	const agentName = (JSON.parse(agentDetails) as { agentName: string }).agentName;
+	const workspacePlan = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
+	addOwnedWorkspace(attempt, workspacePlan);
+	const tabPlan = await host.planHostAllocation({ goal: GOAL, kind: "worker_tab", task, attempt }, context()) as WorkerTabAllocationPlan;
+	const leasePath = tabPlan.leasePath;
+	addOwnedTab(attempt, tabPlan);
+	const agentPlan = await host.planHostAllocation({ goal: GOAL, kind: "agent", task, attempt }, context()) as AgentAllocationPlan;
 	attempt.allocations.push({
-		kind: "agent", generation: attempt.allocationGeneration, token: attempt.correlationToken, details: agentDetails,
-		status: "owned", resourceId: agentName, resources: { paneId: WORKER_PANE_ID },
+		...agentPlan, generation: attempt.allocationGeneration, token: attempt.correlationToken, status: "owned",
 	});
 	return { attempt, leasePath };
 }
 
 async function plannedAgentName(paths: Paths, host: HerdrHostRuntime, token: string): Promise<string> {
 	const attempt = baseAttempt(paths, token);
-	addOwnedWorkspace(attempt, "persisted workspace details");
-	addOwnedTab(attempt, "persisted worker-tab details", join(paths.leases, token, `${"a".repeat(32)}.lease`));
-	const details = await host.planHostAllocation({ goal: GOAL, kind: "agent", task, attempt, owned: owned(attempt) }, context());
-	return (JSON.parse(details) as { agentName: string }).agentName;
+	addOwnedWorkspace(attempt, {
+		kind: "workspace", label: `pi-orchestrator-${token}-workspace`, worktreeCwd: paths.worktree,
+		mainRoot: paths.root, repoKey: await realpath(paths.commonDirectory), herdrRepoRoot: await realpath(paths.repoRoot),
+	});
+	addOwnedTab(attempt, {
+		kind: "worker_tab", label: `pi-orchestrator-${token}-worker`, workspaceId: WORKSPACE_ID,
+		workspaceRootTabId: ROOT_TAB_ID, workspaceRootPaneId: ROOT_PANE_ID, worktreeCwd: paths.worktree,
+		leasePath: join(paths.leases, token, `${"a".repeat(32)}.lease`),
+	});
+	const agentPlan = await host.planHostAllocation({ goal: GOAL, kind: "agent", task, attempt }, context()) as AgentAllocationPlan;
+	return agentPlan.agentName;
 }
 
 async function privateLease(path: string): Promise<void> {
@@ -333,6 +341,13 @@ const launch: VerifiedImplementerLaunch = {
 	tools: ["read", "edit"],
 	fingerprint: "f".repeat(64),
 };
+
+function transientLaunch(cleanup: () => Promise<void> = async () => {}): {
+	launch: VerifiedImplementerLaunch;
+	cleanup(): Promise<void>;
+} {
+	return { launch, cleanup };
+}
 
 function lsof(path: string, stdout = "", code = stdout ? 0 : 1, pid?: number): Step {
 	return {
@@ -538,13 +553,13 @@ test("workspace identity planning rejects malformed, failed, killed, and non-pri
 		{
 			name: "relative task checkout",
 			mutateAttempt: (attempt) => {
-				attempt.allocations[0]!.resourceId = "relative-worktree";
-				attempt.allocations[0]!.worktree!.path = "relative-worktree";
-				attempt.allocations[0]!.worktree!.cwd = "relative-worktree";
+				const worktree = attempt.allocations[0] as WorktreeAllocationIntent;
+				worktree.worktree!.path = "relative-worktree";
+				worktree.worktree!.cwd = "relative-worktree";
 			},
-			error: /owned worktree ID must be an absolute path/,
+			error: /owned worktree cwd must be an absolute path/,
 		},
-		{ name: "relative Main root", mutateAttempt: (attempt) => { attempt.allocations[0]!.worktree!.repoRoot = "relative-main"; }, error: /Main root must be an absolute path/ },
+		{ name: "relative Main root", mutateAttempt: (attempt) => { (attempt.allocations[0] as WorktreeAllocationIntent).worktree!.repoRoot = "relative-main"; }, error: /Main root must be an absolute path/ },
 		{ name: "empty output", result: { code: 0, stdout: "", stderr: "" }, error: /malformed output/ },
 		{ name: "relative output", result: { code: 0, stdout: ".git\n", stderr: "" }, error: /malformed output/ },
 		{ name: "multiple outputs", result: { code: 0, stdout: `${fixture.commonDirectory}\n${fixture.commonDirectory}\n`, stderr: "" }, error: /malformed output/ },
@@ -564,7 +579,6 @@ test("workspace identity planning rejects malformed, failed, killed, and non-pri
 				kind: "workspace",
 				task,
 				attempt,
-				owned: owned(attempt),
 			}, context()), candidate.error);
 			assert.equal(attempt.allocations.length, 1);
 			assert.ok(script.calls.every(({ command }) => command === "git"));
@@ -590,7 +604,6 @@ test("oversized initial assignment is rejected before workspace planning or host
 		kind: "workspace",
 		task: oversizedTask,
 		attempt,
-		owned: owned(attempt),
 	}, context()), /Worker assignment exceeds 98304 bytes/);
 	assert.equal(attempt.allocations.length, 1);
 	assert.equal(script.calls.length, 0);
@@ -609,7 +622,7 @@ test("workspace allocation revalidates strict persisted identity before Herdr cr
 		expectsProbe: boolean;
 	}> = [
 		{ name: "relative persisted Main root", mutate: (details) => { details.mainRoot = "relative-main"; }, error: /Main root must be an absolute path/, expectsProbe: false },
-		{ name: "legacy repository-root field", mutate: (details) => { details.repoRoot = details.herdrRepoRoot; delete details.herdrRepoRoot; }, error: /unsupported or missing fields/, expectsProbe: false },
+		{ name: "legacy repository-root field", mutate: (details) => { details.repoRoot = details.herdrRepoRoot; delete details.herdrRepoRoot; }, error: /Herdr repository root must be a non-empty exact string/, expectsProbe: false },
 		{ name: "drifted persisted Main root", mutate: (details) => { details.mainRoot = fixture.worktree; }, error: /drifted from the exact owned worktree/, expectsProbe: false },
 		{ name: "drifted persisted repo key", mutate: (details) => { details.repoKey = driftedCommonDirectory; }, error: /no longer matches Git/, expectsProbe: true },
 		{ name: "drifted persisted Herdr root", mutate: (details) => { details.herdrRepoRoot = driftedRepoRoot; }, error: /no longer matches Git/, expectsProbe: true },
@@ -624,9 +637,7 @@ test("workspace allocation revalidates strict persisted identity before Herdr cr
 			const host = runtime(fixture, script);
 			const attempt = baseAttempt(fixture);
 			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
-			const details = JSON.parse(intent.details) as Record<string, unknown>;
-			candidate.mutate?.(details);
-			intent.details = JSON.stringify(details);
+			candidate.mutate?.(intent as unknown as Record<string, unknown>);
 			const callsBeforeAllocation = script.calls.length;
 			if (candidate.expectsProbe) script.push(repositoryIdentityStep(fixture, candidate.result));
 			await assert.rejects(host.allocateHost({ intent, task, attempt }, context()), candidate.error);
@@ -705,15 +716,20 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	const host = runtime(fixture, script);
 	const attempt = baseAttempt(fixture);
 	const workspaceIntent = await plannedIntent(host, attempt, "workspace", fixture, script);
-	const workspaceDetails = JSON.parse(workspaceIntent.details) as Record<string, unknown>;
-	assert.deepEqual(workspaceDetails, {
+	assert.deepEqual({
+		kind: workspaceIntent.kind,
+		label: workspaceIntent.label,
+		worktreeCwd: workspaceIntent.worktreeCwd,
+		mainRoot: workspaceIntent.mainRoot,
+		repoKey: workspaceIntent.repoKey,
+		herdrRepoRoot: workspaceIntent.herdrRepoRoot,
+	}, {
 		kind: "workspace",
 		label: WORKSPACE_LABEL,
 		worktreeCwd: fixture.worktree,
 		mainRoot: fixture.root,
 		repoKey: await realpath(fixture.commonDirectory),
 		herdrRepoRoot: await realpath(fixture.repoRoot),
-		expectedWorktreeId: fixture.worktree,
 	});
 	script.push(repositoryIdentityStep(fixture), {
 		command: "herdr",
@@ -731,17 +747,20 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		}),
 	});
 	const workspace = await host.allocateHost({ intent: workspaceIntent, task, attempt }, context());
-	assert.deepEqual(workspace, { outcome: "owned", resourceId: WORKSPACE_ID, resources: { tabId: ROOT_TAB_ID, rootPaneId: ROOT_PANE_ID } });
+	assert.deepEqual(workspace, { kind: "workspace", outcome: "owned", workspaceId: WORKSPACE_ID, rootTabId: ROOT_TAB_ID, rootPaneId: ROOT_PANE_ID });
 	assert.notEqual(fixture.root, fixture.repoRoot);
 	assert.deepEqual(script.calls.slice(0, 3).map(({ command, options }) => [command, options.cwd]), [
 		["git", fixture.root],
 		["git", fixture.root],
 		["herdr", fixture.repoRoot],
 	]);
-	Object.assign(workspaceIntent, { status: "owned", resourceId: WORKSPACE_ID, resources: workspace.outcome === "owned" ? workspace.resources : undefined });
+	assert.equal(workspace.outcome, "owned");
+	Object.assign(workspaceIntent, {
+		status: "owned", workspaceId: workspace.workspaceId, rootTabId: workspace.rootTabId, rootPaneId: workspace.rootPaneId,
+	});
 
 	const tabIntent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
-	const tabDetails = JSON.parse(tabIntent.details) as { leasePath: string };
+	const tabDetails = { leasePath: tabIntent.leasePath };
 	script.push({
 		command: "herdr",
 		args: [
@@ -755,19 +774,21 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		}),
 	});
 	const tab = await host.allocateHost({ intent: tabIntent, task, attempt }, context());
-	assert.deepEqual(tab, { outcome: "owned", resourceId: WORKER_TAB_ID, resources: { rootPaneId: WORKER_PANE_ID, leasePath: tabDetails.leasePath } });
+	assert.deepEqual(tab, { kind: "worker_tab", outcome: "owned", tabId: WORKER_TAB_ID, paneId: WORKER_PANE_ID });
 	assert.equal((await stat(tabDetails.leasePath)).mode & 0o777, 0o600);
-	Object.assign(tabIntent, { status: "owned", resourceId: WORKER_TAB_ID, resources: tab.outcome === "owned" ? tab.resources : undefined });
+	assert.equal(tab.outcome, "owned");
+	Object.assign(tabIntent, { status: "owned", tabId: tab.tabId, paneId: tab.paneId });
 
 	const agentIntent = await plannedIntent(host, attempt, "agent", fixture, script);
-	let verified = false;
+	let acquired = false;
+	let cleanups = 0;
 	script.push(
 		lsof(tabDetails.leasePath),
 		...startablePaneSteps(fixture),
 		{
 			command: "herdr",
 			args: (args) => {
-				assert.equal(verified, true);
+				assert.equal(acquired, true);
 				assert.deepEqual(args, [
 					"agent", "start", AGENT_NAME, "--kind", "pi", "--pane", WORKER_PANE_ID, "--",
 					...launch.args,
@@ -781,17 +802,18 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		intent: agentIntent,
 		task,
 		attempt,
-		verifyLaunch: async () => {
+		acquireLaunch: async () => {
 			assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
 				["lsof-test", "-nP", "-a", "-F", "p", "--", tabDetails.leasePath],
 				["herdr", "pane", "get", WORKER_PANE_ID],
 				["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
 			]);
-			verified = true;
-			return launch;
+			acquired = true;
+			return transientLaunch(async () => { cleanups += 1; });
 		},
 	}, context());
-	assert.deepEqual(agent, { outcome: "owned", resourceId: AGENT_NAME, resources: { paneId: WORKER_PANE_ID } });
+	assert.deepEqual(agent, { kind: "agent", outcome: "owned" });
+	assert.equal(cleanups, 1);
 	assert.equal(script.calls.some(({ command }) => command === "ps"), false, "fresh allocation must not inspect same-TTY shell helpers");
 	script.done();
 });
@@ -801,22 +823,19 @@ test("a native-invalid persisted agent name is rejected before startPiAgent", as
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
 	const { attempt } = await fullAttempt(fixture, host, script);
-	const intent = attempt.allocations.at(-1)!;
+	const intent = attempt.allocations.at(-1) as AgentAllocationIntent;
 	intent.status = "allocating";
-	delete intent.resourceId;
-	const details = JSON.parse(intent.details) as { agentName: string };
-	details.agentName = `O-${TOKEN}-agent`;
-	intent.details = JSON.stringify(details);
+	intent.agentName = `O-${TOKEN}-agent`;
 	const callsBeforeAllocation = script.calls.length;
-	let verifications = 0;
+	let acquisitions = 0;
 
 	await assert.rejects(host.allocateHost({
 		intent,
 		task,
 		attempt,
-		verifyLaunch: async () => { verifications += 1; return launch; },
-	}, context()), /Agent allocation details drifted/);
-	assert.equal(verifications, 0);
+		acquireLaunch: async () => { acquisitions += 1; return transientLaunch(); },
+	}, context()), /Agent allocation plan drifted/);
+	assert.equal(acquisitions, 0);
 	assert.equal(script.calls.length, callsBeforeAllocation);
 	script.done();
 });
@@ -843,14 +862,14 @@ test("agent start accepts only omitted or null agent as an empty pane", async (t
 					result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
 				},
 			);
-			let verifications = 0;
+			let acquisitions = 0;
 			assert.equal((await host.allocateHost({
 				intent,
 				task,
 				attempt,
-				verifyLaunch: async () => { verifications += 1; return launch; },
+				acquireLaunch: async () => { acquisitions += 1; return transientLaunch(); },
 			}, context())).outcome, "owned");
-			assert.equal(verifications, 1);
+			assert.equal(acquisitions, 1);
 			assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, 1);
 			script.done();
 		});
@@ -868,14 +887,14 @@ test("agent start accepts only omitted or null agent as an empty pane", async (t
 			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 			await privateLease(leasePath);
 			script.push(lsof(leasePath), ...startablePaneSteps(fixture, {}, { agent }).slice(0, 1));
-			let verifications = 0;
+			let acquisitions = 0;
 			await assert.rejects(host.allocateHost({
 				intent,
 				task,
 				attempt,
-				verifyLaunch: async () => { verifications += 1; return launch; },
+				acquireLaunch: async () => { acquisitions += 1; return transientLaunch(); },
 			}, context()), /not empty and startable/);
-			assert.equal(verifications, 0);
+			assert.equal(acquisitions, 0);
 			assert.equal(script.calls.some(({ args }) => args[0] === "agent" && args[1] === "start"), false);
 			script.done();
 		});
@@ -895,7 +914,7 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 			const host = runtime(fixture, script);
 			const attempt = baseAttempt(fixture);
 			script.push(repositoryIdentityStep(fixture));
-			const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt, owned: owned(attempt) }, context());
+			const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
 			addOwnedWorkspace(attempt, workspaceDetails);
 			const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 			script.push({
@@ -933,7 +952,7 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 		intent,
 		task,
 		attempt,
-		verifyLaunch: async () => {
+		acquireLaunch: async () => {
 			assert.equal(script.calls.length, 4);
 			throw new Error("Implementer extension fingerprint drifted");
 		},
@@ -951,11 +970,54 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 	const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 	await privateLease(leasePath);
 	script.push(lsof(leasePath), ...startablePaneSteps(fixture), { command: "herdr", args: () => {}, result: failure("agent_pane_busy") });
-	assert.deepEqual(await host.allocateHost({ intent, task, attempt, verifyLaunch: async () => launch }, context()), {
+	let cleanups = 0;
+	assert.deepEqual(await host.allocateHost({
+		intent,
+		task,
+		attempt,
+		acquireLaunch: async () => transientLaunch(async () => { cleanups += 1; }),
+	}, context()), {
+		kind: "agent",
 		outcome: "absent",
 		failure: "herdr agent start failed: {\"error\":{\"code\":\"agent_pane_busy\"}}",
 	});
+	assert.equal(cleanups, 1);
 	assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, 1);
+	script.done();
+});
+
+test("aborted Implementer start still cleans its acquired launch", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+	attempt.allocations.pop();
+	const intent = await plannedIntent(host, attempt, "agent", fixture, script);
+	await privateLease(leasePath);
+	const controller = new AbortController();
+	const operationContext: OperationContext = {
+		signal: controller.signal,
+		deadline: 20_000,
+		timeoutMs: 19_000,
+	};
+	let cleanups = 0;
+	script.push(
+		lsof(leasePath),
+		...startablePaneSteps(fixture),
+		{
+			command: "herdr",
+			args: () => controller.abort(new Error("start aborted")),
+			result: failure("aborted", true),
+		},
+	);
+	const result = await host.allocateHost({
+		intent,
+		task,
+		attempt,
+		acquireLaunch: async () => transientLaunch(async () => { cleanups += 1; }),
+	}, operationContext);
+	assert.equal(result.outcome, "unknown");
+	assert.equal(cleanups, 1);
 	script.done();
 });
 
@@ -969,18 +1031,18 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				const attempt = baseAttempt(fixture);
 				if (kind !== "workspace") {
 					script.push(repositoryIdentityStep(fixture));
-					const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt, owned: owned(attempt) }, context());
+					const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
 					addOwnedWorkspace(attempt, workspaceDetails);
 				}
 				let leasePath: string | undefined;
 				if (kind === "agent") {
-					const tabDetails = await host.planHostAllocation({ goal: GOAL, kind: "worker_tab", task, attempt, owned: owned(attempt) }, context());
-					leasePath = (JSON.parse(tabDetails) as { leasePath: string }).leasePath;
-					addOwnedTab(attempt, tabDetails, leasePath);
+					const tabDetails = await host.planHostAllocation({ goal: GOAL, kind: "worker_tab", task, attempt }, context()) as WorkerTabAllocationPlan;
+					leasePath = tabDetails.leasePath;
+					addOwnedTab(attempt, tabDetails);
 					await privateLease(leasePath);
 				}
 				const intent = await plannedIntent(host, attempt, kind, fixture, script);
-				if (kind === "worker_tab") leasePath = (JSON.parse(intent.details) as { leasePath: string }).leasePath;
+				if (intent.kind === "worker_tab") leasePath = intent.leasePath;
 				const malformed = boundary === "malformed-after-side-effect";
 				if (kind === "agent") script.push(lsof(leasePath!), ...startablePaneSteps(fixture));
 				if (kind === "workspace") script.push(repositoryIdentityStep(fixture));
@@ -992,10 +1054,10 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 						: { error: new Error(boundary === "before-side-effect" ? "spawn failed" : "result lost") }),
 				});
 				if (malformed) {
-					const result = await host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { verifyLaunch: async () => launch } : {}) }, context());
+					const result = await host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { acquireLaunch: async () => transientLaunch() } : {}) }, context());
 					assert.equal(result.outcome, "unknown");
 				} else {
-					await assert.rejects(host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { verifyLaunch: async () => launch } : {}) }, context()), /spawn failed|result lost/);
+					await assert.rejects(host.allocateHost({ intent, task, attempt, ...(kind === "agent" ? { acquireLaunch: async () => transientLaunch() } : {}) }, context()), /spawn failed|result lost/);
 				}
 				intent.status = "unknown";
 				const exists = boundary !== "before-side-effect";
@@ -1055,9 +1117,7 @@ test("unknown workspace reconciliation revalidates persisted Git identity before
 			const attempt = baseAttempt(fixture);
 			const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
 			intent.status = "unknown";
-			const details = JSON.parse(intent.details) as Record<string, unknown>;
-			candidate.mutate?.(details);
-			intent.details = JSON.stringify(details);
+			candidate.mutate?.(intent as unknown as Record<string, unknown>);
 			const callsBeforeReconciliation = script.calls.length;
 			if (candidate.expectsProbe) script.push(repositoryIdentityStep(fixture, candidate.result));
 			await assert.rejects(host.reconcileHostAllocation({ intent, task, attempt }, context()), candidate.error);
@@ -1141,11 +1201,11 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			const host = runtime(fixture, script);
 			const attempt = baseAttempt(fixture);
 			script.push(repositoryIdentityStep(fixture));
-			const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt, owned: owned(attempt) }, context());
+			const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
 			addOwnedWorkspace(attempt, workspaceDetails);
 			const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 			intent.status = "unknown";
-			const leasePath = (JSON.parse(intent.details) as { leasePath: string }).leasePath;
+			const leasePath = intent.leasePath;
 			if (holder) await privateLease(leasePath);
 			script.push({ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({ type: "tab_list", tabs }) });
 			if (holder) script.push(lsof(leasePath, "p71\n"));
@@ -1156,7 +1216,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		const host = runtime(fixture, script);
 		const attempt = baseAttempt(fixture);
 		script.push(repositoryIdentityStep(fixture));
-		const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt, owned: owned(attempt) }, context());
+		const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
 		addOwnedWorkspace(attempt, workspaceDetails);
 		const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 		intent.status = "unknown";
@@ -1177,9 +1237,8 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			const script = new ScriptedProcess();
 			const host = runtime(fixture, script);
 			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
-			const intent = attempt.allocations.at(-1)!;
+			const intent = attempt.allocations.at(-1) as AgentAllocationIntent;
 			intent.status = "unknown";
-			delete intent.resourceId;
 			await privateLease(leasePath);
 			script.push(
 				{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents }) },
@@ -1195,18 +1254,16 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		const missingScript = new ScriptedProcess();
 		const missingHost = runtime(fixture, missingScript);
 		const missing = await fullAttempt(fixture, missingHost, missingScript);
-		const missingIntent = missing.attempt.allocations.at(-1)!;
+		const missingIntent = missing.attempt.allocations.at(-1) as AgentAllocationIntent;
 		missingIntent.status = "unknown";
-		delete missingIntent.resourceId;
 		assert.equal((await missingHost.reconcileHostAllocation({ intent: missingIntent, task, attempt: missing.attempt }, context())).outcome, "possible");
 		assert.equal(missingScript.calls.length, 1);
 
 		const partialScript = new ScriptedProcess();
 		const partialHost = runtime(fixture, partialScript);
 		const partial = await fullAttempt(fixture, partialHost, partialScript);
-		const partialIntent = partial.attempt.allocations.at(-1)!;
+		const partialIntent = partial.attempt.allocations.at(-1) as AgentAllocationIntent;
 		partialIntent.status = "unknown";
-		delete partialIntent.resourceId;
 		await privateLease(partial.leasePath);
 		partialScript.push(
 			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
@@ -1222,9 +1279,8 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		const backgroundScript = new ScriptedProcess();
 		const backgroundHost = runtime(fixture, backgroundScript);
 		const background = await fullAttempt(fixture, backgroundHost, backgroundScript);
-		const backgroundIntent = background.attempt.allocations.at(-1)!;
+		const backgroundIntent = background.attempt.allocations.at(-1) as AgentAllocationIntent;
 		backgroundIntent.status = "unknown";
-		delete backgroundIntent.resourceId;
 		await privateLease(background.leasePath);
 		backgroundScript.push(
 			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
@@ -1249,9 +1305,8 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 			const inventoryScript = new ScriptedProcess();
 			const inventoryHost = runtime(fixture, inventoryScript);
 			const inventory = await fullAttempt(fixture, inventoryHost, inventoryScript);
-			const inventoryIntent = inventory.attempt.allocations.at(-1)!;
+			const inventoryIntent = inventory.attempt.allocations.at(-1) as AgentAllocationIntent;
 			inventoryIntent.status = "unknown";
-			delete inventoryIntent.resourceId;
 			await privateLease(inventory.leasePath);
 			inventoryScript.push(
 				{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
@@ -1271,9 +1326,8 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		const exclusiveScript = new ScriptedProcess();
 		const exclusiveHost = runtime(fixture, exclusiveScript);
 		const exclusive = await fullAttempt(fixture, exclusiveHost, exclusiveScript);
-		const exclusiveIntent = exclusive.attempt.allocations.at(-1)!;
+		const exclusiveIntent = exclusive.attempt.allocations.at(-1) as AgentAllocationIntent;
 		exclusiveIntent.status = "unknown";
-		delete exclusiveIntent.resourceId;
 		await privateLease(exclusive.leasePath);
 		exclusiveScript.push(
 			{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
@@ -1291,9 +1345,8 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 		const malformedScript = new ScriptedProcess();
 		const malformedHost = runtime(fixture, malformedScript);
 		const malformed = await fullAttempt(fixture, malformedHost, malformedScript);
-		const malformedIntent = malformed.attempt.allocations.at(-1)!;
+		const malformedIntent = malformed.attempt.allocations.at(-1) as AgentAllocationIntent;
 		malformedIntent.status = "unknown";
-		delete malformedIntent.resourceId;
 		await privateLease(malformed.leasePath);
 		malformedScript.push({ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: "ambiguous" }) });
 		assert.equal((await malformedHost.reconcileHostAllocation({ intent: malformedIntent, task, attempt: malformed.attempt }, context())).outcome, "possible");
@@ -1314,15 +1367,14 @@ test("correction oversize uses the authoritative formatter and is definitively n
 	};
 	const attempt = baseAttempt(fixture);
 	script.push(repositoryIdentityStep(fixture));
-	const workspaceDetails = await host.planHostAllocation({ goal, kind: "workspace", task: nearLimitTask, attempt, owned: owned(attempt) }, context());
+	const workspaceDetails = await host.planHostAllocation({ goal, kind: "workspace", task: nearLimitTask, attempt }, context()) as WorkspaceAllocationPlan;
 	addOwnedWorkspace(attempt, workspaceDetails);
-	const tabDetails = await host.planHostAllocation({ goal, kind: "worker_tab", task: nearLimitTask, attempt, owned: owned(attempt) }, context());
-	const leasePath = (JSON.parse(tabDetails) as { leasePath: string }).leasePath;
-	addOwnedTab(attempt, tabDetails, leasePath);
-	const agentDetails = await host.planHostAllocation({ goal, kind: "agent", task: nearLimitTask, attempt, owned: owned(attempt) }, context());
+	const tabDetails = await host.planHostAllocation({ goal, kind: "worker_tab", task: nearLimitTask, attempt }, context()) as WorkerTabAllocationPlan;
+	const leasePath = tabDetails.leasePath;
+	addOwnedTab(attempt, tabDetails);
+	const agentDetails = await host.planHostAllocation({ goal, kind: "agent", task: nearLimitTask, attempt }, context()) as AgentAllocationPlan;
 	attempt.allocations.push({
-		kind: "agent", generation: 1, token: TOKEN, details: agentDetails,
-		status: "owned", resourceId: AGENT_NAME,
+		...agentDetails, generation: 1, token: TOKEN, status: "owned",
 	});
 
 	const result = await host.runWorker({
@@ -1784,10 +1836,8 @@ test("workspace cleanup revalidates persisted Git identity before any Herdr insp
 			const { attempt } = await fullAttempt(fixture, host, script);
 			attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
 			attempt.cleanup[0]!.status = "completed";
-			const workspaceIntent = attempt.allocations.find(({ kind }) => kind === "workspace")!;
-			const details = JSON.parse(workspaceIntent.details) as Record<string, unknown>;
-			candidate.mutate?.(details);
-			workspaceIntent.details = JSON.stringify(details);
+			const workspaceIntent = attempt.allocations.find(({ kind }) => kind === "workspace") as WorkspaceAllocationIntent;
+			candidate.mutate?.(workspaceIntent as unknown as Record<string, unknown>);
 			const callsBeforeCleanup = script.calls.length;
 			if (candidate.expectsProbe) script.push(repositoryIdentityStep(fixture, candidate.result));
 			assert.equal((await host.cleanupHost({ kind: "workspace", task, attempt }, context())).outcome, "blocked");
@@ -1905,7 +1955,7 @@ test("lease cleanup preserves artifacts on schema-valid persisted identity drift
 	const cases: Array<{
 		name: string;
 		failure: RegExp;
-		drift: (intent: AllocationIntent, paths: Paths, leasePath: string) => string;
+		drift: (intent: WorkerTabAllocationIntent, paths: Paths, leasePath: string) => string;
 	}> = [
 		{
 			name: "worker-tab token differs from the attempt token",
@@ -1913,24 +1963,10 @@ test("lease cleanup preserves artifacts on schema-valid persisted identity drift
 			drift: (intent, paths) => {
 				const token = "fedcba9876543210fedcba98";
 				const leasePath = join(paths.leases, token, `${"e".repeat(32)}.lease`);
-				const details = JSON.parse(intent.details) as { label: string; leasePath: string };
 				intent.token = token;
-				intent.resources!.leasePath = leasePath;
-				details.label = `pi-orchestrator-${token}-worker`;
-				details.leasePath = leasePath;
-				intent.details = JSON.stringify(details);
+				intent.label = `pi-orchestrator-${token}-worker`;
+				intent.leasePath = leasePath;
 				return leasePath;
-			},
-		},
-		{
-			name: "details lease path differs from the owned resource path",
-			failure: /lease path drifted from its owned resource/,
-			drift: (intent, _paths, leasePath) => {
-				const driftedLeasePath = join(dirname(leasePath), `${"e".repeat(32)}.lease`);
-				const details = JSON.parse(intent.details) as { leasePath: string };
-				details.leasePath = driftedLeasePath;
-				intent.details = JSON.stringify(details);
-				return driftedLeasePath;
 			},
 		},
 	];
@@ -1942,7 +1978,7 @@ test("lease cleanup preserves artifacts on schema-valid persisted identity drift
 			const host = runtime(fixture, script);
 			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
 			attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
-			const tabIntent = attempt.allocations.find((intent) => intent.kind === "worker_tab")!;
+			const tabIntent = attempt.allocations.find((intent) => intent.kind === "worker_tab") as WorkerTabAllocationIntent;
 			const artifactPath = candidate.drift(tabIntent, fixture, leasePath);
 			await privateLease(artifactPath);
 			const callsBeforeCleanup = script.calls.length;
