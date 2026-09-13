@@ -11,6 +11,9 @@ import {
 	TERMINATION_SAFETY_BUDGET_MS,
 	type AllocationReconciliation,
 	type AllocationResult,
+	type HostAllocationKind,
+	type HostAllocationResult,
+	type WorktreeAllocationResult,
 	type CheckRunResult,
 	type CommandResult,
 	type IntegrationResult,
@@ -36,9 +39,12 @@ import {
 	type LaunchRecord,
 	type ModelClass,
 	type NormalizedLaunchRecord,
-	type WorktreeRecord,
+	type HostAllocationIntent,
+	type HostAllocationPlan,
 	type TaskAttempt,
 	type TaskRequest,
+	type WorktreeAllocationIntent,
+	type WorktreeAllocationPlan,
 	type WorkspaceIdentity,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
@@ -148,8 +154,11 @@ class FakeRuntime implements OrchestratorRuntime {
 	retainedCandidate?: WorkspaceIdentity;
 	allocationFailure?: { kind: AllocationKind; error?: Error; result?: AllocationResult };
 	allocationPlanError?: Error;
-	allocationResources: Partial<Record<AllocationKind, Record<string, string>>> = {};
-	reconciliation: AllocationReconciliation = { outcome: "absent" };
+	allocationResources: {
+		workspace?: { workspaceId: string; rootTabId: string; rootPaneId: string };
+		worker_tab?: { tabId: string; paneId: string };
+	} = {};
+	reconciliation: { outcome: "absent" } | { outcome: "possible"; failure: string; possibleResources?: string[] } = { outcome: "absent" };
 	preflightAction?: () => Promise<void>;
 	preflightRoot?: string;
 	acquireLaunchAction?: (record: NormalizedLaunchRecord) => Promise<void>;
@@ -265,11 +274,31 @@ class FakeRuntime implements OrchestratorRuntime {
 	async planHostAllocation(
 		input: { readonly goal: ExecuteRequest["goal"]; kind: Exclude<AllocationKind, "worktree">; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
-	): Promise<string> {
+	): Promise<HostAllocationPlan> {
 		this.observe("plan-allocation", context);
 		this.allocationPlanGoals.push(input.goal);
 		if (this.allocationPlanError) throw this.allocationPlanError;
-		return `${input.task.id}/${input.kind}/${input.attempt.allocationGeneration}`;
+		const worktree = input.attempt.allocations.find((allocation): allocation is WorktreeAllocationIntent => allocation.kind === "worktree")?.worktree;
+		if (!worktree) throw new Error("missing worktree plan");
+		if (input.kind === "workspace") return {
+			kind: "workspace", label: `${input.task.id}-workspace`, worktreeCwd: worktree.cwd,
+			mainRoot: worktree.repoRoot, repoKey: worktree.repoRoot, herdrRepoRoot: worktree.repoRoot,
+		};
+		const workspace = input.attempt.allocations.find((allocation) => allocation.kind === "workspace");
+		if (!workspace || workspace.kind !== "workspace" || !workspace.workspaceId || !workspace.rootTabId || !workspace.rootPaneId) {
+			throw new Error("missing workspace allocation");
+		}
+		if (input.kind === "worker_tab") return {
+			kind: "worker_tab", label: `${input.task.id}-worker`, workspaceId: workspace.workspaceId,
+			workspaceRootTabId: workspace.rootTabId, workspaceRootPaneId: workspace.rootPaneId,
+			worktreeCwd: worktree.cwd, leasePath: `/tmp/${input.attempt.correlationToken}.lease`,
+		};
+		const tab = input.attempt.allocations.find((allocation) => allocation.kind === "worker_tab");
+		if (!tab || tab.kind !== "worker_tab" || !tab.tabId || !tab.paneId) throw new Error("missing worker tab allocation");
+		return {
+			kind: "agent", agentName: `${input.task.id}-agent`, workspaceId: workspace.workspaceId,
+			tabId: tab.tabId, paneId: tab.paneId, worktreeCwd: worktree.cwd, leasePath: tab.leasePath,
+		};
 	}
 
 	private allocation(input: { intent: { kind: AllocationKind }; task: TaskRequest }, context: OperationContext): AllocationResult {
@@ -281,37 +310,41 @@ class FakeRuntime implements OrchestratorRuntime {
 			if (failure.error) throw failure.error;
 			return failure.result!;
 		}
-		return {
-			outcome: "owned",
-			resourceId: `${input.task.id}-${input.intent.kind}`,
-			...(this.allocationResources[input.intent.kind]
-				? { resources: structuredClone(this.allocationResources[input.intent.kind]) }
-				: {}),
+		if (input.intent.kind === "workspace") return {
+			kind: "workspace", outcome: "owned",
+			...(this.allocationResources.workspace ?? {
+				workspaceId: `${input.task.id}-workspace`, rootTabId: `${input.task.id}-root-tab`, rootPaneId: `${input.task.id}-root-pane`,
+			}),
 		};
+		if (input.intent.kind === "worker_tab") return {
+			kind: "worker_tab", outcome: "owned",
+			...(this.allocationResources.worker_tab ?? { tabId: `${input.task.id}-worker-tab`, paneId: `${input.task.id}-worker-pane` }),
+		};
+		return { kind: input.intent.kind, outcome: "owned" };
 	}
 
 	async allocateWorktree(
-		input: { root: string; intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; onPrepared(worktree: WorktreeRecord): Promise<void> },
+		input: { root: string; intent: WorktreeAllocationIntent; task: TaskRequest; attempt: TaskAttempt; onPrepared(worktree: WorktreeAllocationPlan): Promise<void> },
 		context: OperationContext,
-	): Promise<AllocationResult> {
-		const planned: WorktreeRecord = {
-			path: `${input.task.id}-worktree`, cwd: `${input.task.id}-worktree`, branch: input.task.id,
-			repoRoot: "fake-root", baseCommit: input.attempt.waveBase.head,
+	): Promise<WorktreeAllocationResult> {
+		const planned: WorktreeAllocationPlan = {
+			path: `/fake/${input.task.id}-worktree`, cwd: `/fake/${input.task.id}-worktree`, branch: input.task.id,
+			repoRoot: "/fake", baseCommit: input.attempt.waveBase.head,
 		};
 		await input.onPrepared(planned);
-		return this.allocation(input, context);
+		return this.allocation(input, context) as WorktreeAllocationResult;
 	}
 
 	async allocateHost(
 		input: {
-			intent: AllocationIntent;
+			intent: HostAllocationIntent;
 			task: TaskRequest;
 			attempt: TaskAttempt;
 			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
 		},
 		context: OperationContext,
-	): Promise<AllocationResult> {
-		if (input.intent.kind !== "agent") return this.allocation(input, context);
+	): Promise<HostAllocationResult> {
+		if (input.intent.kind !== "agent") return this.allocation(input, context) as HostAllocationResult;
 		if (!input.acquireLaunch) throw new Error("missing Implementer launch acquisition");
 		const handle = await input.acquireLaunch();
 		return await withTransientLaunch(handle, async (launch) => {
@@ -320,27 +353,27 @@ class FakeRuntime implements OrchestratorRuntime {
 				args: [...launch.args],
 				exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
 			});
-			return this.allocation(input, context);
+			return this.allocation(input, context) as HostAllocationResult;
 		});
 	}
 
-	private reconcile(input: { intent: { kind: AllocationKind } }, context: OperationContext): AllocationReconciliation {
+	private reconcile<Kind extends AllocationKind>(input: { intent: { kind: Kind } }, context: OperationContext): AllocationReconciliation<Kind> {
 		this.observe("reconcile-allocation", context);
 		this.reconciliationCalls.push(input.intent.kind);
-		return this.reconciliation;
+		return { ...this.reconciliation, kind: input.intent.kind } as AllocationReconciliation<Kind>;
 	}
 
 	async reconcileWorktreeAllocation(
-		input: { root: string; intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		input: { root: string; intent: WorktreeAllocationIntent; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
-	): Promise<AllocationReconciliation> {
+	): Promise<AllocationReconciliation<"worktree">> {
 		return this.reconcile(input, context);
 	}
 
 	async reconcileHostAllocation(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
-	): Promise<AllocationReconciliation> {
+	): Promise<AllocationReconciliation<HostAllocationKind>> {
 		return this.reconcile(input, context);
 	}
 
@@ -642,15 +675,20 @@ test("host planning rejection stops after the exact worktree without allocating 
 test("owned allocation metadata is persisted exactly without adopting possible resources", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	runtime.allocationResources = {
-		workspace: { workspaceId: "workspace-7", rootPaneId: "pane-root-9" },
+		workspace: { workspaceId: "workspace-7", rootTabId: "tab-root-8", rootPaneId: "pane-root-9" },
 		worker_tab: { tabId: "tab-11", paneId: "pane-worker-13" },
-		agent: { processId: "agent-process-17" },
 	};
 	const completed = await runner.execute(request(), root);
 	const allocations = completed.state.tasks[0]!.attempts[0]!.allocations;
-	assert.deepEqual(allocations.find(({ kind }) => kind === "workspace")?.resources, runtime.allocationResources.workspace);
-	assert.deepEqual(allocations.find(({ kind }) => kind === "worker_tab")?.resources, runtime.allocationResources.worker_tab);
-	assert.deepEqual(allocations.find(({ kind }) => kind === "agent")?.resources, runtime.allocationResources.agent);
+	const workspace = allocations.find((allocation) => allocation.kind === "workspace");
+	const workerTab = allocations.find((allocation) => allocation.kind === "worker_tab");
+	assert.ok(workspace?.kind === "workspace");
+	assert.ok(workerTab?.kind === "worker_tab");
+	assert.deepEqual(
+		{ workspaceId: workspace.workspaceId, rootTabId: workspace.rootTabId, rootPaneId: workspace.rootPaneId },
+		runtime.allocationResources.workspace,
+	);
+	assert.deepEqual({ tabId: workerTab.tabId, paneId: workerTab.paneId }, runtime.allocationResources.worker_tab);
 });
 
 test("ready tasks dispatch in parallel, then integrate in declared dependency-wave order", async (t) => {
@@ -799,7 +837,7 @@ test("completed task and request states require exact authoritative evidence and
 	assert.throws(() => parseRunState(malformedCleanup), /cleanup sequence/i);
 
 	const wrongWorktreeBase = structuredClone(valid);
-	wrongWorktreeBase.tasks[0]!.attempts[0]!.allocations[0]!.worktree!.baseCommit = oid("f");
+	(wrongWorktreeBase.tasks[0]!.attempts[0]!.allocations[0] as WorktreeAllocationIntent).worktree!.baseCommit = oid("f");
 	assert.throws(() => parseRunState(wrongWorktreeBase), /worktree.*wave base/i);
 
 	const dirtyFinal = structuredClone(valid);
@@ -1120,7 +1158,7 @@ test("an interrupted prompt enters attention and is never replayed", async (t) =
 	assert.equal(attempt.prompts[0]!.status, "ambiguous");
 	assert.equal(attempt.termination?.status, "terminated");
 	assert.deepEqual(runtime.terminationCalls, [{
-		workerId: attempt.allocations.find(({ kind }) => kind === "agent")!.resourceId!,
+		workerId: attempt.allocations.find((allocation) => allocation.kind === "agent")!.agentName,
 		candidate: attempt.prompts[0]!.preCandidate,
 	}]);
 	await assert.rejects(

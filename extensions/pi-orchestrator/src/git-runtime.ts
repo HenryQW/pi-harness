@@ -16,17 +16,16 @@ import {
 	launchKey,
 	reviewEvidencePasses,
 	sameIdentity,
-	type AllocationIntent,
 	type CheckCommand,
 	type ReviewEvidence,
 	type TaskAttempt,
 	type TaskRequest,
-	type WorktreeRecord,
+	type WorktreeAllocationIntent,
+	type WorktreeAllocationPlan,
 	type WorkspaceIdentity,
 } from "./schema.ts";
 import {
 	type AllocationReconciliation,
-	type AllocationResult,
 	type CheckRunResult,
 	type CommandResult,
 	type GitCleanupKind,
@@ -39,6 +38,7 @@ import {
 	type RebaseResult,
 	type ReviewResult,
 	type TransientLaunchHandle,
+	type WorktreeAllocationResult,
 	type VerifiedReviewerLaunch,
 	withTransientLaunch,
 } from "./runner.ts";
@@ -169,15 +169,17 @@ if (!valid) reject();
 `;
 }
 
-function worktreeIntent(attempt: TaskAttempt): AllocationIntent & { worktree: WorktreeRecord } {
-	const intent = [...attempt.allocations].reverse().find((candidate) => candidate.kind === "worktree" && candidate.status === "owned");
-	if (!intent?.worktree || intent.resourceId !== intent.worktree.path) {
+function worktreeIntent(attempt: TaskAttempt): WorktreeAllocationPlan {
+	const intent = [...attempt.allocations].reverse().find(
+		(candidate): candidate is WorktreeAllocationIntent => candidate.kind === "worktree" && candidate.status === "owned",
+	);
+	if (!intent?.worktree || intent.worktree.path !== intent.worktree.cwd) {
 		throw new Error("Task has no exact owned worktree allocation metadata.");
 	}
-	return intent as AllocationIntent & { worktree: WorktreeRecord };
+	return intent.worktree;
 }
 
-function cloneWorktree(info: WorktreeInfo): WorktreeRecord {
+function cloneWorktree(info: WorktreeInfo): WorktreeAllocationPlan {
 	return {
 		path: info.path,
 		cwd: info.cwd,
@@ -216,16 +218,16 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 
 	async allocateWorktree(input: {
 		root: string;
-		intent: AllocationIntent;
+		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		onPrepared(worktree: WorktreeRecord): Promise<void>;
-	}, context: OperationContext): Promise<AllocationResult> {
-		let prepared: WorktreeRecord | undefined;
-		let createdWorktree: WorktreeRecord | undefined;
+		onPrepared(worktree: WorktreeAllocationPlan): Promise<void>;
+	}, context: OperationContext): Promise<WorktreeAllocationResult> {
+		let prepared: WorktreeAllocationPlan | undefined;
+		let createdWorktree: WorktreeAllocationPlan | undefined;
 		const before = await this.inspectMain({ root: input.root }, context);
 		if (!sameIdentity(before, input.attempt.waveBase)) {
-			return { outcome: "absent", failure: "Main drifted before worktree allocation." };
+			return { kind: "worktree", outcome: "absent", failure: "Main drifted before worktree allocation." };
 		}
 		try {
 			const created = await createChildWorktree(
@@ -245,12 +247,13 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 					}
 				},
 			);
-			if (!created) return { outcome: "absent", failure: "Git worktree allocation requires a committed repository." };
+			if (!created) return { kind: "worktree", outcome: "absent", failure: "Git worktree allocation requires a committed repository." };
 			const worktree = cloneWorktree(created);
 			createdWorktree = worktree;
 			if (!prepared || worktree.baseCommit !== input.attempt.waveBase.head
 				|| JSON.stringify(worktree) !== JSON.stringify(prepared)) {
 				return {
+					kind: "worktree",
 					outcome: "unknown",
 					failure: "Created worktree did not match its exact persisted preparation metadata.",
 					possibleResources: [worktree.path, worktree.branch],
@@ -259,16 +262,18 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			const after = await this.inspectMain({ root: input.root }, context);
 			if (!sameIdentity(after, input.attempt.waveBase)) {
 				return {
+					kind: "worktree",
 					outcome: "unknown",
 					failure: "Main drifted during worktree setup; the created worktree remains retained.",
 					possibleResources: [worktree.path, worktree.branch],
 				};
 			}
-			return { outcome: "owned", resourceId: worktree.path };
+			return { kind: "worktree", outcome: "owned" };
 		} catch (error) {
 			if (error instanceof WorktreeSetupError) {
 				const attempted = cloneWorktree(error.worktree);
 				return {
+					kind: "worktree",
 					outcome: "unknown",
 					failure: text(error),
 					possibleResources: [attempted.path, attempted.branch],
@@ -276,24 +281,25 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			}
 			if (createdWorktree) {
 				return {
+					kind: "worktree",
 					outcome: "unknown",
 					failure: `Created worktree could not be verified: ${text(error)}`,
 					possibleResources: [createdWorktree.path, createdWorktree.branch],
 				};
 			}
-			if (prepared) return { outcome: "absent", failure: text(error) };
+			if (prepared) return { kind: "worktree", outcome: "absent", failure: text(error) };
 			throw error;
 		}
 	}
 
 	async reconcileWorktreeAllocation(input: {
 		root: string;
-		intent: AllocationIntent;
+		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-	}, context: OperationContext): Promise<AllocationReconciliation> {
+	}, context: OperationContext): Promise<AllocationReconciliation<"worktree">> {
 		const worktree = input.intent.worktree;
-		if (!worktree) return { outcome: "absent" };
+		if (!worktree) return { kind: "worktree", outcome: "absent" };
 		const [registered, branch, checkout] = await Promise.all([
 			this.registeredWorktreePaths(input.root, context),
 			this.branchExists(input.root, worktree.branch, context),
@@ -305,8 +311,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			...(branch ? [`branch ${worktree.branch}`] : []),
 		];
 		return possible.length
-			? { outcome: "possible", failure: "A possible prior Git allocation remains and was not adopted or removed.", possibleResources: possible }
-			: { outcome: "absent" };
+			? { kind: "worktree", outcome: "possible", failure: "A possible prior Git allocation remains and was not adopted or removed.", possibleResources: possible }
+			: { kind: "worktree", outcome: "absent" };
 	}
 
 	async runChecks(input: {
@@ -362,7 +368,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		const cwd = await this.requireScopeIdentity({ ...input, candidate: input.tip }, context);
 		const evidenceWorktree = input.scope === "final"
 			? await realpath(oneLine(await this.requireGit(["rev-parse", "--show-toplevel"], input.root, context), "Main worktree root"))
-			: worktreeIntent(input.attempt!).worktree.path;
+			: worktreeIntent(input.attempt!).path;
 		const evidence = await prepareExactReviewEvidence({
 			base: input.base.head,
 			tip: input.tip.head,
@@ -467,7 +473,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (input.attempt.waveBase.head === input.onto.head) {
 			return { outcome: "ready", base: input.onto, candidate: current };
 		}
-		const worktree = worktreeIntent(input.attempt).worktree;
+		const worktree = worktreeIntent(input.attempt);
 		const args = ["rebase", "--no-update-refs", "--no-autostash", input.onto.head];
 		const rebased = await this.git(args, worktree.cwd, context);
 		if (rebased.code !== 0 || rebased.killed) {
@@ -572,8 +578,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		attempt: TaskAttempt;
 	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }> {
 		try {
-			const intent = worktreeIntent(input.attempt);
-			const worktree = intent.worktree;
+			const worktree = worktreeIntent(input.attempt);
 			const integrationBase = input.attempt.integrationBase;
 			const integrationCandidate = input.attempt.integrationCandidate;
 			const integration = input.attempt.integration;
@@ -639,7 +644,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 	}, context: OperationContext): Promise<string> {
 		const actual = await this.requireScopeCurrent(input, context);
 		if (!sameIdentity(actual, input.candidate)) throw new Error(`${input.scope} candidate drifted before the operation.`);
-		return input.scope === "final" ? input.root : worktreeIntent(input.attempt!).worktree.cwd;
+		return input.scope === "final" ? input.root : worktreeIntent(input.attempt!).cwd;
 	}
 
 	private async requireScopeCurrent(input: {
@@ -684,8 +689,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		task: Pick<TaskRequest, "id">,
 		attempt: TaskAttempt,
 		context: OperationContext,
-	): Promise<WorktreeRecord> {
-		const worktree = worktreeIntent(attempt).worktree;
+	): Promise<WorktreeAllocationPlan> {
+		const worktree = worktreeIntent(attempt);
 		if (worktree.baseCommit !== attempt.waveBase.head) {
 			throw new Error(`Task ${task.id} worktree was not created from its recorded wave base.`);
 		}

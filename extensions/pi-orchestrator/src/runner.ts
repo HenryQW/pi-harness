@@ -17,6 +17,8 @@ import {
 	type CleanupKind,
 	type CommandEvidence,
 	type ExecuteRequest,
+	type HostAllocationIntent,
+	type HostAllocationPlan,
 	type LaunchRecord,
 	type ModelClass,
 	type NormalizedLaunchRecord,
@@ -28,7 +30,8 @@ import {
 	type TaskRequest,
 	type TaskState,
 	type WaveState,
-	type WorktreeRecord,
+	type WorktreeAllocationIntent,
+	type WorktreeAllocationPlan,
 	type WorkspaceIdentity,
 } from "./schema.ts";
 import { FileRunStore, type RunStateHandle } from "./store.ts";
@@ -52,14 +55,28 @@ export interface CommandResult extends CheckCommand {
 	stderr: string;
 }
 
-export type AllocationResult =
-	| { outcome: "owned"; resourceId: string; resources?: Record<string, string> }
-	| { outcome: "absent"; failure: string }
-	| { outcome: "unknown"; failure: string; possibleResources?: string[] };
+type AllocationFailureResult<Kind extends AllocationKind> =
+	| { kind: Kind; outcome: "absent"; failure: string }
+	| { kind: Kind; outcome: "unknown"; failure: string; possibleResources?: string[] };
 
-export type AllocationReconciliation =
-	| { outcome: "absent" }
-	| { outcome: "possible"; failure: string; possibleResources?: string[] };
+export type WorktreeAllocationResult =
+	| { kind: "worktree"; outcome: "owned" }
+	| AllocationFailureResult<"worktree">;
+export type WorkspaceAllocationResult =
+	| { kind: "workspace"; outcome: "owned"; workspaceId: string; rootTabId: string; rootPaneId: string }
+	| AllocationFailureResult<"workspace">;
+export type WorkerTabAllocationResult =
+	| { kind: "worker_tab"; outcome: "owned"; tabId: string; paneId: string }
+	| AllocationFailureResult<"worker_tab">;
+export type AgentAllocationResult =
+	| { kind: "agent"; outcome: "owned" }
+	| AllocationFailureResult<"agent">;
+export type HostAllocationResult = WorkspaceAllocationResult | WorkerTabAllocationResult | AgentAllocationResult;
+export type AllocationResult = WorktreeAllocationResult | HostAllocationResult;
+
+export type AllocationReconciliation<Kind extends AllocationKind = AllocationKind> =
+	| { kind: Kind; outcome: "absent" }
+	| { kind: Kind; outcome: "possible"; failure: string; possibleResources?: string[] };
 
 export type WorkerResult =
 	| { outcome: "candidate"; candidate: WorkspaceIdentity; diagnostic?: string }
@@ -165,16 +182,15 @@ export interface HostRuntime {
 		kind: HostAllocationKind;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		owned: Partial<Record<AllocationKind, string>>;
-	}, context: OperationContext): Promise<string>;
+	}, context: OperationContext): Promise<HostAllocationPlan>;
 	allocateHost(input: {
-		intent: AllocationIntent;
+		intent: HostAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		/** Invoked only after pane, lease, and startability checks at the final agent-start boundary. */
 		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
-	}, context: OperationContext): Promise<AllocationResult>;
-	reconcileHostAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
+	}, context: OperationContext): Promise<HostAllocationResult>;
+	reconcileHostAllocation(input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation<HostAllocationKind>>;
 	runWorker(input: {
 		readonly goal: ExecuteRequest["goal"];
 		task: TaskRequest;
@@ -218,17 +234,17 @@ export interface GitRuntime {
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {
 		root: string;
-		intent: AllocationIntent;
+		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		onPrepared(worktree: WorktreeRecord): Promise<void>;
-	}, context: OperationContext): Promise<AllocationResult>;
+		onPrepared(worktree: WorktreeAllocationPlan): Promise<void>;
+	}, context: OperationContext): Promise<WorktreeAllocationResult>;
 	reconcileWorktreeAllocation(input: {
 		root: string;
-		intent: AllocationIntent;
+		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-	}, context: OperationContext): Promise<AllocationReconciliation>;
+	}, context: OperationContext): Promise<AllocationReconciliation<"worktree">>;
 	runChecks(input: {
 		root: string;
 		scope: "task" | "final";
@@ -341,8 +357,10 @@ function errorText(error: unknown): string {
 	return bounded(error instanceof Error ? error.message : String(error));
 }
 
-function exactResourceText(value: string): boolean {
-	return Boolean(value.trim() && value.trim() === value && !value.includes("\0"));
+function requireExactAllocationText(value: string, field: string): void {
+	if (!value.trim() || value.trim() !== value || value.includes("\0")) {
+		throw new Error(`${field} must be exact non-empty text.`);
+	}
 }
 
 function taskRequest(state: RunState, id: string): TaskRequest {
@@ -363,15 +381,35 @@ function latestAttempt(task: TaskState): TaskAttempt {
 	return attempt;
 }
 
-function allocationByKind(attempt: TaskAttempt, kind: AllocationKind): AllocationIntent | undefined {
-	return [...attempt.allocations].reverse().find((intent) => intent.kind === kind && intent.status === "owned");
+type AllocationOfKind<Kind extends AllocationKind> = Extract<AllocationIntent, { kind: Kind }>;
+
+function allocationByKind<Kind extends AllocationKind>(attempt: TaskAttempt, kind: Kind): AllocationOfKind<Kind> | undefined {
+	return [...attempt.allocations].reverse().find(
+		(intent): intent is AllocationOfKind<Kind> => intent.kind === kind && intent.status === "owned",
+	);
 }
 
-function ownedAllocations(attempt: TaskAttempt): Partial<Record<AllocationKind, string>> {
-	return Object.fromEntries(ALLOCATION_KINDS.flatMap((kind) => {
-		const intent = allocationByKind(attempt, kind);
-		return intent?.resourceId ? [[kind, intent.resourceId]] : [];
-	})) as Partial<Record<AllocationKind, string>>;
+function applyOwnedAllocationResult(intent: AllocationIntent, result: AllocationResult): void {
+	if (result.kind !== intent.kind) throw new Error(`${intent.kind} allocation returned the wrong result kind.`);
+	if (result.outcome !== "owned") throw new Error(`${intent.kind} allocation did not return an owned result.`);
+	if (intent.kind === "worktree" && result.kind === "worktree") {
+		if (!intent.worktree) throw new Error("Worktree allocation returned without exact persisted plan fields.");
+	} else if (intent.kind === "workspace" && result.kind === "workspace") {
+		for (const [field, value] of Object.entries({
+			workspaceId: result.workspaceId, rootTabId: result.rootTabId, rootPaneId: result.rootPaneId,
+		})) requireExactAllocationText(value, `Workspace allocation ${field}`);
+		intent.workspaceId = result.workspaceId;
+		intent.rootTabId = result.rootTabId;
+		intent.rootPaneId = result.rootPaneId;
+	} else if (intent.kind === "worker_tab" && result.kind === "worker_tab") {
+		requireExactAllocationText(result.tabId, "Worker-tab allocation tabId");
+		requireExactAllocationText(result.paneId, "Worker-tab allocation paneId");
+		intent.tabId = result.tabId;
+		intent.paneId = result.paneId;
+	} else if (intent.kind !== "agent" || result.kind !== "agent") {
+		throw new Error(`${intent.kind} allocation result could not be matched to its persisted plan.`);
+	}
+	intent.status = "owned";
 }
 
 function exactCommandResults(results: readonly CommandResult[], checks: readonly CheckCommand[]): boolean {
@@ -499,7 +537,7 @@ export class OrchestratorRunner {
 				if (request.action === "retry") {
 					const task = taskState(state, request.taskId);
 					const attempt = task.attempts.at(-1);
-					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
 						this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
 						await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 					}
@@ -521,7 +559,7 @@ export class OrchestratorRunner {
 			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
 			for (const task of state.tasks) {
 				for (const attempt of task.attempts) {
-					if (!allocationByKind(attempt, "agent")?.resourceId || attempt.termination?.status === "terminated") continue;
+					if (!allocationByKind(attempt, "agent")?.agentName || attempt.termination?.status === "terminated") continue;
 					await this.terminateWithSafety(
 						handle, task, attempt, this.terminationCandidate(attempt), outerSignal, safetyDeadline,
 					);
@@ -677,46 +715,56 @@ export class OrchestratorRunner {
 		try {
 			for (const kind of ALLOCATION_KINDS) {
 				if (allocationByKind(attempt, kind)) continue;
-				const details = kind === "worktree"
-					? "Awaiting exact pi-subagent worktree preparation."
-					: await scope.call(async (context) => await this.runtime.planHostAllocation({
+				let intent: AllocationIntent;
+				if (kind === "worktree") {
+					intent = {
+						kind,
+						generation: attempt.allocationGeneration,
+						token: attempt.correlationToken,
+						status: "allocating",
+					};
+				} else {
+					const plan = await scope.call(async (context) => await this.runtime.planHostAllocation({
 						goal: state.request.goal,
 						kind,
 						task: request,
 						attempt,
-						owned: ownedAllocations(attempt),
 					}, context));
-				const intent: AllocationIntent = {
-					kind,
-					generation: attempt.allocationGeneration,
-					token: attempt.correlationToken,
-					details,
-					status: "allocating",
-				};
+					if (plan.kind !== kind) throw new Error(`${kind} allocation planning returned the wrong kind.`);
+					intent = {
+						...plan,
+						generation: attempt.allocationGeneration,
+						token: attempt.correlationToken,
+						status: "allocating",
+					};
+				}
 				attempt.allocations.push(intent);
 				await handle.save();
 				let result: AllocationResult;
 				try {
-					result = kind === "worktree"
-						? await scope.call(async (context) => await this.gitRuntime.allocateWorktree({
+					if (intent.kind === "worktree") {
+						result = await scope.call(async (context) => await this.gitRuntime.allocateWorktree({
 							root: state.root,
 							intent,
 							task: request,
 							attempt,
 							onPrepared: async (worktree) => {
-								if (worktree.baseCommit !== attempt.waveBase.head) {
-									throw new Error("Prepared worktree base does not match the recorded wave base.");
+								if (worktree.baseCommit !== attempt.waveBase.head || worktree.path !== worktree.cwd) {
+									throw new Error("Prepared worktree does not match the exact recorded wave plan.");
+								}
+								for (const [field, value] of Object.entries(worktree)) {
+									requireExactAllocationText(value, `Prepared worktree ${field}`);
 								}
 								intent.worktree = { ...worktree };
-								intent.details = JSON.stringify(worktree);
 								await handle.save();
 							},
-						}, context))
-						: await scope.call(async (context) => await this.runtime.allocateHost({
+						}, context));
+					} else {
+						result = await scope.call(async (context) => await this.runtime.allocateHost({
 							intent,
 							task: request,
 							attempt,
-							...(kind === "agent" ? { acquireLaunch: async () => {
+							...(intent.kind === "agent" ? { acquireLaunch: async () => {
 								const handle = await this.runtime.acquireLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
 								if (handle.launch.role !== "implementer") {
 									await withTransientLaunch(handle, async () => {
@@ -726,12 +774,16 @@ export class OrchestratorRunner {
 								return handle as TransientLaunchHandle<VerifiedImplementerLaunch>;
 							} } : {}),
 						}, context));
+					}
 				} catch (error) {
 					intent.status = "unknown";
 					intent.failure = `Allocation result is unknown: ${errorText(error)}`;
 					this.attention(task, intent.failure);
 					await handle.save();
 					return;
+				}
+				if (result.kind !== intent.kind) {
+					throw new Error(`${intent.kind} allocation returned the wrong result kind.`);
 				}
 				if (result.outcome !== "owned") {
 					intent.status = result.outcome;
@@ -743,16 +795,7 @@ export class OrchestratorRunner {
 					await handle.save();
 					return;
 				}
-				if (!exactResourceText(result.resourceId)) throw new Error(`${kind} allocation returned a malformed resource ID.`);
-				if (result.resources && Object.entries(result.resources).some(([key, value]) => !exactResourceText(key) || !exactResourceText(value))) {
-					throw new Error(`${kind} allocation returned malformed resource metadata.`);
-				}
-				if (kind === "worktree" && (!intent.worktree || intent.worktree.path !== result.resourceId)) {
-					throw new Error("Worktree allocation returned without exact persisted preparation metadata.");
-				}
-				intent.status = "owned";
-				intent.resourceId = result.resourceId;
-				if (result.resources) intent.resources = { ...result.resources };
+				applyOwnedAllocationResult(intent, result);
 				await handle.save();
 			}
 			task.status = "working";
@@ -761,7 +804,7 @@ export class OrchestratorRunner {
 		} catch (error) {
 			this.attention(task, isDeadline(error, scope) ? "The productive request deadline expired during allocation." : `Task allocation was interrupted: ${errorText(error)}`);
 			const attempt = task.attempts.at(-1);
-			if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+			if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 			} else {
 				await handle.save();
@@ -782,7 +825,7 @@ export class OrchestratorRunner {
 				? "The productive request deadline expired during worker execution."
 				: `Worker execution was interrupted: ${errorText(error)}`);
 			const attempt = latestAttempt(task);
-			if (!attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+			if (!attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 			} else {
 				await handle.save();
@@ -799,7 +842,7 @@ export class OrchestratorRunner {
 		const state = handle.state;
 		const request = taskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
-		const workerId = allocationByKind(attempt, "agent")?.resourceId;
+		const workerId = allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Worker launch has no durably recorded agent ID.");
 		let kind = initialKind;
 		let failure = task.failure;
@@ -821,9 +864,9 @@ export class OrchestratorRunner {
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				return;
 			}
-			const worktree = allocationByKind(attempt, "worktree")?.worktree;
-			if (!worktree
-				|| preCandidate.branch !== `refs/heads/${worktree.branch}`
+			const worktree = allocationByKind(attempt, "worktree");
+			if (!worktree?.worktree
+				|| preCandidate.branch !== `refs/heads/${worktree.worktree.branch}`
 				|| !isCleanCommitted(preCandidate)
 				|| (kind === "initial" && preCandidate.head !== attempt.waveBase.head)) {
 				this.attention(task, "Pre-prompt task candidate inspection returned an invalid owned worktree identity.");
@@ -924,7 +967,7 @@ export class OrchestratorRunner {
 		_scope: DeadlineScope,
 	): Promise<boolean> {
 		const attempt = latestAttempt(task);
-		if (allocationByKind(attempt, "agent")?.resourceId !== workerId) {
+		if (allocationByKind(attempt, "agent")?.agentName !== workerId) {
 			throw new Error("Worker termination requires the exact durably owned agent ID.");
 		}
 		return await this.terminateWithSafety(handle, task, attempt, candidate);
@@ -945,7 +988,7 @@ export class OrchestratorRunner {
 		outerSignal?: AbortSignal,
 		safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS,
 	): Promise<boolean> {
-		const workerId = allocationByKind(attempt, "agent")?.resourceId;
+		const workerId = allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Safety termination requires an exact durably owned agent ID.");
 		attempt.termination = { status: "terminating", workerId, candidate };
 		await handle.save();
@@ -976,7 +1019,7 @@ export class OrchestratorRunner {
 		for (const task of handle.state.tasks) {
 			for (const attempt of task.attempts) {
 				if (!attempt.prompts.some((prompt) => prompt.status === "ambiguous")
-					|| !allocationByKind(attempt, "agent")?.resourceId
+					|| !allocationByKind(attempt, "agent")?.agentName
 					|| attempt.termination?.status === "terminated") continue;
 				await this.terminateWithSafety(
 					handle, task, attempt, this.terminationCandidate(attempt), outerSignal, safetyDeadline,
@@ -1293,13 +1336,13 @@ export class OrchestratorRunner {
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be retried or adopted automatically.");
 		if (attempt.prompts.length) {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
-				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.resourceId) {
+				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.agentName) {
 					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				}
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
 			if (!correctionEligible(taskRequest(handle.state, task.taskId), attempt)) {
-				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.resourceId) {
+				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.agentName) {
 					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				}
 				throw new Error("The same-agent correction is unavailable or already used.");
@@ -1508,7 +1551,7 @@ export class OrchestratorRunner {
 				}
 				if (!attempt.termination && attempt.candidate
 					&& !correctionEligible(taskRequest(state, task.taskId), attempt)) {
-					const workerId = allocationByKind(attempt, "agent")?.resourceId;
+					const workerId = allocationByKind(attempt, "agent")?.agentName;
 					if (workerId) {
 						attempt.termination = {
 							status: "unknown",

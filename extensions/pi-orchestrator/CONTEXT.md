@@ -24,7 +24,7 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - Launch records contain Role and prompt hashes, never raw Role prompts or prompt paths. Productive recovery and each launch re-resolve the effective Role and fail on drift.
 - Each final launch boundary creates a unique mode `0600` Role prompt in a mode `0700` temporary directory. Implementer startup and Reviewer execution own its cleanup.
 - Assignments and exact Reviewer packets remain task messages. They never become Role definitions or Role prompt material.
-- Each task attempt owns one worktree, one Herdr workspace, one worker tab, and one agent. Allocation intent is durable before non-idempotent creation.
+- Each task attempt owns one worktree, one Herdr workspace, one worker tab, and one agent. Each allocation stores kind-specific plan and result fields before non-idempotent creation.
 - A task worker receives one initial assignment. One correction is allowed only after a settled prompt or an unchanged failed check candidate.
 - Ready tasks run in parallel. Preliminary validation uses direct checks only, then the Herdr worker must stop before declared-order integration.
 - After worker termination and rebase, task checks run again. One ephemeral exact Reviewer runs only when the task declares judgment.

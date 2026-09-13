@@ -70,7 +70,6 @@ const PRIVATE_STATE = {
 			allocations: [{
 				kind: "worktree",
 				status: "owned",
-				resourceId: "/tmp/pi-task",
 				worktree: {
 					path: "/tmp/pi-task",
 					cwd: "/tmp/pi-task",

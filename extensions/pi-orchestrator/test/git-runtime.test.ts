@@ -10,7 +10,7 @@ import {
 	type DirectProcessRunner,
 	type ExactReviewExecutorInput,
 } from "../src/git-runtime.ts";
-import { sameIdentity, type AllocationIntent, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
+import { sameIdentity, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
 import type { OperationContext, TransientLaunchHandle, VerifiedReviewerLaunch } from "../src/runner.ts";
 
 const launch: VerifiedReviewerLaunch = {
@@ -84,8 +84,8 @@ async function commit(cwd: string, path: string, contents: string): Promise<void
 	git(cwd, "commit", "-qm", `change ${path}`);
 }
 
-function worktreeIntent(id: string, token: string): AllocationIntent {
-	return { kind: "worktree", generation: 1, token, details: "pending", status: "allocating" };
+function worktreeIntent(_id: string, token: string): WorktreeAllocationIntent {
+	return { kind: "worktree", generation: 1, token, status: "allocating" };
 }
 
 async function allocate(
@@ -95,7 +95,7 @@ async function allocate(
 	waveBase: WorkspaceIdentity,
 	token: string,
 	operationContext = context(),
-): Promise<{ attempt: TaskAttempt; intent: AllocationIntent; result: Awaited<ReturnType<CheckedGitRuntime["allocateWorktree"]>> }> {
+): Promise<{ attempt: TaskAttempt; intent: WorktreeAllocationIntent; result: Awaited<ReturnType<CheckedGitRuntime["allocateWorktree"]>> }> {
 	const intent = worktreeIntent(definition.id, token);
 	const attempt: TaskAttempt = {
 		number: 1,
@@ -115,13 +115,9 @@ async function allocate(
 		onPrepared: async (worktree) => {
 			assert.equal(git(root, "branch", "--list", worktree.branch), "");
 			intent.worktree = { ...worktree };
-			intent.details = JSON.stringify(worktree);
-		},
+			},
 	}, operationContext);
-	if (result.outcome === "owned") {
-		intent.status = "owned";
-		intent.resourceId = result.resourceId;
-	}
+	if (result.outcome === "owned") intent.status = "owned";
 	return { attempt, intent, result };
 }
 
@@ -264,7 +260,7 @@ test("worktree allocation persists helper-derived intent before add and retains 
 	const first = await allocate(runtime, root, task("first"), waveBase, "token-first-00001", operationContext);
 	assert.equal(first.result.outcome, "owned");
 	assert.equal(first.intent.worktree?.baseCommit, waveBase.head);
-	assert.equal(first.intent.resourceId, first.intent.worktree?.path);
+	assert.equal(first.result.outcome, "owned");
 	assert.ok(first.intent.worktree && await readFile(join(first.intent.worktree.path, "base.txt"), "utf8") === "base\n");
 	assert.ok(calls.every((call) => Array.isArray(call.args)
 		&& call.options.signal === operationContext.signal

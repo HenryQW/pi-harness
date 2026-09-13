@@ -110,10 +110,88 @@ export function launchRecordFingerprint(record: Omit<NormalizedLaunchRecord, "fi
 	return createHash("sha256").update(JSON.stringify(launchFingerprintValue(record))).digest("hex");
 }
 
+const AllocationLifecycleFields = {
+	generation: Type.Integer({ minimum: 1, maximum: 2 }),
+	token: Type.String({ pattern: TOKEN_PATTERN }),
+	status: Type.Union([
+		Type.Literal("allocating"), Type.Literal("owned"), Type.Literal("absent"), Type.Literal("unknown"),
+	]),
+	possibleResources: Type.Optional(Type.Array(TextSchema, { maxItems: 32 })),
+	failure: OptionalTextSchema,
+};
+
+const WorktreeRecordSchema = Type.Object({
+	path: TextSchema,
+	cwd: TextSchema,
+	branch: TextSchema,
+	repoRoot: TextSchema,
+	baseCommit: Type.String({ pattern: OID_PATTERN }),
+}, { additionalProperties: false });
+
+const WorktreeAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("worktree"),
+	...AllocationLifecycleFields,
+	worktree: Type.Optional(WorktreeRecordSchema),
+}, { additionalProperties: false });
+
+const WorkspaceAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("workspace"),
+	...AllocationLifecycleFields,
+	label: TextSchema,
+	worktreeCwd: TextSchema,
+	mainRoot: TextSchema,
+	repoKey: TextSchema,
+	herdrRepoRoot: TextSchema,
+	workspaceId: Type.Optional(TextSchema),
+	rootTabId: Type.Optional(TextSchema),
+	rootPaneId: Type.Optional(TextSchema),
+}, { additionalProperties: false });
+
+const WorkerTabAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("worker_tab"),
+	...AllocationLifecycleFields,
+	label: TextSchema,
+	workspaceId: TextSchema,
+	workspaceRootTabId: TextSchema,
+	workspaceRootPaneId: TextSchema,
+	worktreeCwd: TextSchema,
+	leasePath: TextSchema,
+	tabId: Type.Optional(TextSchema),
+	paneId: Type.Optional(TextSchema),
+}, { additionalProperties: false });
+
+const AgentAllocationIntentSchema = Type.Object({
+	kind: Type.Literal("agent"),
+	...AllocationLifecycleFields,
+	agentName: TextSchema,
+	workspaceId: TextSchema,
+	tabId: TextSchema,
+	paneId: TextSchema,
+	worktreeCwd: TextSchema,
+	leasePath: TextSchema,
+}, { additionalProperties: false });
+
+export const AllocationIntentSchema = Type.Union([
+	WorktreeAllocationIntentSchema,
+	WorkspaceAllocationIntentSchema,
+	WorkerTabAllocationIntentSchema,
+	AgentAllocationIntentSchema,
+]);
+
 export type WorktreeRecord = Static<typeof WorktreeRecordSchema>;
+export type WorktreeAllocationIntent = Static<typeof WorktreeAllocationIntentSchema>;
+export type WorkspaceAllocationIntent = Static<typeof WorkspaceAllocationIntentSchema>;
+export type WorkerTabAllocationIntent = Static<typeof WorkerTabAllocationIntentSchema>;
+export type AgentAllocationIntent = Static<typeof AgentAllocationIntentSchema>;
 export type AllocationIntent = Static<typeof AllocationIntentSchema>;
 export type AllocationKind = AllocationIntent["kind"];
 export type AllocationStatus = AllocationIntent["status"];
+export type WorktreeAllocationPlan = WorktreeRecord;
+export type WorkspaceAllocationPlan = Pick<WorkspaceAllocationIntent, "kind" | "label" | "worktreeCwd" | "mainRoot" | "repoKey" | "herdrRepoRoot">;
+export type WorkerTabAllocationPlan = Pick<WorkerTabAllocationIntent, "kind" | "label" | "workspaceId" | "workspaceRootTabId" | "workspaceRootPaneId" | "worktreeCwd" | "leasePath">;
+export type AgentAllocationPlan = Pick<AgentAllocationIntent, "kind" | "agentName" | "workspaceId" | "tabId" | "paneId" | "worktreeCwd" | "leasePath">;
+export type HostAllocationIntent = WorkspaceAllocationIntent | WorkerTabAllocationIntent | AgentAllocationIntent;
+export type HostAllocationPlan = WorkspaceAllocationPlan | WorkerTabAllocationPlan | AgentAllocationPlan;
 export type PromptRecord = Static<typeof PromptRecordSchema>;
 export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
 export type CheckBatchEvidence = Static<typeof CheckBatchEvidenceSchema>;
@@ -162,27 +240,6 @@ const LaunchRecordSchema = Type.Object({
 	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
 	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 1, maxItems: 256 }),
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
-}, { additionalProperties: false });
-
-const WorktreeRecordSchema = Type.Object({
-	path: TextSchema,
-	cwd: TextSchema,
-	branch: TextSchema,
-	repoRoot: TextSchema,
-	baseCommit: Type.String({ pattern: OID_PATTERN }),
-}, { additionalProperties: false });
-
-const AllocationIntentSchema = Type.Object({
-	kind: Type.Union([Type.Literal("worktree"), Type.Literal("workspace"), Type.Literal("worker_tab"), Type.Literal("agent")]),
-	generation: Type.Integer({ minimum: 1, maximum: 2 }),
-	token: Type.String({ pattern: TOKEN_PATTERN }),
-	details: TextSchema,
-	status: Type.Union([Type.Literal("allocating"), Type.Literal("owned"), Type.Literal("absent"), Type.Literal("unknown")]),
-	resourceId: Type.Optional(TextSchema),
-	worktree: Type.Optional(WorktreeRecordSchema),
-	possibleResources: Type.Optional(Type.Array(TextSchema, { maxItems: 32 })),
-	resources: Type.Optional(Type.Record(Type.String(), TextSchema)),
-	failure: OptionalTextSchema,
 }, { additionalProperties: false });
 
 const PromptRecordSchema = Type.Object({
@@ -521,6 +578,23 @@ function sameCheck(left: CheckCommand, right: CheckCommand): boolean {
 		&& left.args.every((arg, index) => arg === right.args[index]);
 }
 
+type PreparedWorktreeAllocation = WorktreeAllocationIntent & { worktree: WorktreeRecord };
+
+function hasWorktreePlan(allocation: WorktreeAllocationIntent): allocation is PreparedWorktreeAllocation {
+	return allocation.worktree !== undefined;
+}
+
+function requireExactAllocationText(value: string, field: string): void {
+	if (!value.trim() || value.trim() !== value || value.includes("\0")) {
+		throw new Error(`${field} must be exact non-empty text.`);
+	}
+}
+
+function requireAbsoluteAllocationPath(value: string, field: string): void {
+	requireExactAllocationText(value, field);
+	if (!isAbsolute(value)) throw new Error(`${field} must be an absolute path.`);
+}
+
 export function checkBatchPasses(evidence: CheckBatchEvidence | undefined, checks: readonly CheckCommand[], candidate: WorkspaceIdentity): boolean {
 	return Boolean(evidence
 		&& evidence.passed
@@ -551,8 +625,10 @@ export function reviewEvidencePasses(
 
 function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest): void {
 	const attempt = taskState.attempts.at(-1);
-	const worktree = [...(attempt?.allocations ?? [])].reverse().find((allocation) => allocation.kind === "worktree" && allocation.status === "owned");
-	if (!worktree?.worktree || worktree.resourceId !== worktree.worktree.path) {
+	const worktree = [...(attempt?.allocations ?? [])].reverse().find(
+		(allocation): allocation is WorktreeAllocationIntent => allocation.kind === "worktree" && allocation.status === "owned",
+	);
+	if (!worktree || !hasWorktreePlan(worktree)) {
 		throw new Error(`Completed task ${request.id} lacks an exact owned worktree record.`);
 	}
 	if (!attempt?.candidate || !attempt.integrationCandidate || !attempt.integrationBase) {
@@ -635,45 +711,104 @@ export function parseRunState(value: unknown): RunState {
 				throw new Error(`Malformed cleanup sequence for ${definition.id}.`);
 			}
 			for (const allocation of attempt.allocations) {
-				if (allocation.kind !== "worktree" && allocation.worktree) {
-					throw new Error(`Malformed worktree metadata for ${definition.id}.`);
-				}
-				if (allocation.worktree?.baseCommit !== undefined && allocation.worktree.baseCommit !== attempt.waveBase.head) {
-					throw new Error(`Worktree metadata for ${definition.id} does not match its recorded wave base.`);
-				}
-				if (allocation.status === "owned") {
-					if (!allocation.resourceId
-						|| !allocation.resourceId.trim()
-						|| allocation.resourceId.trim() !== allocation.resourceId
-						|| allocation.resourceId.includes("\0")) {
-						throw new Error(`Owned ${allocation.kind} allocation for ${definition.id} lacks an exact resource ID.`);
-					}
-				} else if (allocation.resourceId || allocation.resources) {
-					throw new Error(`Unowned ${allocation.kind} allocation for ${definition.id} must not claim resources.`);
+				if (allocation.token !== attempt.correlationToken) {
+					throw new Error(`${allocation.kind} allocation for ${definition.id} has the wrong correlation token.`);
 				}
 				if (allocation.status === "unknown") {
 					if (!allocation.failure?.trim()) throw new Error(`Unknown ${allocation.kind} allocation for ${definition.id} lacks a failure.`);
-					if (allocation.possibleResources) {
-						for (const resource of allocation.possibleResources) {
-							if (!resource.trim() || resource.trim() !== resource || resource.includes("\0")) {
-								throw new Error(`Unknown ${allocation.kind} allocation for ${definition.id} has malformed possible resources.`);
-							}
-						}
+					for (const resource of allocation.possibleResources ?? []) {
+						requireExactAllocationText(resource, `Unknown ${allocation.kind} allocation possible resource`);
 					}
 				} else if (allocation.possibleResources) {
 					throw new Error(`Only unknown allocations may record possible resources for ${definition.id}.`);
 				}
-				if (allocation.resources) {
-					for (const [key, value] of Object.entries(allocation.resources)) {
-						if (!key.trim() || key.trim() !== key || key.includes("\0")
-							|| !value.trim() || value.trim() !== value || value.includes("\0")) {
-							throw new Error(`Owned ${allocation.kind} allocation for ${definition.id} has malformed resource metadata.`);
+
+				if (allocation.kind === "worktree") {
+					if (allocation.status === "owned" && !hasWorktreePlan(allocation)) {
+						throw new Error(`Owned worktree allocation for ${definition.id} lacks exact plan fields.`);
+					}
+					if (hasWorktreePlan(allocation)) {
+						requireAbsoluteAllocationPath(allocation.worktree.path, `Worktree allocation path for ${definition.id}`);
+						requireAbsoluteAllocationPath(allocation.worktree.cwd, `Worktree allocation cwd for ${definition.id}`);
+						requireAbsoluteAllocationPath(allocation.worktree.repoRoot, `Worktree allocation repository root for ${definition.id}`);
+						requireExactAllocationText(allocation.worktree.branch, `Worktree allocation branch for ${definition.id}`);
+						if (allocation.worktree.path !== allocation.worktree.cwd) throw new Error(`Worktree path and cwd for ${definition.id} must match exactly.`);
+						if (allocation.worktree.baseCommit !== attempt.waveBase.head) {
+							throw new Error(`Worktree plan for ${definition.id} does not match its recorded wave base.`);
 						}
 					}
+					continue;
 				}
-				if (allocation.kind === "worktree" && allocation.status === "owned"
-					&& (!allocation.worktree || allocation.resourceId !== allocation.worktree.path)) {
-					throw new Error(`Owned worktree allocation for ${definition.id} lacks exact metadata.`);
+
+				const worktree = attempt.allocations.find((candidate): candidate is PreparedWorktreeAllocation =>
+					candidate.kind === "worktree" && candidate.status === "owned" && hasWorktreePlan(candidate));
+				if (!worktree) throw new Error(`${allocation.kind} allocation for ${definition.id} lacks its exact owned worktree parent.`);
+				if (allocation.kind === "workspace") {
+					for (const [field, value] of Object.entries({
+						label: allocation.label, worktreeCwd: allocation.worktreeCwd, mainRoot: allocation.mainRoot,
+						repoKey: allocation.repoKey, herdrRepoRoot: allocation.herdrRepoRoot,
+					})) requireExactAllocationText(value, `Workspace allocation ${field} for ${definition.id}`);
+					for (const [field, value] of Object.entries({
+						worktreeCwd: allocation.worktreeCwd, mainRoot: allocation.mainRoot,
+						repoKey: allocation.repoKey, herdrRepoRoot: allocation.herdrRepoRoot,
+					})) requireAbsoluteAllocationPath(value, `Workspace allocation ${field} for ${definition.id}`);
+					if (allocation.worktreeCwd !== worktree.worktree.cwd || allocation.mainRoot !== worktree.worktree.repoRoot) {
+						throw new Error(`Workspace allocation for ${definition.id} drifted from its exact worktree parent.`);
+					}
+					const results = [allocation.workspaceId, allocation.rootTabId, allocation.rootPaneId];
+					if (allocation.status === "owned" && results.some((value) => value === undefined)) {
+						throw new Error(`Owned workspace allocation for ${definition.id} lacks exact result fields.`);
+					}
+					if (allocation.status !== "owned" && results.some((value) => value !== undefined)) {
+						throw new Error(`Unowned workspace allocation for ${definition.id} must not claim result fields.`);
+					}
+					for (const value of results) if (value !== undefined) requireExactAllocationText(value, `Workspace allocation result for ${definition.id}`);
+					continue;
+				}
+
+				const workspace = attempt.allocations.find(
+					(candidate): candidate is WorkspaceAllocationIntent => candidate.kind === "workspace" && candidate.status === "owned",
+				);
+				if (!workspace?.workspaceId || !workspace.rootTabId || !workspace.rootPaneId) {
+					throw new Error(`${allocation.kind} allocation for ${definition.id} lacks its exact owned workspace parent.`);
+				}
+				if (allocation.kind === "worker_tab") {
+					for (const [field, value] of Object.entries({
+						label: allocation.label, workspaceId: allocation.workspaceId,
+						workspaceRootTabId: allocation.workspaceRootTabId, workspaceRootPaneId: allocation.workspaceRootPaneId,
+						worktreeCwd: allocation.worktreeCwd, leasePath: allocation.leasePath,
+					})) requireExactAllocationText(value, `Worker-tab allocation ${field} for ${definition.id}`);
+					if (allocation.workspaceId !== workspace.workspaceId
+						|| allocation.workspaceRootTabId !== workspace.rootTabId
+						|| allocation.workspaceRootPaneId !== workspace.rootPaneId
+						|| allocation.worktreeCwd !== worktree.worktree.cwd) {
+						throw new Error(`Worker-tab allocation for ${definition.id} drifted from its exact parents.`);
+					}
+					const results = [allocation.tabId, allocation.paneId];
+					if (allocation.status === "owned" && results.some((value) => value === undefined)) {
+						throw new Error(`Owned worker-tab allocation for ${definition.id} lacks exact result fields.`);
+					}
+					if (allocation.status !== "owned" && results.some((value) => value !== undefined)) {
+						throw new Error(`Unowned worker-tab allocation for ${definition.id} must not claim result fields.`);
+					}
+					for (const value of results) if (value !== undefined) requireExactAllocationText(value, `Worker-tab allocation result for ${definition.id}`);
+					continue;
+				}
+
+				const workerTab = attempt.allocations.find(
+					(candidate): candidate is WorkerTabAllocationIntent => candidate.kind === "worker_tab" && candidate.status === "owned",
+				);
+				if (!workerTab?.tabId || !workerTab.paneId) throw new Error(`Agent allocation for ${definition.id} lacks its exact owned worker-tab parent.`);
+				for (const [field, value] of Object.entries({
+					agentName: allocation.agentName, workspaceId: allocation.workspaceId, tabId: allocation.tabId,
+					paneId: allocation.paneId, worktreeCwd: allocation.worktreeCwd, leasePath: allocation.leasePath,
+				})) requireExactAllocationText(value, `Agent allocation ${field} for ${definition.id}`);
+				if (allocation.workspaceId !== workspace.workspaceId
+					|| allocation.tabId !== workerTab.tabId
+					|| allocation.paneId !== workerTab.paneId
+					|| allocation.worktreeCwd !== worktree.worktree.cwd
+					|| allocation.leasePath !== workerTab.leasePath) {
+					throw new Error(`Agent allocation for ${definition.id} drifted from its exact parents.`);
 				}
 			}
 		}
