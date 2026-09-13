@@ -17,8 +17,8 @@ test("missing config directory still returns validated built-in implementer, rev
 	const roles = loadRoles(agentDir);
 	const [implementer, reviewer, scout] = roles;
 
-	assert.deepEqual(roles.map(({ name, description, tools, isolation, extensions, skills }) => ({
-		name, description, tools, isolation, extensions, skills,
+	assert.deepEqual(roles.map(({ name, description, tools, isolation, extensions, skills, mcps }) => ({
+		name, description, tools, isolation, extensions, skills, mcps,
 	})), [
 		{
 			name: "implementer",
@@ -27,6 +27,7 @@ test("missing config directory still returns validated built-in implementer, rev
 			isolation: "worktree",
 			extensions: [],
 			skills: [],
+			mcps: [],
 		},
 		{
 			name: "reviewer",
@@ -35,6 +36,7 @@ test("missing config directory still returns validated built-in implementer, rev
 			isolation: undefined,
 			extensions: [],
 			skills: [],
+			mcps: [],
 		},
 		{
 			name: "scout",
@@ -43,6 +45,7 @@ test("missing config directory still returns validated built-in implementer, rev
 			isolation: undefined,
 			extensions: [],
 			skills: [],
+			mcps: [],
 		},
 	]);
 
@@ -121,6 +124,7 @@ Custom scout body.
 		isolation: undefined,
 		extensions: [],
 		skills: [],
+		mcps: [],
 		systemPrompt: "Custom body.",
 	});
 	assert.deepEqual(roles.find(({ name }) => name === "scout"), {
@@ -130,6 +134,7 @@ Custom scout body.
 		isolation: undefined,
 		extensions: [],
 		skills: [],
+		mcps: [],
 		systemPrompt: "Custom scout body.",
 	});
 });
@@ -174,6 +179,18 @@ test("Role capability lists are required arrays", async (t) => {
 	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 	const role = loadRoles(agentDir).find((candidate) => candidate.name === "role")!;
 	assert.deepEqual([role.tools, role.extensions, role.skills], [[], [], []]);
+});
+
+test("Role MCP allowlists default to deny, normalize names, and reject duplicates", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	const rolePath = join(rolesDir, "role.md");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\nmcps: [real-browser, codegraph]\n---\nBody.\n");
+	assert.deepEqual(loadRoles(agentDir).find(({ name }) => name === "role")!.mcps, ["real-browser", "codegraph"]);
+
+	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\nmcps: [codegraph, codegraph]\n---\nBody.\n");
+	assert.throws(() => loadRoles(agentDir), /role\.md: mcps contains duplicate MCP server names\./);
 });
 
 test("Role modelClass accepts shared profiles and rejects invalid values", async (t) => {

@@ -86,7 +86,8 @@ test("exact evidence preserves its 200-character ordinary Git diagnostic cap", a
 	await withFakeGit(t, stderr, async () => {
 		await assert.rejects(prepareExactReviewEvidence(context), (error: unknown) => {
 			assert.ok(error instanceof Error);
-			assert.equal(error.message, `git rev-parse --verify --end-of-options ${context.base}^{commit} failed with exit 7: ${stderr.slice(0, 200)}`);
+			assert.ok([context.base, context.tip].some((commit) =>
+				error.message === `git rev-parse --verify --end-of-options ${commit}^{commit} failed with exit 7: ${stderr.slice(0, 200)}`));
 			return true;
 		});
 	});

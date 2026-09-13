@@ -336,7 +336,12 @@ const launch: VerifiedImplementerLaunch = {
 	modelClass: "fast",
 	model: "provider/model",
 	thinkingLevel: "high",
-	args: ["--model", "provider/model", "--append-system-prompt", "/private/implementer.prompt"],
+	args: [
+		"--model", "provider/model",
+		"--pi-subagent-role-mcps", "[\"codegraph\"]",
+		"--pi-subagent-role-mcp-config-sha256", "a".repeat(64),
+		"--append-system-prompt", "/private/implementer.prompt",
+	],
 	env: {},
 	tools: ["read", "edit"],
 	fingerprint: "f".repeat(64),
@@ -793,6 +798,8 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 					"agent", "start", AGENT_NAME, "--kind", "pi", "--pane", WORKER_PANE_ID, "--",
 					...launch.args,
 				]);
+				assert.ok(args.includes("--pi-subagent-role-mcps"));
+				assert.ok(args.includes("--pi-subagent-role-mcp-config-sha256"));
 				assert.ok(!args.includes("Implementer raw prompt must stay private"));
 			},
 			result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),

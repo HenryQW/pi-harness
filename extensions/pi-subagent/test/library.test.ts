@@ -8,8 +8,12 @@ import childToolPolicy from "../extensions/role-tools.ts";
 import {
 	createRoleLaunch,
 	EXECUTION_BUDGET_ENV,
+	parseRoleMcpAllowlist,
 	resolveRoleLaunch,
+	ROLE_MCP_POLICY_FLAG,
+	roleMcpFlagValue,
 	ROLE_TOOL_POLICY_FLAG,
+	selectRoleMcpConfig,
 	type Role,
 } from "../src/index.ts";
 
@@ -433,6 +437,49 @@ test("empty Role tools activate only trusted extension tools and caller addition
 	assert.ok(sessionStart);
 	sessionStart();
 	assert.deepEqual(activeTools, ["caller_protocol", "role_extension", "caller_extension"]);
+});
+
+test("Role MCP allowlists load the adapter wrapper without allowing ambient servers", () => {
+	const role: Role = {
+		name: "worker",
+		description: "Uses selected MCP servers",
+		tools: [],
+		extensions: [],
+		skills: [],
+		mcps: ["docs", "browser"],
+		systemPrompt: "Use only the selected servers.",
+	};
+	const pi = { getCommands: () => [] } as unknown as Pick<ExtensionAPI, "getCommands">;
+	const launch = createRoleLaunch(pi, { isProjectTrusted: () => true }, {
+		role,
+		route: { model, thinkingLevel: "high" },
+	});
+
+	const policyFlag = `--${ROLE_MCP_POLICY_FLAG}`;
+	assert.deepEqual(parseRoleMcpAllowlist(roleMcpFlagValue(launch.args, policyFlag)), ["docs", "browser"]);
+	assert.throws(() => roleMcpFlagValue([policyFlag], policyFlag), /requires a value/);
+	assert.throws(() => roleMcpFlagValue([policyFlag, "[]", policyFlag, "[]"], policyFlag), /at most once/);
+	assert.deepEqual(launch.env, {});
+	assert.match(valuesAfter(launch.args, "--extension").at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
+	assert.deepEqual(selectRoleMcpConfig({
+		mcpServers: { other: { url: "https://other.test" }, docs: { url: "https://docs.test" }, browser: { command: "browser" } },
+		settings: { directTools: true, agentPluginPaths: ["./plugins"], hostConfigDiscovery: "on" },
+	}, role.mcps!), {
+		mcpServers: { docs: { url: "https://docs.test" }, browser: { command: "browser" } },
+		settings: { directTools: true },
+	});
+	assert.throws(
+		() => selectRoleMcpConfig({ mcpServers: { docs: {} } }, ["missing"]),
+		/Role MCP servers are not configured: missing/,
+	);
+	assert.throws(
+		() => createRoleLaunch(pi, { isProjectTrusted: () => true }, {
+			role: { ...role, extensions: ["npm:pi-mcp-adapter"] },
+			route: { model, thinkingLevel: "high" },
+		}),
+		/must select MCP servers with mcps/,
+	);
+	assert.throws(() => parseRoleMcpAllowlist("[\"docs\",\"docs\"]"), /duplicate MCP server names/);
 });
 
 test("Role launch resolves call, Role, then Model Task routes", async (t) => {

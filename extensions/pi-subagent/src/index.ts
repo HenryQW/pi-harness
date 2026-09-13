@@ -19,6 +19,7 @@ import {
 } from "@henryqw/pi-task-models";
 
 export { DISPLAY_TEXT_CONTRACT, hasDisplayControlCharacters } from "./display-text.ts";
+export { fingerprintRoleMcpConfig, parseRoleMcpAllowlist, roleMcpFlagValue, selectRoleMcpConfig, type RoleMcpConfig } from "./mcp-role.ts";
 export {
 	addUsage,
 	capEphemeralSubagentOutput,
@@ -57,8 +58,11 @@ export {
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
+const ROLE_MCP_EXTENSION = fileURLToPath(new URL("../extensions/role-mcp.ts", import.meta.url));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 export const PI_ORCHESTRATOR_PROCESS_LEASE = "PI_ORCHESTRATOR_PROCESS_LEASE";
+export const ROLE_MCP_CONFIG_SHA256_FLAG = "pi-subagent-role-mcp-config-sha256";
+export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
@@ -86,6 +90,7 @@ export interface Role {
 	isolation?: string;
 	extensions: string[];
 	skills: string[];
+	mcps?: string[];
 	systemPrompt: string;
 }
 
@@ -155,6 +160,16 @@ function extensionList(value: unknown, source: string): string[] {
 	return stringList(value, "extensions", source).map((extension) => validateExtension(extension, source));
 }
 
+function mcpList(value: unknown, source: string): string[] {
+	const names = stringList(value ?? [], "mcps", source);
+	if (new Set(names).size !== names.length) throw new Error(`${source}: mcps contains duplicate MCP server names.`);
+	return names;
+}
+
+function namesMcpAdapter(extension: string): boolean {
+	return extension.toLowerCase().split(/[\\/:@]+/).some((component) => component === "pi-mcp-adapter" || component.startsWith("pi-mcp-adapter."));
+}
+
 function roleModelClass(value: unknown, source: string): ProfileName | undefined {
 	if (value === undefined) return;
 	if (typeof value !== "string" || !(PROFILE_NAMES as readonly string[]).includes(value)) {
@@ -187,6 +202,7 @@ function parseRoleFile(file: string, raw: string): Role {
 		isolation,
 		extensions: extensionList(frontmatter.extensions, file),
 		skills: stringList(frontmatter.skills, "skills", file),
+		mcps: mcpList(frontmatter.mcps, file),
 		systemPrompt: cleanText(parsed.body, "system prompt", file),
 	};
 }
@@ -287,19 +303,26 @@ export function createRoleLaunch(
 ): ResolvedRoleLaunch {
 	const role = input.role;
 	const skills = resolveRoleSkills(pi, role);
+	const mcps = mcpList(role.mcps, `Role ${role.name}`);
 	const tools = [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+	const selectedExtensions = [...role.extensions, ...(input.extensions ?? [])]
+		.map((extension) => validateExtension(extension, `Role ${role.name}`));
+	if (selectedExtensions.some(namesMcpAdapter)) {
+		throw new Error(`Role ${role.name} must select MCP servers with mcps instead of loading pi-mcp-adapter directly.`);
+	}
 	const extensions = [
-		...role.extensions,
-		...(input.extensions ?? []),
+		...selectedExtensions,
 		...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
+		...(mcps.length ? [ROLE_MCP_EXTENSION] : []),
 		ROLE_TOOLS_EXTENSION,
-	].map((extension) => validateExtension(extension, `Role ${role.name}`));
+	];
 	const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
 		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid launch environment name: ${key}`);
 		if (typeof value !== "string" || value.includes("\0")) throw new Error(`Invalid launch environment value: ${key}`);
 		return [key, value];
 	}));
 	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
+	if (mcps.length) args.push(`--${ROLE_MCP_POLICY_FLAG}`, JSON.stringify(mcps));
 	for (const extension of new Set(extensions)) args.push("--extension", extension);
 	for (const skill of skills.paths) args.push("--skill", skill);
 	args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));

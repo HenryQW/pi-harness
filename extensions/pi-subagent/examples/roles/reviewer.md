@@ -8,6 +8,7 @@ tools:
   - ls
 extensions: []
 skills: []
+mcps: []
 ---
 
 Review the supplied candidate read-only. Use only supplied requirements and named files or evidence; do not prepare Git or broaden discovery. If evidence is insufficient, say so and stop.

@@ -46,6 +46,16 @@ Call `orchestrate_execute` with a bounded request. It runs the graph through che
 
 Use `delegate_task` for lightweight generic delegation. Use `orchestrate_*` when implementation needs durable state, checks, dependencies, integration, or recovery.
 
+### Roles
+
+Pi Orchestrator reuses the effective `implementer` and `reviewer` Roles from Pi Subagent. Keep one set of Role files in `config/pi-subagent/`. You do not need orchestrator-specific copies.
+
+Pi resolves Implementer extension packages before launch. The orchestrator launches exact local resources. It fingerprints every extension, Skill, prompt, and theme file.
+
+Implementer MCP allowlists reuse Pi Subagent's `pi-mcp-adapter` wrapper. Launch records store exact server names, fingerprint adapter resources, and hash the selected config. The child verifies that config hash before loading the servers.
+
+Judgment launches reuse the Reviewer prompt and tool list. They omit configured Reviewer extensions, Skills, and MCP servers. This keeps exact reviews capability-enforced and read-only. `delegate_task` still loads the complete Reviewer Role.
+
 ### Start a request
 
 ```json
@@ -100,6 +110,8 @@ The package root exports its strict request and state schemas, runner contracts,
 State lives under `~/.pi/agent/config/pi-orchestrator/state/`, namespaced by repository and request ID. Do not edit state files.
 
 Each launch record names a predefined effective Role. It stores the Role, route, resource, and prompt fingerprints. It never stores the Role prompt or a prompt-file path.
+
+Pi's package manager resolves Implementer package sources. Launch records fingerprint every selected local extension, Skill, prompt, and theme file.
 
 The orchestrator resolves the Role again on recovery and immediately before each launch. Any change blocks productive work.
 

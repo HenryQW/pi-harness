@@ -11,6 +11,7 @@ tools:
   - ls
 extensions: []
 skills: []
+mcps: []
 isolation: worktree
 ---
 

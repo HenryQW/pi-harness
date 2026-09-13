@@ -125,7 +125,7 @@ test("launch records require complete prompt-free fingerprinted Role snapshots",
 			? { ...resource, path: "/roles/other.ts" }
 			: resource),
 	});
-	assert.throws(() => validateLaunchRecords(definition, [mismatchedResources, reviewer]), /must match its exact Role extension and Skill paths/);
+	assert.throws(() => validateLaunchRecords(definition, [mismatchedResources, reviewer]), /must match its exact selected resource paths/);
 
 	const serialized = JSON.stringify(records);
 	assert.doesNotMatch(serialized, /Role prompt|private\.prompt|append-system-prompt/);

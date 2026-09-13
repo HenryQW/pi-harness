@@ -103,13 +103,14 @@ A Role file requires:
 - base tools: a YAML array; `tools: []` activates no base built-ins, while trusted selected extension tools still activate;
 - explicit extension paths or package sources: a YAML array; `extensions: []` selects no Role extension bundle;
 - additional effective Pi Skill names: a YAML array; `skills: []` selects no separately named Role Skills, while trusted selected extension Skills still load;
+- optional exact MCP server names: `mcps: []` or an omitted field denies MCP access, while allowed servers expose all their tools through `pi-mcp-adapter`;
 - system instructions;
 - optional `modelClass` default (`fast`, `balanced`, `frontier`, or `fav`); and
 - optional `isolation: worktree` for the tool layer.
 
 Every launch installs the Role tool policy. At launch, a package caller may add `tools`, `extensions`, and `env`; caller tools are unioned into the Role base list and loaded extension tools activate in every case. Caller `env` adds to or overrides the active Pi process environment for the child.
 
-Children start with ambient extension and Skill discovery disabled. Only explicit Role or caller extensions, resolved Skill paths, extension package resources, and required internal tool-policy or Codex adapters load. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `orchestrate_execute`, `orchestrate_status`, `orchestrate_resume`, `orchestrate_abort`, and `ask_question`. Explicit Role or caller tool names are verified against the final filtered registry after each provider extension completes `session_start`. Unavailable names fail before the first model turn and identify the missing names with provider guidance.
+Children start with ambient extension and Skill discovery disabled. Only explicit Role or caller extensions, resolved Skill paths, extension package resources, and required internal tool-policy, MCP, or Codex adapters load. A non-empty `mcps` list requires an installed `pi-mcp-adapter`. The MCP adapter receives an isolated in-memory config containing only the named servers. Unknown server names fail before the first model turn, and direct adapter loading through `extensions` is rejected. Loaded extension tools activate even when the Role base list is empty. Child-inappropriate parent tools are always excluded: `delegate_task`, `orchestrate_execute`, `orchestrate_status`, `orchestrate_resume`, `orchestrate_abort`, and `ask_question`. Explicit Role or caller tool names are verified against the final filtered registry after each provider extension completes `session_start`. Unavailable names fail before the first model turn and identify the missing names with provider guidance.
 
 Role Skill names resolve through Main's effective Pi Skill registry at launch. Missing names are returned in `ResolvedRoleLaunch.missingSkills`; `delegate_task` warns and skips them. Library callers must surface that warning themselves. Missing Skills do not block launch.
 
@@ -147,7 +148,7 @@ The package root exports the following mechanism-level APIs:
 | `retained` | `path`, `branch`, `commits`, `dirty` | Work was preserved. Both measurements are known. |
 | `recovery` | `path`, `branch`, `note`, optional `commits`, `dirty` | Recovery needs action. The note tells Main what to inspect. Present measurements completed; omitted values are unknown. |
 
-A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, optional `modelClass` and `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, optional call-level `modelClass`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
+A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, a normalized `mcps` array, optional `modelClass` and `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, optional call-level `modelClass`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
 
 `createEphemeralSubagentExecutor` requires:
 

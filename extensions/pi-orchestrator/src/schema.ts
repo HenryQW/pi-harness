@@ -101,6 +101,11 @@ function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprin
 		tools: [...record.tools],
 		roleExtensions: [...record.roleExtensions],
 		roleSkills: [...record.roleSkills],
+		...(record.rolePrompts ? { rolePrompts: [...record.rolePrompts] } : {}),
+		...(record.roleThemes ? { roleThemes: [...record.roleThemes] } : {}),
+		...(record.roleMcps ? { roleMcps: [...record.roleMcps] } : {}),
+		...(record.roleMcpResources ? { roleMcpResources: [...record.roleMcpResources] } : {}),
+		...(record.mcpConfigSha256 ? { mcpConfigSha256: record.mcpConfigSha256 } : {}),
 		resources: record.resources.map((resource) => ({
 			kind: resource.kind,
 			path: resource.path,
@@ -222,7 +227,9 @@ const WorkspaceSchema = Type.Object({
 }, { additionalProperties: false });
 
 const LaunchResourceFingerprintSchema = Type.Object({
-	kind: Type.Union([Type.Literal("skill"), Type.Literal("extension")]),
+	kind: Type.Union([
+		Type.Literal("skill"), Type.Literal("extension"), Type.Literal("prompt"), Type.Literal("theme"), Type.Literal("mcp-adapter"),
+	]),
 	path: TextSchema,
 	sha256: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });
@@ -241,6 +248,11 @@ const LaunchRecordSchema = Type.Object({
 	tools: Type.Array(TextSchema, { maxItems: 128 }),
 	roleExtensions: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
 	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
+	rolePrompts: Type.Optional(Type.Array(TextSchema, { maxItems: 128 })),
+	roleThemes: Type.Optional(Type.Array(TextSchema, { maxItems: 128 })),
+	roleMcps: Type.Optional(Type.Array(TextSchema, { minItems: 1, maxItems: 128 })),
+	roleMcpResources: Type.Optional(Type.Array(TextSchema, { minItems: 1, maxItems: 128 })),
+	mcpConfigSha256: Type.Optional(Type.String({ pattern: SHA256_PATTERN })),
 	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 1, maxItems: 256 }),
 	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });
@@ -533,12 +545,25 @@ export function validateLaunchRecords(request: ExecuteRequest, records: readonly
 			throw new Error(`Launch record ${record.key} prompt argv index is out of bounds.`);
 		}
 		if (Object.keys(record.env).length) throw new Error(`Launch record ${record.key} must not pass caller Role environment.`);
+		const hasMcpPolicy = record.roleMcps !== undefined;
+		if (hasMcpPolicy !== (record.roleMcpResources !== undefined) || hasMcpPolicy !== (record.mcpConfigSha256 !== undefined)
+			|| (record.role === "reviewer" && hasMcpPolicy)) {
+			throw new Error(`Launch record ${record.key} MCP fields must describe one complete Implementer policy.`);
+		}
+		for (const [index, name] of (record.roleMcps ?? []).entries()) requireExactLaunchText(name, `Launch record ${record.key} roleMcps[${index}]`);
+		requireUnique(record.roleMcps ?? [], `Launch record ${record.key} roleMcps`);
 		for (const [index, tool] of record.tools.entries()) requireExactLaunchText(tool, `Launch record ${record.key} tools[${index}]`);
 		requireUnique(record.tools, `Launch record ${record.key} tools`);
 		for (const [index, path] of record.roleExtensions.entries()) requireCanonicalPath(path, `Launch record ${record.key} roleExtensions[${index}]`);
 		for (const [index, path] of record.roleSkills.entries()) requireCanonicalPath(path, `Launch record ${record.key} roleSkills[${index}]`);
+		for (const [index, path] of (record.rolePrompts ?? []).entries()) requireCanonicalPath(path, `Launch record ${record.key} rolePrompts[${index}]`);
+		for (const [index, path] of (record.roleThemes ?? []).entries()) requireCanonicalPath(path, `Launch record ${record.key} roleThemes[${index}]`);
+		for (const [index, path] of (record.roleMcpResources ?? []).entries()) requireCanonicalPath(path, `Launch record ${record.key} roleMcpResources[${index}]`);
 		requireUnique(record.roleExtensions, `Launch record ${record.key} roleExtensions`);
 		requireUnique(record.roleSkills, `Launch record ${record.key} roleSkills`);
+		requireUnique(record.rolePrompts ?? [], `Launch record ${record.key} rolePrompts`);
+		requireUnique(record.roleThemes ?? [], `Launch record ${record.key} roleThemes`);
+		requireUnique(record.roleMcpResources ?? [], `Launch record ${record.key} roleMcpResources`);
 		const resourceKeys = new Set<string>();
 		for (const [index, resource] of record.resources.entries()) {
 			requireCanonicalPath(resource.path, `Launch record ${record.key} resources[${index}].path`);
@@ -549,10 +574,13 @@ export function validateLaunchRecords(request: ExecuteRequest, records: readonly
 		const selectedResources = [
 			...record.roleExtensions.map((path) => `extension\0${path}`),
 			...record.roleSkills.map((path) => `skill\0${path}`),
+			...(record.rolePrompts ?? []).map((path) => `prompt\0${path}`),
+			...(record.roleThemes ?? []).map((path) => `theme\0${path}`),
+			...(record.roleMcpResources ?? []).map((path) => `mcp-adapter\0${path}`),
 		];
 		if (selectedResources.length !== record.resources.length
 			|| selectedResources.some((resourceKey) => !resourceKeys.has(resourceKey))) {
-			throw new Error(`Launch record ${record.key} resource fingerprints must match its exact Role extension and Skill paths.`);
+			throw new Error(`Launch record ${record.key} resource fingerprints must match its exact selected resource paths.`);
 		}
 		const normalized = structuredClone(record);
 		const { fingerprint, ...fingerprinted } = normalized;

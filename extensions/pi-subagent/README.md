@@ -15,6 +15,12 @@ pi install npm:@henryqw/pi-subagent
 
 Run `/task-models` and configure the `fast` profile before delegating. Open `/task-models` again and verify that `fast` no longer says `not configured`.
 
+Install `pi-mcp-adapter` when any Role declares an MCP server allowlist:
+
+```bash
+pi install npm:pi-mcp-adapter
+```
+
 ## Works with
 
 | Package | Relationship | Purpose |
@@ -22,6 +28,7 @@ Run `/task-models` and configure the `fast` profile before delegating. Open `/ta
 | [`@henryqw/pi-orchestrator`](https://pi.henry.wang/extensions/pi-orchestrator) | Consumer | Owns durable checked local implementation graphs. |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
 | [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs bounded captured Git commands. |
+| [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) | Optional | Exposes only the MCP servers selected by a Role. |
 
 Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. Missing shared model config warns once because delegation needs a route.
 
@@ -102,7 +109,11 @@ Its ordinary review loop is optional. Use it only when the caller or repository 
 - Fix initial findings together. Validate repaired inputs once before focused re-review. Include the original findings and acceptance criteria, exact repaired-candidate evidence, and validation evidence.
 - Only `PASS` completes the loop. Surface and block on re-review findings or empty output. Retry empty output only when explicit caller policy requires one. A second empty result blocks. Do not add another round.
 
-A Role selects base tools, extensions, named Skills, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
+A Role selects base tools, extensions, named Skills, MCP servers, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
+
+Use `mcps` to allow configured MCP servers by exact name. An omitted or empty `mcps` list denies MCP access. Every tool exposed by an allowed server is available through `pi-mcp-adapter`.
+
+The adapter receives an isolated in-memory config containing only those servers. Unknown names fail before the first model turn. Loading `pi-mcp-adapter` directly through `extensions` is rejected because it would bypass the allowlist.
 
 Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
 
@@ -157,6 +168,7 @@ Role Markdown files live beside the config file. They require frontmatter and a 
 | `isolation` | Optional; only `worktree`. |
 | `extensions` | Required YAML array. Entries are absolute paths, `~/…`, `file://`, or `npm:`, `git:`, `github:`, `https?:`, or `ssh:` sources. |
 | `skills` | Required YAML array of non-empty Skill names. |
+| `mcps` | Optional YAML array of exact MCP server names. Omitted or `[]` denies MCP access. |
 | body | Required Markdown system prompt after the frontmatter. |
 
 A Role's `modelClass` is a default. A call-level class wins.

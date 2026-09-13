@@ -8,6 +8,7 @@ tools:
   - ls
 extensions: []
 skills: []
+mcps: []
 ---
 
 Answer only the bounded discovery questions.

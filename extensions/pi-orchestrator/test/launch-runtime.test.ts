@@ -110,6 +110,7 @@ function roleMarkdown(input: {
 	tools?: string[];
 	extensions?: string[];
 	skills?: string[];
+	mcps?: string[];
 	prompt?: string;
 }): string {
 	const lines = (values: string[]) => values.length ? values.map((value) => `  - ${JSON.stringify(value)}`).join("\n") : "  []";
@@ -122,6 +123,8 @@ extensions:
 ${lines(input.extensions ?? [])}
 skills:
 ${lines(input.skills ?? [])}
+mcps:
+${lines(input.mcps ?? [])}
 ${input.name === "implementer" ? "isolation: worktree\n" : ""}---
 ${input.prompt ?? `Test ${input.name} prompt.`}
 `;
@@ -205,6 +208,60 @@ async function harness(t: test.TestContext) {
 
 async function preflight(fixture: Awaited<ReturnType<typeof harness>>, definition = request()) {
 	return await fixture.runtime.preflight({ request: definition, cwd: fixture.root }, operationContext());
+}
+
+async function installRolePackage(fixture: Awaited<ReturnType<typeof harness>>, name = "@example/role") {
+	const root = join(fixture.agentDir, "npm", "node_modules", ...name.split("/"));
+	const extension = join(root, "extension.ts");
+	const skill = join(root, "SKILL.md");
+	const prompt = join(root, "prompt.md");
+	const theme = join(root, "theme.json");
+	await mkdir(root, { recursive: true });
+	await Promise.all([
+		writeFile(extension, "export default function roleExtension() {}\n"),
+		writeFile(skill, "---\nname: package-skill\ndescription: Test package Skill\n---\nUse the package Skill.\n"),
+		writeFile(prompt, "Package prompt.\n"),
+		writeFile(theme, "{}\n"),
+		writeFile(join(root, "package.json"), JSON.stringify({
+			name,
+			version: "1.0.0",
+			pi: {
+				extensions: ["./extension.ts"],
+				skills: ["./SKILL.md"],
+				prompts: ["./prompt.md"],
+				themes: ["./theme.json"],
+			},
+		})),
+	]);
+	return { extension, skill, prompt, theme };
+}
+
+async function installMcpAdapter(fixture: Awaited<ReturnType<typeof harness>>) {
+	const root = join(fixture.agentDir, "npm", "node_modules", "pi-mcp-adapter");
+	const extension = join(root, "index.ts");
+	const configModule = join(root, "config.js");
+	const config = join(fixture.agentDir, "mcp.json");
+	await mkdir(root, { recursive: true });
+	await Promise.all([
+		writeFile(extension, "export default function adapter() {}\n"),
+		writeFile(configModule, "import { readFileSync } from 'node:fs';\nexport const loadMcpConfig = (path) => JSON.parse(readFileSync(path, 'utf8'));\n"),
+		writeFile(config, JSON.stringify({
+			mcpServers: {
+				"real-browser": { url: "https://browser.test" },
+				codegraph: { command: "codegraph" },
+				ambient: { command: "ambient" },
+			},
+			settings: { directTools: true },
+		})),
+		writeFile(join(root, "package.json"), JSON.stringify({
+			name: "pi-mcp-adapter",
+			version: "1.0.0",
+			type: "module",
+			exports: { ".": "./index.ts", "./config": "./config.js" },
+			pi: { extensions: ["./index.ts"] },
+		})),
+	]);
+	return { extension, configModule, config };
 }
 
 function recordsByKey(records: readonly NormalizedLaunchRecord[]): Record<string, NormalizedLaunchRecord> {
@@ -320,22 +377,31 @@ test("missing Skills and duplicate canonical resources fail preflight", async (t
 	});
 });
 
-test("Role extensions reject package, remote, file URL, missing, non-regular, symlink, and self sources", async (t) => {
+test("Implementer package sources resolve to exact fingerprinted child resources", async (t) => {
+	const fixture = await harness(t);
+	const expected = await installRolePackage(fixture);
+	await fixture.setRole({ name: "implementer", extensions: ["npm:@example/role"] });
+	const record = (await preflight(fixture)).launchRecords[0]! as NormalizedLaunchRecord;
+	assert.deepEqual(record.roleExtensions.slice(0, -1), [await realpath(expected.extension)]);
+	assert.deepEqual(record.roleSkills, [await realpath(expected.skill)]);
+	assert.deepEqual(record.rolePrompts, [await realpath(expected.prompt)]);
+	assert.deepEqual(record.roleThemes, [await realpath(expected.theme)]);
+	assert.deepEqual(record.resources.map(({ kind }) => kind), ["extension", "extension", "skill", "prompt", "theme"]);
+	assert.ok(record.args.includes("--no-prompt-templates"));
+	assert.ok(record.args.includes("--no-themes"));
+	assert.ok(!record.args.includes("npm:@example/role"));
+	await writeFile(expected.prompt, "changed package prompt\n");
+	await assert.rejects(fixture.runtime.acquireLaunch(record, operationContext()), /prompt fingerprint drifted/i);
+});
+
+test("Role extensions reject unresolved, non-regular, duplicate, and self resources", async (t) => {
 	for (const [name, extension, pattern, prepare] of [
-		["package", "npm:@example/role", /package, remote, or file URL/i],
-		["remote", "https://example.test/role.ts", /package, remote, or file URL/i],
-		["file URL", "file:///tmp/role.ts", /package, remote, or file URL/i],
-		["missing", "missing.ts", /missing/i, async (fixture: Awaited<ReturnType<typeof harness>>) => join(fixture.directory, "missing.ts")],
+		["remote", "https://example.test/role.ts", /resolved no resources/i],
+		["file URL", "file:///tmp/role.ts", /resolved no resources/i],
+		["missing", "missing.ts", /resolved no resources/i, async (fixture: Awaited<ReturnType<typeof harness>>) => join(fixture.directory, "missing.ts")],
 		["directory", "directory", /regular file/i, async (fixture: Awaited<ReturnType<typeof harness>>) => {
 			const path = join(fixture.directory, "role-dir");
 			await mkdir(path);
-			return path;
-		}],
-		["symlink", "symlink", /symbolic link/i, async (fixture: Awaited<ReturnType<typeof harness>>) => {
-			const target = join(fixture.directory, "target.ts");
-			const path = join(fixture.directory, "linked.ts");
-			await writeFile(target, "export default function x() {}\n");
-			await symlink(target, path);
 			return path;
 		}],
 	] as const) {
@@ -401,24 +467,56 @@ test("tool preflight rejects missing, child-excluded, sdk, inline, unknown, unve
 	}
 });
 
-test("Reviewer Role rejects mutable tools, Skills, extensions, and unexpected resolved additions", async (t) => {
+test("Implementer MCP policy and adapter config are fingerprinted while Reviewer judgment MCP access is filtered", async (t) => {
+	const fixture = await harness(t);
+	const adapter = await installMcpAdapter(fixture);
+	await fixture.setRole({ name: "implementer", mcps: ["real-browser", "codegraph"] });
+	await fixture.setRole({ name: "reviewer", mcps: ["codegraph"] });
+	assert.deepEqual(loadRoles(fixture.agentDir).find(({ name }) => name === "implementer")!.mcps, ["real-browser", "codegraph"]);
+	const prepared = await preflight(fixture, request([
+		task("task-a", "fast", { criterion: "Review.", modelClass: "fast" }),
+	]));
+	const implementer = prepared.launchRecords.find(({ role }) => role === "implementer")! as NormalizedLaunchRecord;
+	const reviewer = prepared.launchRecords.find(({ role }) => role === "reviewer")! as NormalizedLaunchRecord;
+	assert.deepEqual(implementer.env, {});
+	assert.deepEqual(implementer.roleMcps, ["real-browser", "codegraph"]);
+	assert.deepEqual(implementer.roleMcpResources, [await realpath(adapter.extension), await realpath(adapter.configModule)]);
+	assert.ok(implementer.mcpConfigSha256);
+	assert.ok(implementer.args.includes("--pi-subagent-role-mcps"));
+	assert.ok(implementer.args.includes("--pi-subagent-role-mcp-config-sha256"));
+	assert.match(implementer.roleExtensions.at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
+	assert.deepEqual(reviewer.env, {});
+	assert.equal(reviewer.roleMcps, undefined);
+	assert.equal(reviewer.roleMcpResources, undefined);
+	assert.equal(reviewer.mcpConfigSha256, undefined);
+	assert.doesNotMatch(reviewer.roleExtensions.join("\n"), /role-mcp\.ts$/);
+
+	await writeFile(adapter.extension, "export default function changedAdapter() {}\n");
+	await assert.rejects(fixture.runtime.acquireLaunch(implementer, operationContext()), /drifted/i);
+	await writeFile(adapter.extension, "export default function adapter() {}\n");
+	const config = JSON.parse(await readFile(adapter.config, "utf8"));
+	config.mcpServers.codegraph.command = "changed-codegraph";
+	await writeFile(adapter.config, JSON.stringify(config));
+	await assert.rejects(fixture.runtime.acquireLaunch(implementer, operationContext()), /drifted/i);
+});
+
+test("Reviewer Role keeps exact tools while filtering configured resources from judgment launches", async (t) => {
 	const reviewed = request([task("task-a", "fast", { criterion: "Review.", modelClass: "fast" })]);
-	await t.test("tool", async (t) => {
+	await t.test("mutable tool", async (t) => {
 		const fixture = await harness(t);
 		await fixture.setRole({ name: "reviewer", tools: ["read", "grep", "find", "ls", "bash"] });
 		await assert.rejects(preflight(fixture, reviewed), /Reviewer Role must declare only/i);
 	});
-	await t.test("Skill", async (t) => {
+	await t.test("configured resources", async (t) => {
 		const fixture = await harness(t);
-		await fixture.setRole({ name: "reviewer", skills: ["review"] });
-		await assert.rejects(preflight(fixture, reviewed), /Reviewer Role must declare no extensions or Skills/i);
-	});
-	await t.test("extension", async (t) => {
-		const fixture = await harness(t);
-		const extension = join(fixture.directory, "reviewer-extension.ts");
-		await writeFile(extension, "export default function x() {}\n");
-		await fixture.setRole({ name: "reviewer", extensions: [extension] });
-		await assert.rejects(preflight(fixture, reviewed), /Reviewer Role must declare no extensions or Skills/i);
+		await fixture.setRole({ name: "reviewer", extensions: ["npm:@example/missing"], skills: ["missing"] });
+		const record = (await preflight(fixture, reviewed)).launchRecords.find(({ role }) => role === "reviewer")! as NormalizedLaunchRecord;
+		assert.deepEqual(record.roleSkills, []);
+		assert.equal(record.rolePrompts, undefined);
+		assert.equal(record.roleThemes, undefined);
+		assert.equal(record.roleExtensions.length, 1);
+		assert.match(record.roleExtensions[0]!, /pi-subagent\/extensions\/role-tools\.ts$/);
+		assert.ok(!record.args.includes("npm:@example/missing"));
 	});
 	await t.test("resolved addition", async (t) => {
 		const fixture = await harness(t);
@@ -442,6 +540,7 @@ test("Reviewer Role rejects mutable tools, Skills, extensions, and unexpected re
 			commands: fixture.commands,
 			tools: fixture.tools,
 			knownFiles: {
+				roleMcp: record.roleExtensions.at(-1)!,
 				roleTools: record.roleExtensions.at(-1)!,
 				multiCodex: record.roleExtensions.at(-1)!,
 				orchestratorEntrypoint: fixture.orchestratorEntrypoint,
@@ -464,7 +563,7 @@ test("the known no-tool provider adapter is the only optional Reviewer extension
 	assert.deepEqual(reviewer.roleSkills, []);
 });
 
-test("normalization rejects a non-empty resolved Role environment", async (t) => {
+test("normalization rejects an environment outside the resolved Role policy", async (t) => {
 	const fixture = await harness(t);
 	const prepared = await preflight(fixture);
 	const record = prepared.launchRecords[0]! as NormalizedLaunchRecord;
@@ -484,12 +583,13 @@ test("normalization rejects a non-empty resolved Role environment", async (t) =>
 		commands: fixture.commands,
 		tools: fixture.tools,
 		knownFiles: {
+			roleMcp: record.roleExtensions.at(-1)!,
 			roleTools: record.roleExtensions.at(-1)!,
 			multiCodex: record.roleExtensions.at(-1)!,
 			orchestratorEntrypoint: fixture.orchestratorEntrypoint,
 		},
 	};
-	await assert.rejects(normalizeResolvedRoleLaunch(input), /environment must be empty/i);
+	await assert.rejects(normalizeResolvedRoleLaunch(input), /launch environment must be empty/i);
 });
 
 test("acquisition creates unique private OS-temp prompts and leaves no request launch directory", async (t) => {
