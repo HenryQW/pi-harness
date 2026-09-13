@@ -401,19 +401,37 @@ test("dispatches creation for dirty-only zero-ahead work", async () => {
 	assert.equal(app.reservations.length, 1);
 });
 
-test("dispatches the launch action returned by the fresh reservation", async () => {
+test("explicit feedback starts a sweep without automatic feedback signals", async () => {
 	const app = harness({
-		states: [{ reviewDecision: "CHANGES_REQUESTED" }],
+		states: [{}],
+		commands: [packageCommand("skill:pi-pr-comment-sweep")],
+	});
+
+	assert.equal(await app.handler("--feedback", app.context), "sweep");
+	assert.equal(app.reservations.length, 1);
+	assert.equal((app.reservations[0] as { route: string }).route, "sweep");
+	assert.equal((app.reservations[0] as { pullRequest: { number: number } }).pullRequest.number, 42);
+	assert.deepEqual(app.messages, [{
+		content: `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=start`,
+		options: { expandPromptTemplates: true },
+	}]);
+	assert.deepEqual(app.confirmations, []);
+});
+
+test("explicit feedback overrides failed-CI routing and resumes recovery", async () => {
+	const app = harness({
+		states: [{ statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
 		commands: [packageCommand("skill:pi-pr-comment-sweep")],
 		reservationAction: "resume",
 	});
 
-	await app.handler("", app.context);
+	await app.handler("--feedback", app.context);
 
 	assert.deepEqual(app.messages, [{
 		content: `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=resume`,
 		options: { expandPromptTemplates: true },
 	}]);
+	assert.equal((app.reservations[0] as { route: string }).route, "sweep");
 });
 
 test("names and confirms an inferred target before linking it", async () => {
@@ -457,6 +475,32 @@ test("does not route an observed GitHub lookup failure to PR creation", async ()
 
 	await assert.rejects(handler("", app.context), /Load observed pull request failed/);
 	assert.deepEqual(app.messages, []);
+});
+
+test("explicit feedback rejects unsafe local state before reservation", async () => {
+	const cases: Array<{
+		name: string;
+		status?: string;
+		ancestry?: "behind" | "ahead" | "diverged";
+		error: RegExp;
+	}> = [
+		{ name: "dirty", status: " M file.ts\n", error: /dirty worktree/ },
+		{ name: "behind", ancestry: "behind", error: /local HEAD behind/ },
+		{ name: "ahead", ancestry: "ahead", error: /local HEAD ahead/ },
+		{ name: "diverged", ancestry: "diverged", error: /local HEAD diverged/ },
+	];
+
+	for (const candidate of cases) {
+		const app = harness({
+			states: [{ ...(candidate.ancestry ? { headRefOid: nextHead } : {}) }],
+			commands: [packageCommand("skill:pi-pr-comment-sweep")],
+			status: candidate.status,
+			ancestry: candidate.ancestry,
+		});
+		await assert.rejects(app.handler("--feedback", app.context), candidate.error, candidate.name);
+		assert.deepEqual(app.reservations, [], candidate.name);
+		assert.deepEqual(app.messages, [], candidate.name);
+	}
 });
 
 test("does not dispatch mutating workflows when the worktree is dirty or local HEAD is behind", async () => {
@@ -537,6 +581,24 @@ test("rejects a missing leading base value before discovery", async () => {
 		await assert.rejects(handler(input, app.context), /--base requires a branch/, input);
 	}
 	await assert.rejects(handler("--base=release", app.context), /base syntax is --base <branch>/);
+	assert.equal(loads, 0);
+});
+
+test("rejects unknown and conflicting options before discovery", async () => {
+	const app = harness({ states: [{}] });
+	let loads = 0;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest() {
+			loads += 1;
+			return noPullRequest();
+		},
+	});
+
+	for (const input of ["--feedback extra", "--feedback --base main", "--base main --feedback"]) {
+		await assert.rejects(handler(input, app.context), /--feedback cannot be combined/, input);
+	}
+	await assert.rejects(handler("--feedback=true", app.context), /feedback syntax is --feedback/);
+	await assert.rejects(handler("--unknown", app.context), /Unknown \/pr option: --unknown/);
 	assert.equal(loads, 0);
 });
 
