@@ -174,6 +174,7 @@ export const spawnBounded: Exec = async (command, args, options) => {
 			stderr.push(chunk);
 		});
 		child.once("error", stop);
+		child.stdin.once("error", stop);
 		child.once("close", (code, signal) => {
 			if (settled) return;
 			settled = true;

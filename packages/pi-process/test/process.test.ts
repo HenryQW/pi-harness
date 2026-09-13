@@ -46,6 +46,16 @@ test("bounded spawn rejects streaming output beyond its cap", async () => {
 	);
 });
 
+test("bounded spawn rejects when the child closes stdin before consuming it", async () => {
+	await assert.rejects(
+		spawnBounded(process.execPath, ["-e", "process.exit(0)"], {
+			cwd: process.cwd(),
+			stdin: "x".repeat(16 * 1024 * 1024),
+		}),
+		(error: unknown) => error instanceof Error && (error as NodeJS.ErrnoException).code === "EPIPE",
+	);
+});
+
 test("bounded spawn aborts and cleans up an in-flight child", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-process-abort-"));
 	const pidPath = join(root, "child.pid");
