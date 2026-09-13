@@ -219,23 +219,23 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 		body: "Pi session: Deploy API",
 	});
 
-	await commands.get("bark-notifications")!("off", ctx);
+	await commands.get("bark")!("off", ctx);
 	await promptStart({}, ctx);
 	assert.equal(pushes.length, 2);
 
-	await commands.get("bark-notifications")!("on", ctx);
+	await commands.get("bark")!("on", ctx);
 	await promptStart({}, ctx);
 	assert.equal(pushes.length, 3);
 
-	await commands.get("bark-notifications")!("default off", ctx);
+	await commands.get("bark")!("default off", ctx);
 	await promptStart({}, ctx);
 	assert.equal(pushes.length, 4, "the explicit CWD override wins over the default");
 
-	await commands.get("bark-notifications")!("inherit", ctx);
+	await commands.get("bark")!("inherit", ctx);
 	await promptStart({}, ctx);
 	assert.equal(pushes.length, 4, "the CWD inherits the disabled default");
 
-	await commands.get("bark-notifications")!("default on", ctx);
+	await commands.get("bark")!("default on", ctx);
 	await promptStart({}, ctx);
 	assert.equal(pushes.length, 5);
 	const config = JSON.parse(readFileSync(join(agentDir, "config", "pi-bark", "config.json"), "utf8"));
@@ -315,10 +315,10 @@ test("automatic status pushes preserve event order and event-time state", async 
 
 	sessionName = "Settled at event";
 	assert.equal(settled({}, ctx), undefined);
-	await commands.get("bark-notifications")!("off", ctx);
+	await commands.get("bark")!("off", ctx);
 	sessionName = "Disabled at event";
 	assert.equal(promptStart({}, ctx), undefined);
-	await commands.get("bark-notifications")!("on", ctx);
+	await commands.get("bark")!("on", ctx);
 	sessionName = "Changed after events";
 	assert.equal(pushes.length, 1, "settled notification waits for the prompt push");
 

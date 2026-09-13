@@ -51,8 +51,8 @@ The `body` value is the same text that Pi's `/copy` command selects. Markdown, c
 | --- | --- | --- |
 | `/copyb` | command | Copy the last agent message and send a Bark push notification. |
 | `/set-bark <device-key> [server-url]` | command | Save the Device Key and Bark server URL. |
-| `/bark-notifications on\|off\|inherit` | command | Override automatic status notifications for the current CWD. |
-| `/bark-notifications default on\|off` | command | Set the default for CWDs without an override. |
+| `/bark on\|off\|inherit` | command | Override automatic status notifications for the current CWD. |
+| `/bark default on\|off` | command | Set the default for CWDs without an override. |
 | `pi-bark-key [--force \| --disable]` | executable | Generate, replace, or disable the Custom Encryption Key. |
 
 ### Automatic status notifications
@@ -69,7 +69,7 @@ An unset session name appears as `Unnamed`. Status notifications do not include 
 Automatic notifications are enabled by default. Disable them only in the current CWD:
 
 ```text
-/bark-notifications off
+/bark off
 ```
 
 Use `on` to enable the current CWD explicitly. Use `inherit` to remove its override. The CWD then follows the global default.
@@ -77,7 +77,7 @@ Use `on` to enable the current CWD explicitly. Use `inherit` to remove its overr
 Change that default for all CWDs without an override:
 
 ```text
-/bark-notifications default off
+/bark default off
 ```
 
 These settings do not affect `/copyb`. CWD overrides live in pi-bark's global config, not in project files.

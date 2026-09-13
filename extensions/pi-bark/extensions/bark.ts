@@ -120,12 +120,12 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 			});
 	});
 
-	pi.registerCommand("bark-notifications", {
+	pi.registerCommand("bark", {
 		description: "Configure automatic Bark status notifications",
 		handler: async (args, ctx) => {
 			const [first, second, extra] = args.trim().split(/\s+/);
 			if (extra || (first === "default" ? !["on", "off"].includes(second) : second)) {
-				throw new Error("Usage: /bark-notifications <on|off|inherit> | default <on|off>");
+				throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
 			}
 			if (first === "default") {
 				const enabled = second === "on";
@@ -137,7 +137,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 				return;
 			}
 			if (!(["on", "off", "inherit"] as const).includes(first as "on" | "off" | "inherit")) {
-				throw new Error("Usage: /bark-notifications <on|off|inherit> | default <on|off>");
+				throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
 			}
 			const cwd = resolve(ctx.cwd);
 			await configStore.update((config) => {
