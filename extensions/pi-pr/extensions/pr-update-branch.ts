@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	loadCurrentPullRequest,
 	samePullRequestSnapshot,
@@ -15,10 +16,7 @@ import {
 	requiredOid,
 	resolveRepositoryFetchSource,
 	runChecked,
-	spawnBounded,
 	withWorktreeLock,
-	type Exec,
-	type ExecOptions,
 } from "./pr-execution.ts";
 
 export type UpdateBranchPhase = "ready" | "conflict-awaiting-user" | "verified" | "published" | "blocked";

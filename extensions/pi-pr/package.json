@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "4.0.9",
+  "version": "4.0.10",
   "description": "Run /pr to safely discover or link the current pull request, then create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
@@ -34,6 +34,7 @@
   "dependencies": {
     "@henryqw/pi-config-store": "^1.1.0",
     "@henryqw/pi-herdr": "^0.4.5",
+    "@henryqw/pi-process": "^0.1.0",
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {

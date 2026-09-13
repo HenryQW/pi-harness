@@ -36,6 +36,8 @@ GitHub, use the network, or write files.
 
 **Requires.** [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) is the shared Herdr CLI client. It installs with this package.
 
+**Uses.** [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) runs bounded child processes. It installs with this package.
+
 **Improves.** [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) shows current-branch pull-request status in the footer.
 
 ## Use

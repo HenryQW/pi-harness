@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawnBounded } from "@henryqw/pi-process";
 import { realpath } from "node:fs/promises";
 import {
 	isBashToolResult,
@@ -26,7 +27,7 @@ import {
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
-import { runChecked, spawnBounded } from "./pr-execution.ts";
+import { runChecked } from "./pr-execution.ts";
 import {
 	discoveryIssueKey,
 	discoveryIssueMessage,

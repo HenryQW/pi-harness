@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	loadCurrentPullRequest,
 	readValidatedRemoteAuthority,
@@ -15,10 +16,7 @@ import {
 	requiredOid,
 	requiredText,
 	runChecked,
-	spawnBounded,
 	withWorktreeLock,
-	type Exec,
-	type ExecOptions,
 } from "./pr-execution.ts";
 
 const PAGE_BYTES = 512 * 1024;

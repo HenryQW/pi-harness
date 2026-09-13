@@ -38,7 +38,7 @@
     ]
   },
   "scripts": {
-    "build": "pnpm --filter @henryqw/pi-config-store --filter @henryqw/pi-herdr --filter @henryqw/pi-task-models --filter @henryqw/pi-subagent --filter @henryqw/pi-ask-question run build",
+    "build": "pnpm --filter @henryqw/pi-config-store --filter @henryqw/pi-herdr --filter @henryqw/pi-process --filter @henryqw/pi-task-models --filter @henryqw/pi-subagent --filter @henryqw/pi-ask-question run build",
     "postinstall": "pnpm run build",
     "test": "node --test scripts/check-package-versions.test.mjs && node scripts/test-workspaces.mjs",
     "test:live": "pnpm --filter @henryqw/pi-auto-compact run test:live",

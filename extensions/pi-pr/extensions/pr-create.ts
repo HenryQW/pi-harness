@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	branchTrackingRef,
 	fetchBranchTrackingRef,
@@ -29,10 +30,7 @@ import {
 	requiredOid,
 	requiredText,
 	runChecked,
-	spawnBounded,
 	withWorktreeLock,
-	type Exec,
-	type ExecOptions,
 } from "./pr-execution.ts";
 
 const MAX_TITLE_BYTES = 256;

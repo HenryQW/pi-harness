@@ -1,8 +1,8 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { runGit, type GitRunner } from "./git-process.ts";
 
 export interface WorktreeInfo {
 	path: string;
@@ -17,9 +17,6 @@ export type WorktreePayload =
 	| { outcome: "retained"; path: string; branch: string; commits: number; dirty: boolean }
 	| { outcome: "recovery"; path: string; branch: string; note: string; commits?: number; dirty?: boolean };
 
-export type GitRunner = (args: string[], cwd: string, signal?: AbortSignal) => Promise<{ code: number; stdout: string; stderr: string }>;
-
-const GIT_TIMEOUT_MS = 30_000;
 const WORKTREES_DIRNAME = ".worktrees";
 const BRANCH_NAMESPACE = "pi-subagent";
 
@@ -32,18 +29,6 @@ export class WorktreeSetupError extends Error {
 		this.worktree = worktree;
 	}
 }
-
-/** Runs git, capturing output; never throws on non-zero exit or spawn failure. */
-const runGit: GitRunner = (args, cwd, signal) =>
-	new Promise((resolve) => {
-		execFile("git", args, { cwd, timeout: GIT_TIMEOUT_MS, signal }, (error, stdout, stderr) => {
-			resolve({
-				code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
-				stdout: String(stdout),
-				stderr: String(stderr),
-			});
-		});
-	});
 
 const sanitizeShortId = (childId: string): string =>
 	createHash("sha256").update(childId).digest("hex").slice(0, 24);
@@ -96,10 +81,13 @@ export async function createChildWorktree(
 	onPrepared?: (worktree: WorktreeInfo) => Promise<void>,
 ): Promise<WorktreeInfo | undefined> {
 	const root = await run(["rev-parse", "--show-toplevel"], cwd, signal);
+	signal?.throwIfAborted();
+	if (root.code === -1) throw new Error(`git rev-parse failed (${root.stderr.trim().slice(0, 200)})`);
 	if (root.code !== 0) {
 		signal?.throwIfAborted();
 		const repository = await run(["-c", "safe.directory=*", "rev-parse", "--show-toplevel"], cwd, signal);
 		signal?.throwIfAborted();
+		if (repository.code === -1) throw new Error(`git rev-parse failed (${repository.stderr.trim().slice(0, 200)})`);
 		if (repository.code !== 0 && !hasRepositoryMarker(cwd) && !process.env.GIT_DIR && !process.env.GIT_WORK_TREE) return undefined;
 		throw new Error(`git rev-parse failed (${root.stderr.trim().slice(0, 200)})`); // dubious ownership, timeout, …
 	}
@@ -109,6 +97,8 @@ export async function createChildWorktree(
 	if (prefix.code !== 0) throw new Error(`git rev-parse --show-prefix failed (${prefix.stderr.trim().slice(0, 200)})`);
 	const relativeCwd = stripGitLineEnd(prefix.stdout);
 	const base = await run(["rev-parse", "HEAD"], repoRoot, signal);
+	signal?.throwIfAborted();
+	if (base.code === -1) throw new Error(`git rev-parse HEAD failed (${base.stderr.trim().slice(0, 200)})`);
 	if (base.code !== 0) {
 		signal?.throwIfAborted();
 		const head = await run(["symbolic-ref", "--quiet", "HEAD"], repoRoot, signal);
