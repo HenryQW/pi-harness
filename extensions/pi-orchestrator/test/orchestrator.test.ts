@@ -70,7 +70,6 @@ const PRIVATE_STATE = {
 			allocations: [{
 				kind: "worktree",
 				status: "owned",
-				resourceId: "/tmp/pi-task",
 				worktree: {
 					path: "/tmp/pi-task",
 					cwd: "/tmp/pi-task",
@@ -112,7 +111,7 @@ const PRIVATE_STATE = {
 	launchRecords: {
 		"implementer/fast": {
 			env: { SECRET_TOKEN: "PRIVATE PROCESS ENVIRONMENT" },
-			rawArgs: ["--private-command-line"],
+			args: ["--private-command-line"],
 		},
 	},
 	createdAt: 100,

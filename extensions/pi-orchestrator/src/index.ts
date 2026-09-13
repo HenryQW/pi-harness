@@ -5,7 +5,6 @@ export {
 	createRoleLaunchRuntime,
 	ORCHESTRATOR_MODEL_TASK,
 	RoleLaunchRuntime,
-	verifyLaunchRecord,
 	type LaunchRuntimeOptions,
 } from "./launch-runtime.ts";
 export * from "./runner.ts";

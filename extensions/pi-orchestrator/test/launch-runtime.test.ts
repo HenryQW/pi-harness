@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -10,12 +10,10 @@ import {
 	normalizeResolvedRoleLaunch,
 	ORCHESTRATOR_MODEL_TASK,
 	selectRequiredRolesForRequest,
-	verifyLaunchRecord,
 	type NormalizeResolvedRoleLaunchInput,
 } from "../src/launch-runtime.ts";
 import type { OperationContext } from "../src/runner.ts";
 import {
-	launchRecordFingerprint,
 	type ExecuteRequest,
 	type ModelClass,
 	type NormalizedLaunchRecord,
@@ -213,9 +211,18 @@ function recordsByKey(records: readonly NormalizedLaunchRecord[]): Record<string
 	return Object.fromEntries(records.map((record) => [record.key, record]));
 }
 
-function refingerprint(record: NormalizedLaunchRecord): NormalizedLaunchRecord {
-	const { fingerprint: _old, ...value } = record;
-	return { ...value, fingerprint: launchRecordFingerprint(value) };
+function resolvedArgs(record: NormalizedLaunchRecord, prompt = "Resolved Role prompt.\nSecond line."): string[] {
+	const args = [...record.args];
+	args.splice(record.promptArgIndex, 0, "--append-system-prompt", prompt);
+	return args;
+}
+
+function transientPromptPath(args: readonly string[]): string {
+	const index = args.indexOf("--append-system-prompt");
+	assert.ok(index >= 0);
+	assert.equal(args.lastIndexOf("--append-system-prompt"), index);
+	assert.ok(args[index + 1]);
+	return args[index + 1]!;
 }
 
 test("default correlation tokens contain 96 bits as 24 lowercase hex characters", async (t) => {
@@ -259,14 +266,18 @@ test("preflight rejects a root resolver result that is not already canonical", a
 	assert.deepEqual(fixture.inspectedRoots, []);
 });
 
-test("effective user Role overrides supply the exact tools and prompt", async (t) => {
+test("effective user Role overrides supply exact tools and only a durable prompt hash", async (t) => {
 	const fixture = await harness(t);
 	await fixture.setRole({ name: "implementer", tools: ["read"], prompt: "Use the user override exactly." });
 	const prepared = await preflight(fixture);
 	const record = prepared.launchRecords[0]! as NormalizedLaunchRecord;
+	const serialized = JSON.stringify(record);
 	assert.deepEqual(record.tools, ["read"]);
-	assert.match(record.prompt!.rawValue, /Use the user override exactly\./);
-	assert.deepEqual(record.rawArgs.filter((arg) => arg === record.prompt!.rawValue), [record.prompt!.rawValue]);
+	assert.match(record.promptSha256, /^[0-9a-f]{64}$/);
+	assert.match(record.roleFingerprint, /^[0-9a-f]{64}$/);
+	assert.doesNotMatch(serialized, /Use the user override exactly|append-system-prompt|system-prompt/);
+	assert.equal("prompt" in record, false);
+	assert.equal("rawArgs" in record, false);
 });
 
 test("required Role selection fails closed on missing or ambiguous Roles", () => {
@@ -417,7 +428,7 @@ test("Reviewer Role rejects mutable tools, Skills, extensions, and unexpected re
 		await writeFile(addition, "export default function x() {}\n");
 		const launch: ResolvedRoleLaunch = {
 			env: {},
-			args: [...record.rawArgs.slice(0, -2), "--extension", addition, ...record.rawArgs.slice(-2)],
+			args: [...resolvedArgs(record), "--extension", addition],
 			model: fixture.models.find(({ id }) => id === "fast-model")!,
 			thinkingLevel: "low",
 			missingSkills: [],
@@ -460,7 +471,7 @@ test("normalization rejects a non-empty resolved Role environment", async (t) =>
 	const effectiveRole = loadRoles(fixture.agentDir).find(({ name }) => name === "implementer")!;
 	const launch: ResolvedRoleLaunch = {
 		env: { SECRET: "caller" },
-		args: record.rawArgs,
+		args: resolvedArgs(record),
 		model: fixture.models.find(({ id }) => id === "fast-model")!,
 		thinkingLevel: "low",
 		missingSkills: [],
@@ -472,7 +483,6 @@ test("normalization rejects a non-empty resolved Role environment", async (t) =>
 		launch,
 		commands: fixture.commands,
 		tools: fixture.tools,
-		promptPath: record.prompt!.path,
 		knownFiles: {
 			roleTools: record.roleExtensions.at(-1)!,
 			multiCodex: record.roleExtensions.at(-1)!,
@@ -482,199 +492,91 @@ test("normalization rejects a non-empty resolved Role environment", async (t) =>
 	await assert.rejects(normalizeResolvedRoleLaunch(input), /environment must be empty/i);
 });
 
-test("Implementer prompt metadata replaces exactly one argv value", async (t) => {
+test("acquisition creates unique private OS-temp prompts and leaves no request launch directory", async (t) => {
 	const fixture = await harness(t);
-	await fixture.setRole({ name: "implementer", tools: ["read"], prompt: "First line.\nSecond line." });
-	const prepared = await preflight(fixture);
-	const record = prepared.launchRecords[0]! as NormalizedLaunchRecord;
-	const differences = record.rawArgs.flatMap((arg, index) => arg === record.prompt!.finalArgs[index] ? [] : [index]);
-	assert.deepEqual(differences, [record.rawArgs.indexOf("--append-system-prompt") + 1]);
-	assert.equal(record.rawArgs[differences[0]!], record.prompt!.rawValue);
-	assert.equal(record.prompt!.finalArgs[differences[0]!], record.prompt!.path);
-	assert.ok(record.prompt!.path.startsWith(join(await realpath(fixture.agentDir), "config", "pi-orchestrator")));
-	await assert.rejects(readFile(record.prompt!.path), /ENOENT/);
-});
-
-test("materialization creates exclusive mode-0600 prompt files and verifies exact content", async (t) => {
-	const fixture = await harness(t);
-	const definition = request([task("task-a", "fast"), task("task-b", "frontier")]);
+	await fixture.setRole({ name: "implementer", prompt: "Private Implementer Role prompt." });
+	await fixture.setRole({ name: "reviewer", prompt: "Private Reviewer Role prompt." });
+	const definition = request([
+		task("task-a", "fast", { criterion: "Review.", modelClass: "fast" }),
+		task("task-b", "frontier"),
+	]);
 	const prepared = await preflight(fixture, definition);
-	const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-	await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: definition, records }, operationContext());
-	for (const record of Object.values(records)) {
-		assert.ok(record.prompt);
-		assert.equal(await readFile(record.prompt.path, "utf8"), record.prompt.rawValue);
-		const mode = (await lstat(record.prompt.path)).mode & 0o7777;
-		assert.equal(mode, 0o600);
-		assert.equal((await lstat(dirname(record.prompt.path))).mode & 0o7777, 0o700);
-		await verifyLaunchRecord(record);
+	const records = prepared.launchRecords as NormalizedLaunchRecord[];
+	const serialized = JSON.stringify(records);
+	assert.doesNotMatch(serialized, /Private (?:Implementer|Reviewer) Role prompt|append-system-prompt|system-prompt/);
+	await assert.rejects(lstat(join(fixture.agentDir, "config", "pi-orchestrator")), /ENOENT/);
+
+	const handles = await Promise.all(records.flatMap((record) => [
+		fixture.runtime.acquireLaunch(record, operationContext()),
+		fixture.runtime.acquireLaunch(record, operationContext()),
+	]));
+	const paths = handles.map(({ launch }) => transientPromptPath(launch.args));
+	assert.equal(new Set(paths).size, paths.length);
+	try {
+		for (const [index, handle] of handles.entries()) {
+			const path = paths[index]!;
+			const contents = await readFile(path, "utf8");
+			assert.match(contents, handle.launch.role === "implementer"
+				? /Private Implementer Role prompt/
+				: /Private Reviewer Role prompt/);
+			assert.equal((await lstat(path)).mode & 0o7777, 0o600);
+			assert.equal((await lstat(dirname(path))).mode & 0o7777, 0o700);
+			assert.ok(!handle.launch.args.some((arg) => arg.includes(contents)));
+			assert.equal("prompt" in handle.launch, false);
+			assert.equal("rawArgs" in handle.launch, false);
+		}
+	} finally {
+		await Promise.all(handles.map(({ cleanup }) => cleanup()));
 	}
-	await assert.rejects(
-		fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: definition, records }, operationContext()),
-		/already exists/i,
-	);
+	for (const path of paths) {
+		await assert.rejects(lstat(path), /ENOENT/);
+		await assert.rejects(lstat(dirname(path)), /ENOENT/);
+	}
+	await Promise.all(handles.map(({ cleanup }) => cleanup()));
 });
 
-test("prelaunch verification exposes only each Role's exact executable argv", async (t) => {
-	const fixture = await harness(t);
-	const definition = request([task("task-a", "fast", { criterion: "Review.", modelClass: "fast" })]);
-	const prepared = await preflight(fixture, definition);
-	const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-	await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: definition, records }, operationContext());
-
-	const implementerRecord = records["implementer/fast"]!;
-	const implementer = await fixture.runtime.verifyLaunch(implementerRecord, operationContext());
-	assert.equal(implementer.role, "implementer");
-	assert.deepEqual(implementer.args, implementerRecord.prompt!.finalArgs);
-	assert.ok(!implementer.args.includes(implementerRecord.prompt!.rawValue));
-	assert.equal("rawArgs" in implementer, false);
-	assert.equal("prompt" in implementer, false);
-
-	const reviewerRecord = records["reviewer/fast"]!;
-	const reviewer = await fixture.runtime.verifyLaunch(reviewerRecord, operationContext());
-	assert.equal(reviewer.role, "reviewer");
-	assert.deepEqual(reviewer.args, reviewerRecord.rawArgs);
-	assert.equal("rawArgs" in reviewer, false);
-	assert.equal("prompt" in reviewer, false);
-});
-
-test("materialization rejects pre-existing material and duplicate request prompt paths without rewriting", async (t) => {
-	await t.test("pre-existing malformed material", async (t) => {
+test("recovery and every acquisition exact-compare freshly resolved Role state", async (t) => {
+	await t.test("route drift on recovery", async (t) => {
 		const fixture = await harness(t);
-		const prepared = await preflight(fixture);
-		const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-		const prompt = records["implementer/fast"]!.prompt!;
-		await mkdir(dirname(prompt.path), { recursive: true });
-		await writeFile(prompt.path, "malicious\n", { mode: 0o644 });
-		await assert.rejects(
-			fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext()),
-			/already exists/i,
-		);
-		assert.equal(await readFile(prompt.path, "utf8"), "malicious\n");
-	});
-	await t.test("duplicate prompt path", async (t) => {
-		const fixture = await harness(t);
-		const definition = request([task("task-a", "fast"), task("task-b", "frontier")]);
+		const definition = request([task("task-a", "fast", { criterion: "Review.", modelClass: "balanced" })]);
 		const prepared = await preflight(fixture, definition);
 		const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-		const first = records["implementer/fast"]!;
-		const second = records["implementer/frontier"]!;
-		second.prompt = { ...second.prompt!, path: first.prompt!.path, finalArgs: second.prompt!.finalArgs.map((arg) => arg === second.prompt!.path ? first.prompt!.path : arg) };
-		records[second.key] = refingerprint(second);
+		assert.deepEqual(
+			await fixture.runtime.recoverLaunchRecords({ root: prepared.root, request: definition, records }, operationContext()),
+			prepared.launchRecords,
+		);
+		await writeProfiles(fixture.agentDir, { fast: { model: "test-provider/frontier-model", thinkingLevel: "high" } });
 		await assert.rejects(
-			fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: definition, records }, operationContext()),
-			/prompt path is not request-owned|duplicates a private prompt path/i,
+			fixture.runtime.recoverLaunchRecords({ root: prepared.root, request: definition, records }, operationContext()),
+			/Role identity, route, argv, resources, tools, or prompt hash drifted/i,
 		);
 	});
-});
 
-test("verification rejects record, argv, resource, prompt hash/content, and mode drift", async (t) => {
-	await t.test("complete record fingerprint", async (t) => {
+	await t.test("prompt drift immediately before launch", async (t) => {
 		const fixture = await harness(t);
+		await fixture.setRole({ name: "implementer", prompt: "Original Role prompt." });
 		const record = (await preflight(fixture)).launchRecords[0]! as NormalizedLaunchRecord;
-		record.rawArgs.push("--unsafe");
-		await assert.rejects(verifyLaunchRecord(record), /record fingerprint drifted/i);
+		await fixture.setRole({ name: "implementer", prompt: "Changed Role prompt." });
+		await assert.rejects(
+			fixture.runtime.acquireLaunch(record, operationContext()),
+			/prompt hash drifted immediately before launch/i,
+		);
 	});
-	await t.test("only-value argv substitution", async (t) => {
-		const fixture = await harness(t);
-		const prepared = await preflight(fixture);
-		const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-		await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
-		const record = records["implementer/fast"]!;
-		record.prompt!.finalArgs[0] = "--changed";
-		const changed = refingerprint(record);
-		await assert.rejects(verifyLaunchRecord(changed), /replace only its single prompt value/i);
-	});
-	await t.test("resource re-fingerprint", async (t) => {
+
+	await t.test("selected resource drift immediately before launch", async (t) => {
 		const fixture = await harness(t);
 		const extension = join(fixture.directory, "mutable-extension.ts");
 		await writeFile(extension, "version one\n");
 		await fixture.setRole({ name: "implementer", tools: ["read"], extensions: [extension] });
 		const record = (await preflight(fixture)).launchRecords[0]! as NormalizedLaunchRecord;
 		await writeFile(extension, "version two\n");
-		await assert.rejects(verifyLaunchRecord(record), /extension fingerprint drifted/i);
+		await assert.rejects(fixture.runtime.acquireLaunch(record, operationContext()), /extension fingerprint drifted/i);
 	});
-	await t.test("prompt content and hash", async (t) => {
-		const fixture = await harness(t);
-		const prepared = await preflight(fixture);
-		const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-		await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
-		const record = records["implementer/fast"]!;
-		await writeFile(record.prompt!.path, "drift\n", { mode: 0o600 });
-		await assert.rejects(verifyLaunchRecord(record), /content or hash drifted/i);
-	});
-	await t.test("prompt mode", async (t) => {
-		const fixture = await harness(t);
-		const prepared = await preflight(fixture);
-		const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-		await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
-		const record = records["implementer/fast"]!;
-		await chmod(record.prompt!.path, 0o644);
-		await assert.rejects(verifyLaunchRecord(record), /mode drifted from 0600/i);
-	});
-	for (const mode of [0o4600, 0o2600]) {
-		await t.test(`prompt special mode ${mode.toString(8)}`, async (t) => {
-			const fixture = await harness(t);
-			const prepared = await preflight(fixture);
-			const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-			await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
-			const record = records["implementer/fast"]!;
-			await chmod(record.prompt!.path, mode);
-			assert.equal((await lstat(record.prompt!.path)).mode & 0o7777, mode);
-			await assert.rejects(verifyLaunchRecord(record), /mode drifted from 0600/i);
-		});
-	}
-	for (const mode of [0o2700, 0o1700]) {
-		await t.test(`prompt directory special mode ${mode.toString(8)}`, async (t) => {
-			const fixture = await harness(t);
-			const prepared = await preflight(fixture);
-			const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-			await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
-			const record = records["implementer/fast"]!;
-			const directory = dirname(record.prompt!.path);
-			await chmod(directory, mode);
-			assert.equal((await lstat(directory)).mode & 0o7777, mode);
-			await assert.rejects(verifyLaunchRecord(record), /directory mode drifted from 0700/i);
-		});
-	}
-});
 
-test("recovery requires exact effective routes, argv, resources, fingerprints, and prompt files", async (t) => {
-	const fixture = await harness(t);
-	const definition = request([task("task-a", "fast", { criterion: "Review.", modelClass: "balanced" })]);
-	const prepared = await preflight(fixture, definition);
-	const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-	await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: definition, records }, operationContext());
-	const recovered = await fixture.runtime.recoverLaunchRecords({ root: fixture.root, request: definition, records }, operationContext());
-	assert.deepEqual(recovered, prepared.launchRecords);
-
-	await writeProfiles(fixture.agentDir, { fast: { model: "test-provider/frontier-model", thinkingLevel: "high" } });
-	await assert.rejects(
-		fixture.runtime.recoverLaunchRecords({ root: fixture.root, request: definition, records }, operationContext()),
-		/route, argv, resources, or prompt metadata drifted/i,
-	);
-});
-
-test("recovery and reusable prelaunch verification reject prompt and selected-file drift", async (t) => {
-	await t.test("prompt drift on recovery", async (t) => {
+	await t.test("complete durable record drift", async (t) => {
 		const fixture = await harness(t);
-		const prepared = await preflight(fixture);
-		const records = recordsByKey(prepared.launchRecords as NormalizedLaunchRecord[]);
-		await fixture.runtime.materializeLaunchRecords({ root: fixture.root, request: request(), records }, operationContext());
-		await writeFile(records["implementer/fast"]!.prompt!.path, "changed\n", { mode: 0o600 });
-		await assert.rejects(
-			fixture.runtime.recoverLaunchRecords({ root: fixture.root, request: request(), records }, operationContext()),
-			/content or hash drifted/i,
-		);
-	});
-	await t.test("Reviewer resource drift before launch", async (t) => {
-		const fixture = await harness(t);
-		const definition = request([task("task-a", "fast", { criterion: "Review.", modelClass: "fast" })]);
-		const prepared = await preflight(fixture, definition);
-		const reviewer = prepared.launchRecords.find(({ role }) => role === "reviewer")! as NormalizedLaunchRecord;
-		const changed = structuredClone(reviewer);
-		changed.resources[0]!.sha256 = "0".repeat(64);
-		const internallyConsistent = refingerprint(changed);
-		await assert.rejects(verifyLaunchRecord(internallyConsistent), /extension fingerprint drifted/i);
+		const record = (await preflight(fixture)).launchRecords[0]! as NormalizedLaunchRecord;
+		record.args.push("--unsafe");
+		await assert.rejects(fixture.runtime.acquireLaunch(record, operationContext()), /record fingerprint drifted/i);
 	});
 });

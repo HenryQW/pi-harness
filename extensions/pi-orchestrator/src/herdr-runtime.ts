@@ -15,23 +15,36 @@ import {
 } from "@henryqw/pi-herdr";
 import {
 	isCleanCommitted,
+	type AgentAllocationIntent,
 	type AllocationIntent,
+	type AllocationKind,
 	type ExecuteRequest,
+	type HostAllocationIntent,
+	type HostAllocationPlan,
 	type TaskAttempt,
 	type TaskRequest,
+	type WorkerTabAllocationIntent,
+	type WorkspaceAllocationIntent,
 	type WorkspaceIdentity,
+	type WorktreeAllocationIntent,
+	type WorktreeAllocationPlan,
 } from "./schema.ts";
-import type {
-	AllocationReconciliation,
-	AllocationResult,
-	HostAllocationKind,
-	HostCleanupKind,
-	HostRuntime,
-	InFlightTaskCandidateInspection,
-	InFlightTaskCandidateInspector,
-	OperationContext,
-	VerifiedImplementerLaunch,
-	WorkerResult,
+import {
+	type AgentAllocationResult,
+	type AllocationReconciliation,
+	type HostAllocationKind,
+	type HostAllocationResult,
+	type HostCleanupKind,
+	type HostRuntime,
+	type InFlightTaskCandidateInspection,
+	type InFlightTaskCandidateInspector,
+	type OperationContext,
+	type TransientLaunchHandle,
+	type VerifiedImplementerLaunch,
+	withTransientLaunch,
+	type WorkerResult,
+	type WorkerTabAllocationResult,
+	type WorkspaceAllocationResult,
 } from "./runner.ts";
 
 const MIN_HERDR_VERSION = [0, 9, 0] as const;
@@ -75,39 +88,7 @@ export interface HerdrHostRuntimeOptions {
 	lsofCommand?: string;
 }
 
-type WorkspaceDetails = {
-	kind: "workspace";
-	label: string;
-	worktreeCwd: string;
-	mainRoot: string;
-	repoKey: string;
-	herdrRepoRoot: string;
-	expectedWorktreeId: string;
-};
-
-type RepositoryIdentity = Pick<WorkspaceDetails, "repoKey" | "herdrRepoRoot">;
-
-type WorkerTabDetails = {
-	kind: "worker_tab";
-	label: string;
-	workspaceId: string;
-	workspaceRootTabId: string;
-	workspaceRootPaneId: string;
-	worktreeCwd: string;
-	leasePath: string;
-};
-
-type AgentDetails = {
-	kind: "agent";
-	agentName: string;
-	workspaceId: string;
-	tabId: string;
-	paneId: string;
-	worktreeCwd: string;
-	leasePath: string;
-};
-
-type HostDetails = WorkspaceDetails | WorkerTabDetails | AgentDetails;
+type RepositoryIdentity = Pick<WorkspaceAllocationIntent, "repoKey" | "herdrRepoRoot">;
 type JsonRecord = Record<string, unknown>;
 
 const defaultRunProcess: HostProcessRunner = (command, args, options) => new Promise((resolveResult) => {
@@ -155,14 +136,6 @@ function exactAbsolutePath(value: unknown, label: string): string {
 	const path = exactString(value, label);
 	if (!isAbsolute(path)) throw new Error(`${label} must be an absolute path.`);
 	return path;
-}
-
-function exactKeys(value: JsonRecord, expected: readonly string[], label: string): void {
-	const actual = Object.keys(value).sort();
-	const wanted = [...expected].sort();
-	if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
-		throw new Error(`${label} has unsupported or missing fields.`);
-	}
 }
 
 function safeText(error: unknown): string {
@@ -247,62 +220,22 @@ function requireSchemaCapabilities(schema: JsonRecord): void {
 	}
 }
 
-function ownedIntent(attempt: TaskAttempt, kind: AllocationIntent["kind"]): AllocationIntent {
-	const matches = attempt.allocations.filter((intent) => intent.kind === kind && intent.status === "owned");
-	if (matches.length !== 1 || !matches[0]!.resourceId) throw new Error(`Task lacks one exact owned ${kind} allocation.`);
+type AllocationOfKind<Kind extends AllocationKind> = Extract<AllocationIntent, { kind: Kind }>;
+
+function ownedIntent<Kind extends AllocationKind>(attempt: TaskAttempt, kind: Kind): AllocationOfKind<Kind> {
+	const matches = attempt.allocations.filter(
+		(intent): intent is AllocationOfKind<Kind> => intent.kind === kind && intent.status === "owned",
+	);
+	if (matches.length !== 1) throw new Error(`Task lacks one exact owned ${kind} allocation.`);
 	return matches[0]!;
 }
 
-function worktreeIntent(attempt: TaskAttempt): AllocationIntent & { worktree: NonNullable<AllocationIntent["worktree"]> } {
+function worktreeIntent(attempt: TaskAttempt): WorktreeAllocationPlan {
 	const intent = ownedIntent(attempt, "worktree");
-	if (!intent.worktree || intent.resourceId !== intent.worktree.path || intent.worktree.cwd !== intent.worktree.path) {
+	if (!intent.worktree || intent.worktree.cwd !== intent.worktree.path) {
 		throw new Error("Task lacks exact owned worktree metadata.");
 	}
-	return intent as AllocationIntent & { worktree: NonNullable<AllocationIntent["worktree"]> };
-}
-
-function parseDetails(intent: AllocationIntent): HostDetails {
-	let parsed;
-	try {
-		parsed = record(JSON.parse(intent.details) as unknown, `${intent.kind} allocation details`);
-	} catch (error) {
-		throw new Error(`${intent.kind} allocation details are malformed.`, { cause: error });
-	}
-	if (parsed.kind !== intent.kind) throw new Error(`${intent.kind} allocation details have the wrong kind.`);
-	if (intent.kind === "workspace") {
-		exactKeys(parsed, ["kind", "label", "worktreeCwd", "mainRoot", "repoKey", "herdrRepoRoot", "expectedWorktreeId"], "workspace allocation details");
-		return {
-			kind: "workspace",
-			label: exactString(parsed.label, "workspace label"),
-			worktreeCwd: exactAbsolutePath(parsed.worktreeCwd, "workspace worktree cwd"),
-			mainRoot: exactAbsolutePath(parsed.mainRoot, "workspace Main root"),
-			repoKey: exactAbsolutePath(parsed.repoKey, "workspace repository key"),
-			herdrRepoRoot: exactAbsolutePath(parsed.herdrRepoRoot, "workspace Herdr repository root"),
-			expectedWorktreeId: exactAbsolutePath(parsed.expectedWorktreeId, "workspace expected worktree ID"),
-		};
-	}
-	if (intent.kind === "worker_tab") {
-		exactKeys(parsed, ["kind", "label", "workspaceId", "workspaceRootTabId", "workspaceRootPaneId", "worktreeCwd", "leasePath"], "worker-tab allocation details");
-		return {
-			kind: "worker_tab",
-			label: exactString(parsed.label, "worker-tab label"),
-			workspaceId: exactString(parsed.workspaceId, "worker-tab workspace ID"),
-			workspaceRootTabId: exactString(parsed.workspaceRootTabId, "workspace root tab ID"),
-			workspaceRootPaneId: exactString(parsed.workspaceRootPaneId, "workspace root pane ID"),
-			worktreeCwd: exactString(parsed.worktreeCwd, "worker-tab cwd"),
-			leasePath: exactString(parsed.leasePath, "worker-tab lease path"),
-		};
-	}
-	exactKeys(parsed, ["kind", "agentName", "workspaceId", "tabId", "paneId", "worktreeCwd", "leasePath"], "agent allocation details");
-	return {
-		kind: "agent",
-		agentName: exactString(parsed.agentName, "agent name"),
-		workspaceId: exactString(parsed.workspaceId, "agent workspace ID"),
-		tabId: exactString(parsed.tabId, "agent tab ID"),
-		paneId: exactString(parsed.paneId, "agent pane ID"),
-		worktreeCwd: exactString(parsed.worktreeCwd, "agent worktree cwd"),
-		leasePath: exactString(parsed.leasePath, "agent lease path"),
-	};
+	return intent.worktree;
 }
 
 function expectedLabel(token: string, kind: "workspace" | "worker"): string {
@@ -325,39 +258,41 @@ function requireIntentIdentity(intent: AllocationIntent, attempt: TaskAttempt): 
 	}
 }
 
-function assertWorkspaceDetails(details: WorkspaceDetails, intent: AllocationIntent, attempt: TaskAttempt): void {
+function assertWorkspaceIntent(intent: WorkspaceAllocationIntent, attempt: TaskAttempt): void {
 	const worktree = worktreeIntent(attempt);
-	if (details.label !== expectedLabel(intent.token, "workspace")
-		|| details.worktreeCwd !== worktree.worktree.cwd
-		|| details.mainRoot !== worktree.worktree.repoRoot
-		|| details.expectedWorktreeId !== worktree.resourceId) {
-		throw new Error("Workspace allocation details drifted from the exact owned worktree.");
+	if (exactString(intent.label, "workspace label") !== expectedLabel(intent.token, "workspace")
+		|| exactAbsolutePath(intent.worktreeCwd, "workspace worktree cwd") !== worktree.cwd
+		|| exactAbsolutePath(intent.mainRoot, "workspace Main root") !== worktree.repoRoot) {
+		throw new Error("Workspace allocation plan drifted from the exact owned worktree.");
 	}
+	exactAbsolutePath(intent.repoKey, "workspace repository key");
+	exactAbsolutePath(intent.herdrRepoRoot, "workspace Herdr repository root");
 }
 
-function assertWorkerTabDetails(details: WorkerTabDetails, intent: AllocationIntent, attempt: TaskAttempt): void {
+function assertWorkerTabIntent(intent: WorkerTabAllocationIntent, attempt: TaskAttempt): void {
 	const worktree = worktreeIntent(attempt);
 	const workspace = ownedIntent(attempt, "workspace");
-	if (details.label !== expectedLabel(intent.token, "worker")
-		|| details.workspaceId !== workspace.resourceId
-		|| details.workspaceRootTabId !== workspace.resources?.tabId
-		|| details.workspaceRootPaneId !== workspace.resources?.rootPaneId
-		|| details.worktreeCwd !== worktree.worktree.cwd) {
-		throw new Error("Worker-tab allocation details drifted from their exact parent resources.");
+	if (exactString(intent.label, "worker-tab label") !== expectedLabel(intent.token, "worker")
+		|| exactString(intent.workspaceId, "worker-tab workspace ID") !== workspace.workspaceId
+		|| exactString(intent.workspaceRootTabId, "workspace root tab ID") !== workspace.rootTabId
+		|| exactString(intent.workspaceRootPaneId, "workspace root pane ID") !== workspace.rootPaneId
+		|| exactAbsolutePath(intent.worktreeCwd, "worker-tab cwd") !== worktree.cwd) {
+		throw new Error("Worker-tab allocation plan drifted from its exact parent resources.");
 	}
+	exactAbsolutePath(intent.leasePath, "worker-tab lease path");
 }
 
-function assertAgentDetails(details: AgentDetails, intent: AllocationIntent, attempt: TaskAttempt): void {
+function assertAgentIntent(intent: AgentAllocationIntent, attempt: TaskAttempt): void {
 	const worktree = worktreeIntent(attempt);
 	const workspace = ownedIntent(attempt, "workspace");
 	const tab = ownedIntent(attempt, "worker_tab");
-	if (details.agentName !== expectedAgentName(intent.token)
-		|| details.workspaceId !== workspace.resourceId
-		|| details.tabId !== tab.resourceId
-		|| details.paneId !== tab.resources?.rootPaneId
-		|| details.worktreeCwd !== worktree.worktree.cwd
-		|| details.leasePath !== tab.resources?.leasePath) {
-		throw new Error("Agent allocation details drifted from their exact parent resources.");
+	if (exactString(intent.agentName, "agent name") !== expectedAgentName(intent.token)
+		|| exactString(intent.workspaceId, "agent workspace ID") !== workspace.workspaceId
+		|| exactString(intent.tabId, "agent tab ID") !== tab.tabId
+		|| exactString(intent.paneId, "agent pane ID") !== tab.paneId
+		|| exactAbsolutePath(intent.worktreeCwd, "agent worktree cwd") !== worktree.cwd
+		|| exactAbsolutePath(intent.leasePath, "agent lease path") !== tab.leasePath) {
+		throw new Error("Agent allocation plan drifted from its exact parent resources.");
 	}
 }
 
@@ -370,7 +305,7 @@ function parseWorkspaceInfo(response: JsonRecord, expectedId?: string): JsonReco
 	return workspace;
 }
 
-function parseAgent(response: JsonRecord, expected: AgentDetails, acceptedTypes: readonly string[]): { status: string; interactiveReady: boolean } {
+function parseAgent(response: JsonRecord, expected: AgentAllocationIntent, acceptedTypes: readonly string[]): { status: string; interactiveReady: boolean } {
 	const result = resultRecord(response, "Herdr agent response");
 	if (!acceptedTypes.includes(String(result.type))) throw new Error("Herdr agent response has the wrong type.");
 	const agent = record(result.agent, "Herdr agent");
@@ -502,97 +437,94 @@ export class HerdrHostRuntime implements HostRuntime {
 			kind: HostAllocationKind;
 			task: TaskRequest;
 			attempt: TaskAttempt;
-			owned: Partial<Record<AllocationIntent["kind"], string>>;
 		},
 		context: OperationContext,
-	): Promise<string> {
+	): Promise<HostAllocationPlan> {
 		context.signal.throwIfAborted();
 		const worktree = worktreeIntent(input.attempt);
-		const worktreeId = exactString(worktree.resourceId, "owned worktree ID");
-		if (input.owned.worktree !== worktreeId) throw new Error("Host allocation does not reference the exact owned worktree.");
+		const worktreeCwd = exactAbsolutePath(worktree.cwd, "owned worktree cwd");
 		if (input.kind === "workspace") {
-			const expectedWorktreeId = exactAbsolutePath(worktreeId, "owned worktree ID");
-			const worktreeCwd = exactAbsolutePath(worktree.worktree.cwd, "owned worktree cwd");
 			assignment({ goal: input.goal, task: input.task, kind: "initial", worktreeCwd });
-			const mainRoot = exactAbsolutePath(worktree.worktree.repoRoot, "owned worktree Main root");
+			const mainRoot = exactAbsolutePath(worktree.repoRoot, "owned worktree Main root");
 			const identity = await this.repositoryIdentity(mainRoot, context);
-			return JSON.stringify({
+			return {
 				kind: "workspace",
 				label: expectedLabel(input.attempt.correlationToken, "workspace"),
 				worktreeCwd,
 				mainRoot,
 				...identity,
-				expectedWorktreeId,
-			} satisfies WorkspaceDetails);
+			};
 		}
 		const workspace = ownedIntent(input.attempt, "workspace");
-		const workspaceId = exactString(workspace.resourceId, "owned workspace ID");
-		if (input.owned.workspace !== workspaceId) throw new Error("Host allocation does not reference the exact owned workspace.");
+		const workspaceId = exactString(workspace.workspaceId, "owned workspace ID");
 		if (input.kind === "worker_tab") {
 			const leasePath = join(this.leaseDirectory, input.attempt.correlationToken, `${this.randomId()}.lease`);
 			this.assertLeasePath(leasePath, input.attempt.correlationToken);
-			return JSON.stringify({
+			return {
 				kind: "worker_tab",
 				label: expectedLabel(input.attempt.correlationToken, "worker"),
 				workspaceId,
-				workspaceRootTabId: exactString(workspace.resources?.tabId, "owned workspace root tab ID"),
-				workspaceRootPaneId: exactString(workspace.resources?.rootPaneId, "owned workspace root pane ID"),
-				worktreeCwd: worktree.worktree.cwd,
+				workspaceRootTabId: exactString(workspace.rootTabId, "owned workspace root tab ID"),
+				workspaceRootPaneId: exactString(workspace.rootPaneId, "owned workspace root pane ID"),
+				worktreeCwd,
 				leasePath,
-			} satisfies WorkerTabDetails);
+			};
 		}
 		const tab = ownedIntent(input.attempt, "worker_tab");
-		const tabId = exactString(tab.resourceId, "owned worker tab ID");
-		if (input.owned.worker_tab !== tabId) throw new Error("Agent allocation does not reference the exact owned worker tab.");
-		const leasePath = exactString(tab.resources?.leasePath, "owned worker lease path");
+		const tabId = exactString(tab.tabId, "owned worker tab ID");
+		const leasePath = exactString(tab.leasePath, "owned worker lease path");
 		this.assertLeasePath(leasePath, input.attempt.correlationToken);
-		return JSON.stringify({
+		return {
 			kind: "agent",
 			agentName: expectedAgentName(input.attempt.correlationToken),
 			workspaceId,
 			tabId,
-			paneId: exactString(tab.resources?.rootPaneId, "owned worker root pane ID"),
-			worktreeCwd: worktree.worktree.cwd,
+			paneId: exactString(tab.paneId, "owned worker pane ID"),
+			worktreeCwd,
 			leasePath,
-		} satisfies AgentDetails);
+		};
 	}
 
 	async allocateHost(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt; verifyLaunch?: () => Promise<VerifiedImplementerLaunch> },
+		input: {
+			intent: HostAllocationIntent;
+			task: TaskRequest;
+			attempt: TaskAttempt;
+			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+		},
 		context: OperationContext,
-	): Promise<AllocationResult> {
+	): Promise<HostAllocationResult> {
 		requireIntentIdentity(input.intent, input.attempt);
-		const details = parseDetails(input.intent);
-		if (details.kind === "workspace") {
-			if (input.verifyLaunch) throw new Error("Implementer launch verification is valid only at the agent allocation boundary.");
-			return await this.allocateWorkspace(details, input.intent, input.attempt, context);
+		if (input.intent.kind === "workspace") {
+			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
+			return await this.allocateWorkspace(input.intent, input.attempt, context);
 		}
-		if (details.kind === "worker_tab") {
-			if (input.verifyLaunch) throw new Error("Implementer launch verification is valid only at the agent allocation boundary.");
-			return await this.allocateWorkerTab(details, input.intent, input.attempt, context);
+		if (input.intent.kind === "worker_tab") {
+			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
+			return await this.allocateWorkerTab(input.intent, input.attempt, context);
 		}
-		return await this.allocateAgent(details, input.intent, input.attempt, input.verifyLaunch, context);
+		return await this.allocateAgent(input.intent, input.attempt, input.acquireLaunch, context);
 	}
 
 	async reconcileHostAllocation(
-		input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt },
+		input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
-	): Promise<AllocationReconciliation> {
+	): Promise<AllocationReconciliation<HostAllocationKind>> {
 		requireIntentIdentity(input.intent, input.attempt);
-		const details = parseDetails(input.intent);
-		if (details.kind === "workspace") {
-			assertWorkspaceDetails(details, input.intent, input.attempt);
-			await this.assertRepositoryIdentity(details, context);
+		const allocation = input.intent;
+		if (allocation.kind === "workspace") {
+			assertWorkspaceIntent(allocation, input.attempt);
+			await this.assertRepositoryIdentity(allocation, context);
 			const response = await this.herdr.json(
-				["worktree", "list", "--cwd", details.worktreeCwd],
-				this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS),
+				["worktree", "list", "--cwd", allocation.worktreeCwd],
+				this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS),
 			);
 			const result = resultRecord(response, "Herdr worktree list response");
 			if (result.type !== "worktree_list" || !Array.isArray(result.worktrees)) throw new Error("Herdr worktree list response is malformed.");
 			const source = record(result.source, "Herdr worktree list source");
-			if (exactString(source.source_checkout_path, "Herdr worktree list source checkout_path") !== details.worktreeCwd
-				|| exactString(source.repo_key, "Herdr worktree list source repo_key") !== details.repoKey
-				|| exactString(source.repo_root, "Herdr worktree list source repo_root") !== details.herdrRepoRoot) {
+			if (exactString(source.source_checkout_path, "Herdr worktree list source checkout_path") !== allocation.worktreeCwd
+				|| exactString(source.repo_key, "Herdr worktree list source repo_key") !== allocation.repoKey
+				|| exactString(source.repo_root, "Herdr worktree list source repo_root") !== allocation.herdrRepoRoot) {
 				throw new Error("Herdr worktree list source does not match the exact saved repository identity.");
 			}
 			const worktrees = result.worktrees.map((entry) => {
@@ -603,45 +535,45 @@ export class HerdrHostRuntime implements HostRuntime {
 				if (openWorkspaceId !== undefined && openWorkspaceId !== null) exactString(openWorkspaceId, "Herdr listed open workspace ID");
 				return { path, label, openWorkspaceId: typeof openWorkspaceId === "string" ? openWorkspaceId : undefined };
 			});
-			const target = worktrees.filter((item) => item.path === details.worktreeCwd);
-			const tokenMatches = worktrees.filter((item) => item.label === details.label);
+			const target = worktrees.filter((item) => item.path === allocation.worktreeCwd);
+			const tokenMatches = worktrees.filter((item) => item.label === allocation.label);
 			const possible = [
 				...(target.length === 1 ? [] : [`expected worktree match count ${target.length}`]),
 				...target.filter((item) => item.openWorkspaceId).map((item) => `possible workspace ${item.openWorkspaceId}`),
 				...tokenMatches.map((item) => `token-labelled worktree ${item.path}${item.openWorkspaceId ? ` in workspace ${item.openWorkspaceId}` : ""}`),
 			];
 			return possible.length
-				? { outcome: "possible", failure: "A possible prior Herdr workspace allocation or parent mismatch remains; it was not adopted or closed.", possibleResources: possible }
-				: { outcome: "absent" };
+				? { kind: "workspace", outcome: "possible", failure: "A possible prior Herdr workspace allocation or parent mismatch remains; it was not adopted or closed.", possibleResources: possible }
+				: { kind: "workspace", outcome: "absent" };
 		}
-		if (details.kind === "worker_tab") {
-			assertWorkerTabDetails(details, input.intent, input.attempt);
-			this.assertLeasePath(details.leasePath, input.intent.token);
-			const tabs = (await this.listTabs(details.workspaceId, details.worktreeCwd, context)).map((tab) => ({
+		if (allocation.kind === "worker_tab") {
+			assertWorkerTabIntent(allocation, input.attempt);
+			this.assertLeasePath(allocation.leasePath, input.intent.token);
+			const tabs = (await this.listTabs(allocation.workspaceId, allocation.worktreeCwd, context)).map((tab) => ({
 				id: exactString(tab.tab_id, "Herdr listed tab ID"),
 				workspaceId: exactString(tab.workspace_id, "Herdr listed tab workspace ID"),
 				label: exactString(tab.label, "Herdr listed tab label"),
 			}));
-			if (tabs.some((tab) => tab.workspaceId !== details.workspaceId)) {
+			if (tabs.some((tab) => tab.workspaceId !== allocation.workspaceId)) {
 				throw new Error("Herdr tab list escaped the exact saved workspace scope.");
 			}
-			const rootTabs = tabs.filter((tab) => tab.id === details.workspaceRootTabId);
-			const unexpected = tabs.filter((tab) => tab.id !== details.workspaceRootTabId || tab.label === details.label);
-			const holders = await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true);
+			const rootTabs = tabs.filter((tab) => tab.id === allocation.workspaceRootTabId);
+			const unexpected = tabs.filter((tab) => tab.id !== allocation.workspaceRootTabId || tab.label === allocation.label);
+			const holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, undefined, true);
 			const possible = [
 				...(rootTabs.length === 1 ? [] : [`workspace root tab match count ${rootTabs.length}`]),
 				...unexpected.map((tab) => `possible tab ${tab.id}`),
 				...holders.map((pid) => `lease holder pid ${pid}`),
 			];
 			return possible.length
-				? { outcome: "possible", failure: "A possible prior worker-tab allocation, parent mismatch, or lease holder remains; it was not adopted or touched.", possibleResources: possible }
-				: { outcome: "absent" };
+				? { kind: "worker_tab", outcome: "possible", failure: "A possible prior worker-tab allocation, parent mismatch, or lease holder remains; it was not adopted or touched.", possibleResources: possible }
+				: { kind: "worker_tab", outcome: "absent" };
 		}
-		assertAgentDetails(details, input.intent, input.attempt);
-		this.assertLeasePath(details.leasePath, input.intent.token);
+		assertAgentIntent(allocation, input.attempt);
+		this.assertLeasePath(allocation.leasePath, input.intent.token);
 		try {
-			await this.assertPrivateLease(details.leasePath, false);
-			const agents = (await this.listAgents(details.worktreeCwd, context)).map((agent) => {
+			await this.assertPrivateLease(allocation.leasePath, false);
+			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => {
 				const name = agent.name;
 				if (name !== undefined && name !== null && typeof name !== "string") throw new Error("Herdr listed agent name is malformed.");
 				return {
@@ -650,22 +582,23 @@ export class HerdrHostRuntime implements HostRuntime {
 					tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
 				};
 			});
-			const matches = agents.filter((agent) => agent.name === details.agentName || agent.paneId === details.paneId || agent.tabId === details.tabId);
-			const holders = await this.scanLease(details.leasePath, details.worktreeCwd, context);
+			const matches = agents.filter((agent) => agent.name === allocation.agentName || agent.paneId === allocation.paneId || agent.tabId === allocation.tabId);
+			const holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context);
 			const possible = [
 				...matches.map((agent) => `possible agent ${agent.name ?? "without expected name"} in pane ${agent.paneId}`),
 				...holders.map((pid) => `lease holder pid ${pid}`),
 			];
 			if (possible.length) {
-				return { outcome: "possible", failure: "A possible prior agent allocation or lease holder remains; it was not adopted or touched.", possibleResources: possible };
+				return { kind: "agent", outcome: "possible", failure: "A possible prior agent allocation or lease holder remains; it was not adopted or touched.", possibleResources: possible };
 			}
-			await this.assertStartableAgentPane(details, context, { requireExclusiveTty: true });
-			return { outcome: "absent" };
+			await this.assertStartableAgentPane(allocation, context, { requireExclusiveTty: true });
+			return { kind: "agent", outcome: "absent" };
 		} catch (error) {
 			return {
+				kind: "agent",
 				outcome: "possible",
 				failure: `A prior agent allocation cannot be proved absent: ${safeText(error)}`,
-				possibleResources: [details.agentName, details.paneId, details.leasePath],
+				possibleResources: [allocation.agentName, allocation.paneId, allocation.leasePath],
 			};
 		}
 	}
@@ -682,11 +615,10 @@ export class HerdrHostRuntime implements HostRuntime {
 		},
 		context: OperationContext,
 	): Promise<WorkerResult> {
-		const intent = ownedIntent(input.attempt, "agent");
-		const details = parseDetails(intent);
-		if (details.kind !== "agent") throw new Error("Owned agent allocation has the wrong details.");
-		assertAgentDetails(details, intent, input.attempt);
-		if (input.workerId !== intent.resourceId || input.workerId !== details.agentName) {
+		const allocation = ownedIntent(input.attempt, "agent");
+		requireIntentIdentity(allocation, input.attempt);
+		assertAgentIntent(allocation, input.attempt);
+		if (input.workerId !== allocation.agentName) {
 			throw new Error("Worker prompt does not target the exact saved agent.");
 		}
 		let text: string;
@@ -695,7 +627,7 @@ export class HerdrHostRuntime implements HostRuntime {
 				goal: input.goal,
 				task: input.task,
 				kind: input.kind,
-				worktreeCwd: details.worktreeCwd,
+				worktreeCwd: allocation.worktreeCwd,
 				...(input.failure ? { failure: input.failure } : {}),
 			});
 		} catch (error) {
@@ -703,25 +635,25 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		let ready;
 		try {
-			ready = await this.waitForSettledAgent(details, context);
+			ready = await this.waitForSettledAgent(allocation, context);
 		} catch (error) {
 			return { outcome: context.signal.aborted ? "interrupted" : "unknown", diagnostic: `Exact worker readiness is unknown: ${safeText(error)}` };
 		}
-		if (ready.status === "blocked") return { outcome: "not_prompted", diagnostic: await this.diagnostic(details, context, "Worker was blocked before prompt submission.") };
+		if (ready.status === "blocked") return { outcome: "not_prompted", diagnostic: await this.diagnostic(allocation, context, "Worker was blocked before prompt submission.") };
 		if (!SETTLED_AGENT_STATES.has(ready.status) || !ready.interactiveReady) {
 			return { outcome: "unknown", diagnostic: `Exact worker was not interactively ready: ${ready.status}.` };
 		}
 
-		const promptOptions = this.processOptions(details.worktreeCwd, context);
+		const promptOptions = this.processOptions(allocation.worktreeCwd, context);
 		const promptArgs = [
-			"agent", "prompt", details.agentName, text, "--wait",
+			"agent", "prompt", allocation.agentName, text, "--wait",
 			"--until", "idle", "--until", "done", "--until", "blocked",
 			"--timeout", String(promptOptions.timeoutMs),
 		];
 		const prompted = await this.herdr.exec(promptArgs, promptOptions);
 		if (prompted.code !== 0 || prompted.killed) {
 			if (!prompted.killed && !context.signal.aborted && hasHerdrErrorCode(prompted, "agent_prompt_stalled")) {
-				return await this.reconcileDeliveredPrompt(input, details, context);
+				return await this.reconcileDeliveredPrompt(input, allocation, context);
 			}
 			return {
 				outcome: prompted.killed || context.signal.aborted ? "interrupted" : "unknown",
@@ -730,13 +662,13 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		let settled;
 		try {
-			settled = parseAgent(parseJsonObject(prompted.stdout, "Herdr agent prompt"), details, ["agent_prompted"]);
+			settled = parseAgent(parseJsonObject(prompted.stdout, "Herdr agent prompt"), allocation, ["agent_prompted"]);
 		} catch (error) {
 			return { outcome: "unknown", diagnostic: `Worker prompt response is malformed: ${safeText(error)}` };
 		}
-		if (settled.status === "blocked") return { outcome: "blocked", diagnostic: await this.diagnostic(details, context, "Worker settled as blocked.") };
+		if (settled.status === "blocked") return { outcome: "blocked", diagnostic: await this.diagnostic(allocation, context, "Worker settled as blocked.") };
 		if (!SETTLED_AGENT_STATES.has(settled.status)) return { outcome: "unknown", diagnostic: `Worker prompt did not return a settled state: ${settled.status}.` };
-		return await this.candidateResult(input, details, context);
+		return await this.candidateResult(input, allocation, context);
 	}
 
 	async terminateWorker(
@@ -744,44 +676,43 @@ export class HerdrHostRuntime implements HostRuntime {
 		context: OperationContext,
 	): Promise<{ outcome: "terminated" } | { outcome: "unknown"; failure: string }> {
 		try {
-			const intent = ownedIntent(input.attempt, "agent");
-			const details = parseDetails(intent);
-			if (details.kind !== "agent") throw new Error("Owned agent allocation has the wrong details.");
-			assertAgentDetails(details, intent, input.attempt);
-			if (input.workerId !== intent.resourceId || input.workerId !== details.agentName) throw new Error("Worker termination identity does not match the exact saved agent.");
-			this.assertLeasePath(details.leasePath, intent.token);
-			await this.assertPrivateLease(details.leasePath, false);
+			const allocation = ownedIntent(input.attempt, "agent");
+			requireIntentIdentity(allocation, input.attempt);
+			assertAgentIntent(allocation, input.attempt);
+			if (input.workerId !== allocation.agentName) throw new Error("Worker termination identity does not match the exact saved agent.");
+			this.assertLeasePath(allocation.leasePath, allocation.token);
+			await this.assertPrivateLease(allocation.leasePath, false);
 
 			const processInfo = await this.herdr.json(
-				["pane", "process-info", "--pane", details.paneId],
-				this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+				["pane", "process-info", "--pane", allocation.paneId],
+				this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
 			);
 			const processResult = resultRecord(processInfo, "Herdr pane process-info response");
 			if (processResult.type !== "pane_process_info") throw new Error("Herdr pane process-info response has the wrong type.");
 			const captured = record(processResult.process_info, "Herdr pane process-info");
-			if (captured.pane_id !== details.paneId) {
+			if (captured.pane_id !== allocation.paneId) {
 				throw new Error("Herdr pane process-info did not match the exact saved pane.");
 			}
 
-			const closed = await this.herdr.exec(["pane", "close", details.paneId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+			const closed = await this.herdr.exec(["pane", "close", allocation.paneId], this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 			if (closed.code !== 0 || closed.killed) throw new Error(herdrCommandFailure(["pane", "close"], closed));
 			requireOkResponse(closed.stdout, "Herdr pane close response");
-			if (!await this.paneAbsent(details.paneId, details.worktreeCwd, context)) throw new Error("The exact saved pane still exists after pane close.");
+			if (!await this.paneAbsent(allocation.paneId, allocation.worktreeCwd, context)) throw new Error("The exact saved pane still exists after pane close.");
 
-			let holders = await this.scanLease(details.leasePath, details.worktreeCwd, context);
+			let holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context);
 			if (holders.length) {
-				await this.signalExactHolders(holders, details, "SIGTERM", context);
+				await this.signalExactHolders(holders, allocation, "SIGTERM", context);
 				await this.delay(250, context.signal);
-				holders = await this.scanLease(details.leasePath, details.worktreeCwd, context);
+				holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context);
 			}
 			if (holders.length) {
-				await this.signalExactHolders(holders, details, "SIGKILL", context);
+				await this.signalExactHolders(holders, allocation, "SIGKILL", context);
 				await this.delay(100, context.signal);
-				holders = await this.scanLease(details.leasePath, details.worktreeCwd, context);
+				holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context);
 			}
 			if (holders.length) throw new Error(`Exact process lease still has ${holders.length} surviving holder(s).`);
 			await this.delay(50, context.signal);
-			if ((await this.scanLease(details.leasePath, details.worktreeCwd, context)).length) {
+			if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
 				throw new Error("Exact process lease did not remain empty for two consecutive scans.");
 			}
 			return { outcome: "terminated" };
@@ -799,67 +730,63 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		try {
 			if (input.kind === "worker_tab") {
-				const tabIntent = ownedIntent(input.attempt, "worker_tab");
-				const workspaceIntent = ownedIntent(input.attempt, "workspace");
-				const details = parseDetails(tabIntent);
-				const workspaceDetails = parseDetails(workspaceIntent);
-				if (details.kind !== "worker_tab" || workspaceDetails.kind !== "workspace") throw new Error("Saved worker-tab identity is malformed.");
-				requireIntentIdentity(tabIntent, input.attempt);
-				assertWorkerTabDetails(details, tabIntent, input.attempt);
-				const leasePath = exactString(tabIntent.resources?.leasePath, "saved worker lease path");
-				if (details.leasePath !== leasePath) throw new Error("Saved worker lease path drifted from its owned resource.");
+				const allocation = ownedIntent(input.attempt, "worker_tab");
+				const workspace = ownedIntent(input.attempt, "workspace");
+				requireIntentIdentity(allocation, input.attempt);
+				requireIntentIdentity(workspace, input.attempt);
+				assertWorkerTabIntent(allocation, input.attempt);
+				const leasePath = exactString(allocation.leasePath, "saved worker lease path");
 				this.assertLeasePath(leasePath, input.attempt.correlationToken);
-				assertWorkspaceDetails(workspaceDetails, workspaceIntent, input.attempt);
-				await this.assertRepositoryIdentity(workspaceDetails, context);
-				const tabId = exactString(tabIntent.resourceId, "saved worker tab ID");
-				const workspaceId = exactString(workspaceIntent.resourceId, "saved workspace ID");
-				if (tabId === details.workspaceRootTabId) throw new Error("Saved worker tab aliases the workspace root tab.");
-				const paneId = exactString(tabIntent.resources?.rootPaneId, "saved worker pane ID");
-				if (!await this.paneAbsent(paneId, details.worktreeCwd, context)) {
+				assertWorkspaceIntent(workspace, input.attempt);
+				await this.assertRepositoryIdentity(workspace, context);
+				const tabId = exactString(allocation.tabId, "saved worker tab ID");
+				const workspaceId = exactString(workspace.workspaceId, "saved workspace ID");
+				if (tabId === allocation.workspaceRootTabId) throw new Error("Saved worker tab aliases the workspace root tab.");
+				const paneId = exactString(allocation.paneId, "saved worker pane ID");
+				if (!await this.paneAbsent(paneId, allocation.worktreeCwd, context)) {
 					return { outcome: "blocked", failure: "The exact saved worker pane still exists after termination." };
 				}
-				const workspaceIsAbsent = await this.workspaceAbsent(workspaceId, workspaceDetails, context);
-				const tab = await this.getTab(tabId, details.worktreeCwd, context);
+				const workspaceIsAbsent = await this.workspaceAbsent(workspaceId, workspace, context);
+				const tab = await this.getTab(tabId, allocation.worktreeCwd, context);
 				if (tab) {
-					if (workspaceIsAbsent || tab.workspace_id !== workspaceId || tab.label !== details.label || tab.pane_count !== 0) {
+					if (workspaceIsAbsent || tab.workspace_id !== workspaceId || tab.label !== allocation.label || tab.pane_count !== 0) {
 						return { outcome: "blocked", failure: "The exact saved worker tab no longer matches its owned empty tab identity." };
 					}
-					const closed = await this.herdr.exec(["tab", "close", tabId], this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+					const closed = await this.herdr.exec(["tab", "close", tabId], this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 					if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["tab", "close"], closed)) };
 					requireOkResponse(closed.stdout, "Herdr tab close response");
-					if (await this.getTab(tabId, details.worktreeCwd, context)) {
+					if (await this.getTab(tabId, allocation.worktreeCwd, context)) {
 						return { outcome: "blocked", failure: "The exact saved worker tab still exists after close." };
 					}
 				}
-				await this.removeLeaseArtifacts(details, input.attempt.correlationToken, paneId, tabId, context);
+				await this.removeLeaseArtifacts(allocation, input.attempt.correlationToken, paneId, tabId, context);
 				return tab ? { outcome: "completed" } : { outcome: "absent" };
 			}
 
 			const workerCleanup = input.attempt.cleanup.find((step) => step.kind === "worker_tab");
 			if (workerCleanup?.status !== "completed") return { outcome: "blocked", failure: "Workspace cleanup must follow worker-tab reconciliation." };
-			const workspaceIntent = ownedIntent(input.attempt, "workspace");
-			const details = parseDetails(workspaceIntent);
-			if (details.kind !== "workspace") throw new Error("Saved workspace identity is malformed.");
-			assertWorkspaceDetails(details, workspaceIntent, input.attempt);
-			await this.assertRepositoryIdentity(details, context);
-			const workspaceId = exactString(workspaceIntent.resourceId, "saved workspace ID");
-			if (await this.workspaceAbsent(workspaceId, details, context)) return { outcome: "absent" };
-			const response = await this.herdr.json(["workspace", "get", workspaceId], this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
+			const allocation = ownedIntent(input.attempt, "workspace");
+			requireIntentIdentity(allocation, input.attempt);
+			assertWorkspaceIntent(allocation, input.attempt);
+			await this.assertRepositoryIdentity(allocation, context);
+			const workspaceId = exactString(allocation.workspaceId, "saved workspace ID");
+			if (await this.workspaceAbsent(workspaceId, allocation, context)) return { outcome: "absent" };
+			const response = await this.herdr.json(["workspace", "get", workspaceId], this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 			const workspace = parseWorkspaceInfo(response, workspaceId);
-			this.assertWorkspaceEvidence(workspace, details);
-			const rootTabId = exactString(workspaceIntent.resources?.tabId, "saved workspace root tab ID");
-			const rootPaneId = exactString(workspaceIntent.resources?.rootPaneId, "saved workspace root pane ID");
-			const tabs = await this.listTabs(workspaceId, details.worktreeCwd, context);
-			const panes = await this.listPanes(workspaceId, details.worktreeCwd, context);
+			this.assertWorkspaceEvidence(workspace, allocation);
+			const rootTabId = exactString(allocation.rootTabId, "saved workspace root tab ID");
+			const rootPaneId = exactString(allocation.rootPaneId, "saved workspace root pane ID");
+			const tabs = await this.listTabs(workspaceId, allocation.worktreeCwd, context);
+			const panes = await this.listPanes(workspaceId, allocation.worktreeCwd, context);
 			if (tabs.length !== 1 || tabs[0]!.tab_id !== rootTabId || tabs[0]!.workspace_id !== workspaceId || tabs[0]!.pane_count !== 1
 				|| panes.length !== 1 || panes[0]!.pane_id !== rootPaneId || panes[0]!.tab_id !== rootTabId
 				|| panes[0]!.workspace_id !== workspaceId || (panes[0]!.agent !== undefined && panes[0]!.agent !== null)) {
 				return { outcome: "blocked", failure: "The exact saved workspace contains missing, mismatched, or additional resources; it was not closed." };
 			}
-			const closed = await this.herdr.exec(["workspace", "close", workspaceId], this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
+			const closed = await this.herdr.exec(["workspace", "close", workspaceId], this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 			if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["workspace", "close"], closed)) };
 			requireOkResponse(closed.stdout, "Herdr workspace close response");
-			return await this.workspaceAbsent(workspaceId, details, context)
+			return await this.workspaceAbsent(workspaceId, allocation, context)
 				? { outcome: "completed" }
 				: { outcome: "blocked", failure: "The exact saved workspace still exists after close." };
 		} catch (error) {
@@ -868,17 +795,16 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	private async allocateWorkspace(
-		details: WorkspaceDetails,
-		intent: AllocationIntent,
+		allocation: WorkspaceAllocationIntent,
 		attempt: TaskAttempt,
 		context: OperationContext,
-	): Promise<AllocationResult> {
-		assertWorkspaceDetails(details, intent, attempt);
-		await this.assertRepositoryIdentity(details, context);
-		const args = ["worktree", "open", "--cwd", details.herdrRepoRoot, "--path", details.worktreeCwd, "--label", details.label, "--no-focus"];
-		const response = await this.herdr.exec(args, this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
+	): Promise<WorkspaceAllocationResult> {
+		assertWorkspaceIntent(allocation, attempt);
+		await this.assertRepositoryIdentity(allocation, context);
+		const args = ["worktree", "open", "--cwd", allocation.herdrRepoRoot, "--path", allocation.worktreeCwd, "--label", allocation.label, "--no-focus"];
+		const response = await this.herdr.exec(args, this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 		if (response.code !== 0 || response.killed) {
-			return { outcome: "unknown", failure: safeText(herdrCommandFailure(args, response)), possibleResources: [details.label] };
+			return { kind: "workspace", outcome: "unknown", failure: safeText(herdrCommandFailure(args, response)), possibleResources: [allocation.label] };
 		}
 		try {
 			const result = resultRecord(parseJsonObject(response.stdout, "Herdr worktree open response"), "Herdr worktree open response");
@@ -891,33 +817,32 @@ export class HerdrHostRuntime implements HostRuntime {
 			const tabId = exactString(tab.tab_id, "opened tab_id");
 			const rootPaneId = exactString(pane.pane_id, "opened root pane_id");
 			const workspaceWorktree = record(workspace.worktree, "opened workspace worktree");
-			if (workspace.label !== details.label || workspace.focused !== false || tab.workspace_id !== workspaceId
+			if (workspace.label !== allocation.label || workspace.focused !== false || tab.workspace_id !== workspaceId
 				|| tab.focused !== false || pane.workspace_id !== workspaceId || pane.tab_id !== tabId || pane.focused !== false
-				|| worktree.path !== details.worktreeCwd || workspaceWorktree.checkout_path !== details.worktreeCwd
-				|| workspaceWorktree.repo_key !== details.repoKey || workspaceWorktree.repo_root !== details.herdrRepoRoot) {
+				|| worktree.path !== allocation.worktreeCwd || workspaceWorktree.checkout_path !== allocation.worktreeCwd
+				|| workspaceWorktree.repo_key !== allocation.repoKey || workspaceWorktree.repo_root !== allocation.herdrRepoRoot) {
 				throw new Error("Herdr worktree open response does not prove the exact non-focused checkout and repository.");
 			}
-			return { outcome: "owned", resourceId: workspaceId, resources: { tabId, rootPaneId } };
+			return { kind: "workspace", outcome: "owned", workspaceId, rootTabId: tabId, rootPaneId };
 		} catch (error) {
-			return { outcome: "unknown", failure: safeText(error), possibleResources: [details.label] };
+			return { kind: "workspace", outcome: "unknown", failure: safeText(error), possibleResources: [allocation.label] };
 		}
 	}
 
 	private async allocateWorkerTab(
-		details: WorkerTabDetails,
-		intent: AllocationIntent,
+		allocation: WorkerTabAllocationIntent,
 		attempt: TaskAttempt,
 		context: OperationContext,
-	): Promise<AllocationResult> {
-		assertWorkerTabDetails(details, intent, attempt);
-		await this.createPrivateLease(details.leasePath, intent.token);
+	): Promise<WorkerTabAllocationResult> {
+		assertWorkerTabIntent(allocation, attempt);
+		await this.createPrivateLease(allocation.leasePath, allocation.token);
 		const args = [
-			"tab", "create", "--workspace", details.workspaceId, "--cwd", details.worktreeCwd,
-			"--label", details.label, "--env", `${PROCESS_LEASE_ENV}=${details.leasePath}`, "--no-focus",
+			"tab", "create", "--workspace", allocation.workspaceId, "--cwd", allocation.worktreeCwd,
+			"--label", allocation.label, "--env", `${PROCESS_LEASE_ENV}=${allocation.leasePath}`, "--no-focus",
 		];
-		const response = await this.herdr.exec(args, this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+		const response = await this.herdr.exec(args, this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 		if (response.code !== 0 || response.killed) {
-			return { outcome: "unknown", failure: safeText(herdrCommandFailure(args, response)), possibleResources: [details.label, details.leasePath] };
+			return { kind: "worker_tab", outcome: "unknown", failure: safeText(herdrCommandFailure(args, response)), possibleResources: [allocation.label, allocation.leasePath] };
 		}
 		try {
 			const result = resultRecord(parseJsonObject(response.stdout, "Herdr tab create response"), "Herdr tab create response");
@@ -926,67 +851,68 @@ export class HerdrHostRuntime implements HostRuntime {
 			const pane = record(result.root_pane, "Herdr created tab root pane");
 			const tabId = exactString(tab.tab_id, "created tab_id");
 			const paneId = exactString(pane.pane_id, "created root pane_id");
-			if (tabId === details.workspaceRootTabId || paneId === details.workspaceRootPaneId
-				|| tab.workspace_id !== details.workspaceId || tab.label !== details.label || tab.focused !== false || tab.pane_count !== 1
-				|| pane.workspace_id !== details.workspaceId || pane.tab_id !== tabId || pane.cwd !== details.worktreeCwd || pane.focused !== false) {
+			if (tabId === allocation.workspaceRootTabId || paneId === allocation.workspaceRootPaneId
+				|| tab.workspace_id !== allocation.workspaceId || tab.label !== allocation.label || tab.focused !== false || tab.pane_count !== 1
+				|| pane.workspace_id !== allocation.workspaceId || pane.tab_id !== tabId || pane.cwd !== allocation.worktreeCwd || pane.focused !== false) {
 				throw new Error("Herdr tab create response does not prove one exact non-focused worker pane distinct from the workspace root.");
 			}
-			return { outcome: "owned", resourceId: tabId, resources: { rootPaneId: paneId, leasePath: details.leasePath } };
+			return { kind: "worker_tab", outcome: "owned", tabId, paneId };
 		} catch (error) {
-			return { outcome: "unknown", failure: safeText(error), possibleResources: [details.label, details.leasePath] };
+			return { kind: "worker_tab", outcome: "unknown", failure: safeText(error), possibleResources: [allocation.label, allocation.leasePath] };
 		}
 	}
 
 	private async allocateAgent(
-		details: AgentDetails,
-		intent: AllocationIntent,
+		allocation: AgentAllocationIntent,
 		attempt: TaskAttempt,
-		verifyLaunch: (() => Promise<VerifiedImplementerLaunch>) | undefined,
+		acquireLaunch: (() => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>) | undefined,
 		context: OperationContext,
-	): Promise<AllocationResult> {
-		assertAgentDetails(details, intent, attempt);
-		if (!verifyLaunch) throw new Error("Agent start requires immediate Implementer launch verification.");
-		this.assertLeasePath(details.leasePath, intent.token);
-		await this.assertPrivateLease(details.leasePath, false);
-		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context)).length) {
+	): Promise<AgentAllocationResult> {
+		assertAgentIntent(allocation, attempt);
+		if (!acquireLaunch) throw new Error("Agent start requires immediate Implementer launch acquisition.");
+		this.assertLeasePath(allocation.leasePath, allocation.token);
+		await this.assertPrivateLease(allocation.leasePath, false);
+		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
 			throw new Error("Agent start requires an empty exact process lease.");
 		}
-		await this.assertStartableAgentPane(details, context, { requireExclusiveTty: false });
-		const options = this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
-		const launch = await verifyLaunch();
-		if (launch.role !== "implementer") throw new Error("Agent start verification returned the wrong Role.");
-		if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
-		const response = await startPiAgent(this.herdr, {
-			name: details.agentName,
-			pane: details.paneId,
-			args: launch.args,
-			options,
-			shouldRetry: () => false,
+		await this.assertStartableAgentPane(allocation, context, { requireExclusiveTty: false });
+		const options = this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
+		const handle = await acquireLaunch();
+		return await withTransientLaunch(handle, async (launch) => {
+			if (launch.role !== "implementer") throw new Error("Agent start acquisition returned the wrong Role.");
+			if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
+			const response = await startPiAgent(this.herdr, {
+				name: allocation.agentName,
+				pane: allocation.paneId,
+				args: launch.args,
+				options,
+				shouldRetry: () => false,
+			});
+			if (response.code !== 0 || response.killed) {
+				const failure = safeText(herdrCommandFailure(["agent", "start"], response));
+				return hasHerdrErrorCode(response, "agent_pane_busy") && !response.killed
+					? { kind: "agent", outcome: "absent", failure }
+					: { kind: "agent", outcome: "unknown", failure, possibleResources: [allocation.agentName, allocation.paneId] };
+			}
+			try {
+				const agent = parseAgent(parseJsonObject(response.stdout, "Herdr agent start response"), allocation, ["agent_started"]);
+				if (!agent.interactiveReady || agent.status !== "idle") throw new Error("Started Herdr agent is not exactly ready and idle.");
+				return { kind: "agent", outcome: "owned" };
+			} catch (error) {
+				return { kind: "agent", outcome: "unknown", failure: safeText(error), possibleResources: [allocation.agentName, allocation.paneId] };
+			}
 		});
-		if (response.code !== 0 || response.killed) {
-			const failure = safeText(herdrCommandFailure(["agent", "start"], response));
-			return hasHerdrErrorCode(response, "agent_pane_busy") && !response.killed
-				? { outcome: "absent", failure }
-				: { outcome: "unknown", failure, possibleResources: [details.agentName, details.paneId] };
-		}
-		try {
-			const agent = parseAgent(parseJsonObject(response.stdout, "Herdr agent start response"), details, ["agent_started"]);
-			if (!agent.interactiveReady || agent.status !== "idle") throw new Error("Started Herdr agent is not exactly ready and idle.");
-			return { outcome: "owned", resourceId: details.agentName, resources: { paneId: details.paneId } };
-		} catch (error) {
-			return { outcome: "unknown", failure: safeText(error), possibleResources: [details.agentName, details.paneId] };
-		}
 	}
 
 	private async reconcileDeliveredPrompt(
 		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
-		details: AgentDetails,
+		allocation: AgentAllocationIntent,
 		context: OperationContext,
 	): Promise<WorkerResult> {
 		for (;;) {
 			let lifecycle;
 			try {
-				lifecycle = await this.waitForAgentLifecycle(details, context, true);
+				lifecycle = await this.waitForAgentLifecycle(allocation, context, true);
 			} catch (error) {
 				return {
 					outcome: this.contextInterrupted(context) ? "interrupted" : "unknown",
@@ -997,7 +923,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			let inspection: InFlightTaskCandidateInspection;
 			try {
 				inspection = await this.inspectInFlightCandidate(
-					{ root: details.worktreeCwd, task: input.task, attempt: input.attempt },
+					{ root: allocation.worktreeCwd, task: input.task, attempt: input.attempt },
 					this.childContext(context, GIT_INSPECTION_CAP_MS),
 				);
 			} catch (error) {
@@ -1011,7 +937,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			}
 
 			if (lifecycle.status === "blocked") {
-				return { outcome: "blocked", diagnostic: await this.diagnostic(details, context, "Delivered stalled prompt settled as blocked.") };
+				return { outcome: "blocked", diagnostic: await this.diagnostic(allocation, context, "Delivered stalled prompt settled as blocked.") };
 			}
 			if (lifecycle.status === "unknown") {
 				return { outcome: "unknown", diagnostic: "Delivered stalled prompt lifecycle is unknown." };
@@ -1023,7 +949,7 @@ export class HerdrHostRuntime implements HostRuntime {
 				return {
 					outcome: "candidate",
 					candidate: inspection.candidate,
-					diagnostic: await this.diagnostic(details, context, "Delivered stalled prompt settled with a candidate."),
+					diagnostic: await this.diagnostic(allocation, context, "Delivered stalled prompt settled with a candidate."),
 				};
 			}
 
@@ -1040,13 +966,13 @@ export class HerdrHostRuntime implements HostRuntime {
 
 	private async candidateResult(
 		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
-		details: AgentDetails,
+		allocation: AgentAllocationIntent,
 		context: OperationContext,
 	): Promise<WorkerResult> {
 		let inspection: InFlightTaskCandidateInspection;
 		try {
 			inspection = await this.inspectInFlightCandidate(
-				{ root: details.worktreeCwd, task: input.task, attempt: input.attempt },
+				{ root: allocation.worktreeCwd, task: input.task, attempt: input.attempt },
 				this.childContext(context, GIT_INSPECTION_CAP_MS),
 			);
 		} catch (error) {
@@ -1055,13 +981,13 @@ export class HerdrHostRuntime implements HostRuntime {
 		if (!inspection.valid || !inspection.clean || !this.isExpectedCandidate(input, inspection.candidate)) {
 			return {
 				outcome: "blocked",
-				diagnostic: await this.diagnostic(details, context, "Settled worker did not produce an exact changed clean committed candidate."),
+				diagnostic: await this.diagnostic(allocation, context, "Settled worker did not produce an exact changed clean committed candidate."),
 			};
 		}
 		return {
 			outcome: "candidate",
 			candidate: inspection.candidate,
-			diagnostic: await this.diagnostic(details, context, "Worker settled with a candidate."),
+			diagnostic: await this.diagnostic(allocation, context, "Worker settled with a candidate."),
 		};
 	}
 
@@ -1069,36 +995,36 @@ export class HerdrHostRuntime implements HostRuntime {
 		input: { attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
 		candidate: WorkspaceIdentity,
 	): boolean {
-		const expectedBranch = `refs/heads/${worktreeIntent(input.attempt).worktree.branch}`;
+		const expectedBranch = `refs/heads/${worktreeIntent(input.attempt).branch}`;
 		return isCleanCommitted(candidate) && candidate.branch === expectedBranch && candidate.head !== input.preCandidate.head;
 	}
 
-	private async waitForSettledAgent(details: AgentDetails, context: OperationContext): Promise<{ status: string; interactiveReady: boolean }> {
-		return await this.waitForAgentLifecycle(details, context, false);
+	private async waitForSettledAgent(allocation: AgentAllocationIntent, context: OperationContext): Promise<{ status: string; interactiveReady: boolean }> {
+		return await this.waitForAgentLifecycle(allocation, context, false);
 	}
 
 	private async waitForAgentLifecycle(
-		details: AgentDetails,
+		allocation: AgentAllocationIntent,
 		context: OperationContext,
 		includeWorking: boolean,
 	): Promise<{ status: string; interactiveReady: boolean }> {
 		const options = includeWorking
-			? this.processOptions(details.worktreeCwd, context)
-			: this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
+			? this.processOptions(allocation.worktreeCwd, context)
+			: this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
 		const response = await this.herdr.json([
-			"agent", "wait", details.agentName,
+			"agent", "wait", allocation.agentName,
 			"--until", "idle", "--until", "done", "--until", "blocked",
 			...(includeWorking ? ["--until", "working"] : []),
 			"--until", "unknown", "--timeout", String(options.timeoutMs),
 		], options);
-		return parseAgent(response, details, ["agent_info"]);
+		return parseAgent(response, allocation, ["agent_info"]);
 	}
 
-	private async diagnostic(details: AgentDetails, context: OperationContext, prefix: string): Promise<string> {
+	private async diagnostic(allocation: AgentAllocationIntent, context: OperationContext, prefix: string): Promise<string> {
 		try {
 			const response = await this.herdr.exec(
-				["agent", "read", details.agentName, "--source", "recent", "--lines", "80", "--format", "text"],
-				this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+				["agent", "read", allocation.agentName, "--source", "recent", "--lines", "80", "--format", "text"],
+				this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
 			);
 			if (response.code === 0 && !response.killed && response.stdout.trim()) return `${prefix}\n${response.stdout.slice(0, DIAGNOSTIC_LIMIT)}`;
 		} catch {
@@ -1108,42 +1034,42 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	private async assertStartableAgentPane(
-		details: AgentDetails,
+		allocation: AgentAllocationIntent,
 		context: OperationContext,
 		options: { requireExclusiveTty: boolean },
 	): Promise<void> {
 		const paneResponse = await this.herdr.json(
-			["pane", "get", details.paneId],
-			this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+			["pane", "get", allocation.paneId],
+			this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
 		);
 		const paneResult = resultRecord(paneResponse, "Herdr agent pane response");
 		if (paneResult.type !== "pane_info") throw new Error("Herdr agent pane response has the wrong type.");
 		const pane = record(paneResult.pane, "Herdr agent pane");
-		if (exactString(pane.pane_id, "Herdr agent pane ID") !== details.paneId
-			|| exactString(pane.tab_id, "Herdr agent pane tab ID") !== details.tabId
-			|| exactString(pane.workspace_id, "Herdr agent pane workspace ID") !== details.workspaceId
-			|| pane.cwd !== details.worktreeCwd || pane.foreground_cwd !== details.worktreeCwd
+		if (exactString(pane.pane_id, "Herdr agent pane ID") !== allocation.paneId
+			|| exactString(pane.tab_id, "Herdr agent pane tab ID") !== allocation.tabId
+			|| exactString(pane.workspace_id, "Herdr agent pane workspace ID") !== allocation.workspaceId
+			|| pane.cwd !== allocation.worktreeCwd || pane.foreground_cwd !== allocation.worktreeCwd
 			|| (pane.agent !== undefined && pane.agent !== null) || pane.agent_status !== "unknown") {
 			throw new Error("The exact saved agent pane is not empty and startable in its owned worktree.");
 		}
 
 		const processResponse = await this.herdr.json(
-			["pane", "process-info", "--pane", details.paneId],
-			this.processOptions(details.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+			["pane", "process-info", "--pane", allocation.paneId],
+			this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
 		);
 		const processResult = resultRecord(processResponse, "Herdr agent pane process-info response");
 		if (processResult.type !== "pane_process_info") throw new Error("Herdr agent pane process-info response has the wrong type.");
 		const processInfo = record(processResult.process_info, "Herdr agent pane process-info");
 		const shellPid = processInfo.shell_pid;
 		const foreground = processInfo.foreground_processes;
-		if (exactString(processInfo.pane_id, "Herdr agent process pane ID") !== details.paneId
+		if (exactString(processInfo.pane_id, "Herdr agent process pane ID") !== allocation.paneId
 			|| !Number.isSafeInteger(shellPid) || Number(shellPid) <= 0
 			|| processInfo.foreground_process_group_id !== shellPid
 			|| !Array.isArray(foreground) || foreground.length !== 1) {
 			throw new Error("The exact saved agent pane process state is not an idle foreground shell.");
 		}
 		const shell = record(foreground[0], "Herdr agent pane foreground process");
-		if (shell.pid !== shellPid || shell.cwd !== details.worktreeCwd) {
+		if (shell.pid !== shellPid || shell.cwd !== allocation.worktreeCwd) {
 			throw new Error("The exact saved agent pane foreground process is not its owned idle shell.");
 		}
 		exactString(shell.name, "Herdr agent pane shell name");
@@ -1153,7 +1079,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		const inventory = await this.execute(
 			"ps",
 			["-axo", "pid=,tty="],
-			this.processOptions(details.worktreeCwd, context, PROCESS_INSPECTION_CAP_MS),
+			this.processOptions(allocation.worktreeCwd, context, PROCESS_INSPECTION_CAP_MS),
 		);
 		if (inventory.code !== 0 || inventory.killed || inventory.stderr.trim() || !inventory.stdout.trim()) {
 			throw new Error("The exact saved agent pane process inventory failed or was ambiguous.");
@@ -1189,39 +1115,39 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	private async removeLeaseArtifacts(
-		details: WorkerTabDetails,
+		allocation: WorkerTabAllocationIntent,
 		token: string,
 		paneId: string,
 		tabId: string,
 		context: OperationContext,
 	): Promise<void> {
-		this.assertLeasePath(details.leasePath, token);
-		await this.assertPrivateLeaseDirectories(details.leasePath, true);
-		const leaseWasPresent = await this.assertPrivateLease(details.leasePath, true);
-		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true)).length) {
+		this.assertLeasePath(allocation.leasePath, token);
+		await this.assertPrivateLeaseDirectories(allocation.leasePath, true);
+		const leaseWasPresent = await this.assertPrivateLease(allocation.leasePath, true);
+		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, undefined, true)).length) {
 			throw new Error("Exact process lease still has a holder during cleanup.");
 		}
 		await this.delay(50, context.signal);
-		if ((await this.scanLease(details.leasePath, details.worktreeCwd, context, undefined, true)).length) {
+		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, undefined, true)).length) {
 			throw new Error("Exact process lease did not remain empty for two consecutive cleanup scans.");
 		}
-		if (!await this.paneAbsent(paneId, details.worktreeCwd, context)) {
+		if (!await this.paneAbsent(paneId, allocation.worktreeCwd, context)) {
 			throw new Error("The exact saved worker pane reappeared before lease cleanup.");
 		}
-		if (await this.getTab(tabId, details.worktreeCwd, context)) {
+		if (await this.getTab(tabId, allocation.worktreeCwd, context)) {
 			throw new Error("The exact saved worker tab reappeared before lease cleanup.");
 		}
-		const directoryPresent = await this.assertPrivateLeaseDirectories(details.leasePath, true);
+		const directoryPresent = await this.assertPrivateLeaseDirectories(allocation.leasePath, true);
 		if (leaseWasPresent) {
 			if (!directoryPresent) throw new Error("Exact process lease directory disappeared during cleanup.");
-			await this.assertPrivateLease(details.leasePath, false);
-			await unlink(details.leasePath);
-		} else if (await this.assertPrivateLease(details.leasePath, true)) {
+			await this.assertPrivateLease(allocation.leasePath, false);
+			await unlink(allocation.leasePath);
+		} else if (await this.assertPrivateLease(allocation.leasePath, true)) {
 			throw new Error("Exact process lease appeared during cleanup.");
 		}
 		if (!directoryPresent) return;
 		try {
-			await rmdir(dirname(details.leasePath));
+			await rmdir(dirname(allocation.leasePath));
 		} catch (error) {
 			if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
 		}
@@ -1295,13 +1221,13 @@ export class HerdrHostRuntime implements HostRuntime {
 
 	private async signalExactHolders(
 		holders: readonly number[],
-		details: AgentDetails,
+		allocation: AgentAllocationIntent,
 		signal: "SIGTERM" | "SIGKILL",
 		context: OperationContext,
 	): Promise<void> {
 		for (const pid of holders) {
 			context.signal.throwIfAborted();
-			if (!(await this.scanLease(details.leasePath, details.worktreeCwd, context, pid)).includes(pid)) continue;
+			if (!(await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, pid)).includes(pid)) continue;
 			try {
 				this.kill(pid, signal);
 			} catch (error) {
@@ -1355,26 +1281,26 @@ export class HerdrHostRuntime implements HostRuntime {
 		throw new Error("Exact saved pane presence is ambiguous.");
 	}
 
-	private async workspaceAbsent(workspaceId: string, details: WorkspaceDetails, context: OperationContext): Promise<boolean> {
+	private async workspaceAbsent(workspaceId: string, allocation: WorkspaceAllocationIntent, context: OperationContext): Promise<boolean> {
 		const response = await this.herdr.exec(
 			["workspace", "get", workspaceId],
-			this.processOptions(details.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS),
+			this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS),
 		);
 		if (response.code === 0 && !response.killed) {
 			const workspace = parseWorkspaceInfo(parseJsonObject(response.stdout, "Herdr workspace get response"), workspaceId);
-			this.assertWorkspaceEvidence(workspace, details);
+			this.assertWorkspaceEvidence(workspace, allocation);
 			return false;
 		}
 		if (!response.killed && hasHerdrErrorCode(response, "workspace_not_found")) return true;
 		throw new Error("Exact saved workspace presence is ambiguous.");
 	}
 
-	private assertWorkspaceEvidence(workspace: JsonRecord, details: WorkspaceDetails): void {
+	private assertWorkspaceEvidence(workspace: JsonRecord, allocation: WorkspaceAllocationIntent): void {
 		const worktree = record(workspace.worktree, "Owned Herdr workspace worktree");
-		if (exactString(workspace.label, "Owned Herdr workspace label") !== details.label
-			|| exactString(worktree.checkout_path, "Owned Herdr workspace checkout_path") !== details.worktreeCwd
-			|| exactString(worktree.repo_key, "Owned Herdr workspace repo_key") !== details.repoKey
-			|| exactString(worktree.repo_root, "Owned Herdr workspace repo_root") !== details.herdrRepoRoot) {
+		if (exactString(workspace.label, "Owned Herdr workspace label") !== allocation.label
+			|| exactString(worktree.checkout_path, "Owned Herdr workspace checkout_path") !== allocation.worktreeCwd
+			|| exactString(worktree.repo_key, "Owned Herdr workspace repo_key") !== allocation.repoKey
+			|| exactString(worktree.repo_root, "Owned Herdr workspace repo_root") !== allocation.herdrRepoRoot) {
 			throw new Error("The exact saved workspace no longer matches its owned label, checkout, and repository.");
 		}
 	}
@@ -1405,9 +1331,9 @@ export class HerdrHostRuntime implements HostRuntime {
 		return { repoKey, herdrRepoRoot };
 	}
 
-	private async assertRepositoryIdentity(details: WorkspaceDetails, context: OperationContext): Promise<void> {
-		const identity = await this.repositoryIdentity(details.mainRoot, context);
-		if (identity.repoKey !== details.repoKey || identity.herdrRepoRoot !== details.herdrRepoRoot) {
+	private async assertRepositoryIdentity(allocation: WorkspaceAllocationIntent, context: OperationContext): Promise<void> {
+		const identity = await this.repositoryIdentity(allocation.mainRoot, context);
+		if (identity.repoKey !== allocation.repoKey || identity.herdrRepoRoot !== allocation.herdrRepoRoot) {
 			throw new Error("Persisted workspace repository identity no longer matches Git.");
 		}
 	}

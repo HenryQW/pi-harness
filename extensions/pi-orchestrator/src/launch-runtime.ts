@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, readFile, realpath, rmdir, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
 	CHILD_EXCLUDED_TOOL_NAMES,
 	loadRoles,
@@ -14,7 +14,12 @@ import {
 	type Role as SubagentRole,
 } from "@henryqw/pi-subagent";
 import { registerModelTask } from "@henryqw/pi-task-models";
-import type { CoordinatorRuntime, OperationContext, VerifiedLaunch } from "./runner.ts";
+import type {
+	CoordinatorRuntime,
+	OperationContext,
+	TransientLaunchHandle,
+	VerifiedLaunch,
+} from "./runner.ts";
 import {
 	launchKey,
 	launchRecordFingerprint,
@@ -34,8 +39,8 @@ const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const PROMPT_FLAG = "--append-system-prompt";
 const EXTENSION_FLAG = "--extension";
 const SKILL_FLAG = "--skill";
-const REQUEST_DIRECTORY_MODE = 0o700;
-const PROMPT_MODE = 0o600 as const;
+const DIRECTORY_MODE = 0o700;
+const PROMPT_MODE = 0o600;
 const FORBIDDEN_ROLE_SOURCE_NAMES = ["pi-orchestrator"] as const;
 
 export const ORCHESTRATOR_MODEL_TASK = {
@@ -52,6 +57,11 @@ type KnownLaunchFiles = {
 	roleTools: string;
 	multiCodex: string;
 	orchestratorEntrypoint: string;
+};
+
+type ResolvedSnapshot = {
+	record: NormalizedLaunchRecord;
+	prompt: string;
 };
 
 export interface LaunchRuntimeOptions {
@@ -72,7 +82,6 @@ export interface NormalizeResolvedRoleLaunchInput {
 	launch: ResolvedRoleLaunch;
 	commands: ReturnType<ExtensionAPI["getCommands"]>;
 	tools: readonly ToolInfo[];
-	promptPath?: string;
 	knownFiles: KnownLaunchFiles;
 	signal?: AbortSignal;
 }
@@ -87,10 +96,6 @@ function sha256(value: string | Uint8Array): string {
 
 function isMissing(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
-}
-
-function isAlreadyPresent(error: unknown): boolean {
-	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EEXIST");
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -141,23 +146,6 @@ async function canonicalRegularFile(path: string, label: string, signal?: AbortS
 	return canonical;
 }
 
-async function canonicalPlannedPath(path: string, signal?: AbortSignal): Promise<string> {
-	let ancestor = resolve(path);
-	const suffix: string[] = [];
-	for (;;) {
-		abortIfNeeded(signal);
-		try {
-			return resolve(await realpath(ancestor), ...suffix.reverse());
-		} catch (error) {
-			if (!isMissing(error)) throw error;
-			const parent = dirname(ancestor);
-			if (parent === ancestor) throw error;
-			suffix.push(ancestor.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
-			ancestor = parent;
-		}
-	}
-}
-
 function valuesAfter(args: readonly string[], flag: string): string[] {
 	const values: string[] = [];
 	for (let index = 0; index < args.length; index += 1) {
@@ -169,34 +157,36 @@ function valuesAfter(args: readonly string[], flag: string): string[] {
 	return values;
 }
 
-function promptSubstitution(rawArgs: readonly string[], path: string): { rawValue: string; finalArgs: string[] } {
+function stripRolePrompt(rawArgs: readonly string[]): { prompt: string; promptArgIndex: number; args: string[] } {
 	const indexes = rawArgs.flatMap((arg, index) => arg === PROMPT_FLAG ? [index] : []);
-	if (indexes.length !== 1) {
-		throw new Error(`Implementer launch must contain exactly one ${PROMPT_FLAG} pair.`);
+	if (indexes.length !== 1) throw new Error(`Role launch must contain exactly one ${PROMPT_FLAG} pair.`);
+	const promptArgIndex = indexes[0]!;
+	const prompt = rawArgs[promptArgIndex + 1];
+	if (prompt === undefined || !prompt.includes("\n") || !prompt.trim() || prompt.includes("\0")) {
+		throw new Error(`Role ${PROMPT_FLAG} value must be the exact multiline Role prompt.`);
 	}
-	const flagIndex = indexes[0]!;
-	const rawValue = rawArgs[flagIndex + 1];
-	if (rawValue === undefined || !rawValue.includes("\n") || !rawValue.trim() || rawValue.includes("\0")) {
-		throw new Error(`Implementer ${PROMPT_FLAG} value must be the exact multiline Role prompt.`);
+	const args = [...rawArgs.slice(0, promptArgIndex), ...rawArgs.slice(promptArgIndex + 2)];
+	if (args.includes(PROMPT_FLAG) || args.includes(prompt)) {
+		throw new Error("Sanitized Role argv must contain no prompt flag or raw Role prompt.");
 	}
-	const finalArgs = [...rawArgs];
-	finalArgs[flagIndex + 1] = path;
-	return { rawValue, finalArgs };
+	return { prompt, promptArgIndex, args };
 }
 
-function assertExactPromptSubstitution(record: NormalizedLaunchRecord): void {
-	if (record.role === "reviewer") {
-		if (record.prompt) throw new Error(`Reviewer launch ${record.key} must not contain private prompt metadata.`);
-		return;
-	}
-	if (!record.prompt) throw new Error(`Implementer launch ${record.key} has no private prompt metadata.`);
-	const expected = promptSubstitution(record.rawArgs, record.prompt.path);
-	if (record.prompt.rawValue !== expected.rawValue || !isDeepStrictEqual(record.prompt.finalArgs, expected.finalArgs)) {
-		throw new Error(`Implementer launch ${record.key} final argv must replace only its single prompt value.`);
-	}
-	if (record.prompt.sha256 !== sha256(record.prompt.rawValue) || record.prompt.mode !== PROMPT_MODE) {
-		throw new Error(`Implementer launch ${record.key} prompt metadata hash or mode drifted.`);
-	}
+function roleFingerprint(
+	role: SubagentRole,
+	canonicalRoleExtensions: readonly string[],
+	promptSha256: string,
+): string {
+	return sha256(JSON.stringify({
+		name: role.name,
+		description: role.description,
+		modelClass: role.modelClass ?? null,
+		isolation: role.isolation ?? null,
+		tools: [...role.tools],
+		extensions: [...canonicalRoleExtensions],
+		skills: [...role.skills],
+		promptSha256,
+	}));
 }
 
 async function fingerprintFile(path: string, label: string, signal?: AbortSignal): Promise<string> {
@@ -220,6 +210,7 @@ function assertExactReviewerRole(role: SubagentRole): void {
 }
 
 function validateRoleDefinition(role: Role, effectiveRole: SubagentRole): void {
+	if (effectiveRole.name !== role) throw new Error(`Effective Role identity drifted from ${role}.`);
 	requireUnique(effectiveRole.tools, `Effective ${role} Role tools`);
 	requireUnique(effectiveRole.skills, `Effective ${role} Role Skills`);
 	requireUnique(effectiveRole.extensions, `Effective ${role} Role extensions`);
@@ -310,11 +301,10 @@ function expectedResolvedExtensions(role: SubagentRole, launch: ResolvedRoleLaun
 	];
 }
 
-/** Normalize one pi-subagent result without constructing or changing its route or argv. */
-export async function normalizeResolvedRoleLaunch(
+async function normalizedResolvedRoleLaunch(
 	input: NormalizeResolvedRoleLaunchInput,
-): Promise<NormalizedLaunchRecord> {
-	const { role, modelClass, effectiveRole, launch, commands, tools, promptPath, knownFiles, signal } = input;
+): Promise<ResolvedSnapshot> {
+	const { role, modelClass, effectiveRole, launch, commands, tools, knownFiles, signal } = input;
 	validateRoleDefinition(role, effectiveRole);
 	if (launch.missingSkills.length) {
 		throw new Error(`Role ${role} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
@@ -364,34 +354,35 @@ export async function normalizeResolvedRoleLaunch(
 		resources.push({ kind: "skill", path, sha256: await fingerprintFile(path, "Role Skill", signal) });
 	}
 
-	const rawArgs = [...launch.args];
+	const stripped = stripRolePrompt(launch.args);
+	const promptSha256 = sha256(stripped.prompt);
 	const value: Omit<NormalizedLaunchRecord, "fingerprint"> = {
 		key: launchKey(role, modelClass),
 		role,
 		modelClass,
+		roleFingerprint: roleFingerprint(effectiveRole, expectedExtensions.slice(0, effectiveRole.extensions.length), promptSha256),
+		promptSha256,
+		promptArgIndex: stripped.promptArgIndex,
 		model: `${launch.model.provider}/${launch.model.id}`,
 		thinkingLevel: launch.thinkingLevel,
-		rawArgs,
+		args: stripped.args,
 		env: {},
 		tools: [...effectiveRole.tools],
 		roleExtensions: resolvedExtensions,
 		roleSkills: resolvedSkills,
 		resources,
-		...(role === "implementer" ? (() => {
-			if (!promptPath) throw new Error(`Implementer ${modelClass} launch has no request-owned prompt path.`);
-			const prompt = promptSubstitution(rawArgs, promptPath);
-			return { prompt: {
-				rawValue: prompt.rawValue,
-				path: promptPath,
-				mode: PROMPT_MODE,
-				sha256: sha256(prompt.rawValue),
-				finalArgs: prompt.finalArgs,
-			} };
-		})() : {}),
 	};
-	const record = { ...value, fingerprint: launchRecordFingerprint(value) };
-	assertExactPromptSubstitution(record);
-	return record;
+	return {
+		record: { ...value, fingerprint: launchRecordFingerprint(value) },
+		prompt: stripped.prompt,
+	};
+}
+
+/** Normalize one pi-subagent result into a durable prompt-free launch snapshot. */
+export async function normalizeResolvedRoleLaunch(
+	input: NormalizeResolvedRoleLaunchInput,
+): Promise<NormalizedLaunchRecord> {
+	return (await normalizedResolvedRoleLaunch(input)).record;
 }
 
 export function selectRequiredRolesForRequest(roles: readonly SubagentRole[], request: ExecuteRequest): Map<Role, SubagentRole> {
@@ -403,19 +394,6 @@ export function selectRequiredRolesForRequest(roles: readonly SubagentRole[], re
 		selected.set(role, matches[0]!);
 	}
 	return selected;
-}
-
-async function requestLaunchDirectory(
-	root: string,
-	requestId: string,
-	agentDir: string | undefined,
-	signal?: AbortSignal,
-): Promise<{ configHome: string; requestDirectory: string }> {
-	const configHome = await canonicalPlannedPath(resolve(extensionConfigDir("pi-orchestrator", agentDir)), signal);
-	const rootKey = sha256(root);
-	const requestDirectory = resolve(configHome, "launches", rootKey, requestId);
-	if (!isWithin(configHome, requestDirectory)) throw new Error("Private launch directory escaped pi-orchestrator's config home.");
-	return { configHome, requestDirectory };
 }
 
 async function knownLaunchFiles(orchestratorEntrypoint: string, signal?: AbortSignal): Promise<KnownLaunchFiles> {
@@ -434,8 +412,8 @@ async function assertRecordResources(record: NormalizedLaunchRecord, signal?: Ab
 	if (launchRecordFingerprint(fingerprinted) !== fingerprint) {
 		throw new Error(`Launch ${record.key} complete record fingerprint drifted.`);
 	}
-	const extensions = await canonicalizeValues(valuesAfter(record.rawArgs, EXTENSION_FLAG), `Launch ${record.key} argv extensions`, signal);
-	const skills = await canonicalizeValues(valuesAfter(record.rawArgs, SKILL_FLAG), `Launch ${record.key} argv Skills`, signal);
+	const extensions = await canonicalizeValues(valuesAfter(record.args, EXTENSION_FLAG), `Launch ${record.key} argv extensions`, signal);
+	const skills = await canonicalizeValues(valuesAfter(record.args, SKILL_FLAG), `Launch ${record.key} argv Skills`, signal);
 	assertSameValues(extensions, record.roleExtensions, `Launch ${record.key} extension paths`);
 	assertSameValues(skills, record.roleSkills, `Launch ${record.key} Skill paths`);
 	const expected = [
@@ -451,63 +429,116 @@ async function assertRecordResources(record: NormalizedLaunchRecord, signal?: Ab
 		const actual = await fingerprintFile(resource.path, `Launch ${record.key} ${resource.kind}`, signal);
 		if (actual !== resource.sha256) throw new Error(`Launch ${record.key} ${resource.kind} fingerprint drifted: ${resource.path}`);
 	}
-	assertExactPromptSubstitution(record);
-}
-
-async function verifyPromptFile(record: NormalizedLaunchRecord, signal?: AbortSignal): Promise<void> {
-	if (!record.prompt) return;
-	abortIfNeeded(signal);
-	const promptDirectory = dirname(record.prompt.path);
-	let directoryInfo;
-	try {
-		directoryInfo = await lstat(promptDirectory);
-	} catch (error) {
-		if (isMissing(error)) throw new Error(`Launch ${record.key} private prompt directory is missing.`);
-		throw error;
-	}
-	if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()
-		|| (directoryInfo.mode & 0o7777) !== REQUEST_DIRECTORY_MODE) {
-		throw new Error(`Launch ${record.key} private prompt directory mode drifted from 0700.`);
-	}
-	if (normalize(await realpath(promptDirectory)) !== promptDirectory) {
-		throw new Error(`Launch ${record.key} private prompt directory is no longer canonical.`);
-	}
-	let info;
-	try {
-		info = await lstat(record.prompt.path);
-	} catch (error) {
-		if (isMissing(error)) throw new Error(`Launch ${record.key} private prompt file is missing.`);
-		throw error;
-	}
-	if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Launch ${record.key} private prompt is not a regular non-symlink file.`);
-	if ((info.mode & 0o7777) !== PROMPT_MODE) throw new Error(`Launch ${record.key} private prompt mode drifted from 0600.`);
-	if (normalize(await realpath(record.prompt.path)) !== record.prompt.path) {
-		throw new Error(`Launch ${record.key} private prompt path is no longer canonical.`);
-	}
-	const contents = await readFile(record.prompt.path, { signal });
-	abortIfNeeded(signal);
-	const expected = Buffer.from(record.prompt.rawValue, "utf8");
-	if (!contents.equals(expected) || sha256(contents) !== record.prompt.sha256) {
-		throw new Error(`Launch ${record.key} private prompt content or hash drifted.`);
+	if (record.args.includes(PROMPT_FLAG) || record.promptArgIndex > record.args.length) {
+		throw new Error(`Launch ${record.key} durable argv contains invalid prompt transport metadata.`);
 	}
 }
 
-/** Revalidate a persisted launch and return only its exact executable argv. */
-export async function verifyLaunchRecord(record: NormalizedLaunchRecord, options: { signal?: AbortSignal } = {}): Promise<VerifiedLaunch> {
-	await assertRecordResources(record, options.signal);
-	await verifyPromptFile(record, options.signal);
-	const common = {
-		key: record.key,
-		modelClass: record.modelClass,
-		model: record.model,
-		thinkingLevel: record.thinkingLevel,
-		env: Object.freeze({ ...record.env }),
-		tools: Object.freeze([...record.tools]),
-		fingerprint: record.fingerprint,
-	};
-	return record.role === "implementer"
-		? Object.freeze({ ...common, role: "implementer", args: Object.freeze([...record.prompt!.finalArgs]) })
-		: Object.freeze({ ...common, role: "reviewer", args: Object.freeze([...record.rawArgs]) });
+async function removeTransientLaunch(
+	directory: string,
+	promptPath: string,
+	promptRequired: boolean,
+): Promise<void> {
+	const failures: unknown[] = [];
+	try {
+		await unlink(promptPath);
+	} catch (error) {
+		if (promptRequired || !isMissing(error)) {
+			failures.push(new Error(`Could not remove transient Role prompt ${promptPath}.`, { cause: error }));
+		}
+	}
+	try {
+		await rmdir(directory);
+	} catch (error) {
+		failures.push(new Error(`Could not remove transient Role launch directory ${directory}.`, { cause: error }));
+	}
+	if (failures.length === 1) throw failures[0];
+	if (failures.length > 1) throw new AggregateError(failures, "Transient Role launch cleanup was incomplete.");
+}
+
+async function materializeTransientLaunch(
+	record: NormalizedLaunchRecord,
+	prompt: string,
+	signal?: AbortSignal,
+): Promise<TransientLaunchHandle<VerifiedLaunch>> {
+	abortIfNeeded(signal);
+	const created = await mkdtemp(join(tmpdir(), "pi-orchestrator-role-"));
+	let directory = normalize(created);
+	let promptPath = join(directory, "system-prompt");
+	let promptCreated = false;
+	let file: Awaited<ReturnType<typeof open>> | undefined;
+	try {
+		directory = normalize(await realpath(created));
+		promptPath = join(directory, "system-prompt");
+		await chmod(directory, DIRECTORY_MODE);
+		const directoryInfo = await lstat(directory);
+		if (directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory()
+			|| (directoryInfo.mode & 0o7777) !== DIRECTORY_MODE
+			|| !isWithin(normalize(await realpath(tmpdir())), directory)) {
+			throw new Error("Transient Role launch directory is not unique canonical mode 0700 OS-temp storage.");
+		}
+		file = await open(
+			promptPath,
+			constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+			PROMPT_MODE,
+		);
+		promptCreated = true;
+		await file.chmod(PROMPT_MODE);
+		abortIfNeeded(signal);
+		await file.writeFile(prompt, { encoding: "utf8", signal });
+		await file.sync();
+		await file.close();
+		file = undefined;
+		const promptInfo = await lstat(promptPath);
+		if (promptInfo.isSymbolicLink() || !promptInfo.isFile()
+			|| (promptInfo.mode & 0o7777) !== PROMPT_MODE
+			|| normalize(await realpath(promptPath)) !== promptPath) {
+			throw new Error("Transient Role prompt is not a canonical mode 0600 regular file.");
+		}
+		const contents = await readFile(promptPath, { signal });
+		abortIfNeeded(signal);
+		if (!contents.equals(Buffer.from(prompt, "utf8")) || sha256(contents) !== record.promptSha256) {
+			throw new Error(`Transient Role prompt for ${record.key} failed exact verification.`);
+		}
+		const args = [...record.args];
+		args.splice(record.promptArgIndex, 0, PROMPT_FLAG, promptPath);
+		const common = {
+			key: record.key,
+			modelClass: record.modelClass,
+			model: record.model,
+			thinkingLevel: record.thinkingLevel,
+			args: Object.freeze(args),
+			env: Object.freeze({ ...record.env }),
+			tools: Object.freeze([...record.tools]),
+			fingerprint: record.fingerprint,
+		};
+		const launch: VerifiedLaunch = record.role === "implementer"
+			? Object.freeze({ ...common, role: "implementer" as const })
+			: Object.freeze({ ...common, role: "reviewer" as const });
+		let cleanup: Promise<void> | undefined;
+		return Object.freeze({
+			launch,
+			cleanup: async () => await (cleanup ??= removeTransientLaunch(directory, promptPath, true)),
+		});
+	} catch (error) {
+		const failures: unknown[] = [error];
+		if (file) {
+			try {
+				await file.close();
+			} catch (closeError) {
+				failures.push(closeError);
+			}
+		}
+		try {
+			await removeTransientLaunch(directory, promptPath, promptCreated);
+		} catch (cleanupError) {
+			failures.push(cleanupError);
+		}
+		if (failures.length > 1) {
+			throw new AggregateError(failures, `Transient Role prompt materialization for ${record.key} failed and cleanup was incomplete.`);
+		}
+		throw error;
+	}
 }
 
 export class RoleLaunchRuntime implements CoordinatorRuntime {
@@ -526,42 +557,46 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		return this.options.randomToken?.() ?? randomBytes(12).toString("hex");
 	}
 
+	private async resolveSnapshot(
+		role: Role,
+		modelClass: ModelClass,
+		context: OperationContext,
+		knownFiles?: KnownLaunchFiles,
+	): Promise<ResolvedSnapshot> {
+		abortIfNeeded(context.signal);
+		const matches = loadRoles(this.options.agentDir).filter((candidate) => candidate.name === role);
+		if (matches.length !== 1) throw new Error(`Required effective Role ${role} is missing or ambiguous.`);
+		const effectiveRole = matches[0]!;
+		validateRoleDefinition(role, effectiveRole);
+		const commands = this.options.pi.getCommands();
+		const launch = resolveRoleLaunch({ getCommands: () => commands }, this.options.context(), {
+			role: effectiveRole,
+			task: ORCHESTRATOR_MODEL_TASK,
+			modelClass,
+			agentDir: this.options.agentDir,
+		});
+		return await normalizedResolvedRoleLaunch({
+			role,
+			modelClass,
+			effectiveRole,
+			launch,
+			commands,
+			tools: this.options.pi.getAllTools(),
+			knownFiles: knownFiles ?? await knownLaunchFiles(this.options.orchestratorEntrypoint, context.signal),
+			signal: context.signal,
+		});
+	}
+
 	private async prepareLaunchRecords(
 		request: ExecuteRequest,
-		root: string,
 		context: OperationContext,
 	): Promise<NormalizedLaunchRecord[]> {
 		abortIfNeeded(context.signal);
-		const roles = selectRequiredRolesForRequest(loadRoles(this.options.agentDir), request);
-		const commands = this.options.pi.getCommands();
-		const tools = this.options.pi.getAllTools();
-		const ctx = this.options.context();
+		selectRequiredRolesForRequest(loadRoles(this.options.agentDir), request);
 		const knownFiles = await knownLaunchFiles(this.options.orchestratorEntrypoint, context.signal);
-		const { requestDirectory } = await requestLaunchDirectory(root, request.id, this.options.agentDir, context.signal);
 		const records: NormalizedLaunchRecord[] = [];
 		for (const [key, required] of requiredLaunchKeys(request)) {
-			abortIfNeeded(context.signal);
-			const effectiveRole = roles.get(required.role)!;
-			validateRoleDefinition(required.role, effectiveRole);
-			const launch = resolveRoleLaunch({ getCommands: () => commands }, ctx, {
-				role: effectiveRole,
-				task: ORCHESTRATOR_MODEL_TASK,
-				modelClass: required.modelClass,
-				agentDir: this.options.agentDir,
-			});
-			const promptPath = required.role === "implementer"
-				? join(requestDirectory, `${required.role}-${required.modelClass}.prompt`)
-				: undefined;
-			const record = await normalizeResolvedRoleLaunch({
-				...required,
-				effectiveRole,
-				launch,
-				commands,
-				tools,
-				promptPath,
-				knownFiles,
-				signal: context.signal,
-			});
+			const { record } = await this.resolveSnapshot(required.role, required.modelClass, context, knownFiles);
 			if (record.key !== key) throw new Error(`Resolved launch key drifted from ${key}.`);
 			records.push(record);
 		}
@@ -585,70 +620,8 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		if (!rootInfo.isDirectory()) throw new Error("Pi Orchestrator root must be an existing local directory.");
 		abortIfNeeded(context.signal);
 		const main = await this.options.inspectMain({ root }, context);
-		const launchRecords = await this.prepareLaunchRecords(input.request, root, context);
+		const launchRecords = await this.prepareLaunchRecords(input.request, context);
 		return { root, main, launchRecords };
-	}
-
-	async materializeLaunchRecords(
-		input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> },
-		context: OperationContext,
-	): Promise<void> {
-		abortIfNeeded(context.signal);
-		const root = normalize(await realpath(input.root));
-		const records = validateLaunchRecords(input.request, Object.values(input.records));
-		const { configHome, requestDirectory } = await requestLaunchDirectory(root, input.request.id, this.options.agentDir, context.signal);
-		const promptPaths = new Set<string>();
-		for (const [key, required] of requiredLaunchKeys(input.request)) {
-			const record = records[key]!;
-			await assertRecordResources(record, context.signal);
-			if (required.role !== "implementer") continue;
-			const expectedPath = join(requestDirectory, `${required.role}-${required.modelClass}.prompt`);
-			if (record.prompt?.path !== expectedPath) throw new Error(`Launch ${key} private prompt path is not request-owned.`);
-			if (promptPaths.has(expectedPath)) throw new Error(`Launch ${key} duplicates a private prompt path.`);
-			promptPaths.add(expectedPath);
-		}
-		if (!promptPaths.size) throw new Error("No Implementer private prompt files were prepared.");
-
-		const currentLocation = await requestLaunchDirectory(root, input.request.id, this.options.agentDir, context.signal);
-		if (currentLocation.configHome !== configHome || currentLocation.requestDirectory !== requestDirectory) {
-			throw new Error("Private launch directory canonicalization drifted before materialization.");
-		}
-		const parent = dirname(requestDirectory);
-		await mkdir(parent, { recursive: true, mode: REQUEST_DIRECTORY_MODE });
-		abortIfNeeded(context.signal);
-		if (!isWithin(normalize(await realpath(configHome)), normalize(await realpath(parent)))) {
-			throw new Error("Private launch parent escaped pi-orchestrator's config home.");
-		}
-		try {
-			await mkdir(requestDirectory, { mode: REQUEST_DIRECTORY_MODE });
-		} catch (error) {
-			if (isAlreadyPresent(error)) throw new Error(`Private launch directory already exists: ${requestDirectory}`);
-			throw error;
-		}
-		const requestInfo = await lstat(requestDirectory);
-		if (requestInfo.isSymbolicLink() || !requestInfo.isDirectory()
-			|| (requestInfo.mode & 0o7777) !== REQUEST_DIRECTORY_MODE
-			|| normalize(await realpath(requestDirectory)) !== requestDirectory) {
-			throw new Error("Private launch request directory is not canonical mode 0700 storage.");
-		}
-
-		for (const record of Object.values(records)) {
-			if (!record.prompt) continue;
-			let file: Awaited<ReturnType<typeof open>> | undefined;
-			try {
-				file = await open(record.prompt.path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, PROMPT_MODE);
-				abortIfNeeded(context.signal);
-				await file.writeFile(record.prompt.rawValue, { encoding: "utf8", signal: context.signal });
-				await file.sync();
-				await file.close();
-				file = undefined;
-			} catch (error) {
-				await file?.close();
-				if (isAlreadyPresent(error)) throw new Error(`Private prompt file already exists: ${record.prompt.path}`);
-				throw error;
-			}
-		}
-		for (const record of Object.values(records)) await verifyLaunchRecord(record, { signal: context.signal });
 	}
 
 	async recoverLaunchRecords(
@@ -656,19 +629,27 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		context: OperationContext,
 	): Promise<LaunchRecord[]> {
 		abortIfNeeded(context.signal);
-		const root = normalize(await realpath(input.root));
+		if (normalize(await realpath(input.root)) !== input.root) throw new Error("Recorded repository root is no longer canonical.");
 		const recorded = validateLaunchRecords(input.request, Object.values(input.records));
-		const freshRecords = await this.prepareLaunchRecords(input.request, root, context);
+		for (const record of Object.values(recorded)) await assertRecordResources(record, context.signal);
+		const freshRecords = await this.prepareLaunchRecords(input.request, context);
 		const fresh = validateLaunchRecords(input.request, freshRecords);
 		if (!isDeepStrictEqual(fresh, recorded)) {
-			throw new Error("Recorded Role/model launch route, argv, resources, or prompt metadata drifted.");
+			throw new Error("Recorded Role identity, route, argv, resources, tools, or prompt hash drifted.");
 		}
-		for (const record of Object.values(recorded)) await verifyLaunchRecord(record, { signal: context.signal });
 		return freshRecords;
 	}
 
-	async verifyLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<VerifiedLaunch> {
-		return await verifyLaunchRecord(record, { signal: context.signal });
+	async acquireLaunch(
+		record: NormalizedLaunchRecord,
+		context: OperationContext,
+	): Promise<TransientLaunchHandle<VerifiedLaunch>> {
+		await assertRecordResources(record, context.signal);
+		const fresh = await this.resolveSnapshot(record.role, record.modelClass, context);
+		if (!isDeepStrictEqual(fresh.record, record)) {
+			throw new Error(`Recorded ${record.key} Role identity, route, argv, resources, tools, or prompt hash drifted immediately before launch.`);
+		}
+		return await materializeTransientLaunch(record, fresh.prompt, context.signal);
 	}
 }
 

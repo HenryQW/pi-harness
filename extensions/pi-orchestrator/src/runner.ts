@@ -5,6 +5,8 @@ import {
 	CLEANUP_KINDS,
 	isCleanCommitted,
 	launchKey,
+	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
+	MAX_POSSIBLE_RESOURCES,
 	parseExecuteRequest,
 	parseResumeRequest,
 	sameIdentity,
@@ -17,6 +19,8 @@ import {
 	type CleanupKind,
 	type CommandEvidence,
 	type ExecuteRequest,
+	type HostAllocationIntent,
+	type HostAllocationPlan,
 	type LaunchRecord,
 	type ModelClass,
 	type NormalizedLaunchRecord,
@@ -28,12 +32,13 @@ import {
 	type TaskRequest,
 	type TaskState,
 	type WaveState,
-	type WorktreeRecord,
+	type WorktreeAllocationIntent,
+	type WorktreeAllocationPlan,
 	type WorkspaceIdentity,
 } from "./schema.ts";
 import { FileRunStore, type RunStateHandle } from "./store.ts";
 
-const EVIDENCE_MAX_BYTES = 8 * 1024;
+const TRUNCATION_MARKER = "\n[truncated]";
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
@@ -52,14 +57,28 @@ export interface CommandResult extends CheckCommand {
 	stderr: string;
 }
 
-export type AllocationResult =
-	| { outcome: "owned"; resourceId: string; resources?: Record<string, string> }
-	| { outcome: "absent"; failure: string }
-	| { outcome: "unknown"; failure: string; possibleResources?: string[] };
+type AllocationFailureResult<Kind extends AllocationKind> =
+	| { kind: Kind; outcome: "absent"; failure: string }
+	| { kind: Kind; outcome: "unknown"; failure: string; possibleResources?: string[] };
 
-export type AllocationReconciliation =
-	| { outcome: "absent" }
-	| { outcome: "possible"; failure: string; possibleResources?: string[] };
+export type WorktreeAllocationResult =
+	| { kind: "worktree"; outcome: "owned" }
+	| AllocationFailureResult<"worktree">;
+export type WorkspaceAllocationResult =
+	| { kind: "workspace"; outcome: "owned"; workspaceId: string; rootTabId: string; rootPaneId: string }
+	| AllocationFailureResult<"workspace">;
+export type WorkerTabAllocationResult =
+	| { kind: "worker_tab"; outcome: "owned"; tabId: string; paneId: string }
+	| AllocationFailureResult<"worker_tab">;
+export type AgentAllocationResult =
+	| { kind: "agent"; outcome: "owned" }
+	| AllocationFailureResult<"agent">;
+export type HostAllocationResult = WorkspaceAllocationResult | WorkerTabAllocationResult | AgentAllocationResult;
+export type AllocationResult = WorktreeAllocationResult | HostAllocationResult;
+
+export type AllocationReconciliation<Kind extends AllocationKind = AllocationKind> =
+	| { kind: Kind; outcome: "absent" }
+	| { kind: Kind; outcome: "possible"; failure: string; possibleResources?: string[] };
 
 export type WorkerResult =
 	| { outcome: "candidate"; candidate: WorkspaceIdentity; diagnostic?: string }
@@ -84,7 +103,7 @@ export type IntegrationResult =
 	| { outcome: "integrated"; main: WorkspaceIdentity }
 	| { outcome: "failed" | "drift" | "unknown"; failure: string };
 
-/** A prelaunch-verified value that omits the persisted record and private Implementer prompt metadata. */
+/** A just-in-time launch whose argv contains only an ephemeral Role prompt path. */
 export interface VerifiedLaunchBase {
 	readonly key: string;
 	readonly modelClass: ModelClass;
@@ -106,6 +125,39 @@ export interface VerifiedReviewerLaunch extends VerifiedLaunchBase {
 
 export type VerifiedLaunch = VerifiedImplementerLaunch | VerifiedReviewerLaunch;
 
+export interface TransientLaunchHandle<Launch extends VerifiedLaunch = VerifiedLaunch> {
+	readonly launch: Launch;
+	cleanup(): Promise<void>;
+}
+
+/** Run one launch action and surface cleanup failure, including after action failure or abort. */
+export async function withTransientLaunch<Launch extends VerifiedLaunch, Result>(
+	handle: TransientLaunchHandle<Launch>,
+	operation: (launch: Launch) => Promise<Result>,
+): Promise<Result> {
+	let failed = false;
+	let operationError: unknown;
+	try {
+		return await operation(handle.launch);
+	} catch (error) {
+		failed = true;
+		operationError = error;
+		throw error;
+	} finally {
+		try {
+			await handle.cleanup();
+		} catch (cleanupError) {
+			if (failed) {
+				throw new AggregateError(
+					[operationError, cleanupError],
+					"Transient Role launch failed and its prompt cleanup also failed.",
+				);
+			}
+			throw cleanupError;
+		}
+	}
+}
+
 /**
  * Productive hooks may inspect or change implementation state. Every call receives
  * the same request abort signal and a timeout capped by the persisted deadline.
@@ -118,9 +170,8 @@ export interface CoordinatorRuntime {
 		main: WorkspaceIdentity;
 		launchRecords: LaunchRecord[];
 	}>;
-	materializeLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<void>;
 	recoverLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
-	verifyLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<VerifiedLaunch>;
+	acquireLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 }
 
 export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
@@ -133,16 +184,15 @@ export interface HostRuntime {
 		kind: HostAllocationKind;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		owned: Partial<Record<AllocationKind, string>>;
-	}, context: OperationContext): Promise<string>;
+	}, context: OperationContext): Promise<HostAllocationPlan>;
 	allocateHost(input: {
-		intent: AllocationIntent;
+		intent: HostAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		/** Invoked only as the final asynchronous boundary before the non-idempotent agent start. */
-		verifyLaunch?: () => Promise<VerifiedImplementerLaunch>;
-	}, context: OperationContext): Promise<AllocationResult>;
-	reconcileHostAllocation(input: { intent: AllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation>;
+		/** Invoked only after pane, lease, and startability checks at the final agent-start boundary. */
+		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+	}, context: OperationContext): Promise<HostAllocationResult>;
+	reconcileHostAllocation(input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation<HostAllocationKind>>;
 	runWorker(input: {
 		readonly goal: ExecuteRequest["goal"];
 		task: TaskRequest;
@@ -186,17 +236,17 @@ export interface GitRuntime {
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {
 		root: string;
-		intent: AllocationIntent;
+		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-		onPrepared(worktree: WorktreeRecord): Promise<void>;
-	}, context: OperationContext): Promise<AllocationResult>;
+		onPrepared(worktree: WorktreeAllocationPlan): Promise<void>;
+	}, context: OperationContext): Promise<WorktreeAllocationResult>;
 	reconcileWorktreeAllocation(input: {
 		root: string;
-		intent: AllocationIntent;
+		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
-	}, context: OperationContext): Promise<AllocationReconciliation>;
+	}, context: OperationContext): Promise<AllocationReconciliation<"worktree">>;
 	runChecks(input: {
 		root: string;
 		scope: "task" | "final";
@@ -214,7 +264,7 @@ export interface GitRuntime {
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		verifyLaunch(): Promise<VerifiedReviewerLaunch>;
+		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult>;
 	inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	rebase(input: {
@@ -298,19 +348,80 @@ class DeadlineScope {
 	}
 }
 
-function bounded(value: string, maxBytes = EVIDENCE_MAX_BYTES): string {
+function bounded(value: string, maxBytes = MAX_PERSISTED_RUNTIME_TEXT_BYTES): string {
 	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-	let end = Math.min(value.length, maxBytes);
-	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
-	return `${value.slice(0, end)}\n[truncated]`;
+	const contentBytes = maxBytes - Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+	let end = Math.min(value.length, contentBytes);
+	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > contentBytes) end -= 1;
+	return `${value.slice(0, end)}${TRUNCATION_MARKER}`;
+}
+
+function boundedRuntimeText(value: unknown, field: string): string {
+	if (typeof value !== "string") throw new Error(`${field} must be text.`);
+	return bounded(value);
+}
+
+function boundedPossibleResources(values: unknown): string[] | undefined {
+	if (values === undefined) return;
+	if (!Array.isArray(values)) return ["Runtime returned an invalid possible-resource list; cleanup remains blocked."];
+	if (!values.length) return;
+	const retained = values.slice(0, MAX_POSSIBLE_RESOURCES).map((value, index) => {
+		if (typeof value !== "string") return `Runtime returned invalid possible-resource evidence at index ${index}.`;
+		const item = bounded(value);
+		return item.trim() && !item.includes("\0")
+			? item
+			: `Runtime returned invalid possible-resource evidence at index ${index}.`;
+	});
+	if (values.length > MAX_POSSIBLE_RESOURCES) {
+		retained[MAX_POSSIBLE_RESOURCES - 1] = `${values.length - MAX_POSSIBLE_RESOURCES + 1} additional possible resources were omitted; cleanup remains blocked.`;
+	}
+	return retained;
 }
 
 function errorText(error: unknown): string {
 	return bounded(error instanceof Error ? error.message : String(error));
 }
 
-function exactResourceText(value: string): boolean {
-	return Boolean(value.trim() && value.trim() === value && !value.includes("\0"));
+function requireExactAllocationText(value: unknown, field: string): asserts value is string {
+	if (typeof value !== "string" || !value.trim() || value.trim() !== value || value.includes("\0")
+		|| Buffer.byteLength(value, "utf8") > MAX_PERSISTED_RUNTIME_TEXT_BYTES) {
+		throw new Error(`${field} must be bounded exact non-empty text.`);
+	}
+}
+
+function runtimeIdentity(value: unknown, field: string): WorkspaceIdentity {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} must be an exact identity.`);
+	const identity = value as Partial<WorkspaceIdentity>;
+	requireExactAllocationText(identity.branch, `${field} branch`);
+	for (const [name, oid] of Object.entries({ head: identity.head, index: identity.index, tree: identity.tree })) {
+		if (typeof oid !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(oid)) {
+			throw new Error(`${field} ${name} is not an exact object ID.`);
+		}
+	}
+	return { branch: identity.branch, head: identity.head!, index: identity.index!, tree: identity.tree! };
+}
+
+function runtimeToken(value: unknown): string {
+	if (typeof value !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(value)) {
+		throw new Error("Runtime correlation token must match the strict token format.");
+	}
+	return value;
+}
+
+function runtimeHostAllocationPlan(plan: HostAllocationPlan, kind: Exclude<AllocationKind, "worktree">): HostAllocationPlan {
+	if (!plan || typeof plan !== "object" || plan.kind !== kind) throw new Error(`${kind} allocation planning returned the wrong kind.`);
+	const fields = kind === "workspace"
+		? ["label", "worktreeCwd", "mainRoot", "repoKey", "herdrRepoRoot"] as const
+		: kind === "worker_tab"
+			? ["label", "workspaceId", "workspaceRootTabId", "workspaceRootPaneId", "worktreeCwd", "leasePath"] as const
+			: ["agentName", "workspaceId", "tabId", "paneId", "worktreeCwd", "leasePath"] as const;
+	const validated: Record<string, string> = {};
+	for (const field of fields) {
+		const value = (plan as unknown as Record<string, unknown>)[field];
+		requireExactAllocationText(value, `${kind} allocation plan ${field}`);
+		validated[field] = value;
+	}
+	return { kind, ...validated } as HostAllocationPlan;
 }
 
 function taskRequest(state: RunState, id: string): TaskRequest {
@@ -331,15 +442,35 @@ function latestAttempt(task: TaskState): TaskAttempt {
 	return attempt;
 }
 
-function allocationByKind(attempt: TaskAttempt, kind: AllocationKind): AllocationIntent | undefined {
-	return [...attempt.allocations].reverse().find((intent) => intent.kind === kind && intent.status === "owned");
+type AllocationOfKind<Kind extends AllocationKind> = Extract<AllocationIntent, { kind: Kind }>;
+
+function allocationByKind<Kind extends AllocationKind>(attempt: TaskAttempt, kind: Kind): AllocationOfKind<Kind> | undefined {
+	return [...attempt.allocations].reverse().find(
+		(intent): intent is AllocationOfKind<Kind> => intent.kind === kind && intent.status === "owned",
+	);
 }
 
-function ownedAllocations(attempt: TaskAttempt): Partial<Record<AllocationKind, string>> {
-	return Object.fromEntries(ALLOCATION_KINDS.flatMap((kind) => {
-		const intent = allocationByKind(attempt, kind);
-		return intent?.resourceId ? [[kind, intent.resourceId]] : [];
-	})) as Partial<Record<AllocationKind, string>>;
+function applyOwnedAllocationResult(intent: AllocationIntent, result: AllocationResult): void {
+	if (result.kind !== intent.kind) throw new Error(`${intent.kind} allocation returned the wrong result kind.`);
+	if (result.outcome !== "owned") throw new Error(`${intent.kind} allocation did not return an owned result.`);
+	if (intent.kind === "worktree" && result.kind === "worktree") {
+		if (!intent.worktree) throw new Error("Worktree allocation returned without exact persisted plan fields.");
+	} else if (intent.kind === "workspace" && result.kind === "workspace") {
+		for (const [field, value] of Object.entries({
+			workspaceId: result.workspaceId, rootTabId: result.rootTabId, rootPaneId: result.rootPaneId,
+		})) requireExactAllocationText(value, `Workspace allocation ${field}`);
+		intent.workspaceId = result.workspaceId;
+		intent.rootTabId = result.rootTabId;
+		intent.rootPaneId = result.rootPaneId;
+	} else if (intent.kind === "worker_tab" && result.kind === "worker_tab") {
+		requireExactAllocationText(result.tabId, "Worker-tab allocation tabId");
+		requireExactAllocationText(result.paneId, "Worker-tab allocation paneId");
+		intent.tabId = result.tabId;
+		intent.paneId = result.paneId;
+	} else if (intent.kind !== "agent" || result.kind !== "agent") {
+		throw new Error(`${intent.kind} allocation result could not be matched to its persisted plan.`);
+	}
+	intent.status = "owned";
 }
 
 function exactCommandResults(results: readonly CommandResult[], checks: readonly CheckCommand[]): boolean {
@@ -401,7 +532,8 @@ export class OrchestratorRunner {
 			const prepared = await scope.call(async (context) => await this.runtime.preflight({ request, cwd: canonicalCwd }, context));
 			const root = realpathSync.native(prepared.root);
 			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
-			if (!isCleanCommitted(prepared.main)) throw new Error("Preflight Main identity must be clean and committed.");
+			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
+			if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
 			const launchRecords = validateLaunchRecords(request, prepared.launchRecords);
 			return await this.store.withLock(root, async () => {
 				await this.store.assertAvailable(root, request.id);
@@ -410,12 +542,11 @@ export class OrchestratorRunner {
 					version: RUN_STATE_VERSION,
 					request,
 					root,
-					requestStartMain: prepared.main,
-					main: prepared.main,
+					requestStartMain: preparedMain,
+					main: preparedMain,
 					deadlineStartedAt: startedAt,
 					deadline,
 					launchRecords,
-					launchMaterialization: { status: "pending" },
 					status: "pending",
 					tasks: request.tasks.map((task) => ({
 						taskId: task.id,
@@ -431,30 +562,6 @@ export class OrchestratorRunner {
 					updatedAt: createdAt,
 				};
 				const handle = await this.store.create(state);
-				const durable = handle.state;
-				durable.launchMaterialization = { status: "materializing" };
-				durable.updatedAt = this.runtime.now();
-				await handle.save();
-				try {
-					await scope.call(async (context) => await this.runtime.materializeLaunchRecords({
-						root,
-						request,
-						records: launchRecords,
-					}, context));
-				} catch (error) {
-					durable.launchMaterialization = {
-						status: "failed",
-						at: this.runtime.now(),
-						failure: `Private launch materialization failed closed: ${errorText(error)}`,
-					};
-					durable.status = "needs_attention";
-					durable.updatedAt = this.runtime.now();
-					await handle.save();
-					return this.response(durable);
-				}
-				durable.launchMaterialization = { status: "ready", at: this.runtime.now() };
-				durable.updatedAt = this.runtime.now();
-				await handle.save();
 				return await this.run(handle, scope);
 			});
 		} finally {
@@ -471,9 +578,6 @@ export class OrchestratorRunner {
 			if (this.recoverInterrupted(state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
-			if (state.launchMaterialization.status !== "ready") {
-				throw new Error(`Pi Orchestrator request ${request.id} launch materialization is ${state.launchMaterialization.status}; productive resume is forbidden.`);
-			}
 
 			if (request.action === "verify") {
 				const task = taskState(state, request.taskId);
@@ -495,7 +599,7 @@ export class OrchestratorRunner {
 				if (request.action === "retry") {
 					const task = taskState(state, request.taskId);
 					const attempt = task.attempts.at(-1);
-					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
 						this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
 						await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 					}
@@ -517,7 +621,7 @@ export class OrchestratorRunner {
 			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
 			for (const task of state.tasks) {
 				for (const attempt of task.attempts) {
-					if (!allocationByKind(attempt, "agent")?.resourceId || attempt.termination?.status === "terminated") continue;
+					if (!allocationByKind(attempt, "agent")?.agentName || attempt.termination?.status === "terminated") continue;
 					await this.terminateWithSafety(
 						handle, task, attempt, this.terminationCandidate(attempt), outerSignal, safetyDeadline,
 					);
@@ -617,7 +721,7 @@ export class OrchestratorRunner {
 						number: task.attempts.length + 1,
 						waveNumber: wave.number,
 						waveBase: wave.base,
-						correlationToken: this.runtime.randomToken(),
+						correlationToken: runtimeToken(this.runtime.randomToken()),
 						allocationGeneration: 1,
 						allocations: [],
 						prompts: [],
@@ -655,7 +759,7 @@ export class OrchestratorRunner {
 			if (active) this.attention(active, isDeadline(error, scope) ? "The productive request deadline expired." : `Execution was interrupted: ${errorText(error)}`);
 			else if (state.final.status === "running") {
 				state.final.status = "interrupted";
-				state.final.failure = isDeadline(error, scope) ? "The productive request deadline expired." : `Final gate was interrupted: ${errorText(error)}`;
+				state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired." : `Final gate was interrupted: ${errorText(error)}`);
 			}
 			state.status = "needs_attention";
 			state.accepted = false;
@@ -673,78 +777,95 @@ export class OrchestratorRunner {
 		try {
 			for (const kind of ALLOCATION_KINDS) {
 				if (allocationByKind(attempt, kind)) continue;
-				const details = kind === "worktree"
-					? "Awaiting exact pi-subagent worktree preparation."
-					: await scope.call(async (context) => await this.runtime.planHostAllocation({
+				let intent: AllocationIntent;
+				if (kind === "worktree") {
+					intent = {
+						kind,
+						generation: attempt.allocationGeneration,
+						token: attempt.correlationToken,
+						status: "allocating",
+					};
+				} else {
+					const plan = runtimeHostAllocationPlan(await scope.call(async (context) => await this.runtime.planHostAllocation({
 						goal: state.request.goal,
 						kind,
 						task: request,
 						attempt,
-						owned: ownedAllocations(attempt),
-					}, context));
-				const intent: AllocationIntent = {
-					kind,
-					generation: attempt.allocationGeneration,
-					token: attempt.correlationToken,
-					details,
-					status: "allocating",
-				};
+					}, context)), kind);
+					intent = {
+						...plan,
+						generation: attempt.allocationGeneration,
+						token: attempt.correlationToken,
+						status: "allocating",
+					};
+				}
 				attempt.allocations.push(intent);
 				await handle.save();
 				let result: AllocationResult;
 				try {
-					result = kind === "worktree"
-						? await scope.call(async (context) => await this.gitRuntime.allocateWorktree({
+					if (intent.kind === "worktree") {
+						result = await scope.call(async (context) => await this.gitRuntime.allocateWorktree({
 							root: state.root,
 							intent,
 							task: request,
 							attempt,
 							onPrepared: async (worktree) => {
-								if (worktree.baseCommit !== attempt.waveBase.head) {
-									throw new Error("Prepared worktree base does not match the recorded wave base.");
+								const prepared = worktree as unknown as Record<string, unknown>;
+								for (const field of ["path", "cwd", "branch", "repoRoot"] as const) {
+									requireExactAllocationText(prepared[field], `Prepared worktree ${field}`);
 								}
-								intent.worktree = { ...worktree };
-								intent.details = JSON.stringify(worktree);
+								if (typeof prepared.baseCommit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(prepared.baseCommit)
+									|| prepared.baseCommit !== attempt.waveBase.head || prepared.path !== prepared.cwd) {
+									throw new Error("Prepared worktree does not match the exact recorded wave plan.");
+								}
+								const exact = prepared as Record<"path" | "cwd" | "branch" | "repoRoot" | "baseCommit", string>;
+								intent.worktree = {
+									path: exact.path,
+									cwd: exact.cwd,
+									branch: exact.branch,
+									repoRoot: exact.repoRoot,
+									baseCommit: exact.baseCommit,
+								};
 								await handle.save();
 							},
-						}, context))
-						: await scope.call(async (context) => await this.runtime.allocateHost({
+						}, context));
+					} else {
+						result = await scope.call(async (context) => await this.runtime.allocateHost({
 							intent,
 							task: request,
 							attempt,
-							...(kind === "agent" ? { verifyLaunch: async () => {
-								const launch = await this.runtime.verifyLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
-								if (launch.role !== "implementer") throw new Error("Implementer launch verification returned the wrong Role.");
-								return launch;
+							...(intent.kind === "agent" ? { acquireLaunch: async () => {
+								const handle = await this.runtime.acquireLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
+								if (handle.launch.role !== "implementer") {
+									await withTransientLaunch(handle, async () => {
+										throw new Error("Implementer launch acquisition returned the wrong Role.");
+									});
+								}
+								return handle as TransientLaunchHandle<VerifiedImplementerLaunch>;
 							} } : {}),
 						}, context));
+					}
 				} catch (error) {
 					intent.status = "unknown";
-					intent.failure = `Allocation result is unknown: ${errorText(error)}`;
+					intent.failure = bounded(`Allocation result is unknown: ${errorText(error)}`);
 					this.attention(task, intent.failure);
 					await handle.save();
 					return;
+				}
+				if (result.kind !== intent.kind) {
+					throw new Error(`${intent.kind} allocation returned the wrong result kind.`);
 				}
 				if (result.outcome !== "owned") {
+					const failure = boundedRuntimeText(result.failure, `${intent.kind} allocation failure`);
+					const possibleResources = result.outcome === "unknown" ? boundedPossibleResources(result.possibleResources) : undefined;
 					intent.status = result.outcome;
-					intent.failure = bounded(result.failure);
-					if (result.outcome === "unknown" && result.possibleResources?.length) {
-						intent.possibleResources = result.possibleResources.map((item) => bounded(item));
-					}
+					intent.failure = failure;
+					if (result.outcome === "unknown") intent.possibleResources = possibleResources;
 					this.attention(task, intent.failure);
 					await handle.save();
 					return;
 				}
-				if (!exactResourceText(result.resourceId)) throw new Error(`${kind} allocation returned a malformed resource ID.`);
-				if (result.resources && Object.entries(result.resources).some(([key, value]) => !exactResourceText(key) || !exactResourceText(value))) {
-					throw new Error(`${kind} allocation returned malformed resource metadata.`);
-				}
-				if (kind === "worktree" && (!intent.worktree || intent.worktree.path !== result.resourceId)) {
-					throw new Error("Worktree allocation returned without exact persisted preparation metadata.");
-				}
-				intent.status = "owned";
-				intent.resourceId = result.resourceId;
-				if (result.resources) intent.resources = { ...result.resources };
+				applyOwnedAllocationResult(intent, result);
 				await handle.save();
 			}
 			task.status = "working";
@@ -753,7 +874,7 @@ export class OrchestratorRunner {
 		} catch (error) {
 			this.attention(task, isDeadline(error, scope) ? "The productive request deadline expired during allocation." : `Task allocation was interrupted: ${errorText(error)}`);
 			const attempt = task.attempts.at(-1);
-			if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+			if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 			} else {
 				await handle.save();
@@ -774,7 +895,7 @@ export class OrchestratorRunner {
 				? "The productive request deadline expired during worker execution."
 				: `Worker execution was interrupted: ${errorText(error)}`);
 			const attempt = latestAttempt(task);
-			if (!attempt.termination && allocationByKind(attempt, "agent")?.resourceId) {
+			if (!attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 			} else {
 				await handle.save();
@@ -791,7 +912,7 @@ export class OrchestratorRunner {
 		const state = handle.state;
 		const request = taskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
-		const workerId = allocationByKind(attempt, "agent")?.resourceId;
+		const workerId = allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Worker launch has no durably recorded agent ID.");
 		let kind = initialKind;
 		let failure = task.failure;
@@ -803,19 +924,19 @@ export class OrchestratorRunner {
 			}
 			let preCandidate: WorkspaceIdentity;
 			try {
-				preCandidate = await scope.call(async (context) => await this.gitRuntime.inspectTaskCandidate({
+				preCandidate = runtimeIdentity(await scope.call(async (context) => await this.gitRuntime.inspectTaskCandidate({
 					root: state.root,
 					task: request,
 					attempt,
-				}, context));
+				}, context)), "Pre-prompt candidate identity");
 			} catch (error) {
 				this.attention(task, `Pre-prompt candidate identity is unavailable: ${errorText(error)}`);
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				return;
 			}
-			const worktree = allocationByKind(attempt, "worktree")?.worktree;
-			if (!worktree
-				|| preCandidate.branch !== `refs/heads/${worktree.branch}`
+			const worktree = allocationByKind(attempt, "worktree");
+			if (!worktree?.worktree
+				|| preCandidate.branch !== `refs/heads/${worktree.worktree.branch}`
 				|| !isCleanCommitted(preCandidate)
 				|| (kind === "initial" && preCandidate.head !== attempt.waveBase.head)) {
 				this.attention(task, "Pre-prompt task candidate inspection returned an invalid owned worktree identity.");
@@ -847,32 +968,33 @@ export class OrchestratorRunner {
 				}, context));
 			} catch (error) {
 				prompt.status = "ambiguous";
-				prompt.failure = `Prompt result is ambiguous and will not be replayed: ${errorText(error)}`;
+				prompt.failure = bounded(`Prompt result is ambiguous and will not be replayed: ${errorText(error)}`);
 				this.attention(task, prompt.failure);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			if (worker.outcome === "unknown" || worker.outcome === "interrupted") {
 				prompt.status = "ambiguous";
-				prompt.failure = bounded(worker.diagnostic);
+				prompt.failure = boundedRuntimeText(worker.diagnostic, `${worker.outcome} worker diagnostic`);
 				this.attention(task, `${worker.outcome} worker result will not be replayed: ${prompt.failure}`);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			if (worker.outcome === "not_prompted") {
 				prompt.status = "not_sent";
-				prompt.failure = bounded(worker.diagnostic);
+				prompt.failure = boundedRuntimeText(worker.diagnostic, "not-prompted worker diagnostic");
 				this.attention(task, `Worker prompt was not submitted: ${prompt.failure}`);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			prompt.status = "settled";
 			if (worker.outcome === "blocked") {
-				failure = bounded(worker.diagnostic);
+				failure = boundedRuntimeText(worker.diagnostic, "blocked worker diagnostic");
 				prompt.failure = failure;
 				await handle.save();
 			} else {
 				if (worker.outcome !== "candidate") throw new Error("Unexpected worker result.");
+				worker.candidate = runtimeIdentity(worker.candidate, "Settled worker candidate identity");
 				if (!isCleanCommitted(worker.candidate) || worker.candidate.head === preCandidate.head) {
 					this.attention(task, "Settled worker did not produce a new clean committed candidate.");
 					await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope);
@@ -916,7 +1038,7 @@ export class OrchestratorRunner {
 		_scope: DeadlineScope,
 	): Promise<boolean> {
 		const attempt = latestAttempt(task);
-		if (allocationByKind(attempt, "agent")?.resourceId !== workerId) {
+		if (allocationByKind(attempt, "agent")?.agentName !== workerId) {
 			throw new Error("Worker termination requires the exact durably owned agent ID.");
 		}
 		return await this.terminateWithSafety(handle, task, attempt, candidate);
@@ -937,7 +1059,7 @@ export class OrchestratorRunner {
 		outerSignal?: AbortSignal,
 		safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS,
 	): Promise<boolean> {
-		const workerId = allocationByKind(attempt, "agent")?.resourceId;
+		const workerId = allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Safety termination requires an exact durably owned agent ID.");
 		attempt.termination = { status: "terminating", workerId, candidate };
 		await handle.save();
@@ -947,8 +1069,9 @@ export class OrchestratorRunner {
 				task: taskRequest(handle.state, task.taskId), attempt, workerId, candidate,
 			}, context));
 			if (result.outcome !== "terminated") {
-				attempt.termination = { status: "unknown", workerId, candidate, failure: bounded(result.failure) };
-				this.attention(task, `Worker termination is unproved: ${bounded(result.failure)}`);
+				const failure = boundedRuntimeText(result.failure, "Worker termination failure");
+				attempt.termination = { status: "unknown", workerId, candidate, failure };
+				this.attention(task, `Worker termination is unproved: ${failure}`);
 				return false;
 			}
 			attempt.termination = { status: "terminated", workerId, candidate, at: this.runtime.now() };
@@ -968,7 +1091,7 @@ export class OrchestratorRunner {
 		for (const task of handle.state.tasks) {
 			for (const attempt of task.attempts) {
 				if (!attempt.prompts.some((prompt) => prompt.status === "ambiguous")
-					|| !allocationByKind(attempt, "agent")?.resourceId
+					|| !allocationByKind(attempt, "agent")?.agentName
 					|| attempt.termination?.status === "terminated") continue;
 				await this.terminateWithSafety(
 					handle, task, attempt, this.terminationCandidate(attempt), outerSignal, safetyDeadline,
@@ -993,22 +1116,33 @@ export class OrchestratorRunner {
 			checks,
 			candidate,
 		}, context));
-		const exact = exactCommandResults(result.results, checks);
+		const identityAfter = runtimeIdentity(result.identityAfter, "Post-check identity");
+		if (!exactCommandResults(result.results, checks)) {
+			throw new Error("Check runtime did not return one result with the exact command and argv for every declared check.");
+		}
+		if (result.results.some((item) => !Number.isSafeInteger(item.code)
+			|| (item.killed !== undefined && typeof item.killed !== "boolean")
+			|| typeof item.stdout !== "string" || typeof item.stderr !== "string")) {
+			throw new Error("Check runtime returned malformed result evidence.");
+		}
+		const commandsPassed = result.results.every((item) => item.code === 0 && !item.killed);
+		const identityMatches = sameIdentity(identityAfter, candidate);
+		const passed = identityMatches && commandsPassed;
+		let diagnosticIndex = passed ? -1 : result.results.findIndex((item) => item.code !== 0 || item.killed);
+		if (diagnosticIndex < 0 && commandsPassed && !identityMatches) diagnosticIndex = result.results.length - 1;
 		const evidence: CheckBatchEvidence = {
 			phase,
 			candidate,
-			identityAfter: result.identityAfter,
-			results: result.results.map((item): CommandEvidence => ({
+			identityAfter,
+			results: result.results.map((item, index): CommandEvidence => ({
 				command: item.command,
 				args: [...item.args],
 				code: item.code,
 				killed: item.killed ?? false,
-				stdout: bounded(item.stdout),
-				stderr: bounded(item.stderr),
+				stdout: index === diagnosticIndex ? bounded(item.stdout) : "",
+				stderr: index === diagnosticIndex ? bounded(item.stderr) : "",
 			})),
-			passed: exact
-				&& sameIdentity(result.identityAfter, candidate)
-				&& result.results.every((item) => item.code === 0 && !item.killed),
+			passed,
 			at: this.runtime.now(),
 		};
 		return evidence;
@@ -1034,21 +1168,27 @@ export class OrchestratorRunner {
 			criterion,
 			base,
 			tip,
-			verifyLaunch: async () => {
-				const launch = await this.runtime.verifyLaunch(record, context);
-				if (launch.role !== "reviewer") throw new Error("Reviewer launch verification returned the wrong Role.");
-				return launch;
+			acquireLaunch: async () => {
+				const handle = await this.runtime.acquireLaunch(record, context);
+				if (handle.launch.role !== "reviewer") {
+					await withTransientLaunch(handle, async () => {
+						throw new Error("Reviewer launch acquisition returned the wrong Role.");
+					});
+				}
+				return handle as TransientLaunchHandle<VerifiedReviewerLaunch>;
 			},
 		}, context));
+		const identityAfter = runtimeIdentity(result.identityAfter, "Post-review identity");
+		const verdict = boundedRuntimeText(result.verdict, "Reviewer verdict");
 		const evidence: ReviewEvidence = {
 			phase,
 			launchKey: recordKey,
 			criterion,
 			base,
 			tip,
-			identityAfter: result.identityAfter,
-			verdict: bounded(result.verdict),
-			passed: result.verdict === "PASS" && sameIdentity(result.identityAfter, tip),
+			identityAfter,
+			verdict,
+			passed: verdict === "PASS" && sameIdentity(identityAfter, tip),
 			at: this.runtime.now(),
 		};
 		return evidence;
@@ -1078,19 +1218,21 @@ export class OrchestratorRunner {
 				onto: state.main,
 			}, context));
 			if (rebased.outcome !== "ready") {
-				this.attention(task, rebased.failure);
+				this.attention(task, boundedRuntimeText(rebased.failure, "Rebase failure"));
 				return false;
 			}
-			if (!sameIdentity(rebased.base, state.main) || !isCleanCommitted(rebased.candidate)) {
+			const rebasedBase = runtimeIdentity(rebased.base, "Rebase base identity");
+			const rebasedCandidate = runtimeIdentity(rebased.candidate, "Rebase candidate identity");
+			if (!sameIdentity(rebasedBase, state.main) || !isCleanCommitted(rebasedCandidate)) {
 				this.attention(task, "Rebase did not return the exact recorded integration base and a clean committed candidate.");
 				return false;
 			}
-			attempt.integrationBase = rebased.base;
-			attempt.integrationCandidate = rebased.candidate;
-			const checks = await this.runCheckBatch(handle, request.checks, rebased.candidate, "authoritative", scope, task.taskId);
+			attempt.integrationBase = rebasedBase;
+			attempt.integrationCandidate = rebasedCandidate;
+			const checks = await this.runCheckBatch(handle, request.checks, rebasedCandidate, "authoritative", scope, task.taskId);
 			attempt.authoritativeChecks = checks;
 			await handle.save();
-			if (!checkBatchPasses(checks, request.checks, rebased.candidate)) {
+			if (!checkBatchPasses(checks, request.checks, rebasedCandidate)) {
 				this.attention(task, "Authoritative checks did not pass on the exact integration candidate.");
 				return false;
 			}
@@ -1099,8 +1241,8 @@ export class OrchestratorRunner {
 				review = await this.runReview(
 					handle,
 					request.judgment.criterion,
-					rebased.base,
-					rebased.candidate,
+					rebasedBase,
+					rebasedCandidate,
 					task.judgmentLaunchKey!,
 					"authoritative",
 					scope,
@@ -1113,7 +1255,7 @@ export class OrchestratorRunner {
 					return false;
 				}
 			}
-			attempt.integration = { status: "integrating", expectedMain: state.main, candidate: rebased.candidate };
+			attempt.integration = { status: "integrating", expectedMain: state.main, candidate: rebasedCandidate };
 			await handle.save();
 			let integrated: IntegrationResult;
 			try {
@@ -1122,40 +1264,42 @@ export class OrchestratorRunner {
 					task: request,
 					attempt,
 					expectedMain: state.main,
-					candidate: rebased.candidate,
+					candidate: rebasedCandidate,
 					checks,
 					...(review ? { review } : {}),
 				}, context));
 			} catch (error) {
 				attempt.integration = {
-					status: "unknown", expectedMain: state.main, candidate: rebased.candidate,
-					failure: `Integration result is unknown: ${errorText(error)}`,
+					status: "unknown", expectedMain: state.main, candidate: rebasedCandidate,
+					failure: bounded(`Integration result is unknown: ${errorText(error)}`),
 				};
 				this.attention(task, attempt.integration.failure!);
 				return false;
 			}
 			if (integrated.outcome !== "integrated") {
+				const failure = boundedRuntimeText(integrated.failure, "Integration failure");
 				attempt.integration = {
 					status: integrated.outcome === "unknown" ? "unknown" : "failed",
 					expectedMain: state.main,
-					candidate: rebased.candidate,
-					failure: bounded(integrated.failure),
+					candidate: rebasedCandidate,
+					failure,
 				};
-				this.attention(task, integrated.failure);
+				this.attention(task, failure);
 				return false;
 			}
+			integrated.main = runtimeIdentity(integrated.main, "Integrated Main identity");
 			if (integrated.main.branch !== state.main.branch
-				|| integrated.main.head !== rebased.candidate.head
+				|| integrated.main.head !== rebasedCandidate.head
 				|| !isCleanCommitted(integrated.main)) {
 				attempt.integration = {
-					status: "unknown", expectedMain: state.main, candidate: rebased.candidate, mainAfter: integrated.main,
+					status: "unknown", expectedMain: state.main, candidate: rebasedCandidate, mainAfter: integrated.main,
 					failure: "Integration returned an unexpected Main identity.",
 				};
 				this.attention(task, attempt.integration.failure!);
 				return false;
 			}
 			attempt.integration = {
-				status: "integrated", expectedMain: state.main, candidate: rebased.candidate, mainAfter: integrated.main,
+				status: "integrated", expectedMain: state.main, candidate: rebasedCandidate, mainAfter: integrated.main,
 			};
 			state.main = integrated.main;
 			task.status = "cleanup";
@@ -1250,9 +1394,9 @@ export class OrchestratorRunner {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
 		if (attempt.termination?.status !== "terminated") throw new Error("Manual verification requires exact recorded worker termination.");
-		const candidate = await scope.call(async (context) => await this.gitRuntime.inspectRetainedTask({
+		const candidate = runtimeIdentity(await scope.call(async (context) => await this.gitRuntime.inspectRetainedTask({
 			root: handle.state.root, task: taskRequest(handle.state, task.taskId), attempt,
-		}, context));
+		}, context)), "Retained task candidate identity");
 		if (!isCleanCommitted(candidate)) throw new Error("Retained task candidate is not clean and committed.");
 		if (candidate.head === attempt.waveBase.head) throw new Error("Retained task candidate must differ from its wave base.");
 		attempt.candidate = candidate;
@@ -1281,13 +1425,13 @@ export class OrchestratorRunner {
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be retried or adopted automatically.");
 		if (attempt.prompts.length) {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
-				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.resourceId) {
+				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.agentName) {
 					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				}
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
 			if (!correctionEligible(taskRequest(handle.state, task.taskId), attempt)) {
-				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.resourceId) {
+				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.agentName) {
 					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				}
 				throw new Error("The same-agent correction is unavailable or already used.");
@@ -1311,13 +1455,15 @@ export class OrchestratorRunner {
 						}, context));
 				} catch (error) {
 					intent.status = "unknown";
-					intent.failure = `Allocation reconciliation is ambiguous: ${errorText(error)}`;
+					intent.failure = bounded(`Allocation reconciliation is ambiguous: ${errorText(error)}`);
 					throw new Error(intent.failure);
 				}
 				if (result.outcome !== "absent") {
+					const failure = boundedRuntimeText(result.failure, "Allocation reconciliation failure");
+					const possibleResources = boundedPossibleResources(result.possibleResources);
 					intent.status = "unknown";
-					intent.failure = bounded(result.failure);
-					intent.possibleResources = result.possibleResources?.map((item) => bounded(item));
+					intent.failure = failure;
+					intent.possibleResources = possibleResources;
 					await handle.save();
 					throw new Error("A possible prior allocation blocks retry; it was not adopted or closed.");
 				}
@@ -1368,7 +1514,10 @@ export class OrchestratorRunner {
 		state.accepted = false;
 		await handle.save();
 		try {
-			const identity = state.final.identity ?? await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
+			const identity = state.final.identity ?? runtimeIdentity(
+				await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context)),
+				"Final Main identity",
+			);
 			if (!sameIdentity(identity, state.main) || !isCleanCommitted(identity)) {
 				await this.markSuperseded(handle, "Main drifted before the final gate.");
 				return this.response(state);
@@ -1433,7 +1582,7 @@ export class OrchestratorRunner {
 			return this.response(state);
 		} catch (error) {
 			state.final.status = "interrupted";
-			state.final.failure = isDeadline(error, scope) ? "The productive request deadline expired during the final gate." : `Final gate was interrupted without a definitive result: ${errorText(error)}`;
+			state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired during the final gate." : `Final gate was interrupted without a definitive result: ${errorText(error)}`);
 			state.status = "needs_attention";
 			state.accepted = false;
 			await handle.save();
@@ -1443,7 +1592,7 @@ export class OrchestratorRunner {
 
 	private async markFinalFailed(handle: RunStateHandle, failure: string): Promise<void> {
 		handle.state.final.status = "final_failed";
-		handle.state.final.failure = failure;
+		handle.state.final.failure = bounded(failure);
 		handle.state.status = "final_failed";
 		handle.state.accepted = false;
 		await handle.save();
@@ -1451,27 +1600,13 @@ export class OrchestratorRunner {
 
 	private async markSuperseded(handle: RunStateHandle, failure: string): Promise<void> {
 		handle.state.final.status = "superseded";
-		handle.state.final.failure = failure;
+		handle.state.final.failure = bounded(failure);
 		handle.state.status = "superseded";
 		handle.state.accepted = false;
 		await handle.save();
 	}
 
 	private recoverInterrupted(state: RunState): boolean {
-		if (state.launchMaterialization.status !== "ready") {
-			if (state.launchMaterialization.status === "pending" || state.launchMaterialization.status === "materializing") {
-				state.launchMaterialization = {
-					status: "failed",
-					at: this.runtime.now(),
-					failure: "Private launch materialization was interrupted and will not be replayed automatically.",
-				};
-				state.status = "needs_attention";
-				state.accepted = false;
-				state.updatedAt = this.runtime.now();
-				return true;
-			}
-			return false;
-		}
 		if (state.status === "pending") {
 			const ready = readyPendingTasks(state).filter((task) => task.attempts.length === 0);
 			if (!ready.length) return false;
@@ -1510,7 +1645,7 @@ export class OrchestratorRunner {
 				}
 				if (!attempt.termination && attempt.candidate
 					&& !correctionEligible(taskRequest(state, task.taskId), attempt)) {
-					const workerId = allocationByKind(attempt, "agent")?.resourceId;
+					const workerId = allocationByKind(attempt, "agent")?.agentName;
 					if (workerId) {
 						attempt.termination = {
 							status: "unknown",
@@ -1549,7 +1684,7 @@ export class OrchestratorRunner {
 
 	private response(state: RunState, main?: MainStatus): RunResponse {
 		const completed = state.tasks.filter((task) => task.status === "completed").length;
-		const resumable = !terminal(state) && state.launchMaterialization.status === "ready";
+		const resumable = !terminal(state);
 		const cleanupAttention = state.tasks.find((task) => task.status === "needs_attention"
 			&& task.attempts.at(-1)?.integration?.status === "integrated");
 		let continuation: ResumeRequest | undefined;
@@ -1579,7 +1714,6 @@ export class OrchestratorRunner {
 					`Main: drifted from ${main.expected.branch}@${main.expected.head} to ${main.actual.branch}@${main.actual.head}.`,
 				] : []),
 				...(main?.status === "unavailable" ? [`Main: ${main.failure}`] : []),
-				...(state.launchMaterialization.failure ? [`Launch materialization: ${state.launchMaterialization.failure}`] : []),
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),

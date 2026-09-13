@@ -120,10 +120,10 @@ test("composed runtime delegates every Coordinator and Host method unchanged", a
 
 	assert.equal(runtime.now(), 123);
 	assert.equal(runtime.randomToken(), "token-1234567890");
-	const verifyLaunch = async () => REVIEWER_LAUNCH;
-	const input = Object.freeze({ marker: "input", goal: "Keep this immutable goal unchanged.", verifyLaunch });
+	const acquireLaunch = async () => ({ launch: REVIEWER_LAUNCH, cleanup: async () => {} });
+	const input = Object.freeze({ marker: "input", goal: "Keep this immutable goal unchanged.", acquireLaunch });
 	const context = operationContext();
-	for (const method of ["preflight", "materializeLaunchRecords", "recoverLaunchRecords", "verifyLaunch"] as const) {
+	for (const method of ["preflight", "recoverLaunchRecords", "acquireLaunch"] as const) {
 		const returned = await (runtime[method] as (...args: any[]) => Promise<unknown>)(input, context);
 		assert.equal(returned, values.get(`roles:${method}`));
 	}
@@ -135,13 +135,13 @@ test("composed runtime delegates every Coordinator and Host method unchanged", a
 	}
 
 	assert.deepEqual(calls.map(({ owner, method }) => `${owner}:${method}`), [
-		"roles:now", "roles:randomToken", "roles:preflight", "roles:materializeLaunchRecords",
-		"roles:recoverLaunchRecords", "roles:verifyLaunch", "host:planHostAllocation", "host:allocateHost",
-		"host:reconcileHostAllocation", "host:runWorker", "host:terminateWorker", "host:cleanupHost",
+		"roles:now", "roles:randomToken", "roles:preflight", "roles:recoverLaunchRecords",
+		"roles:acquireLaunch", "host:planHostAllocation", "host:allocateHost", "host:reconcileHostAllocation",
+		"host:runWorker", "host:terminateWorker", "host:cleanupHost",
 	]);
 	assert.ok(calls.slice(2).every(({ args }) => args[0] === input && args[1] === context));
 	assert.equal(calls.find(({ method }) => method === "allocateHost")!.args[0], input);
-	assert.equal((calls.find(({ method }) => method === "allocateHost")!.args[0] as typeof input).verifyLaunch, verifyLaunch);
+	assert.equal((calls.find(({ method }) => method === "allocateHost")!.args[0] as typeof input).acquireLaunch, acquireLaunch);
 	assert.equal((calls.find(({ method }) => method === "planHostAllocation")!.args[0] as typeof input).goal, input.goal);
 	assert.equal((calls.find(({ method }) => method === "runWorker")!.args[0] as typeof input).goal, input.goal);
 });

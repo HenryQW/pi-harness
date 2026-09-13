@@ -10,8 +10,8 @@ import {
 	type DirectProcessRunner,
 	type ExactReviewExecutorInput,
 } from "../src/git-runtime.ts";
-import { sameIdentity, type AllocationIntent, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
-import type { OperationContext, VerifiedReviewerLaunch } from "../src/runner.ts";
+import { sameIdentity, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
+import type { OperationContext, TransientLaunchHandle, VerifiedReviewerLaunch } from "../src/runner.ts";
 
 const launch: VerifiedReviewerLaunch = {
 	key: "reviewer/fast",
@@ -24,6 +24,10 @@ const launch: VerifiedReviewerLaunch = {
 	tools: ["read", "grep", "find", "ls"],
 	fingerprint: "1".repeat(64),
 };
+
+function acquiredReviewer(cleanup: () => Promise<void> = async () => {}): TransientLaunchHandle<VerifiedReviewerLaunch> {
+	return { launch, cleanup };
+}
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -80,8 +84,8 @@ async function commit(cwd: string, path: string, contents: string): Promise<void
 	git(cwd, "commit", "-qm", `change ${path}`);
 }
 
-function worktreeIntent(id: string, token: string): AllocationIntent {
-	return { kind: "worktree", generation: 1, token, details: "pending", status: "allocating" };
+function worktreeIntent(_id: string, token: string): WorktreeAllocationIntent {
+	return { kind: "worktree", generation: 1, token, status: "allocating" };
 }
 
 async function allocate(
@@ -91,7 +95,7 @@ async function allocate(
 	waveBase: WorkspaceIdentity,
 	token: string,
 	operationContext = context(),
-): Promise<{ attempt: TaskAttempt; intent: AllocationIntent; result: Awaited<ReturnType<CheckedGitRuntime["allocateWorktree"]>> }> {
+): Promise<{ attempt: TaskAttempt; intent: WorktreeAllocationIntent; result: Awaited<ReturnType<CheckedGitRuntime["allocateWorktree"]>> }> {
 	const intent = worktreeIntent(definition.id, token);
 	const attempt: TaskAttempt = {
 		number: 1,
@@ -111,13 +115,9 @@ async function allocate(
 		onPrepared: async (worktree) => {
 			assert.equal(git(root, "branch", "--list", worktree.branch), "");
 			intent.worktree = { ...worktree };
-			intent.details = JSON.stringify(worktree);
-		},
+			},
 	}, operationContext);
-	if (result.outcome === "owned") {
-		intent.status = "owned";
-		intent.resourceId = result.resourceId;
-	}
+	if (result.outcome === "owned") intent.status = "owned";
 	return { attempt, intent, result };
 }
 
@@ -206,7 +206,7 @@ async function prepareIntegration(
 			criterion: definition.judgment.criterion,
 			base: rebased.base,
 			tip: rebased.candidate,
-			verifyLaunch: async () => launch,
+			acquireLaunch: async () => acquiredReviewer(),
 		}, operationContext);
 		review = reviewEvidence(definition, rebased.base, rebased.candidate, result);
 		attempt.authoritativeReview = review;
@@ -260,7 +260,7 @@ test("worktree allocation persists helper-derived intent before add and retains 
 	const first = await allocate(runtime, root, task("first"), waveBase, "token-first-00001", operationContext);
 	assert.equal(first.result.outcome, "owned");
 	assert.equal(first.intent.worktree?.baseCommit, waveBase.head);
-	assert.equal(first.intent.resourceId, first.intent.worktree?.path);
+	assert.equal(first.result.outcome, "owned");
 	assert.ok(first.intent.worktree && await readFile(join(first.intent.worktree.path, "base.txt"), "utf8") === "base\n");
 	assert.ok(calls.every((call) => Array.isArray(call.args)
 		&& call.options.signal === operationContext.signal
@@ -562,7 +562,7 @@ test("final review resolves a canonical Main worktree root without changing the 
 		criterion: "Review the final change.",
 		base,
 		tip,
-		verifyLaunch: async () => launch,
+		acquireLaunch: async () => acquiredReviewer(),
 	}, operationContext);
 
 	assert.equal(reviewed.verdict, "PASS");
@@ -575,6 +575,59 @@ test("final review resolves a canonical Main worktree root without changing the 
 		&& options.signal === operationContext.signal
 		&& options.timeoutMs > 0
 		&& options.timeoutMs <= operationContext.timeoutMs));
+});
+
+test("Reviewer launch cleanup runs after success, failure, and abort, and cleanup errors surface", async (t) => {
+	const root = await repository(t);
+	const baseRuntime = new CheckedGitRuntime();
+	const base = await baseRuntime.inspectMain({ root }, context());
+	await commit(root, "reviewed.txt", "reviewed\n");
+	const tip = await baseRuntime.inspectMain({ root }, context());
+
+	for (const outcome of ["success", "failure", "abort"] as const) {
+		await t.test(outcome, async () => {
+			let cleanups = 0;
+			const controller = new AbortController();
+			const operationContext: OperationContext = {
+				signal: controller.signal,
+				deadline: Date.now() + 60_000,
+				timeoutMs: 60_000,
+			};
+			const runtime = new CheckedGitRuntime({
+				executeReview: async () => {
+					if (outcome === "failure") throw new Error("review failed");
+					if (outcome === "abort") {
+						controller.abort(new Error("review aborted"));
+						throw controller.signal.reason;
+					}
+					return { verdict: "PASS" };
+				},
+			});
+			const reviewed = runtime.review({
+				root,
+				scope: "final",
+				phase: "final",
+				criterion: "Review cleanup.",
+				base,
+				tip,
+				acquireLaunch: async () => acquiredReviewer(async () => { cleanups += 1; }),
+			}, operationContext);
+			if (outcome === "success") assert.equal((await reviewed).verdict, "PASS");
+			else await assert.rejects(reviewed, new RegExp(outcome === "failure" ? "review failed" : "review aborted"));
+			assert.equal(cleanups, 1);
+		});
+	}
+
+	const cleanupFailure = new CheckedGitRuntime({ executeReview: async () => ({ verdict: "PASS" }) });
+	await assert.rejects(cleanupFailure.review({
+		root,
+		scope: "final",
+		phase: "final",
+		criterion: "Review cleanup failure.",
+		base,
+		tip,
+		acquireLaunch: async () => acquiredReviewer(async () => { throw new Error("prompt cleanup failed"); }),
+	}, context()), /prompt cleanup failed/);
 });
 
 test("rebase conflicts retain exact work and report whether abort succeeded", async (t) => {
@@ -649,13 +702,13 @@ test("failed checks, Reviewer findings or mutation, and Main drift cannot integr
 	allocated.attempt.integrationCandidate = candidate;
 	const findings = await runtime.review({
 		root, scope: "task", phase: "authoritative", taskId: definition.id, attempt: allocated.attempt,
-		criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
+		criterion: definition.judgment!.criterion, base, tip: candidate, acquireLaunch: async () => acquiredReviewer(),
 	}, context());
 	assert.match(findings.verdict, /Finding/);
 	reviewMode = "mutation";
 	const mutated = await runtime.review({
 		root, scope: "task", phase: "authoritative", taskId: definition.id, attempt: allocated.attempt,
-		criterion: definition.judgment!.criterion, base, tip: candidate, verifyLaunch: async () => launch,
+		criterion: definition.judgment!.criterion, base, tip: candidate, acquireLaunch: async () => acquiredReviewer(),
 	}, context());
 	assert.equal(mutated.verdict, "PASS");
 	assert.ok(!sameIdentity(mutated.identityAfter, candidate));

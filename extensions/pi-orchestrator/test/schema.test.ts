@@ -7,7 +7,6 @@ import {
 	parseExecuteRequest,
 	validateLaunchRecords,
 	type ExecuteRequest,
-	type LaunchPromptFile,
 	type NormalizedLaunchRecord,
 	type Role,
 	type TaskRequest,
@@ -39,22 +38,17 @@ const sha256 = (value: string): string => createHash("sha256").update(value).dig
 function launch(role: Role): NormalizedLaunchRecord {
 	const extensionPath = `/roles/${role}.ts`;
 	const skillPath = `/skills/${role}.md`;
-	const rawArgs = ["--model", "provider/model", "--thinking", "high"];
-	const rawValue = "Implement the exact task.";
-	const prompt: LaunchPromptFile = {
-		rawValue,
-		path: "/private/implementer.prompt",
-		mode: 0o600,
-		sha256: sha256(rawValue),
-		finalArgs: [...rawArgs, "--prompt-file", "/private/implementer.prompt"],
-	};
+	const promptHash = sha256(`${role} Role prompt`);
 	const value: Omit<NormalizedLaunchRecord, "fingerprint"> = {
 		key: `${role}/fast`,
 		role,
 		modelClass: "fast",
+		roleFingerprint: sha256(`${role} Role identity`),
+		promptSha256: promptHash,
+		promptArgIndex: 4,
 		model: "provider/model",
 		thinkingLevel: "high",
-		rawArgs,
+		args: ["--model", "provider/model", "--thinking", "high"],
 		env: {},
 		tools: ["read", role === "implementer" ? "edit" : "grep"],
 		roleExtensions: [extensionPath],
@@ -63,7 +57,6 @@ function launch(role: Role): NormalizedLaunchRecord {
 			{ kind: "extension", path: extensionPath, sha256: "1".repeat(64) },
 			{ kind: "skill", path: skillPath, sha256: "2".repeat(64) },
 		],
-		...(role === "implementer" ? { prompt } : {}),
 	};
 	return { ...value, fingerprint: launchRecordFingerprint(value) };
 }
@@ -89,7 +82,7 @@ test("the strict graph rejects excess, unknown, duplicate, self, and cyclic depe
 	}), /strict v1 schema/);
 });
 
-test("launch records require complete fingerprinted Role resources and private prompt constraints", () => {
+test("launch records require complete prompt-free fingerprinted Role snapshots", () => {
 	const definition = request([{
 		...task("task-a"),
 		judgment: { criterion: "Review exactly.", modelClass: "fast" },
@@ -101,17 +94,21 @@ test("launch records require complete fingerprinted Role resources and private p
 	assert.deepEqual(records[reviewer.key], reviewer);
 
 	const tamperedArg = structuredClone(implementer);
-	tamperedArg.rawArgs.push("--unsafe");
+	tamperedArg.args.push("--unsafe");
 	assert.throws(() => validateLaunchRecords(definition, [tamperedArg, reviewer]), /fingerprint.*complete contents/i);
 
 	const callerEnv = fingerprint({ ...implementer, env: { TOKEN: "secret" } });
 	assert.throws(() => validateLaunchRecords(definition, [callerEnv, reviewer]), /must not pass caller Role environment/);
 
-	const missingPrompt = fingerprint({ ...implementer, prompt: undefined });
-	assert.throws(() => validateLaunchRecords(definition, [missingPrompt, reviewer]), /lacks its private prompt file/);
+	const promptTransport = fingerprint({
+		...implementer,
+		args: [...implementer.args, "--append-system-prompt", "/tmp/private.prompt"],
+		promptArgIndex: implementer.args.length,
+	});
+	assert.throws(() => validateLaunchRecords(definition, [promptTransport, reviewer]), /argv must omit Role prompt transport/i);
 
-	const reviewerPrompt = fingerprint({ ...reviewer, prompt: structuredClone(implementer.prompt) });
-	assert.throws(() => validateLaunchRecords(definition, [implementer, reviewerPrompt]), /Reviewer.*must not use a private/i);
+	const outOfBoundsPromptIndex = fingerprint({ ...implementer, promptArgIndex: implementer.args.length + 1 });
+	assert.throws(() => validateLaunchRecords(definition, [outOfBoundsPromptIndex, reviewer]), /prompt argv index is out of bounds/i);
 
 	const relativePath = fingerprint({
 		...implementer,
@@ -130,21 +127,6 @@ test("launch records require complete fingerprinted Role resources and private p
 	});
 	assert.throws(() => validateLaunchRecords(definition, [mismatchedResources, reviewer]), /must match its exact Role extension and Skill paths/);
 
-	const wrongPromptHash = fingerprint({
-		...implementer,
-		prompt: { ...implementer.prompt!, sha256: "3".repeat(64) },
-	});
-	assert.throws(() => validateLaunchRecords(definition, [wrongPromptHash, reviewer]), /prompt hash.*raw prompt/i);
-
-	const exposedPrompt = fingerprint({
-		...implementer,
-		prompt: { ...implementer.prompt!, finalArgs: [implementer.prompt!.rawValue, implementer.prompt!.path] },
-	});
-	assert.throws(() => validateLaunchRecords(definition, [exposedPrompt, reviewer]), /final argv.*raw prompt/i);
-
-	const unreferencedPrompt = fingerprint({
-		...implementer,
-		prompt: { ...implementer.prompt!, finalArgs: ["--prompt-file", "/private/other.prompt"] },
-	});
-	assert.throws(() => validateLaunchRecords(definition, [unreferencedPrompt, reviewer]), /final argv.*private prompt path/i);
+	const serialized = JSON.stringify(records);
+	assert.doesNotMatch(serialized, /Role prompt|private\.prompt|append-system-prompt/);
 });
