@@ -20,7 +20,11 @@ const workflowActions = {
 	"fix-ci": "collect",
 } as const;
 
-function noPullRequest(): Extract<CurrentPullRequestDiscovery, { kind: "none" }> {
+function noPullRequest(branch: Extract<CurrentPullRequestDiscovery, { kind: "none" }>["branch"] = {
+	ahead: 1,
+	worktree: "clean",
+	relation: "distinct-ref",
+}): Extract<CurrentPullRequestDiscovery, { kind: "none" }> {
 	return {
 		kind: "none",
 		creationTarget: {
@@ -33,7 +37,7 @@ function noPullRequest(): Extract<CurrentPullRequestDiscovery, { kind: "none" }>
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: { ahead: 1 },
+		branch,
 	};
 }
 
@@ -375,6 +379,26 @@ test("routes one package workflow without opening a browser or chaining", async 
 		assert.equal(mutationCalls(app.calls).length, 0, route.name);
 		assert.equal(app.calls.some(({ args }) => args.includes("--web")), false, route.name);
 	}
+});
+
+test("dispatches creation for dirty-only zero-ahead work", async () => {
+	const app = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest() {
+			return noPullRequest({ ahead: 0, worktree: "dirty", relation: "distinct-ref" });
+		},
+		async reserveWorkflow(reservation) {
+			app.reservations.push(reservation);
+			return { runId: workflowRunId, action: "prepare" };
+		},
+	});
+
+	assert.equal(await handler("", app.context), "create");
+	assert.deepEqual(app.messages, [{
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
+		options: { expandPromptTemplates: true },
+	}]);
+	assert.equal(app.reservations.length, 1);
 });
 
 test("dispatches the launch action returned by the fresh reservation", async () => {

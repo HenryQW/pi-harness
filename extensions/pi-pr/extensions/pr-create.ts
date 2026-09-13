@@ -15,7 +15,10 @@ import {
 	type PullRequestLoadContext,
 	type PullRequestPublication,
 } from "./pr-github.ts";
-import type { PullRequestTarget } from "./pr-routing.ts";
+import {
+	isPullRequestCreationEligible,
+	type PullRequestTarget,
+} from "./pr-routing.ts";
 import {
 	assertOnlyDeclaredStatusChanged,
 	inspectWorktree,
@@ -221,13 +224,14 @@ export class PullRequestCreator {
 		return { cwd: this.cwd, signal: this.signal ?? new AbortController().signal };
 	}
 
-	private async freshNone(): Promise<void> {
+	private async freshNone() {
 		const discovery = await this.load(this.pi(), this.context(), undefined, undefined, this.explicitBase);
 		if (discovery.kind !== "none" || !sameTarget(this.target, discovery.creationTarget)) {
 			throw new Error("PR creation cancelled: fresh complete discovery is no longer none");
 		}
 		const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
 		if (branch !== this.target.branch) throw new Error("PR creation cancelled: current branch changed");
+		return discovery;
 	}
 
 	private async liveBase(): Promise<string> {
@@ -270,8 +274,11 @@ export class PullRequestCreator {
 				this.target,
 				this.explicitBase,
 			);
-			if (preflight.ahead === 0) {
-				throw new Error("PR creation requires at least one commit ahead of the selected base");
+			if (preflight.worktree === "operation") {
+				throw new Error("PR creation cannot prepare while a Git operation is in progress");
+			}
+			if (!isPullRequestCreationEligible({ ...preflight, relation: "distinct-ref" })) {
+				throw new Error("PR creation requires at least one commit ahead of the selected base or pending work");
 			}
 			const { base } = preflight;
 			this.state.base = {
@@ -286,11 +293,14 @@ export class PullRequestCreator {
 				"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, base.oid,
 			], this.options());
 			await runChecked(this.exec, "git", ["cat-file", "-e", `${base.oid}^{commit}`], this.options());
-			await this.freshNone();
+			const fresh = await this.freshNone();
 			if (await readHead(this.exec, this.options()) !== preflight.head) {
 				throw new Error("PR creation cancelled: local HEAD changed during prepare");
 			}
 			if (await this.liveBase() !== base.oid) throw new Error("PR creation cancelled: base ref moved during prepare");
+			if (!isPullRequestCreationEligible(fresh.branch)) {
+				throw new Error("PR creation cancelled: branch no longer has a committed change or pending work");
+			}
 			this.state.phase = "prepared";
 			return { kind: "prepared", base: { ...this.state.base }, mergeBase: base.mergeBase };
 		}, { agentDir: this.agentDir, signal: this.signal });

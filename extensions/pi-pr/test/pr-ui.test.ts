@@ -37,13 +37,18 @@ const target = {
 	remoteOid: "b".repeat(40),
 };
 
-function projectPrDisplay(input: PrDisplayInput | null, ahead = 0) {
+function projectPrDisplay(
+	input: PrDisplayInput | null,
+	ahead = 0,
+	worktree: "clean" | "dirty" | "operation" = "clean",
+	relation: "same-ref" | "distinct-ref" = "distinct-ref",
+) {
 	return input
 		? projectDiscoveryDisplay({ kind: "current", pullRequest: input })
 		: projectDiscoveryDisplay({
 			kind: "none",
 			creationTarget: target,
-			branch: { ahead },
+			branch: { ahead, worktree, relation },
 		});
 }
 const theme: PrTheme = {
@@ -208,6 +213,21 @@ test("projects normal runnable, merge, and no-action states", () => {
 		assert.equal(display.footer?.color, color, `${name} color`);
 		assert.equal(display.widget, widget, `${name} widget`);
 	}
+});
+
+test("shows creation only for actionable pending branch state", () => {
+	assert.deepEqual(projectPrDisplay(null, 0, "dirty", "distinct-ref"), {
+		nextStep: "create",
+		widget: "Run /pr to create pull request",
+	});
+	assert.deepEqual(projectPrDisplay(null, 0, "operation", "distinct-ref"), {
+		nextStep: "none",
+		widget: undefined,
+	});
+	assert.deepEqual(projectPrDisplay(null, 0, "dirty", "same-ref"), {
+		nextStep: "none",
+		widget: undefined,
+	});
 });
 
 test("uses visible-condition priority for combined states", () => {

@@ -64,7 +64,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 | Current condition | `/pr` route |
 | --- | --- |
-| No current-branch pull request, no published matching ref, safe Git push configuration, and a commit ahead of the selected base | Start pull-request creation. |
+| No current-branch pull request, no published matching ref, safe Git push configuration, and a commit or ordinary pending work | Start pull-request creation. |
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
@@ -74,7 +74,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and squash-merge if confirmed. |
 
-`pi-pr-create` selects its base in this order: the leading `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then the default branch of validated `origin`. It captures the selected base OID and merge-base. Creation requires at least one committed change ahead. Dirty work alone does not enable creation. If the current branch is the selected base, pi-pr stays silent because GitHub cannot create a pull request from a ref to itself.
+`pi-pr-create` selects its base in this order: the leading `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then the default branch of validated `origin`. It captures the selected base OID and merge-base. Creation requires a commit ahead or ordinary pending work, including untracked files. A Git operation in progress does not count as pending work. If the current branch is the selected base, pi-pr stays silent because GitHub cannot create a pull request from a ref to itself.
 
 The base always comes from validated `origin`. The head may use that repository or a fork with the same GitHub source. Base and head must use the same GitHub host. Other fork relationships stop before mutation.
 
@@ -137,7 +137,7 @@ The footer and widget load once at session start. A directory outside a Git work
 
 They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. There is no periodic presentation refresh, so external changes may leave the footer and widget stale indefinitely. `/pr` reads fresh state before routing or acting and remains authoritative.
 
-The create widget stays hidden until the local branch has a commit beyond its creation point. `/pr` replaces any hint with routing feedback while it selects a route. The feedback clears before route interaction. A dispatched workflow keeps the widget hidden until the agent settles. Direct and no-action routes refresh it after completion. A failed command restores the prior hint and schedules a refresh, except when fresh lookup hits the GitHub API quota: it shows the sanitized message `GitHub API rate limit exhausted; retry after GitHub resets it` and does not immediately retry.
+The create widget stays hidden on a clean branch with no commit ahead. It appears for a commit ahead or ordinary pending work. It stays hidden during a Git operation and when the current branch is the selected base. `/pr` replaces any hint with routing feedback while it selects a route. The feedback clears before route interaction. A dispatched workflow keeps the widget hidden until the agent settles. Direct and no-action routes refresh it after completion. A failed command restores the prior hint and schedules a refresh, except when fresh lookup hits the GitHub API quota: it shows the sanitized message `GitHub API rate limit exhausted; retry after GitHub resets it` and does not immediately retry.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
