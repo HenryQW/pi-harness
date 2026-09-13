@@ -1,11 +1,10 @@
 import { createCipheriv, randomBytes } from "node:crypto";
 import { ENCRYPTION_KEY_BYTES, type BarkEncryption } from "./config.ts";
 
-const RANDOM_TEXT_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 const GCM_IV_BYTES = 12;
 
 function randomText(length: number): string {
-	return Array.from(randomBytes(length), (byte) => RANDOM_TEXT_ALPHABET[byte & 63]).join("");
+	return randomBytes(length).toString("base64url").slice(0, length);
 }
 
 export function generateEncryptionKey(): string {
