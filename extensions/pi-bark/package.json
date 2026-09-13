@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-bark",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Send Pi session status and agent output to Bark on iOS.",
   "keywords": [
     "pi-package",
@@ -19,7 +19,6 @@
     "dist",
     "docs",
     "extensions",
-    "scripts",
     "src",
     "README.md"
   ],
@@ -28,7 +27,6 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
-    "generate:key": "npm run build && node dist/scripts/generate-encryption-key.js",
     "test": "npm run build && node --test test/*.test.ts",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/bark.ts scripts/*.ts src/*.ts test/*.test.ts",
     "prepack": "npm run build",

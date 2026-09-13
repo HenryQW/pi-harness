@@ -3,7 +3,6 @@ import { copyToClipboard, type ExtensionAPI, type SessionEntry } from "@earendil
 import {
 	createBarkConfigStore,
 	DEFAULT_SERVER_URL,
-	parseDeviceKey,
 	parseServerUrl,
 	statusNotificationsEnabled,
 	type BarkConfig,
@@ -68,28 +67,22 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 
 	let statusPushQueue = Promise.resolve();
 	let pendingFinishedPush: AbortController | undefined;
-	const queueStatus = (
+	const queueStatus = async (
 		title: string,
 		cwd: string,
 		shouldSend?: Promise<boolean>,
 		cancelSignal?: AbortSignal,
 	): Promise<void> => {
-		let configSnapshot: BarkConfig;
-		try {
-			configSnapshot = configStore.loadSync().value;
-		} catch (error) {
-			return Promise.reject(error);
-		}
-		if (!configSnapshot.deviceKey || !statusNotificationsEnabled(configSnapshot, cwd)) return Promise.resolve();
+		const configSnapshot = configStore.loadSync().value;
+		if (!configSnapshot.deviceKey || !statusNotificationsEnabled(configSnapshot, cwd)) return;
 		const sessionName = pi.getSessionName()?.trim() || "Unnamed";
 		const contentSnapshot = { title, body: `Pi session: ${sessionName}` };
 		const send = async () => {
 			if (shouldSend && !(await shouldSend)) return;
 			await sendPush(configSnapshot, contentSnapshot, fetchImpl, cancelSignal);
 		};
-		const push = statusPushQueue.then(send, send);
-		statusPushQueue = push;
-		return push;
+		statusPushQueue = statusPushQueue.then(send, send);
+		return statusPushQueue;
 	};
 
 	pi.on("ui_prompt_start", (_event, ctx) => {
@@ -120,12 +113,12 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 			});
 	});
 
-	pi.registerCommand("bark-notifications", {
+	pi.registerCommand("bark", {
 		description: "Configure automatic Bark status notifications",
 		handler: async (args, ctx) => {
 			const [first, second, extra] = args.trim().split(/\s+/);
 			if (extra || (first === "default" ? !["on", "off"].includes(second) : second)) {
-				throw new Error("Usage: /bark-notifications <on|off|inherit> | default <on|off>");
+				throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
 			}
 			if (first === "default") {
 				const enabled = second === "on";
@@ -137,7 +130,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 				return;
 			}
 			if (!(["on", "off", "inherit"] as const).includes(first as "on" | "off" | "inherit")) {
-				throw new Error("Usage: /bark-notifications <on|off|inherit> | default <on|off>");
+				throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
 			}
 			const cwd = resolve(ctx.cwd);
 			await configStore.update((config) => {
@@ -182,7 +175,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 			await configStore.update((config) => ({
 				...config,
 				serverUrl: parseServerUrl(serverUrl),
-				deviceKey: parseDeviceKey(deviceKey),
+				deviceKey,
 			}));
 			ctx.ui.notify("Saved the Bark Device Key and server URL.", "info");
 		},
