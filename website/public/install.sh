@@ -11,13 +11,15 @@ PI_MIN_VERSION="0.85.1"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
 HERDR_LATEST_URL="https://herdr.dev/latest.json"
 HERDR_MIN_VERSION="0.7.4"
+HERDR_ORCHESTRATOR_MIN_VERSION="0.9.0"
+ORCHESTRATOR_PACKAGE="@henryqw/pi-orchestrator"
+LEGACY_AUTO_DAG_SOURCE="npm:@henryqw/pi-auto-dag"
 
 # BEGIN GENERATED EXTENSIONS
 EXTENSIONS='
 @henryqw/pi-add-dir
 @henryqw/pi-ask-question
 @henryqw/pi-auto-compact
-@henryqw/pi-auto-dag
 @henryqw/pi-deps
 @henryqw/pi-footer
 @henryqw/pi-herdr-btw
@@ -28,6 +30,7 @@ EXTENSIONS='
 @henryqw/pi-multi-codex
 @henryqw/pi-notes
 @henryqw/pi-open-in
+@henryqw/pi-orchestrator
 @henryqw/pi-pr
 @henryqw/pi-prompt-creator
 @henryqw/pi-rtk-test
@@ -280,6 +283,18 @@ ensure_pi() {
   success "Pi $pi_version $pi_status: $pi_bin"
 }
 
+select_herdr_minimum() {
+  required_herdr_version=$HERDR_MIN_VERSION
+  orchestrator_selected=false
+  for extension in $selected_extensions; do
+    if [ "$extension" = "$ORCHESTRATOR_PACKAGE" ]; then
+      required_herdr_version=$HERDR_ORCHESTRATOR_MIN_VERSION
+      orchestrator_selected=true
+      return 0
+    fi
+  done
+}
+
 ensure_herdr() {
   if herdr_bin=$(find_herdr); then
     herdr_status="already installed"
@@ -289,21 +304,21 @@ ensure_herdr() {
     herdr_status="installed"
   fi
 
-  herdr_version=$(installed_version "Herdr" "$herdr_bin" "$HERDR_MIN_VERSION")
+  herdr_version=$(installed_version "Herdr" "$herdr_bin" "$required_herdr_version")
   if [ "$herdr_status" = "already installed" ] && herdr_latest=$(latest_version "Herdr" "$HERDR_LATEST_URL"); then
     if [ "$herdr_version" != "$herdr_latest" ] && version_at_least "$herdr_latest" "$herdr_version"; then
       offer_update "Herdr" "$herdr_version" "$herdr_latest"
       if [ "$update_requested" = true ]; then
         info "Updating Herdr..."
         "$herdr_bin" update || die "Herdr update failed."
-        herdr_version=$(installed_version "Herdr" "$herdr_bin" "$HERDR_MIN_VERSION")
-        version_at_least "$herdr_version" "$herdr_latest" || die "Herdr update finished, but $herdr_bin reports $herdr_version instead of $herdr_latest+."
+        herdr_version=$(installed_version "Herdr" "$herdr_bin" "$required_herdr_version")
+        require_minimum_version "Herdr" "$herdr_bin" "$herdr_version" "$required_herdr_version"
         herdr_status="updated"
       fi
     fi
   fi
 
-  require_minimum_version "Herdr" "$herdr_bin" "$herdr_version" "$HERDR_MIN_VERSION"
+  require_minimum_version "Herdr" "$herdr_bin" "$herdr_version" "$required_herdr_version"
   success "Herdr $herdr_version $herdr_status: $herdr_bin"
 }
 
@@ -418,6 +433,29 @@ choose_extensions() {
   done
 }
 
+remove_legacy_auto_dag() {
+  [ "$orchestrator_selected" = true ] || return 0
+
+  if ! installed_sources=$("$pi_bin" list); then
+    die "Could not list installed Pi package sources before checking for the retired Auto DAG package."
+  fi
+  if ! printf '%s\n' "$installed_sources" \
+    | grep -Fx -e "$LEGACY_AUTO_DAG_SOURCE" -e "  $LEGACY_AUTO_DAG_SOURCE" >/dev/null; then
+    return 0
+  fi
+
+  info "Removing retired Auto DAG package source..."
+  "$pi_bin" uninstall "$LEGACY_AUTO_DAG_SOURCE" || die "Could not remove retired Pi package source $LEGACY_AUTO_DAG_SOURCE."
+  if ! installed_sources=$("$pi_bin" list); then
+    die "Could not verify removal of retired Pi package source $LEGACY_AUTO_DAG_SOURCE."
+  fi
+  if printf '%s\n' "$installed_sources" \
+    | grep -Fx -e "$LEGACY_AUTO_DAG_SOURCE" -e "  $LEGACY_AUTO_DAG_SOURCE" >/dev/null; then
+    die "Retired Pi package source $LEGACY_AUTO_DAG_SOURCE is still installed."
+  fi
+  success "Removed retired Pi package source $LEGACY_AUTO_DAG_SOURCE."
+}
+
 install_extensions() {
   installed=0
   total=0
@@ -447,6 +485,7 @@ install_extensions() {
   done
   [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || printf '\n'
   success "Installed $installed extension(s)."
+  remove_legacy_auto_dag
   info "Start Pi with: $pi_bin"
 }
 
@@ -468,6 +507,7 @@ main() {
 
   printf '\nHenry Pi Harness installer\nPi + Herdr + selected extensions\n'
   choose_extensions
+  select_herdr_minimum
   ensure_pi
   ensure_herdr
   install_extensions

@@ -58,8 +58,16 @@ export {
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
+export const PI_ORCHESTRATOR_PROCESS_LEASE = "PI_ORCHESTRATOR_PROCESS_LEASE";
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-export const CHILD_EXCLUDED_TOOL_NAMES = ["delegate_task", "delegate_flow", "delegate_flow_continue", "ask_question"] as const;
+export const CHILD_EXCLUDED_TOOL_NAMES = [
+	"delegate_task",
+	"ask_question",
+	"orchestrate_execute",
+	"orchestrate_status",
+	"orchestrate_resume",
+	"orchestrate_abort",
+] as const;
 export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");
 const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";
 

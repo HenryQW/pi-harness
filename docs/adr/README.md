@@ -11,7 +11,7 @@ An Architecture Decision Record (ADR) records one current architecture choice. T
 - [005 — Knowledge Tier Model](005-knowledge-tier-model.md)
 - [006 — pi-memory Global Store Threat Model](006-pi-memory-global-store-threat-model.md)
 - [017 — Consumer-Owned Task-Model Routing](017-consumer-owned-task-model-routing.md)
-- [019 — pi-auto-dag Serial Runner](019-pi-auto-dag-serial-runner.md)
+- [019 — pi-orchestrator](019-pi-orchestrator.md)
 
 ## Package architecture
 

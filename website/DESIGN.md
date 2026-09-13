@@ -327,7 +327,7 @@ The current sources of truth are:
 - `blume.config.ts` for background, accent, fonts, and radius;
 - `theme.css` for foreground, muted surfaces, borders, and code surfaces;
 - `pages/index.astro` for the website's visual hierarchy;
-- `../extensions/pi-subagent/docs/delegate-flow.svg` as a skin example, not a layout template.
+- `../extensions/pi-task-models/docs/task-routing-architecture.svg` as a skin example, not a layout template.
 
 When those sources change, update this profile in the same change. If this profile conflicts with the source files, stop and resolve the conflict before drawing.
 
