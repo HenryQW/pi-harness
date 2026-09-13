@@ -5,7 +5,11 @@ import type {
 import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
-import { withWorktreeLock } from "./pr-execution.ts";
+import {
+	inspectWorktreeState,
+	withWorktreeLock,
+	type GitWorktreeState,
+} from "./pr-execution.ts";
 import type {
 	CiStatus,
 	LocalMergeSafety,
@@ -112,10 +116,11 @@ export type PullRequestCreationPreflight = {
 		mergeBase: string;
 	};
 	ahead: number;
+	worktree: GitWorktreeState;
 };
 
 type CreationPreflightResult =
-	| { kind: "same-ref" }
+	| { kind: "same-ref"; worktree: GitWorktreeState }
 	| { kind: "distinct-ref"; preflight: PullRequestCreationPreflight };
 
 type CreationIdentity = {
@@ -1158,6 +1163,24 @@ function parseCreationAhead(output: string): number {
 	return ahead;
 }
 
+async function inspectCreationWorktree(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+): Promise<GitWorktreeState> {
+	try {
+		return await inspectWorktreeState(
+			async (command, args) => await invoke(pi, context, "Inspect creation worktree", command, args),
+			{ cwd: context.cwd, signal: context.signal },
+		);
+	} catch (error) {
+		if (error instanceof PullRequestLoadError) throw error;
+		return fail(
+			"Inspect creation worktree",
+			error instanceof Error ? error.message : "inspection failed",
+		);
+	}
+}
+
 async function preflightCreation(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1176,7 +1199,8 @@ async function preflightCreation(
 		: await validateCreationRef(pi, context, explicitBaseRef);
 	const baseRef = configuredBaseRef ?? await readDefaultCreationBaseRef(pi, context, origin);
 	const relation = await inspectCreationRepositoryRelation(pi, context, identity.target, origin, baseRef);
-	if (relation === "same-ref") return { kind: relation };
+	const worktree = await inspectCreationWorktree(pi, context);
+	if (relation === "same-ref") return { kind: relation, worktree };
 	const trackingRef = `refs/remotes/origin/${baseRef}`;
 	await execute(pi, context, "Fetch creation base", "git", [
 		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
@@ -1208,6 +1232,7 @@ async function preflightCreation(
 				mergeBase,
 			},
 			ahead,
+			worktree,
 		},
 	};
 }
@@ -1236,7 +1261,9 @@ async function creationDiscovery(
 	return {
 		kind: "none",
 		creationTarget: target,
-		branch: { ahead: result.kind === "same-ref" ? 0 : result.preflight.ahead },
+		branch: result.kind === "same-ref"
+			? { ahead: 0, worktree: result.worktree, relation: result.kind }
+			: { ahead: result.preflight.ahead, worktree: result.preflight.worktree, relation: result.kind },
 	};
 }
 

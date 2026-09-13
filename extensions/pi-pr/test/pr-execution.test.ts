@@ -8,6 +8,7 @@ import { extensionConfigDir } from "@henryqw/pi-config-store";
 import {
 	assertOnlyDeclaredStatusChanged,
 	inspectWorktree,
+	inspectWorktreeState,
 	parseStatusSnapshot,
 	spawnBounded,
 	withWorktreeLock,
@@ -119,7 +120,15 @@ test("worktree inspection treats an empty-status Git operation as dirty", async 
 		code: 0,
 		killed: false,
 	});
+	assert.equal(await inspectWorktreeState(exec, { cwd: root }), "operation");
 	assert.equal(await inspectWorktree(exec, { cwd: root }), "dirty");
+});
+
+test("worktree inspection includes untracked files as ordinary dirty work", async (t) => {
+	const root = await temporaryGitRepository("pi-pr-untracked-");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await writeFile(join(root, "pending.ts"), "pending\n");
+	assert.equal(await inspectWorktreeState(spawnBounded, { cwd: root }), "dirty");
 });
 
 test("worktree lock canonicalizes root and subdirectory calls", async (t) => {

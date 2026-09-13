@@ -210,7 +210,7 @@ async function makeEvidenceDirectory(): Promise<{ directory: string; cleanup: ()
 	};
 }
 
-/** Prepares the one exact private patch Flow supplies to its Reviewer. */
+/** Prepare one exact private patch for caller-owned review. */
 export async function prepareExactReviewEvidence(
 	request: PrepareExactReviewEvidenceInput,
 	signal?: AbortSignal,

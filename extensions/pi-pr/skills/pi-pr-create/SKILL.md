@@ -7,7 +7,7 @@ description: Prepare and publish the current branch pull request with determinis
 
 Use only `pi_pr_create` for base selection, merge, push, upstream, and GitHub work. Do not repeat its Git or GitHub checks with shell tools.
 
-Start with the prompted `prepare` action. It uses the saved branch base: explicit `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then validated `origin` default. It requires a committed change ahead. Dirty work alone cannot start this route. The base is always `origin`; fork heads must share its GitHub source and host. Apply trailing prompt guidance only to the PR content.
+Start with the prompted `prepare` action. It uses the saved branch base: explicit `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then validated `origin` default. It requires a committed change ahead or ordinary pending work, including untracked files. It rejects an in-progress Git operation and a head ref equal to the selected base ref. The base is always `origin`; fork heads must share its GitHub source and host. Apply trailing prompt guidance only to the PR content.
 
 After `prepare`, inspect the returned base and merge-base. Separate and commit coherent pending work. Preserve coherent staging. Exclude `.context/` and unrelated changes. Stop when separation is unsafe.
 

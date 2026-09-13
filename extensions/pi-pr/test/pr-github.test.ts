@@ -887,7 +887,7 @@ test("treats the default branch with no pull request as creation-ineligible", as
 	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
 	assert.equal(discovery.kind, "none");
 	if (discovery.kind !== "none") return;
-	assert.equal(discovery.branch.ahead, 0);
+	assert.deepEqual(discovery.branch, { ahead: 0, worktree: "clean", relation: "same-ref" });
 	const search = app.calls.find(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("associatedPullRequests("))
 	);
@@ -1017,7 +1017,7 @@ test("offers creation only after validating origin and finding no published ref"
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: { ahead: 1 },
+		branch: { ahead: 1, worktree: "clean", relation: "distinct-ref" },
 	});
 	assert.equal(calls.some(({ command }) => command === process.execPath), false);
 	assert.deepEqual(calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
@@ -1058,6 +1058,46 @@ test("offers creation only after validating origin and finding no published ref"
 	}
 });
 
+test("offers creation for untracked dirty work with no commits ahead", async () => {
+	const app = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		creationAhead: "0",
+		status: "?? pending.ts\n",
+	});
+
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(discovery.kind, "none");
+	if (discovery.kind !== "none") return;
+	assert.deepEqual(discovery.branch, { ahead: 0, worktree: "dirty", relation: "distinct-ref" });
+});
+
+test("does not treat an in-progress Git operation as pending creation work", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "pi-pr-create-operation-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	mkdirSync(join(root, ".git"));
+	writeFileSync(join(root, ".git", "MERGE_HEAD"), LOCAL_HEAD);
+	const states = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
+	const app = harness({
+		pushResult: result("\n"),
+		remote: "origin",
+		remoteNames: ["origin"],
+		pushUrl: "git@github.com:acme/project.git",
+		remoteHead: null,
+		creationAhead: "0",
+		status: "?? pending.ts\n",
+		stateResult: result(`${states.map((state) => join(root, ".git", state)).join("\n")}\n`),
+	});
+
+	const discovery = await discoverCurrentPullRequest(app.pi, app.context);
+	assert.equal(discovery.kind, "none");
+	if (discovery.kind !== "none") return;
+	assert.deepEqual(discovery.branch, { ahead: 0, worktree: "operation", relation: "distinct-ref" });
+});
+
 test("prioritizes a current pull request before an explicit creation preflight", async () => {
 	const app = harness();
 	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
@@ -1083,7 +1123,11 @@ test("uses an explicit creation branch for discovery ahead routing", async () =>
 	});
 
 	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
-	assert.deepEqual(discovery.kind === "none" ? discovery.branch : undefined, { ahead: 2 });
+	assert.deepEqual(discovery.kind === "none" ? discovery.branch : undefined, {
+		ahead: 2,
+		worktree: "clean",
+		relation: "distinct-ref",
+	});
 	assert.equal(app.calls.some(({ command, args }) =>
 		command === "git" && args.join(" ") === "check-ref-format --branch release"
 	), true);
@@ -1122,6 +1166,7 @@ test("preflights an explicit creation base from captured OIDs", async () => {
 			mergeBase,
 		},
 		ahead: 2,
+		worktree: "clean",
 	});
 	assert.equal(app.calls.some(({ command, args }) =>
 		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
@@ -1651,7 +1696,7 @@ test("ignores the same head ref in an unrelated repository", async () => {
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
 	assert.equal(calls.filter(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "view").length, 0);
-	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), true);
 });
 
 test("chooses the longest configured remote-name prefix for a push target", async () => {
@@ -1753,7 +1798,7 @@ test("does not fall back to local HEAD when the remote push ref is absent", asyn
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("associatedPullRequests("))
 	);
 	assert.ok(search?.args.includes("qualifiedName=refs/heads/feature/pr"));
-	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), true);
 });
 
 test("rehydrates a merged PR from its exact observed enterprise URL after its configured ref is deleted", async () => {
@@ -1881,7 +1926,7 @@ test("returns null only when no current-branch PR matches", async () => {
 	const { pi, context, calls } = harness({ candidates: [stale], ...forkOrigin });
 
 	assert.equal(await loadCurrentPullRequest(pi, context), null);
-	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), false);
+	assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "status"), true);
 	assert.equal(calls.some(({ command, args }) =>
 		command === "gh" && args[0] === "api" && args[1] === "graphql" && !args.some((arg) => arg.includes("associatedPullRequests("))
 	), false);
