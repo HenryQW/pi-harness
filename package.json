@@ -27,6 +27,7 @@
       "./extensions/pi-open-in/extensions",
       "./extensions/pi-herdr-rename/extensions",
       "./extensions/pi-herdr-btw/extensions/btw.ts",
+      "./extensions/pi-bark/extensions/bark.ts",
       "./extensions/pi-herdr-clone/extensions",
       "./extensions/pi-herdr-done/extensions",
       "./extensions/pi-multi-codex/extensions",
