@@ -93,6 +93,7 @@ export async function createChildWorktree(
 	childId: string,
 	run: GitRunner = runGit,
 	signal?: AbortSignal,
+	onPrepared?: (worktree: WorktreeInfo) => Promise<void>,
 ): Promise<WorktreeInfo | undefined> {
 	const root = await run(["rev-parse", "--show-toplevel"], cwd, signal);
 	if (root.code !== 0) {
@@ -154,6 +155,9 @@ export async function createChildWorktree(
 	const name = `subagent-${sanitizeShortId(childId)}`;
 	const branch = `${BRANCH_NAMESPACE}/${name}`;
 	const path = join(worktreesRoot, name);
+	const worktree = { path, cwd: join(path, relativeCwd), branch, repoRoot: stableRepoRoot, baseCommit };
+	if (onPrepared) await onPrepared(worktree);
+	signal?.throwIfAborted();
 	try {
 		await mkdir(worktreesRoot, { recursive: true });
 	} catch (error) {
@@ -161,7 +165,6 @@ export async function createChildWorktree(
 	}
 	await ensureLocalExclude(gitDir);
 	signal?.throwIfAborted();
-	const worktree = { path, cwd: join(path, relativeCwd), branch, repoRoot: stableRepoRoot, baseCommit };
 	const added = await run(["worktree", "add", path, "-b", branch, baseCommit], repoRoot, signal);
 	if (added.code !== 0) {
 		throw new WorktreeSetupError(

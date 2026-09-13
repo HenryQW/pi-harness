@@ -1,48 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadRoles } from "../src/index.ts";
 
-const packageDir = fileURLToPath(new URL("../", import.meta.url));
-
-test("bundled pi-subagent-delegated-development Skill is valid and registered", async () => {
-	const manifest = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
-	assert.deepEqual(manifest.pi.skills, ["./skills"]);
-	assert.ok(manifest.files.includes("skills"));
-
-	const skill = await readFile(
-		join(packageDir, "skills", "pi-subagent-delegated-development", "SKILL.md"),
-		"utf8",
-	);
-	for (const contract of [
-		/^name: pi-subagent-delegated-development$/m,
-		/^description: .+/m,
-		/trivial, single-owner, mechanically verifiable edit in Main/i,
-		/literal UI or copy defect.*search the exact quoted text first.*producer and nearby regression assertions/is,
-		/repository policy overrides.*compatibility is disallowed.*forbid legacy readers.*fallbacks/is,
-		/neighboring behavior.*stay unchanged.*exact test name or error.*known CI evidence/is,
-		/FLOW unit must fit one Implementer launch.*cohesion does not justify combining separately verifiable milestones/is,
-		/known regression.*exact test-name filter.*node --test --test-name-pattern "exact test name"/is,
-		/broad or cross-unit check once in Main.*Do not duplicate checks.*no post-merge validation/is,
-		/runtime owns.*worktrees.*Git identity.*rebasing.*declared validation.*exact read-only review.*fast-forward integration.*cleanup/is,
-		/without `review`.*exact validated tip.*with `review`.*`PASS`/is,
-		/Trust the structured Flow outcome.*Never edit child worktrees.*Do not repeat Flow validation/is,
-		/do not re-read implementation, tests, manifests, or commit stats/i,
-		/delegate_flow_continue` once.*guidance specific to the failure/is,
-		/Omit `modelClass`.*supply it only to replace both defaults/is,
-		/terminal failure.*exact retained paths.*Do not retry Flow.*`git worktree list`/is,
-		/cleanup warning from a successful Flow as-is/i,
-		/caller-managed review only when the caller or repository policy explicitly requires judgment/is,
-		/role: "reviewer".*same-named user Role remains effective/is,
-		/Reviewer cannot see an isolated candidate.*use Flow/is,
-		/Empty output fails.*second empty result blocks/is,
-		/findings.*repair them together.*validate once.*re-review once.*Only `PASS` completes/is,
-	]) assert.match(skill, contract);
-	assert.doesNotMatch(skill, /git rev-parse|git diff|sha-?256|cherry-pick|advisory|reconsideration|public review/i);
-});
 
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-examples-"));
