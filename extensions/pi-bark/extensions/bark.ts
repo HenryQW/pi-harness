@@ -40,6 +40,7 @@ async function sendPush(
 	config: BarkConfig,
 	content: BarkPushContent,
 	fetchImpl: typeof globalThis.fetch,
+	cancelSignal?: AbortSignal,
 ): Promise<void> {
 	if (!config.deviceKey) throw new Error("Bark Device Key is required.");
 	const payload = config.encryption ? encryptPushContent(content, config.encryption) : content;
@@ -49,9 +50,12 @@ async function sendPush(
 			method: "POST",
 			headers: { "Content-Type": "application/json; charset=utf-8" },
 			body: JSON.stringify({ device_key: config.deviceKey, ...payload }),
-			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+			signal: cancelSignal
+				? AbortSignal.any([cancelSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
+				: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 		});
 	} catch (error) {
+		if (cancelSignal?.aborted) return;
 		throw new Error(`Bark push request failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	if (!response.ok) throw new Error(`Bark push request failed with HTTP ${response.status}.`);
@@ -63,7 +67,13 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	const fetchImpl = options.fetch ?? globalThis.fetch;
 
 	let statusPushQueue = Promise.resolve();
-	const queueStatus = (title: string, cwd: string, shouldSend?: Promise<boolean>): Promise<void> => {
+	let pendingFinishedPush: AbortController | undefined;
+	const queueStatus = (
+		title: string,
+		cwd: string,
+		shouldSend?: Promise<boolean>,
+		cancelSignal?: AbortSignal,
+	): Promise<void> => {
 		let configSnapshot: BarkConfig;
 		try {
 			configSnapshot = configStore.loadSync().value;
@@ -75,7 +85,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		const contentSnapshot = { title, body: `Pi session: ${sessionName}` };
 		const send = async () => {
 			if (shouldSend && !(await shouldSend)) return;
-			await sendPush(configSnapshot, contentSnapshot, fetchImpl);
+			await sendPush(configSnapshot, contentSnapshot, fetchImpl, cancelSignal);
 		};
 		const push = statusPushQueue.then(send, send);
 		statusPushQueue = push;
@@ -88,14 +98,26 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		});
 	});
 
+	pi.on("agent_start", () => {
+		pendingFinishedPush?.abort();
+		pendingFinishedPush = undefined;
+	});
+
 	pi.on("agent_settled", (_event, ctx) => {
 		if (!ctx.isIdle()) return;
+		const controller = new AbortController();
+		pendingFinishedPush?.abort();
+		pendingFinishedPush = controller;
 		const shouldSend = new Promise<boolean>((resolve) => {
 			setImmediate(() => resolve(ctx.isIdle()));
 		});
-		void queueStatus("Pi finished", ctx.cwd, shouldSend).catch((error) => {
-			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
-		});
+		void queueStatus("Pi finished", ctx.cwd, shouldSend, controller.signal)
+			.catch((error) => {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+			})
+			.finally(() => {
+				if (pendingFinishedPush === controller) pendingFinishedPush = undefined;
+			});
 	});
 
 	pi.registerCommand("bark-notifications", {

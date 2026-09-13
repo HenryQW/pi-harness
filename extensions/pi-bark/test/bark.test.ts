@@ -242,6 +242,41 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 	assert.deepEqual(config.statusNotifications, { defaultEnabled: true, cwdOverrides: {} });
 });
 
+test("a continuation cancels a finished push after its deferred idle check", async (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+
+	let requestSignal: AbortSignal | null | undefined;
+	const notices: string[] = [];
+	const { commands, lifecycleHandlers } = harness(
+		agentDir,
+		((_input: string | URL | Request, init?: RequestInit) => {
+			requestSignal = init?.signal;
+			return new Promise<Response>((_resolve, reject) => {
+				requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), { once: true });
+			});
+		}) as typeof fetch,
+		async () => {},
+	);
+	const ctx = {
+		cwd: join(agentDir, "project"),
+		sessionManager: { buildContextEntries: () => [] },
+		isIdle: () => true,
+		ui: { notify: (message: string) => notices.push(message) },
+	};
+	await commands.get("set-bark")!("device-key", ctx);
+	notices.length = 0;
+
+	assert.equal(lifecycleHandlers.get("agent_settled")!({}, ctx), undefined);
+	await waitForImmediate();
+	assert.equal(requestSignal?.aborted, false);
+
+	lifecycleHandlers.get("agent_start")!({}, ctx);
+	await Promise.resolve();
+	assert.equal(requestSignal?.aborted, true);
+	assert.deepEqual(notices, []);
+});
+
 test("automatic status pushes preserve event order and event-time state", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
