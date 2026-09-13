@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
-import { spawnBounded, type Exec, type ExecResult } from "../extensions/pr-execution.ts";
 import { PullRequestCiFixer } from "../extensions/pr-ci.ts";
 
 const original = "a".repeat(40);
@@ -257,24 +257,6 @@ function harness(scenario: Scenario) {
 function oneFailure(): Snapshot {
 	return { checks: [check(11, 101)], jobs: [job(101, 11)] };
 }
-
-test("streams bounded complete UTF-8 stdout tails and rejects invalid UTF-8", async () => {
-	const streamed = await spawnBounded(process.execPath, [
-		"-e",
-		"process.stdout.write(Buffer.concat([Buffer.alloc(9 * 1024 * 1024, 0x78), Buffer.from('x🙂終')]))",
-	], { cwd, stdoutTailBytes: 6 });
-	assert.equal(streamed.stdout, "終");
-	assert.equal(streamed.stdoutTruncated, true);
-	assert.ok(Buffer.byteLength(streamed.stdout, "utf8") <= 6);
-
-	await assert.rejects(
-		spawnBounded(process.execPath, ["-e", "process.stdout.write(Buffer.from([0xff]))"], {
-			cwd,
-			stdoutTailBytes: 20 * 1024,
-		}),
-		/stdout was not valid UTF-8/,
-	);
-});
 
 test("aborts an in-flight streamed log read and blocks collection", async (t) => {
 	const controller = new AbortController();

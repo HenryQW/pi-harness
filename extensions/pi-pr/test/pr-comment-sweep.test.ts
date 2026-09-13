@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import {
 	collectPullRequestFeedback,
 	FEEDBACK_API_PAGE_MAX_BYTES,
@@ -16,7 +17,6 @@ import {
 	type SweepStatus,
 } from "../extensions/pr-comment-sweep.ts";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
-import { spawnBounded, type Exec, type ExecResult } from "../extensions/pr-execution.ts";
 
 const operationPaths = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-sweep-no-operation-${index}`).join("\n") + "\n";
 

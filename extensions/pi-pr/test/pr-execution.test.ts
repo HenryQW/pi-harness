@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
+import { spawnBounded } from "@henryqw/pi-process";
 import {
 	assertOnlyDeclaredStatusChanged,
 	inspectWorktree,
 	parseStatusSnapshot,
-	spawnBounded,
 	withWorktreeLock,
 } from "../extensions/pr-execution.ts";
 
@@ -31,79 +31,6 @@ async function worktreeLockPath(root: string, agentDir: string): Promise<string>
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", agentDir));
 	return join(lockNamespace, "worktree-locks", `${createHash("sha256").update(canonical).digest("hex")}.lock`);
 }
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForFile(path: string, timeoutMs: number): Promise<string> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		try {
-			return await readFile(path, "utf8");
-		} catch (error) {
-			if (!error || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		}
-		await delay(20);
-	}
-	throw new Error(`Timed out waiting for ${path}`);
-}
-
-async function waitForExit(pid: number): Promise<void> {
-	const deadline = Date.now() + 2_000;
-	while (Date.now() < deadline) {
-		try {
-			process.kill(pid, 0);
-		} catch (error) {
-			if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ESRCH") return;
-			throw error;
-		}
-		await delay(20);
-	}
-	throw new Error(`SIGTERM-ignoring descendant ${pid} remained alive`);
-}
-
-test("bounded spawn rejects streaming output beyond its cap", async () => {
-	await assert.rejects(
-		spawnBounded(process.execPath, ["-e", "process.stdout.write('x'.repeat(33))"], {
-			cwd: process.cwd(),
-			stdoutLimitBytes: 32,
-		}),
-		/stdout exceeded 32 bytes/,
-	);
-});
-
-test("bounded spawn kills a SIGTERM-ignoring descendant after its leader closes", { skip: process.platform === "win32" }, async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "pi-pr-process-group-"));
-	const pidPath = join(root, "descendant.pid");
-	let descendantPid: number | undefined;
-	t.after(() => rm(root, { recursive: true, force: true }));
-	t.after(() => {
-		if (descendantPid === undefined) return;
-		try {
-			process.kill(descendantPid, "SIGKILL");
-		} catch (error) {
-			if (!error || typeof error !== "object" || (error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-		}
-	});
-	const descendant = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1_000);";
-	const leader = [
-		"const { spawn } = require('node:child_process');",
-		"const { writeFileSync } = require('node:fs');",
-		`const child = spawn(process.execPath, [\"-e\", ${JSON.stringify(descendant)}], { stdio: \"ignore\" });`,
-		"writeFileSync(process.argv[1], String(child.pid));",
-		"setInterval(() => {}, 1_000);",
-	].join("\n");
-	const timedOut = assert.rejects(
-		spawnBounded(process.execPath, ["-e", leader, pidPath], { cwd: root, timeoutMs: 1_000 }),
-		/timed out after 1000ms/,
-	);
-	const pidText = await waitForFile(pidPath, 500);
-	descendantPid = Number(pidText);
-	assert.ok(Number.isSafeInteger(descendantPid) && descendantPid > 0, `invalid descendant PID: ${pidText}`);
-	await timedOut;
-	await waitForExit(descendantPid);
-});
 
 test("worktree inspection treats an empty-status Git operation as dirty", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-pr-operation-"));

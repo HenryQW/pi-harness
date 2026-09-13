@@ -4,11 +4,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { Exec, ExecResult } from "@henryqw/pi-process";
 import {
 	executeGitHubMerge,
 	inspectLocalMergeSafety,
 } from "../extensions/pr-merge.ts";
-import type { Exec, ExecResult } from "../extensions/pr-execution.ts";
 
 const cwd = "/repo";
 const hostname = "github.com";

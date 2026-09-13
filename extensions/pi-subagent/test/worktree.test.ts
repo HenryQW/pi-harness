@@ -5,7 +5,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type GitRunner, type WorktreePayload } from "../src/worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type WorktreePayload } from "../src/worktree.ts";
+import type { GitRunner } from "../src/git-process.ts";
 import { loadRoles } from "../src/index.ts";
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
@@ -308,6 +309,53 @@ test("createChildWorktree never degrades aborted repository classification", asy
 		if (command.startsWith("show-ref ")) headAbort.abort();
 		return command.startsWith("show-ref ") ? fail() : ok();
 	}, headAbort.signal), { name: "AbortError" });
+});
+
+test("createChildWorktree stops each captured execution failure before semantic fallbacks", async (t) => {
+	const cases = [
+		{ name: "initial root", stage: "root", reason: `initial root ${"x".repeat(220)}` },
+		{ name: "safe.directory retry", stage: "safe", reason: `safe retry ${"y".repeat(220)}` },
+		{ name: "HEAD probe", stage: "head", reason: `HEAD ${"z".repeat(220)}` },
+	] as const;
+	for (const scenario of cases) {
+		await t.test(scenario.name, async (t) => {
+			const repo = await tempDir(t);
+			const calls: string[][] = [];
+			const run: GitRunner = async (args) => {
+				calls.push(args);
+				const command = args.join(" ");
+				if (scenario.stage === "root" && command === "rev-parse --show-toplevel") {
+					return { code: -1, stdout: "", stderr: scenario.reason };
+				}
+				if (scenario.stage === "safe") {
+					if (command === "rev-parse --show-toplevel") return fail("root rejected");
+					if (command === "-c safe.directory=* rev-parse --show-toplevel") {
+						return { code: -1, stdout: "", stderr: scenario.reason };
+					}
+				}
+				if (scenario.stage === "head") {
+					if (command === "rev-parse --show-toplevel") return ok(`${repo}\n`);
+					if (command === "rev-parse HEAD") return { code: -1, stdout: "", stderr: scenario.reason };
+				}
+				return ok();
+			};
+			await assert.rejects(
+				createChildWorktree(repo, `failure-${scenario.stage}`, run),
+				(error: unknown) => {
+					assert.ok(error instanceof Error);
+					const command = scenario.stage === "head" ? "git rev-parse HEAD failed" : "git rev-parse failed";
+					assert.equal(error.message, `${command} (${scenario.reason.slice(0, 200)})`);
+					return true;
+				},
+			);
+			const expected = scenario.stage === "root"
+				? [["rev-parse", "--show-toplevel"]]
+				: scenario.stage === "safe"
+					? [["rev-parse", "--show-toplevel"], ["-c", "safe.directory=*", "rev-parse", "--show-toplevel"]]
+					: [["rev-parse", "--show-toplevel"], ["rev-parse", "--show-prefix"], ["rev-parse", "HEAD"]];
+			assert.deepEqual(calls, expected);
+		});
+	}
 });
 
 test("createChildWorktree counts the dedicated branch, not the checkout HEAD", async (t) => {

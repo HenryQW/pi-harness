@@ -19,6 +19,7 @@ Run `/task-models` and configure the `fast` profile before delegating. Open `/ta
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
+| [`@henryqw/pi-process`](https://pi.henry.wang/extensions/pi-process) | Required | Runs bounded captured Git commands. |
 
 Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. Missing shared model config warns once because delegation needs a route.
 

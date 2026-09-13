@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
+import type { Exec, ExecOptions } from "@henryqw/pi-process";
 import {
 	runChecked,
 	requiredOid,
 	requiredText,
-	type Exec,
-	type ExecOptions,
 } from "./pr-execution.ts";
 import type { CurrentPullRequest } from "./pr-github.ts";
 

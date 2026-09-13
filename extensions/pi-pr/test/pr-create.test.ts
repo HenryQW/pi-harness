@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Exec, ExecResult } from "../extensions/pr-execution.ts";
+import type { Exec, ExecResult } from "@henryqw/pi-process";
 import { PullRequestCreator } from "../extensions/pr-create.ts";
 import type { PullRequestTarget } from "../extensions/pr-routing.ts";
 

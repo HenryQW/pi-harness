@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { Exec, ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
-import type { Exec, ExecResult } from "../extensions/pr-execution.ts";
 import { PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
 
 const oldHead = "a".repeat(40);

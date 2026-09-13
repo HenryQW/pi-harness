@@ -1,10 +1,10 @@
+import type { Exec } from "@henryqw/pi-process";
 import {
 	inspectWorktree,
 	readHead,
 	requiredOid,
 	requiredText,
 	runChecked,
-	type Exec,
 } from "./pr-execution.ts";
 import type { LocalMergeSafety } from "./pr-routing.ts";
 

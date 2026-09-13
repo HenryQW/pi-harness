@@ -17,10 +17,10 @@ import {
 	loadCurrentPullRequest,
 	samePullRequestSnapshot,
 } from "../../../extensions/pr-github.ts";
+import { spawnBounded } from "@henryqw/pi-process";
 import {
 	inspectWorktree,
 	readHead,
-	spawnBounded,
 } from "../../../extensions/pr-execution.ts";
 
 class UsageError extends Error {}

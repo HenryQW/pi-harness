@@ -233,6 +233,9 @@ importers:
       '@henryqw/pi-herdr':
         specifier: ^0.4.5
         version: link:../../packages/pi-herdr
+      '@henryqw/pi-process':
+        specifier: ^0.1.0
+        version: link:../../packages/pi-process
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -300,6 +303,9 @@ importers:
       '@henryqw/pi-multi-codex':
         specifier: ^1.0.0
         version: link:../pi-multi-codex
+      '@henryqw/pi-process':
+        specifier: ^0.1.0
+        version: link:../../packages/pi-process
       '@henryqw/pi-task-models':
         specifier: ^5.0.0
         version: link:../pi-task-models
@@ -347,6 +353,8 @@ importers:
       '@types/proper-lockfile':
         specifier: ^4.1.4
         version: 4.1.4
+
+  packages/pi-process: {}
 
   website:
     devDependencies:

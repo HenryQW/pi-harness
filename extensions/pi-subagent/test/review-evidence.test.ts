@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, type Mode, type PathLike } from "node:fs";
-import fs, { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
@@ -59,6 +59,38 @@ function assertEvidenceDirectoriesRemoved(directories: readonly string[]): void 
 	assert.ok(directories.length > 0, "review evidence did not create a temporary directory");
 	for (const directory of directories) assert.equal(existsSync(directory), false);
 }
+
+async function withFakeGit<T>(t: import("node:test").TestContext, stderr: string, operation: () => Promise<T>): Promise<T> {
+	const root = await mkdtemp(join(tmpdir(), "pi-subagent-review-git-"));
+	const bin = join(root, "bin");
+	await mkdir(bin);
+	await writeFile(join(bin, "git"), `#!${process.execPath}
+require("node:fs").writeSync(2, ${JSON.stringify(stderr)});
+process.exit(7);
+`);
+	await chmod(join(bin, "git"), 0o755);
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const originalPath = process.env.PATH;
+	process.env.PATH = `${bin}${process.platform === "win32" ? ";" : ":"}${originalPath ?? ""}`;
+	try {
+		return await operation();
+	} finally {
+		if (originalPath === undefined) delete process.env.PATH;
+		else process.env.PATH = originalPath;
+	}
+}
+
+test("exact evidence preserves its 200-character ordinary Git diagnostic cap", async (t) => {
+	const context = await candidate(t, await repository(t), "diagnostic");
+	const stderr = "x".repeat(201);
+	await withFakeGit(t, stderr, async () => {
+		await assert.rejects(prepareExactReviewEvidence(context), (error: unknown) => {
+			assert.ok(error instanceof Error);
+			assert.equal(error.message, `git rev-parse --verify --end-of-options ${context.base}^{commit} failed with exit 7: ${stderr.slice(0, 200)}`);
+			return true;
+		});
+	});
+});
 
 test("exact evidence creates one private binary patch and idempotently cleans it up", async (t) => {
 	const repo = await repository(t);
