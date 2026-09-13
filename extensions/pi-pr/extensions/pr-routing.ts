@@ -40,6 +40,8 @@ export type PullRequestTarget = {
 
 export type BranchCreationState = {
 	ahead: number;
+	worktree: "clean" | "dirty" | "operation";
+	relation: "same-ref" | "distinct-ref";
 };
 
 export type DiscoveryIssue =
@@ -88,10 +90,15 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 	return "merge";
 }
 
+export function isPullRequestCreationEligible(branch: BranchCreationState): boolean {
+	return branch.relation === "distinct-ref" && branch.worktree !== "operation" &&
+		(branch.ahead > 0 || branch.worktree === "dirty");
+}
+
 export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
 	if (discovery.kind === "inactive") return "none";
 	if (discovery.kind === "blocked") return "blocked";
-	if (discovery.kind === "none") return discovery.branch.ahead > 0 ? "create" : "none";
+	if (discovery.kind === "none") return isPullRequestCreationEligible(discovery.branch) ? "create" : "none";
 	if (discovery.pullRequest.target.provenance === "inferred") {
 		return discovery.pullRequest.lifecycle === "open" ? "link-branch" : "none";
 	}

@@ -15,6 +15,7 @@
 
 - Treat a configured default branch with no pull request as a normal no-PR discovery. For example, clean `main -> origin/main` with GitHub default branch `main` returns `kind: "none"` with zero commits ahead. It must not become blocked or `status unavailable`.
 - Keep passive discovery separate from mutation preflight. A head ref equal to the selected base ref disables creation during discovery, but actual creation preflight must still reject that same-ref request.
+- Creation requires a commit ahead or ordinary pending work. Include untracked files, and never count an in-progress Git operation as pending work. Keep passive worktree inspection read-only.
 - Preserve a regression test whose current branch, push ref, and default base are all `main`. Never change its default base to another name merely to satisfy creation-preflight mocks.
 - Reserve `status unavailable` for real lookup or validation failures, not valid non-actionable repository states.
 

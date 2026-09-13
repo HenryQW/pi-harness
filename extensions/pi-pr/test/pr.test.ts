@@ -132,7 +132,7 @@ function noPullRequest(ahead = 0): CurrentPullRequestDiscovery {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: { ahead },
+		branch: { ahead, worktree: "clean", relation: "distinct-ref" },
 	};
 }
 

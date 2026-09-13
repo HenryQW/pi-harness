@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, realpath, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { realpath, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	extensionConfigDir,
@@ -27,6 +27,7 @@ import {
 	type PullRequestLoadContext,
 } from "./pr-github.ts";
 import {
+	inspectGitOperation,
 	isAncestor,
 	parseNulPaths,
 	parseStatusSnapshot,
@@ -46,7 +47,6 @@ export const SWEEP_RECOVERY_MAX_BYTES = 1024 * 1024;
 
 const STATE_VERSION = 1;
 const STATE_FILE = "state.json";
-const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 const LEDGER_NOTE_MAX_BYTES = 2 * 1024;
 const CHECK_MAX_COUNT = 32;
 const CHECK_ARGUMENTS_MAX_BYTES = 32 * 1024;
@@ -640,23 +640,8 @@ export class PullRequestCommentSweep {
 	}
 
 	private async requireNoGitOperation(): Promise<void> {
-		const paths = await runChecked(this.exec, "git", [
-			"rev-parse", ...GIT_OPERATION_STATES.flatMap((state) => ["--git-path", state]),
-		], this.options());
-		const normalized = paths.stdout.replace(/\r\n/g, "\n");
-		const values = (normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized).split("\n");
-		if (values.length !== GIT_OPERATION_STATES.length || values.some((path) => !path)) {
-			throw new Error("Git operation state path resolution returned invalid output");
-		}
-		for (const [index, path] of values.entries()) {
-			try {
-				await lstat(resolve(this.cwd, path));
-				throw new Error(`${GIT_OPERATION_STATES[index]} is in progress`);
-			} catch (error) {
-				if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
-				throw error;
-			}
-		}
+		const operation = await inspectGitOperation(this.exec, this.options());
+		if (operation !== null) throw new Error(`${operation} is in progress`);
 	}
 
 	private async localPaths(): Promise<string[]> {
