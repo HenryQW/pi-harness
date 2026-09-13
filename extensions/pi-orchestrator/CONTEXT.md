@@ -29,9 +29,10 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - Ready tasks run in parallel. Preliminary validation uses direct checks only, then the Herdr worker must stop before declared-order integration.
 - After worker termination and rebase, task checks run again. One ephemeral exact Reviewer runs only when the task declares judgment.
 - Task and final checks are authoritative. Checks run directly from exact command and argument arrays without a shell.
+- Durable check evidence keeps every exact command, argument array, exit status, killed status, and before/after identity. Only one failed-batch diagnostic result may retain bounded output.
 - Judgment uses pi-subagent's exact `{base, tip, patchPath}` evidence and accepts only exact `PASS`.
 - Main identity is checked at each integration and final boundary. Drift fails closed and preserves recovery evidence.
-- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Reads validate the strict schema, reject old versions, and never migrate another format.
+- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Runtime evidence is bounded before persistence. Reads validate the strict schema, reject old versions, and never migrate another format.
 - `orchestrate_status` may reconcile interrupted state and terminate ambiguous owned workers. It starts no productive replacement attempt.
 - `orchestrate_resume` permits only `retry`, `verify`, or `finalize`. `orchestrate_abort` terminates owned workers before recording abort.
 - Cleanup records uncertainty. The runtime never reports unknown resources as absent or force-deletes recoverable work.

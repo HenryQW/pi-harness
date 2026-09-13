@@ -7,6 +7,8 @@ import { Check, Errors } from "typebox/value";
 export const RUN_STATE_VERSION = 1;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
+export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
+export const MAX_POSSIBLE_RESOURCES = 32;
 
 export const MODEL_CLASSES = ["fast", "balanced", "frontier", "fav"] as const;
 export type ModelClass = Static<typeof ModelClassSchema>;
@@ -18,7 +20,8 @@ const SHA256_PATTERN = "^[0-9a-f]{64}$";
 const TOKEN_PATTERN = "^[A-Za-z0-9_-]{16,128}$";
 const IdSchema = Type.String({ minLength: 1, maxLength: 80, pattern: ID_PATTERN });
 const TextSchema = Type.String({ minLength: 1, maxLength: 32_000 });
-const OptionalTextSchema = Type.Optional(Type.String({ maxLength: 32_000 }));
+const RuntimeTextSchema = Type.String({ minLength: 1, maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES });
+const OptionalRuntimeTextSchema = Type.Optional(Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }));
 const TimestampSchema = Type.Integer({ minimum: 0 });
 const ModelClassSchema = Type.Union([
 	Type.Literal("fast"),
@@ -116,15 +119,15 @@ const AllocationLifecycleFields = {
 	status: Type.Union([
 		Type.Literal("allocating"), Type.Literal("owned"), Type.Literal("absent"), Type.Literal("unknown"),
 	]),
-	possibleResources: Type.Optional(Type.Array(TextSchema, { maxItems: 32 })),
-	failure: OptionalTextSchema,
+	possibleResources: Type.Optional(Type.Array(RuntimeTextSchema, { maxItems: MAX_POSSIBLE_RESOURCES })),
+	failure: OptionalRuntimeTextSchema,
 };
 
 const WorktreeRecordSchema = Type.Object({
-	path: TextSchema,
-	cwd: TextSchema,
-	branch: TextSchema,
-	repoRoot: TextSchema,
+	path: RuntimeTextSchema,
+	cwd: RuntimeTextSchema,
+	branch: RuntimeTextSchema,
+	repoRoot: RuntimeTextSchema,
 	baseCommit: Type.String({ pattern: OID_PATTERN }),
 }, { additionalProperties: false });
 
@@ -137,38 +140,38 @@ const WorktreeAllocationIntentSchema = Type.Object({
 const WorkspaceAllocationIntentSchema = Type.Object({
 	kind: Type.Literal("workspace"),
 	...AllocationLifecycleFields,
-	label: TextSchema,
-	worktreeCwd: TextSchema,
-	mainRoot: TextSchema,
-	repoKey: TextSchema,
-	herdrRepoRoot: TextSchema,
-	workspaceId: Type.Optional(TextSchema),
-	rootTabId: Type.Optional(TextSchema),
-	rootPaneId: Type.Optional(TextSchema),
+	label: RuntimeTextSchema,
+	worktreeCwd: RuntimeTextSchema,
+	mainRoot: RuntimeTextSchema,
+	repoKey: RuntimeTextSchema,
+	herdrRepoRoot: RuntimeTextSchema,
+	workspaceId: Type.Optional(RuntimeTextSchema),
+	rootTabId: Type.Optional(RuntimeTextSchema),
+	rootPaneId: Type.Optional(RuntimeTextSchema),
 }, { additionalProperties: false });
 
 const WorkerTabAllocationIntentSchema = Type.Object({
 	kind: Type.Literal("worker_tab"),
 	...AllocationLifecycleFields,
-	label: TextSchema,
-	workspaceId: TextSchema,
-	workspaceRootTabId: TextSchema,
-	workspaceRootPaneId: TextSchema,
-	worktreeCwd: TextSchema,
-	leasePath: TextSchema,
-	tabId: Type.Optional(TextSchema),
-	paneId: Type.Optional(TextSchema),
+	label: RuntimeTextSchema,
+	workspaceId: RuntimeTextSchema,
+	workspaceRootTabId: RuntimeTextSchema,
+	workspaceRootPaneId: RuntimeTextSchema,
+	worktreeCwd: RuntimeTextSchema,
+	leasePath: RuntimeTextSchema,
+	tabId: Type.Optional(RuntimeTextSchema),
+	paneId: Type.Optional(RuntimeTextSchema),
 }, { additionalProperties: false });
 
 const AgentAllocationIntentSchema = Type.Object({
 	kind: Type.Literal("agent"),
 	...AllocationLifecycleFields,
-	agentName: TextSchema,
-	workspaceId: TextSchema,
-	tabId: TextSchema,
-	paneId: TextSchema,
-	worktreeCwd: TextSchema,
-	leasePath: TextSchema,
+	agentName: RuntimeTextSchema,
+	workspaceId: RuntimeTextSchema,
+	tabId: RuntimeTextSchema,
+	paneId: RuntimeTextSchema,
+	worktreeCwd: RuntimeTextSchema,
+	leasePath: RuntimeTextSchema,
 }, { additionalProperties: false });
 
 export const AllocationIntentSchema = Type.Union([
@@ -212,7 +215,7 @@ export type RequestStatus = RunState["status"];
 export type CleanupRecovery = NonNullable<RunState["recovery"]>;
 
 const WorkspaceSchema = Type.Object({
-	branch: TextSchema,
+	branch: RuntimeTextSchema,
 	head: Type.String({ pattern: OID_PATTERN }),
 	index: Type.String({ pattern: OID_PATTERN }),
 	tree: Type.String({ pattern: OID_PATTERN }),
@@ -247,7 +250,7 @@ const PromptRecordSchema = Type.Object({
 	status: Type.Union([Type.Literal("submitting"), Type.Literal("not_sent"), Type.Literal("settled"), Type.Literal("ambiguous")]),
 	preCandidate: WorkspaceSchema,
 	candidate: Type.Optional(WorkspaceSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 	at: TimestampSchema,
 }, { additionalProperties: false });
 
@@ -256,8 +259,8 @@ const CommandEvidenceSchema = Type.Object({
 	args: Type.Array(Type.String({ maxLength: 16_000 }), { maxItems: 128 }),
 	code: Type.Integer(),
 	killed: Type.Boolean(),
-	stdout: Type.String({ maxLength: 32_000 }),
-	stderr: Type.String({ maxLength: 32_000 }),
+	stdout: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
+	stderr: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
 }, { additionalProperties: false });
 
 const CheckBatchEvidenceSchema = Type.Object({
@@ -276,17 +279,17 @@ const ReviewEvidenceSchema = Type.Object({
 	base: WorkspaceSchema,
 	tip: WorkspaceSchema,
 	identityAfter: WorkspaceSchema,
-	verdict: Type.String({ maxLength: 32_000 }),
+	verdict: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
 	passed: Type.Boolean(),
 	at: TimestampSchema,
 }, { additionalProperties: false });
 
 const WorkerTerminationSchema = Type.Object({
 	status: Type.Union([Type.Literal("terminating"), Type.Literal("terminated"), Type.Literal("unknown")]),
-	workerId: TextSchema,
+	workerId: RuntimeTextSchema,
 	candidate: WorkspaceSchema,
 	at: Type.Optional(TimestampSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const IntegrationRecordSchema = Type.Object({
@@ -294,7 +297,7 @@ const IntegrationRecordSchema = Type.Object({
 	expectedMain: WorkspaceSchema,
 	candidate: WorkspaceSchema,
 	mainAfter: Type.Optional(WorkspaceSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const CleanupStepSchema = Type.Object({
@@ -302,7 +305,7 @@ const CleanupStepSchema = Type.Object({
 		Type.Literal("worker_tab"), Type.Literal("workspace"), Type.Literal("worktree"), Type.Literal("branch"),
 	]),
 	status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed")]),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const TaskAttemptSchema = Type.Object({
@@ -311,7 +314,7 @@ const TaskAttemptSchema = Type.Object({
 	waveBase: WorkspaceSchema,
 	correlationToken: Type.String({ pattern: TOKEN_PATTERN }),
 	allocationGeneration: Type.Integer({ minimum: 1, maximum: 2 }),
-	allocations: Type.Array(AllocationIntentSchema, { maxItems: 8 }),
+	allocations: Type.Array(AllocationIntentSchema, { maxItems: 5 }),
 	prompts: Type.Array(PromptRecordSchema, { maxItems: 2 }),
 	candidate: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
@@ -333,7 +336,7 @@ const TaskStateSchema = Type.Object({
 	implementerLaunchKey: TextSchema,
 	judgmentLaunchKey: Type.Optional(TextSchema),
 	attempts: Type.Array(TaskAttemptSchema, { maxItems: 2 }),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const WaveStateSchema = Type.Object({
@@ -351,7 +354,7 @@ const FinalGateSchema = Type.Object({
 	identity: Type.Optional(WorkspaceSchema),
 	checks: Type.Optional(CheckBatchEvidenceSchema),
 	review: Type.Optional(ReviewEvidenceSchema),
-	failure: OptionalTextSchema,
+	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
 const RunStateSchema = Type.Object({
@@ -595,6 +598,25 @@ function requireAbsoluteAllocationPath(value: string, field: string): void {
 	if (!isAbsolute(value)) throw new Error(`${field} must be an absolute path.`);
 }
 
+function validateCheckBatchEvidence(evidence: CheckBatchEvidence, checks: readonly CheckCommand[], field: string): void {
+	if (evidence.results.length !== checks.length
+		|| evidence.results.some((result, index) => !sameCheck(result, checks[index]!))) {
+		throw new Error(`${field} does not retain every exact declared command and argv.`);
+	}
+	const commandsPassed = evidence.results.every((result) => result.code === 0 && !result.killed);
+	const identityMatches = sameIdentity(evidence.candidate, evidence.identityAfter);
+	if (evidence.passed !== (commandsPassed && identityMatches)) {
+		throw new Error(`${field} has an inconsistent pass result.`);
+	}
+	let diagnosticIndex = evidence.passed
+		? -1
+		: evidence.results.findIndex((result) => result.code !== 0 || result.killed);
+	if (diagnosticIndex < 0 && commandsPassed && !identityMatches) diagnosticIndex = evidence.results.length - 1;
+	if (evidence.results.some((result, index) => index !== diagnosticIndex && (result.stdout !== "" || result.stderr !== ""))) {
+		throw new Error(`${field} retains non-diagnostic command output.`);
+	}
+}
+
 export function checkBatchPasses(evidence: CheckBatchEvidence | undefined, checks: readonly CheckCommand[], candidate: WorkspaceIdentity): boolean {
 	return Boolean(evidence
 		&& evidence.passed
@@ -694,6 +716,14 @@ export function parseRunState(value: unknown): RunState {
 		if (taskState.judgmentLaunchKey !== judgmentKey) throw new Error(`Malformed Reviewer launch key for ${definition.id}.`);
 		for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
 			if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed attempt order for ${definition.id}.`);
+			if (attempt.preliminaryChecks) {
+				if (attempt.preliminaryChecks.phase !== "preliminary") throw new Error(`Malformed preliminary check phase for ${definition.id}.`);
+				validateCheckBatchEvidence(attempt.preliminaryChecks, definition.checks, `Preliminary checks for ${definition.id}`);
+			}
+			if (attempt.authoritativeChecks) {
+				if (attempt.authoritativeChecks.phase !== "authoritative") throw new Error(`Malformed authoritative check phase for ${definition.id}.`);
+				validateCheckBatchEvidence(attempt.authoritativeChecks, definition.checks, `Authoritative checks for ${definition.id}`);
+			}
 			if (attempt.prompts[0]?.kind === "correction" || (attempt.prompts[1] && attempt.prompts[1].kind !== "correction")) {
 				throw new Error(`Malformed correction history for ${definition.id}.`);
 			}
@@ -709,6 +739,9 @@ export function parseRunState(value: unknown): RunState {
 			}
 			if (attempt.cleanup.some((step, cleanupIndex) => step.kind !== CLEANUP_KINDS[cleanupIndex])) {
 				throw new Error(`Malformed cleanup sequence for ${definition.id}.`);
+			}
+			if (attempt.allocations.filter((allocation) => allocation.status === "unknown").length > 1) {
+				throw new Error(`Attempt for ${definition.id} has more than one ambiguous allocation result.`);
 			}
 			for (const allocation of attempt.allocations) {
 				if (allocation.token !== attempt.correlationToken) {
@@ -813,6 +846,10 @@ export function parseRunState(value: unknown): RunState {
 			}
 		}
 		if (taskState.status === "completed") requireCompletedTaskEvidence(taskState, definition);
+	}
+	if (state.final.checks) {
+		if (state.final.checks.phase !== "final") throw new Error("Malformed final check phase.");
+		validateCheckBatchEvidence(state.final.checks, request.finalChecks, "Final checks");
 	}
 	if (state.recovery && !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
 		throw new Error("Malformed cleanup-only recovery task.");

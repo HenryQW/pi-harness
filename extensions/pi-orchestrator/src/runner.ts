@@ -5,6 +5,8 @@ import {
 	CLEANUP_KINDS,
 	isCleanCommitted,
 	launchKey,
+	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
+	MAX_POSSIBLE_RESOURCES,
 	parseExecuteRequest,
 	parseResumeRequest,
 	sameIdentity,
@@ -36,7 +38,7 @@ import {
 } from "./schema.ts";
 import { FileRunStore, type RunStateHandle } from "./store.ts";
 
-const EVIDENCE_MAX_BYTES = 8 * 1024;
+const TRUNCATION_MARKER = "\n[truncated]";
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
@@ -346,21 +348,80 @@ class DeadlineScope {
 	}
 }
 
-function bounded(value: string, maxBytes = EVIDENCE_MAX_BYTES): string {
+function bounded(value: string, maxBytes = MAX_PERSISTED_RUNTIME_TEXT_BYTES): string {
 	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-	let end = Math.min(value.length, maxBytes);
-	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
-	return `${value.slice(0, end)}\n[truncated]`;
+	const contentBytes = maxBytes - Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+	let end = Math.min(value.length, contentBytes);
+	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > contentBytes) end -= 1;
+	return `${value.slice(0, end)}${TRUNCATION_MARKER}`;
+}
+
+function boundedRuntimeText(value: unknown, field: string): string {
+	if (typeof value !== "string") throw new Error(`${field} must be text.`);
+	return bounded(value);
+}
+
+function boundedPossibleResources(values: unknown): string[] | undefined {
+	if (values === undefined) return;
+	if (!Array.isArray(values)) return ["Runtime returned an invalid possible-resource list; cleanup remains blocked."];
+	if (!values.length) return;
+	const retained = values.slice(0, MAX_POSSIBLE_RESOURCES).map((value, index) => {
+		if (typeof value !== "string") return `Runtime returned invalid possible-resource evidence at index ${index}.`;
+		const item = bounded(value);
+		return item.trim() && !item.includes("\0")
+			? item
+			: `Runtime returned invalid possible-resource evidence at index ${index}.`;
+	});
+	if (values.length > MAX_POSSIBLE_RESOURCES) {
+		retained[MAX_POSSIBLE_RESOURCES - 1] = `${values.length - MAX_POSSIBLE_RESOURCES + 1} additional possible resources were omitted; cleanup remains blocked.`;
+	}
+	return retained;
 }
 
 function errorText(error: unknown): string {
 	return bounded(error instanceof Error ? error.message : String(error));
 }
 
-function requireExactAllocationText(value: string, field: string): void {
-	if (!value.trim() || value.trim() !== value || value.includes("\0")) {
-		throw new Error(`${field} must be exact non-empty text.`);
+function requireExactAllocationText(value: unknown, field: string): asserts value is string {
+	if (typeof value !== "string" || !value.trim() || value.trim() !== value || value.includes("\0")
+		|| Buffer.byteLength(value, "utf8") > MAX_PERSISTED_RUNTIME_TEXT_BYTES) {
+		throw new Error(`${field} must be bounded exact non-empty text.`);
 	}
+}
+
+function runtimeIdentity(value: unknown, field: string): WorkspaceIdentity {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} must be an exact identity.`);
+	const identity = value as Partial<WorkspaceIdentity>;
+	requireExactAllocationText(identity.branch, `${field} branch`);
+	for (const [name, oid] of Object.entries({ head: identity.head, index: identity.index, tree: identity.tree })) {
+		if (typeof oid !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(oid)) {
+			throw new Error(`${field} ${name} is not an exact object ID.`);
+		}
+	}
+	return { branch: identity.branch, head: identity.head!, index: identity.index!, tree: identity.tree! };
+}
+
+function runtimeToken(value: unknown): string {
+	if (typeof value !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(value)) {
+		throw new Error("Runtime correlation token must match the strict token format.");
+	}
+	return value;
+}
+
+function runtimeHostAllocationPlan(plan: HostAllocationPlan, kind: Exclude<AllocationKind, "worktree">): HostAllocationPlan {
+	if (!plan || typeof plan !== "object" || plan.kind !== kind) throw new Error(`${kind} allocation planning returned the wrong kind.`);
+	const fields = kind === "workspace"
+		? ["label", "worktreeCwd", "mainRoot", "repoKey", "herdrRepoRoot"] as const
+		: kind === "worker_tab"
+			? ["label", "workspaceId", "workspaceRootTabId", "workspaceRootPaneId", "worktreeCwd", "leasePath"] as const
+			: ["agentName", "workspaceId", "tabId", "paneId", "worktreeCwd", "leasePath"] as const;
+	const validated: Record<string, string> = {};
+	for (const field of fields) {
+		const value = (plan as unknown as Record<string, unknown>)[field];
+		requireExactAllocationText(value, `${kind} allocation plan ${field}`);
+		validated[field] = value;
+	}
+	return { kind, ...validated } as HostAllocationPlan;
 }
 
 function taskRequest(state: RunState, id: string): TaskRequest {
@@ -471,7 +532,8 @@ export class OrchestratorRunner {
 			const prepared = await scope.call(async (context) => await this.runtime.preflight({ request, cwd: canonicalCwd }, context));
 			const root = realpathSync.native(prepared.root);
 			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
-			if (!isCleanCommitted(prepared.main)) throw new Error("Preflight Main identity must be clean and committed.");
+			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
+			if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
 			const launchRecords = validateLaunchRecords(request, prepared.launchRecords);
 			return await this.store.withLock(root, async () => {
 				await this.store.assertAvailable(root, request.id);
@@ -480,8 +542,8 @@ export class OrchestratorRunner {
 					version: RUN_STATE_VERSION,
 					request,
 					root,
-					requestStartMain: prepared.main,
-					main: prepared.main,
+					requestStartMain: preparedMain,
+					main: preparedMain,
 					deadlineStartedAt: startedAt,
 					deadline,
 					launchRecords,
@@ -659,7 +721,7 @@ export class OrchestratorRunner {
 						number: task.attempts.length + 1,
 						waveNumber: wave.number,
 						waveBase: wave.base,
-						correlationToken: this.runtime.randomToken(),
+						correlationToken: runtimeToken(this.runtime.randomToken()),
 						allocationGeneration: 1,
 						allocations: [],
 						prompts: [],
@@ -697,7 +759,7 @@ export class OrchestratorRunner {
 			if (active) this.attention(active, isDeadline(error, scope) ? "The productive request deadline expired." : `Execution was interrupted: ${errorText(error)}`);
 			else if (state.final.status === "running") {
 				state.final.status = "interrupted";
-				state.final.failure = isDeadline(error, scope) ? "The productive request deadline expired." : `Final gate was interrupted: ${errorText(error)}`;
+				state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired." : `Final gate was interrupted: ${errorText(error)}`);
 			}
 			state.status = "needs_attention";
 			state.accepted = false;
@@ -724,13 +786,12 @@ export class OrchestratorRunner {
 						status: "allocating",
 					};
 				} else {
-					const plan = await scope.call(async (context) => await this.runtime.planHostAllocation({
+					const plan = runtimeHostAllocationPlan(await scope.call(async (context) => await this.runtime.planHostAllocation({
 						goal: state.request.goal,
 						kind,
 						task: request,
 						attempt,
-					}, context));
-					if (plan.kind !== kind) throw new Error(`${kind} allocation planning returned the wrong kind.`);
+					}, context)), kind);
 					intent = {
 						...plan,
 						generation: attempt.allocationGeneration,
@@ -749,13 +810,22 @@ export class OrchestratorRunner {
 							task: request,
 							attempt,
 							onPrepared: async (worktree) => {
-								if (worktree.baseCommit !== attempt.waveBase.head || worktree.path !== worktree.cwd) {
+								const prepared = worktree as unknown as Record<string, unknown>;
+								for (const field of ["path", "cwd", "branch", "repoRoot"] as const) {
+									requireExactAllocationText(prepared[field], `Prepared worktree ${field}`);
+								}
+								if (typeof prepared.baseCommit !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(prepared.baseCommit)
+									|| prepared.baseCommit !== attempt.waveBase.head || prepared.path !== prepared.cwd) {
 									throw new Error("Prepared worktree does not match the exact recorded wave plan.");
 								}
-								for (const [field, value] of Object.entries(worktree)) {
-									requireExactAllocationText(value, `Prepared worktree ${field}`);
-								}
-								intent.worktree = { ...worktree };
+								const exact = prepared as Record<"path" | "cwd" | "branch" | "repoRoot" | "baseCommit", string>;
+								intent.worktree = {
+									path: exact.path,
+									cwd: exact.cwd,
+									branch: exact.branch,
+									repoRoot: exact.repoRoot,
+									baseCommit: exact.baseCommit,
+								};
 								await handle.save();
 							},
 						}, context));
@@ -777,7 +847,7 @@ export class OrchestratorRunner {
 					}
 				} catch (error) {
 					intent.status = "unknown";
-					intent.failure = `Allocation result is unknown: ${errorText(error)}`;
+					intent.failure = bounded(`Allocation result is unknown: ${errorText(error)}`);
 					this.attention(task, intent.failure);
 					await handle.save();
 					return;
@@ -786,11 +856,11 @@ export class OrchestratorRunner {
 					throw new Error(`${intent.kind} allocation returned the wrong result kind.`);
 				}
 				if (result.outcome !== "owned") {
+					const failure = boundedRuntimeText(result.failure, `${intent.kind} allocation failure`);
+					const possibleResources = result.outcome === "unknown" ? boundedPossibleResources(result.possibleResources) : undefined;
 					intent.status = result.outcome;
-					intent.failure = bounded(result.failure);
-					if (result.outcome === "unknown" && result.possibleResources?.length) {
-						intent.possibleResources = result.possibleResources.map((item) => bounded(item));
-					}
+					intent.failure = failure;
+					if (result.outcome === "unknown") intent.possibleResources = possibleResources;
 					this.attention(task, intent.failure);
 					await handle.save();
 					return;
@@ -854,11 +924,11 @@ export class OrchestratorRunner {
 			}
 			let preCandidate: WorkspaceIdentity;
 			try {
-				preCandidate = await scope.call(async (context) => await this.gitRuntime.inspectTaskCandidate({
+				preCandidate = runtimeIdentity(await scope.call(async (context) => await this.gitRuntime.inspectTaskCandidate({
 					root: state.root,
 					task: request,
 					attempt,
-				}, context));
+				}, context)), "Pre-prompt candidate identity");
 			} catch (error) {
 				this.attention(task, `Pre-prompt candidate identity is unavailable: ${errorText(error)}`);
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
@@ -898,32 +968,33 @@ export class OrchestratorRunner {
 				}, context));
 			} catch (error) {
 				prompt.status = "ambiguous";
-				prompt.failure = `Prompt result is ambiguous and will not be replayed: ${errorText(error)}`;
+				prompt.failure = bounded(`Prompt result is ambiguous and will not be replayed: ${errorText(error)}`);
 				this.attention(task, prompt.failure);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			if (worker.outcome === "unknown" || worker.outcome === "interrupted") {
 				prompt.status = "ambiguous";
-				prompt.failure = bounded(worker.diagnostic);
+				prompt.failure = boundedRuntimeText(worker.diagnostic, `${worker.outcome} worker diagnostic`);
 				this.attention(task, `${worker.outcome} worker result will not be replayed: ${prompt.failure}`);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			if (worker.outcome === "not_prompted") {
 				prompt.status = "not_sent";
-				prompt.failure = bounded(worker.diagnostic);
+				prompt.failure = boundedRuntimeText(worker.diagnostic, "not-prompted worker diagnostic");
 				this.attention(task, `Worker prompt was not submitted: ${prompt.failure}`);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			prompt.status = "settled";
 			if (worker.outcome === "blocked") {
-				failure = bounded(worker.diagnostic);
+				failure = boundedRuntimeText(worker.diagnostic, "blocked worker diagnostic");
 				prompt.failure = failure;
 				await handle.save();
 			} else {
 				if (worker.outcome !== "candidate") throw new Error("Unexpected worker result.");
+				worker.candidate = runtimeIdentity(worker.candidate, "Settled worker candidate identity");
 				if (!isCleanCommitted(worker.candidate) || worker.candidate.head === preCandidate.head) {
 					this.attention(task, "Settled worker did not produce a new clean committed candidate.");
 					await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope);
@@ -998,8 +1069,9 @@ export class OrchestratorRunner {
 				task: taskRequest(handle.state, task.taskId), attempt, workerId, candidate,
 			}, context));
 			if (result.outcome !== "terminated") {
-				attempt.termination = { status: "unknown", workerId, candidate, failure: bounded(result.failure) };
-				this.attention(task, `Worker termination is unproved: ${bounded(result.failure)}`);
+				const failure = boundedRuntimeText(result.failure, "Worker termination failure");
+				attempt.termination = { status: "unknown", workerId, candidate, failure };
+				this.attention(task, `Worker termination is unproved: ${failure}`);
 				return false;
 			}
 			attempt.termination = { status: "terminated", workerId, candidate, at: this.runtime.now() };
@@ -1044,22 +1116,33 @@ export class OrchestratorRunner {
 			checks,
 			candidate,
 		}, context));
-		const exact = exactCommandResults(result.results, checks);
+		const identityAfter = runtimeIdentity(result.identityAfter, "Post-check identity");
+		if (!exactCommandResults(result.results, checks)) {
+			throw new Error("Check runtime did not return one result with the exact command and argv for every declared check.");
+		}
+		if (result.results.some((item) => !Number.isSafeInteger(item.code)
+			|| (item.killed !== undefined && typeof item.killed !== "boolean")
+			|| typeof item.stdout !== "string" || typeof item.stderr !== "string")) {
+			throw new Error("Check runtime returned malformed result evidence.");
+		}
+		const commandsPassed = result.results.every((item) => item.code === 0 && !item.killed);
+		const identityMatches = sameIdentity(identityAfter, candidate);
+		const passed = identityMatches && commandsPassed;
+		let diagnosticIndex = passed ? -1 : result.results.findIndex((item) => item.code !== 0 || item.killed);
+		if (diagnosticIndex < 0 && commandsPassed && !identityMatches) diagnosticIndex = result.results.length - 1;
 		const evidence: CheckBatchEvidence = {
 			phase,
 			candidate,
-			identityAfter: result.identityAfter,
-			results: result.results.map((item): CommandEvidence => ({
+			identityAfter,
+			results: result.results.map((item, index): CommandEvidence => ({
 				command: item.command,
 				args: [...item.args],
 				code: item.code,
 				killed: item.killed ?? false,
-				stdout: bounded(item.stdout),
-				stderr: bounded(item.stderr),
+				stdout: index === diagnosticIndex ? bounded(item.stdout) : "",
+				stderr: index === diagnosticIndex ? bounded(item.stderr) : "",
 			})),
-			passed: exact
-				&& sameIdentity(result.identityAfter, candidate)
-				&& result.results.every((item) => item.code === 0 && !item.killed),
+			passed,
 			at: this.runtime.now(),
 		};
 		return evidence;
@@ -1095,15 +1178,17 @@ export class OrchestratorRunner {
 				return handle as TransientLaunchHandle<VerifiedReviewerLaunch>;
 			},
 		}, context));
+		const identityAfter = runtimeIdentity(result.identityAfter, "Post-review identity");
+		const verdict = boundedRuntimeText(result.verdict, "Reviewer verdict");
 		const evidence: ReviewEvidence = {
 			phase,
 			launchKey: recordKey,
 			criterion,
 			base,
 			tip,
-			identityAfter: result.identityAfter,
-			verdict: bounded(result.verdict),
-			passed: result.verdict === "PASS" && sameIdentity(result.identityAfter, tip),
+			identityAfter,
+			verdict,
+			passed: verdict === "PASS" && sameIdentity(identityAfter, tip),
 			at: this.runtime.now(),
 		};
 		return evidence;
@@ -1133,19 +1218,21 @@ export class OrchestratorRunner {
 				onto: state.main,
 			}, context));
 			if (rebased.outcome !== "ready") {
-				this.attention(task, rebased.failure);
+				this.attention(task, boundedRuntimeText(rebased.failure, "Rebase failure"));
 				return false;
 			}
-			if (!sameIdentity(rebased.base, state.main) || !isCleanCommitted(rebased.candidate)) {
+			const rebasedBase = runtimeIdentity(rebased.base, "Rebase base identity");
+			const rebasedCandidate = runtimeIdentity(rebased.candidate, "Rebase candidate identity");
+			if (!sameIdentity(rebasedBase, state.main) || !isCleanCommitted(rebasedCandidate)) {
 				this.attention(task, "Rebase did not return the exact recorded integration base and a clean committed candidate.");
 				return false;
 			}
-			attempt.integrationBase = rebased.base;
-			attempt.integrationCandidate = rebased.candidate;
-			const checks = await this.runCheckBatch(handle, request.checks, rebased.candidate, "authoritative", scope, task.taskId);
+			attempt.integrationBase = rebasedBase;
+			attempt.integrationCandidate = rebasedCandidate;
+			const checks = await this.runCheckBatch(handle, request.checks, rebasedCandidate, "authoritative", scope, task.taskId);
 			attempt.authoritativeChecks = checks;
 			await handle.save();
-			if (!checkBatchPasses(checks, request.checks, rebased.candidate)) {
+			if (!checkBatchPasses(checks, request.checks, rebasedCandidate)) {
 				this.attention(task, "Authoritative checks did not pass on the exact integration candidate.");
 				return false;
 			}
@@ -1154,8 +1241,8 @@ export class OrchestratorRunner {
 				review = await this.runReview(
 					handle,
 					request.judgment.criterion,
-					rebased.base,
-					rebased.candidate,
+					rebasedBase,
+					rebasedCandidate,
 					task.judgmentLaunchKey!,
 					"authoritative",
 					scope,
@@ -1168,7 +1255,7 @@ export class OrchestratorRunner {
 					return false;
 				}
 			}
-			attempt.integration = { status: "integrating", expectedMain: state.main, candidate: rebased.candidate };
+			attempt.integration = { status: "integrating", expectedMain: state.main, candidate: rebasedCandidate };
 			await handle.save();
 			let integrated: IntegrationResult;
 			try {
@@ -1177,40 +1264,42 @@ export class OrchestratorRunner {
 					task: request,
 					attempt,
 					expectedMain: state.main,
-					candidate: rebased.candidate,
+					candidate: rebasedCandidate,
 					checks,
 					...(review ? { review } : {}),
 				}, context));
 			} catch (error) {
 				attempt.integration = {
-					status: "unknown", expectedMain: state.main, candidate: rebased.candidate,
-					failure: `Integration result is unknown: ${errorText(error)}`,
+					status: "unknown", expectedMain: state.main, candidate: rebasedCandidate,
+					failure: bounded(`Integration result is unknown: ${errorText(error)}`),
 				};
 				this.attention(task, attempt.integration.failure!);
 				return false;
 			}
 			if (integrated.outcome !== "integrated") {
+				const failure = boundedRuntimeText(integrated.failure, "Integration failure");
 				attempt.integration = {
 					status: integrated.outcome === "unknown" ? "unknown" : "failed",
 					expectedMain: state.main,
-					candidate: rebased.candidate,
-					failure: bounded(integrated.failure),
+					candidate: rebasedCandidate,
+					failure,
 				};
-				this.attention(task, integrated.failure);
+				this.attention(task, failure);
 				return false;
 			}
+			integrated.main = runtimeIdentity(integrated.main, "Integrated Main identity");
 			if (integrated.main.branch !== state.main.branch
-				|| integrated.main.head !== rebased.candidate.head
+				|| integrated.main.head !== rebasedCandidate.head
 				|| !isCleanCommitted(integrated.main)) {
 				attempt.integration = {
-					status: "unknown", expectedMain: state.main, candidate: rebased.candidate, mainAfter: integrated.main,
+					status: "unknown", expectedMain: state.main, candidate: rebasedCandidate, mainAfter: integrated.main,
 					failure: "Integration returned an unexpected Main identity.",
 				};
 				this.attention(task, attempt.integration.failure!);
 				return false;
 			}
 			attempt.integration = {
-				status: "integrated", expectedMain: state.main, candidate: rebased.candidate, mainAfter: integrated.main,
+				status: "integrated", expectedMain: state.main, candidate: rebasedCandidate, mainAfter: integrated.main,
 			};
 			state.main = integrated.main;
 			task.status = "cleanup";
@@ -1305,9 +1394,9 @@ export class OrchestratorRunner {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
 		if (attempt.termination?.status !== "terminated") throw new Error("Manual verification requires exact recorded worker termination.");
-		const candidate = await scope.call(async (context) => await this.gitRuntime.inspectRetainedTask({
+		const candidate = runtimeIdentity(await scope.call(async (context) => await this.gitRuntime.inspectRetainedTask({
 			root: handle.state.root, task: taskRequest(handle.state, task.taskId), attempt,
-		}, context));
+		}, context)), "Retained task candidate identity");
 		if (!isCleanCommitted(candidate)) throw new Error("Retained task candidate is not clean and committed.");
 		if (candidate.head === attempt.waveBase.head) throw new Error("Retained task candidate must differ from its wave base.");
 		attempt.candidate = candidate;
@@ -1366,13 +1455,15 @@ export class OrchestratorRunner {
 						}, context));
 				} catch (error) {
 					intent.status = "unknown";
-					intent.failure = `Allocation reconciliation is ambiguous: ${errorText(error)}`;
+					intent.failure = bounded(`Allocation reconciliation is ambiguous: ${errorText(error)}`);
 					throw new Error(intent.failure);
 				}
 				if (result.outcome !== "absent") {
+					const failure = boundedRuntimeText(result.failure, "Allocation reconciliation failure");
+					const possibleResources = boundedPossibleResources(result.possibleResources);
 					intent.status = "unknown";
-					intent.failure = bounded(result.failure);
-					intent.possibleResources = result.possibleResources?.map((item) => bounded(item));
+					intent.failure = failure;
+					intent.possibleResources = possibleResources;
 					await handle.save();
 					throw new Error("A possible prior allocation blocks retry; it was not adopted or closed.");
 				}
@@ -1423,7 +1514,10 @@ export class OrchestratorRunner {
 		state.accepted = false;
 		await handle.save();
 		try {
-			const identity = state.final.identity ?? await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
+			const identity = state.final.identity ?? runtimeIdentity(
+				await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context)),
+				"Final Main identity",
+			);
 			if (!sameIdentity(identity, state.main) || !isCleanCommitted(identity)) {
 				await this.markSuperseded(handle, "Main drifted before the final gate.");
 				return this.response(state);
@@ -1488,7 +1582,7 @@ export class OrchestratorRunner {
 			return this.response(state);
 		} catch (error) {
 			state.final.status = "interrupted";
-			state.final.failure = isDeadline(error, scope) ? "The productive request deadline expired during the final gate." : `Final gate was interrupted without a definitive result: ${errorText(error)}`;
+			state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired during the final gate." : `Final gate was interrupted without a definitive result: ${errorText(error)}`);
 			state.status = "needs_attention";
 			state.accepted = false;
 			await handle.save();
@@ -1498,7 +1592,7 @@ export class OrchestratorRunner {
 
 	private async markFinalFailed(handle: RunStateHandle, failure: string): Promise<void> {
 		handle.state.final.status = "final_failed";
-		handle.state.final.failure = failure;
+		handle.state.final.failure = bounded(failure);
 		handle.state.status = "final_failed";
 		handle.state.accepted = false;
 		await handle.save();
@@ -1506,7 +1600,7 @@ export class OrchestratorRunner {
 
 	private async markSuperseded(handle: RunStateHandle, failure: string): Promise<void> {
 		handle.state.final.status = "superseded";
-		handle.state.final.failure = failure;
+		handle.state.final.failure = bounded(failure);
 		handle.state.status = "superseded";
 		handle.state.accepted = false;
 		await handle.save();

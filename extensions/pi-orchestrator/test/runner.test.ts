@@ -29,6 +29,8 @@ import {
 } from "../src/runner.ts";
 import {
 	launchRecordFingerprint,
+	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
+	MAX_POSSIBLE_RESOURCES,
 	parseRunState,
 	requiredLaunchKeys,
 	type AllocationIntent,
@@ -95,6 +97,10 @@ type WorkerPlan = {
 };
 type CheckPlan = {
 	code?: number;
+	killed?: boolean;
+	stdout?: string;
+	stderr?: string;
+	results?: CommandResult[];
 	identityAfter?: WorkspaceIdentity;
 	error?: Error;
 	expire?: boolean;
@@ -428,11 +434,12 @@ class FakeRuntime implements OrchestratorRuntime {
 		this.checkCalls.push({ scope: input.scope, ...(input.taskId ? { taskId: input.taskId } : {}) });
 		if (plan.mutateMain) this.main = { ...plan.mutateMain };
 		if (plan.error) throw plan.error;
-		const results: CommandResult[] = input.checks.map((check) => ({
+		const results: CommandResult[] = plan.results ?? input.checks.map((check) => ({
 			...check,
 			code: plan.code ?? 0,
-			stdout: "",
-			stderr: plan.code ? "failed" : "",
+			killed: plan.killed,
+			stdout: plan.stdout ?? "",
+			stderr: plan.stderr ?? (plan.code ? "failed" : ""),
 		}));
 		return { results, identityAfter: plan.identityAfter ?? { ...input.candidate } };
 	}
@@ -907,6 +914,144 @@ test("a failed preliminary check gets one correction before the single authorita
 	assert.deepEqual(runtime.reviewCalls.map(({ phase, workerTermination }) => ({ phase, workerTermination })), [
 		{ phase: "authoritative", workerTermination: "terminated" },
 	]);
+});
+
+test("durable check evidence keeps exact identity while retaining output only on one failed-batch diagnostic", async (t) => {
+	const checks: CheckCommand[] = [
+		{ command: "check-one", args: ["--one"] },
+		{ command: "check-two", args: ["--two"] },
+		{ command: "check-three", args: ["--three"] },
+	];
+	const definition = request({ tasks: [{ ...task("task-a"), checks }], finalChecks: checks });
+
+	await t.test("successful batches discard all output", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.checkPlans.push(
+			{ stdout: "preliminary stdout", stderr: "preliminary stderr" },
+			{ stdout: "authoritative stdout", stderr: "authoritative stderr" },
+			{ stdout: "final stdout", stderr: "final stderr" },
+		);
+		const completed = await runner.execute(definition, root);
+		const attempt = completed.state.tasks[0]!.attempts[0]!;
+		for (const batch of [attempt.preliminaryChecks!, attempt.authoritativeChecks!, completed.state.final.checks!]) {
+			assert.equal(batch.passed, true);
+			assert.deepEqual(batch.candidate, batch.identityAfter);
+			assert.deepEqual(batch.results.map(({ command, args, code, killed, stdout, stderr }) => ({ command, args, code, killed, stdout, stderr })),
+				checks.map(({ command, args }) => ({ command, args, code: 0, killed: false, stdout: "", stderr: "" })));
+		}
+	});
+
+	await t.test("the first failed or killed command alone retains bounded output", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		const oversized = "界".repeat(MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+		runtime.checkPlans.push({}, {
+			results: [
+				{ ...checks[0]!, code: 0, killed: false, stdout: "discard one", stderr: "discard one" },
+				{ ...checks[1]!, code: 0, killed: true, stdout: oversized, stderr: oversized },
+				{ ...checks[2]!, code: 1, killed: false, stdout: "discard three", stderr: "discard three" },
+			],
+		});
+		const failed = await runner.execute(definition, root);
+		const batch = failed.state.tasks[0]!.attempts[0]!.authoritativeChecks!;
+		assert.equal(batch.passed, false);
+		assert.deepEqual(batch.candidate, batch.identityAfter);
+		assert.deepEqual(batch.results.map(({ command, args, code, killed }) => ({ command, args, code, killed })), [
+			{ ...checks[0]!, code: 0, killed: false },
+			{ ...checks[1]!, code: 0, killed: true },
+			{ ...checks[2]!, code: 1, killed: false },
+		]);
+		assert.deepEqual(batch.results.map(({ stdout, stderr }) => ({ stdout, stderr })), [
+			{ stdout: "", stderr: "" },
+			{ stdout: batch.results[1]!.stdout, stderr: batch.results[1]!.stderr },
+			{ stdout: "", stderr: "" },
+		]);
+		assert.ok(batch.results[1]!.stdout.endsWith("[truncated]"));
+		assert.ok(Buffer.byteLength(batch.results[1]!.stdout, "utf8") <= MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+		assert.ok(Buffer.byteLength(batch.results[1]!.stderr, "utf8") <= MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+	});
+
+	await t.test("identity drift retains only the final command output", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.checkPlans.push({}, {}, { stdout: "drift stdout", stderr: "drift stderr", identityAfter: identity("f") });
+		const superseded = await runner.execute(definition, root);
+		const batch = superseded.state.final.checks!;
+		assert.equal(batch.passed, false);
+		assert.notDeepEqual(batch.candidate, batch.identityAfter);
+		assert.deepEqual(batch.results.map(({ stdout, stderr }) => ({ stdout, stderr })), [
+			{ stdout: "", stderr: "" },
+			{ stdout: "", stderr: "" },
+			{ stdout: "drift stdout", stderr: "drift stderr" },
+		]);
+	});
+});
+
+test("runtime diagnostics, verdicts, and reconciliation evidence are bounded before persistence", async (t) => {
+	const oversized = "界".repeat(MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+	const assertBounded = (value: string): void => {
+		assert.ok(Buffer.byteLength(value, "utf8") <= MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+		assert.ok(value.endsWith("[truncated]"));
+	};
+
+	await t.test("worker diagnostic and Reviewer verdict", async (t) => {
+		const { root, runtime, runner } = await harness(t);
+		runtime.workerPlans.push({ outcome: "blocked", diagnostic: oversized });
+		runtime.reviewPlans.push({ verdict: oversized });
+		const result = await runner.execute(request({
+			tasks: [task("task-a", [], "fast", { criterion: "Review A.", modelClass: "balanced" })],
+		}), root);
+		const attempt = result.state.tasks[0]!.attempts[0]!;
+		assertBounded(attempt.prompts[0]!.failure!);
+		assertBounded(attempt.authoritativeReview!.verdict);
+		assert.equal(result.state.accepted, false);
+	});
+
+	await t.test("termination and cleanup failures", async (t) => {
+		const terminated = await harness(t);
+		terminated.runtime.terminationPlans.push({ outcome: "unknown", failure: oversized });
+		const terminationResult = await terminated.runner.execute(request(), terminated.root);
+		assertBounded(terminationResult.state.tasks[0]!.attempts[0]!.termination!.failure!);
+
+		const cleaned = await harness(t);
+		cleaned.runtime.cleanupPlans.push({ outcome: "blocked", failure: oversized });
+		const cleanupResult = await cleaned.runner.execute(request(), cleaned.root);
+		assertBounded(cleanupResult.state.tasks[0]!.attempts[0]!.cleanup[0]!.failure!);
+	});
+
+	await t.test("possible reconciliation resources", async (t) => {
+		const { root, runtime, store, runner } = await harness(t);
+		runtime.allocationFailure = { kind: "agent", error: new Error("lost result") };
+		await runner.execute(request(), root);
+		runtime.reconciliation = {
+			outcome: "possible",
+			failure: oversized,
+			possibleResources: Array.from({ length: MAX_POSSIBLE_RESOURCES + 9 }, (_, index) => `${index}-${oversized}`),
+		};
+		await assert.rejects(
+			runner.resume({ id: "request-one", action: "retry", taskId: "task-a" }, root),
+			/was not adopted or closed/,
+		);
+		const intent = (await store.load(root, "request-one")).state.tasks[0]!.attempts[0]!.allocations.at(-1)!;
+		assertBounded(intent.failure!);
+		assert.equal(intent.possibleResources?.length, MAX_POSSIBLE_RESOURCES);
+		assertBounded(intent.possibleResources![0]!);
+		assert.match(intent.possibleResources!.at(-1)!, /additional possible resources were omitted; cleanup remains blocked/);
+		assert.equal(intent.status, "unknown");
+	});
+
+	await t.test("oversized exact resource identities fail closed instead of being truncated", async (t) => {
+		const { root, runtime, store, runner } = await harness(t);
+		runtime.allocationResources.workspace = {
+			workspaceId: oversized,
+			rootTabId: "root-tab",
+			rootPaneId: "root-pane",
+		};
+		const result = await runner.execute(request(), root);
+		assert.equal(result.state.status, "needs_attention");
+		const intent = (await store.load(root, "request-one")).state.tasks[0]!.attempts[0]!.allocations.at(-1)!;
+		assert.equal(intent.kind, "workspace");
+		assert.equal(intent.status, "allocating");
+		assert.equal("workspaceId" in intent, false);
+	});
 });
 
 test("a settled implementation block gets one same-agent correction before checks and review", async (t) => {

@@ -107,6 +107,10 @@ Pi needs a file to keep a multiline Role prompt out of process arguments. The or
 
 Task goals, requirements, checks, corrections, and review packets remain task messages. They never become Role instructions.
 
+Each saved check result keeps its exact command, arguments, exit code, killed status, and Git identity. Successful batches save no output. A failed batch saves bounded output only for its first failed or killed command. If only Git identity drift fails the batch, the final command keeps bounded output.
+
+Runtime diagnostics and possible-resource evidence are bounded before each save. Oversized state files are rejected and left unchanged.
+
 ## Limits and recovery
 
 ### Recovery actions
