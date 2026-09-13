@@ -58,6 +58,10 @@ function runKeyGenerator(agentDir: string, ...args: string[]) {
 	});
 }
 
+function waitForImmediate(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
+
 test("lastAssistantText matches /copy text selection and formatting", () => {
 	const older = assistantEntry([{ type: "text", text: "older" }]);
 	const latest = assistantEntry([
@@ -185,10 +189,11 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 		async () => {},
 		"Deploy API",
 	);
+	let idle = true;
 	const ctx = {
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => [] },
-		isIdle: () => true,
+		isIdle: () => idle,
 		ui: { notify: () => {} },
 	};
 	await commands.get("set-bark")!("device-key", ctx);
@@ -200,7 +205,14 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 
 	const settled = lifecycleHandlers.get("agent_settled");
 	assert.ok(settled);
-	await settled({}, ctx);
+	assert.equal(settled({}, ctx), undefined, "agent_settled stays non-blocking for later handlers");
+	idle = false;
+	await waitForImmediate();
+	assert.equal(pushes.length, 1, "a continuation queued by a later settled handler suppresses Pi finished");
+
+	idle = true;
+	assert.equal(settled({}, ctx), undefined);
+	await waitForImmediate();
 	assert.deepEqual(pushes[1], {
 		device_key: "device-key",
 		title: "Pi finished",
@@ -267,7 +279,7 @@ test("automatic status pushes preserve event order and event-time state", async 
 	assert.equal(pushes[0]?.title, "Pi needs input");
 
 	sessionName = "Settled at event";
-	const settledPush = settled({}, ctx) as Promise<void>;
+	assert.equal(settled({}, ctx), undefined);
 	await commands.get("bark-notifications")!("off", ctx);
 	sessionName = "Disabled at event";
 	assert.equal(promptStart({}, ctx), undefined);
@@ -276,8 +288,7 @@ test("automatic status pushes preserve event order and event-time state", async 
 	assert.equal(pushes.length, 1, "settled notification waits for the prompt push");
 
 	finishFirst?.(new Response(null, { status: 200 }));
-	await settledPush;
-	await Promise.resolve();
+	await waitForImmediate();
 	assert.equal(pushes.length, 2, "settled notification starts after the prompt push completes");
 	assert.deepEqual(pushes, [
 		{ device_key: "device-key", title: "Pi needs input", body: "Pi session: First session" },
@@ -328,11 +339,12 @@ test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is
 	const plaintext = Buffer.concat([decipher.update(combined.subarray(0, -16)), decipher.final()]).toString("utf8");
 	assert.equal(plaintext, JSON.stringify({ body: text }));
 
-	await lifecycleHandlers.get("agent_settled")!({}, {
+	lifecycleHandlers.get("agent_settled")!({}, {
 		cwd: join(agentDir, "project"),
 		isIdle: () => true,
 		ui: { notify: () => {} },
 	});
+	await waitForImmediate();
 	const statusPayload = JSON.parse(requestBody) as Record<string, string>;
 	assert.deepEqual(Object.keys(statusPayload).sort(), ["ciphertext", "device_key", "iv"]);
 	const statusCombined = Buffer.from(statusPayload.ciphertext, "base64");

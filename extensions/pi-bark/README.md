@@ -47,6 +47,14 @@ Without push encryption, the JSON request uses Bark's standard parameter names:
 
 The `body` value is the same text that Pi's `/copy` command selects. Markdown, code blocks, spacing, and line breaks stay unchanged.
 
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/copyb` | command | Copy the last agent message and send a Bark push notification. |
+| `/set-bark <device-key> [server-url]` | command | Save the Device Key and Bark server URL. |
+| `/bark-notifications on\|off\|inherit` | command | Override automatic status notifications for the current CWD. |
+| `/bark-notifications default on\|off` | command | Set the default for CWDs without an override. |
+| `pi-bark-key [--force \| --disable]` | executable | Generate, replace, or disable the Custom Encryption Key. |
+
 ### Automatic status notifications
 
 After setup, pi-bark sends two status-only notifications:
@@ -164,16 +172,6 @@ Set `encryption` to `null` when push encryption is disabled.
 - The server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter.
 - Config writes are private and atomic.
 - Pi commands never print the Device Key, server URL, or Custom Encryption Key.
-
-## API
-
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `/copyb` | command | Copy the last agent message and send a Bark push notification. |
-| `/set-bark <device-key> [server-url]` | command | Save the Device Key and Bark server URL. |
-| `/bark-notifications on\|off\|inherit` | command | Override automatic status notifications for the current CWD. |
-| `/bark-notifications default on\|off` | command | Set the default for CWDs without an override. |
-| `pi-bark-key [--force \| --disable]` | executable | Generate, replace, or disable the Custom Encryption Key. |
 
 ## Limits and recovery
 

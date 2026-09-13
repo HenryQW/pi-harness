@@ -63,7 +63,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	const fetchImpl = options.fetch ?? globalThis.fetch;
 
 	let statusPushQueue = Promise.resolve();
-	const queueStatus = (title: string, cwd: string): Promise<void> => {
+	const queueStatus = (title: string, cwd: string, shouldSend?: Promise<boolean>): Promise<void> => {
 		let configSnapshot: BarkConfig;
 		try {
 			configSnapshot = configStore.loadSync().value;
@@ -73,7 +73,10 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		if (!configSnapshot.deviceKey || !statusNotificationsEnabled(configSnapshot, cwd)) return Promise.resolve();
 		const sessionName = pi.getSessionName()?.trim() || "Unnamed";
 		const contentSnapshot = { title, body: `Pi session: ${sessionName}` };
-		const send = () => sendPush(configSnapshot, contentSnapshot, fetchImpl);
+		const send = async () => {
+			if (shouldSend && !(await shouldSend)) return;
+			await sendPush(configSnapshot, contentSnapshot, fetchImpl);
+		};
 		const push = statusPushQueue.then(send, send);
 		statusPushQueue = push;
 		return push;
@@ -85,13 +88,14 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		});
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", (_event, ctx) => {
 		if (!ctx.isIdle()) return;
-		try {
-			await queueStatus("Pi finished", ctx.cwd);
-		} catch (error) {
+		const shouldSend = new Promise<boolean>((resolve) => {
+			setImmediate(() => resolve(ctx.isIdle()));
+		});
+		void queueStatus("Pi finished", ctx.cwd, shouldSend).catch((error) => {
 			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
-		}
+		});
 	});
 
 	pi.registerCommand("bark-notifications", {

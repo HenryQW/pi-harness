@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-bark",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Send Pi session status and agent output to Bark on iOS.",
   "keywords": [
     "pi-package",
