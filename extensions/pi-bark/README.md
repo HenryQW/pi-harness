@@ -1,6 +1,6 @@
 # `@henryqw/pi-bark`
 
-Use Bark as an out-of-band status channel for Pi sessions. The extension reports when Pi finishes or waits for input. `/copyb` can also send the last agent message.
+Get [Bark](https://bark.day.app) notifications when Pi finishes or needs your input. Use `/copyb` to send Pi's latest response to your device.
 
 ## Install
 
