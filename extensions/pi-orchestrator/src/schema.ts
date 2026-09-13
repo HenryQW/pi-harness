@@ -1,16 +1,16 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-export const RUN_STATE_VERSION = 2;
+export const RUN_STATE_VERSION = 1;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 
 export const MODEL_CLASSES = ["fast", "balanced", "frontier", "fav"] as const;
-export type ModelClass = (typeof MODEL_CLASSES)[number];
-export type Role = "implementer" | "reviewer";
+export type ModelClass = Static<typeof ModelClassSchema>;
+export type Role = Static<typeof RoleSchema>;
 
 const ID_PATTERN = "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$";
 const OID_PATTERN = "^(?:[0-9a-f]{40}|[0-9a-f]{64})$";
@@ -65,79 +65,23 @@ export const ResumeRequestSchema = Type.Union([
 	Type.Object({ id: IdSchema, action: Type.Literal("finalize") }, { additionalProperties: false }),
 ]);
 
-export type IdOnly = { id: string };
-export type CheckCommand = { command: string; args: string[] };
-export type Judgment = { criterion: string; modelClass: ModelClass };
-export type TaskRequest = {
-	id: string;
-	modelClass: ModelClass;
-	requirements: string;
-	deliverable: string;
-	dependsOn: string[];
-	checks: CheckCommand[];
-	judgment?: Judgment;
-};
-export type ExecuteRequest = {
-	id: string;
-	goal: string;
-	budgetMs: number;
-	tasks: TaskRequest[];
-	finalChecks: CheckCommand[];
-	finalJudgment?: Judgment;
-};
-export type ResumeRequest =
-	| { id: string; action: "retry"; taskId: string }
-	| { id: string; action: "verify"; taskId: string }
-	| { id: string; action: "finalize" };
+export type IdOnly = Static<typeof IdOnlySchema>;
+export type CheckCommand = Static<typeof CheckCommandSchema>;
+export type Judgment = Static<typeof JudgmentSchema>;
+export type TaskRequest = Static<typeof TaskRequestSchema>;
+export type ExecuteRequest = Static<typeof ExecuteRequestSchema>;
+export type ResumeRequest = Static<typeof ResumeRequestSchema>;
 
-export interface WorkspaceIdentity {
-	branch: string;
-	head: string;
-	index: string;
-	tree: string;
-}
-
-export interface LaunchResourceFingerprint {
-	kind: "skill" | "extension";
-	path: string;
-	sha256: string;
-}
+export type WorkspaceIdentity = Static<typeof WorkspaceSchema>;
+export type LaunchResourceFingerprint = Static<typeof LaunchResourceFingerprintSchema>;
+export type NormalizedLaunchRecord = Static<typeof LaunchRecordSchema>;
 
 /**
- * Runtime hooks are untrusted boundaries, so the added fields remain optional
+ * Runtime hooks are untrusted boundaries, so normalized fields remain optional
  * on hook input and become required only after validateLaunchRecords succeeds.
  */
-export interface LaunchRecord {
-	key: string;
-	role: Role;
-	modelClass: ModelClass;
-	roleFingerprint?: string;
-	promptSha256?: string;
-	promptArgIndex?: number;
-	model?: string;
-	thinkingLevel?: string;
-	args?: string[];
-	env?: Record<string, string>;
-	tools?: string[];
-	roleExtensions?: string[];
-	roleSkills?: string[];
-	resources?: LaunchResourceFingerprint[];
-	fingerprint: string;
-}
-
-export interface NormalizedLaunchRecord extends LaunchRecord {
-	roleFingerprint: string;
-	promptSha256: string;
-	promptArgIndex: number;
-	model: string;
-	thinkingLevel: string;
-	args: string[];
-	env: Record<string, string>;
-	tools: string[];
-	roleExtensions: string[];
-	roleSkills: string[];
-	resources: LaunchResourceFingerprint[];
-}
+export type LaunchRecord = Partial<NormalizedLaunchRecord>
+	& Pick<NormalizedLaunchRecord, "key" | "role" | "modelClass" | "fingerprint">;
 
 function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprint">): object {
 	return {
@@ -166,171 +110,28 @@ export function launchRecordFingerprint(record: Omit<NormalizedLaunchRecord, "fi
 	return createHash("sha256").update(JSON.stringify(launchFingerprintValue(record))).digest("hex");
 }
 
-export type AllocationKind = "worktree" | "workspace" | "worker_tab" | "agent";
-export type AllocationStatus = "allocating" | "owned" | "absent" | "unknown";
-
-export interface WorktreeRecord {
-	path: string;
-	cwd: string;
-	branch: string;
-	repoRoot: string;
-	baseCommit: string;
-}
-
-export interface AllocationIntent {
-	kind: AllocationKind;
-	generation: number;
-	token: string;
-	details: string;
-	status: AllocationStatus;
-	resourceId?: string;
-	worktree?: WorktreeRecord;
-	possibleResources?: string[];
-	resources?: Record<string, string>;
-	failure?: string;
-}
-
-export interface PromptRecord {
-	kind: "initial" | "correction";
-	status: "submitting" | "not_sent" | "settled" | "ambiguous";
-	preCandidate: WorkspaceIdentity;
-	candidate?: WorkspaceIdentity;
-	failure?: string;
-	at: number;
-}
-
-export interface CommandEvidence extends CheckCommand {
-	code: number;
-	killed: boolean;
-	stdout: string;
-	stderr: string;
-}
-
-export interface CheckBatchEvidence {
-	phase: "preliminary" | "authoritative" | "final";
-	candidate: WorkspaceIdentity;
-	identityAfter: WorkspaceIdentity;
-	results: CommandEvidence[];
-	passed: boolean;
-	at: number;
-}
-
-export interface ReviewEvidence {
-	phase: "authoritative" | "final";
-	launchKey: string;
-	criterion: string;
-	base: WorkspaceIdentity;
-	tip: WorkspaceIdentity;
-	identityAfter: WorkspaceIdentity;
-	verdict: string;
-	passed: boolean;
-	at: number;
-}
-
-export interface WorkerTermination {
-	status: "terminating" | "terminated" | "unknown";
-	workerId: string;
-	candidate: WorkspaceIdentity;
-	at?: number;
-	failure?: string;
-}
-
-export interface IntegrationRecord {
-	status: "integrating" | "integrated" | "failed" | "unknown";
-	expectedMain: WorkspaceIdentity;
-	candidate: WorkspaceIdentity;
-	mainAfter?: WorkspaceIdentity;
-	failure?: string;
-}
+export type WorktreeRecord = Static<typeof WorktreeRecordSchema>;
+export type AllocationIntent = Static<typeof AllocationIntentSchema>;
+export type AllocationKind = AllocationIntent["kind"];
+export type AllocationStatus = AllocationIntent["status"];
+export type PromptRecord = Static<typeof PromptRecordSchema>;
+export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
+export type CheckBatchEvidence = Static<typeof CheckBatchEvidenceSchema>;
+export type ReviewEvidence = Static<typeof ReviewEvidenceSchema>;
+export type WorkerTermination = Static<typeof WorkerTerminationSchema>;
+export type IntegrationRecord = Static<typeof IntegrationRecordSchema>;
 
 export const CLEANUP_KINDS = ["worker_tab", "workspace", "worktree", "branch"] as const;
-export type CleanupKind = (typeof CLEANUP_KINDS)[number];
-export interface CleanupStep {
-	kind: CleanupKind;
-	status: "pending" | "running" | "completed";
-	failure?: string;
-}
-
-export interface TaskAttempt {
-	number: number;
-	waveNumber: number;
-	waveBase: WorkspaceIdentity;
-	correlationToken: string;
-	allocationGeneration: number;
-	allocations: AllocationIntent[];
-	prompts: PromptRecord[];
-	candidate?: WorkspaceIdentity;
-	preliminaryChecks?: CheckBatchEvidence;
-	termination?: WorkerTermination;
-	integrationBase?: WorkspaceIdentity;
-	integrationCandidate?: WorkspaceIdentity;
-	authoritativeChecks?: CheckBatchEvidence;
-	authoritativeReview?: ReviewEvidence;
-	integration?: IntegrationRecord;
-	cleanup: CleanupStep[];
-}
-
-export type TaskStatus =
-	| "pending"
-	| "allocating"
-	| "working"
-	| "ready_to_integrate"
-	| "integrating"
-	| "cleanup"
-	| "completed"
-	| "needs_attention";
-
-export interface TaskState {
-	taskId: string;
-	status: TaskStatus;
-	implementerLaunchKey: string;
-	judgmentLaunchKey?: string;
-	attempts: TaskAttempt[];
-	failure?: string;
-}
-
-export interface WaveState {
-	number: number;
-	base: WorkspaceIdentity;
-	taskIds: string[];
-	status: "dispatching" | "integrating" | "completed" | "needs_attention";
-}
-
-export interface FinalGateState {
-	status: "pending" | "running" | "interrupted" | "passed" | "final_failed" | "superseded";
-	identity?: WorkspaceIdentity;
-	checks?: CheckBatchEvidence;
-	review?: ReviewEvidence;
-	failure?: string;
-}
-
-export type RequestStatus = "pending" | "running" | "needs_attention" | "completed" | "final_failed" | "superseded" | "aborted";
-
-export interface CleanupRecovery {
-	kind: "cleanup_only";
-	taskId: string;
-	deadline: number;
-}
-
-export interface RunState {
-	version: typeof RUN_STATE_VERSION;
-	request: ExecuteRequest;
-	root: string;
-	requestStartMain: WorkspaceIdentity;
-	main: WorkspaceIdentity;
-	deadlineStartedAt: number;
-	deadline: number;
-	launchRecords: Record<string, NormalizedLaunchRecord>;
-	status: RequestStatus;
-	tasks: TaskState[];
-	waves: WaveState[];
-	final: FinalGateState;
-	recovery?: CleanupRecovery;
-	accepted: boolean;
-	acceptedAt?: number;
-	createdAt: number;
-	updatedAt: number;
-}
+export type CleanupStep = Static<typeof CleanupStepSchema>;
+export type CleanupKind = CleanupStep["kind"];
+export type TaskAttempt = Static<typeof TaskAttemptSchema>;
+export type TaskState = Static<typeof TaskStateSchema>;
+export type TaskStatus = TaskState["status"];
+export type WaveState = Static<typeof WaveStateSchema>;
+export type FinalGateState = Static<typeof FinalGateSchema>;
+export type RunState = Static<typeof RunStateSchema>;
+export type RequestStatus = RunState["status"];
+export type CleanupRecovery = NonNullable<RunState["recovery"]>;
 
 const WorkspaceSchema = Type.Object({
 	branch: TextSchema,
@@ -440,7 +241,9 @@ const IntegrationRecordSchema = Type.Object({
 }, { additionalProperties: false });
 
 const CleanupStepSchema = Type.Object({
-	kind: Type.Union(CLEANUP_KINDS.map((kind) => Type.Literal(kind))),
+	kind: Type.Union([
+		Type.Literal("worker_tab"), Type.Literal("workspace"), Type.Literal("worktree"), Type.Literal("branch"),
+	]),
 	status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed")]),
 	failure: OptionalTextSchema,
 }, { additionalProperties: false });

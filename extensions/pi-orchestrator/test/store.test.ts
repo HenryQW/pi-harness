@@ -46,7 +46,7 @@ function launch(): NormalizedLaunchRecord {
 function state(root: string, request: ExecuteRequest, record = launch()): RunState {
 	const main = identity();
 	return {
-		version: 2,
+		version: 1,
 		request,
 		root,
 		requestStartMain: main,
@@ -141,14 +141,14 @@ test("the store reserves capacity for escaped evidence and rejects over-bound fi
 		const malformedPath = store.statePath(root, "malformed");
 		const malformed = "{}\n";
 		await writeFile(malformedPath, malformed);
-		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v2 state/);
+		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v1 state/);
 		assert.equal(await readFile(malformedPath, "utf8"), malformed);
 
-		const oldPath = store.statePath(root, "old-state");
-		const oldState = JSON.stringify({ ...state(root, request), version: 1 });
-		await writeFile(oldPath, oldState);
-		await assert.rejects(store.load(root, "old-state"), /Unsupported pi-orchestrator state version 1; expected 2/);
-		assert.equal(await readFile(oldPath, "utf8"), oldState);
+		const unsupportedPath = store.statePath(root, "unsupported-state");
+		const unsupportedState = JSON.stringify({ ...state(root, request), version: 2 });
+		await writeFile(unsupportedPath, unsupportedState);
+		await assert.rejects(store.load(root, "unsupported-state"), /Unsupported pi-orchestrator state version 2; expected 1/);
+		assert.equal(await readFile(unsupportedPath, "utf8"), unsupportedState);
 
 		const oversizedPath = store.statePath(root, "oversized");
 		await writeFile(oversizedPath, "");

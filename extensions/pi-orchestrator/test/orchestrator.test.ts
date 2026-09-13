@@ -56,7 +56,7 @@ const EXECUTE_REQUEST: ExecuteRequest = {
 };
 
 const PRIVATE_STATE = {
-	version: 2,
+	version: 1,
 	request: EXECUTE_REQUEST,
 	root: CANONICAL_ROOT,
 	status: "needs_attention",
@@ -307,7 +307,7 @@ async function executeTool(
 
 function expectedPublicState() {
 	return {
-		version: 2,
+		version: 1,
 		id: "request-one",
 		status: "needs_attention",
 		accepted: false,
