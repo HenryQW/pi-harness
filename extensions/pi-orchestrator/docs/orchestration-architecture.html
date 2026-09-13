@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pi Orchestrator checked execution architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --paper: #f0eee9;
+      --ink: #101828;
+      --muted: #4c5665;
+    }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 32px;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: 'Geist', sans-serif;
+    }
+    .frame { width: 100%; max-width: 1280px; }
+    .eyebrow {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font: 500 8px 'Geist Mono', monospace;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin-bottom: 24px;
+      color: var(--ink);
+      font: 400 28px 'Instrument Serif', serif;
+      letter-spacing: -.02em;
+      line-height: 1.15;
+    }
+    svg { display: block; width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <p class="eyebrow">Architecture · Secure paved road</p>
+    <h1>Checked work reaches Main through one guarded path</h1>
+
+    <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="orchestration-architecture-title orchestration-architecture-desc">
+      <title id="orchestration-architecture-title">Pi Orchestrator checked execution architecture</title>
+      <desc id="orchestration-architecture-desc">Architecture diagram showing Pi Main routing a strict request through durable orchestration, an isolated Herdr Implementer with task-scoped tools and skills, direct checks, an optional read-only Reviewer, and guarded Main integration, while recursive orchestration and unchecked Git bypasses stop at trust boundaries.</desc>
+      <defs>
+        <style>
+          .zone { fill: #e6e4de; stroke: #101828; stroke-opacity: .141; stroke-width: 1; }
+          .zone-protected { fill: #1d4ed8; fill-opacity: .05; stroke: #1d4ed8; stroke-opacity: .50; stroke-width: 1; stroke-dasharray: 4 4; }
+          .zone-label { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+          .node-mask { fill: #f0eee9; }
+          .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+          .node-input { fill: #4c5665; fill-opacity: .10; stroke: #6a7282; stroke-width: 1; }
+          .node-store { fill: #101828; fill-opacity: .05; stroke: #4c5665; stroke-width: 1; }
+          .node-focal { fill: #1d4ed8; fill-opacity: .08; stroke: #1d4ed8; stroke-width: 1.2; }
+          .tag { fill: none; stroke: #101828; stroke-opacity: .34; stroke-width: .8; }
+          .tag-focal { fill: none; stroke: #1d4ed8; stroke-opacity: .55; stroke-width: .8; }
+          .tag-text { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .08em; text-anchor: middle; }
+          .tag-text-focal { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; letter-spacing: .08em; text-anchor: middle; }
+          .name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .sub { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+          .edge-approved { fill: none; stroke: #1d4ed8; stroke-width: 1.2; marker-end: url(#arrow-accent); }
+          .edge-audit { fill: none; stroke: #4c5665; stroke-width: 1; stroke-dasharray: 5 4; marker-end: url(#arrow); }
+          .edge-blocked { fill: none; stroke: #6a7282; stroke-width: 1; stroke-dasharray: 5 4; }
+          .label-mask { fill: #f0eee9; }
+          .label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .04em; text-anchor: middle; }
+          .label-approved { fill: #1d4ed8; font: 500 8px 'Geist Mono', monospace; letter-spacing: .04em; text-anchor: middle; }
+          .stop { fill: #f0eee9; stroke: #6a7282; stroke-width: 1.2; }
+          .stop-mark { stroke: #6a7282; stroke-width: 1.2; }
+          .legend { fill: #101828; font: 400 12px 'Geist', sans-serif; }
+          .legend-label { fill: #6a7282; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
+        </style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#4c5665"/>
+        </marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <!-- Trust zones -->
+      <rect class="zone" x="248" y="96" width="344" height="448" rx="8"/>
+      <rect class="label-mask" x="260" y="100" width="152" height="16" rx="2"/>
+      <text class="zone-label" x="268" y="112">MAIN CONTROL PLANE</text>
+
+      <rect class="zone" x="624" y="96" width="304" height="448" rx="8"/>
+      <rect class="label-mask" x="636" y="100" width="164" height="16" rx="2"/>
+      <text class="zone-label" x="644" y="112">ISOLATED TASK ATTEMPT</text>
+
+      <rect class="zone-protected" x="960" y="96" width="280" height="472" rx="8"/>
+      <rect class="label-mask" x="972" y="100" width="196" height="16" rx="2"/>
+      <text class="zone-label" x="980" y="112">PROTECTED MAIN REPOSITORY</text>
+
+      <!-- Approved and audit paths -->
+      <line class="edge" x1="216" y1="216" x2="280" y2="216"/>
+      <line class="edge" x1="560" y1="216" x2="656" y2="216"/>
+      <line class="edge" x1="420" y1="272" x2="420" y2="400"/>
+      <line class="edge" x1="776" y1="272" x2="776" y2="336"/>
+      <line class="edge-approved" x1="776" y1="448" x2="776" y2="472"/>
+      <line class="edge-approved" x1="896" y1="516" x2="992" y2="516"/>
+      <path class="edge-audit" d="M1068 560 V584 Q1068 592 1060 592 H428 Q420 592 420 584 V512"/>
+
+      <!-- Forbidden routes stop before crossing -->
+      <path class="edge-blocked" d="M704 272 V296 Q704 304 696 304 H624"/>
+      <circle class="stop" cx="624" cy="304" r="8"/>
+      <line class="stop-mark" x1="620" y1="300" x2="628" y2="308"/>
+      <line class="stop-mark" x1="628" y1="300" x2="620" y2="308"/>
+
+      <line class="edge-blocked" x1="896" y1="420" x2="952" y2="420"/>
+      <circle class="stop" cx="952" cy="420" r="8"/>
+      <line class="stop-mark" x1="948" y1="416" x2="956" y2="424"/>
+      <line class="stop-mark" x1="956" y1="416" x2="948" y2="424"/>
+
+      <!-- Connector labels -->
+      <rect class="label-mask" x="220" y="196" width="56" height="12" rx="2"/>
+      <text class="label" x="248" y="204">EXECUTE</text>
+
+      <rect class="label-mask" x="580" y="196" width="56" height="12" rx="2"/>
+      <text class="label" x="608" y="204">LAUNCH</text>
+
+      <rect class="label-mask" x="428" y="324" width="72" height="12" rx="2"/>
+      <text class="label" x="464" y="332">CHECKPOINT</text>
+
+      <rect class="label-mask" x="784" y="296" width="72" height="12" rx="2"/>
+      <text class="label" x="820" y="304">IMPLEMENT</text>
+
+      <rect class="label-mask" x="916" y="496" width="56" height="12" rx="2"/>
+      <text class="label-approved" x="944" y="504">VERIFY</text>
+
+      <rect class="label-mask" x="628" y="284" width="96" height="12" rx="2"/>
+      <text class="label" x="676" y="292">NO CONTROL API</text>
+
+      <rect class="label-mask" x="900" y="400" width="48" height="12" rx="2"/>
+      <text class="label" x="924" y="408">NO BYPASS</text>
+
+      <rect class="label-mask" x="696" y="572" width="80" height="12" rx="2"/>
+      <text class="label" x="736" y="580">AUDIT RESULT</text>
+
+      <!-- Opaque node masks -->
+      <rect class="node-mask" x="40" y="160" width="176" height="112" rx="6"/>
+      <rect class="node-mask" x="280" y="160" width="280" height="112" rx="6"/>
+      <rect class="node-mask" x="280" y="400" width="280" height="112" rx="6"/>
+      <rect class="node-mask" x="656" y="160" width="240" height="112" rx="6"/>
+      <rect class="node-mask" x="656" y="336" width="240" height="112" rx="6"/>
+      <rect class="node-mask" x="656" y="472" width="240" height="72" rx="6"/>
+      <rect class="node-mask" x="992" y="472" width="216" height="88" rx="6"/>
+
+      <!-- Request -->
+      <rect class="node-input" x="40" y="160" width="176" height="112" rx="6"/>
+      <rect class="tag" x="52" y="172" width="40" height="16" rx="2"/>
+      <text class="tag-text" x="72" y="184">INPUT</text>
+      <text class="name" x="128" y="216">Checked request</text>
+      <text class="sub" x="128" y="240">TASK DAG · CHECKS · BUDGET</text>
+
+      <!-- Main control plane -->
+      <rect class="node-focal" x="280" y="160" width="280" height="112" rx="6"/>
+      <rect class="tag-focal" x="292" y="172" width="40" height="16" rx="2"/>
+      <text class="tag-text-focal" x="312" y="184">MAIN</text>
+      <text class="name" x="420" y="212">Pi Orchestrator</text>
+      <text class="sub" x="420" y="236">FREEZES ROLE + MODEL ROUTES</text>
+      <text class="sub" x="420" y="252">OWNS REQUEST LIFECYCLE</text>
+
+      <rect class="node-store" x="280" y="400" width="280" height="112" rx="6"/>
+      <rect class="tag" x="292" y="412" width="48" height="16" rx="2"/>
+      <text class="tag-text" x="316" y="424">AUDIT</text>
+      <text class="name" x="420" y="452">Durable request state</text>
+      <text class="sub" x="420" y="476">CONFIG/PI-ORCHESTRATOR/STATE</text>
+      <text class="sub" x="420" y="492">STRICT SCHEMA · RECOVERY EVIDENCE</text>
+
+      <!-- Isolated attempt -->
+      <rect class="node" x="656" y="160" width="240" height="112" rx="6"/>
+      <rect class="tag" x="668" y="172" width="40" height="16" rx="2"/>
+      <text class="tag-text" x="688" y="184">ROLE</text>
+      <text class="name" x="776" y="212">Herdr Implementer</text>
+      <text class="sub" x="776" y="236">TASK-SCOPED TOOLS + SKILLS</text>
+      <text class="sub" x="776" y="252">NO ORCHESTRATE_* RECURSION</text>
+
+      <rect class="node-store" x="656" y="336" width="240" height="112" rx="6"/>
+      <rect class="tag" x="668" y="348" width="32" height="16" rx="2"/>
+      <text class="tag-text" x="684" y="360">GIT</text>
+      <text class="name" x="776" y="388">Isolated task worktree</text>
+      <text class="sub" x="776" y="412">ONE ATTEMPT · COMMITTED CANDIDATE</text>
+      <text class="sub" x="776" y="428">DIRTY OR AMBIGUOUS FAILS CLOSED</text>
+
+      <!-- Post-stop task gate -->
+      <rect class="node" x="656" y="472" width="240" height="72" rx="6"/>
+      <rect class="tag" x="668" y="484" width="40" height="16" rx="2"/>
+      <text class="tag-text" x="688" y="496">CHECK</text>
+      <text class="name" x="776" y="508">Post-stop checks + review</text>
+      <text class="sub" x="776" y="528">REBASE · DIRECT ARGV · EXACT PATCH</text>
+
+      <!-- Protected Main repository -->
+      <rect class="node-focal" x="992" y="472" width="216" height="88" rx="6"/>
+      <rect class="tag-focal" x="1004" y="484" width="40" height="16" rx="2"/>
+      <text class="tag-text-focal" x="1024" y="496">GATE</text>
+      <text class="name" x="1100" y="520">Guarded Main integration</text>
+      <text class="sub" x="1100" y="544">IDENTITY FENCE · DECLARED ORDER</text>
+
+      <!-- Legend -->
+      <line x1="40" y1="640" x2="1240" y2="640" stroke="#101828" stroke-opacity=".141" stroke-width=".8"/>
+      <text class="legend-label" x="40" y="672">LEGEND</text>
+
+      <line class="edge-approved" x1="136" y1="668" x2="184" y2="668"/>
+      <text class="legend" x="200" y="672">approved checked path</text>
+
+      <line class="edge-audit" x1="396" y1="668" x2="444" y2="668"/>
+      <text class="legend" x="460" y="672">durable audit record</text>
+
+      <line class="edge-blocked" x1="660" y1="668" x2="700" y2="668"/>
+      <circle class="stop" cx="708" cy="668" r="8"/>
+      <line class="stop-mark" x1="704" y1="664" x2="712" y2="672"/>
+      <line class="stop-mark" x1="712" y1="664" x2="704" y2="672"/>
+      <text class="legend" x="728" y="672">blocked before boundary</text>
+
+      <rect class="zone-protected" x="988" y="660" width="32" height="16" rx="4"/>
+      <text class="legend" x="1036" y="672">trust boundary</text>
+    </svg>
+  </main>
+</body>
+</html>

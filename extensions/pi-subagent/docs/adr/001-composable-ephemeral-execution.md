@@ -18,8 +18,8 @@ An explicit call `modelClass` selects a task-model route. Without one, an option
 
 ## Scope boundary
 
-`delegate_flow` is a fixed package-owned Git workflow, documented in [ADR 002](./002-package-owned-delegate-flow-orchestration.md). It reuses the prepared-child runner but is not a general executor workflow primitive: it has its own fixed unit, worktree, validation, review, integration, and cleanup contract. `delegate_task` and library callers remain generic.
+`delegate_task` and library callers remain generic. The package does not own checked implementation orchestration.
 
 ## Consequences
 
-The executor remains a stable mechanism while generic callers own semantic protocols, shared workspace/state, retry decisions, and bounds. The package-owned Flow removes only its repeated deterministic Git mechanics; it does not turn the executor into a workflow language.
+The executor remains a stable mechanism while callers own semantic protocols, shared workspace and state, validation, review, retry decisions, integration, cleanup, and bounds.

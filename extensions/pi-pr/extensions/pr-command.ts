@@ -17,15 +17,17 @@ import {
 
 export type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
 
-const WORKFLOWS: Record<WorkflowNextStep, { command: string; action: string }> = {
-	create: { command: "skill:pi-pr-create", action: "prepare" },
-	"update-branch": { command: "skill:pi-pr-update-branch", action: "merge" },
-	sweep: { command: "skill:pi-pr-comment-sweep", action: "start" },
-	"fix-ci": { command: "skill:pi-pr-fix-ci", action: "collect" },
+const WORKFLOWS: Record<WorkflowNextStep, { command: string }> = {
+	create: { command: "skill:pi-pr-create" },
+	"update-branch": { command: "skill:pi-pr-update-branch" },
+	sweep: { command: "skill:pi-pr-comment-sweep" },
+	"fix-ci": { command: "skill:pi-pr-fix-ci" },
 };
 export type WorkflowReservation =
 	| { route: "create"; target: PullRequestTarget; base?: string }
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
+export type WorkflowLaunchAction = "prepare" | "merge" | "start" | "resume" | "collect";
+export type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
@@ -42,7 +44,7 @@ export type WorkflowPromptIdentity = Readonly<{
 	route: WorkflowNextStep;
 	skill: string;
 	runId: string;
-	action: string;
+	action: WorkflowLaunchAction;
 }>;
 
 export type PrCommandDependencies = {
@@ -52,7 +54,7 @@ export type PrCommandDependencies = {
 		reservation: WorkflowReservation,
 		ctx: ExtensionCommandContext,
 		invocation?: PrCommandInvocation,
-	) => Promise<string>;
+	) => Promise<WorkflowReservationResult>;
 	markWorkflowPromptQueued?: (identity: WorkflowPromptIdentity, queued: boolean) => void;
 	releaseWorkflow?: (runId: string, invocation?: PrCommandInvocation) => void;
 };
@@ -96,7 +98,7 @@ function packageWorkflowCommand(pi: PrCommandPi, route: WorkflowNextStep) {
 		candidate.sourceInfo.origin === "package"
 	);
 	if (!command) throw new Error(`${workflow.command} failed: bundled workflow is unavailable`);
-	return { command, action: workflow.action };
+	return command;
 }
 
 async function dispatchWorkflow(
@@ -113,10 +115,11 @@ async function dispatchWorkflow(
 	const workflow = packageWorkflowCommand(pi, route);
 	let runId: string | undefined;
 	try {
-		runId = await reserve(reservation, ctx, invocation);
+		const reserved = await reserve(reservation, ctx, invocation);
+		runId = reserved.runId;
 		invocation?.assertCurrent();
 		const queued = !ctx.isIdle();
-		const identity = { route, skill: workflow.command.name, runId, action: workflow.action };
+		const identity = { route, skill: workflow.name, runId, action: reserved.action };
 		markPromptQueued(identity, queued);
 		const options = queued
 			? { deliverAs: "followUp" as const, expandPromptTemplates: true }

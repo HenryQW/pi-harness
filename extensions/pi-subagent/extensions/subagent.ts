@@ -33,7 +33,6 @@ import {
 	type WorktreePayload,
 } from "@henryqw/pi-subagent";
 import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
-import { registerDelegateFlow } from "./delegate-flow.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -272,7 +271,6 @@ export default function subagentExtension(
 		].join("\n"), outputPad, 0);
 	});
 	const widgetItems = new Map<string, WidgetItem>();
-	const retainedWidgetTaskIds = new Set<string>();
 	// Each child is a full Pi process issuing its own model calls; cap parallel
 	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
 	// maxSubagents > default 5. Invalid present config falls back to the default
@@ -312,7 +310,6 @@ export default function subagentExtension(
 	// Bumped by session_start and session_shutdown; background tasks may only
 	// deliver into the exact session that launched them.
 	let sessionEpoch = 0;
-	let invalidateDelegateFlow = () => {};
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
@@ -324,11 +321,6 @@ export default function subagentExtension(
 	};
 
 	const requestWidgetRender = () => activeTui?.requestRender();
-
-	const setWidgetTaskRetained = (taskId: string, retained: boolean) => {
-		if (retained) retainedWidgetTaskIds.add(taskId);
-		else retainedWidgetTaskIds.delete(taskId);
-	};
 
 	const startWidgetTimer = () => {
 		if (widgetTimer) return;
@@ -364,7 +356,7 @@ export default function subagentExtension(
 		ensureWidget(ctx);
 		if (!widgetItems.has(id) && widgetItems.size >= MAX_WIDGET_ITEMS) {
 			for (const [oldestId, item] of widgetItems) {
-				if (item.status === "working" || retainedWidgetTaskIds.has(item.taskId) || item.taskId === taskId) continue;
+				if (item.status === "working" || item.taskId === taskId) continue;
 				widgetItems.delete(oldestId);
 				if (widgetItems.size < MAX_WIDGET_ITEMS) break;
 			}
@@ -449,7 +441,6 @@ export default function subagentExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionEpoch += 1;
-		invalidateDelegateFlow();
 		latestCtx = ctx;
 		ensureWidget(ctx);
 		if (loadedConfig.error !== undefined) ctx.ui.notify(loadedConfig.error, "warning");
@@ -465,14 +456,12 @@ export default function subagentExtension(
 		failedToolPatches.clear();
 		stopWidgetTimer();
 		widgetItems.clear();
-		retainedWidgetTaskIds.clear();
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
 		// Invalidate ordinary outcomes, abort children, then let preserved isolated
 		// work report into the outgoing session before Pi tears it down.
 		sessionEpoch += 1;
-		invalidateDelegateFlow();
 		const tasks = [...backgroundTasks.values()];
 		for (const { controller } of tasks) controller.abort();
 		await Promise.allSettled(tasks.map(({ settled }) => settled));
@@ -483,7 +472,7 @@ export default function subagentExtension(
 	pi.on("input", (event) => {
 		if (event.source === "extension") return;
 		for (const [id, item] of widgetItems) {
-			if (item.status !== "working" && !retainedWidgetTaskIds.has(item.taskId)) widgetItems.delete(id);
+			if (item.status !== "working") widgetItems.delete(id);
 		}
 		requestWidgetRender();
 	});
@@ -570,23 +559,6 @@ export default function subagentExtension(
 			}
 		}
 	};
-
-	invalidateDelegateFlow = registerDelegateFlow(pi, {
-		executor,
-		maxRuntimeMs: timeoutPolicy.maxMs,
-		getSessionGeneration: () => sessionEpoch,
-		loadRoles,
-		resolveLaunch: (role, modelClass, ctx) => resolveRoleLaunch(pi, latestCtx ?? ctx, {
-			role,
-			task: DELEGATE_TASK,
-			...(modelClass === undefined ? {} : { modelClass }),
-		}),
-		startWidget: startWidgetItem,
-		setWidgetTaskRetained,
-		updateWidgetTokens,
-		updateWidgetActivity,
-		finishWidget: finishWidgetItem,
-	});
 
 	pi.registerTool({
 		name: "delegate_task",

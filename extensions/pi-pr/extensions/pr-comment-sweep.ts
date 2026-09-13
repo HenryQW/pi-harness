@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, realpath, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { realpath, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
@@ -28,6 +28,7 @@ import {
 	type PullRequestLoadContext,
 } from "./pr-github.ts";
 import {
+	inspectGitOperation,
 	isAncestor,
 	parseNulPaths,
 	parseStatusSnapshot,
@@ -44,7 +45,6 @@ export const SWEEP_RECOVERY_MAX_BYTES = 1024 * 1024;
 
 const STATE_VERSION = 1;
 const STATE_FILE = "state.json";
-const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 const LEDGER_NOTE_MAX_BYTES = 2 * 1024;
 const CHECK_MAX_COUNT = 32;
 const CHECK_ARGUMENTS_MAX_BYTES = 32 * 1024;
@@ -227,6 +227,16 @@ function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHe
 		expected.target.repository === current.target.repository && expected.target.host === current.target.host &&
 		expected.target.fetchSource === current.target.fetchSource && current.head.oid === remoteHead &&
 		current.target.remoteOid === remoteHead;
+}
+
+function recoveryMatchesRouteAuthority(state: SweepState, suppliedAuthority: SweepAuthority): boolean {
+	const permittedHeads = new Set<string>();
+	if (state.attempts.push.state !== "applied") permittedHeads.add(state.original.lease);
+	if (
+		(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
+		state.publicationHead
+	) permittedHeads.add(state.publicationHead);
+	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head));
 }
 
 function feedbackMatchesAuthority(snapshot: FeedbackSnapshot, authority: SweepAuthority, head: string): boolean {
@@ -573,6 +583,17 @@ export class PullRequestCommentSweep {
 		return (await this.location()).path;
 	}
 
+	async recoveryLaunchAction(): Promise<"start" | "resume"> {
+		if (!this.suppliedAuthority) throw new Error("Comment sweep recovery inspection requires route authority");
+		const location = await this.location();
+		const state = await this.loadIfPresent(location);
+		if (!state) return "start";
+		if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
+			throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match freshly discovered route authority`);
+		}
+		return "resume";
+	}
+
 	private async loadState(location: Awaited<ReturnType<PullRequestCommentSweep["location"]>>): Promise<SweepState> {
 		const raw = await readTextFileBounded(location.path, SWEEP_RECOVERY_MAX_BYTES, { signal: this.signal });
 		let value: unknown;
@@ -617,23 +638,8 @@ export class PullRequestCommentSweep {
 	}
 
 	private async requireNoGitOperation(): Promise<void> {
-		const paths = await runChecked(this.exec, "git", [
-			"rev-parse", ...GIT_OPERATION_STATES.flatMap((state) => ["--git-path", state]),
-		], this.options());
-		const normalized = paths.stdout.replace(/\r\n/g, "\n");
-		const values = (normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized).split("\n");
-		if (values.length !== GIT_OPERATION_STATES.length || values.some((path) => !path)) {
-			throw new Error("Git operation state path resolution returned invalid output");
-		}
-		for (const [index, path] of values.entries()) {
-			try {
-				await lstat(resolve(this.cwd, path));
-				throw new Error(`${GIT_OPERATION_STATES[index]} is in progress`);
-			} catch (error) {
-				if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
-				throw error;
-			}
-		}
+		const operation = await inspectGitOperation(this.exec, this.options());
+		if (operation !== null) throw new Error(`${operation} is in progress`);
 	}
 
 	private async localPaths(): Promise<string[]> {
@@ -787,17 +793,10 @@ export class PullRequestCommentSweep {
 	async resume(): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			if (!this.suppliedAuthority) throw new Error("Comment sweep resume requires route authority");
-			const suppliedAuthority = this.suppliedAuthority;
 			const location = await this.location();
 			const state = await this.loadState(location);
-			const permittedHeads = new Set<string>();
-			if (state.attempts.push.state !== "applied") permittedHeads.add(state.original.lease);
-			if (
-				(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
-				state.publicationHead
-			) permittedHeads.add(state.publicationHead);
-			if (![...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head))) {
-				throw new Error("Comment sweep recovery does not match supplied route authority");
+			if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
+				throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
 			}
 			await this.reconcile(state);
 			state.attempts.resolutions = state.attempts.resolutions.filter(({ state: attempt }) => attempt !== "blocked");

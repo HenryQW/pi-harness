@@ -14,6 +14,7 @@ const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHE
 const WORKTREE_LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
 
 export type AttemptState = "none" | "attempting" | "applied" | "blocked" | "unknown";
+export type GitWorktreeState = "clean" | "dirty" | "operation";
 
 export function requiredText(value: unknown, label: string): string {
 	if (typeof value !== "string" || !value || value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
@@ -47,9 +48,8 @@ export async function runChecked(
 	return result;
 }
 
-/** Inspect both porcelain state and Git operation markers without mutating the repository. */
-export async function inspectWorktree(exec: Exec, options: ExecOptions): Promise<"clean" | "dirty"> {
-	const status = await runChecked(exec, "git", ["status", "--porcelain=v1", "--untracked-files=all"], options);
+/** Return the active Git operation marker without mutating the repository. */
+export async function inspectGitOperation(exec: Exec, options: ExecOptions): Promise<string | null> {
 	const stateOutput = await runChecked(exec, "git", [
 		"rev-parse",
 		...GIT_OPERATION_STATES.flatMap((state) => ["--git-path", state]),
@@ -62,7 +62,7 @@ export async function inspectWorktree(exec: Exec, options: ExecOptions): Promise
 	for (const [index, path] of statePaths.entries()) {
 		try {
 			await lstat(resolve(options.cwd, path));
-			return "dirty";
+			return GIT_OPERATION_STATES[index]!;
 		} catch (error) {
 			if (error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
 			const code = error && typeof error === "object" && typeof (error as NodeJS.ErrnoException).code === "string"
@@ -71,7 +71,19 @@ export async function inspectWorktree(exec: Exec, options: ExecOptions): Promise
 			throw new Error(`Git operation state inspection failed for ${GIT_OPERATION_STATES[index]}: ${code}`);
 		}
 	}
+	return null;
+}
+
+/** Distinguish ordinary pending work from an in-progress Git operation. */
+export async function inspectWorktreeState(exec: Exec, options: ExecOptions): Promise<GitWorktreeState> {
+	const status = await runChecked(exec, "git", ["status", "--porcelain=v1", "--untracked-files=all"], options);
+	if (await inspectGitOperation(exec, options) !== null) return "operation";
 	return status.stdout === "" ? "clean" : "dirty";
+}
+
+/** Inspect both porcelain state and Git operation markers without mutating the repository. */
+export async function inspectWorktree(exec: Exec, options: ExecOptions): Promise<"clean" | "dirty"> {
+	return await inspectWorktreeState(exec, options) === "clean" ? "clean" : "dirty";
 }
 
 /** Exclude concurrent PR mutations for one canonical worktree and pi-pr namespace. */

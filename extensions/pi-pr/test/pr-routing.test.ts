@@ -36,7 +36,7 @@ function deriveNextStep(pullRequest: PullRequest | null): NextStep {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: { ahead: 1 },
+		branch: { ahead: 1, worktree: "clean", relation: "distinct-ref" },
 	});
 }
 
@@ -77,7 +77,7 @@ test("routes exactly one highest-priority next step", () => {
 	}
 });
 
-test("requires an ahead commit before routing creation", () => {
+test("routes creation for commits or ordinary pending work only on a distinct ref", () => {
 	const creation = {
 		kind: "none" as const,
 		creationTarget: {
@@ -90,10 +90,13 @@ test("requires an ahead commit before routing creation", () => {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: { ahead: 0 },
+		branch: { ahead: 0, worktree: "clean" as const, relation: "distinct-ref" as const },
 	};
 	assert.equal(deriveDiscoveryNextStep(creation), "none");
 	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, ahead: 1 } }), "create");
+	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, worktree: "dirty" } }), "create");
+	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, worktree: "operation" } }), "none");
+	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, worktree: "dirty", relation: "same-ref" } }), "none");
 });
 
 test("routes discovery states without mutating ambiguous targets", () => {

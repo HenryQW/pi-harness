@@ -66,17 +66,17 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 | Current condition | `/pr` route |
 | --- | --- |
-| No current-branch pull request, no published matching ref, safe Git push configuration, and a commit ahead of the selected base | Start pull-request creation. |
+| No current-branch pull request, no published matching ref, safe Git push configuration, and a commit or ordinary pending work | Start pull-request creation. |
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Base update required or merge conflict | Update from the base branch's current target when the tree is clean and local HEAD equals the PR head. |
 | GitHub Actions job failed | Run the CI fix workflow when the same local prerequisite holds. |
 | External check or commit status failed | Show `CI failed` as a no-action blocker. |
-| Changes requested or unresolved review threads | Run the package comment sweep when the same local prerequisite holds. |
+| Changes requested or unresolved review threads | Start or resume the package comment sweep when the same local prerequisite holds. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and squash-merge if confirmed. |
 
-`pi-pr-create` selects its base in this order: the leading `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then the default branch of validated `origin`. It captures the selected base OID and merge-base. Creation requires at least one committed change ahead. Dirty work alone does not enable creation. If the current branch is the selected base, pi-pr stays silent because GitHub cannot create a pull request from a ref to itself.
+`pi-pr-create` selects its base in this order: the leading `/pr --base BRANCH`, one `branch.<branch>.gh-merge-base` value, then the default branch of validated `origin`. It captures the selected base OID and merge-base. Creation requires a commit ahead or ordinary pending work, including untracked files. A Git operation in progress does not count as pending work. If the current branch is the selected base, pi-pr stays silent because GitHub cannot create a pull request from a ref to itself.
 
 The base always comes from validated `origin`. The head may use that repository or a fork with the same GitHub source. Base and head must use the same GitHub host. Other fork relationships stop before mutation.
 
@@ -91,6 +91,10 @@ Multiple candidate remotes, multiple matching PRs, OID mismatches, and unsafe Gi
 The creation workflow repeats destination, remote OID, PR, and configuration checks immediately before pushing. It pushes to the saved validated URL, not a mutable remote name. Every push uses the saved remote OID as an exact lease. Existing refs must also be ancestors of the captured local OID. A missing ref uses an empty lease as a create-only compare-and-swap.
 
 Each helper workflow receives a random run ID and its first action. The run stays bound to one session, canonical worktree, route, and fresh authority. Helper calls from another run, session, worktree, or route fail.
+
+For comment sweeps, `/pr` checks the package recovery file without changing it. It selects `start` when recovery is absent. It selects `resume` only when valid recovery matches the fresh route authority. Invalid recovery stays unchanged and blocks dispatch with its path and reason.
+
+Direct skill or `pi_pr_*` tool calls cannot create route authority. Run `/pr` to reserve a fresh route.
 
 Only one helper run can exist at a time. Most runs expire when the agent settles. A create or branch-update conflict stays available for one user-guided continuation, then expires after that continuation settles. Session replacement and shutdown forget the run without aborting or cleaning a pending merge.
 
@@ -131,17 +135,17 @@ The sweep runs existing non-destructive checks on the clean committed `HEAD` bef
 
 ### Refresh
 
-The footer and widget load at session start. A directory outside a Git worktree stays silent and does not start polling. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
+The footer and widget load once at session start. A directory outside a Git worktree stays silent. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
 
-They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. Active Git worktrees poll every 30 seconds. Polling updates presentation only and may be stale.
+They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. There is no periodic presentation refresh, so external changes may leave the footer and widget stale indefinitely. `/pr` reads fresh state before routing or acting and remains authoritative.
 
-The create widget stays hidden until the local branch has a commit beyond its creation point. `/pr` replaces any hint with routing feedback while it selects a route. The feedback clears before route interaction. A dispatched workflow keeps the widget hidden until the agent settles. Direct and no-action routes refresh it after completion. A failed command restores the prior hint and schedules a refresh.
+The create widget stays hidden on a clean branch with no commit ahead. It appears for a commit ahead or ordinary pending work. It stays hidden during a Git operation and when the current branch is the selected base. `/pr` replaces any hint with routing feedback while it selects a route. The feedback clears before route interaction. A dispatched workflow keeps the widget hidden until the agent settles. Direct and no-action routes refresh it after completion. A failed command restores the prior hint and schedules a refresh, except when fresh lookup hits the GitHub API quota: it shows the sanitized message `GitHub API rate limit exhausted; retry after GitHub resets it` and does not immediately retry.
 
 Presentation uses route priority, so draft appears before running CI. `/pr` reads fresh state before routing or merging. The command is authoritative for actions.
 
 ### Session identity
 
-The extension records one configured PR identity in the Pi session. It stores only the PR URL, number, host, head identity, and configured target identity. It does not store lifecycle, CI, review, readiness, or base state. Repeated polling does not add duplicate entries, and no repository cache file is created.
+The extension records one configured PR identity in the Pi session. It stores only the PR URL, number, host, head identity, and configured target identity. It does not store lifecycle, CI, review, readiness, or base state. Event-driven refreshes do not add duplicate entries, and no repository cache file is created.
 
 Normal discovery always runs first. If the configured remote ref was deleted, the footer and `/pr` may reload the exact observed PR URL. The current host, repository, branch, remote, ref, and local HEAD must still match the observation. Repository names use case-insensitive GitHub matching.
 
@@ -151,7 +155,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 - `/pr` accepts creation syntax only as a leading `--base BRANCH`, followed by optional creation guidance. It does not open a browser.
 - It does not run `/done` or `/sweep`.
-- Polling does not auto-triage comments or start a workflow. The package comment sweep runs only when an explicit `/pr` selects it.
+- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep starts or resumes only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.
 - It does not rebase the local branch, overwrite concurrent remote updates, delete branches, or clean up worktrees. Creation uses exact leases plus ancestry checks; an empty lease is only an atomic absence check.
 - Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.

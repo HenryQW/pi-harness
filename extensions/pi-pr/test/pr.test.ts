@@ -10,6 +10,7 @@ import type {
 import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
 import {
+	GitHubRateLimitError,
 	pullRequestObservation,
 	type CurrentPullRequest,
 	type CurrentPullRequestDiscovery,
@@ -131,7 +132,7 @@ function noPullRequest(ahead = 0): CurrentPullRequestDiscovery {
 			fetchSource: "git@github.com:acme/project.git",
 			remoteOid: null,
 		},
-		branch: { ahead },
+		branch: { ahead, worktree: "clean", relation: "distinct-ref" },
 	};
 }
 
@@ -819,6 +820,7 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 		async canonicalWorktree() { return "/canonical/repo"; },
 		createCommentSweep() {
 			return {
+				async recoveryLaunchAction() { return "start" as const; },
 				async start() { sweepCalls.push("start"); return { phase: "triage" }; },
 			} as never;
 		},
@@ -858,8 +860,96 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 	}
 });
 
-test("stays silent and does not poll outside a Git worktree", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
+test("fresh /pr sweep runs rotate route IDs and resume package recovery after settlement", async () => {
+	const firstRunId = routeRunId;
+	const secondRunId = "22222222-2222-4222-8222-222222222222";
+	const runIds = [firstRunId, secondRunId];
+	const authority = currentPullRequest({ conditions: { unresolvedThreads: 1 } });
+	const inspections: string[] = [];
+	const actions: string[] = [];
+	let recoveryExists = false;
+	let loads = 0;
+	let runIndex = 0;
+	const app = harness({
+		async load() { loads += 1; return authority; },
+		useDefaultCommandHandler: true,
+		newRunId: () => runIds[runIndex++]!,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createCommentSweep(options) {
+			assert.equal(options.cwd, "/canonical/repo");
+			assert.equal(options.authority, authority);
+			return {
+				async recoveryLaunchAction() {
+					const action = recoveryExists ? "resume" : "start";
+					inspections.push(action);
+					return action;
+				},
+				async start() {
+					actions.push("start");
+					recoveryExists = true;
+					return { phase: "triage" };
+				},
+				async resume() {
+					actions.push("resume");
+					return { phase: "triage" };
+				},
+			} as never;
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [
+			`/skill:pi-pr-comment-sweep runId=${firstRunId} action=start`,
+		]);
+		await app.callTool("pi_pr_sweep", { runId: firstRunId, action: "start" }, ctx);
+		await app.settle(ctx);
+		await assert.rejects(
+			app.callTool("pi_pr_sweep", { runId: firstRunId, action: "resume" }, ctx),
+			/run \/pr/,
+		);
+
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [
+			`/skill:pi-pr-comment-sweep runId=${firstRunId} action=start`,
+			`/skill:pi-pr-comment-sweep runId=${secondRunId} action=resume`,
+		]);
+		await assert.rejects(
+			app.callTool("pi_pr_sweep", { runId: firstRunId, action: "resume" }, ctx),
+			/wrong or stale/,
+		);
+		await app.callTool("pi_pr_sweep", { runId: secondRunId, action: "resume" }, ctx);
+		assert.deepEqual(inspections, ["start", "resume"]);
+		assert.deepEqual(actions, ["start", "resume"]);
+		assert.equal(loads, 4, "each /pr must run fresh discovery");
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("direct workflow tools without a route tell the caller to run /pr", async () => {
+	const app = harness({ async load() { return { kind: "inactive" }; } });
+	const ctx = app.context();
+	const calls = [
+		["pi_pr_update_branch", { runId: routeRunId, action: "merge" }],
+		["pi_pr_create", { runId: routeRunId, action: "prepare" }],
+		["pi_pr_sweep", { runId: routeRunId, action: "start" }],
+		["pi_pr_fix_ci", { runId: routeRunId, action: "collect" }],
+	] as const;
+
+	for (const [tool, params] of calls) {
+		await assert.rejects(app.callTool(tool, params, ctx), (error: unknown) => {
+			assert(error instanceof Error);
+			assert.match(error.message, /run \/pr/);
+			assert.doesNotMatch(error.message, /\/sweep/);
+			return true;
+		});
+	}
+});
+
+test("stays silent outside a Git worktree", async () => {
 	let loads = 0;
 	const app = harness({
 		async load() {
@@ -873,26 +963,32 @@ test("stays silent and does not poll outside a Git worktree", async (t) => {
 	assert.deepEqual(app.statuses, [undefined]);
 	assert.deepEqual(app.widgets, [undefined]);
 	assert.deepEqual(app.notifications, []);
-	t.mock.timers.tick(60_000);
-	await flush();
 	assert.equal(loads, 1);
 
 	await app.shutdown(ctx);
 });
 
-test("records one configured PR observation without polling duplicates", async (t) => {
+test("does not poll presentation or duplicate observations", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const pullRequest = currentPullRequest();
 	const expected = pullRequestObservation(pullRequest);
 	assert.ok(expected);
-	const app = harness({ async load() { return pullRequest; } });
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			return pullRequest;
+		},
+	});
 	const ctx = app.context();
 
 	await app.start(ctx);
+	assert.equal(loads, 1);
 	assert.deepEqual(app.appended, [{ customType: "pi-pr-observation", data: expected }]);
 
 	t.mock.timers.tick(60_000);
 	await flush();
+	assert.equal(loads, 1, "advancing time must not perform another presentation load");
 	assert.equal(app.appended.length, 1);
 	await app.shutdown(ctx);
 });
@@ -950,8 +1046,7 @@ test("does not persist a stale observation after session replacement", async () 
 	await app.shutdown(replacement);
 });
 
-test("stops polling when an active worktree becomes inactive", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
+test("stays silent when a worktree becomes inactive after a native refresh", async () => {
 	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery> = [
 		currentPullRequest(),
 		{ kind: "inactive" },
@@ -968,12 +1063,14 @@ test("stops polling when an active worktree becomes inactive", async (t) => {
 	const ctx = app.context();
 
 	await app.start(ctx);
-	t.mock.timers.tick(30_000);
-	await flush();
-	assert.deepEqual(app.statuses.at(-1), undefined);
-	t.mock.timers.tick(60_000);
-	await flush();
+	assert.equal(loads, 1);
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(loads, 2);
+	assert.deepEqual(app.statuses.at(-1), undefined);
+	assert.deepEqual(app.widgets.at(-1), undefined);
+
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	assert.equal(loads, 2, "an inactive worktree must stay silent");
 
 	await app.shutdown(ctx);
 });
@@ -1000,8 +1097,7 @@ test("refreshes a configured PR after successful delegated work settles", async 
 	await app.shutdown(ctx);
 });
 
-test("warns once for one blocked issue and warns again after recovery", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
+test("warns once for one blocked issue and warns again after recovery", async () => {
 	const blocked: CurrentPullRequestDiscovery = {
 		kind: "blocked",
 		issue: {
@@ -1028,16 +1124,13 @@ test("warns once for one blocked issue and warns again after recovery", async (t
 	const ctx = app.context();
 
 	await app.start(ctx);
-	t.mock.timers.tick(30_000);
-	await flush();
 	assert.equal(app.notifications.length, 1);
 	assert.equal(app.notifications[0]?.type, "warning");
 	assert.match(app.notifications[0]?.message ?? "", /pull\/42, https:\/\/github\.com\/acme\/project\/pull\/43/);
 
-	t.mock.timers.tick(30_000);
-	await flush();
-	t.mock.timers.tick(30_000);
-	await flush();
+	for (const command of ["git push origin HEAD", "git commit -m recovery", "git push origin HEAD"]) {
+		await app.tool({ toolName: "bash", input: { command }, isError: false }, ctx);
+	}
 	assert.equal(app.notifications.length, 2);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR · target ambiguous");
 
@@ -1088,8 +1181,7 @@ test("renders the shared projection and refreshes after successful create or pus
 	await app.shutdown(ctx);
 });
 
-test("failed CI replaces review feedback in the footer on refresh", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
+test("failed CI replaces review feedback in the footer on refresh", async () => {
 	const results = [
 		currentPullRequest({ conditions: { unresolvedThreads: 1 } }),
 		currentPullRequest({ conditions: { unresolvedThreads: 1, ci: "failure" } }),
@@ -1107,8 +1199,7 @@ test("failed CI replaces review feedback in the footer on refresh", async (t) =>
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · 1 unresolved");
 	assert.deepEqual(app.widgets.at(-1), widgetLine("! Run /pr to address review feedback"));
 
-	t.mock.timers.tick(30_000);
-	await flush();
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
 	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 
@@ -1281,8 +1372,7 @@ test("propagates render failures before mutating UI", async () => {
 	await app.shutdown(ctx);
 });
 
-test("reports detached render failures once and resumes after recovery", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
+test("reports detached render failures once and resumes after recovery", async () => {
 	let failure: string | undefined;
 	const app = harness({
 		async load() {
@@ -1298,9 +1388,8 @@ test("reports detached render failures once and resumes after recovery", async (
 	await app.start(ctx);
 	const statusWritesBeforeFailure = app.statuses.length;
 	const widgetWritesBeforeFailure = app.widgets.length;
-	failure = "timer render failed";
-	t.mock.timers.tick(30_000);
-	await flush();
+	failure = "native render failed";
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.deepEqual(app.notifications, [{
 		message: "PR status refresh failed: status unavailable",
 		type: "error",
@@ -1308,9 +1397,8 @@ test("reports detached render failures once and resumes after recovery", async (
 	assert.equal(app.statuses.length, statusWritesBeforeFailure);
 	assert.equal(app.widgets.length, widgetWritesBeforeFailure);
 
-	t.mock.timers.tick(30_000);
-	await flush();
-	assert.equal(app.notifications.length, 1, "persistent poll failures must not spam notifications");
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	assert.equal(app.notifications.length, 1, "persistent refresh failures must not spam notifications");
 
 	failure = undefined;
 	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
@@ -1335,8 +1423,7 @@ test("reports detached render failures once and resumes after recovery", async (
 	await app.shutdown(ctx);
 });
 
-test("reports lookup failures once, clears stale actions, and resets after recovery", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
+test("reports lookup failures once, clears stale actions, and resets after recovery", async () => {
 	const results: Array<CurrentPullRequest | Error> = [
 		new Error("initial lookup failed"),
 		new Error("initial lookup failed again"),
@@ -1361,19 +1448,16 @@ test("reports lookup failures once, clears stale actions, and resets after recov
 	assert.deepEqual(app.statuses.map((status) => plain(status ?? "")), ["PR · status unavailable"]);
 	assert.deepEqual(app.widgets, [undefined]);
 
-	t.mock.timers.tick(30_000);
-	await flush();
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(app.notifications.length, 1, "repeated lookup failures must not spam notifications");
 
-	t.mock.timers.tick(30_000);
-	await flush();
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI failed");
 	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
 	const statusWrites = app.statuses.length;
 	const widgetWrites = app.widgets.length;
 
-	t.mock.timers.tick(30_000);
-	await flush();
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.deepEqual(app.notifications.at(-1), {
 		message: "PR status refresh failed: status unavailable",
 		type: "error",
@@ -1386,8 +1470,57 @@ test("reports lookup failures once, clears stale actions, and resets after recov
 	await app.shutdown(ctx);
 });
 
-test("polls one request at a time, retains loader errors, and stops cleanly", async (t) => {
-	t.mock.timers.enable({ apis: ["setInterval"] });
+test("reports generic then sanitized rate-limit failures, clears its stale action, and does not retry /pr", async () => {
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			if (loads === 1) return currentPullRequest({ conditions: { ci: "failure" } });
+			if (loads === 2) throw new Error("native refresh failed");
+			throw new GitHubRateLimitError();
+		},
+		useDefaultCommandHandler: true,
+	});
+	const ctx = app.context();
+
+	await app.start(ctx);
+	assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
+
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	assert.deepEqual(app.notifications, [{
+		message: "PR status refresh failed: status unavailable",
+		type: "error",
+	}]);
+	assert.equal(app.widgets.at(-1), undefined);
+
+	await assert.rejects(
+		app.command().handler("", ctx as ExtensionCommandContext),
+		(error: unknown) => error instanceof GitHubRateLimitError,
+	);
+	assert.equal(loads, 3);
+	assert.deepEqual(app.notifications, [
+		{
+			message: "PR status refresh failed: status unavailable",
+			type: "error",
+		},
+		{
+			message: "GitHub API rate limit exhausted; retry after GitHub resets it",
+			type: "error",
+		},
+	]);
+	assert.equal(
+		app.notifications.filter(({ message }) => message === "GitHub API rate limit exhausted; retry after GitHub resets it").length,
+		1,
+	);
+	assert.doesNotMatch(app.notifications.at(-1)?.message ?? "", /secret|password|token/i);
+	assert.equal(app.widgets.at(-1), undefined, "a rate-limited /pr must clear the stale action");
+
+	await flush();
+	assert.equal(loads, 3, "a rate-limited /pr must not schedule an immediate refresh");
+	await app.shutdown(ctx);
+});
+
+test("serializes native-event refreshes, retains loader errors, and stops cleanly", async () => {
 	const pending = deferred<CurrentPullRequest | null>();
 	const duringShutdown = deferred<CurrentPullRequest | null>();
 	const signals: Array<AbortSignal | undefined> = [];
@@ -1407,14 +1540,20 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 
 	await app.start(ctx);
 	assert.equal(calls, 1);
-	t.mock.timers.tick(30_000);
+	const pendingRefresh = app.tool({
+		toolName: "bash",
+		input: { command: "gh pr create --fill" },
+		isError: false,
+	}, ctx);
+	await flush();
 	assert.equal(calls, 2);
 	assert.equal(signals[1]?.aborted, false);
 
-	await app.tool({ toolName: "bash", input: { command: "gh pr create --fill" }, isError: false }, ctx);
+	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(calls, 2, "matching tool result queues behind the active refresh");
 
 	pending.resolve(currentPullRequest({ conditions: { ci: "running" } }));
+	await pendingRefresh;
 	await flush();
 	assert.equal(calls, 3, "queued refresh runs after the active request");
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI running");
@@ -1424,10 +1563,15 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 		type: "error",
 	}]);
 
-	t.mock.timers.tick(30_000);
+	const shutdownRefresh = app.tool({
+		toolName: "bash",
+		input: { command: "git push origin HEAD" },
+		isError: false,
+	}, ctx);
+	await flush();
 	assert.equal(calls, 4);
 	assert.equal(signals[3]?.aborted, false);
-	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
+	await app.tool({ toolName: "bash", input: { command: "gh pr create --fill" }, isError: false }, ctx);
 	assert.equal(calls, 4, "matching tool result queues behind the signal-ignoring request");
 
 	const statusWritesBeforeShutdown = app.statuses.length;
@@ -1437,13 +1581,11 @@ test("polls one request at a time, retains loader errors, and stops cleanly", as
 	const callsAfterShutdown = calls;
 
 	duringShutdown.resolve(currentPullRequest());
+	await shutdownRefresh;
 	await flush();
 	assert.equal(calls, callsAfterShutdown, "shutdown must not restart queued refreshes");
 	assert.equal(app.statuses.length, statusWritesBeforeShutdown, "shutdown request must not render a status");
 	assert.equal(app.widgets.length, widgetWritesBeforeShutdown, "shutdown request must not render a widget");
-
-	t.mock.timers.tick(60_000);
-	assert.equal(calls, callsAfterShutdown, "shutdown must stop later polling");
 });
 
 test("session replacement stops routing animation before stale /pr completion", async (t) => {
@@ -1887,7 +2029,7 @@ test("tracks creation from the fresh command route instead of stale presentation
 	const staleCreateContext = staleCreate.context();
 	try {
 		await staleCreate.start(staleCreateContext);
-		const polling = staleCreate.tool({
+		const toolRefresh = staleCreate.tool({
 			toolName: "bash",
 			input: { command: "git push origin HEAD" },
 			isError: false,
@@ -1899,7 +2041,7 @@ test("tracks creation from the fresh command route instead of stale presentation
 		assert.equal(plain(staleCreate.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 
 		staleNull.resolve(noPullRequest());
-		await polling;
+		await toolRefresh;
 		assert.equal(plain(staleCreate.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 	} finally {
 		await staleCreate.shutdown(staleCreateContext);
@@ -1921,7 +2063,7 @@ test("tracks creation from the fresh command route instead of stale presentation
 	const stalePullRequestContext = stalePullRequest.context();
 	try {
 		await stalePullRequest.start(stalePullRequestContext);
-		const polling = stalePullRequest.tool({
+		const toolRefresh = stalePullRequest.tool({
 			toolName: "bash",
 			input: { command: "git push origin HEAD" },
 			isError: false,
@@ -1933,7 +2075,7 @@ test("tracks creation from the fresh command route instead of stale presentation
 		assert.equal(stalePullRequest.widgets.at(-1), undefined);
 
 		stalePr.resolve(currentPullRequest());
-		await polling;
+		await toolRefresh;
 		assert.equal(stalePullRequest.statuses.at(-1), undefined);
 		assert.equal(stalePullRequest.widgets.at(-1), undefined);
 
