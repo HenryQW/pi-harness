@@ -362,6 +362,7 @@ test("/copyb requires valid config and preserves malformed files", async (t) => 
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	let copied = false;
 	let pushed = false;
+	const notices: Array<{ message: string; type: string }> = [];
 	const { commands, lifecycleHandlers } = harness(
 		agentDir,
 		(async () => {
@@ -373,7 +374,7 @@ test("/copyb requires valid config and preserves malformed files", async (t) => 
 	const ctx: Context = {
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => [assistantEntry([{ type: "text", text: "done" }])] },
-		ui: { notify: () => {} },
+		ui: { notify: (message, type) => notices.push({ message, type }) },
 	};
 	const configPath = join(agentDir, "config", "pi-bark", "config.json");
 
@@ -392,6 +393,10 @@ test("/copyb requires valid config and preserves malformed files", async (t) => 
 	await commands.get("set-bark")!("device-key https://push.example.com/bark", ctx);
 	const malformed = '{"serverUrl":"https://api.day.app","deviceKey":42,"encryption":null,"statusNotifications":{"defaultEnabled":true,"cwdOverrides":{}}}\n';
 	writeFileSync(configPath, malformed);
+	assert.equal(lifecycleHandlers.get("ui_prompt_start")!({}, ctx), undefined);
+	await Promise.resolve();
+	assert.equal(notices.at(-1)?.type, "warning");
+	assert.match(notices.at(-1)?.message ?? "", /deviceKey/);
 	await assert.rejects(() => commands.get("copyb")!("", ctx), /deviceKey/);
 	assert.equal(readFileSync(configPath, "utf8"), malformed);
 	assert.equal(copied, false);

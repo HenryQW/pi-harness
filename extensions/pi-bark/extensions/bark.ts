@@ -84,7 +84,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 
 	pi.on("ui_prompt_start", (_event, ctx) => {
 		void queueStatus("Pi needs input", ctx.cwd).catch((error) => {
-			console.error(`[pi-bark] ${error instanceof Error ? error.message : String(error)}`);
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 		});
 	});
 
