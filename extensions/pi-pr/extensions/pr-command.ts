@@ -11,8 +11,11 @@ import {
 } from "./pr-github.ts";
 import {
 	deriveNextStep,
+	deriveRouteDecision,
+	type FeedbackRouteBlocker,
 	type NextStep,
 	type PullRequestTarget,
+	type RouteIntent,
 } from "./pr-routing.ts";
 
 export type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
@@ -61,18 +64,42 @@ export type PrCommandDependencies = {
 
 type ParsedPrArguments = {
 	base?: string;
+	intent: RouteIntent;
 	instructions: string;
 };
 
 function parsePrArguments(args: string): ParsedPrArguments {
 	const leading = args.trimStart();
-	if (leading.startsWith("--base=")) throw new Error("/pr base syntax is --base <branch>");
-	if (!leading.startsWith("--base") || !/^--base(?:\s|$)/.test(leading)) {
-		return { instructions: args.trim() };
+	const trimmed = leading.trim();
+	if (leading.startsWith("--feedback=")) throw new Error("/pr feedback syntax is --feedback");
+	if (/^--feedback(?:\s|$)/.test(leading)) {
+		if (trimmed !== "--feedback") throw new Error("/pr --feedback cannot be combined with other options or instructions");
+		return { intent: "feedback", instructions: "" };
 	}
-	const value = /^--base\s+(\S+)/.exec(leading);
-	if (!value) throw new Error("/pr --base requires a branch");
-	return { base: value[1]!, instructions: leading.slice(value[0].length).trim() };
+	if (/(?:^|\s)--feedback(?=\s|=|$)/.test(leading)) {
+		throw new Error("/pr --feedback cannot be combined with other options or instructions");
+	}
+	if (leading.startsWith("--base=")) throw new Error("/pr base syntax is --base <branch>");
+	if (/^--base(?:\s|$)/.test(leading)) {
+		const value = /^--base\s+(\S+)/.exec(leading);
+		if (!value) throw new Error("/pr --base requires a branch");
+		const instructions = leading.slice(value[0].length).trim();
+		if (instructions.startsWith("--")) throw new Error(`Unknown /pr option: ${instructions.split(/\s+/, 1)[0]}`);
+		return { base: value[1]!, intent: "automatic", instructions };
+	}
+	if (leading.startsWith("--")) throw new Error(`Unknown /pr option: ${leading.split(/\s+/, 1)[0]}`);
+	return { intent: "automatic", instructions: args.trim() };
+}
+
+function feedbackBlockerMessage(blocker: FeedbackRouteBlocker): string {
+	switch (blocker.kind) {
+		case "discovery-blocked": return "/pr --feedback is blocked because pull request discovery is unsafe";
+		case "pull-request-unavailable": return "/pr --feedback requires a current pull request";
+		case "pull-request-not-open": return "/pr --feedback requires an open pull request";
+		case "target-not-configured": return "/pr --feedback requires a configured pull request target; run /pr to link the branch first";
+		case "worktree-dirty": return "/pr --feedback is blocked by a dirty worktree";
+		case "head-not-equal": return `/pr --feedback is blocked by local HEAD ${blocker.relation}`;
+	}
 }
 
 function workflowReservation(
@@ -257,11 +284,13 @@ export function createPrCommandHandler(
 		const commandInvocation = onRouteResolved && "assertCurrent" in onRouteResolved
 			? onRouteResolved as PrCommandInvocation
 			: undefined;
-		const { base, instructions } = parsePrArguments(args);
+		const { base, intent, instructions } = parsePrArguments(args);
 		const discovery = await load(pi, ctx, undefined, undefined, base);
 		commandInvocation?.assertCurrent();
-		const nextStep = deriveNextStep(discovery);
+		const decision = deriveRouteDecision(discovery, intent);
+		const nextStep = decision.nextStep;
 		onRouteResolved?.(nextStep);
+		if (decision.kind === "feedback-blocked") throw new Error(feedbackBlockerMessage(decision.blocker));
 		if (base !== undefined && nextStep !== "create") {
 			throw new Error("/pr --base is accepted only for pull request creation");
 		}

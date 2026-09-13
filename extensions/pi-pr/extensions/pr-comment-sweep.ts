@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	extensionConfigDir,
 	readTextFileBounded,
@@ -36,11 +37,8 @@ import {
 	requiredOid,
 	requiredText,
 	runChecked,
-	spawnBounded,
 	withWorktreeLock,
 	type AttemptState,
-	type Exec,
-	type ExecOptions,
 } from "./pr-execution.ts";
 
 export const SWEEP_RECOVERY_MAX_BYTES = 1024 * 1024;

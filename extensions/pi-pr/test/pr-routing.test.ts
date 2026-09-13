@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	deriveNextStep as deriveDiscoveryNextStep,
 	derivePullRequestNextStep,
+	deriveRouteDecision,
 	type LocalMergeSafety,
 	type NextStep,
 	type PullRequest,
@@ -128,6 +129,44 @@ test("routes discovery states without mutating ambiguous targets", () => {
 test("ordinary conversation comments do not route", () => {
 	const candidate = { ...pullRequest(), comments: [{ body: "Looks good" }] };
 	assert.equal(deriveNextStep(candidate), "merge");
+});
+
+test("central routing applies explicit feedback intent without changing automatic priority", () => {
+	const target = {
+		provenance: "configured" as const,
+		branch: "feature",
+		remote: "origin",
+		ref: "feature",
+		repository: "acme/project",
+		host: "github.com",
+		fetchSource: "git@github.com:acme/project.git",
+		remoteOid: "a".repeat(40),
+	};
+	const discovery = (candidate: PullRequest, provenance: "configured" | "inferred" = "configured") => ({
+		kind: "current" as const,
+		pullRequest: { ...candidate, target: { ...target, provenance } },
+	});
+	const conversationOnly = { ...pullRequest(), comments: [{ body: "Please fix this" }] };
+	assert.equal(deriveRouteDecision(discovery(conversationOnly), "automatic").nextStep, "merge");
+	assert.equal(deriveRouteDecision(discovery(conversationOnly), "feedback").nextStep, "sweep");
+
+	const failedCi = discovery(pullRequest({ conditions: { ci: "failure" } }));
+	assert.equal(deriveRouteDecision(failedCi, "automatic").nextStep, "fix-ci");
+	assert.equal(deriveRouteDecision(failedCi, "feedback").nextStep, "sweep");
+
+	const blockers = [
+		{ name: "closed", candidate: discovery(pullRequest({ lifecycle: "closed" })), kind: "pull-request-not-open" },
+		{ name: "inferred", candidate: discovery(pullRequest(), "inferred"), kind: "target-not-configured" },
+		{ name: "dirty", candidate: discovery(pullRequest({ local: { worktree: "dirty" } })), kind: "worktree-dirty" },
+		{ name: "behind", candidate: discovery(pullRequest({ local: { head: "behind" } })), kind: "head-not-equal" },
+		{ name: "ahead", candidate: discovery(pullRequest({ local: { head: "ahead" } })), kind: "head-not-equal" },
+		{ name: "diverged", candidate: discovery(pullRequest({ local: { head: "diverged" } })), kind: "head-not-equal" },
+	] as const;
+	for (const blocker of blockers) {
+		const decision = deriveRouteDecision(blocker.candidate, "feedback");
+		assert.equal(decision.kind, "feedback-blocked", blocker.name);
+		assert.equal(decision.kind === "feedback-blocked" ? decision.blocker.kind : undefined, blocker.kind, blocker.name);
+	}
 });
 
 test("mutating workflows require a clean worktree with local HEAD equal to the PR head", () => {

@@ -36,6 +36,8 @@ GitHub, use the network, or write files.
 
 **Requires.** [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) is the shared Herdr CLI client. It installs with this package.
 
+**Uses.** [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) runs bounded child processes. It installs with this package.
+
 **Improves.** [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) shows current-branch pull-request status in the footer.
 
 ## Use
@@ -44,9 +46,12 @@ Run `/pr` in a GitHub checkout. It reads fresh pull request and local state, the
 
 For creation, put an optional base branch first. For example, run `/pr --base release/2026 Keep the title concise.` The base is a branch name, not a host or repository. Only creation accepts the base and remaining guidance. Other routes reject them instead of ignoring them.
 
+Run `/pr --feedback` to explicitly start or resume a feedback sweep. Use it for actionable conversation comments that do not select the sweep automatically. It cannot be combined with a base, other options, or instructions.
+
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/pr [--base BRANCH] [creation instructions]` | command | Run the current pull request's next safe route. |
+| `/pr --feedback` | command | Explicitly start or resume the guarded feedback sweep. |
 | Footer | ui | Show a linked `PR #number` and one plain-language status. |
 | Widget | ui | Show one action hint or transient routing status. |
 
@@ -71,6 +76,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | GitHub Actions job failed | Run the CI fix workflow when the same local prerequisite holds. |
 | External check or commit status failed | Show `CI failed` as a no-action blocker. |
 | Changes requested or unresolved review threads | Start or resume the package comment sweep when the same local prerequisite holds. |
+| Explicit `/pr --feedback` on an open, configured pull request | Start or resume the sweep when the tree is clean and local HEAD equals the PR head. |
 | No-action state | Report the state without taking action. |
 | Merge-ready pull request | Ask for final confirmation, recheck fresh state, and squash-merge if confirmed. |
 
@@ -91,6 +97,8 @@ The creation workflow repeats destination, remote OID, PR, and configuration che
 Each helper workflow receives a random run ID and its first action. The run stays bound to one session, canonical worktree, route, and fresh authority. Helper calls from another run, session, worktree, or route fail.
 
 For comment sweeps, `/pr` checks the package recovery file without changing it. It selects `start` when recovery is absent. It selects `resume` only when valid recovery matches the fresh route authority. Invalid recovery stays unchanged and blocks dispatch with its path and reason.
+
+`/pr --feedback` uses the same discovery, reservation, recovery, and guard checks. It can select the sweep even when CI failure or merge readiness would otherwise select another route. Without the flag, route priority stays unchanged.
 
 Direct skill or `pi_pr_*` tool calls cannot create route authority. Run `/pr` to reserve a fresh route.
 
@@ -121,7 +129,7 @@ A missing pull request uses creation. For an existing pull request, the first ma
 5. Waiting or local safety block: no action.
 6. Merge-ready: allow clean local HEAD equal to or behind the PR head. Confirm, then merge directly.
 
-Ordinary conversation comments do not trigger a route or block a merge. Changes requested and unresolved review threads can select the package comment sweep.
+Ordinary conversation comments do not trigger a route or block a merge. Changes requested and unresolved review threads can select the package comment sweep. Use `/pr --feedback` when a conversation comment needs action.
 
 The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
 
@@ -151,7 +159,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 ## Limits and recovery
 
-- `/pr` accepts creation syntax only as a leading `--base BRANCH`, followed by optional creation guidance. It does not open a browser.
+- `/pr` accepts either standalone `--feedback` or creation syntax with leading `--base BRANCH` and optional guidance. It rejects unknown or conflicting options. It does not open a browser.
 - It does not run `/done` or `/sweep`.
 - Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep starts or resumes only when an explicit `/pr` selects it.
 - It does not enable auto-merge or add a merge queue.

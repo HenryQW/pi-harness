@@ -1,8 +1,9 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { inspectIndexFlags } from "./worktree.ts";
+import { runGit as runCapturedGit, type GitResult } from "./git-process.ts";
 
 const GIT_TIMEOUT_MS = 30_000;
 export const REVIEW_MAX_PATHS = 1_000;
@@ -23,28 +24,16 @@ export interface PreparedReviewEvidence {
 	cleanup: () => Promise<void>;
 }
 
-type GitResult = { code: number; stdout: string; stderr: string };
-
 const STDERR_LIMIT = 200;
-const git = (args: string[], cwd: string, signal?: AbortSignal): Promise<GitResult> =>
-	new Promise((resolve) => {
-		execFile("git", ["--no-pager", ...args], { cwd, signal, timeout: GIT_TIMEOUT_MS }, (error, stdout, stderr) => {
-			resolve({
-				code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
-				stdout: String(stdout),
-				stderr: String(stderr).slice(0, STDERR_LIMIT),
-			});
-		});
-	});
 
 function failure(args: readonly string[], result: GitResult): Error {
-	const detail = result.stderr.trim();
+	const detail = result.stderr.slice(0, STDERR_LIMIT).trim();
 	return new Error(`git ${args.join(" ")} failed with exit ${result.code}${detail ? `: ${detail}` : ""}`);
 }
 
 async function runGit(args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
 	signal?.throwIfAborted();
-	const result = await git(args, cwd, signal);
+	const result = await runCapturedGit(args, cwd, signal);
 	signal?.throwIfAborted();
 	if (result.code !== 0) throw failure(args, result);
 	return result.stdout;
@@ -144,7 +133,7 @@ async function assertCleanRegisteredWorktree(worktree: string, tip: string, sign
 	if (await runGit(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], worktree, signal)) {
 		throw new Error("Review evidence worktree is not clean.");
 	}
-	const flags = await inspectIndexFlags(worktree, git, signal);
+	const flags = await inspectIndexFlags(worktree, runCapturedGit, signal);
 	if (flags.failure) throw new Error(`Review evidence index inspection failed: ${flags.failure}`);
 	if (flags.hidden) throw new Error("Review evidence rejects assume-unchanged or skip-worktree index entries.");
 }

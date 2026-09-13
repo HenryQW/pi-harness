@@ -61,6 +61,17 @@ export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
 	| { kind: "inactive" };
 
 export type NextStep = "create" | "link-branch" | "blocked" | "none" | "update-branch" | "sweep" | "fix-ci" | "merge";
+export type RouteIntent = "automatic" | "feedback";
+export type FeedbackRouteBlocker =
+	| { kind: "discovery-blocked" }
+	| { kind: "pull-request-unavailable" }
+	| { kind: "pull-request-not-open" }
+	| { kind: "target-not-configured" }
+	| { kind: "worktree-dirty" }
+	| { kind: "head-not-equal"; relation: Exclude<LocalHeadRelation, "equal"> };
+export type RouteDecision =
+	| { kind: "selected"; nextStep: NextStep }
+	| { kind: "feedback-blocked"; nextStep: "blocked"; blocker: FeedbackRouteBlocker };
 
 function localMutationSafe(local: LocalMergeSafety): boolean {
 	return local.worktree === "clean" && local.head === "equal";
@@ -95,7 +106,7 @@ export function isPullRequestCreationEligible(branch: BranchCreationState): bool
 		(branch.ahead > 0 || branch.worktree === "dirty");
 }
 
-export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
+function deriveAutomaticNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
 	if (discovery.kind === "inactive") return "none";
 	if (discovery.kind === "blocked") return "blocked";
 	if (discovery.kind === "none") return isPullRequestCreationEligible(discovery.branch) ? "create" : "none";
@@ -103,4 +114,39 @@ export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { t
 		return discovery.pullRequest.lifecycle === "open" ? "link-branch" : "none";
 	}
 	return derivePullRequestNextStep(discovery.pullRequest);
+}
+
+export function deriveRouteDecision(
+	discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>,
+	intent: RouteIntent = "automatic",
+): RouteDecision {
+	if (intent === "automatic") return { kind: "selected", nextStep: deriveAutomaticNextStep(discovery) };
+	if (discovery.kind === "blocked") {
+		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "discovery-blocked" } };
+	}
+	if (discovery.kind !== "current") {
+		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "pull-request-unavailable" } };
+	}
+	const pullRequest = discovery.pullRequest;
+	if (pullRequest.lifecycle !== "open") {
+		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "pull-request-not-open" } };
+	}
+	if (pullRequest.target.provenance !== "configured") {
+		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "target-not-configured" } };
+	}
+	if (pullRequest.local.worktree !== "clean") {
+		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "worktree-dirty" } };
+	}
+	if (pullRequest.local.head !== "equal") {
+		return {
+			kind: "feedback-blocked",
+			nextStep: "blocked",
+			blocker: { kind: "head-not-equal", relation: pullRequest.local.head },
+		};
+	}
+	return { kind: "selected", nextStep: "sweep" };
+}
+
+export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
+	return deriveRouteDecision(discovery).nextStep;
 }
