@@ -80,6 +80,7 @@ export async function createChildWorktree(
 	signal?: AbortSignal,
 ): Promise<WorktreeInfo | undefined> {
 	const root = await run(["rev-parse", "--show-toplevel"], cwd, signal);
+	signal?.throwIfAborted();
 	if (root.code === -1) throw new Error(`git rev-parse failed (${root.stderr.trim().slice(0, 200)})`);
 	if (root.code !== 0) {
 		signal?.throwIfAborted();
@@ -95,6 +96,7 @@ export async function createChildWorktree(
 	if (prefix.code !== 0) throw new Error(`git rev-parse --show-prefix failed (${prefix.stderr.trim().slice(0, 200)})`);
 	const relativeCwd = stripGitLineEnd(prefix.stdout);
 	const base = await run(["rev-parse", "HEAD"], repoRoot, signal);
+	signal?.throwIfAborted();
 	if (base.code === -1) throw new Error(`git rev-parse HEAD failed (${base.stderr.trim().slice(0, 200)})`);
 	if (base.code !== 0) {
 		signal?.throwIfAborted();

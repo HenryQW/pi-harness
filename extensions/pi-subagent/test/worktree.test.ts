@@ -300,6 +300,15 @@ test("createChildWorktree never degrades aborted repository classification", asy
 		return fail();
 	}, rootAbort.signal), { name: "AbortError" });
 
+	const rootTransportAbort = new AbortController();
+	const rootCalls: string[][] = [];
+	await assert.rejects(createChildWorktree(repo, "root-transport-abort", async (args) => {
+		rootCalls.push(args);
+		rootTransportAbort.abort();
+		return { code: -1, stdout: "", stderr: "aborted" };
+	}, rootTransportAbort.signal), { name: "AbortError" });
+	assert.deepEqual(rootCalls, [["rev-parse", "--show-toplevel"]]);
+
 	const headAbort = new AbortController();
 	await assert.rejects(createChildWorktree(repo, "head-abort", async (args) => {
 		const command = args.join(" ");
@@ -309,6 +318,25 @@ test("createChildWorktree never degrades aborted repository classification", asy
 		if (command.startsWith("show-ref ")) headAbort.abort();
 		return command.startsWith("show-ref ") ? fail() : ok();
 	}, headAbort.signal), { name: "AbortError" });
+
+	const headTransportAbort = new AbortController();
+	const headCalls: string[][] = [];
+	await assert.rejects(createChildWorktree(repo, "head-transport-abort", async (args) => {
+		headCalls.push(args);
+		const command = args.join(" ");
+		if (command === "rev-parse --show-toplevel") return ok(`${repo}\n`);
+		if (command === "rev-parse --show-prefix") return ok();
+		if (command === "rev-parse HEAD") {
+			headTransportAbort.abort();
+			return { code: -1, stdout: "", stderr: "aborted" };
+		}
+		return ok();
+	}, headTransportAbort.signal), { name: "AbortError" });
+	assert.deepEqual(headCalls, [
+		["rev-parse", "--show-toplevel"],
+		["rev-parse", "--show-prefix"],
+		["rev-parse", "HEAD"],
+	]);
 });
 
 test("createChildWorktree stops each captured execution failure before semantic fallbacks", async (t) => {
