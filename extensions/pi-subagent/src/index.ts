@@ -82,8 +82,10 @@ export const DELEGATE_TASK = {
 	defaultProfile: "fast",
 } as const satisfies ModelTask;
 
+export type RoleName = string;
+
 export interface Role {
-	name: string;
+	name: RoleName;
 	description: string;
 	modelClass?: ProfileName;
 	tools: string[];
@@ -137,6 +139,11 @@ const cleanDisplayText = (value: unknown, field: string, source: string): string
 	}
 	return cleanText(value, field, source);
 };
+
+/** Normalize one arbitrary Role name using the Role configuration contract. */
+export function parseRoleName(value: unknown, source = "Role"): RoleName {
+	return cleanDisplayText(value, "name", source);
+}
 
 const stringList = (value: unknown, field: string, source: string): string[] => {
 	if (value === undefined) throw new Error(`${source}: ${field} is required.`);
@@ -195,7 +202,7 @@ function parseRoleFile(file: string, raw: string): Role {
 	if (isolation !== undefined && isolation !== "worktree") throw new Error(`${file}: isolation must be "worktree".`);
 	const modelClass = roleModelClass(frontmatter.modelClass, file);
 	return {
-		name: cleanDisplayText(frontmatter.name, "name", file),
+		name: parseRoleName(frontmatter.name, file),
 		description: cleanDisplayText(frontmatter.description, "description", file),
 		...(modelClass === undefined ? {} : { modelClass }),
 		tools: stringList(frontmatter.tools, "tools", file),

@@ -190,6 +190,7 @@ The package root includes these main exports:
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `loadRoles` | function | Loads built-in and user Role definitions. |
+| `RoleName` / `parseRoleName` | type/function | Normalizes arbitrary Role names and rejects empty or C0/C1 control-character values. |
 | `resolveRoleSkills` | function | Resolves a Role's named Skills from Pi's effective registry. |
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
