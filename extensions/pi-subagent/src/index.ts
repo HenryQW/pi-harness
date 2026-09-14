@@ -1,7 +1,14 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	DefaultPackageManager,
+	getAgentDir,
+	parseFrontmatter,
+	SettingsManager,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
 import {
@@ -184,6 +191,15 @@ function namesMcpAdapter(extension: string): boolean {
 	return extension.toLowerCase().split(/[\\/:@]+/).some((component) => component === "pi-mcp-adapter" || component.startsWith("pi-mcp-adapter."));
 }
 
+const FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES = ["pi-orchestrator", "pi-mcp-adapter"] as const;
+
+function rejectForbiddenRolePackageSource(value: string, role: Role): void {
+	const components = value.toLowerCase().split(/[\\/:@]+/);
+	if (FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES.some((name) => components.some((component) => component === name || component.startsWith(`${name}.`)))) {
+		throw new Error(`Role ${role.name} extension explicitly names the forbidden ${FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES.join("/")} source: ${value}`);
+	}
+}
+
 function roleModelClass(value: unknown, source: string): ProfileName | undefined {
 	if (value === undefined) return;
 	if (typeof value !== "string" || !(PROFILE_NAMES as readonly string[]).includes(value)) {
@@ -315,6 +331,34 @@ export function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: R
 		else missing.push(name);
 	}
 	return { paths, missing };
+}
+
+function packageManager(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): DefaultPackageManager {
+	const agentDir = getAgentDir();
+	const settingsManager = SettingsManager.create(ctx.cwd, agentDir, { projectTrusted: ctx.isProjectTrusted() });
+	return new DefaultPackageManager({ cwd: ctx.cwd, agentDir, settingsManager });
+}
+
+/** Resolve all enabled package resources selected by one Role's extension sources. */
+export async function resolveRolePackageResources(
+	role: Role,
+	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+): Promise<{ extensions: string[]; skills: string[]; prompts: string[]; themes: string[] }> {
+	const sources = role.extensions;
+	for (const source of sources) rejectForbiddenRolePackageSource(source, role);
+	if (!sources.length) return { extensions: [], skills: [], prompts: [], themes: [] };
+	const resolved = await packageManager(ctx).resolveExtensionSources([...sources]);
+	const resourceGroups = [resolved.extensions, resolved.skills, resolved.prompts, resolved.themes]
+		.map((resources) => resources.filter((resource) => resource.enabled));
+	const resolvedSources = new Set(resourceGroups.flat().map((resource) => resource.metadata.source));
+	const missing = sources.filter((source) => !resolvedSources.has(source));
+	if (missing.length) throw new Error(`Role extension sources resolved no resources: ${missing.join(", ")}.`);
+	return {
+		extensions: resourceGroups[0]!.map((resource) => resource.path),
+		skills: resourceGroups[1]!.map((resource) => resource.path),
+		prompts: resourceGroups[2]!.map((resource) => resource.path),
+		themes: resourceGroups[3]!.map((resource) => resource.path),
+	};
 }
 
 export function createRoleLaunch(

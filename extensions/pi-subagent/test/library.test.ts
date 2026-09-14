@@ -12,6 +12,7 @@ import {
 	parseRoleMcpAllowlist,
 	prepareRoleLaunch,
 	resolveRoleLaunch,
+	resolveRolePackageResources,
 	ROLE_MCP_POLICY_FLAG,
 	roleMcpFlagValue,
 	ROLE_TOOL_POLICY_FLAG,
@@ -618,6 +619,79 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		agentDir,
 	});
 	assert.equal(taskDefault.thinkingLevel, "high");
+});
+
+test("Role package resources resolve enabled paths and reject missing or forbidden sources", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-package-resources-"));
+	const agentDir = join(directory, "agent");
+	const cwd = join(directory, "project");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	t.after(async () => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(directory, { recursive: true, force: true });
+	});
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+
+	const packageDir = join(agentDir, "npm", "node_modules", "@example", "role");
+	const extension = join(packageDir, "extension.ts");
+	const skill = join(packageDir, "SKILL.md");
+	const prompt = join(packageDir, "prompt.md");
+	const theme = join(packageDir, "theme.json");
+	await Promise.all([
+		mkdir(cwd, { recursive: true }),
+		mkdir(packageDir, { recursive: true }),
+	]);
+	await Promise.all([
+		writeFile(extension, "export default function roleExtension() {}\n"),
+		writeFile(skill, "---\nname: package-skill\ndescription: Test package Skill\n---\nUse the package Skill.\n"),
+		writeFile(prompt, "Package prompt.\n"),
+		writeFile(theme, "{}\n"),
+		writeFile(join(packageDir, "package.json"), JSON.stringify({
+			name: "@example/role",
+			version: "1.0.0",
+			pi: {
+				extensions: ["./extension.ts"],
+				skills: ["./SKILL.md"],
+				prompts: ["./prompt.md"],
+				themes: ["./theme.json"],
+			},
+		})),
+	]);
+	const role: Role = {
+		name: "package-role",
+		description: "Uses package resources",
+		tools: [],
+		extensions: ["npm:@example/role"],
+		skills: [],
+		systemPrompt: "Do bounded work.",
+	};
+	const ctx = { cwd, isProjectTrusted: () => false };
+
+	assert.deepEqual(await resolveRolePackageResources({ ...role, extensions: [] }, ctx), {
+		extensions: [], skills: [], prompts: [], themes: [],
+	});
+	assert.deepEqual(await resolveRolePackageResources(role, ctx), {
+		extensions: [extension], skills: [skill], prompts: [prompt], themes: [theme],
+	});
+
+	const emptyPackage = join(agentDir, "npm", "node_modules", "@example", "empty");
+	await mkdir(emptyPackage, { recursive: true });
+	await writeFile(join(emptyPackage, "package.json"), JSON.stringify({
+		name: "@example/empty",
+		version: "1.0.0",
+		pi: { extensions: [], skills: [], prompts: [], themes: [] },
+	}));
+	await assert.rejects(
+		resolveRolePackageResources({ ...role, extensions: ["npm:@example/empty"] }, ctx),
+		/Role extension sources resolved no resources: npm:@example\/empty\./,
+	);
+	for (const source of ["npm:pi-orchestrator", "npm:pi-mcp-adapter"]) {
+		await assert.rejects(
+			resolveRolePackageResources({ ...role, extensions: [source] }, ctx),
+			/forbidden pi-orchestrator\/pi-mcp-adapter source/,
+		);
+	}
 });
 
 function valueAfter(args: string[], flag: string): string {
