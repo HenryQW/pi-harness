@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdtemp, open, readFile, realpath, rmdir, unlink } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -32,14 +32,8 @@ import type {
 	VerifiedLaunch,
 } from "./runner.ts";
 import {
-	launchKey,
-	launchRecordFingerprint,
-	requiredLaunchKeys,
-	validateLaunchRecords,
 	type ExecuteRequest,
-	type LaunchResourceFingerprint,
 	type ModelClass,
-	type NormalizedLaunchRecord,
 	type WorkspaceIdentity,
 } from "./schema.ts";
 
@@ -70,9 +64,10 @@ type KnownLaunchFiles = {
 	orchestratorEntrypoint: string;
 };
 
-type ResolvedSnapshot = {
-	record: NormalizedLaunchRecord;
+type PreparedLaunch = {
+	launch: VerifiedLaunch;
 	prompt: string;
+	promptArgIndex: number;
 };
 
 type ResolvedRoleResources = {
@@ -95,7 +90,7 @@ export interface LaunchRuntimeOptions {
 	randomToken?: () => string;
 }
 
-export interface NormalizeResolvedRoleLaunchInput {
+type PrepareResolvedRoleLaunchInput = {
 	role: string;
 	modelClass: ModelClass;
 	effectiveRole: SubagentRole;
@@ -105,14 +100,10 @@ export interface NormalizeResolvedRoleLaunchInput {
 	knownFiles: KnownLaunchFiles;
 	packageResources?: Omit<ResolvedRoleResources, "extensions">;
 	signal?: AbortSignal;
-}
+};
 
 function abortIfNeeded(signal?: AbortSignal): void {
 	signal?.throwIfAborted();
-}
-
-function sha256(value: string | Uint8Array): string {
-	return createHash("sha256").update(value).digest("hex");
 }
 
 function isMissing(error: unknown): boolean {
@@ -269,33 +260,6 @@ function stripRolePrompt(rawArgs: readonly string[]): { prompt: string; promptAr
 	return { prompt, promptArgIndex, args };
 }
 
-function roleFingerprint(
-	role: SubagentRole,
-	canonicalRoleExtensions: readonly string[],
-	promptSha256: string,
-): string {
-	return sha256(JSON.stringify({
-		name: role.name,
-		description: role.description,
-		modelClass: role.modelClass ?? null,
-		isolation: role.isolation ?? null,
-		tools: [...role.tools],
-		extensions: [...canonicalRoleExtensions],
-		skills: [...role.skills],
-		mcps: [...(role.mcps ?? [])],
-		promptSha256,
-	}));
-}
-
-async function fingerprintFile(path: string, label: string, signal?: AbortSignal): Promise<string> {
-	const canonical = await canonicalRegularFile(path, label, signal);
-	if (canonical !== path) throw new Error(`${label} path is no longer canonical: ${path}`);
-	abortIfNeeded(signal);
-	const contents = await readFile(canonical, { signal });
-	abortIfNeeded(signal);
-	return sha256(contents);
-}
-
 function validateRoleDefinition(role: string, effectiveRole: SubagentRole): void {
 	if (effectiveRole.name !== role) throw new Error(`Effective Role identity drifted from ${role}.`);
 	requireUnique(effectiveRole.tools, `Effective ${role} Role tools`);
@@ -389,9 +353,9 @@ function expectedResolvedExtensions(role: SubagentRole, launch: ResolvedRoleLaun
 	];
 }
 
-async function normalizedResolvedRoleLaunch(
-	input: NormalizeResolvedRoleLaunchInput,
-): Promise<ResolvedSnapshot> {
+async function prepareResolvedRoleLaunch(
+	input: PrepareResolvedRoleLaunchInput,
+): Promise<PreparedLaunch> {
 	const {
 		role, modelClass, effectiveRole, launch, commands, tools, knownFiles, signal,
 		packageResources = { skills: [], prompts: [], themes: [], mcpResources: [] },
@@ -457,68 +421,21 @@ async function normalizedResolvedRoleLaunch(
 	requireUnique(allResourcePaths, `Resolved ${role}/${modelClass} resources`);
 	await validateRoleTools(effectiveRole, tools, resolvedExtensions, signal);
 
-	const resources: LaunchResourceFingerprint[] = [];
-	for (const path of resolvedExtensions) {
-		resources.push({ kind: "extension", path, sha256: await fingerprintFile(path, "Role extension", signal) });
-	}
-	for (const path of resolvedSkills) {
-		resources.push({ kind: "skill", path, sha256: await fingerprintFile(path, "Role Skill", signal) });
-	}
-	for (const path of resolvedPrompts) {
-		resources.push({ kind: "prompt", path, sha256: await fingerprintFile(path, "Role prompt", signal) });
-	}
-	for (const path of resolvedThemes) {
-		resources.push({ kind: "theme", path, sha256: await fingerprintFile(path, "Role theme", signal) });
-	}
-	for (const path of mcpResources) {
-		resources.push({ kind: "mcp-adapter", path, sha256: await fingerprintFile(path, "Role MCP adapter", signal) });
-	}
-
 	const stripped = stripRolePrompt(launch.args);
-	const promptSha256 = sha256(stripped.prompt);
-	const value: Omit<NormalizedLaunchRecord, "fingerprint"> = {
-		key: launchKey(role, modelClass),
+	const prepared: VerifiedLaunch = Object.freeze({
 		role,
 		modelClass,
-		roleFingerprint: roleFingerprint(effectiveRole, expectedExtensions.slice(0, effectiveRole.extensions.length), promptSha256),
-		promptSha256,
-		promptArgIndex: stripped.promptArgIndex,
 		model: `${launch.model.provider}/${launch.model.id}`,
 		thinkingLevel: launch.thinkingLevel,
-		args: stripped.args,
-		env: {},
-		tools: [...effectiveRole.tools],
-		roleExtensions: resolvedExtensions,
-		roleSkills: resolvedSkills,
-		...(resolvedPrompts.length ? { rolePrompts: resolvedPrompts } : {}),
-		...(resolvedThemes.length ? { roleThemes: resolvedThemes } : {}),
-		...(expectedMcps.length ? { roleMcps: [...expectedMcps] } : {}),
-		...(mcpResources.length ? { roleMcpResources: mcpResources } : {}),
-		...(packageResources.mcpConfigSha256 ? { mcpConfigSha256: packageResources.mcpConfigSha256 } : {}),
-		resources,
-	};
-	return {
-		record: { ...value, fingerprint: launchRecordFingerprint(value) },
+		args: Object.freeze(stripped.args),
+		env: Object.freeze({ ...launch.env }),
+		tools: Object.freeze([...effectiveRole.tools]),
+	});
+	return Object.freeze({
+		launch: prepared,
 		prompt: stripped.prompt,
-	};
-}
-
-/** Normalize one pi-subagent result into a durable prompt-free launch snapshot. */
-export async function normalizeResolvedRoleLaunch(
-	input: NormalizeResolvedRoleLaunchInput,
-): Promise<NormalizedLaunchRecord> {
-	return (await normalizedResolvedRoleLaunch(input)).record;
-}
-
-export function selectRequiredRolesForRequest(roles: readonly SubagentRole[], request: ExecuteRequest): Map<string, SubagentRole> {
-	const required = new Set([...requiredLaunchKeys(request).values()].map(({ role }) => role));
-	const selected = new Map<string, SubagentRole>();
-	for (const role of required) {
-		const matches = roles.filter((candidate) => candidate.name === role);
-		if (matches.length !== 1) throw new Error(`Required effective Role ${role} is missing or ambiguous.`);
-		selected.set(role, matches[0]!);
-	}
-	return selected;
+		promptArgIndex: stripped.promptArgIndex,
+	});
 }
 
 async function knownLaunchFiles(orchestratorEntrypoint: string, signal?: AbortSignal): Promise<KnownLaunchFiles> {
@@ -532,48 +449,6 @@ async function knownLaunchFiles(orchestratorEntrypoint: string, signal?: AbortSi
 		multiCodex: await canonicalRegularFile(multiCodex, "pi-multi-codex provider adapter", signal),
 		orchestratorEntrypoint: await canonicalRegularFile(orchestratorEntrypoint, "pi-orchestrator entrypoint", signal),
 	};
-}
-
-async function assertRecordResources(record: NormalizedLaunchRecord, signal?: AbortSignal): Promise<void> {
-	const { fingerprint, ...fingerprinted } = record;
-	if (launchRecordFingerprint(fingerprinted) !== fingerprint) {
-		throw new Error(`Launch ${record.key} complete record fingerprint drifted.`);
-	}
-	const extensions = await canonicalizeValues(valuesAfter(record.args, EXTENSION_FLAG), `Launch ${record.key} argv extensions`, signal);
-	const skills = await canonicalizeValues(valuesAfter(record.args, SKILL_FLAG), `Launch ${record.key} argv Skills`, signal);
-	const prompts = await canonicalizeValues(valuesAfter(record.args, PROMPT_TEMPLATE_FLAG), `Launch ${record.key} argv prompts`, signal);
-	const themes = await canonicalizeValues(valuesAfter(record.args, THEME_FLAG), `Launch ${record.key} argv themes`, signal);
-	assertSameValues(extensions, record.roleExtensions, `Launch ${record.key} extension paths`);
-	assertSameValues(skills, record.roleSkills, `Launch ${record.key} Skill paths`);
-	assertSameValues(prompts, record.rolePrompts ?? [], `Launch ${record.key} prompt paths`);
-	assertSameValues(themes, record.roleThemes ?? [], `Launch ${record.key} theme paths`);
-	const mcpPolicy = record.roleMcps?.length ? [JSON.stringify(record.roleMcps)] : [];
-	if (!isDeepStrictEqual(valuesAfter(record.args, `--${ROLE_MCP_POLICY_FLAG}`), mcpPolicy)) {
-		throw new Error(`Launch ${record.key} MCP allowlist drifted.`);
-	}
-	const mcpConfig = record.mcpConfigSha256 ? [record.mcpConfigSha256] : [];
-	if (!isDeepStrictEqual(valuesAfter(record.args, `--${ROLE_MCP_CONFIG_SHA256_FLAG}`), mcpConfig)) {
-		throw new Error(`Launch ${record.key} MCP config fingerprint drifted.`);
-	}
-	const expected = [
-		...record.roleExtensions.map((path) => ({ kind: "extension" as const, path })),
-		...record.roleSkills.map((path) => ({ kind: "skill" as const, path })),
-		...(record.rolePrompts ?? []).map((path) => ({ kind: "prompt" as const, path })),
-		...(record.roleThemes ?? []).map((path) => ({ kind: "theme" as const, path })),
-		...(record.roleMcpResources ?? []).map((path) => ({ kind: "mcp-adapter" as const, path })),
-	];
-	if (record.resources.length !== expected.length) throw new Error(`Launch ${record.key} resource list drifted.`);
-	for (const [index, selected] of expected.entries()) {
-		const resource = record.resources[index];
-		if (!resource || resource.kind !== selected.kind || resource.path !== selected.path) {
-			throw new Error(`Launch ${record.key} resource order or identity drifted.`);
-		}
-		const actual = await fingerprintFile(resource.path, `Launch ${record.key} ${resource.kind}`, signal);
-		if (actual !== resource.sha256) throw new Error(`Launch ${record.key} ${resource.kind} fingerprint drifted: ${resource.path}`);
-	}
-	if (record.args.includes(PROMPT_FLAG) || record.promptArgIndex > record.args.length) {
-		throw new Error(`Launch ${record.key} durable argv contains invalid prompt transport metadata.`);
-	}
 }
 
 async function removeTransientLaunch(
@@ -599,11 +474,11 @@ async function removeTransientLaunch(
 }
 
 async function materializeTransientLaunch(
-	record: NormalizedLaunchRecord,
-	prompt: string,
+	prepared: PreparedLaunch,
 	signal?: AbortSignal,
 ): Promise<TransientLaunchHandle<VerifiedLaunch>> {
 	abortIfNeeded(signal);
+	const promptBytes = Buffer.from(prepared.prompt, "utf8");
 	const created = await mkdtemp(join(tmpdir(), "pi-orchestrator-role-"));
 	let directory = normalize(created);
 	let promptPath = join(directory, "system-prompt");
@@ -627,7 +502,7 @@ async function materializeTransientLaunch(
 		promptCreated = true;
 		await file.chmod(PROMPT_MODE);
 		abortIfNeeded(signal);
-		await file.writeFile(prompt, { encoding: "utf8", signal });
+		await file.writeFile(promptBytes, { signal });
 		await file.sync();
 		await file.close();
 		file = undefined;
@@ -639,20 +514,15 @@ async function materializeTransientLaunch(
 		}
 		const contents = await readFile(promptPath, { signal });
 		abortIfNeeded(signal);
-		if (!contents.equals(Buffer.from(prompt, "utf8")) || sha256(contents) !== record.promptSha256) {
-			throw new Error(`Transient Role prompt for ${record.key} failed exact verification.`);
+		if (!contents.equals(promptBytes)) {
+			throw new Error(`Transient Role prompt for ${prepared.launch.role} failed exact verification.`);
 		}
-		const args = [...record.args];
-		args.splice(record.promptArgIndex, 0, PROMPT_FLAG, promptPath);
-		const common = {
-			modelClass: record.modelClass,
-			model: record.model,
-			thinkingLevel: record.thinkingLevel,
+		const args = [...prepared.launch.args];
+		args.splice(prepared.promptArgIndex, 0, PROMPT_FLAG, promptPath);
+		const launch: VerifiedLaunch = Object.freeze({
+			...prepared.launch,
 			args: Object.freeze(args),
-			env: Object.freeze({ ...record.env }),
-			tools: Object.freeze([...record.tools]),
-		};
-		const launch: VerifiedLaunch = Object.freeze({ ...common, role: record.role });
+		});
 		let cleanup: Promise<void> | undefined;
 		return Object.freeze({
 			launch,
@@ -673,7 +543,7 @@ async function materializeTransientLaunch(
 			failures.push(cleanupError);
 		}
 		if (failures.length > 1) {
-			throw new AggregateError(failures, `Transient Role prompt materialization for ${record.key} failed and cleanup was incomplete.`);
+			throw new AggregateError(failures, `Transient Role prompt materialization for ${prepared.launch.role} failed and cleanup was incomplete.`);
 		}
 		throw error;
 	}
@@ -695,12 +565,12 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		return this.options.randomToken?.() ?? randomBytes(12).toString("hex");
 	}
 
-	private async resolveSnapshot(
+	private async prepareLaunch(
 		role: string,
 		modelClass: ModelClass,
 		context: OperationContext,
 		knownFiles?: KnownLaunchFiles,
-	): Promise<ResolvedSnapshot> {
+	): Promise<PreparedLaunch> {
 		abortIfNeeded(context.signal);
 		const matches = loadRoles(this.options.agentDir).filter((candidate) => candidate.name === role);
 		if (matches.length !== 1) throw new Error(`Required effective Role ${role} is missing or ambiguous.`);
@@ -722,7 +592,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 			modelClass,
 			agentDir: this.options.agentDir,
 		}), resources);
-		return await normalizedResolvedRoleLaunch({
+		return await prepareResolvedRoleLaunch({
 			role,
 			modelClass,
 			effectiveRole,
@@ -733,23 +603,6 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 			packageResources: resources,
 			signal: context.signal,
 		});
-	}
-
-	private async prepareLaunchRecords(
-		request: ExecuteRequest,
-		context: OperationContext,
-	): Promise<NormalizedLaunchRecord[]> {
-		abortIfNeeded(context.signal);
-		selectRequiredRolesForRequest(loadRoles(this.options.agentDir), request);
-		const knownFiles = await knownLaunchFiles(this.options.orchestratorEntrypoint, context.signal);
-		const records: NormalizedLaunchRecord[] = [];
-		for (const [key, required] of requiredLaunchKeys(request)) {
-			const { record } = await this.resolveSnapshot(required.role, required.modelClass, context, knownFiles);
-			if (record.key !== key) throw new Error(`Resolved launch key drifted from ${key}.`);
-			records.push(record);
-		}
-		const normalized = validateLaunchRecords(request, records);
-		return [...requiredLaunchKeys(request).keys()].map((key) => normalized[key]!);
 	}
 
 	async preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext): Promise<{
@@ -781,7 +634,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 			addRequired(input.request.finalJudgment.role, input.request.finalJudgment.modelClass);
 		}
 		for (const [role, modelClasses] of required) {
-			for (const modelClass of modelClasses) await this.resolveSnapshot(role, modelClass, context);
+			for (const modelClass of modelClasses) await this.prepareLaunch(role, modelClass, context);
 		}
 		return { root, main };
 	}
@@ -791,8 +644,8 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		modelClass: ModelClass,
 		context: OperationContext,
 	): Promise<TransientLaunchHandle<VerifiedLaunch>> {
-		const fresh = await this.resolveSnapshot(role, modelClass, context);
-		return await materializeTransientLaunch(fresh.record, fresh.prompt, context.signal);
+		const prepared = await this.prepareLaunch(role, modelClass, context);
+		return await materializeTransientLaunch(prepared, context.signal);
 	}
 }
 
