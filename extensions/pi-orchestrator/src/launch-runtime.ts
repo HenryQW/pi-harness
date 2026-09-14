@@ -92,6 +92,7 @@ type PrepareResolvedRoleLaunchInput = {
 	modelClass: ModelClass;
 	effectiveRole: SubagentRole;
 	launch: ResolvedRoleLaunch;
+	agentDir?: string;
 	commands: ReturnType<ExtensionAPI["getCommands"]>;
 	tools: readonly ToolInfo[];
 	knownFiles: KnownLaunchFiles;
@@ -101,6 +102,10 @@ type PrepareResolvedRoleLaunchInput = {
 
 function abortIfNeeded(signal?: AbortSignal): void {
 	signal?.throwIfAborted();
+}
+
+function expectedLaunchEnv(agentDir?: string): Record<string, string> {
+	return agentDir === undefined ? {} : { PI_CODING_AGENT_DIR: agentDir };
 }
 
 function isMissing(error: unknown): boolean {
@@ -350,14 +355,18 @@ async function prepareResolvedRoleLaunch(
 	input: PrepareResolvedRoleLaunchInput,
 ): Promise<PreparedLaunch> {
 	const {
-		role, modelClass, effectiveRole, launch, commands, tools, knownFiles, signal,
+		role, modelClass, effectiveRole, launch, agentDir, commands, tools, knownFiles, signal,
 		packageResources = { skills: [], prompts: [], themes: [], mcpResources: [] },
 	} = input;
 	validateRoleDefinition(role, effectiveRole);
 	if (launch.missingSkills.length) {
 		throw new Error(`Role ${role} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
 	}
-	if (Object.keys(launch.env).length) throw new Error(`Resolved ${role} launch environment must be empty.`);
+	if (!isDeepStrictEqual(launch.env, expectedLaunchEnv(agentDir))) {
+		throw new Error(agentDir === undefined
+			? `Resolved ${role} launch environment must be empty.`
+			: `Resolved ${role} launch environment must contain only the configured PI_CODING_AGENT_DIR.`);
+	}
 	const expectedMcps = effectiveRole.mcps ?? [];
 	const expectedMcpPolicy = expectedMcps.length ? [JSON.stringify(expectedMcps)] : [];
 	if (!isDeepStrictEqual(valuesAfter(launch.args, `--${ROLE_MCP_POLICY_FLAG}`), expectedMcpPolicy)) {
@@ -579,12 +588,14 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 			task: ORCHESTRATOR_MODEL_TASK,
 			modelClass,
 			agentDir: this.options.agentDir,
+			env: expectedLaunchEnv(this.options.agentDir),
 		}), resources);
 		return await prepareResolvedRoleLaunch({
 			role,
 			modelClass,
 			effectiveRole,
 			launch,
+			agentDir: this.options.agentDir,
 			commands,
 			tools: this.options.pi.getAllTools(),
 			knownFiles: knownFiles ?? await knownLaunchFiles(this.options.orchestratorEntrypoint, context.signal),
