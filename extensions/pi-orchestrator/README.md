@@ -20,7 +20,7 @@ pi install npm:@henryqw/pi-orchestrator
 
 ### Requirements
 
-- Use a clean Git worktree on an attached branch with a committed `HEAD`.
+- Use a clean Git worktree on an attached branch with a committed `HEAD`. Task worktrees may contain ignored dependency and index artifacts created by Role tooling.
 - Use Herdr `0.9.0` or newer, with protocol version 22 or newer. Run `herdr --version` to verify the installed version.
 - Configure Pi task-model profiles for every requested model class. Run `/task-models` to verify the profiles.
 - Use `@henryqw/pi-subagent` 16 or newer for Role launch, execution, worktrees, and exact review evidence.
@@ -93,7 +93,7 @@ The architecture diagram shows the guarded path from the checked request through
 
 A request accepts one to eight tasks. Every task needs direct checks and an explicit model class.
 
-`dependsOn` creates later waves. Tasks in one ready wave use separate worktrees and visible Herdr workers.
+`dependsOn` creates later waves. Tasks in one ready wave use separate worktrees and visible Herdr workers. Identity checks ignore Git-ignored artifacts, such as dependencies installed by `pi-deps` and indexes created by Herdr plugins. They still reject tracked changes, non-ignored untracked files, hidden index entries, gitlinks, and branch or commit drift.
 
 Preliminary validation uses checks only while the worker remains available. A settled implementation block or unchanged failed check can trigger one same-agent correction.
 
