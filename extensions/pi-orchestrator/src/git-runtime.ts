@@ -13,7 +13,6 @@ import {
 import {
 	checkBatchPasses,
 	isCleanCommitted,
-	launchKey,
 	reviewEvidencePasses,
 	sameIdentity,
 	type CheckCommand,
@@ -501,6 +500,9 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		checks: import("./schema.ts").CheckBatchEvidence;
 		review?: ReviewEvidence;
 	}, context: OperationContext): Promise<IntegrationResult> {
+		if (input.task.kind !== "changeset") {
+			return { outcome: "failed", failure: "Integration requires a changeset task." };
+		}
 		if (input.attempt.termination?.status !== "terminated") {
 			return { outcome: "failed", failure: "Integration requires exact recorded worker termination." };
 		}
@@ -513,19 +515,16 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			return { outcome: "failed", failure: "Integration requires exact persisted authoritative passing checks." };
 		}
 		if (input.task.judgment) {
-			const reviewerLaunchKey = launchKey("reviewer", input.task.judgment.modelClass);
 			if (!reviewEvidencePasses(
 				input.review,
 				"authoritative",
 				input.task.judgment.criterion,
-				reviewerLaunchKey,
 				input.expectedMain,
 				input.candidate,
 			) || !reviewEvidencePasses(
 				input.attempt.authoritativeReview,
 				"authoritative",
 				input.task.judgment.criterion,
-				reviewerLaunchKey,
 				input.expectedMain,
 				input.candidate,
 			)) return { outcome: "failed", failure: "Integration requires exact persisted authoritative PASS review evidence." };
