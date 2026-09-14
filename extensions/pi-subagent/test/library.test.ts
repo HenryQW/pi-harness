@@ -8,7 +8,9 @@ import childToolPolicy from "../extensions/role-tools.ts";
 import {
 	createRoleLaunch,
 	EXECUTION_BUDGET_ENV,
+	finalizeRoleLaunch,
 	parseRoleMcpAllowlist,
+	prepareRoleLaunch,
 	resolveRoleLaunch,
 	ROLE_MCP_POLICY_FLAG,
 	roleMcpFlagValue,
@@ -503,6 +505,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		name: "reviewer",
 		description: "Reviews changes",
 		modelClass: "balanced",
+		isolation: "worktree",
 		tools: ["read"],
 		extensions: ["/roles/reviewer.ts"],
 		skills: ["security", "missing"],
@@ -563,6 +566,38 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	);
 
 	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort");
+
+	const prepared = prepareRoleLaunch(pi, ctx, {
+		role,
+		task,
+		modelClass: "frontier",
+		agentDir,
+		extensions: ["/caller/adapter.ts", "/roles/reviewer.ts"],
+		tools: ["submit", "read"],
+		env: { CALLER_ID: "run-1" },
+	});
+	const promptArgIndex = launch.args.indexOf("--append-system-prompt");
+	assert.equal(prepared.role, "reviewer");
+	assert.equal(prepared.isolation, "worktree");
+	assert.equal(prepared.promptArgIndex, promptArgIndex);
+	assert.equal(prepared.systemPrompt, valueAfter(launch.args, "--append-system-prompt"));
+	assert.deepEqual(prepared.args, [...launch.args.slice(0, promptArgIndex), ...launch.args.slice(promptArgIndex + 2)]);
+	assert.equal(prepared.args.includes("--append-system-prompt"), false);
+	const finalized = finalizeRoleLaunch(prepared);
+	assert.deepEqual(finalized, launch);
+	assert.equal(finalized.args.filter((arg) => arg === "--append-system-prompt").length, 1);
+	assert.throws(
+		() => finalizeRoleLaunch({ ...prepared, args: finalized.args }),
+		/already contains --append-system-prompt/,
+	);
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: { ...role, name: "bad\0" }, task, agentDir }),
+		/Role: name/,
+	);
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: { ...role, isolation: "shared" }, task, agentDir }),
+		/Role reviewer: isolation must be "worktree"/,
+	);
 
 	const roleDefault = resolveRoleLaunch(pi, ctx, { role, task, agentDir });
 	assert.equal(roleDefault.thinkingLevel, "medium");
