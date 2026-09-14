@@ -15,7 +15,10 @@ import type {
 	TextTaskState,
 } from "../src/schema.ts";
 
-function textTask(id: string): TextTaskRequest {
+function textTask(
+	id: string,
+	options: { dependsOn?: string[]; contextFrom?: string[] } = {},
+): TextTaskRequest {
 	return {
 		id,
 		kind: "text",
@@ -23,8 +26,8 @@ function textTask(id: string): TextTaskRequest {
 		modelClass: "fast",
 		requirements: `Research ${id}.`,
 		deliverable: `Explain ${id}.`,
-		dependsOn: [],
-		contextFrom: [],
+		dependsOn: options.dependsOn ?? [],
+		contextFrom: options.contextFrom ?? [],
 	};
 }
 
@@ -70,27 +73,39 @@ function runnerState(definitions: TaskRequest[], tasks: TaskState[]): RunState {
 	return { request: { tasks: definitions }, tasks } as unknown as RunState;
 }
 
-test("context sources prevent same-wave dispatch until completed", () => {
+test("ready tasks include text and wait for every dependency source", () => {
 	const source = textTask("research");
 	const dependency = changesetTask("dependency");
-	const consumer = changesetTask("change", { dependsOn: [dependency.id], contextFrom: [source.id] });
-	const definitions = [source, dependency, consumer];
+	const textConsumer = textTask("summary", { dependsOn: [dependency.id], contextFrom: [source.id] });
+	const changesetConsumer = changesetTask("change", { dependsOn: [dependency.id], contextFrom: [source.id] });
+	const definitions = [source, dependency, textConsumer, changesetConsumer];
 
 	assert.deepEqual(
 		readyPendingTasks(runnerState(definitions, [
 			pendingTextState(source.id),
 			changesetState(dependency.id, "completed"),
-			changesetState(consumer.id, "pending"),
+			pendingTextState(textConsumer.id),
+			changesetState(changesetConsumer.id, "pending"),
 		])).map(({ taskId }) => taskId),
-		[],
+		[source.id],
+	);
+	assert.deepEqual(
+		readyPendingTasks(runnerState(definitions, [
+			completedTextState(source.id, "Research result."),
+			changesetState(dependency.id, "pending"),
+			pendingTextState(textConsumer.id),
+			changesetState(changesetConsumer.id, "pending"),
+		])).map(({ taskId }) => taskId),
+		[dependency.id],
 	);
 	assert.deepEqual(
 		readyPendingTasks(runnerState(definitions, [
 			completedTextState(source.id, "Research result."),
 			changesetState(dependency.id, "completed"),
-			changesetState(consumer.id, "pending"),
+			pendingTextState(textConsumer.id),
+			changesetState(changesetConsumer.id, "pending"),
 		])).map(({ taskId }) => taskId),
-		[consumer.id],
+		[textConsumer.id, changesetConsumer.id],
 	);
 });
 

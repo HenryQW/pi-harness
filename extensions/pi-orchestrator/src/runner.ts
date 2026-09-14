@@ -28,6 +28,7 @@ import {
 	type TaskAttempt,
 	type TaskRequest,
 	type TaskState,
+	type TextTaskState,
 	type WaveState,
 	type WorktreeAllocationIntent,
 	type WorktreeAllocationPlan,
@@ -530,12 +531,12 @@ export function formatTextTaskContexts(contexts: readonly TextTaskContext[], max
 	return text;
 }
 
-export function readyPendingTasks(state: RunState): ChangesetTaskState[] {
-	return state.tasks.filter((task): task is ChangesetTaskState => {
-		if (task.kind !== "changeset" || task.status !== "pending") return false;
-		const request = changesetTaskRequest(state, task.taskId);
-		return request.dependsOn.every((dependency) => taskState(state, dependency).status === "completed")
-			&& request.contextFrom.every((source) => taskState(state, source).status === "completed");
+export function readyPendingTasks(state: RunState): TaskState[] {
+	return state.tasks.filter((task) => {
+		if (task.status !== "pending") return false;
+		const request = taskRequest(state, task.taskId);
+		return [...request.dependsOn, ...request.contextFrom]
+			.every((source) => taskState(state, source).status === "completed");
 	});
 }
 
@@ -740,6 +741,11 @@ export class OrchestratorRunner {
 				};
 				state.waves.push(wave);
 				for (const task of ready) {
+					if (task.kind === "text") {
+						task.status = "running";
+						task.attempts.push({ number: task.attempts.length + 1, status: "running" });
+						continue;
+					}
 					task.status = "allocating";
 					task.attempts.push({
 						number: task.attempts.length + 1,
@@ -754,17 +760,22 @@ export class OrchestratorRunner {
 				}
 				await handle.save();
 				await Promise.all(ready.map(async (task) => await this.dispatchTask(handle, task, scope)));
-				if (ready.some((task) => task.status !== "ready_to_integrate")) {
+				if (ready.some((task) => task.kind === "text"
+					? task.status !== "completed"
+					: task.status !== "ready_to_integrate")) {
 					wave.status = "needs_attention";
 					state.status = "needs_attention";
 					return this.response(state);
 				}
 				wave.status = "integrating";
 				await handle.save();
-				for (const task of ready) {
+				const readyTaskIds = new Set(ready.map((task) => task.taskId));
+				for (const request of state.request.tasks) {
+					if (request.kind !== "changeset" || !readyTaskIds.has(request.id)) continue;
+					const task = changesetTaskState(state, request.id);
 					if (!await this.integrateTask(handle, task, scope)) {
 						for (const retained of ready) {
-							if (retained.status === "ready_to_integrate"
+							if (retained.kind === "changeset" && retained.status === "ready_to_integrate"
 								&& latestAttempt(retained).termination?.status === "terminated") {
 								this.attention(retained, "Earlier same-wave integration stopped; verify the retained candidate to continue.");
 							}
@@ -794,7 +805,8 @@ export class OrchestratorRunner {
 		}
 	}
 
-	private async dispatchTask(handle: RunStateHandle, task: ChangesetTaskState, scope: DeadlineScope): Promise<void> {
+	private async dispatchTask(handle: RunStateHandle, task: TaskState, scope: DeadlineScope): Promise<void> {
+		if (task.kind === "text") return await this.dispatchTextTask(handle, task, scope);
 		const state = handle.state;
 		const request = changesetTaskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
@@ -904,6 +916,14 @@ export class OrchestratorRunner {
 				await handle.save();
 			}
 		}
+	}
+
+	private async dispatchTextTask(
+		_handle: RunStateHandle,
+		_task: TextTaskState,
+		_scope: DeadlineScope,
+	): Promise<void> {
+		throw new Error("Text task dispatch is not implemented.");
 	}
 
 	private async driveWorkerSafely(
@@ -1503,11 +1523,12 @@ export class OrchestratorRunner {
 			await handle.save();
 			await this.dispatchTask(handle, task, scope);
 		}
-		if (task.status === "ready_to_integrate" && !await this.integrateTask(handle, task, scope)) {
+		const current = changesetTaskState(handle.state, task.taskId);
+		if (current.status === "ready_to_integrate" && !await this.integrateTask(handle, current, scope)) {
 			handle.state.status = "needs_attention";
 			return this.response(handle.state);
 		}
-		if (task.status !== "completed") {
+		if (current.status !== "completed") {
 			handle.state.status = "needs_attention";
 			await handle.save();
 			return this.response(handle.state);
