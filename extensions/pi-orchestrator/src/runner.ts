@@ -1728,8 +1728,17 @@ export class OrchestratorRunner {
 	}
 
 	private attention(task: TaskState, failure: string): void {
+		const boundedFailure = bounded(failure);
+		if (task.kind === "text" && task.status === "running") {
+			const attempt = task.attempts.at(-1);
+			if (!attempt || attempt.status !== "running") {
+				throw new Error(`Running text task ${task.taskId} has no running latest attempt.`);
+			}
+			attempt.status = "failed";
+			attempt.failure = boundedFailure;
+		}
 		task.status = "needs_attention";
-		task.failure = bounded(failure);
+		task.failure = boundedFailure;
 	}
 
 	private response(state: RunState, main?: MainStatus): RunResponse {
