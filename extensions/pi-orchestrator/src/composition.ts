@@ -198,10 +198,6 @@ export class ComposedOrchestratorRuntime implements OrchestratorRuntime {
 		return this.roles.preflight(...args);
 	}
 
-	recoverLaunchRecords(...args: Parameters<CoordinatorRuntime["recoverLaunchRecords"]>): ReturnType<CoordinatorRuntime["recoverLaunchRecords"]> {
-		return this.roles.recoverLaunchRecords(...args);
-	}
-
 	acquireLaunch(...args: Parameters<CoordinatorRuntime["acquireLaunch"]>): ReturnType<CoordinatorRuntime["acquireLaunch"]> {
 		return this.roles.acquireLaunch(...args);
 	}
