@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	buildTextTaskPrompt,
 	formatTextTaskContexts,
 	readyPendingTasks,
 	resolveTextTaskContexts,
@@ -122,6 +123,64 @@ test("text context resolution and formatting preserve declared source order", ()
 	assert.equal(
 		formatTextTaskContexts(contexts, 1_024),
 		"Context from task second:\nSecond result.\n\nContext from task first:\nFirst result.",
+	);
+});
+
+test("text task prompts preserve ordered context as task data", () => {
+	const task = textTask("summary");
+	assert.equal(
+		buildTextTaskPrompt("Summarize the research.", task, [
+			{ taskId: "second", text: "Second result." },
+			{ taskId: "first", text: "First result." },
+		]),
+		[
+			"Task: summary",
+			"Goal:",
+			"Summarize the research.",
+			"",
+			"Requirements:",
+			"Research summary.",
+			"",
+			"Deliverable:",
+			"Explain summary.",
+			"",
+			"Task data:",
+			"Context from task second:\nSecond result.",
+			"",
+			"Context from task first:\nFirst result.",
+		].join("\n"),
+	);
+});
+
+test("text task prompts cap total multibyte UTF-8 bytes without truncation", () => {
+	const task = textTask("summary");
+	const goal = "Summarize the research.";
+	const maxBytes = 64 * 1024;
+	const prefix = `${[
+		`Task: ${task.id}`,
+		"Goal:",
+		goal,
+		"",
+		"Requirements:",
+		task.requirements,
+		"",
+		"Deliverable:",
+		task.deliverable,
+		"",
+		"Task data:",
+		"Context from task research:",
+	].join("\n")}\n`;
+	const availableBytes = maxBytes - Buffer.byteLength(prefix, "utf8");
+	const character = "界";
+	const repeated = character.repeat(Math.floor(availableBytes / Buffer.byteLength(character, "utf8")));
+	const output = `${repeated}${"a".repeat(availableBytes - Buffer.byteLength(repeated, "utf8"))}`;
+
+	const prompt = buildTextTaskPrompt(goal, task, [{ taskId: "research", text: output }]);
+	assert.equal(Buffer.byteLength(prompt, "utf8"), maxBytes);
+	assert.ok(prompt.endsWith(output));
+	assert.throws(
+		() => buildTextTaskPrompt(goal, task, [{ taskId: "research", text: `${output}a` }]),
+		/exceeds .* UTF-8 bytes/,
 	);
 });
 

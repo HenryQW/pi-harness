@@ -38,6 +38,7 @@ import {
 import { FileRunStore, type RunStateHandle } from "./store.ts";
 
 const TRUNCATION_MARKER = "\n[truncated]";
+const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
@@ -530,6 +531,29 @@ export function formatTextTaskContexts(contexts: readonly TextTaskContext[], max
 		throw new Error(`Text task context exceeds ${maxBytes} UTF-8 bytes.`);
 	}
 	return text;
+}
+
+/** Build a bounded text-task assignment with upstream output marked as task data. */
+export function buildTextTaskPrompt(
+	goal: ExecuteRequest["goal"],
+	task: Pick<TaskRequest, "id" | "requirements" | "deliverable">,
+	contexts: readonly TextTaskContext[],
+): string {
+	const assignment = [
+		`Task: ${task.id}`,
+		"Goal:",
+		goal,
+		"",
+		"Requirements:",
+		task.requirements,
+		"",
+		"Deliverable:",
+		task.deliverable,
+	].join("\n");
+	const prefix = contexts.length ? `${assignment}\n\nTask data:\n` : assignment;
+	const remainingBytes = TEXT_TASK_PROMPT_MAX_BYTES - Buffer.byteLength(prefix, "utf8");
+	if (remainingBytes < 0) throw new Error(`Text task prompt exceeds ${TEXT_TASK_PROMPT_MAX_BYTES} UTF-8 bytes.`);
+	return `${prefix}${formatTextTaskContexts(contexts, remainingBytes)}`;
 }
 
 export function readyPendingTasks(state: RunState): TaskState[] {
