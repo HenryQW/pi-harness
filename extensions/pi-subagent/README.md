@@ -175,7 +175,7 @@ A Role's `modelClass` is a default. A call-level class wins.
 
 An unreadable or invalid Role fails loading fast. Duplicate Role names are rejected. A same-named user file overrides a built-in Role.
 
-A missing named Skill rejects `prepareRoleLaunch`. `delegate_task` returns a Role-specific workflow error and does not start a child.
+A missing named Skill rejects `prepareRoleLaunch` and `resolveConfiguredRoleLaunch`. `delegate_task` returns a Role-specific workflow error and does not start a child.
 
 The package always provides these built-in Roles. Their files leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` assignment or declared default unless a call overrides it:
 
@@ -195,7 +195,7 @@ The package root includes these main exports:
 | `RoleName` / `parseRoleName` | type/function | Normalizes arbitrary Role names and rejects empty or C0/C1 control-character values. |
 | `resolveRoleSkills` | function | Resolves a Role's named Skills from Pi's effective registry. |
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
-| `resolveConfiguredRoleLaunch` | function | Resolves a configured Role and its package resources with an explicit model class. |
+| `resolveConfiguredRoleLaunch` | function | Resolves a configured Role and its package resources with an explicit model class. Rejects missing Role Skills. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
 | `prepareRoleLaunch` / `finalizeRoleLaunch` | functions | Separates the stable Role prompt and rejects missing Role Skills. |
 | `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |

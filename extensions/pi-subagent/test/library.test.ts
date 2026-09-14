@@ -628,7 +628,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.equal(taskDefault.thinkingLevel, "high");
 });
 
-test("Role package resources resolve enabled paths; configured launches require a class and deduplicate Skills", async (t) => {
+test("Role package resources resolve enabled paths; configured launches require a class, reject missing Skills, and deduplicate Skills", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-package-resources-"));
 	const agentDir = join(directory, "agent");
 	const cwd = join(directory, "project");
@@ -725,6 +725,15 @@ Do bounded work.
 	await assert.rejects(
 		resolveConfiguredRoleLaunch(pi, launchCtx, { role: "package-role" } as unknown as Parameters<typeof resolveConfiguredRoleLaunch>[2]),
 		/requires an explicit modelClass/,
+	);
+	const missingNamedSkillPi = {
+		getCommands: () => [
+			{ name: "skill:package-skill", source: "skill", sourceInfo: { path: skill } },
+		],
+	} as unknown as Pick<ExtensionAPI, "getCommands">;
+	await assert.rejects(
+		resolveConfiguredRoleLaunch(missingNamedSkillPi, launchCtx, { role: "package-role", modelClass: "frontier" }),
+		/Role package-role requires missing Skills: named-skill\./,
 	);
 	const launch = await resolveConfiguredRoleLaunch(pi, launchCtx, { role: "package-role", modelClass: "frontier" });
 	assert.equal(launch.thinkingLevel, "high");

@@ -458,6 +458,11 @@ function prepareResolvedRoleLaunch(roleDefinition: Role, launch: ResolvedRoleLau
 	return { ...launch, args, role, isolation, systemPrompt, promptArgIndex };
 }
 
+function assertNoMissingRoleSkills(role: Role, launch: ResolvedRoleLaunch): void {
+	if (!launch.missingSkills.length) return;
+	throw new Error(`Role ${parseRoleName(role.name)} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
+}
+
 /** Prepare a resolved or resolvable Role launch while keeping its system prompt out of argv. */
 export function prepareRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
@@ -477,9 +482,7 @@ export function prepareRoleLaunch(
 	const launch = "route" in input
 		? createRoleLaunch(pi, ctx, input)
 		: resolveRoleLaunch(pi, ctx, input);
-	if (launch.missingSkills.length) {
-		throw new Error(`Role ${parseRoleName(input.role.name)} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
-	}
+	assertNoMissingRoleSkills(input.role, launch);
 	return prepareResolvedRoleLaunch(input.role, launch);
 }
 
@@ -509,6 +512,7 @@ export async function resolveConfiguredRoleLaunch(
 		role: effectiveRole,
 		route: resolveTaskRoute(ctx, input.modelClass),
 	}, skills);
+	assertNoMissingRoleSkills(effectiveRole, launch);
 	const additions = [
 		"--no-prompt-templates",
 		"--no-themes",
