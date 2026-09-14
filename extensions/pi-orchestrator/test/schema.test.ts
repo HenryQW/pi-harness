@@ -165,6 +165,12 @@ test("v2 state discriminates text tasks and rejects v1 and launch state", () => 
 	delete completedTextAttempt.attempts[0]!.output;
 	assert.throws(() => parseRunState(completedWithoutOutput), /completed text attempt.*lacks output/i);
 
+	const completedAttemptWithoutTaskCompletion = structuredClone(valid) as RunState;
+	const textTaskWithOutput = completedAttemptWithoutTaskCompletion.tasks[0]!;
+	if (textTaskWithOutput.kind !== "text") throw new Error("Expected a text task.");
+	textTaskWithOutput.status = "running";
+	assert.throws(() => parseRunState(completedAttemptWithoutTaskCompletion), /must be completed when its latest attempt is completed/i);
+
 	const outputWithoutCompletion = structuredClone(valid) as RunState;
 	const textAttempt = outputWithoutCompletion.tasks[0]!;
 	if (textAttempt.kind !== "text") throw new Error("Expected a text task.");
