@@ -561,6 +561,9 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		abortIfNeeded(context.signal);
 		const input = { role, modelClass, task: ORCHESTRATOR_MODEL_TASK };
 		const prepared = await resolveConfiguredRoleLaunch(this.options.pi, this.options.context(), input);
+		if (prepared.missingSkills.length) {
+			throw new Error(`Role ${role} requires missing Skills: ${prepared.missingSkills.join(", ")}.`);
+		}
 		const toolPolicy = valuesAfter(prepared.args, `--${ROLE_TOOL_POLICY_FLAG}`);
 		if (toolPolicy.length !== 1) throw new Error(`Resolved ${role} launch has no unique tool policy.`);
 		const tools: unknown = JSON.parse(toolPolicy[0]!);

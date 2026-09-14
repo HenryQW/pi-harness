@@ -358,7 +358,7 @@ test("missing Skills and duplicate canonical resources fail preflight", async (t
 	await t.test("missing Skill", async (t) => {
 		const fixture = await harness(t);
 		await fixture.setRole({ name: "implementer", skills: ["missing"] });
-		await assert.rejects(preflight(fixture), /missing Skills?: missing/i);
+		await assert.rejects(preflight(fixture), /Role implementer requires missing Skills: missing\./);
 	});
 	await t.test("two Skill names resolve to one file", async (t) => {
 		const fixture = await harness(t);
