@@ -249,6 +249,126 @@ test("text retry saves its second attempt atomically before executor launch", as
 	assert.deepEqual(persistedAtSecondLaunch, firstProductiveSave);
 });
 
+test("text retry runs only the selected ready task while another needs attention", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	t.after(async () => await rm(directory, { recursive: true, force: true }));
+	const root = join(directory, "workspace");
+	await mkdir(root);
+	const store = new FileRunStore(join(directory, "agent"));
+	const otherId = "other";
+	const selectedId = "selected";
+	const request: ExecuteRequest = {
+		id: "text-retry-with-attention",
+		goal: "Retry one failed text task without scheduling another.",
+		budgetMs: 1_000,
+		tasks: [
+			{
+				id: otherId,
+				kind: "text",
+				role: "researcher",
+				modelClass: "fast",
+				requirements: "Research the other task.",
+				deliverable: "Return the other result.",
+				dependsOn: [],
+				contextFrom: [],
+			},
+			{
+				id: selectedId,
+				kind: "text",
+				role: "researcher",
+				modelClass: "fast",
+				requirements: "Research the selected task.",
+				deliverable: "Return the selected result.",
+				dependsOn: [],
+				contextFrom: [],
+			},
+		],
+		finalChecks: [{ command: "true", args: [] }],
+	};
+	const executions: string[] = [];
+	let persistedSelectedRetry: RunState | undefined;
+	const executor: EphemeralSubagentExecutor = {
+		run: async ({ prepare }) => {
+			const prepared = await prepare();
+			const taskId = /^Task: (\S+)$/m.exec(prepared.task)?.[1];
+			if (!taskId) throw new Error("Text task prompt did not name its task.");
+			executions.push(taskId);
+			if (executions.filter((id) => id === taskId).length === 1) {
+				throw new Error(`first ${taskId} launch failed`);
+			}
+			if (taskId === selectedId) persistedSelectedRetry = (await store.load(root, request.id)).state;
+			return {
+				outcome: "success",
+				exitCode: 0,
+				output: "Selected retry output.",
+				outputTruncated: false,
+				stderr: "",
+			};
+		},
+	};
+	const runner = new OrchestratorRunner(
+		{
+			now: () => 1,
+			randomToken: () => "token-0000000000000001",
+			preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
+			acquireLaunch: acquireTextLaunch,
+		} as unknown as OrchestratorRuntime,
+		{
+			inspectMain: async () => mainIdentity(),
+		} as unknown as GitRuntime & TaskCandidateInspector,
+		store,
+		executor,
+	);
+
+	const failed = await runner.execute(request, root);
+	const failedOther = failed.state.tasks.find((task) => task.taskId === otherId);
+	const failedSelected = failed.state.tasks.find((task) => task.taskId === selectedId);
+	if (failedOther?.kind !== "text" || failedSelected?.kind !== "text") throw new Error("Expected text task state.");
+	assert.equal(failedOther.status, "needs_attention");
+	assert.equal(failedSelected.status, "needs_attention");
+
+	const blocked = await store.load(root, request.id);
+	const selectedRequest = blocked.state.request.tasks.find((task) => task.id === selectedId);
+	if (!selectedRequest) throw new Error("Expected selected task request.");
+	selectedRequest.dependsOn.push(otherId);
+	await blocked.save();
+	await assert.rejects(
+		runner.resume({ id: request.id, action: "retry", taskId: selectedId }, root),
+		/dependencies are not completed/,
+	);
+	assert.equal(executions.filter((id) => id === selectedId).length, 1);
+	assert.equal((await store.load(root, request.id)).state.tasks.find((task) => task.taskId === selectedId)?.status, "needs_attention");
+
+	selectedRequest.dependsOn.length = 0;
+	await blocked.save();
+	const retried = await runner.resume({ id: request.id, action: "retry", taskId: selectedId }, root);
+	const retriedOther = retried.state.tasks.find((task) => task.taskId === otherId);
+	const retriedSelected = retried.state.tasks.find((task) => task.taskId === selectedId);
+	if (retriedOther?.kind !== "text" || retriedSelected?.kind !== "text") throw new Error("Expected text task state.");
+	assert.equal(retried.state.status, "needs_attention");
+	assert.equal(retriedOther.status, "needs_attention");
+	assert.equal(retriedSelected.status, "completed");
+	assert.equal(executions.filter((id) => id === otherId).length, 1);
+	assert.equal(executions.filter((id) => id === selectedId).length, 2);
+
+	if (!persistedSelectedRetry) throw new Error("Expected selected retry to be persisted before executor launch.");
+	const persistedOther = persistedSelectedRetry.tasks.find((task) => task.taskId === otherId);
+	const persistedSelected = persistedSelectedRetry.tasks.find((task) => task.taskId === selectedId);
+	if (persistedOther?.kind !== "text" || persistedSelected?.kind !== "text") throw new Error("Expected persisted text task state.");
+	assert.equal(persistedOther.status, "needs_attention");
+	assert.equal(persistedSelected.status, "running");
+	assert.deepEqual(persistedSelectedRetry.waves.at(-1), {
+		number: 2,
+		base: mainIdentity(),
+		taskIds: [selectedId],
+		status: "dispatching",
+	});
+	assert.deepEqual(persistedSelected.attempts.map(({ number, status }) => ({ number, status })), [
+		{ number: 1, status: "failed" },
+		{ number: 2, status: "running" },
+	]);
+});
+
 test("mixed waves settle and attribute dispatch failures in either task order", async (t) => {
 	for (const kinds of [["changeset", "text"], ["text", "changeset"]] as const) {
 		await t.test(kinds.join(" then "), async (t) => {

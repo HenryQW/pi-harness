@@ -661,7 +661,10 @@ export class OrchestratorRunner {
 					}
 					task.status = "pending";
 					task.failure = undefined;
-					return await this.run(handle, scope);
+					if (!readyPendingTasks(state).includes(task)) {
+						throw new Error(`Text task ${task.taskId} dependencies are not completed.`);
+					}
+					return await this.run(handle, scope, task.taskId);
 				}
 				if (request.action === "verify") {
 					const attempt = latestAttempt(task);
@@ -746,18 +749,18 @@ export class OrchestratorRunner {
 		});
 	}
 
-	private async run(handle: RunStateHandle, scope: DeadlineScope): Promise<RunResponse> {
+	private async run(handle: RunStateHandle, scope: DeadlineScope, forceTextTaskId?: string): Promise<RunResponse> {
 		const state = handle.state;
 		state.status = "running";
 		state.updatedAt = this.runtime.now();
 		try {
 			while (state.tasks.some((task) => task.status !== "completed")) {
-				const attention = state.tasks.find((task) => task.status === "needs_attention");
+				const attention = forceTextTaskId ? undefined : state.tasks.find((task) => task.status === "needs_attention");
 				if (attention) {
 					state.status = "needs_attention";
 					return this.response(state);
 				}
-				const ready = readyPendingTasks(state);
+				const ready = readyPendingTasks(state).filter((task) => !forceTextTaskId || task.taskId === forceTextTaskId);
 				if (!ready.length) throw new Error("No dependency wave is ready.");
 				let actualMain: WorkspaceIdentity;
 				try {
@@ -838,6 +841,7 @@ export class OrchestratorRunner {
 				}
 				wave.status = "completed";
 				await handle.save();
+				forceTextTaskId = undefined;
 			}
 			return await this.runFinal(handle, scope);
 		} catch (error) {
