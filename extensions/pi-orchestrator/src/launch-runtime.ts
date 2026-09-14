@@ -43,7 +43,6 @@ import {
 	type WorkspaceIdentity,
 } from "./schema.ts";
 
-const REVIEWER_TOOLS = ["read", "grep", "find", "ls"] as const;
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const PROMPT_FLAG = "--append-system-prompt";
 const EXTENSION_FLAG = "--extension";
@@ -52,7 +51,7 @@ const PROMPT_TEMPLATE_FLAG = "--prompt-template";
 const THEME_FLAG = "--theme";
 const DIRECTORY_MODE = 0o700;
 const PROMPT_MODE = 0o600;
-const FORBIDDEN_ROLE_SOURCE_NAMES = ["pi-orchestrator"] as const;
+const FORBIDDEN_ROLE_SOURCE_NAMES = ["pi-orchestrator", "pi-mcp-adapter"] as const;
 
 export const ORCHESTRATOR_MODEL_TASK = {
 	id: "pi-orchestrator/roleLaunch",
@@ -297,24 +296,13 @@ async function fingerprintFile(path: string, label: string, signal?: AbortSignal
 	return sha256(contents);
 }
 
-function assertExactReviewerRole(role: SubagentRole): void {
-	if (role.tools.length !== REVIEWER_TOOLS.length
-		|| new Set(role.tools).size !== REVIEWER_TOOLS.length
-		|| REVIEWER_TOOLS.some((tool) => !role.tools.includes(tool))) {
-		throw new Error(`Effective Reviewer Role must declare only ${REVIEWER_TOOLS.join(", ")}.`);
-	}
-}
-
 function validateRoleDefinition(role: string, effectiveRole: SubagentRole): void {
 	if (effectiveRole.name !== role) throw new Error(`Effective Role identity drifted from ${role}.`);
 	requireUnique(effectiveRole.tools, `Effective ${role} Role tools`);
 	requireUnique(effectiveRole.skills, `Effective ${role} Role Skills`);
 	requireUnique(effectiveRole.extensions, `Effective ${role} Role extensions`);
-	if (role === "implementer") {
-		for (const extension of effectiveRole.extensions) rejectForbiddenRoleExtensionSource(extension, role);
-	} else {
-		assertExactReviewerRole(effectiveRole);
-	}
+	requireUnique(effectiveRole.mcps ?? [], `Effective ${role} Role MCPs`);
+	for (const extension of effectiveRole.extensions) rejectForbiddenRoleExtensionSource(extension, role);
 }
 
 function validateSourceInfo(tool: ToolInfo): void {
@@ -440,13 +428,6 @@ async function normalizedResolvedRoleLaunch(
 			throw new Error(`Resolved ${role}/${modelClass} extension is a forbidden self source: ${source}`);
 		}
 	}
-	if (role === "reviewer") {
-		const allowed = CODEX_ALIAS.test(launch.model.provider)
-			? [knownFiles.multiCodex, knownFiles.roleTools]
-			: [knownFiles.roleTools];
-		assertSameValues(resolvedExtensions, allowed, "Reviewer resolved extensions");
-	}
-
 	const resolvedSkills = await canonicalizeValues(
 		valuesAfter(launch.args, SKILL_FLAG),
 		`Resolved ${role}/${modelClass} Skill paths`,
@@ -673,9 +654,7 @@ async function materializeTransientLaunch(
 			tools: Object.freeze([...record.tools]),
 			fingerprint: record.fingerprint,
 		};
-		const launch: VerifiedLaunch = record.role === "implementer"
-			? Object.freeze({ ...common, role: "implementer" as const })
-			: Object.freeze({ ...common, role: "reviewer" as const });
+		const launch: VerifiedLaunch = Object.freeze({ ...common, role: record.role });
 		let cleanup: Promise<void> | undefined;
 		return Object.freeze({
 			launch,
@@ -730,16 +709,13 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		const configuredRole = matches[0]!;
 		validateRoleDefinition(role, configuredRole);
 		const ctx = this.options.context();
-		const resources = role === "implementer"
-			? {
-				...await resolveRoleResources(configuredRole.extensions, ctx, this.options.agentDir, context.signal),
-				...await resolveRoleMcpResources(configuredRole.mcps ?? [], ctx, this.options.agentDir, context.signal),
-			}
-			: { extensions: [], skills: [], prompts: [], themes: [], mcpResources: [] };
+		const resources = {
+			...await resolveRoleResources(configuredRole.extensions, ctx, this.options.agentDir, context.signal),
+			...await resolveRoleMcpResources(configuredRole.mcps ?? [], ctx, this.options.agentDir, context.signal),
+		};
 		const effectiveRole: SubagentRole = {
 			...configuredRole,
 			extensions: resources.extensions,
-			...(role === "reviewer" ? { skills: [], mcps: [] } : {}),
 		};
 		const commands = this.options.pi.getCommands();
 		const launch = addPackageResources(resolveRoleLaunch({ getCommands: () => commands }, ctx, {
