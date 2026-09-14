@@ -648,28 +648,39 @@ export class OrchestratorRunner {
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
 
-			if (request.action === "verify") {
-				const task = changesetTaskState(state, request.taskId);
-				const attempt = latestAttempt(task);
-				if (attempt.integration?.status === "integrated") {
-					return await this.verifyCleanupOnly(handle, task, attempt, outerSignal);
-				}
-			}
-
 			const scope = new DeadlineScope(state.deadline, () => this.runtime.now(), outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
-				const task = changesetTaskState(state, request.taskId);
+				const task = taskState(state, request.taskId);
+				if (task.kind === "text") {
+					if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
+					if (request.action === "verify") throw new Error(`Text task ${task.taskId} cannot be verified.`);
+					const attempt = task.attempts.at(-1);
+					if (attempt?.status !== "failed" || task.attempts.length >= 2) {
+						throw new Error(`Text task ${task.taskId} retry requires a failed latest attempt and fewer than two attempts.`);
+					}
+					task.status = "pending";
+					task.failure = undefined;
+					return await this.run(handle, scope);
+				}
+				if (request.action === "verify") {
+					const attempt = latestAttempt(task);
+					if (attempt.integration?.status === "integrated") {
+						return await this.verifyCleanupOnly(handle, task, attempt, outerSignal);
+					}
+				}
 				if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
 				if (request.action === "retry") return await this.retry(handle, task, scope);
 				return await this.verifyRetainedTask(handle, task, scope);
 			} catch (error) {
 				if (request.action === "retry") {
-					const task = changesetTaskState(state, request.taskId);
-					const attempt = task.attempts.at(-1);
-					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
-						this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
-						await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+					const task = taskState(state, request.taskId);
+					if (task.kind === "changeset") {
+						const attempt = task.attempts.at(-1);
+						if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
+							this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
+							await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+						}
 					}
 				}
 				throw error;
