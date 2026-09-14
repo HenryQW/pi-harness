@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
 	OrchestratorRunner,
 	type GitRuntime,
@@ -25,10 +26,44 @@ type DispatchTaskRunner = {
 	dispatchTask(handle: unknown, task: TaskState, scope: unknown): Promise<void>;
 };
 
+class RecordingRunStore extends FileRunStore {
+	readonly saved: RunState[] = [];
+
+	override async load(root: string, id: string) {
+		const handle = await super.load(root, id);
+		const save = handle.save.bind(handle);
+		handle.save = async () => {
+			const snapshot = JSON.parse(JSON.stringify(handle.state)) as RunState;
+			await save();
+			this.saved.push(snapshot);
+		};
+		return handle;
+	}
+}
+
+const unavailableTextExecutor: EphemeralSubagentExecutor = {
+	run: async () => { throw new Error("Text task dispatch is not implemented."); },
+};
+
+const acquireTextLaunch = async () => ({
+	launch: {
+		role: "researcher",
+		modelClass: "fast",
+		model: "test-model",
+		thinkingLevel: "low",
+		args: [],
+		env: {},
+		tools: [],
+	},
+	cleanup: async () => {},
+});
+
 function markAttention(task: TextTaskState, failure: string): void {
 	const runner = new OrchestratorRunner(
 		{} as OrchestratorRuntime,
 		{} as GitRuntime & TaskCandidateInspector,
+		undefined,
+		unavailableTextExecutor,
 	);
 	(runner as unknown as AttentionRunner).attention(task, failure);
 }
@@ -87,11 +122,13 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 			now: () => 1,
 			randomToken: () => "token-0000000000000001",
 			preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
+			acquireLaunch: acquireTextLaunch,
 		} as unknown as OrchestratorRuntime,
 		{
 			inspectMain: async () => mainIdentity(),
 		} as unknown as GitRuntime & TaskCandidateInspector,
 		store,
+		unavailableTextExecutor,
 	);
 	const request: ExecuteRequest = {
 		id: "text-failure",
@@ -122,6 +159,96 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 	assert.deepEqual((await store.load(root, request.id)).state.tasks[0], task);
 });
 
+test("text retry saves its second attempt atomically before executor launch", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	t.after(async () => await rm(directory, { recursive: true, force: true }));
+	const root = join(directory, "workspace");
+	await mkdir(root);
+	const store = new RecordingRunStore(join(directory, "agent"));
+	const request: ExecuteRequest = {
+		id: "text-retry",
+		goal: "Retry a failed text task without an invalid intermediate state.",
+		budgetMs: 1_000,
+		tasks: [{
+			id: "research",
+			kind: "text",
+			role: "researcher",
+			modelClass: "fast",
+			requirements: "Research the implementation.",
+			deliverable: "Return the result.",
+			dependsOn: [],
+			contextFrom: [],
+		}],
+		finalChecks: [{ command: "true", args: [] }],
+	};
+	let launches = 0;
+	let persistedAtSecondLaunch: RunState | undefined;
+	const executor: EphemeralSubagentExecutor = {
+		run: async () => {
+			launches += 1;
+			if (launches === 1) throw new Error("first executor launch failed");
+			persistedAtSecondLaunch = (await store.load(root, request.id)).state;
+			return {
+				outcome: "success",
+				exitCode: 0,
+				output: "Second attempt output.",
+				outputTruncated: false,
+				stderr: "",
+			};
+		},
+	};
+	const runner = new OrchestratorRunner(
+		{
+			now: () => 1,
+			randomToken: () => "token-0000000000000001",
+			preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
+			acquireLaunch: acquireTextLaunch,
+		} as unknown as OrchestratorRuntime,
+		{
+			inspectMain: async () => mainIdentity(),
+			runChecks: async () => ({
+				results: [{ command: "true", args: [], code: 0, killed: false, stdout: "", stderr: "" }],
+				identityAfter: mainIdentity(),
+			}),
+		} as unknown as GitRuntime & TaskCandidateInspector,
+		store,
+		executor,
+	);
+
+	const failed = await runner.execute(request, root);
+	const failedTask = failed.state.tasks[0]!;
+	if (failedTask.kind !== "text") throw new Error("Expected a text task.");
+	assert.equal(failedTask.status, "needs_attention");
+	assert.deepEqual(failedTask.attempts.map(({ number, status }) => ({ number, status })), [{ number: 1, status: "failed" }]);
+
+	const retried = await runner.resume({ id: request.id, action: "retry", taskId: "research" }, root);
+	assert.equal(retried.state.accepted, true);
+	assert.equal(launches, 2);
+
+	const firstProductiveSave = store.saved[0]!;
+	const taskAtFirstSave = firstProductiveSave.tasks[0]!;
+	if (taskAtFirstSave.kind !== "text") throw new Error("Expected a text task.");
+	assert.equal(firstProductiveSave.status, "running");
+	assert.deepEqual(firstProductiveSave.waves.at(-1), {
+		number: 2,
+		base: mainIdentity(),
+		taskIds: ["research"],
+		status: "dispatching",
+	});
+	assert.equal(taskAtFirstSave.status, "running");
+	assert.deepEqual(taskAtFirstSave.attempts.map(({ number, status }) => ({ number, status })), [
+		{ number: 1, status: "failed" },
+		{ number: 2, status: "running" },
+	]);
+	assert.ok(store.saved.every((snapshot) => {
+		const task = snapshot.tasks[0]!;
+		return snapshot.status !== "running" || task.kind !== "text" || task.status !== "pending" || task.attempts.length !== 1;
+	}));
+
+	if (!persistedAtSecondLaunch) throw new Error("Expected state to be persisted before the second executor launch.");
+	assert.deepEqual(persistedAtSecondLaunch, firstProductiveSave);
+});
+
 test("mixed waves settle and attribute dispatch failures in either task order", async (t) => {
 	for (const kinds of [["changeset", "text"], ["text", "changeset"]] as const) {
 		await t.test(kinds.join(" then "), async (t) => {
@@ -143,11 +270,13 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 					now: () => 1,
 					randomToken: () => "token-0000000000000001",
 					preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
+					acquireLaunch: acquireTextLaunch,
 				} as unknown as OrchestratorRuntime,
 				{
 					inspectMain: async () => mainIdentity(),
 				} as unknown as GitRuntime & TaskCandidateInspector,
 				store,
+				unavailableTextExecutor,
 			);
 			const dispatchingRunner = runner as unknown as DispatchTaskRunner;
 			const dispatchTask = dispatchingRunner.dispatchTask.bind(runner);

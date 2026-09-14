@@ -750,7 +750,6 @@ export class OrchestratorRunner {
 		const state = handle.state;
 		state.status = "running";
 		state.updatedAt = this.runtime.now();
-		await handle.save();
 		try {
 			while (state.tasks.some((task) => task.status !== "completed")) {
 				const attention = state.tasks.find((task) => task.status === "needs_attention");
