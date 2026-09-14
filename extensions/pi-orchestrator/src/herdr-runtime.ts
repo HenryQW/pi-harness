@@ -30,6 +30,7 @@ import {
 	type WorktreeAllocationPlan,
 } from "./schema.ts";
 import {
+	formatTextTaskContexts,
 	type AgentAllocationResult,
 	type AllocationReconciliation,
 	type HostAllocationKind,
@@ -39,6 +40,7 @@ import {
 	type InFlightTaskCandidateInspection,
 	type InFlightTaskCandidateInspector,
 	type OperationContext,
+	type TextTaskContext,
 	type TransientLaunchHandle,
 	type VerifiedLaunch,
 	withTransientLaunch,
@@ -329,6 +331,7 @@ function requireOkResponse(stdout: string, label: string): void {
 
 function assignment(input: {
 	readonly goal: ExecuteRequest["goal"];
+	readonly contexts: readonly TextTaskContext[];
 	task: TaskRequest;
 	kind: "initial" | "correction";
 	worktreeCwd: string;
@@ -336,6 +339,9 @@ function assignment(input: {
 }): string {
 	if (input.task.kind !== "changeset") throw new Error("Herdr assignment requires a changeset task.");
 	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
+	const upstreamTaskData = input.contexts.length
+		? ["", "Upstream task data:", formatTextTaskContexts(input.contexts, ASSIGNMENT_LIMIT)]
+		: [];
 	const text = [
 		`Task: ${input.task.id}`,
 		"Goal:",
@@ -348,6 +354,7 @@ function assignment(input: {
 		"",
 		"Deliverable:",
 		input.task.deliverable,
+		...upstreamTaskData,
 		"",
 		"Required checks (direct command/argv):",
 		checks,
@@ -445,7 +452,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		const worktree = worktreeIntent(input.attempt);
 		const worktreeCwd = exactAbsolutePath(worktree.cwd, "owned worktree cwd");
 		if (input.kind === "workspace") {
-			assignment({ goal: input.goal, task: input.task, kind: "initial", worktreeCwd });
+			assignment({ goal: input.goal, contexts: [], task: input.task, kind: "initial", worktreeCwd });
 			const mainRoot = exactAbsolutePath(worktree.repoRoot, "owned worktree Main root");
 			const identity = await this.repositoryIdentity(mainRoot, context);
 			return {
@@ -607,6 +614,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	async runWorker(
 		input: {
 			readonly goal: ExecuteRequest["goal"];
+			readonly contexts: readonly TextTaskContext[];
 			task: TaskRequest;
 			attempt: TaskAttempt;
 			workerId: string;
@@ -626,6 +634,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		try {
 			text = assignment({
 				goal: input.goal,
+				contexts: input.contexts,
 				task: input.task,
 				kind: input.kind,
 				worktreeCwd: allocation.worktreeCwd,
