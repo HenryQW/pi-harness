@@ -617,12 +617,18 @@ function validateTextTaskState(taskState: TextTaskState): void {
 			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has failure without failure status.`);
 		}
 	}
-	if (latest?.status === "completed") {
-		if (taskState.status !== "completed") {
-			throw new Error(`Completed text attempt ${latest.number} for ${taskState.taskId} must be the latest attempt of a completed task.`);
-		}
-	} else if (taskState.status === "completed") {
-		throw new Error(`Completed text task ${taskState.taskId} lacks a latest completed attempt.`);
+	const expectedLatestStatus = taskState.status === "pending"
+		? undefined
+		: taskState.status === "running"
+			? "running"
+			: taskState.status === "completed"
+				? "completed"
+				: "failed";
+	if (latest?.status !== expectedLatestStatus) {
+		throw new Error(`Text task ${taskState.taskId} status ${taskState.status} has an incompatible latest attempt.`);
+	}
+	if ((taskState.failure !== undefined) !== (taskState.status === "needs_attention")) {
+		throw new Error(`Text task ${taskState.taskId} must retain a failure exactly when it needs attention.`);
 	}
 }
 

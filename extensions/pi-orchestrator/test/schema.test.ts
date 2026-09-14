@@ -10,7 +10,9 @@ import {
 	type ExecuteRequest,
 	type RunState,
 	type TaskRequest,
+	type TextTaskAttempt,
 	type TextTaskRequest,
+	type TextTaskState,
 	type WorkspaceIdentity,
 } from "../src/schema.ts";
 
@@ -151,61 +153,79 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
 });
 
-test("v2 state discriminates text tasks and rejects v1 and launch state", () => {
+test("v2 state maps text task attempts exactly and rejects v1 and launch state", () => {
 	const definition = parseExecuteRequest(request([
 		textTask("research"),
 		changesetTask("change", { contextFrom: ["research"] }),
 	]));
 	const valid = state(definition);
-	assert.doesNotThrow(() => parseRunState(structuredClone(valid)));
-
-	const completedWithoutOutput = structuredClone(valid) as RunState;
-	const completedTextAttempt = completedWithoutOutput.tasks[0]!;
-	if (completedTextAttempt.kind !== "text") throw new Error("Expected a text task.");
-	delete completedTextAttempt.attempts[0]!.output;
-	assert.throws(() => parseRunState(completedWithoutOutput), /completed text attempt.*lacks output/i);
-
-	const completedAttemptWithoutTaskCompletion = structuredClone(valid) as RunState;
-	const textTaskWithOutput = completedAttemptWithoutTaskCompletion.tasks[0]!;
-	if (textTaskWithOutput.kind !== "text") throw new Error("Expected a text task.");
-	textTaskWithOutput.status = "running";
-	assert.throws(() => parseRunState(completedAttemptWithoutTaskCompletion), /latest attempt of a completed task/i);
-
-	const runningThenCompleted = structuredClone(valid) as RunState;
-	const textTaskWithInterruptedAttempt = runningThenCompleted.tasks[0]!;
-	if (textTaskWithInterruptedAttempt.kind !== "text") throw new Error("Expected a text task.");
-	textTaskWithInterruptedAttempt.attempts = [
-		{ number: 1, status: "running" },
-		{ number: 2, status: "completed", output: { text: "Research result." } },
+	const output = { text: "Research result." };
+	type TextStateMapping = {
+		name: string;
+		status: TextTaskState["status"];
+		attempts: TextTaskAttempt[];
+		taskFailure?: string;
+		accepted: boolean;
+	};
+	const mappings: TextStateMapping[] = [
+		{ name: "pending with no attempts", status: "pending", attempts: [], accepted: true },
+		{ name: "pending with a running attempt", status: "pending", attempts: [{ number: 1, status: "running" }], accepted: false },
+		{ name: "pending with a completed attempt", status: "pending", attempts: [{ number: 1, status: "completed", output }], accepted: false },
+		{ name: "pending with a failed attempt", status: "pending", attempts: [{ number: 1, status: "failed" }], accepted: false },
+		{ name: "running with no attempts", status: "running", attempts: [], accepted: false },
+		{ name: "running with a running attempt", status: "running", attempts: [{ number: 1, status: "running" }], accepted: true },
+		{ name: "running with a completed attempt", status: "running", attempts: [{ number: 1, status: "completed", output }], accepted: false },
+		{ name: "running with a failed attempt", status: "running", attempts: [{ number: 1, status: "failed" }], accepted: false },
+		{ name: "completed with no attempts", status: "completed", attempts: [], accepted: false },
+		{ name: "completed with a running attempt", status: "completed", attempts: [{ number: 1, status: "running" }], accepted: false },
+		{ name: "completed with a completed attempt", status: "completed", attempts: [{ number: 1, status: "completed", output }], accepted: true },
+		{ name: "completed with a failed attempt", status: "completed", attempts: [{ number: 1, status: "failed" }], accepted: false },
+		{ name: "needs_attention with no attempts", status: "needs_attention", attempts: [], taskFailure: "Task failed.", accepted: false },
+		{ name: "needs_attention with a running attempt", status: "needs_attention", attempts: [{ number: 1, status: "running" }], taskFailure: "Task failed.", accepted: false },
+		{ name: "needs_attention with a completed attempt", status: "needs_attention", attempts: [{ number: 1, status: "completed", output }], taskFailure: "Task failed.", accepted: false },
+		{ name: "needs_attention with a failed attempt", status: "needs_attention", attempts: [{ number: 1, status: "failed" }], taskFailure: "Task failed.", accepted: true },
+		{ name: "pending with a task failure", status: "pending", attempts: [], taskFailure: "Unexpected failure.", accepted: false },
+		{ name: "running with a task failure", status: "running", attempts: [{ number: 1, status: "running" }], taskFailure: "Unexpected failure.", accepted: false },
+		{ name: "completed with a task failure", status: "completed", attempts: [{ number: 1, status: "completed", output }], taskFailure: "Unexpected failure.", accepted: false },
+		{ name: "needs_attention without a task failure", status: "needs_attention", attempts: [{ number: 1, status: "failed" }], accepted: false },
+		{ name: "running after a failed attempt", status: "running", attempts: [
+			{ number: 1, status: "failed", failure: "First attempt failed." },
+			{ number: 2, status: "running" },
+		], accepted: true },
+		{ name: "completed after a failed attempt", status: "completed", attempts: [
+			{ number: 1, status: "failed" },
+			{ number: 2, status: "completed", output },
+		], accepted: true },
+		{ name: "needs_attention after a failed attempt", status: "needs_attention", attempts: [
+			{ number: 1, status: "failed" },
+			{ number: 2, status: "failed" },
+		], taskFailure: "Retry failed.", accepted: true },
+		{ name: "running after a non-latest running attempt", status: "running", attempts: [
+			{ number: 1, status: "running" },
+			{ number: 2, status: "running" },
+		], accepted: false },
+		{ name: "completed after a non-latest completed attempt", status: "completed", attempts: [
+			{ number: 1, status: "completed", output },
+			{ number: 2, status: "completed", output },
+		], accepted: false },
+		{ name: "needs_attention after a non-latest failed output", status: "needs_attention", attempts: [
+			{ number: 1, status: "failed", output },
+			{ number: 2, status: "failed" },
+		], taskFailure: "Retry failed.", accepted: false },
+		{ name: "completed without output", status: "completed", attempts: [{ number: 1, status: "completed" }], accepted: false },
+		{ name: "needs_attention with failed output", status: "needs_attention", attempts: [{ number: 1, status: "failed", output }], taskFailure: "Task failed.", accepted: false },
 	];
-	assert.throws(() => parseRunState(runningThenCompleted), /must be failed with no output/i);
-
-	const completedOutputThenFailed = structuredClone(valid) as RunState;
-	const retriedTextTask = completedOutputThenFailed.tasks[0]!;
-	if (retriedTextTask.kind !== "text") throw new Error("Expected a text task.");
-	retriedTextTask.status = "needs_attention";
-	retriedTextTask.attempts.push({ number: 2, status: "failed", failure: "Retry failed." });
-	assert.throws(() => parseRunState(completedOutputThenFailed), /must be failed with no output/i);
-
-	const failedThenRunning = structuredClone(valid) as RunState;
-	const runningTextTask = failedThenRunning.tasks[0]!;
-	if (runningTextTask.kind !== "text") throw new Error("Expected a text task.");
-	runningTextTask.status = "running";
-	runningTextTask.attempts = [
-		{ number: 1, status: "failed", failure: "First attempt failed." },
-		{ number: 2, status: "running" },
-	];
-	assert.doesNotThrow(() => parseRunState(failedThenRunning));
-	runningTextTask.attempts[0]!.output = { text: "Stale result." };
-	assert.throws(() => parseRunState(failedThenRunning), /must be failed with no output/i);
-
-	const outputWithoutCompletion = structuredClone(valid) as RunState;
-	const textAttempt = outputWithoutCompletion.tasks[0]!;
-	if (textAttempt.kind !== "text") throw new Error("Expected a text task.");
-	textAttempt.attempts[0]!.status = "failed";
-	assert.throws(() => parseRunState(outputWithoutCompletion), /output without completion/);
-	delete textAttempt.attempts[0]!.output;
-	assert.throws(() => parseRunState(outputWithoutCompletion), /completed text task.*latest completed attempt/i);
+	for (const mapping of mappings) {
+		const candidate = structuredClone(valid);
+		const task = candidate.tasks[0]!;
+		if (task.kind !== "text") throw new Error("Expected a text task.");
+		task.status = mapping.status;
+		task.attempts = structuredClone(mapping.attempts);
+		if (mapping.taskFailure === undefined) delete task.failure;
+		else task.failure = mapping.taskFailure;
+		if (mapping.accepted) assert.doesNotThrow(() => parseRunState(candidate), mapping.name);
+		else assert.throws(() => parseRunState(candidate), undefined, mapping.name);
+	}
 
 	const oldTaskField = structuredClone(valid) as RunState & { tasks: Array<Record<string, unknown>> };
 	oldTaskField.tasks[1]!.implementerLaunchKey = "implementer/balanced";
