@@ -138,8 +138,7 @@ export interface ResolveRoleLaunchInput extends Omit<CreateRoleLaunchInput, "rou
 
 export interface ResolveConfiguredRoleLaunchInput {
 	role: string;
-	modelClass?: ProfileName;
-	task: ModelTask;
+	modelClass: ProfileName;
 }
 
 export interface ResolvedRoleSkills {
@@ -373,8 +372,15 @@ export function createRoleLaunch(
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
 	input: CreateRoleLaunchInput,
 ): ResolvedRoleLaunch {
+	return createRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role));
+}
+
+function createRoleLaunchFromSkills(
+	ctx: Pick<ExtensionContext, "isProjectTrusted">,
+	input: CreateRoleLaunchInput,
+	skills: ResolvedRoleSkills,
+): ResolvedRoleLaunch {
 	const role = input.role;
-	const skills = resolveRoleSkills(pi, role);
 	const mcps = mcpList(role.mcps, `Role ${role.name}`);
 	const tools = [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
 	const selectedExtensions = [...role.extensions, ...(input.extensions ?? [])]
@@ -481,6 +487,7 @@ export async function resolveConfiguredRoleLaunch(
 	input: ResolveConfiguredRoleLaunchInput,
 ): Promise<PreparedRoleLaunch> {
 	const roleName = parseRoleName(input.role);
+	if (input.modelClass === undefined) throw new Error("Configured Role launch requires an explicit modelClass.");
 	const matches = loadRoles().filter((role) => role.name === roleName);
 	if (matches.length !== 1) throw new Error(`Required configured Role ${roleName} is missing or ambiguous.`);
 	const role = matches[0]!;
@@ -490,15 +497,18 @@ export async function resolveConfiguredRoleLaunch(
 	}
 	const resources = await resolveRolePackageResources(role, ctx);
 	const effectiveRole: Role = { ...role, extensions: resources.extensions };
-	const launch = resolveRoleLaunch(pi, ctx, {
+	const namedSkills = resolveRoleSkills(pi, effectiveRole);
+	const skills: ResolvedRoleSkills = {
+		...namedSkills,
+		paths: [...new Set([...namedSkills.paths, ...resources.skills])],
+	};
+	const launch = createRoleLaunchFromSkills(ctx, {
 		role: effectiveRole,
-		task: input.task,
-		...(input.modelClass === undefined ? {} : { modelClass: input.modelClass }),
-	});
+		route: resolveTaskRoute(ctx, input.modelClass),
+	}, skills);
 	const additions = [
 		"--no-prompt-templates",
 		"--no-themes",
-		...resources.skills.flatMap((path) => ["--skill", path]),
 		...resources.prompts.flatMap((path) => ["--prompt-template", path]),
 		...resources.themes.flatMap((path) => ["--theme", path]),
 	];

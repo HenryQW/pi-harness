@@ -136,6 +136,7 @@ The package root exports the following mechanism-level APIs:
 | `parseRoleName(value, source?)` / `RoleName` | Normalize one arbitrary Role name. Empty names and C0/C1 controls fail. |
 | `resolveRoleSkills(pi, role)` | Resolve Role Skill names from Pi's effective registry. |
 | `resolveRoleLaunch(pi, ctx, input)` | Resolve a caller-owned Model Task route, applying call-level then Role `modelClass` precedence, and produce `ResolvedRoleLaunch`. |
+| `resolveConfiguredRoleLaunch(pi, ctx, { role, modelClass })` | Reload one configured Role and package resources with a required explicit Model Class. |
 | `createRoleLaunch(pi, ctx, input)` | Produce the same launch from a caller-supplied resolved route. |
 | `createEphemeralSubagentExecutor(options)` | Queue and run one prepared no-session child per `run`. |
 | `createChildWorktree` / `finalizeChildWorktree` | Optional caller-managed worktree lifecycle; `createChildWorktree` can prepare exact metadata before allocation. |
@@ -149,7 +150,7 @@ The package root exports the following mechanism-level APIs:
 | `retained` | `path`, `branch`, `commits`, `dirty` | Work was preserved. Both measurements are known. |
 | `recovery` | `path`, `branch`, `note`, optional `commits`, `dirty` | Recovery needs action. The note tells Main what to inspect. Present measurements completed; omitted values are unknown. |
 
-`parseRoleName` returns a trimmed `RoleName`. It accepts arbitrary names, not only the built-in Role catalog. A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, a normalized `mcps` array, optional `modelClass` and `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, optional call-level `modelClass`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
+`parseRoleName` returns a trimmed `RoleName`. It accepts arbitrary names, not only the built-in Role catalog. A loaded `Role` contains `name`, `description`, required normalized `tools`, `extensions`, and `skills` arrays, a normalized `mcps` array, optional `modelClass` and `isolation`, and `systemPrompt`. `resolveRoleLaunch` accepts `role`, a caller-owned `task` Model Task declaration, optional call-level `modelClass`, and optional caller `agentDir`, `extensions`, `tools`, and `env`. `resolveConfiguredRoleLaunch` accepts a Role name and required `modelClass`. It does not use Role or task defaults. Its named and package Skill paths load once in that order. At extension load, callers invoke `registerModelTask(pi, task)` from `@henryqw/pi-task-models` once to expose that declaration in the shared control plane. Its result is a `PiLaunch` (`{ env, args }`) plus the selected `model`, `thinkingLevel`, and `missingSkills`.
 
 `createEphemeralSubagentExecutor` requires:
 

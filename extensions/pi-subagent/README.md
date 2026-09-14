@@ -193,6 +193,7 @@ The package root includes these main exports:
 | `RoleName` / `parseRoleName` | type/function | Normalizes arbitrary Role names and rejects empty or C0/C1 control-character values. |
 | `resolveRoleSkills` | function | Resolves a Role's named Skills from Pi's effective registry. |
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
+| `resolveConfiguredRoleLaunch` | function | Resolves a configured Role and its package resources with an explicit model class. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
 | `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
 | Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
@@ -202,7 +203,7 @@ The executor works only inside the active Pi process. It does not discover or st
 
 `finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union. `pruned` proves zero commits, a clean tree, and removed worktree and branch. `retained` contains measured `commits` and `dirty` values. `recovery` has an actionable `note` and only completed measurements. An omitted recovery measurement is unknown.
 
-See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default.
+See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default. `resolveConfiguredRoleLaunch` requires a model class and does not use Role or task defaults.
 
 ## Limits and recovery
 

@@ -11,6 +11,7 @@ import {
 	finalizeRoleLaunch,
 	parseRoleMcpAllowlist,
 	prepareRoleLaunch,
+	resolveConfiguredRoleLaunch,
 	resolveRoleLaunch,
 	resolveRolePackageResources,
 	ROLE_MCP_POLICY_FLAG,
@@ -621,7 +622,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.equal(taskDefault.thinkingLevel, "high");
 });
 
-test("Role package resources resolve enabled paths and reject missing or forbidden sources", async (t) => {
+test("Role package resources resolve enabled paths; configured launches require a class and deduplicate Skills", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-package-resources-"));
 	const agentDir = join(directory, "agent");
 	const cwd = join(directory, "project");
@@ -636,6 +637,7 @@ test("Role package resources resolve enabled paths and reject missing or forbidd
 	const packageDir = join(agentDir, "npm", "node_modules", "@example", "role");
 	const extension = join(packageDir, "extension.ts");
 	const skill = join(packageDir, "SKILL.md");
+	const namedSkill = join(packageDir, "named-skill.md");
 	const prompt = join(packageDir, "prompt.md");
 	const theme = join(packageDir, "theme.json");
 	await Promise.all([
@@ -645,6 +647,7 @@ test("Role package resources resolve enabled paths and reject missing or forbidd
 	await Promise.all([
 		writeFile(extension, "export default function roleExtension() {}\n"),
 		writeFile(skill, "---\nname: package-skill\ndescription: Test package Skill\n---\nUse the package Skill.\n"),
+		writeFile(namedSkill, "---\nname: named-skill\ndescription: Test named Skill\n---\nUse the named Skill.\n"),
 		writeFile(prompt, "Package prompt.\n"),
 		writeFile(theme, "{}\n"),
 		writeFile(join(packageDir, "package.json"), JSON.stringify({
@@ -674,6 +677,52 @@ test("Role package resources resolve enabled paths and reject missing or forbidd
 	assert.deepEqual(await resolveRolePackageResources(role, ctx), {
 		extensions: [extension], skills: [skill], prompts: [prompt], themes: [theme],
 	});
+
+	await Promise.all([
+		mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true }),
+		mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true }),
+	]);
+	await Promise.all([
+		writeFile(join(agentDir, "config", "pi-subagent", "package-role.md"), `---
+name: package-role
+description: Uses package resources
+modelClass: balanced
+tools: []
+extensions:
+  - npm:@example/role
+skills:
+  - package-skill
+  - named-skill
+  - package-skill
+---
+Do bounded work.
+`),
+		writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
+			profiles: {
+				balanced: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "medium" } },
+				frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } },
+			},
+		})),
+	]);
+	const pi = {
+		getCommands: () => [
+			{ name: "skill:package-skill", source: "skill", sourceInfo: { path: skill } },
+			{ name: "skill:named-skill", source: "skill", sourceInfo: { path: namedSkill } },
+		],
+	} as unknown as Pick<ExtensionAPI, "getCommands">;
+	const launchCtx = {
+		...ctx,
+		model,
+		scopedModels: [],
+		modelRegistry: { getAvailable: () => [model] },
+	} as unknown as ExtensionContext;
+	await assert.rejects(
+		resolveConfiguredRoleLaunch(pi, launchCtx, { role: "package-role" } as unknown as Parameters<typeof resolveConfiguredRoleLaunch>[2]),
+		/requires an explicit modelClass/,
+	);
+	const launch = await resolveConfiguredRoleLaunch(pi, launchCtx, { role: "package-role", modelClass: "frontier" });
+	assert.equal(launch.thinkingLevel, "high");
+	assert.deepEqual(valuesAfter(launch.args, "--skill"), [skill, namedSkill]);
 
 	const emptyPackage = join(agentDir, "npm", "node_modules", "@example", "empty");
 	await mkdir(emptyPackage, { recursive: true });
