@@ -573,18 +573,18 @@ export class OrchestratorRunner {
 	private readonly runtime: OrchestratorRuntime;
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
-	private readonly subagentExecutor: EphemeralSubagentExecutor;
+	private readonly textExecutor: EphemeralSubagentExecutor;
 
 	constructor(
 		runtime: OrchestratorRuntime,
 		gitRuntime: GitRuntime & TaskCandidateInspector,
 		store = new FileRunStore(),
-		subagentExecutor: EphemeralSubagentExecutor,
+		textExecutor: EphemeralSubagentExecutor,
 	) {
 		this.runtime = runtime;
 		this.gitRuntime = gitRuntime;
 		this.store = store;
-		this.subagentExecutor = subagentExecutor;
+		this.textExecutor = textExecutor;
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -960,11 +960,48 @@ export class OrchestratorRunner {
 	}
 
 	private async dispatchTextTask(
-		_handle: RunStateHandle,
-		_task: TextTaskState,
-		_scope: DeadlineScope,
+		handle: RunStateHandle,
+		task: TextTaskState,
+		scope: DeadlineScope,
 	): Promise<void> {
-		throw new Error("Text task dispatch is not implemented.");
+		const state = handle.state;
+		const request = taskRequest(state, task.taskId);
+		if (request.kind !== "text") throw new Error(`Task ${task.taskId} is not a text task.`);
+		const attempt = task.attempts.at(-1);
+		if (!attempt || attempt.status !== "running") throw new Error(`Text task ${task.taskId} has no running attempt.`);
+		const prompt = buildTextTaskPrompt(state.request.goal, request, resolveTextTaskContexts(state, request));
+		const result = await scope.call(async (context) => {
+			const handle = await this.runtime.acquireLaunch(request.role, request.modelClass, context);
+			if (handle.launch.role !== request.role || handle.launch.modelClass !== request.modelClass) {
+				await withTransientLaunch(handle, async () => {
+					throw new Error("Text task launch acquisition returned the wrong Role or model class.");
+				});
+			}
+			return await withTransientLaunch(handle, async (verifiedLaunch) => {
+				const launch = { args: [...verifiedLaunch.args], env: { ...verifiedLaunch.env } };
+				return await this.textExecutor.run({
+					signal: context.signal,
+					prepare: async () => ({ launch, task: prompt, cwd: state.root }),
+				});
+			});
+		});
+		if (result.outcome !== "success" || result.exitCode !== 0) {
+			throw new Error("Text task executor did not complete successfully.");
+		}
+		if (result.outputTruncated !== false) throw new Error("Text task executor output was truncated.");
+		const output = result.output.trim();
+		if (!output) throw new Error("Text task executor returned empty output.");
+		if (Buffer.byteLength(output, "utf8") > MAX_PERSISTED_RUNTIME_TEXT_BYTES) {
+			throw new Error(`Text task executor output exceeds ${MAX_PERSISTED_RUNTIME_TEXT_BYTES} UTF-8 bytes.`);
+		}
+		const actualMain = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
+		if (!sameIdentity(actualMain, state.main)) throw new Error("Main drifted during text task execution.");
+		attempt.status = "completed";
+		attempt.failure = undefined;
+		attempt.output = { text: output };
+		task.status = "completed";
+		task.failure = undefined;
+		await handle.save();
 	}
 
 	private async driveWorkerSafely(
