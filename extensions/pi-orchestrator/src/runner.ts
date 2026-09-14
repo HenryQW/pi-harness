@@ -182,6 +182,7 @@ export interface HostRuntime {
 	reconcileHostAllocation(input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation<HostAllocationKind>>;
 	runWorker(input: {
 		readonly goal: ExecuteRequest["goal"];
+		readonly contexts: readonly TextTaskContext[];
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		workerId: string;
@@ -1095,6 +1096,7 @@ export class OrchestratorRunner {
 			try {
 				worker = await scope.call(async (context) => await this.runtime.runWorker({
 					goal: state.request.goal,
+					contexts: resolveTextTaskContexts(state, request),
 					task: request,
 					attempt,
 					workerId,
