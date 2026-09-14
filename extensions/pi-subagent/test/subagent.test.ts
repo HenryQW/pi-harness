@@ -457,6 +457,7 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		const child = JSON.parse(singleOutput(result));
 		assert.equal(child.cwd, await realpath("/tmp"));
 		assert.equal(child.prompt, "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only requested change.");
+		assert.equal(child.args.filter((arg: string) => arg === "--append-system-prompt").length, 1);
 		const extensionArgs = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension");
 		const policyExtension = extensionArgs.at(-1)!;
 		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
@@ -645,6 +646,7 @@ Return concise findings.
 		const directArgs = JSON.parse(singleOutput(direct));
 		assert.equal(directArgs[directArgs.indexOf("--model") + 1], "provider/direct-model");
 		assert.equal(directArgs[directArgs.indexOf("--thinking") + 1], "medium");
+		assert.equal(directArgs.filter((arg: string) => arg === "--append-system-prompt").length, 1);
 
 		const directExplicit = await app.tool.execute("call-3-explicit", {
 			role: "worker",

@@ -583,8 +583,19 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.equal(prepared.systemPrompt, valueAfter(launch.args, "--append-system-prompt"));
 	assert.deepEqual(prepared.args, [...launch.args.slice(0, promptArgIndex), ...launch.args.slice(promptArgIndex + 2)]);
 	assert.equal(prepared.args.includes("--append-system-prompt"), false);
+	const preparedDirectRoute = prepareRoleLaunch(pi, ctx, {
+		role,
+		route: { model, thinkingLevel: "high" },
+		extensions: ["/caller/adapter.ts", "/roles/reviewer.ts"],
+		tools: ["submit", "read"],
+		env: { CALLER_ID: "run-1" },
+	});
+	assert.deepEqual(preparedDirectRoute.args, prepared.args);
+	assert.equal(preparedDirectRoute.args.includes("--append-system-prompt"), false);
+	assert.equal(preparedDirectRoute.args.includes(preparedDirectRoute.systemPrompt), false);
 	const finalized = finalizeRoleLaunch(prepared);
 	assert.deepEqual(finalized, launch);
+	assert.deepEqual(finalizeRoleLaunch(preparedDirectRoute), launch);
 	assert.equal(finalized.args.filter((arg) => arg === "--append-system-prompt").length, 1);
 	assert.throws(
 		() => finalizeRoleLaunch({ ...prepared, args: finalized.args }),

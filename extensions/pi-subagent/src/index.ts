@@ -394,15 +394,27 @@ function stripRoleSystemPrompt(rawArgs: readonly string[]): {
 	return { args, systemPrompt, promptArgIndex };
 }
 
-/** Resolve a Role launch while keeping its system prompt out of its argv. */
+/** Prepare a resolved or resolvable Role launch while keeping its system prompt out of argv. */
 export function prepareRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput,
+): PreparedRoleLaunch;
+export function prepareRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: CreateRoleLaunchInput,
+): PreparedRoleLaunch;
+export function prepareRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: ResolveRoleLaunchInput | CreateRoleLaunchInput,
 ): PreparedRoleLaunch {
 	const role = parseRoleName(input.role.name);
 	const isolation = roleIsolation(input.role.isolation, `Role ${role}`);
-	const launch = resolveRoleLaunch(pi, ctx, input);
+	const launch = "route" in input
+		? createRoleLaunch(pi, ctx, input)
+		: resolveRoleLaunch(pi, ctx, input);
 	const { args, systemPrompt, promptArgIndex } = stripRoleSystemPrompt(launch.args);
 	return { ...launch, args, role, isolation, systemPrompt, promptArgIndex };
 }
