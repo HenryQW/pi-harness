@@ -159,11 +159,19 @@ test("v2 state discriminates text tasks and rejects v1 and launch state", () => 
 	const valid = state(definition);
 	assert.doesNotThrow(() => parseRunState(structuredClone(valid)));
 
+	const completedWithoutOutput = structuredClone(valid) as RunState;
+	const completedTextAttempt = completedWithoutOutput.tasks[0]!;
+	if (completedTextAttempt.kind !== "text") throw new Error("Expected a text task.");
+	delete completedTextAttempt.attempts[0]!.output;
+	assert.throws(() => parseRunState(completedWithoutOutput), /completed text attempt.*lacks output/i);
+
 	const outputWithoutCompletion = structuredClone(valid) as RunState;
 	const textAttempt = outputWithoutCompletion.tasks[0]!;
 	if (textAttempt.kind !== "text") throw new Error("Expected a text task.");
 	textAttempt.attempts[0]!.status = "failed";
 	assert.throws(() => parseRunState(outputWithoutCompletion), /output without completion/);
+	delete textAttempt.attempts[0]!.output;
+	assert.throws(() => parseRunState(outputWithoutCompletion), /completed text task.*latest completed attempt/i);
 
 	const oldTaskField = structuredClone(valid) as RunState & { tasks: Array<Record<string, unknown>> };
 	oldTaskField.tasks[1]!.implementerLaunchKey = "implementer/balanced";

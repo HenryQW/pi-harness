@@ -601,14 +601,20 @@ function requireCompletedTaskEvidence(taskState: ChangesetTaskState, request: Ch
 }
 
 function validateTextTaskState(taskState: TextTaskState): void {
+	const latest = taskState.attempts.at(-1);
 	for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
 		if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed text attempt order for ${taskState.taskId}.`);
-		if (attempt.output && attempt.status !== "completed") {
+		if (attempt.status === "completed") {
+			if (!attempt.output) throw new Error(`Completed text attempt ${attempt.number} for ${taskState.taskId} lacks output.`);
+		} else if (attempt.output) {
 			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has output without completion.`);
 		}
 		if (attempt.failure !== undefined && attempt.status !== "failed") {
 			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has failure without failure status.`);
 		}
+	}
+	if (taskState.status === "completed" && latest?.status !== "completed") {
+		throw new Error(`Completed text task ${taskState.taskId} lacks a latest completed attempt.`);
 	}
 }
 
