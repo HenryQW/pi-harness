@@ -120,7 +120,6 @@ class FakeRuntime implements OrchestratorRuntime {
 	allocationPlanGoals: string[] = [];
 	reconciliationCalls: AllocationKind[] = [];
 	agentStartCalls: {
-		launchKey: string;
 		args: string[];
 		exposedPersistedFields: boolean;
 	}[] = [];
@@ -136,7 +135,6 @@ class FakeRuntime implements OrchestratorRuntime {
 		scope: "task" | "final";
 		phase: "authoritative" | "final";
 		taskId?: string;
-		launchKey: string;
 		workerTermination?: NonNullable<TaskAttempt["termination"]>["status"];
 		args: string[];
 		exposedPersistedFields: boolean;
@@ -237,14 +235,12 @@ class FakeRuntime implements OrchestratorRuntime {
 		const args = [...record.args];
 		args.splice(record.promptArgIndex, 0, "--append-system-prompt", promptPath);
 		const common = {
-			key: record.key,
 			modelClass: record.modelClass,
 			model: record.model,
 			thinkingLevel: record.thinkingLevel,
 			args,
 			env: { ...record.env },
 			tools: [...record.tools],
-			fingerprint: record.fingerprint,
 		};
 		const launch = record.role === "implementer"
 			? { ...common, role: "implementer" as const }
@@ -354,7 +350,6 @@ class FakeRuntime implements OrchestratorRuntime {
 		const handle = await input.acquireLaunch();
 		return await withTransientLaunch(handle, async (launch) => {
 			this.agentStartCalls.push({
-				launchKey: launch.key,
 				args: [...launch.args],
 				exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
 			});
@@ -462,7 +457,6 @@ class FakeRuntime implements OrchestratorRuntime {
 				scope: input.scope,
 				phase: input.phase,
 				...(input.taskId ? { taskId: input.taskId } : {}),
-				launchKey: launch.key,
 				...(input.attempt?.termination ? { workerTermination: input.attempt.termination.status } : {}),
 				args: [...launch.args],
 				exposedPersistedFields: "rawArgs" in launch || "prompt" in launch,
@@ -734,8 +728,6 @@ test("mixed Role/model launches remain keyed and recover exactly before finaliza
 	assert.equal(completed.state.deadline, originalDeadline);
 	assert.equal(completed.state.deadline, completed.state.deadlineStartedAt + completed.state.request.budgetMs);
 	assert.deepEqual(runtime.recoverCalls, [interrupted.state.launchRecords]);
-	assert.deepEqual(runtime.agentStartCalls.map(({ launchKey }) => launchKey), ["implementer/fast", "implementer/frontier"]);
-	assert.deepEqual(runtime.reviewCalls.map(({ launchKey }) => launchKey), ["reviewer/balanced", "reviewer/fav"]);
 });
 
 test("JIT Role acquisition immediately precedes each launch and durable argv never reaches spawn", async (t) => {

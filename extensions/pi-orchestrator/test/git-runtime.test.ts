@@ -14,7 +14,6 @@ import { sameIdentity, type ChangesetTaskRequest, type CheckBatchEvidence, type 
 import type { OperationContext, TransientLaunchHandle, VerifiedLaunch } from "../src/runner.ts";
 
 const launch: VerifiedLaunch = {
-	key: "reviewer/fast",
 	role: "reviewer",
 	modelClass: "fast",
 	model: "provider/model",
@@ -22,7 +21,6 @@ const launch: VerifiedLaunch = {
 	args: ["--model", "provider/model"],
 	env: {},
 	tools: ["read", "grep", "find", "ls"],
-	fingerprint: "1".repeat(64),
 };
 
 function acquiredReviewer(cleanup: () => Promise<void> = async () => {}): TransientLaunchHandle<VerifiedLaunch> {

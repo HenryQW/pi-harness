@@ -102,7 +102,6 @@ export type IntegrationResult =
 
 /** A just-in-time launch whose argv contains only an ephemeral Role prompt path. */
 export interface VerifiedLaunch {
-	readonly key: string;
 	readonly role: string;
 	readonly modelClass: ModelClass;
 	readonly model: string;
@@ -110,7 +109,6 @@ export interface VerifiedLaunch {
 	readonly args: readonly string[];
 	readonly env: Readonly<Record<string, string>>;
 	readonly tools: readonly string[];
-	readonly fingerprint: string;
 }
 
 export interface TransientLaunchHandle<Launch extends VerifiedLaunch = VerifiedLaunch> {

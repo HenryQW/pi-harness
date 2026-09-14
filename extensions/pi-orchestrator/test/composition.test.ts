@@ -33,7 +33,6 @@ const IDENTITY: WorkspaceIdentity = {
 };
 
 const REVIEWER_LAUNCH: VerifiedLaunch = {
-	key: "reviewer/fast",
 	role: "reviewer",
 	modelClass: "fast",
 	model: "provider/model",
@@ -41,7 +40,6 @@ const REVIEWER_LAUNCH: VerifiedLaunch = {
 	args: ["--model", "provider/model", "--thinking", "high"],
 	env: {},
 	tools: ["read", "grep", "find", "ls"],
-	fingerprint: "3".repeat(64),
 };
 
 function operationContext(timeoutMs = 20_000): OperationContext {

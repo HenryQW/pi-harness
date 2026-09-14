@@ -645,14 +645,12 @@ async function materializeTransientLaunch(
 		const args = [...record.args];
 		args.splice(record.promptArgIndex, 0, PROMPT_FLAG, promptPath);
 		const common = {
-			key: record.key,
 			modelClass: record.modelClass,
 			model: record.model,
 			thinkingLevel: record.thinkingLevel,
 			args: Object.freeze(args),
 			env: Object.freeze({ ...record.env }),
 			tools: Object.freeze([...record.tools]),
-			fingerprint: record.fingerprint,
 		};
 		const launch: VerifiedLaunch = Object.freeze({ ...common, role: record.role });
 		let cleanup: Promise<void> | undefined;

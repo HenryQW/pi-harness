@@ -331,7 +331,6 @@ function schema(overrides: Record<string, unknown> = {}): Record<string, unknown
 }
 
 const launch: VerifiedLaunch = {
-	key: "implementer/fast",
 	role: "implementer",
 	modelClass: "fast",
 	model: "provider/model",
@@ -344,7 +343,6 @@ const launch: VerifiedLaunch = {
 	],
 	env: {},
 	tools: ["read", "edit"],
-	fingerprint: "f".repeat(64),
 };
 
 function transientLaunch(cleanup: () => Promise<void> = async () => {}): {
