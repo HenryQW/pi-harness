@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
+import { selectRoleMcpConfig } from "./mcp-role.ts";
 import {
 	loadTaskModelsConfig,
 	modelReference,
@@ -133,6 +134,12 @@ export interface ResolveRoleLaunchInput extends Omit<CreateRoleLaunchInput, "rou
 	task: ModelTask;
 	modelClass?: ProfileName;
 	agentDir?: string;
+}
+
+export interface ResolveConfiguredRoleLaunchInput {
+	role: string;
+	modelClass?: ProfileName;
+	task: ModelTask;
 }
 
 export interface ResolvedRoleSkills {
@@ -438,6 +445,13 @@ function stripRoleSystemPrompt(rawArgs: readonly string[]): {
 	return { args, systemPrompt, promptArgIndex };
 }
 
+function prepareResolvedRoleLaunch(roleDefinition: Role, launch: ResolvedRoleLaunch): PreparedRoleLaunch {
+	const role = parseRoleName(roleDefinition.name);
+	const isolation = roleIsolation(roleDefinition.isolation, `Role ${role}`);
+	const { args, systemPrompt, promptArgIndex } = stripRoleSystemPrompt(launch.args);
+	return { ...launch, args, role, isolation, systemPrompt, promptArgIndex };
+}
+
 /** Prepare a resolved or resolvable Role launch while keeping its system prompt out of argv. */
 export function prepareRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
@@ -454,13 +468,45 @@ export function prepareRoleLaunch(
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput | CreateRoleLaunchInput,
 ): PreparedRoleLaunch {
-	const role = parseRoleName(input.role.name);
-	const isolation = roleIsolation(input.role.isolation, `Role ${role}`);
 	const launch = "route" in input
 		? createRoleLaunch(pi, ctx, input)
 		: resolveRoleLaunch(pi, ctx, input);
-	const { args, systemPrompt, promptArgIndex } = stripRoleSystemPrompt(launch.args);
-	return { ...launch, args, role, isolation, systemPrompt, promptArgIndex };
+	return prepareResolvedRoleLaunch(input.role, launch);
+}
+
+/** Resolve and prepare a configured Role with its package-owned resources. */
+export async function resolveConfiguredRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: ResolveConfiguredRoleLaunchInput,
+): Promise<PreparedRoleLaunch> {
+	const roleName = parseRoleName(input.role);
+	const matches = loadRoles().filter((role) => role.name === roleName);
+	if (matches.length !== 1) throw new Error(`Required configured Role ${roleName} is missing or ambiguous.`);
+	const role = matches[0]!;
+	if (role.mcps?.length) {
+		const { loadMcpConfig } = await import("pi-mcp-adapter/config");
+		selectRoleMcpConfig(loadMcpConfig(join(getAgentDir(), "mcp.json"), ctx.cwd), role.mcps);
+	}
+	const resources = await resolveRolePackageResources(role, ctx);
+	const effectiveRole: Role = { ...role, extensions: resources.extensions };
+	const launch = resolveRoleLaunch(pi, ctx, {
+		role: effectiveRole,
+		task: input.task,
+		...(input.modelClass === undefined ? {} : { modelClass: input.modelClass }),
+	});
+	const additions = [
+		"--no-prompt-templates",
+		"--no-themes",
+		...resources.skills.flatMap((path) => ["--skill", path]),
+		...resources.prompts.flatMap((path) => ["--prompt-template", path]),
+		...resources.themes.flatMap((path) => ["--theme", path]),
+	];
+	const promptArgIndex = launch.args.indexOf(SYSTEM_PROMPT_FLAG);
+	if (promptArgIndex < 0) throw new Error(`Resolved Role launch has no ${SYSTEM_PROMPT_FLAG}.`);
+	const args = [...launch.args];
+	args.splice(promptArgIndex, 0, ...additions);
+	return prepareResolvedRoleLaunch(effectiveRole, { ...launch, args });
 }
 
 /** Restore the system prompt pair after a caller has prepared its launch argv. */
