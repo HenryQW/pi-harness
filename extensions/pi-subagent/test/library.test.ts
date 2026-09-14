@@ -461,6 +461,12 @@ test("Role MCP allowlists load the adapter wrapper without allowing ambient serv
 	assert.throws(() => roleMcpFlagValue([policyFlag, "[]", policyFlag, "[]"], policyFlag), /at most once/);
 	assert.deepEqual(launch.env, {});
 	assert.match(valuesAfter(launch.args, "--extension").at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
+	const noMcpLaunch = createRoleLaunch(pi, { isProjectTrusted: () => true }, {
+		role: { ...role, mcps: [] },
+		route: { model, thinkingLevel: "high" },
+	});
+	assert.equal(noMcpLaunch.args.includes(policyFlag), false);
+	assert.ok(valuesAfter(noMcpLaunch.args, "--extension").every((extension) => !/[\\/]role-mcp\.ts$/.test(extension)));
 	assert.deepEqual(selectRoleMcpConfig({
 		mcpServers: { other: { url: "https://other.test" }, docs: { url: "https://docs.test" }, browser: { command: "browser" } },
 		settings: { directTools: true, agentPluginPaths: ["./plugins"], hostConfigDiscovery: "on" },

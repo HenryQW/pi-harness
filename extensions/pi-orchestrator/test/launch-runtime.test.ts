@@ -467,7 +467,7 @@ test("tool preflight rejects missing, child-excluded, sdk, inline, unknown, unve
 	}
 });
 
-test("Implementer MCP policy and adapter config are fingerprinted while Reviewer judgment MCP access is filtered", async (t) => {
+test("Implementer MCP policy isolates current config while Reviewer judgment MCP access is filtered", async (t) => {
 	const fixture = await harness(t);
 	const adapter = await installMcpAdapter(fixture);
 	await fixture.setRole({ name: "implementer", mcps: ["real-browser", "codegraph"] });
@@ -481,14 +481,11 @@ test("Implementer MCP policy and adapter config are fingerprinted while Reviewer
 	assert.deepEqual(implementer.env, {});
 	assert.deepEqual(implementer.roleMcps, ["real-browser", "codegraph"]);
 	assert.deepEqual(implementer.roleMcpResources, [await realpath(adapter.extension), await realpath(adapter.configModule)]);
-	assert.ok(implementer.mcpConfigSha256);
 	assert.ok(implementer.args.includes("--pi-subagent-role-mcps"));
-	assert.ok(implementer.args.includes("--pi-subagent-role-mcp-config-sha256"));
 	assert.match(implementer.roleExtensions.at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
 	assert.deepEqual(reviewer.env, {});
 	assert.equal(reviewer.roleMcps, undefined);
 	assert.equal(reviewer.roleMcpResources, undefined);
-	assert.equal(reviewer.mcpConfigSha256, undefined);
 	assert.doesNotMatch(reviewer.roleExtensions.join("\n"), /role-mcp\.ts$/);
 
 	await writeFile(adapter.extension, "export default function changedAdapter() {}\n");
@@ -497,7 +494,8 @@ test("Implementer MCP policy and adapter config are fingerprinted while Reviewer
 	const config = JSON.parse(await readFile(adapter.config, "utf8"));
 	config.mcpServers.codegraph.command = "changed-codegraph";
 	await writeFile(adapter.config, JSON.stringify(config));
-	await assert.rejects(fixture.runtime.acquireLaunch(implementer, operationContext()), /drifted/i);
+	const updatedConfigLaunch = await fixture.runtime.acquireLaunch(implementer, operationContext());
+	await updatedConfigLaunch.cleanup();
 });
 
 test("Reviewer Role keeps exact tools while filtering configured resources from judgment launches", async (t) => {

@@ -338,7 +338,6 @@ const launch: VerifiedLaunch = {
 	args: [
 		"--model", "provider/model",
 		"--pi-subagent-role-mcps", "[\"codegraph\"]",
-		"--pi-subagent-role-mcp-config-sha256", "a".repeat(64),
 		"--append-system-prompt", "/private/implementer.prompt",
 	],
 	env: {},
@@ -797,7 +796,6 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 					...launch.args,
 				]);
 				assert.ok(args.includes("--pi-subagent-role-mcps"));
-				assert.ok(args.includes("--pi-subagent-role-mcp-config-sha256"));
 				assert.ok(!args.includes("Implementer raw prompt must stay private"));
 			},
 			result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
