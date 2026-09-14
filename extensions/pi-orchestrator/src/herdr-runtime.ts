@@ -334,6 +334,7 @@ function assignment(input: {
 	worktreeCwd: string;
 	failure?: string;
 }): string {
+	if (input.task.kind !== "changeset") throw new Error("Herdr assignment requires a changeset task.");
 	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
 	const text = [
 		`Task: ${input.task.id}`,
