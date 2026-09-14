@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
 	checkBatchPasses,
 	CLEANUP_KINDS,
@@ -548,11 +549,18 @@ export class OrchestratorRunner {
 	private readonly runtime: OrchestratorRuntime;
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
+	private readonly subagentExecutor: EphemeralSubagentExecutor;
 
-	constructor(runtime: OrchestratorRuntime, gitRuntime: GitRuntime & TaskCandidateInspector, store = new FileRunStore()) {
+	constructor(
+		runtime: OrchestratorRuntime,
+		gitRuntime: GitRuntime & TaskCandidateInspector,
+		store = new FileRunStore(),
+		subagentExecutor: EphemeralSubagentExecutor,
+	) {
 		this.runtime = runtime;
 		this.gitRuntime = gitRuntime;
 		this.store = store;
+		this.subagentExecutor = subagentExecutor;
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
