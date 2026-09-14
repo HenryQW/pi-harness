@@ -606,15 +606,15 @@ function validateTextTaskState(taskState: TextTaskState): void {
 		if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed text attempt order for ${taskState.taskId}.`);
 		if (attempt.status === "completed") {
 			if (!attempt.output) throw new Error(`Completed text attempt ${attempt.number} for ${taskState.taskId} lacks output.`);
+			if (taskState.status !== "completed" || attemptIndex !== taskState.attempts.length - 1) {
+				throw new Error(`Completed text attempt ${attempt.number} for ${taskState.taskId} must be the latest attempt of a completed task.`);
+			}
 		} else if (attempt.output) {
 			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has output without completion.`);
 		}
 		if (attempt.failure !== undefined && attempt.status !== "failed") {
 			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has failure without failure status.`);
 		}
-	}
-	if (latest?.status === "completed" && taskState.status !== "completed") {
-		throw new Error(`Text task ${taskState.taskId} must be completed when its latest attempt is completed.`);
 	}
 	if (taskState.status === "completed" && latest?.status !== "completed") {
 		throw new Error(`Completed text task ${taskState.taskId} lacks a latest completed attempt.`);

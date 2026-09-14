@@ -169,7 +169,24 @@ test("v2 state discriminates text tasks and rejects v1 and launch state", () => 
 	const textTaskWithOutput = completedAttemptWithoutTaskCompletion.tasks[0]!;
 	if (textTaskWithOutput.kind !== "text") throw new Error("Expected a text task.");
 	textTaskWithOutput.status = "running";
-	assert.throws(() => parseRunState(completedAttemptWithoutTaskCompletion), /must be completed when its latest attempt is completed/i);
+	assert.throws(() => parseRunState(completedAttemptWithoutTaskCompletion), /latest attempt of a completed task/i);
+
+	const completedOutputThenFailed = structuredClone(valid) as RunState;
+	const retriedTextTask = completedOutputThenFailed.tasks[0]!;
+	if (retriedTextTask.kind !== "text") throw new Error("Expected a text task.");
+	retriedTextTask.status = "needs_attention";
+	retriedTextTask.attempts.push({ number: 2, status: "failed", failure: "Retry failed." });
+	assert.throws(() => parseRunState(completedOutputThenFailed), /latest attempt of a completed task/i);
+
+	const failedThenRunning = structuredClone(valid) as RunState;
+	const runningTextTask = failedThenRunning.tasks[0]!;
+	if (runningTextTask.kind !== "text") throw new Error("Expected a text task.");
+	runningTextTask.status = "running";
+	runningTextTask.attempts = [
+		{ number: 1, status: "failed", failure: "First attempt failed." },
+		{ number: 2, status: "running" },
+	];
+	assert.doesNotThrow(() => parseRunState(failedThenRunning));
 
 	const outputWithoutCompletion = structuredClone(valid) as RunState;
 	const textAttempt = outputWithoutCompletion.tasks[0]!;
