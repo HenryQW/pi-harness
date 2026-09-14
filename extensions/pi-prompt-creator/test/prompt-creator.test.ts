@@ -37,7 +37,7 @@ const model = {
 };
 
 function success(output: string): EphemeralSubagentResult {
-	return { outcome: "success", exitCode: 0, output, stderr: "", stopReason: "stop" };
+	return { outcome: "success", exitCode: 0, output, outputTruncated: false, stderr: "", stopReason: "stop" };
 }
 
 function controlledExecutor(): { executor: EphemeralSubagentExecutor; runs: PendingRun[] } {

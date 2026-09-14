@@ -219,6 +219,28 @@ setTimeout(() => {
 	assert.ok(Buffer.byteLength(result.output, "utf8") <= 50 * 1024);
 });
 
+test("executor reports bounded assistant output truncation for success and failure outcomes", async (t) => {
+	const literalMarker = "[Output truncated: 1 bytes omitted]";
+	const oversized = "x".repeat(60 * 1024);
+	const cwd = await useRunner(t, `const task = process.argv.at(-1);
+const failure = task.includes("failure");
+const text = task.includes("large") ? "x".repeat(60 * 1024) : "[Output truncated: 1 bytes omitted]";
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: failure ? "error" : "stop" } }));
+if (failure) process.exitCode = 2;
+`);
+	for (const [task, outcome, expectedOutput, outputTruncated] of [
+		["success-small", "success", literalMarker, false],
+		["success-large", "success", oversized, true],
+		["failure-small", "failure", literalMarker, false],
+		["failure-large", "failure", oversized, true],
+	] as const) {
+		const result = await executor().run({ prepare: async () => prepared(cwd, task) });
+		assert.equal(result.outcome, outcome);
+		assert.equal(result.output, capEphemeralSubagentOutput(expectedOutput));
+		assert.equal(result.outputTruncated, outputTruncated);
+	}
+});
+
 test("executor discards oversized known lifecycle events", async (t) => {
 	const cwd = await useRunner(t, `const event = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
