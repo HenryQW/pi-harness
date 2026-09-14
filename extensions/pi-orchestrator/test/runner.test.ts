@@ -22,8 +22,7 @@ import {
 	type RebaseResult,
 	type ReviewResult,
 	type TransientLaunchHandle,
-	type VerifiedImplementerLaunch,
-	type VerifiedReviewerLaunch,
+	type VerifiedLaunch,
 	withTransientLaunch,
 	type WorkerResult,
 } from "../src/runner.ts";
@@ -346,7 +345,7 @@ class FakeRuntime implements OrchestratorRuntime {
 			intent: HostAllocationIntent;
 			task: TaskRequest;
 			attempt: TaskAttempt;
-			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedLaunch>>;
 		},
 		context: OperationContext,
 	): Promise<HostAllocationResult> {
@@ -451,7 +450,7 @@ class FakeRuntime implements OrchestratorRuntime {
 			taskId?: string;
 			attempt?: TaskAttempt;
 			tip: WorkspaceIdentity;
-			acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
+			acquireLaunch(): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 		},
 		context: OperationContext,
 	): Promise<ReviewResult> {

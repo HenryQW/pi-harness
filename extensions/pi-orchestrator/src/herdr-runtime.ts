@@ -40,7 +40,7 @@ import {
 	type InFlightTaskCandidateInspector,
 	type OperationContext,
 	type TransientLaunchHandle,
-	type VerifiedImplementerLaunch,
+	type VerifiedLaunch,
 	withTransientLaunch,
 	type WorkerResult,
 	type WorkerTabAllocationResult,
@@ -490,7 +490,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			intent: HostAllocationIntent;
 			task: TaskRequest;
 			attempt: TaskAttempt;
-			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedLaunch>>;
 		},
 		context: OperationContext,
 	): Promise<HostAllocationResult> {
@@ -865,7 +865,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	private async allocateAgent(
 		allocation: AgentAllocationIntent,
 		attempt: TaskAttempt,
-		acquireLaunch: (() => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>) | undefined,
+		acquireLaunch: (() => Promise<TransientLaunchHandle<VerifiedLaunch>>) | undefined,
 		context: OperationContext,
 	): Promise<AgentAllocationResult> {
 		assertAgentIntent(allocation, attempt);

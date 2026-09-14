@@ -11,9 +11,9 @@ import {
 	type ExactReviewExecutorInput,
 } from "../src/git-runtime.ts";
 import { sameIdentity, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
-import type { OperationContext, TransientLaunchHandle, VerifiedReviewerLaunch } from "../src/runner.ts";
+import type { OperationContext, TransientLaunchHandle, VerifiedLaunch } from "../src/runner.ts";
 
-const launch: VerifiedReviewerLaunch = {
+const launch: VerifiedLaunch = {
 	key: "reviewer/fast",
 	role: "reviewer",
 	modelClass: "fast",
@@ -25,7 +25,7 @@ const launch: VerifiedReviewerLaunch = {
 	fingerprint: "1".repeat(64),
 };
 
-function acquiredReviewer(cleanup: () => Promise<void> = async () => {}): TransientLaunchHandle<VerifiedReviewerLaunch> {
+function acquiredReviewer(cleanup: () => Promise<void> = async () => {}): TransientLaunchHandle<VerifiedLaunch> {
 	return { launch, cleanup };
 }
 

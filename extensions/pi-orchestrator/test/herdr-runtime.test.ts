@@ -12,7 +12,7 @@ import {
 	type HostProcessOptions,
 	type HostProcessRunner,
 } from "../src/herdr-runtime.ts";
-import type { InFlightTaskCandidateInspection, OperationContext, VerifiedImplementerLaunch } from "../src/runner.ts";
+import type { InFlightTaskCandidateInspection, OperationContext, VerifiedLaunch } from "../src/runner.ts";
 import type {
 	AllocationKind,
 	AgentAllocationIntent,
@@ -330,7 +330,7 @@ function schema(overrides: Record<string, unknown> = {}): Record<string, unknown
 	};
 }
 
-const launch: VerifiedImplementerLaunch = {
+const launch: VerifiedLaunch = {
 	key: "implementer/fast",
 	role: "implementer",
 	modelClass: "fast",
@@ -348,7 +348,7 @@ const launch: VerifiedImplementerLaunch = {
 };
 
 function transientLaunch(cleanup: () => Promise<void> = async () => {}): {
-	launch: VerifiedImplementerLaunch;
+	launch: VerifiedLaunch;
 	cleanup(): Promise<void>;
 } {
 	return { launch, cleanup };

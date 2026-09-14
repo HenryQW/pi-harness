@@ -104,8 +104,9 @@ export type IntegrationResult =
 	| { outcome: "failed" | "drift" | "unknown"; failure: string };
 
 /** A just-in-time launch whose argv contains only an ephemeral Role prompt path. */
-export interface VerifiedLaunchBase {
+export interface VerifiedLaunch {
 	readonly key: string;
+	readonly role: string;
 	readonly modelClass: ModelClass;
 	readonly model: string;
 	readonly thinkingLevel: string;
@@ -114,16 +115,6 @@ export interface VerifiedLaunchBase {
 	readonly tools: readonly string[];
 	readonly fingerprint: string;
 }
-
-export interface VerifiedImplementerLaunch extends VerifiedLaunchBase {
-	readonly role: "implementer";
-}
-
-export interface VerifiedReviewerLaunch extends VerifiedLaunchBase {
-	readonly role: "reviewer";
-}
-
-export type VerifiedLaunch = VerifiedImplementerLaunch | VerifiedReviewerLaunch;
 
 export interface TransientLaunchHandle<Launch extends VerifiedLaunch = VerifiedLaunch> {
 	readonly launch: Launch;
@@ -190,7 +181,7 @@ export interface HostRuntime {
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		/** Invoked only after pane, lease, and startability checks at the final agent-start boundary. */
-		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<HostAllocationResult>;
 	reconcileHostAllocation(input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation<HostAllocationKind>>;
 	runWorker(input: {
@@ -264,7 +255,7 @@ export interface GitRuntime {
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
+		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult>;
 	inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	rebase(input: {
@@ -841,7 +832,7 @@ export class OrchestratorRunner {
 										throw new Error("Implementer launch acquisition returned the wrong Role.");
 									});
 								}
-								return handle as TransientLaunchHandle<VerifiedImplementerLaunch>;
+								return handle;
 							} } : {}),
 						}, context));
 					}
@@ -1175,7 +1166,7 @@ export class OrchestratorRunner {
 						throw new Error("Reviewer launch acquisition returned the wrong Role.");
 					});
 				}
-				return handle as TransientLaunchHandle<VerifiedReviewerLaunch>;
+				return handle;
 			},
 		}, context));
 		const identityAfter = runtimeIdentity(result.identityAfter, "Post-review identity");

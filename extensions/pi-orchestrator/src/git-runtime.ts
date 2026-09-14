@@ -39,7 +39,7 @@ import {
 	type ReviewResult,
 	type TransientLaunchHandle,
 	type WorktreeAllocationResult,
-	type VerifiedReviewerLaunch,
+	type VerifiedLaunch,
 	withTransientLaunch,
 } from "./runner.ts";
 
@@ -72,7 +72,7 @@ export interface ExactReviewExecutorInput {
 	scope: "task" | "final";
 	taskId?: string;
 	criterion: string;
-	launch: VerifiedReviewerLaunch;
+	launch: VerifiedLaunch;
 	cwd: string;
 	packet: ExactReviewPacket;
 }
@@ -347,7 +347,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
+		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult> {
 		if (!this.executeReview) throw new Error("Exact Reviewer execution is not configured.");
 		if (input.scope === "final") {

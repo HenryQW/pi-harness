@@ -21,7 +21,7 @@ import type {
 	CoordinatorRuntime,
 	HostRuntime,
 	OperationContext,
-	VerifiedReviewerLaunch,
+	VerifiedLaunch,
 } from "../src/runner.ts";
 import type { WorkspaceIdentity } from "../src/schema.ts";
 
@@ -32,7 +32,7 @@ const IDENTITY: WorkspaceIdentity = {
 	tree: "2".repeat(40),
 };
 
-const REVIEWER_LAUNCH: VerifiedReviewerLaunch = {
+const REVIEWER_LAUNCH: VerifiedLaunch = {
 	key: "reviewer/fast",
 	role: "reviewer",
 	modelClass: "fast",
