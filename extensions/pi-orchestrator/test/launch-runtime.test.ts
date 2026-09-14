@@ -146,9 +146,15 @@ async function writeProfiles(agentDir: string, overrides: Partial<Record<ModelCl
 
 async function harness(t: test.TestContext) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-launch-"));
-	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "root");
 	const agentDir = join(directory, "agent");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(async () => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(directory, { recursive: true, force: true });
+	});
 	const orchestratorEntrypoint = join(directory, "orchestrator-entry.ts");
 	await mkdir(root);
 	await writeFile(orchestratorEntrypoint, "export default function orchestrator() {}\n");
@@ -193,7 +199,6 @@ async function harness(t: test.TestContext) {
 			return { ...MAIN };
 		},
 		orchestratorEntrypoint,
-		agentDir,
 	});
 	async function setRole(role: Parameters<typeof roleMarkdown>[0]): Promise<void> {
 		const directory = join(agentDir, "config", "pi-subagent");

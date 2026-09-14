@@ -82,7 +82,6 @@ export interface LaunchRuntimeOptions {
 	resolveRoot(cwd: string, context: OperationContext): Promise<string>;
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	orchestratorEntrypoint: string;
-	agentDir?: string;
 	now?: () => number;
 	randomToken?: () => string;
 }
@@ -92,7 +91,6 @@ type PrepareResolvedRoleLaunchInput = {
 	modelClass: ModelClass;
 	effectiveRole: SubagentRole;
 	launch: ResolvedRoleLaunch;
-	agentDir?: string;
 	commands: ReturnType<ExtensionAPI["getCommands"]>;
 	tools: readonly ToolInfo[];
 	knownFiles: KnownLaunchFiles;
@@ -102,10 +100,6 @@ type PrepareResolvedRoleLaunchInput = {
 
 function abortIfNeeded(signal?: AbortSignal): void {
 	signal?.throwIfAborted();
-}
-
-function expectedLaunchEnv(agentDir?: string): Record<string, string> {
-	return agentDir === undefined ? {} : { PI_CODING_AGENT_DIR: agentDir };
 }
 
 function isMissing(error: unknown): boolean {
@@ -130,8 +124,8 @@ function rejectForbiddenRoleExtensionSource(value: string, role: string): void {
 
 function packageManager(
 	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-	agentDir: string,
 ): DefaultPackageManager {
+	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(ctx.cwd, agentDir, { projectTrusted: ctx.isProjectTrusted() });
 	return new DefaultPackageManager({ cwd: ctx.cwd, agentDir, settingsManager });
 }
@@ -139,12 +133,11 @@ function packageManager(
 async function resolveRoleResources(
 	sources: readonly string[],
 	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-	agentDir: string | undefined,
 	signal?: AbortSignal,
 ): Promise<ResolvedRoleResources> {
 	abortIfNeeded(signal);
 	if (!sources.length) return { extensions: [], skills: [], prompts: [], themes: [], mcpResources: [] };
-	const resolved = await packageManager(ctx, agentDir ?? getAgentDir()).resolveExtensionSources([...sources]);
+	const resolved = await packageManager(ctx).resolveExtensionSources([...sources]);
 	abortIfNeeded(signal);
 	const resourceGroups = [resolved.extensions, resolved.skills, resolved.prompts, resolved.themes]
 		.map((resources) => resources.filter((resource) => resource.enabled));
@@ -163,13 +156,12 @@ async function resolveRoleResources(
 async function resolveRoleMcpResources(
 	allowlist: readonly string[],
 	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-	agentDir: string | undefined,
 	signal?: AbortSignal,
 ): Promise<Pick<ResolvedRoleResources, "mcpResources">> {
 	if (!allowlist.length) return { mcpResources: [] };
 	abortIfNeeded(signal);
-	const resolvedAgentDir = agentDir ?? getAgentDir();
-	const resolved = await packageManager(ctx, resolvedAgentDir).resolveExtensionSources(["npm:pi-mcp-adapter"]);
+	const agentDir = getAgentDir();
+	const resolved = await packageManager(ctx).resolveExtensionSources(["npm:pi-mcp-adapter"]);
 	const adapters = resolved.extensions.filter((resource) => resource.enabled && resource.metadata.source === "npm:pi-mcp-adapter");
 	if (adapters.length !== 1) throw new Error("pi-mcp-adapter must resolve to exactly one enabled extension for an MCP-enabled Role.");
 	const adapter = await canonicalRegularFile(adapters[0]!.path, "pi-mcp-adapter extension", signal);
@@ -184,7 +176,7 @@ async function resolveRoleMcpResources(
 		loadMcpConfig?: (overridePath?: string, cwd?: string) => { mcpServers: Record<string, unknown>; settings?: Record<string, unknown> };
 	};
 	if (typeof imported.loadMcpConfig !== "function") throw new Error("pi-mcp-adapter/config does not export loadMcpConfig.");
-	selectRoleMcpConfig(imported.loadMcpConfig(join(resolvedAgentDir, "mcp.json"), ctx.cwd), allowlist);
+	selectRoleMcpConfig(imported.loadMcpConfig(join(agentDir, "mcp.json"), ctx.cwd), allowlist);
 	return { mcpResources: [adapter, configModule] };
 }
 
@@ -355,18 +347,14 @@ async function prepareResolvedRoleLaunch(
 	input: PrepareResolvedRoleLaunchInput,
 ): Promise<PreparedLaunch> {
 	const {
-		role, modelClass, effectiveRole, launch, agentDir, commands, tools, knownFiles, signal,
+		role, modelClass, effectiveRole, launch, commands, tools, knownFiles, signal,
 		packageResources = { skills: [], prompts: [], themes: [], mcpResources: [] },
 	} = input;
 	validateRoleDefinition(role, effectiveRole);
 	if (launch.missingSkills.length) {
 		throw new Error(`Role ${role} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
 	}
-	if (!isDeepStrictEqual(launch.env, expectedLaunchEnv(agentDir))) {
-		throw new Error(agentDir === undefined
-			? `Resolved ${role} launch environment must be empty.`
-			: `Resolved ${role} launch environment must contain only the configured PI_CODING_AGENT_DIR.`);
-	}
+	if (Object.keys(launch.env).length) throw new Error(`Resolved ${role} launch environment must be empty.`);
 	const expectedMcps = effectiveRole.mcps ?? [];
 	const expectedMcpPolicy = expectedMcps.length ? [JSON.stringify(expectedMcps)] : [];
 	if (!isDeepStrictEqual(valuesAfter(launch.args, `--${ROLE_MCP_POLICY_FLAG}`), expectedMcpPolicy)) {
@@ -569,14 +557,14 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		knownFiles?: KnownLaunchFiles,
 	): Promise<PreparedLaunch> {
 		abortIfNeeded(context.signal);
-		const matches = loadRoles(this.options.agentDir).filter((candidate) => candidate.name === role);
+		const matches = loadRoles().filter((candidate) => candidate.name === role);
 		if (matches.length !== 1) throw new Error(`Required effective Role ${role} is missing or ambiguous.`);
 		const configuredRole = matches[0]!;
 		validateRoleDefinition(role, configuredRole);
 		const ctx = this.options.context();
 		const resources = {
-			...await resolveRoleResources(configuredRole.extensions, ctx, this.options.agentDir, context.signal),
-			...await resolveRoleMcpResources(configuredRole.mcps ?? [], ctx, this.options.agentDir, context.signal),
+			...await resolveRoleResources(configuredRole.extensions, ctx, context.signal),
+			...await resolveRoleMcpResources(configuredRole.mcps ?? [], ctx, context.signal),
 		};
 		const effectiveRole: SubagentRole = {
 			...configuredRole,
@@ -587,15 +575,12 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 			role: effectiveRole,
 			task: ORCHESTRATOR_MODEL_TASK,
 			modelClass,
-			agentDir: this.options.agentDir,
-			env: expectedLaunchEnv(this.options.agentDir),
 		}), resources);
 		return await prepareResolvedRoleLaunch({
 			role,
 			modelClass,
 			effectiveRole,
 			launch,
-			agentDir: this.options.agentDir,
 			commands,
 			tools: this.options.pi.getAllTools(),
 			knownFiles: knownFiles ?? await knownLaunchFiles(this.options.orchestratorEntrypoint, context.signal),
