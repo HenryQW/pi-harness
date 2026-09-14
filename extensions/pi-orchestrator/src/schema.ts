@@ -645,6 +645,9 @@ function validateTextTaskState(taskState: TextTaskState): void {
 	if (taskState.failure !== undefined) {
 		requireRuntimeTextByteLength(taskState.failure, `Text task ${taskState.taskId} failure`);
 	}
+	if (taskState.status === "needs_attention" && latest?.failure !== taskState.failure) {
+		throw new Error(`Text task ${taskState.taskId} needs-attention failure must exactly match its latest attempt failure.`);
+	}
 }
 
 export function parseRunState(value: unknown): RunState {

@@ -9,13 +9,68 @@ import {
 	type OrchestratorRuntime,
 	type TaskCandidateInspector,
 } from "../src/runner.ts";
-import type { ExecuteRequest, WorkspaceIdentity } from "../src/schema.ts";
+import type { ExecuteRequest, TextTaskState, WorkspaceIdentity } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
 
 function mainIdentity(): WorkspaceIdentity {
 	const oid = "a".repeat(40);
 	return { branch: "refs/heads/main", head: oid, index: oid, tree: oid };
 }
+
+type AttentionRunner = {
+	attention(task: TextTaskState, failure: string): void;
+};
+
+function markAttention(task: TextTaskState, failure: string): void {
+	const runner = new OrchestratorRunner(
+		{} as OrchestratorRuntime,
+		{} as GitRuntime & TaskCandidateInspector,
+	);
+	(runner as unknown as AttentionRunner).attention(task, failure);
+}
+
+test("text attention fails a running latest attempt despite pending task state", () => {
+	const failure = "Task execution stopped.";
+	const task: TextTaskState = {
+		taskId: "research",
+		kind: "text",
+		status: "pending",
+		attempts: [{ number: 1, status: "running" }],
+	};
+
+	markAttention(task, failure);
+
+	assert.deepEqual(task, {
+		taskId: "research",
+		kind: "text",
+		status: "needs_attention",
+		attempts: [{ number: 1, status: "failed", failure }],
+		failure,
+	});
+});
+
+test("text attention appends a failure despite running task state without a running latest attempt", () => {
+	const failure = "Task execution stopped.";
+	const task: TextTaskState = {
+		taskId: "research",
+		kind: "text",
+		status: "running",
+		attempts: [{ number: 1, status: "failed", failure: "Earlier attempt stopped." }],
+	};
+
+	markAttention(task, failure);
+
+	assert.deepEqual(task, {
+		taskId: "research",
+		kind: "text",
+		status: "needs_attention",
+		attempts: [
+			{ number: 1, status: "failed", failure: "Earlier attempt stopped." },
+			{ number: 2, status: "failed", failure },
+		],
+		failure,
+	});
+});
 
 test("text dispatch failure persists its failed running attempt", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
