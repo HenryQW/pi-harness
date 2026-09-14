@@ -9,7 +9,7 @@ import {
 	type OrchestratorRuntime,
 	type TaskCandidateInspector,
 } from "../src/runner.ts";
-import type { ExecuteRequest, TextTaskState, WorkspaceIdentity } from "../src/schema.ts";
+import type { ExecuteRequest, RunState, TaskState, TextTaskState, WorkspaceIdentity } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
 
 function mainIdentity(): WorkspaceIdentity {
@@ -19,6 +19,10 @@ function mainIdentity(): WorkspaceIdentity {
 
 type AttentionRunner = {
 	attention(task: TextTaskState, failure: string): void;
+};
+
+type DispatchTaskRunner = {
+	dispatchTask(handle: unknown, task: TaskState, scope: unknown): Promise<void>;
 };
 
 function markAttention(task: TextTaskState, failure: string): void {
@@ -112,8 +116,86 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 
 	assert.equal(result.state.status, "needs_attention");
 	assert.equal(task.status, "needs_attention");
-	assert.equal(task.failure, "Execution was interrupted: Text task dispatch is not implemented.");
+	assert.equal(task.failure, "Task dispatch was interrupted: Text task dispatch is not implemented.");
 	assert.equal(task.attempts.at(-1)!.status, "failed");
 	assert.equal(task.attempts.at(-1)!.failure, task.failure);
 	assert.deepEqual((await store.load(root, request.id)).state.tasks[0], task);
+});
+
+test("mixed waves settle and attribute dispatch failures in either task order", async (t) => {
+	for (const kinds of [["changeset", "text"], ["text", "changeset"]] as const) {
+		await t.test(kinds.join(" then "), async (t) => {
+			const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+			t.after(async () => await rm(directory, { recursive: true, force: true }));
+			const root = join(directory, "workspace");
+			await mkdir(root);
+			const store = {
+				async withLock<T>(_root: string, action: () => Promise<T>): Promise<T> {
+					return await action();
+				},
+				async assertAvailable(): Promise<void> {},
+				async create(state: RunState) {
+					return { state, save: async (): Promise<void> => {} };
+				},
+			} as unknown as FileRunStore;
+			const runner = new OrchestratorRunner(
+				{
+					now: () => 1,
+					randomToken: () => "token-0000000000000001",
+					preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
+				} as unknown as OrchestratorRuntime,
+				{
+					inspectMain: async () => mainIdentity(),
+				} as unknown as GitRuntime & TaskCandidateInspector,
+				store,
+			);
+			const dispatchingRunner = runner as unknown as DispatchTaskRunner;
+			const dispatchTask = dispatchingRunner.dispatchTask.bind(runner);
+			dispatchingRunner.dispatchTask = async (handle, task, scope) => {
+				if (task.kind === "text") return await dispatchTask(handle, task, scope);
+				await new Promise<void>((resolve) => setTimeout(resolve, 1));
+				task.status = "ready_to_integrate";
+			};
+			const text = {
+				id: "research",
+				kind: "text" as const,
+				role: "researcher",
+				modelClass: "fast" as const,
+				requirements: "Research the implementation.",
+				deliverable: "Return the result.",
+				dependsOn: [],
+				contextFrom: [],
+			};
+			const changeset = {
+				id: "change",
+				kind: "changeset" as const,
+				role: "implementer",
+				modelClass: "fast" as const,
+				requirements: "Implement the change.",
+				deliverable: "Deliver the change.",
+				dependsOn: [],
+				contextFrom: [],
+				checks: [{ command: "true", args: [] }],
+			};
+			const result = await runner.execute({
+				id: `mixed-${kinds.join("-")}`,
+				goal: "Keep wave failure attribution exact.",
+				budgetMs: 1_000,
+				tasks: kinds.map((kind) => kind === "text" ? text : changeset),
+				finalChecks: [{ command: "true", args: [] }],
+			} satisfies ExecuteRequest, root);
+			const textTask = result.state.tasks.find((task) => task.taskId === text.id);
+			const changesetTask = result.state.tasks.find((task) => task.taskId === changeset.id);
+			if (textTask?.kind !== "text" || changesetTask?.kind !== "changeset") throw new Error("Expected mixed task state.");
+
+			assert.equal(result.state.status, "needs_attention");
+			assert.equal(result.state.waves[0]!.status, "needs_attention");
+			assert.equal(textTask.status, "needs_attention");
+			assert.equal(textTask.failure, "Task dispatch was interrupted: Text task dispatch is not implemented.");
+			assert.equal(textTask.attempts.at(-1)!.status, "failed");
+			assert.equal(textTask.attempts.at(-1)!.failure, textTask.failure);
+			assert.equal(changesetTask.status, "ready_to_integrate");
+			assert.equal(changesetTask.failure, undefined);
+		});
+	}
 });

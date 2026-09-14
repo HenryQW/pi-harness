@@ -759,7 +759,16 @@ export class OrchestratorRunner {
 					});
 				}
 				await handle.save();
-				await Promise.all(ready.map(async (task) => await this.dispatchTask(handle, task, scope)));
+				await Promise.all(ready.map(async (task) => {
+					try {
+						await this.dispatchTask(handle, task, scope);
+					} catch (error) {
+						const failure = isDeadline(error, scope)
+							? "The productive request deadline expired during task dispatch."
+							: `Task dispatch was interrupted: ${errorText(error)}`;
+						this.attention(task, bounded(failure));
+					}
+				}));
 				if (ready.some((task) => task.kind === "text"
 					? task.status !== "completed"
 					: task.status !== "ready_to_integrate")) {
