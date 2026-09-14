@@ -668,7 +668,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		requireChange = true,
 	): Promise<WorkspaceIdentity> {
 		const worktree = await this.requireTaskWorktree(root, task, attempt, context);
-		const identity = await this.inspectWorkspace(worktree.cwd, true, context);
+		const identity = await this.inspectWorkspace(worktree.cwd, false, context);
 		if (identity.branch !== `refs/heads/${worktree.branch}`) throw new Error(`Task ${task.id} moved off its owned branch.`);
 		const branch = await this.branchTip(worktree.cwd, worktree.branch, context);
 		if (branch !== identity.head) throw new Error(`Task ${task.id} branch no longer names its checked-out HEAD.`);

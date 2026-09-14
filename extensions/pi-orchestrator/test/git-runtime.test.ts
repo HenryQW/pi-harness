@@ -361,13 +361,27 @@ test("pre-prompt inspection proves exact owned worktree identity and fails close
 		}, context()), /branch no longer names its checked-out HEAD/);
 	});
 
+	await t.test("ignored dependency artifacts do not dirty a candidate", async (t) => {
+		const definition = task("ignored-prompt");
+		const setup = await prepared(t, definition);
+		await writeFile(join(setup.root, ".git", "info", "exclude"), "\nnode_modules/\n", { flag: "a" });
+		await mkdir(join(setup.intent.worktree!.cwd, "node_modules"));
+		await writeFile(join(setup.intent.worktree!.cwd, "node_modules", "generated"), "ignored\n");
+		const candidate = await setup.runtime.inspectTaskCandidate({
+			root: setup.root, task: definition, attempt: setup.attempt,
+		}, context());
+		assert.equal(candidate.head, setup.base.head);
+		assert.equal(candidate.index, setup.base.index);
+		assert.equal(candidate.tree, setup.base.tree);
+	});
+
 	await t.test("dirty candidate", async (t) => {
 		const definition = task("dirty-prompt");
 		const setup = await prepared(t, definition);
 		await writeFile(join(setup.intent.worktree!.cwd, "untracked.txt"), "dirty\n");
 		await assert.rejects(setup.runtime.inspectTaskCandidate({
 			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /tracked|dirty|inspection/i);
+		}, context()), /tracked|dirty|inspection|workspace is not clean/i);
 	});
 
 	await t.test("gitlink", async (t) => {
@@ -465,7 +479,7 @@ test("candidate inspection rejects zero commits, dirty bytes, and hidden index s
 			}
 			await assert.rejects(
 				runtime.inspectRetainedTask({ root, task: task(kind), attempt: allocated.attempt }, context()),
-				kind === "zero" ? /no committed change/ : /tracked|hidden|skip-worktree|inspection/i,
+				kind === "zero" ? /no committed change/ : /tracked|hidden|skip-worktree|inspection|workspace is not clean/i,
 			);
 		});
 	}
