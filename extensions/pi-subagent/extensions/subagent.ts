@@ -633,15 +633,6 @@ export default function subagentExtension(
 					route: replaceRouteModel(context, delegation.model, launch),
 				});
 			};
-			const notifyMissingSkills = (launch: ReturnType<typeof prepareLaunch>) => {
-				if (launch.missingSkills.length) {
-					ctx.ui.notify(
-						`Subagent role ${launch.role} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
-						"warning",
-					);
-				}
-			};
-
 			const foregroundWorkflow: ParsedWorkflow = { ...workflow, background: false };
 			const entries = identifyWorkflowEntries(toolCallId, foregroundWorkflow);
 			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
@@ -707,7 +698,6 @@ export default function subagentExtension(
 								// shared executor permit, before isolated state is created.
 								const role = reloadRole(entry.delegation.role);
 								const preparedLaunch = prepareLaunch(role, entry.delegation);
-								notifyMissingSkills(preparedLaunch);
 								model = modelReference(preparedLaunch.model);
 								thinkingLevel = preparedLaunch.thinkingLevel;
 								if (preparedLaunch.isolation === "worktree") {

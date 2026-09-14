@@ -510,7 +510,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		isolation: "worktree",
 		tools: ["read"],
 		extensions: ["/roles/reviewer.ts"],
-		skills: ["security", "missing"],
+		skills: ["security"],
 		systemPrompt: "Review only the requested change.",
 	};
 	const pi = {
@@ -546,7 +546,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.deepEqual(launch.env, { CALLER_ID: "run-1" });
 	assert.equal(launch.model, model);
 	assert.equal(launch.thinkingLevel, "high");
-	assert.deepEqual(launch.missingSkills, ["missing"]);
+	assert.deepEqual(launch.missingSkills, []);
 	assert.deepEqual(launch.args.slice(0, 5), [
 		"--no-session", "--no-extensions", "--no-skills",
 		"--exclude-tools", "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort",
@@ -568,6 +568,12 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	);
 
 	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort");
+
+	const missingRole = { ...role, skills: [...role.skills, "missing"] };
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: missingRole, task, modelClass: "frontier", agentDir }),
+		/Role reviewer requires missing Skills: missing\./,
+	);
 
 	const prepared = prepareRoleLaunch(pi, ctx, {
 		role,

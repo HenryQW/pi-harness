@@ -175,6 +175,8 @@ A Role's `modelClass` is a default. A call-level class wins.
 
 An unreadable or invalid Role fails loading fast. Duplicate Role names are rejected. A same-named user file overrides a built-in Role.
 
+A missing named Skill rejects `prepareRoleLaunch`. `delegate_task` returns a Role-specific workflow error and does not start a child.
+
 The package always provides these built-in Roles. Their files leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` assignment or declared default unless a call overrides it:
 
 | Role | Purpose | Isolation/use |
@@ -195,6 +197,7 @@ The package root includes these main exports:
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
 | `resolveConfiguredRoleLaunch` | function | Resolves a configured Role and its package resources with an explicit model class. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
+| `prepareRoleLaunch` / `finalizeRoleLaunch` | functions | Separates the stable Role prompt and rejects missing Role Skills. |
 | `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
 | Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
 | `prepareExactReviewEvidence` | function | Create a bounded private base-to-tip patch with exact Git identity for caller-owned review. |

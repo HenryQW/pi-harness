@@ -477,6 +477,9 @@ export function prepareRoleLaunch(
 	const launch = "route" in input
 		? createRoleLaunch(pi, ctx, input)
 		: resolveRoleLaunch(pi, ctx, input);
+	if (launch.missingSkills.length) {
+		throw new Error(`Role ${parseRoleName(input.role.name)} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
+	}
 	return prepareResolvedRoleLaunch(input.role, launch);
 }
 

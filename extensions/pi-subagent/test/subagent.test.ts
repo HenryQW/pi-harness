@@ -425,7 +425,6 @@ extensions:
   - /user/extensions/review.ts
 skills:
   - security
-  - unavailable-skill
 ---
 Review only requested change.
 `);
@@ -476,10 +475,44 @@ console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", 
 		]);
 		assert.ok(updates.length >= 2);
 		assert.ok(updates.every((update) => update.content[0].text.startsWith("Delegation ·") && !update.content[0].text.includes("id=")));
-		assert.deepEqual(app.notifications, [{
-			message: "Subagent role reviewer skipped unavailable Pi skills: unavailable-skill.",
-			type: "warning",
-		}]);
+		assert.deepEqual(app.notifications, []);
+	});
+});
+
+test("missing Role Skills reject delegation before the child starts", async () => {
+	await environment(async (agentDir) => {
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(join(agentDir, "config", "pi-subagent", "reviewer.md"), `---
+name: reviewer
+description: Reviews focused changes
+tools: [read]
+extensions: []
+skills: [unavailable-skill]
+---
+Review only requested change.
+`);
+		const marker = join(agentDir, "child-started");
+		const runner = join(agentDir, "fake-pi.mjs");
+		await writeFile(runner, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "started");`);
+		process.argv[1] = runner;
+
+		const app = harness();
+		const error = await app.tool.execute(
+			"missing-skill",
+			{ role: "reviewer", name: "Test delegated task", task: "inspect auth" },
+			undefined,
+			undefined,
+			app.ctx,
+		).then(
+			() => assert.fail("expected missing-Skill rejection"),
+			(reason) => reason,
+		);
+		assert.ok(error instanceof WorkflowFailureError);
+		assert.equal(error.details.entries[0]?.status, "rejected");
+		assert.equal(error.details.entries[0]?.summary, "Role reviewer requires missing Skills: unavailable-skill.");
+		assert.match(error.message, /Role reviewer requires missing Skills: unavailable-skill\./);
+		assert.equal(existsSync(marker), false);
+		assert.deepEqual(app.notifications, []);
 	});
 });
 
