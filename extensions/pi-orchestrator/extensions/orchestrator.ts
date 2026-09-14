@@ -32,7 +32,6 @@ import {
 	type CheckBatchEvidence,
 	type ReviewEvidence,
 	type RunState,
-	type TaskAttempt,
 	type WorktreeAllocationIntent,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
@@ -108,7 +107,22 @@ function publicFailedReview(evidence: ReviewEvidence | undefined) {
 	};
 }
 
-function publicTaskRecovery(task: RunState["tasks"][number], attempt: TaskAttempt | undefined) {
+function publicTaskRecovery(task: RunState["tasks"][number]) {
+	if (task.kind === "text") {
+		const attempt = task.attempts.at(-1);
+		return {
+			scope: "task" as const,
+			taskId: task.taskId,
+			...(task.failure ? { failure: boundedPublicText(task.failure) } : {}),
+			...(attempt ? { attempt: {
+				number: attempt.number,
+				status: attempt.status,
+				...(attempt.failure ? { failure: boundedPublicText(attempt.failure) } : {}),
+			} } : {}),
+		};
+	}
+
+	const attempt = task.attempts.at(-1);
 	const failedCheck = publicFailedCheck(
 		attempt?.authoritativeChecks?.passed === false
 			? attempt.authoritativeChecks
@@ -147,7 +161,7 @@ function publicNeedsAttention(state: RunState, preferredTaskId?: string) {
 	if (state.status !== "needs_attention") return undefined;
 	const task = state.tasks.find((candidate) => candidate.status === "needs_attention" && candidate.taskId === preferredTaskId)
 		?? state.tasks.find((candidate) => candidate.status === "needs_attention");
-	if (task) return publicTaskRecovery(task, task.attempts.at(-1));
+	if (task) return publicTaskRecovery(task);
 	if (state.final.failure || state.final.checks?.passed === false || state.final.review?.passed === false) {
 		const failedCheck = publicFailedCheck(state.final.checks);
 		const failedReview = publicFailedReview(state.final.review);

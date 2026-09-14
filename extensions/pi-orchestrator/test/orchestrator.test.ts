@@ -69,6 +69,7 @@ const PRIVATE_STATE = {
 	accepted: false,
 	tasks: [{
 		taskId: "unit-one",
+		kind: "changeset",
 		status: "needs_attention",
 		failure: "The task needs a deliberate recovery decision.",
 		attempts: [{
@@ -477,7 +478,9 @@ test("lazily wires one checked runtime graph, shared Subagent executor, direct p
 
 test("public recovery evidence stays bounded and omits private durable state", async () => {
 	const state = structuredClone(PRIVATE_STATE);
-	state.tasks[0]!.attempts[0]!.preliminaryChecks!.results[0]!.stderr = `${"界".repeat(1_000)}UNEXPOSED_TAIL`;
+	const task = state.tasks[0]!;
+	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
+	task.attempts[0]!.preliminaryChecks!.results[0]!.stderr = `${"界".repeat(1_000)}UNEXPOSED_TAIL`;
 	const harness = createHarness({
 		createRunner() {
 			return {
@@ -501,6 +504,83 @@ test("public recovery evidence stays bounded and omits private durable state", a
 	assert.equal(details.state.needsAttention.retainedWorktree.cwd, "/tmp/pi-task");
 	assert.doesNotMatch(JSON.stringify(result.details), /UNEXPOSED_TAIL|PRIVATE|prompt|rawArgs|SECRET_TOKEN|command-line/i);
 	assert.ok(Buffer.byteLength(JSON.stringify(result.details), "utf8") < 8 * 1024);
+});
+
+test("text recovery exposes only bounded text attempt evidence", async () => {
+	const taskFailure = `${"界".repeat(1_000)}UNEXPOSED_TASK_TAIL`;
+	const attemptFailure = `${"界".repeat(1_000)}UNEXPOSED_ATTEMPT_TAIL`;
+	const textAttempt = { number: 2, status: "failed", failure: attemptFailure };
+	for (const field of [
+		"allocations", "preliminaryChecks", "authoritativeChecks", "authoritativeReview", "cleanup", "output",
+	]) {
+		Object.defineProperty(textAttempt, field, {
+			enumerable: true,
+			get() {
+				throw new Error(`Text recovery read ${field}.`);
+			},
+		});
+	}
+	const state = {
+		...PRIVATE_STATE,
+		request: {
+			...EXECUTE_REQUEST,
+			tasks: [{
+				id: "text-one",
+				kind: "text",
+				role: "implementer",
+				modelClass: "fast",
+				requirements: "Provide a concise status.",
+				deliverable: "A concise status.",
+				dependsOn: [],
+				contextFrom: [],
+			}],
+		},
+		tasks: [{
+			taskId: "text-one",
+			kind: "text",
+			status: "needs_attention",
+			failure: taskFailure,
+			attempts: [textAttempt],
+		}],
+	} as unknown as RunState;
+	const harness = createHarness({
+		createRunner() {
+			return {
+				async execute() {
+					return { text: "bounded text recovery", state };
+				},
+			} as never;
+		},
+	});
+	const result = await executeTool(
+		namedTool(harness, "orchestrate_execute"),
+		EXECUTE_REQUEST,
+		new AbortController().signal,
+		context(CANONICAL_ROOT),
+	);
+	const recovery = (result.details as {
+		state: {
+			needsAttention: {
+				scope: string;
+				taskId: string;
+				failure: string;
+				attempt: { number: number; status: string; failure: string };
+			};
+		};
+	}).state.needsAttention;
+
+	assert.deepEqual(Object.keys(recovery).sort(), ["attempt", "failure", "scope", "taskId"]);
+	assert.equal(recovery.scope, "task");
+	assert.equal(recovery.taskId, "text-one");
+	assert.ok(Buffer.byteLength(recovery.failure, "utf8") < 600);
+	assert.match(recovery.failure, /\[truncated\]$/);
+	assert.doesNotMatch(recovery.failure, /UNEXPOSED_TASK_TAIL/);
+	assert.deepEqual(Object.keys(recovery.attempt).sort(), ["failure", "number", "status"]);
+	assert.equal(recovery.attempt.number, 2);
+	assert.equal(recovery.attempt.status, "failed");
+	assert.ok(Buffer.byteLength(recovery.attempt.failure, "utf8") < 600);
+	assert.match(recovery.attempt.failure, /\[truncated\]$/);
+	assert.doesNotMatch(recovery.attempt.failure, /UNEXPOSED_ATTEMPT_TAIL/);
 });
 
 test("execute keeps raw cwd while lookup actions use canonical root, bounded context, and signals", async () => {
