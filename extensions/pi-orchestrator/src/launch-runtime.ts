@@ -15,9 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	CHILD_EXCLUDED_TOOL_NAMES,
-	fingerprintRoleMcpConfig,
 	loadRoles,
-	ROLE_MCP_CONFIG_SHA256_FLAG,
 	ROLE_MCP_POLICY_FLAG,
 	resolveRoleLaunch,
 	selectRoleMcpConfig,
@@ -76,7 +74,6 @@ type ResolvedRoleResources = {
 	prompts: string[];
 	themes: string[];
 	mcpResources: string[];
-	mcpConfigSha256?: string;
 };
 
 export interface LaunchRuntimeOptions {
@@ -163,7 +160,7 @@ async function resolveRoleMcpResources(
 	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
 	agentDir: string | undefined,
 	signal?: AbortSignal,
-): Promise<Pick<ResolvedRoleResources, "mcpResources" | "mcpConfigSha256">> {
+): Promise<Pick<ResolvedRoleResources, "mcpResources">> {
 	if (!allowlist.length) return { mcpResources: [] };
 	abortIfNeeded(signal);
 	const resolvedAgentDir = agentDir ?? getAgentDir();
@@ -182,11 +179,8 @@ async function resolveRoleMcpResources(
 		loadMcpConfig?: (overridePath?: string, cwd?: string) => { mcpServers: Record<string, unknown>; settings?: Record<string, unknown> };
 	};
 	if (typeof imported.loadMcpConfig !== "function") throw new Error("pi-mcp-adapter/config does not export loadMcpConfig.");
-	const config = selectRoleMcpConfig(imported.loadMcpConfig(join(resolvedAgentDir, "mcp.json"), ctx.cwd), allowlist);
-	return {
-		mcpResources: [adapter, configModule],
-		mcpConfigSha256: fingerprintRoleMcpConfig(config),
-	};
+	selectRoleMcpConfig(imported.loadMcpConfig(join(resolvedAgentDir, "mcp.json"), ctx.cwd), allowlist);
+	return { mcpResources: [adapter, configModule] };
 }
 
 async function canonicalRegularFile(path: string, label: string, signal?: AbortSignal): Promise<string> {
@@ -236,7 +230,6 @@ function addPackageResources(launch: ResolvedRoleLaunch, resources: Omit<Resolve
 		...resources.skills.flatMap((path) => [SKILL_FLAG, path]),
 		...resources.prompts.flatMap((path) => [PROMPT_TEMPLATE_FLAG, path]),
 		...resources.themes.flatMap((path) => [THEME_FLAG, path]),
-		...(resources.mcpConfigSha256 ? [`--${ROLE_MCP_CONFIG_SHA256_FLAG}`, resources.mcpConfigSha256] : []),
 	];
 	const promptIndex = launch.args.indexOf(PROMPT_FLAG);
 	if (promptIndex < 0) throw new Error(`Resolved Role launch has no ${PROMPT_FLAG}.`);
@@ -370,11 +363,6 @@ async function prepareResolvedRoleLaunch(
 	if (!isDeepStrictEqual(valuesAfter(launch.args, `--${ROLE_MCP_POLICY_FLAG}`), expectedMcpPolicy)) {
 		throw new Error(`Resolved ${role} launch MCP allowlist does not match its Role policy.`);
 	}
-	const expectedMcpConfig = packageResources.mcpConfigSha256 ? [packageResources.mcpConfigSha256] : [];
-	if (!isDeepStrictEqual(valuesAfter(launch.args, `--${ROLE_MCP_CONFIG_SHA256_FLAG}`), expectedMcpConfig)) {
-		throw new Error(`Resolved ${role} launch MCP config fingerprint does not match its Role policy.`);
-	}
-
 	const resolvedExtensions = await canonicalizeValues(
 		valuesAfter(launch.args, EXTENSION_FLAG),
 		`Resolved ${role}/${modelClass} extensions`,
