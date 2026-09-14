@@ -17,6 +17,8 @@ import {
 	CHILD_EXCLUDED_TOOL_NAMES,
 	loadRoles,
 	ROLE_MCP_POLICY_FLAG,
+	ROLE_TOOL_POLICY_FLAG,
+	resolveConfiguredRoleLaunch,
 	resolveRoleLaunch,
 	selectRoleMcpConfig,
 	type ResolvedRoleLaunch,
@@ -557,35 +559,26 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		knownFiles?: KnownLaunchFiles,
 	): Promise<PreparedLaunch> {
 		abortIfNeeded(context.signal);
-		const matches = loadRoles().filter((candidate) => candidate.name === role);
-		if (matches.length !== 1) throw new Error(`Required effective Role ${role} is missing or ambiguous.`);
-		const configuredRole = matches[0]!;
-		validateRoleDefinition(role, configuredRole);
-		const ctx = this.options.context();
-		const resources = {
-			...await resolveRoleResources(configuredRole.extensions, ctx, context.signal),
-			...await resolveRoleMcpResources(configuredRole.mcps ?? [], ctx, context.signal),
-		};
-		const effectiveRole: SubagentRole = {
-			...configuredRole,
-			extensions: resources.extensions,
-		};
-		const commands = this.options.pi.getCommands();
-		const launch = addPackageResources(resolveRoleLaunch({ getCommands: () => commands }, ctx, {
-			role: effectiveRole,
-			task: ORCHESTRATOR_MODEL_TASK,
-			modelClass,
-		}), resources);
-		return await prepareResolvedRoleLaunch({
-			role,
-			modelClass,
-			effectiveRole,
-			launch,
-			commands,
-			tools: this.options.pi.getAllTools(),
-			knownFiles: knownFiles ?? await knownLaunchFiles(this.options.orchestratorEntrypoint, context.signal),
-			packageResources: resources,
-			signal: context.signal,
+		const input = { role, modelClass, task: ORCHESTRATOR_MODEL_TASK };
+		const prepared = await resolveConfiguredRoleLaunch(this.options.pi, this.options.context(), input);
+		const toolPolicy = valuesAfter(prepared.args, `--${ROLE_TOOL_POLICY_FLAG}`);
+		if (toolPolicy.length !== 1) throw new Error(`Resolved ${role} launch has no unique tool policy.`);
+		const tools: unknown = JSON.parse(toolPolicy[0]!);
+		if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string")) {
+			throw new Error(`Resolved ${role} launch has an invalid tool policy.`);
+		}
+		return Object.freeze({
+			launch: Object.freeze({
+				role: prepared.role,
+				modelClass,
+				model: `${prepared.model.provider}/${prepared.model.id}`,
+				thinkingLevel: prepared.thinkingLevel,
+				args: Object.freeze([...prepared.args]),
+				env: Object.freeze({ ...prepared.env }),
+				tools: Object.freeze([...tools]),
+			}),
+			prompt: prepared.systemPrompt,
+			promptArgIndex: prepared.promptArgIndex,
 		});
 	}
 
