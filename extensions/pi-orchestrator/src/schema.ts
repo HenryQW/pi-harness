@@ -600,6 +600,12 @@ function requireCompletedTaskEvidence(taskState: ChangesetTaskState, request: Ch
 	}
 }
 
+function requireRuntimeTextByteLength(value: string, field: string): void {
+	if (Buffer.byteLength(value, "utf8") > MAX_PERSISTED_RUNTIME_TEXT_BYTES) {
+		throw new Error(`${field} exceeds ${MAX_PERSISTED_RUNTIME_TEXT_BYTES} UTF-8 bytes.`);
+	}
+}
+
 function validateTextTaskState(taskState: TextTaskState): void {
 	const latest = taskState.attempts.at(-1);
 	for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
@@ -613,8 +619,14 @@ function validateTextTaskState(taskState: TextTaskState): void {
 		} else if (attempt.output) {
 			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has output without completion.`);
 		}
-		if (attempt.failure !== undefined && attempt.status !== "failed") {
-			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has failure without failure status.`);
+		if (attempt.output) {
+			requireRuntimeTextByteLength(attempt.output.text, `Text attempt ${attempt.number} for ${taskState.taskId} output`);
+		}
+		if (attempt.failure !== undefined) {
+			if (attempt.status !== "failed") {
+				throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has failure without failure status.`);
+			}
+			requireRuntimeTextByteLength(attempt.failure, `Text attempt ${attempt.number} for ${taskState.taskId} failure`);
 		}
 	}
 	const expectedLatestStatus = taskState.status === "pending"
@@ -629,6 +641,9 @@ function validateTextTaskState(taskState: TextTaskState): void {
 	}
 	if ((taskState.failure !== undefined) !== (taskState.status === "needs_attention")) {
 		throw new Error(`Text task ${taskState.taskId} must retain a failure exactly when it needs attention.`);
+	}
+	if (taskState.failure !== undefined) {
+		requireRuntimeTextByteLength(taskState.failure, `Text task ${taskState.taskId} failure`);
 	}
 }
 

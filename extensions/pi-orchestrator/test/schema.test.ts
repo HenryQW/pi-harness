@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	MAX_TASKS,
 	parseExecuteRequest,
 	parseRunState,
@@ -236,4 +237,54 @@ test("v2 state maps text task attempts exactly and rejects v1 and launch state",
 
 	const v1 = { ...structuredClone(valid), version: 1, launchRecords: {} };
 	assert.throws(() => parseRunState(v1), /Unsupported pi-orchestrator state version 1; expected 2/);
+});
+
+test("v2 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
+	const definition = parseExecuteRequest(request([textTask("research")]));
+	const valid = state(definition);
+	const character = "界";
+	const repeated = character.repeat(Math.floor(MAX_PERSISTED_RUNTIME_TEXT_BYTES / Buffer.byteLength(character, "utf8")));
+	const atLimit = `${repeated}${"a".repeat(MAX_PERSISTED_RUNTIME_TEXT_BYTES - Buffer.byteLength(repeated, "utf8"))}`;
+	const tooLong = `${atLimit}${character}`;
+	assert.equal(Buffer.byteLength(atLimit, "utf8"), MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+	assert.ok(tooLong.length <= MAX_PERSISTED_RUNTIME_TEXT_BYTES);
+
+	const outputAtLimit = structuredClone(valid);
+	const outputTask = outputAtLimit.tasks[0]!;
+	if (outputTask.kind !== "text") throw new Error("Expected a text task.");
+	outputTask.attempts[0]!.output = { text: atLimit };
+	assert.doesNotThrow(() => parseRunState(outputAtLimit));
+
+	const invalidFields: Array<{ name: string; mutate: (task: TextTaskState) => void }> = [
+		{
+			name: "attempt failure",
+			mutate: (task) => {
+				task.status = "needs_attention";
+				task.attempts = [{ number: 1, status: "failed", failure: tooLong }];
+				task.failure = "Task failed.";
+			},
+		},
+		{
+			name: "task failure",
+			mutate: (task) => {
+				task.status = "needs_attention";
+				task.attempts = [{ number: 1, status: "failed" }];
+				task.failure = tooLong;
+			},
+		},
+		{
+			name: "output",
+			mutate: (task) => {
+				task.status = "completed";
+				task.attempts = [{ number: 1, status: "completed", output: { text: tooLong } }];
+			},
+		},
+	];
+	for (const { name, mutate } of invalidFields) {
+		const candidate = structuredClone(valid);
+		const task = candidate.tasks[0]!;
+		if (task.kind !== "text") throw new Error("Expected a text task.");
+		mutate(task);
+		assert.throws(() => parseRunState(candidate), new RegExp(`exceeds ${MAX_PERSISTED_RUNTIME_TEXT_BYTES} UTF-8 bytes`), name);
+	}
 });
