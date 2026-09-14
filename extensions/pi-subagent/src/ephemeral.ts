@@ -715,7 +715,10 @@ async function runPi(
 				const update = record.assistantMessageEvent;
 				if (update && typeof update === "object" && !Array.isArray(update)) {
 					const assistantEvent = update as Record<string, unknown>;
-					if (assistantEvent.type === "text_start" && hasPartialText) appendBounded(partial, "\n");
+					if (assistantEvent.type === "text_start" && hasPartialText) {
+						appendBounded(partial, "\n");
+						updateOutput(boundedText(partial));
+					}
 					if (assistantEvent.type === "text_start") hasPartialText = true;
 					if (assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") {
 						hasPartialText = true;

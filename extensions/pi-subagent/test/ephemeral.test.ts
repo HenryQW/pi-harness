@@ -219,6 +219,23 @@ setTimeout(() => {
 	assert.ok(Buffer.byteLength(result.output, "utf8") <= 50 * 1024);
 });
 
+test("executor retains separator-caused truncation without duplicate streamed updates", async (t) => {
+	const partial = "x".repeat(50 * 1024);
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "message_update", assistantMessageEvent: { type: "text_start" } });
+event({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "x".repeat(50 * 1024) } });
+event({ type: "message_update", assistantMessageEvent: { type: "text_start" } });
+`);
+	const updates: string[] = [];
+	const result = await executor().run({
+		onUpdate: (text) => updates.push(text),
+		prepare: async () => prepared(cwd),
+	});
+	assert.deepEqual(updates, [partial]);
+	assert.equal(result.output, capEphemeralSubagentOutput(`${partial}\n`));
+	assert.equal(result.outputTruncated, true);
+});
+
 test("executor reports bounded assistant output truncation for success and failure outcomes", async (t) => {
 	const literalMarker = "[Output truncated: 1 bytes omitted]";
 	const oversized = "x".repeat(60 * 1024);
