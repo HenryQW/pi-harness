@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
-import { isAbsolute, normalize } from "node:path";
-import { isDeepStrictEqual } from "node:util";
+import { isAbsolute } from "node:path";
+import { parseRoleName, type RoleName } from "@henryqw/pi-subagent";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-export const RUN_STATE_VERSION = 1;
+export const RUN_STATE_VERSION = 2;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
@@ -12,14 +11,13 @@ export const MAX_POSSIBLE_RESOURCES = 32;
 
 export const MODEL_CLASSES = ["fast", "balanced", "frontier", "fav"] as const;
 export type ModelClass = Static<typeof ModelClassSchema>;
-export type Role = Static<typeof RoleSchema>;
 
 const ID_PATTERN = "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$";
 const OID_PATTERN = "^(?:[0-9a-f]{40}|[0-9a-f]{64})$";
-const SHA256_PATTERN = "^[0-9a-f]{64}$";
 const TOKEN_PATTERN = "^[A-Za-z0-9_-]{16,128}$";
 const IdSchema = Type.String({ minLength: 1, maxLength: 80, pattern: ID_PATTERN });
 const TextSchema = Type.String({ minLength: 1, maxLength: 32_000 });
+const RoleNameSchema = Type.String({ minLength: 1, maxLength: 32_000 });
 const RuntimeTextSchema = Type.String({ minLength: 1, maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES });
 const OptionalRuntimeTextSchema = Type.Optional(Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }));
 const TimestampSchema = Type.Integer({ minimum: 0 });
@@ -29,7 +27,6 @@ const ModelClassSchema = Type.Union([
 	Type.Literal("frontier"),
 	Type.Literal("fav"),
 ]);
-const RoleSchema = Type.Union([Type.Literal("implementer"), Type.Literal("reviewer")]);
 
 export const CheckCommandSchema = Type.Object({
 	command: TextSchema,
@@ -37,19 +34,35 @@ export const CheckCommandSchema = Type.Object({
 }, { additionalProperties: false });
 
 export const JudgmentSchema = Type.Object({
-	criterion: TextSchema,
+	role: RoleNameSchema,
 	modelClass: ModelClassSchema,
+	criterion: TextSchema,
 }, { additionalProperties: false });
 
-export const TaskRequestSchema = Type.Object({
-	id: IdSchema,
+const TaskRequestBaseFields = {
+	role: RoleNameSchema,
 	modelClass: ModelClassSchema,
 	requirements: TextSchema,
 	deliverable: TextSchema,
 	dependsOn: Type.Array(IdSchema, { maxItems: MAX_TASKS }),
+	contextFrom: Type.Array(IdSchema, { maxItems: MAX_TASKS }),
+};
+
+const TextTaskRequestSchema = Type.Object({
+	id: IdSchema,
+	kind: Type.Literal("text"),
+	...TaskRequestBaseFields,
+}, { additionalProperties: false });
+
+const ChangesetTaskRequestSchema = Type.Object({
+	id: IdSchema,
+	kind: Type.Literal("changeset"),
+	...TaskRequestBaseFields,
 	checks: Type.Array(CheckCommandSchema, { minItems: 1, maxItems: 32 }),
 	judgment: Type.Optional(JudgmentSchema),
 }, { additionalProperties: false });
+
+export const TaskRequestSchema = Type.Union([TextTaskRequestSchema, ChangesetTaskRequestSchema]);
 
 export const ExecuteRequestSchema = Type.Object({
 	id: IdSchema,
@@ -71,52 +84,13 @@ export const ResumeRequestSchema = Type.Union([
 export type IdOnly = Static<typeof IdOnlySchema>;
 export type CheckCommand = Static<typeof CheckCommandSchema>;
 export type Judgment = Static<typeof JudgmentSchema>;
+export type TextTaskRequest = Static<typeof TextTaskRequestSchema>;
+export type ChangesetTaskRequest = Static<typeof ChangesetTaskRequestSchema>;
 export type TaskRequest = Static<typeof TaskRequestSchema>;
 export type ExecuteRequest = Static<typeof ExecuteRequestSchema>;
 export type ResumeRequest = Static<typeof ResumeRequestSchema>;
 
 export type WorkspaceIdentity = Static<typeof WorkspaceSchema>;
-export type LaunchResourceFingerprint = Static<typeof LaunchResourceFingerprintSchema>;
-export type NormalizedLaunchRecord = Static<typeof LaunchRecordSchema>;
-
-/**
- * Runtime hooks are untrusted boundaries, so normalized fields remain optional
- * on hook input and become required only after validateLaunchRecords succeeds.
- */
-export type LaunchRecord = Partial<NormalizedLaunchRecord>
-	& Pick<NormalizedLaunchRecord, "key" | "role" | "modelClass" | "fingerprint">;
-
-function launchFingerprintValue(record: Omit<NormalizedLaunchRecord, "fingerprint">): object {
-	return {
-		key: record.key,
-		role: record.role,
-		modelClass: record.modelClass,
-		roleFingerprint: record.roleFingerprint,
-		promptSha256: record.promptSha256,
-		promptArgIndex: record.promptArgIndex,
-		model: record.model,
-		thinkingLevel: record.thinkingLevel,
-		args: [...record.args],
-		env: { ...record.env },
-		tools: [...record.tools],
-		roleExtensions: [...record.roleExtensions],
-		roleSkills: [...record.roleSkills],
-		...(record.rolePrompts ? { rolePrompts: [...record.rolePrompts] } : {}),
-		...(record.roleThemes ? { roleThemes: [...record.roleThemes] } : {}),
-		...(record.roleMcps ? { roleMcps: [...record.roleMcps] } : {}),
-		...(record.roleMcpResources ? { roleMcpResources: [...record.roleMcpResources] } : {}),
-		...(record.mcpConfigSha256 ? { mcpConfigSha256: record.mcpConfigSha256 } : {}),
-		resources: record.resources.map((resource) => ({
-			kind: resource.kind,
-			path: resource.path,
-			sha256: resource.sha256,
-		})),
-	};
-}
-
-export function launchRecordFingerprint(record: Omit<NormalizedLaunchRecord, "fingerprint">): string {
-	return createHash("sha256").update(JSON.stringify(launchFingerprintValue(record))).digest("hex");
-}
 
 const AllocationLifecycleFields = {
 	generation: Type.Integer({ minimum: 1, maximum: 2 }),
@@ -210,7 +184,12 @@ export type IntegrationRecord = Static<typeof IntegrationRecordSchema>;
 export const CLEANUP_KINDS = ["worker_tab", "workspace", "worktree", "branch"] as const;
 export type CleanupStep = Static<typeof CleanupStepSchema>;
 export type CleanupKind = CleanupStep["kind"];
-export type TaskAttempt = Static<typeof TaskAttemptSchema>;
+export type ChangesetTaskAttempt = Static<typeof TaskAttemptSchema>;
+export type TaskAttempt = ChangesetTaskAttempt;
+export type TextTaskOutput = Static<typeof TextTaskOutputSchema>;
+export type TextTaskAttempt = Static<typeof TextTaskAttemptSchema>;
+export type ChangesetTaskState = Static<typeof ChangesetTaskStateSchema>;
+export type TextTaskState = Static<typeof TextTaskStateSchema>;
 export type TaskState = Static<typeof TaskStateSchema>;
 export type TaskStatus = TaskState["status"];
 export type WaveState = Static<typeof WaveStateSchema>;
@@ -224,37 +203,6 @@ const WorkspaceSchema = Type.Object({
 	head: Type.String({ pattern: OID_PATTERN }),
 	index: Type.String({ pattern: OID_PATTERN }),
 	tree: Type.String({ pattern: OID_PATTERN }),
-}, { additionalProperties: false });
-
-const LaunchResourceFingerprintSchema = Type.Object({
-	kind: Type.Union([
-		Type.Literal("skill"), Type.Literal("extension"), Type.Literal("prompt"), Type.Literal("theme"), Type.Literal("mcp-adapter"),
-	]),
-	path: TextSchema,
-	sha256: Type.String({ pattern: SHA256_PATTERN }),
-}, { additionalProperties: false });
-
-const LaunchRecordSchema = Type.Object({
-	key: TextSchema,
-	role: RoleSchema,
-	modelClass: ModelClassSchema,
-	roleFingerprint: Type.String({ pattern: SHA256_PATTERN }),
-	promptSha256: Type.String({ pattern: SHA256_PATTERN }),
-	promptArgIndex: Type.Integer({ minimum: 0, maximum: 256 }),
-	model: TextSchema,
-	thinkingLevel: TextSchema,
-	args: Type.Array(Type.String({ maxLength: 32_000 }), { maxItems: 256 }),
-	env: Type.Record(Type.String(), Type.String({ maxLength: 32_000 })),
-	tools: Type.Array(TextSchema, { maxItems: 128 }),
-	roleExtensions: Type.Array(TextSchema, { minItems: 1, maxItems: 128 }),
-	roleSkills: Type.Array(TextSchema, { maxItems: 128 }),
-	rolePrompts: Type.Optional(Type.Array(TextSchema, { maxItems: 128 })),
-	roleThemes: Type.Optional(Type.Array(TextSchema, { maxItems: 128 })),
-	roleMcps: Type.Optional(Type.Array(TextSchema, { minItems: 1, maxItems: 128 })),
-	roleMcpResources: Type.Optional(Type.Array(TextSchema, { minItems: 1, maxItems: 128 })),
-	mcpConfigSha256: Type.Optional(Type.String({ pattern: SHA256_PATTERN })),
-	resources: Type.Array(LaunchResourceFingerprintSchema, { minItems: 1, maxItems: 256 }),
-	fingerprint: Type.String({ pattern: SHA256_PATTERN }),
 }, { additionalProperties: false });
 
 const PromptRecordSchema = Type.Object({
@@ -286,7 +234,6 @@ const CheckBatchEvidenceSchema = Type.Object({
 
 const ReviewEvidenceSchema = Type.Object({
 	phase: Type.Union([Type.Literal("authoritative"), Type.Literal("final")]),
-	launchKey: TextSchema,
 	criterion: TextSchema,
 	base: WorkspaceSchema,
 	tip: WorkspaceSchema,
@@ -339,17 +286,39 @@ const TaskAttemptSchema = Type.Object({
 	cleanup: Type.Array(CleanupStepSchema, { minItems: CLEANUP_KINDS.length, maxItems: CLEANUP_KINDS.length }),
 }, { additionalProperties: false });
 
-const TaskStateSchema = Type.Object({
+const ChangesetTaskStateSchema = Type.Object({
 	taskId: IdSchema,
+	kind: Type.Literal("changeset"),
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("ready_to_integrate"),
 		Type.Literal("integrating"), Type.Literal("cleanup"), Type.Literal("completed"), Type.Literal("needs_attention"),
 	]),
-	implementerLaunchKey: TextSchema,
-	judgmentLaunchKey: Type.Optional(TextSchema),
 	attempts: Type.Array(TaskAttemptSchema, { maxItems: 2 }),
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
+
+const TextTaskOutputSchema = Type.Object({
+	text: RuntimeTextSchema,
+}, { additionalProperties: false });
+
+const TextTaskAttemptSchema = Type.Object({
+	number: Type.Integer({ minimum: 1, maximum: 2 }),
+	status: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed")]),
+	failure: OptionalRuntimeTextSchema,
+	output: Type.Optional(TextTaskOutputSchema),
+}, { additionalProperties: false });
+
+const TextTaskStateSchema = Type.Object({
+	taskId: IdSchema,
+	kind: Type.Literal("text"),
+	status: Type.Union([
+		Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed"), Type.Literal("needs_attention"),
+	]),
+	attempts: Type.Array(TextTaskAttemptSchema, { maxItems: 2 }),
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
+const TaskStateSchema = Type.Union([TextTaskStateSchema, ChangesetTaskStateSchema]);
 
 const WaveStateSchema = Type.Object({
 	number: Type.Integer({ minimum: 1 }),
@@ -377,7 +346,6 @@ const RunStateSchema = Type.Object({
 	main: WorkspaceSchema,
 	deadlineStartedAt: TimestampSchema,
 	deadline: TimestampSchema,
-	launchRecords: Type.Record(Type.String(), LaunchRecordSchema),
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"), Type.Literal("completed"),
 		Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
@@ -412,20 +380,40 @@ function normalizeText(value: string, field: string): string {
 	return normalized;
 }
 
+function normalizeRole(value: string, field: string): RoleName {
+	return parseRoleName(value, field);
+}
+
 function normalizeJudgment(judgment: Judgment | undefined, field: string): Judgment | undefined {
 	if (!judgment) return;
-	return { ...judgment, criterion: normalizeText(judgment.criterion, `${field}.criterion`) };
+	return {
+		...judgment,
+		role: normalizeRole(judgment.role, `${field}.role`),
+		criterion: normalizeText(judgment.criterion, `${field}.criterion`),
+	};
 }
 
 function normalizeTask(task: TaskRequest, index: number): TaskRequest {
-	return {
-		...task,
+	const fields = {
+		id: task.id,
+		role: normalizeRole(task.role, `tasks[${index}].role`),
+		modelClass: task.modelClass,
 		requirements: normalizeText(task.requirements, `tasks[${index}].requirements`),
 		deliverable: normalizeText(task.deliverable, `tasks[${index}].deliverable`),
 		dependsOn: [...task.dependsOn],
+		contextFrom: [...task.contextFrom],
+	};
+	if (task.kind === "text") return { ...fields, kind: "text" };
+	return {
+		...fields,
+		kind: "changeset",
 		checks: task.checks.map((check, checkIndex) => normalizeCheck(check, `tasks[${index}].checks[${checkIndex}]`)),
 		...(task.judgment ? { judgment: normalizeJudgment(task.judgment, `tasks[${index}].judgment`)! } : {}),
 	};
+}
+
+export function taskDependencies(task: TaskRequest): string[] {
+	return [...task.dependsOn, ...task.contextFrom];
 }
 
 export function validateGraph(tasks: readonly TaskRequest[]): void {
@@ -439,10 +427,22 @@ export function validateGraph(tasks: readonly TaskRequest[]): void {
 			if (dependencies.has(dependency)) throw new Error(`Task ${task.id} has duplicate dependency ${dependency}.`);
 			dependencies.add(dependency);
 		}
+		const context = new Set<string>();
+		for (const source of task.contextFrom) {
+			if (source === task.id) throw new Error(`Task ${task.id} cannot depend on itself.`);
+			if (context.has(source)) throw new Error(`Task ${task.id} has duplicate context source ${source}.`);
+			if (dependencies.has(source)) throw new Error(`Task ${task.id} has overlapping dependsOn and contextFrom edge ${source}.`);
+			context.add(source);
+		}
 	}
 	for (const task of tasks) {
 		for (const dependency of task.dependsOn) {
 			if (!byId.has(dependency)) throw new Error(`Task ${task.id} has unknown dependency ${dependency}.`);
+		}
+		for (const source of task.contextFrom) {
+			const sourceTask = byId.get(source);
+			if (!sourceTask) throw new Error(`Task ${task.id} has unknown context source ${source}.`);
+			if (sourceTask.kind !== "text") throw new Error(`Task ${task.id} context source ${source} must be a text task.`);
 		}
 	}
 	const visiting = new Set<string>();
@@ -451,7 +451,7 @@ export function validateGraph(tasks: readonly TaskRequest[]): void {
 		if (visiting.has(id)) throw new Error(`Task dependency cycle includes ${id}.`);
 		if (visited.has(id)) return;
 		visiting.add(id);
-		for (const dependency of byId.get(id)!.dependsOn) visit(dependency);
+		for (const dependency of taskDependencies(byId.get(id)!)) visit(dependency);
 		visiting.delete(id);
 		visited.add(id);
 	};
@@ -459,7 +459,7 @@ export function validateGraph(tasks: readonly TaskRequest[]): void {
 }
 
 export function parseExecuteRequest(value: unknown): ExecuteRequest {
-	if (!Check(ExecuteRequestSchema, value)) throw new Error("orchestrate_execute request must match the strict v1 schema.");
+	if (!Check(ExecuteRequestSchema, value)) throw new Error("orchestrate_execute request must match the strict task schema.");
 	const input = value as ExecuteRequest;
 	const request: ExecuteRequest = {
 		...input,
@@ -483,116 +483,6 @@ export function parseIdOnly(value: unknown): IdOnly {
 export function parseResumeRequest(value: unknown): ResumeRequest {
 	if (!Check(ResumeRequestSchema, value)) throw new Error("orchestrate_resume request must match one strict v1 action.");
 	return value as ResumeRequest;
-}
-
-export function launchKey(role: Role, modelClass: ModelClass): string {
-	return `${role}/${modelClass}`;
-}
-
-export function requiredLaunchKeys(request: ExecuteRequest): Map<string, { role: Role; modelClass: ModelClass }> {
-	const required = new Map<string, { role: Role; modelClass: ModelClass }>();
-	for (const task of request.tasks) {
-		required.set(launchKey("implementer", task.modelClass), { role: "implementer", modelClass: task.modelClass });
-		if (task.judgment) required.set(launchKey("reviewer", task.judgment.modelClass), { role: "reviewer", modelClass: task.judgment.modelClass });
-	}
-	if (request.finalJudgment) {
-		required.set(launchKey("reviewer", request.finalJudgment.modelClass), { role: "reviewer", modelClass: request.finalJudgment.modelClass });
-	}
-	return required;
-}
-
-function requireExactLaunchText(value: string, field: string): string {
-	if (!value.trim() || value.trim() !== value || value.includes("\0")) {
-		throw new Error(`${field} must be exact non-empty text without surrounding whitespace or NUL bytes.`);
-	}
-	return value;
-}
-
-function requireCanonicalPath(value: string, field: string): string {
-	requireExactLaunchText(value, field);
-	if (!isAbsolute(value) || normalize(value) !== value) throw new Error(`${field} must be a canonical absolute path.`);
-	return value;
-}
-
-function requireUnique(values: readonly string[], field: string): void {
-	if (new Set(values).size !== values.length) throw new Error(`${field} must not contain duplicates.`);
-}
-
-export function validateLaunchRecords(request: ExecuteRequest, records: readonly LaunchRecord[]): Record<string, NormalizedLaunchRecord> {
-	const required = requiredLaunchKeys(request);
-	const keyed: Record<string, NormalizedLaunchRecord> = {};
-	for (const candidate of records) {
-		if (!Check(LaunchRecordSchema, candidate)) {
-			throw new Error("Launch record must contain complete strict launch metadata.");
-		}
-		const record = candidate as NormalizedLaunchRecord;
-		if (keyed[record.key]) throw new Error(`Duplicate launch record ${record.key}.`);
-		const expected = required.get(record.key);
-		if (!expected || record.role !== expected.role || record.modelClass !== expected.modelClass) {
-			throw new Error(`Unexpected launch record ${record.key}.`);
-		}
-		requireExactLaunchText(record.model, `Launch record ${record.key} model`);
-		requireExactLaunchText(record.thinkingLevel, `Launch record ${record.key} thinking level`);
-		for (const [index, arg] of record.args.entries()) {
-			if (/[\r\n\0]/.test(arg)) {
-				throw new Error(`Launch record ${record.key} args[${index}] must be a sanitized single-line value.`);
-			}
-			if (arg === "--append-system-prompt") {
-				throw new Error(`Launch record ${record.key} argv must omit Role prompt transport.`);
-			}
-		}
-		if (record.promptArgIndex > record.args.length) {
-			throw new Error(`Launch record ${record.key} prompt argv index is out of bounds.`);
-		}
-		if (Object.keys(record.env).length) throw new Error(`Launch record ${record.key} must not pass caller Role environment.`);
-		const hasMcpPolicy = record.roleMcps !== undefined;
-		if (hasMcpPolicy !== (record.roleMcpResources !== undefined) || hasMcpPolicy !== (record.mcpConfigSha256 !== undefined)
-			|| (record.role === "reviewer" && hasMcpPolicy)) {
-			throw new Error(`Launch record ${record.key} MCP fields must describe one complete Implementer policy.`);
-		}
-		for (const [index, name] of (record.roleMcps ?? []).entries()) requireExactLaunchText(name, `Launch record ${record.key} roleMcps[${index}]`);
-		requireUnique(record.roleMcps ?? [], `Launch record ${record.key} roleMcps`);
-		for (const [index, tool] of record.tools.entries()) requireExactLaunchText(tool, `Launch record ${record.key} tools[${index}]`);
-		requireUnique(record.tools, `Launch record ${record.key} tools`);
-		for (const [index, path] of record.roleExtensions.entries()) requireCanonicalPath(path, `Launch record ${record.key} roleExtensions[${index}]`);
-		for (const [index, path] of record.roleSkills.entries()) requireCanonicalPath(path, `Launch record ${record.key} roleSkills[${index}]`);
-		for (const [index, path] of (record.rolePrompts ?? []).entries()) requireCanonicalPath(path, `Launch record ${record.key} rolePrompts[${index}]`);
-		for (const [index, path] of (record.roleThemes ?? []).entries()) requireCanonicalPath(path, `Launch record ${record.key} roleThemes[${index}]`);
-		for (const [index, path] of (record.roleMcpResources ?? []).entries()) requireCanonicalPath(path, `Launch record ${record.key} roleMcpResources[${index}]`);
-		requireUnique(record.roleExtensions, `Launch record ${record.key} roleExtensions`);
-		requireUnique(record.roleSkills, `Launch record ${record.key} roleSkills`);
-		requireUnique(record.rolePrompts ?? [], `Launch record ${record.key} rolePrompts`);
-		requireUnique(record.roleThemes ?? [], `Launch record ${record.key} roleThemes`);
-		requireUnique(record.roleMcpResources ?? [], `Launch record ${record.key} roleMcpResources`);
-		const resourceKeys = new Set<string>();
-		for (const [index, resource] of record.resources.entries()) {
-			requireCanonicalPath(resource.path, `Launch record ${record.key} resources[${index}].path`);
-			const resourceKey = `${resource.kind}\0${resource.path}`;
-			if (resourceKeys.has(resourceKey)) throw new Error(`Launch record ${record.key} has duplicate resource fingerprints.`);
-			resourceKeys.add(resourceKey);
-		}
-		const selectedResources = [
-			...record.roleExtensions.map((path) => `extension\0${path}`),
-			...record.roleSkills.map((path) => `skill\0${path}`),
-			...(record.rolePrompts ?? []).map((path) => `prompt\0${path}`),
-			...(record.roleThemes ?? []).map((path) => `theme\0${path}`),
-			...(record.roleMcpResources ?? []).map((path) => `mcp-adapter\0${path}`),
-		];
-		if (selectedResources.length !== record.resources.length
-			|| selectedResources.some((resourceKey) => !resourceKeys.has(resourceKey))) {
-			throw new Error(`Launch record ${record.key} resource fingerprints must match its exact selected resource paths.`);
-		}
-		const normalized = structuredClone(record);
-		const { fingerprint, ...fingerprinted } = normalized;
-		if (launchRecordFingerprint(fingerprinted) !== fingerprint) {
-			throw new Error(`Launch record ${record.key} fingerprint does not match its complete contents.`);
-		}
-		keyed[record.key] = normalized;
-	}
-	for (const key of required.keys()) {
-		if (!keyed[key]) throw new Error(`Missing launch record ${key}.`);
-	}
-	return keyed;
 }
 
 export function sameIdentity(left: WorkspaceIdentity, right: WorkspaceIdentity): boolean {
@@ -658,7 +548,6 @@ export function reviewEvidencePasses(
 	evidence: ReviewEvidence | undefined,
 	phase: ReviewEvidence["phase"],
 	criterion: string,
-	launchRecordKey: string,
 	base: WorkspaceIdentity,
 	tip: WorkspaceIdentity,
 ): boolean {
@@ -667,13 +556,12 @@ export function reviewEvidencePasses(
 		&& evidence.passed
 		&& evidence.verdict === "PASS"
 		&& evidence.criterion === criterion
-		&& evidence.launchKey === launchRecordKey
 		&& sameIdentity(evidence.base, base)
 		&& sameIdentity(evidence.tip, tip)
 		&& sameIdentity(evidence.identityAfter, tip));
 }
 
-function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest): void {
+function requireCompletedTaskEvidence(taskState: ChangesetTaskState, request: ChangesetTaskRequest): void {
 	const attempt = taskState.attempts.at(-1);
 	const worktree = [...(attempt?.allocations ?? [])].reverse().find(
 		(allocation): allocation is WorktreeAllocationIntent => allocation.kind === "worktree" && allocation.status === "owned",
@@ -695,7 +583,6 @@ function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest
 		attempt.authoritativeReview,
 		"authoritative",
 		request.judgment.criterion,
-		taskState.judgmentLaunchKey!,
 		attempt.integrationBase,
 		attempt.integrationCandidate,
 	)) throw new Error(`Completed task ${request.id} lacks an exact authoritative passing review.`);
@@ -710,6 +597,18 @@ function requireCompletedTaskEvidence(taskState: TaskState, request: TaskRequest
 	}
 	if (attempt.cleanup.length !== 4 || attempt.cleanup.some((step) => step.status !== "completed")) {
 		throw new Error(`Completed task ${request.id} has incomplete cleanup.`);
+	}
+}
+
+function validateTextTaskState(taskState: TextTaskState): void {
+	for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
+		if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed text attempt order for ${taskState.taskId}.`);
+		if (attempt.output && attempt.status !== "completed") {
+			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has output without completion.`);
+		}
+		if (attempt.failure !== undefined && attempt.status !== "failed") {
+			throw new Error(`Text attempt ${attempt.number} for ${taskState.taskId} has failure without failure status.`);
+		}
 	}
 }
 
@@ -730,18 +629,17 @@ export function parseRunState(value: unknown): RunState {
 		|| state.deadline !== state.deadlineStartedAt + request.budgetMs) {
 		throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} deadline.`);
 	}
-	const records = validateLaunchRecords(request, Object.values(state.launchRecords));
-	if (!isDeepStrictEqual(records, state.launchRecords)) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} launch record keys.`);
 	if (state.tasks.length !== request.tasks.length) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task count.`);
 	for (let index = 0; index < request.tasks.length; index += 1) {
 		const definition = request.tasks[index]!;
 		const taskState = state.tasks[index]!;
 		if (taskState.taskId !== definition.id) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task order.`);
-		if (taskState.implementerLaunchKey !== launchKey("implementer", definition.modelClass)) {
-			throw new Error(`Malformed implementer launch key for ${definition.id}.`);
+		if (definition.kind === "text") {
+			if (taskState.kind !== "text") throw new Error(`Malformed task kind for ${definition.id}.`);
+			validateTextTaskState(taskState);
+			continue;
 		}
-		const judgmentKey = definition.judgment ? launchKey("reviewer", definition.judgment.modelClass) : undefined;
-		if (taskState.judgmentLaunchKey !== judgmentKey) throw new Error(`Malformed Reviewer launch key for ${definition.id}.`);
+		if (taskState.kind !== "changeset") throw new Error(`Malformed task kind for ${definition.id}.`);
 		for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
 			if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed attempt order for ${definition.id}.`);
 			if (attempt.preliminaryChecks) {
@@ -903,7 +801,6 @@ export function parseRunState(value: unknown): RunState {
 			state.final.review,
 			"final",
 			request.finalJudgment.criterion,
-			launchKey("reviewer", request.finalJudgment.modelClass),
 			state.requestStartMain,
 			state.final.identity,
 		)) throw new Error("Accepted request lacks an exact passing final review.");
@@ -915,5 +812,5 @@ export function parseRunState(value: unknown): RunState {
 	}
 	if (state.status === "final_failed" && state.final.status !== "final_failed") throw new Error("Malformed final_failed state.");
 	if (state.status === "superseded" && state.final.status !== "superseded") throw new Error("Malformed superseded state.");
-	return { ...state, request, launchRecords: records };
+	return { ...state, request };
 }
