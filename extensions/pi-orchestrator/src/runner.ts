@@ -498,10 +498,45 @@ function terminal(state: RunState): boolean {
 	return state.status === "completed" || state.status === "final_failed" || state.status === "superseded" || state.status === "aborted";
 }
 
-function readyPendingTasks(state: RunState): ChangesetTaskState[] {
-	return state.tasks.filter((task): task is ChangesetTaskState => task.kind === "changeset"
-		&& task.status === "pending"
-		&& taskRequest(state, task.taskId).dependsOn.every((dependency) => taskState(state, dependency).status === "completed"));
+export type TextTaskContext = { taskId: string; text: string };
+
+/** Resolve completed text outputs in the consumer's declared context order. */
+export function resolveTextTaskContexts(
+	state: { readonly tasks: readonly TaskState[] },
+	task: Pick<TaskRequest, "id" | "contextFrom">,
+): TextTaskContext[] {
+	return task.contextFrom.map((taskId) => {
+		const source = state.tasks.find((candidate) => candidate.taskId === taskId);
+		if (!source) throw new Error(`Context source ${taskId} for task ${task.id} is absent.`);
+		if (source.kind !== "text") throw new Error(`Context source ${taskId} for task ${task.id} is not a text task.`);
+		const attempt = source.attempts.at(-1);
+		if (source.status !== "completed" || attempt?.status !== "completed") {
+			throw new Error(`Context source ${taskId} for task ${task.id} is incomplete.`);
+		}
+		if (!attempt.output) throw new Error(`Context source ${taskId} for task ${task.id} is missing output.`);
+		return { taskId, text: attempt.output.text };
+	});
+}
+
+/** Format complete context blocks or fail; prompt data is never truncated. */
+export function formatTextTaskContexts(contexts: readonly TextTaskContext[], maxBytes: number): string {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+		throw new Error("Text task context byte cap must be a non-negative safe integer.");
+	}
+	const text = contexts.map(({ taskId, text: output }) => `Context from task ${taskId}:\n${output}`).join("\n\n");
+	if (Buffer.byteLength(text, "utf8") > maxBytes) {
+		throw new Error(`Text task context exceeds ${maxBytes} UTF-8 bytes.`);
+	}
+	return text;
+}
+
+export function readyPendingTasks(state: RunState): ChangesetTaskState[] {
+	return state.tasks.filter((task): task is ChangesetTaskState => {
+		if (task.kind !== "changeset" || task.status !== "pending") return false;
+		const request = changesetTaskRequest(state, task.taskId);
+		return request.dependsOn.every((dependency) => taskState(state, dependency).status === "completed")
+			&& request.contextFrom.every((source) => taskState(state, source).status === "completed");
+	});
 }
 
 function isDeadline(error: unknown, scope: DeadlineScope): boolean {
