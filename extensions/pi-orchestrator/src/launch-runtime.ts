@@ -37,11 +37,9 @@ import {
 	requiredLaunchKeys,
 	validateLaunchRecords,
 	type ExecuteRequest,
-	type LaunchRecord,
 	type LaunchResourceFingerprint,
 	type ModelClass,
 	type NormalizedLaunchRecord,
-	type Role,
 	type WorkspaceIdentity,
 } from "./schema.ts";
 
@@ -99,7 +97,7 @@ export interface LaunchRuntimeOptions {
 }
 
 export interface NormalizeResolvedRoleLaunchInput {
-	role: Role;
+	role: string;
 	modelClass: ModelClass;
 	effectiveRole: SubagentRole;
 	launch: ResolvedRoleLaunch;
@@ -131,7 +129,7 @@ function requireUnique(values: readonly string[], label: string): void {
 	if (new Set(values).size !== values.length) throw new Error(`${label} contains duplicate or ambiguous entries.`);
 }
 
-function rejectForbiddenRoleExtensionSource(value: string, role: Role): void {
+function rejectForbiddenRoleExtensionSource(value: string, role: string): void {
 	const components = value.toLowerCase().split(/[\\/:@]+/);
 	if (FORBIDDEN_ROLE_SOURCE_NAMES.some((name) => components.some((component) => component === name || component.startsWith(`${name}.`)))) {
 		throw new Error(`Role ${role} extension explicitly names the forbidden ${FORBIDDEN_ROLE_SOURCE_NAMES.join("/")} source: ${value}`);
@@ -307,7 +305,7 @@ function assertExactReviewerRole(role: SubagentRole): void {
 	}
 }
 
-function validateRoleDefinition(role: Role, effectiveRole: SubagentRole): void {
+function validateRoleDefinition(role: string, effectiveRole: SubagentRole): void {
 	if (effectiveRole.name !== role) throw new Error(`Effective Role identity drifted from ${role}.`);
 	requireUnique(effectiveRole.tools, `Effective ${role} Role tools`);
 	requireUnique(effectiveRole.skills, `Effective ${role} Role Skills`);
@@ -531,9 +529,9 @@ export async function normalizeResolvedRoleLaunch(
 	return (await normalizedResolvedRoleLaunch(input)).record;
 }
 
-export function selectRequiredRolesForRequest(roles: readonly SubagentRole[], request: ExecuteRequest): Map<Role, SubagentRole> {
+export function selectRequiredRolesForRequest(roles: readonly SubagentRole[], request: ExecuteRequest): Map<string, SubagentRole> {
 	const required = new Set([...requiredLaunchKeys(request).values()].map(({ role }) => role));
-	const selected = new Map<Role, SubagentRole>();
+	const selected = new Map<string, SubagentRole>();
 	for (const role of required) {
 		const matches = roles.filter((candidate) => candidate.name === role);
 		if (matches.length !== 1) throw new Error(`Required effective Role ${role} is missing or ambiguous.`);
@@ -721,7 +719,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 	}
 
 	private async resolveSnapshot(
-		role: Role,
+		role: string,
 		modelClass: ModelClass,
 		context: OperationContext,
 		knownFiles?: KnownLaunchFiles,
@@ -783,7 +781,6 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 	async preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext): Promise<{
 		root: string;
 		main: WorkspaceIdentity;
-		launchRecords: LaunchRecord[];
 	}> {
 		abortIfNeeded(context.signal);
 		const resolvedRoot = await this.options.resolveRoot(input.cwd, context);
@@ -796,36 +793,32 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		if (!rootInfo.isDirectory()) throw new Error("Pi Orchestrator root must be an existing local directory.");
 		abortIfNeeded(context.signal);
 		const main = await this.options.inspectMain({ root }, context);
-		const launchRecords = await this.prepareLaunchRecords(input.request, context);
-		return { root, main, launchRecords };
-	}
-
-	async recoverLaunchRecords(
-		input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> },
-		context: OperationContext,
-	): Promise<LaunchRecord[]> {
-		abortIfNeeded(context.signal);
-		if (normalize(await realpath(input.root)) !== input.root) throw new Error("Recorded repository root is no longer canonical.");
-		const recorded = validateLaunchRecords(input.request, Object.values(input.records));
-		for (const record of Object.values(recorded)) await assertRecordResources(record, context.signal);
-		const freshRecords = await this.prepareLaunchRecords(input.request, context);
-		const fresh = validateLaunchRecords(input.request, freshRecords);
-		if (!isDeepStrictEqual(fresh, recorded)) {
-			throw new Error("Recorded Role identity, route, argv, resources, tools, or prompt hash drifted.");
+		const required = new Map<string, Set<ModelClass>>();
+		const addRequired = (role: string, modelClass: ModelClass): void => {
+			const modelClasses = required.get(role) ?? new Set<ModelClass>();
+			modelClasses.add(modelClass);
+			required.set(role, modelClasses);
+		};
+		for (const task of input.request.tasks) {
+			addRequired(task.role, task.modelClass);
+			if (task.kind === "changeset" && task.judgment) addRequired(task.judgment.role, task.judgment.modelClass);
 		}
-		return freshRecords;
+		if (input.request.finalJudgment) {
+			addRequired(input.request.finalJudgment.role, input.request.finalJudgment.modelClass);
+		}
+		for (const [role, modelClasses] of required) {
+			for (const modelClass of modelClasses) await this.resolveSnapshot(role, modelClass, context);
+		}
+		return { root, main };
 	}
 
 	async acquireLaunch(
-		record: NormalizedLaunchRecord,
+		role: string,
+		modelClass: ModelClass,
 		context: OperationContext,
 	): Promise<TransientLaunchHandle<VerifiedLaunch>> {
-		await assertRecordResources(record, context.signal);
-		const fresh = await this.resolveSnapshot(record.role, record.modelClass, context);
-		if (!isDeepStrictEqual(fresh.record, record)) {
-			throw new Error(`Recorded ${record.key} Role identity, route, argv, resources, tools, or prompt hash drifted immediately before launch.`);
-		}
-		return await materializeTransientLaunch(record, fresh.prompt, context.signal);
+		const fresh = await this.resolveSnapshot(role, modelClass, context);
+		return await materializeTransientLaunch(fresh.record, fresh.prompt, context.signal);
 	}
 }
 
