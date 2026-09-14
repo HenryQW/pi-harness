@@ -171,12 +171,21 @@ test("v2 state discriminates text tasks and rejects v1 and launch state", () => 
 	textTaskWithOutput.status = "running";
 	assert.throws(() => parseRunState(completedAttemptWithoutTaskCompletion), /latest attempt of a completed task/i);
 
+	const runningThenCompleted = structuredClone(valid) as RunState;
+	const textTaskWithInterruptedAttempt = runningThenCompleted.tasks[0]!;
+	if (textTaskWithInterruptedAttempt.kind !== "text") throw new Error("Expected a text task.");
+	textTaskWithInterruptedAttempt.attempts = [
+		{ number: 1, status: "running" },
+		{ number: 2, status: "completed", output: { text: "Research result." } },
+	];
+	assert.throws(() => parseRunState(runningThenCompleted), /must be failed with no output/i);
+
 	const completedOutputThenFailed = structuredClone(valid) as RunState;
 	const retriedTextTask = completedOutputThenFailed.tasks[0]!;
 	if (retriedTextTask.kind !== "text") throw new Error("Expected a text task.");
 	retriedTextTask.status = "needs_attention";
 	retriedTextTask.attempts.push({ number: 2, status: "failed", failure: "Retry failed." });
-	assert.throws(() => parseRunState(completedOutputThenFailed), /latest attempt of a completed task/i);
+	assert.throws(() => parseRunState(completedOutputThenFailed), /must be failed with no output/i);
 
 	const failedThenRunning = structuredClone(valid) as RunState;
 	const runningTextTask = failedThenRunning.tasks[0]!;
@@ -187,6 +196,8 @@ test("v2 state discriminates text tasks and rejects v1 and launch state", () => 
 		{ number: 2, status: "running" },
 	];
 	assert.doesNotThrow(() => parseRunState(failedThenRunning));
+	runningTextTask.attempts[0]!.output = { text: "Stale result." };
+	assert.throws(() => parseRunState(failedThenRunning), /must be failed with no output/i);
 
 	const outputWithoutCompletion = structuredClone(valid) as RunState;
 	const textAttempt = outputWithoutCompletion.tasks[0]!;
