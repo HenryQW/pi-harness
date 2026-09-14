@@ -1,6 +1,10 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import {
+	createEphemeralSubagentExecutor,
+	ROLE_TOOL_POLICY_FLAG,
+	type EphemeralSubagentExecutor,
+} from "@henryqw/pi-subagent";
 import {
 	ComposedOrchestratorRuntime,
 	createCanonicalGitRootResolver,
@@ -38,25 +42,36 @@ const PUBLIC_EVIDENCE_MAX_BYTES = 512;
 
 export interface OrchestratorExtensionDependencies {
 	now(): number;
+	createSubagentExecutor(): EphemeralSubagentExecutor;
 	createRootResolver(options: CanonicalGitRootResolverOptions): NonNullable<ComposeOrchestratorRuntimeOptions["resolveRoot"]>;
 	createReviewerExecutor(options?: ExactReviewerExecutorOptions): ReturnType<typeof createExactReviewerExecutor>;
 	createGitRuntime(options: CheckedGitRuntimeOptions): CheckedGitRuntime;
 	createHostRuntime(options: HerdrHostRuntimeOptions): HerdrHostRuntime;
 	createRuntime(options: ComposeOrchestratorRuntimeOptions): ComposedOrchestratorRuntime;
 	createStore(): FileRunStore;
-	createRunner(runtime: ComposedOrchestratorRuntime, git: CheckedGitRuntime, store: FileRunStore): OrchestratorRunner;
+	createRunner(
+		runtime: ComposedOrchestratorRuntime,
+		git: CheckedGitRuntime,
+		store: FileRunStore,
+		executor: EphemeralSubagentExecutor,
+	): OrchestratorRunner;
 	orchestratorEntrypoint: string;
 }
 
 const DEFAULT_DEPENDENCIES: OrchestratorExtensionDependencies = {
 	now: Date.now,
+	createSubagentExecutor: () => createEphemeralSubagentExecutor({
+		maxConcurrency: 8,
+		maxTurns: 50,
+		timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
+	}),
 	createRootResolver: createCanonicalGitRootResolver,
 	createReviewerExecutor: createExactReviewerExecutor,
 	createGitRuntime: (options) => new CheckedGitRuntime(options),
 	createHostRuntime: (options) => new HerdrHostRuntime(options),
 	createRuntime: createComposedOrchestratorRuntime,
 	createStore: () => new FileRunStore(),
-	createRunner: (runtime, git, store) => new OrchestratorRunner(runtime, git, store),
+	createRunner: (runtime, git, store, executor) => new OrchestratorRunner(runtime, git, store, executor),
 	orchestratorEntrypoint: fileURLToPath(import.meta.url),
 };
 
@@ -205,9 +220,10 @@ export function registerOrchestratorExtension(
 			timeout: options.timeoutMs,
 		});
 		const resolveRoot = dependencies.createRootResolver({ runProcess, now: dependencies.now });
+		const executor = dependencies.createSubagentExecutor();
 		const git = dependencies.createGitRuntime({
 			runProcess,
-			executeReview: dependencies.createReviewerExecutor(),
+			executeReview: dependencies.createReviewerExecutor({ executor }),
 		});
 		const host = dependencies.createHostRuntime({
 			inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git),
@@ -224,7 +240,7 @@ export function registerOrchestratorExtension(
 			resolveRoot,
 		});
 		const store = dependencies.createStore();
-		const runner = dependencies.createRunner(runtime, git, store);
+		const runner = dependencies.createRunner(runtime, git, store, executor);
 		return components = { runner, resolveRoot };
 	};
 

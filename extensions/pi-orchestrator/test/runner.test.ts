@@ -543,7 +543,14 @@ async function harness(t: test.TestContext) {
 	await mkdir(root);
 	const runtime = new FakeRuntime();
 	const store = new FileRunStore(agentDir);
-	return { root, runtime, store, runner: new OrchestratorRunner(runtime, runtime, store) };
+	return {
+		root,
+		runtime,
+		store,
+		runner: new OrchestratorRunner(runtime, runtime, store, {
+			run: async () => { throw new Error("Text task executor should not run in changeset runner tests."); },
+		}),
+	};
 }
 
 function productiveCallCount(runtime: FakeRuntime): number {
