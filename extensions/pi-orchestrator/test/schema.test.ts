@@ -227,7 +227,7 @@ test("v2 state maps text task attempts exactly and rejects v1 and launch state",
 		if (mapping.taskFailure === undefined) delete task.failure;
 		else task.failure = mapping.taskFailure;
 		if (mapping.accepted) assert.doesNotThrow(() => parseRunState(candidate), mapping.name);
-		else assert.throws(() => parseRunState(candidate), undefined, mapping.name);
+		else assert.throws(() => parseRunState(candidate), mapping.name);
 	}
 
 	const oldTaskField = structuredClone(valid) as RunState & { tasks: Array<Record<string, unknown>> };
