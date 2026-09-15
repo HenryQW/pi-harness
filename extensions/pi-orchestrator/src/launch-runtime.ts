@@ -7,10 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import {
-	ROLE_TOOL_POLICY_FLAG,
-	resolveConfiguredRoleLaunch,
-} from "@henryqw/pi-subagent";
+import { resolveConfiguredRoleLaunch } from "@henryqw/pi-subagent";
 import { registerModelTask } from "@henryqw/pi-task-models";
 import type {
 	CoordinatorRuntime,
@@ -64,17 +61,6 @@ function isMissing(error: unknown): boolean {
 function isWithin(root: string, candidate: string): boolean {
 	const fromRoot = relative(root, candidate);
 	return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
-}
-
-function valuesAfter(args: readonly string[], flag: string): string[] {
-	const values: string[] = [];
-	for (let index = 0; index < args.length; index += 1) {
-		if (args[index] !== flag) continue;
-		if (index + 1 >= args.length) throw new Error(`Resolved Role argv has ${flag} without a value.`);
-		values.push(args[index + 1]!);
-		index += 1;
-	}
-	return values;
 }
 
 async function removeTransientLaunch(
@@ -202,12 +188,6 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		if (prepared.missingSkills.length) {
 			throw new Error(`Role ${role} requires missing Skills: ${prepared.missingSkills.join(", ")}.`);
 		}
-		const toolPolicy = valuesAfter(prepared.args, `--${ROLE_TOOL_POLICY_FLAG}`);
-		if (toolPolicy.length !== 1) throw new Error(`Resolved ${role} launch has no unique tool policy.`);
-		const tools: unknown = JSON.parse(toolPolicy[0]!);
-		if (!Array.isArray(tools) || tools.some((tool) => typeof tool !== "string")) {
-			throw new Error(`Resolved ${role} launch has an invalid tool policy.`);
-		}
 		return Object.freeze({
 			launch: Object.freeze({
 				role: prepared.role,
@@ -216,7 +196,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 				thinkingLevel: prepared.thinkingLevel,
 				args: Object.freeze([...prepared.args]),
 				env: Object.freeze({ ...prepared.env }),
-				tools: Object.freeze([...tools]),
+				tools: prepared.tools,
 			}),
 			prompt: prepared.systemPrompt,
 			promptArgIndex: prepared.promptArgIndex,
