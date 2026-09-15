@@ -508,7 +508,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		description: "Reviews changes",
 		modelClass: "balanced",
 		isolation: "worktree",
-		tools: ["read"],
+		tools: ["read", "grep", "read"],
 		extensions: ["/roles/reviewer.ts"],
 		skills: ["security"],
 		systemPrompt: "Review only the requested change.",
@@ -558,7 +558,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.deepEqual(valuesAfter(launch.args, "--skill"), ["/effective/security/SKILL.md"]);
 	assert.equal(launch.args.includes("--tools"), false);
 	assert.equal(launch.args.includes("--no-tools"), false);
-	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "submit"]));
+	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "grep", "submit"]));
 	assert.equal(valueAfter(launch.args, "--model"), "openai-codex-2/gpt-test");
 	assert.equal(valueAfter(launch.args, "--thinking"), "high");
 	assert.ok(launch.args.includes("--no-approve"));
@@ -587,6 +587,8 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	const promptArgIndex = launch.args.indexOf("--append-system-prompt");
 	assert.equal(prepared.role, "reviewer");
 	assert.equal(prepared.isolation, "worktree");
+	assert.deepEqual(prepared.tools, ["read", "grep", "submit"]);
+	assert.equal(Object.isFrozen(prepared.tools), true);
 	assert.equal(prepared.promptArgIndex, promptArgIndex);
 	assert.equal(prepared.systemPrompt, valueAfter(launch.args, "--append-system-prompt"));
 	assert.deepEqual(prepared.args, [...launch.args.slice(0, promptArgIndex), ...launch.args.slice(promptArgIndex + 2)]);
@@ -599,6 +601,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		env: { CALLER_ID: "run-1" },
 	});
 	assert.deepEqual(preparedDirectRoute.args, prepared.args);
+	assert.deepEqual(preparedDirectRoute.tools, prepared.tools);
 	assert.equal(preparedDirectRoute.args.includes("--append-system-prompt"), false);
 	assert.equal(preparedDirectRoute.args.includes(preparedDirectRoute.systemPrompt), false);
 	const finalized = finalizeRoleLaunch(prepared);
@@ -693,7 +696,7 @@ test("Role package resources resolve enabled paths; configured launches require 
 name: package-role
 description: Uses package resources
 modelClass: balanced
-tools: []
+tools: [read, grep, read]
 extensions:
   - npm:@example/role
 skills:
@@ -737,6 +740,9 @@ Do bounded work.
 	);
 	const launch = await resolveConfiguredRoleLaunch(pi, launchCtx, { role: "package-role", modelClass: "frontier" });
 	assert.equal(launch.thinkingLevel, "high");
+	assert.deepEqual(launch.tools, ["read", "grep"]);
+	assert.equal(Object.isFrozen(launch.tools), true);
+	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(launch.tools));
 	assert.deepEqual(valuesAfter(launch.args, "--skill"), [skill, namedSkill]);
 
 	const emptyPackage = join(agentDir, "npm", "node_modules", "@example", "empty");

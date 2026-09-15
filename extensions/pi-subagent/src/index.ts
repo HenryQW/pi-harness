@@ -118,6 +118,7 @@ export interface ResolvedRoleLaunch extends PiLaunch {
 export interface PreparedRoleLaunch extends ResolvedRoleLaunch {
 	role: RoleName;
 	isolation?: "worktree";
+	tools: readonly string[];
 	systemPrompt: string;
 	promptArgIndex: number;
 }
@@ -191,6 +192,10 @@ function mcpList(value: unknown, source: string): string[] {
 	const names = stringList(value ?? [], "mcps", source);
 	if (new Set(names).size !== names.length) throw new Error(`${source}: mcps contains duplicate MCP server names.`);
 	return names;
+}
+
+function roleToolPolicy(role: Role, additionalTools: readonly string[] = []): string[] {
+	return [...new Set([...role.tools, ...additionalTools].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
 }
 
 function namesMcpAdapter(extension: string): boolean {
@@ -382,7 +387,7 @@ function createRoleLaunchFromSkills(
 ): ResolvedRoleLaunch {
 	const role = input.role;
 	const mcps = mcpList(role.mcps, `Role ${role.name}`);
-	const tools = [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+	const tools = roleToolPolicy(role, input.tools);
 	const selectedExtensions = [...role.extensions, ...(input.extensions ?? [])]
 		.map((extension) => validateExtension(extension, `Role ${role.name}`));
 	if (selectedExtensions.some(namesMcpAdapter)) {
@@ -451,11 +456,16 @@ function stripRoleSystemPrompt(rawArgs: readonly string[]): {
 	return { args, systemPrompt, promptArgIndex };
 }
 
-function prepareResolvedRoleLaunch(roleDefinition: Role, launch: ResolvedRoleLaunch): PreparedRoleLaunch {
+function prepareResolvedRoleLaunch(
+	roleDefinition: Role,
+	launch: ResolvedRoleLaunch,
+	additionalTools: readonly string[] = [],
+): PreparedRoleLaunch {
 	const role = parseRoleName(roleDefinition.name);
 	const isolation = roleIsolation(roleDefinition.isolation, `Role ${role}`);
+	const tools = Object.freeze(roleToolPolicy(roleDefinition, additionalTools));
 	const { args, systemPrompt, promptArgIndex } = stripRoleSystemPrompt(launch.args);
-	return { ...launch, args, role, isolation, systemPrompt, promptArgIndex };
+	return { ...launch, args, role, isolation, tools, systemPrompt, promptArgIndex };
 }
 
 function assertNoMissingRoleSkills(role: Role, launch: ResolvedRoleLaunch): void {
@@ -483,7 +493,7 @@ export function prepareRoleLaunch(
 		? createRoleLaunch(pi, ctx, input)
 		: resolveRoleLaunch(pi, ctx, input);
 	assertNoMissingRoleSkills(input.role, launch);
-	return prepareResolvedRoleLaunch(input.role, launch);
+	return prepareResolvedRoleLaunch(input.role, launch, input.tools);
 }
 
 /** Resolve and prepare a configured Role with its package-owned resources. */

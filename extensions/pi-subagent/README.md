@@ -197,7 +197,7 @@ The package root includes these main exports:
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
 | `resolveConfiguredRoleLaunch` | function | Resolves a configured Role and its package resources with an explicit model class. Rejects missing Role Skills. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
-| `prepareRoleLaunch` / `finalizeRoleLaunch` | functions | Separates the stable Role prompt and rejects missing Role Skills. |
+| `prepareRoleLaunch` / `finalizeRoleLaunch` | functions | Separates the stable Role prompt, exposes its immutable tool policy, and rejects missing Role Skills. |
 | `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
 | Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
 | `prepareExactReviewEvidence` | function | Create a bounded private base-to-tip patch with exact Git identity for caller-owned review. |
