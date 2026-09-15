@@ -799,7 +799,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 					...launch.args,
 				]);
 				assert.ok(args.includes("--pi-subagent-role-mcps"));
-				assert.ok(!args.includes("Implementer raw prompt must stay private"));
+				assert.ok(!args.includes("Role prompt must stay private"));
 			},
 			result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
 		},
@@ -822,6 +822,63 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	assert.equal(cleanups, 1);
 	assert.equal(script.calls.some(({ command }) => command === "ps"), false, "fresh allocation must not inspect same-TTY shell helpers");
 	script.done();
+});
+
+test("agent allocation accepts the task's explicit Role and rejects launch mismatches", async (t) => {
+	const roleTask: TaskRequest = { ...task, role: "release manager" };
+	const cases: Array<{
+		name: string;
+		launchRole: string;
+		env?: Record<string, string>;
+		error?: RegExp;
+	}> = [
+		{ name: "matching non-implementer Role", launchRole: roleTask.role },
+		{ name: "mismatched Role", launchRole: "implementer", error: /wrong Role/ },
+		{ name: "caller Role environment", launchRole: roleTask.role, env: { CALLER_SECRET: "forbidden" }, error: /must not receive caller Role environment variables/ },
+	];
+
+	for (const candidate of cases) {
+		await t.test(candidate.name, async (t) => {
+			const fixture = await paths(t);
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+			attempt.allocations.pop();
+			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
+			await privateLease(leasePath);
+			script.push(
+				lsof(leasePath),
+				...startablePaneSteps(fixture),
+				...(candidate.error ? [] : [{
+					command: "herdr",
+					args: () => {},
+					result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
+				}]),
+			);
+			let cleanups = 0;
+			const allocated = host.allocateHost({
+				intent,
+				task: roleTask,
+				attempt,
+				acquireLaunch: async () => {
+					assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
+						["lsof-test", "-nP", "-a", "-F", "p", "--", leasePath],
+						["herdr", "pane", "get", WORKER_PANE_ID],
+						["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
+					]);
+					return {
+						launch: { ...launch, role: candidate.launchRole, env: candidate.env ?? {} },
+						cleanup: async () => { cleanups += 1; },
+					};
+				},
+			}, context());
+			if (candidate.error) await assert.rejects(allocated, candidate.error);
+			else assert.deepEqual(await allocated, { kind: "agent", outcome: "owned" });
+			assert.equal(cleanups, 1);
+			assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, candidate.error ? 0 : 1);
+			script.done();
+		});
+	}
 });
 
 test("a native-invalid persisted agent name is rejected before startPiAgent", async (t) => {
@@ -960,7 +1017,7 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 		attempt,
 		acquireLaunch: async () => {
 			assert.equal(script.calls.length, 4);
-			throw new Error("Implementer extension fingerprint drifted");
+			throw new Error("Role extension fingerprint drifted");
 		},
 	}, context()), /fingerprint drifted/);
 	assert.ok(script.calls.every(({ args }) => !(args[0] === "agent" && args[1] === "start")));
@@ -992,7 +1049,7 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 	script.done();
 });
 
-test("aborted Implementer start still cleans its acquired launch", async (t) => {
+test("aborted agent start still cleans its acquired Role launch", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);

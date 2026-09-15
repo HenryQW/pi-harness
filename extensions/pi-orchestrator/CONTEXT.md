@@ -19,13 +19,13 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 
 ## Invariants
 
-- `orchestrate_execute` accepts one strict version-1 request with one to eight tasks. Every task has checks and an explicit model class.
-- Preflight requires one canonical clean Git Main with a committed `HEAD`. It snapshots every required predefined Implementer and Reviewer Role before durable work starts.
-- Implementer package sources resolve through Pi to exact local extension, Skill, prompt, and theme files. Launch records fingerprint every selected file.
-- Implementer MCP allowlists use Pi Subagent's adapter wrapper. Durable records persist exact server names, fingerprint adapter resources, and hash the selected config; the child rechecks that hash.
-- Judgment launches reuse the effective Reviewer prompt and exact read-only tool list but omit its configured extensions, Skills, and MCP servers. Generic Pi Subagent delegation still uses the complete Role.
-- Launch records contain Role and prompt hashes, never raw Role prompts or prompt paths. Productive recovery and each launch re-resolve the effective Role and fail on drift.
-- Each final launch boundary creates a unique mode `0600` Role prompt in a mode `0700` temporary directory. Implementer startup and Reviewer execution own its cleanup.
+- `orchestrate_execute` accepts one strict request with one to eight text or changeset tasks. Every task has an explicit Role and model class; changeset tasks also have checks.
+- Preflight requires one canonical clean Git Main with a committed `HEAD`. It resolves every explicit task and judgment Role before durable work starts.
+- Task Roles resolve through Pi Subagent to exact model, argument, environment, tool, extension, Skill, and MCP policy.
+- Herdr changeset agents require the acquired launch to match the task's exact Role and to contain no caller Role environment.
+- Judgment launches use the declared Role without adding arguments, environment, or resources. Judgment Roles must expose read-only tools.
+- Durable state contains no raw Role prompts or prompt paths. Preflight and each launch resolve the effective Role.
+- Each final launch boundary creates a unique mode `0600` Role prompt in a mode `0700` temporary directory. Agent startup and judgment execution own its cleanup.
 - Assignments and exact Reviewer packets remain task messages. They never become Role definitions or Role prompt material.
 - Each task attempt owns one worktree, one Herdr workspace, one worker tab, and one agent. Each allocation stores kind-specific plan and result fields before non-idempotent creation.
 - Task identity ignores Git-ignored dependency, build, and index artifacts created by Role tooling. It still rejects tracked changes, non-ignored untracked files, hidden index entries, gitlinks, and branch or commit drift.

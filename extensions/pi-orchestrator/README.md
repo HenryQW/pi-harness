@@ -48,13 +48,13 @@ Use `delegate_task` for lightweight generic delegation. Use `orchestrate_*` when
 
 ### Roles
 
-Pi Orchestrator reuses the effective `implementer` and `reviewer` Roles from Pi Subagent. Keep one set of Role files in `config/pi-subagent/`. You do not need orchestrator-specific copies.
+Pi Orchestrator reuses the effective Roles named by each task and judgment. Keep one set of Role files in `config/pi-subagent/`. You do not need orchestrator-specific copies.
 
-Pi resolves Implementer extension packages before launch. The orchestrator launches exact local resources. It fingerprints every extension, Skill, prompt, and theme file.
+Pi Subagent resolves each Role's model, tools, extensions, Skills, and MCP policy. The orchestrator resolves each Role during preflight and again at launch.
 
-Implementer MCP allowlists reuse Pi Subagent's `pi-mcp-adapter` wrapper. Launch records store exact server names, fingerprint adapter resources, and hash the selected config. The child verifies that config hash before loading the servers.
+Herdr starts each changeset agent with its task's exact Role launch. It rejects a mismatched Role or any caller Role environment.
 
-Judgment launches reuse the Reviewer prompt and tool list. They omit configured Reviewer extensions, Skills, and MCP servers. This keeps exact reviews capability-enforced and read-only. `delegate_task` still loads the complete Reviewer Role.
+Judgment launches use the declared judgment Role without adding arguments, environment, or resources. Configure judgment Roles with read-only tools.
 
 ### Start a request
 
@@ -66,10 +66,13 @@ Judgment launches reuse the Reviewer prompt and tool list. They omit configured 
   "tasks": [
     {
       "id": "auth-runtime",
+      "kind": "changeset",
+      "role": "implementer",
       "modelClass": "balanced",
       "requirements": "Fix the sign-in failure without changing unrelated session behavior.",
       "deliverable": "A focused committed runtime fix.",
       "dependsOn": [],
+      "contextFrom": [],
       "checks": [
         { "command": "pnpm", "args": ["test", "--filter", "auth"] }
       ]
@@ -91,7 +94,7 @@ The architecture diagram shows the guarded path from the checked request through
 
 ### Execution and review
 
-A request accepts one to eight tasks. Every task needs direct checks and an explicit model class.
+A request accepts one to eight tasks. Every task needs an explicit kind, Role, and model class. Changeset tasks also need direct checks.
 
 `dependsOn` creates later waves. Tasks in one ready wave use separate worktrees and visible Herdr workers. Identity checks ignore Git-ignored artifacts, such as dependencies installed by `pi-deps` and indexes created by Herdr plugins. They still reject tracked changes, non-ignored untracked files, hidden index entries, gitlinks, and branch or commit drift.
 
@@ -109,11 +112,9 @@ The package root exports its strict request and state schemas, runner contracts,
 
 State lives under `~/.pi/agent/config/pi-orchestrator/state/`, namespaced by repository and request ID. Do not edit state files.
 
-Each launch record names a predefined effective Role. It stores the Role, route, resource, and prompt fingerprints. It never stores the Role prompt or a prompt-file path.
+Each task and judgment names one effective Role and model class. Durable state never stores a Role prompt or prompt-file path.
 
-Pi's package manager resolves Implementer package sources. Launch records fingerprint every selected local extension, Skill, prompt, and theme file.
-
-The orchestrator resolves the Role again on recovery and immediately before each launch. Any change blocks productive work.
+Pi Subagent resolves each Role's configured launch. A resolution failure during preflight or immediately before launch blocks productive work.
 
 Pi needs a file to keep a multiline Role prompt out of process arguments. The orchestrator creates a private temporary file only at the final launch boundary. It removes the file after Herdr reports readiness or after the Reviewer exits.
 

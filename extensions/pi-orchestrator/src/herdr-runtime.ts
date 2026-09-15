@@ -504,14 +504,14 @@ export class HerdrHostRuntime implements HostRuntime {
 	): Promise<HostAllocationResult> {
 		requireIntentIdentity(input.intent, input.attempt);
 		if (input.intent.kind === "workspace") {
-			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
+			if (input.acquireLaunch) throw new Error("Role launch acquisition is valid only at the exact agent allocation boundary.");
 			return await this.allocateWorkspace(input.intent, input.attempt, context);
 		}
 		if (input.intent.kind === "worker_tab") {
-			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
+			if (input.acquireLaunch) throw new Error("Role launch acquisition is valid only at the exact agent allocation boundary.");
 			return await this.allocateWorkerTab(input.intent, input.attempt, context);
 		}
-		return await this.allocateAgent(input.intent, input.attempt, input.acquireLaunch, context);
+		return await this.allocateAgent(input.intent, input.task.role, input.attempt, input.acquireLaunch, context);
 	}
 
 	async reconcileHostAllocation(
@@ -874,12 +874,13 @@ export class HerdrHostRuntime implements HostRuntime {
 
 	private async allocateAgent(
 		allocation: AgentAllocationIntent,
+		expectedRole: TaskRequest["role"],
 		attempt: TaskAttempt,
 		acquireLaunch: (() => Promise<TransientLaunchHandle<VerifiedLaunch>>) | undefined,
 		context: OperationContext,
 	): Promise<AgentAllocationResult> {
 		assertAgentIntent(allocation, attempt);
-		if (!acquireLaunch) throw new Error("Agent start requires immediate Implementer launch acquisition.");
+		if (!acquireLaunch) throw new Error("Agent start requires immediate Role launch acquisition.");
 		this.assertLeasePath(allocation.leasePath, allocation.token);
 		await this.assertPrivateLease(allocation.leasePath, false);
 		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
@@ -889,8 +890,8 @@ export class HerdrHostRuntime implements HostRuntime {
 		const options = this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
 		const handle = await acquireLaunch();
 		return await withTransientLaunch(handle, async (launch) => {
-			if (launch.role !== "implementer") throw new Error("Agent start acquisition returned the wrong Role.");
-			if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
+			if (launch.role !== expectedRole) throw new Error("Agent start acquisition returned the wrong Role.");
+			if (Object.keys(launch.env).length) throw new Error("Herdr agent launch must not receive caller Role environment variables.");
 			const response = await startPiAgent(this.herdr, {
 				name: allocation.agentName,
 				pane: allocation.paneId,
