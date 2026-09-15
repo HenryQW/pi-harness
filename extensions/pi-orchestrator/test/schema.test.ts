@@ -7,7 +7,9 @@ import {
 	parseRunState,
 	RUN_STATE_VERSION,
 	taskDependencies,
+	type ChangesetTaskAttempt,
 	type ChangesetTaskRequest,
+	type ChangesetTaskState,
 	type ExecuteRequest,
 	type RunState,
 	type TaskRequest,
@@ -98,6 +100,140 @@ function state(requestValue: ExecuteRequest): RunState {
 	};
 }
 
+function completedChangesetState(): RunState {
+	const definition = parseExecuteRequest(request([changesetTask("change", {
+		judgment: { role: "reviewer", modelClass: "frontier", criterion: "Review the exact candidate." },
+	})]));
+	const task = definition.tasks[0];
+	if (task?.kind !== "changeset" || !task.judgment) throw new Error("Expected a judged changeset task.");
+	const base = identity();
+	const worktreeBase = { ...base, branch: "refs/heads/orchestrator/change" };
+	const revision = "b".repeat(40);
+	const candidate: WorkspaceIdentity = { ...worktreeBase, head: revision, index: revision, tree: revision };
+	const mainAfter: WorkspaceIdentity = { ...candidate, branch: base.branch };
+	const correlationToken = "completed-change-token";
+	const attempt: ChangesetTaskAttempt = {
+		number: 1,
+		waveNumber: 1,
+		waveBase: base,
+		correlationToken,
+		allocationGeneration: 1,
+		allocations: [
+			{
+				kind: "worktree",
+				generation: 1,
+				token: correlationToken,
+				status: "owned",
+				worktree: {
+					path: "/repo/.worktrees/change",
+					cwd: "/repo/.worktrees/change",
+					branch: worktreeBase.branch,
+					repoRoot: "/repo",
+					baseCommit: base.head,
+				},
+			},
+			{
+				kind: "workspace",
+				generation: 1,
+				token: correlationToken,
+				status: "owned",
+				label: "change workspace",
+				worktreeCwd: "/repo/.worktrees/change",
+				mainRoot: "/repo",
+				repoKey: "/repo",
+				herdrRepoRoot: "/repo",
+				workspaceId: "workspace-change",
+				rootTabId: "root-tab-change",
+				rootPaneId: "root-pane-change",
+			},
+			{
+				kind: "worker_tab",
+				generation: 1,
+				token: correlationToken,
+				status: "owned",
+				label: "change worker",
+				workspaceId: "workspace-change",
+				workspaceRootTabId: "root-tab-change",
+				workspaceRootPaneId: "root-pane-change",
+				worktreeCwd: "/repo/.worktrees/change",
+				leasePath: "/repo/.worktrees/change/.lease",
+				tabId: "worker-tab-change",
+				paneId: "worker-pane-change",
+			},
+			{
+				kind: "agent",
+				generation: 1,
+				token: correlationToken,
+				status: "owned",
+				agentName: "worker-change",
+				workspaceId: "workspace-change",
+				tabId: "worker-tab-change",
+				paneId: "worker-pane-change",
+				worktreeCwd: "/repo/.worktrees/change",
+				leasePath: "/repo/.worktrees/change/.lease",
+			},
+		],
+		prompts: [{ kind: "initial", status: "settled", preCandidate: worktreeBase, candidate, at: 2 }],
+		candidate,
+		termination: { status: "terminated", workerId: "worker-change", candidate, at: 3 },
+		integrationBase: base,
+		integrationCandidate: candidate,
+		authoritativeChecks: {
+			phase: "authoritative",
+			candidate,
+			identityAfter: candidate,
+			results: [{ ...task.checks[0]!, code: 0, killed: false, stdout: "", stderr: "" }],
+			passed: true,
+			at: 4,
+		},
+		authoritativeReview: {
+			phase: "authoritative",
+			criterion: task.judgment.criterion,
+			base,
+			tip: candidate,
+			identityAfter: candidate,
+			verdict: "PASS",
+			passed: true,
+			at: 5,
+		},
+		integration: { status: "integrated", expectedMain: base, candidate, mainAfter },
+		cleanup: [
+			{ kind: "worker_tab", status: "completed" },
+			{ kind: "workspace", status: "completed" },
+			{ kind: "worktree", status: "completed" },
+			{ kind: "branch", status: "completed" },
+		],
+	};
+	return {
+		version: RUN_STATE_VERSION,
+		request: definition,
+		root: "/repo",
+		requestStartMain: base,
+		main: mainAfter,
+		deadlineStartedAt: 1,
+		deadline: 1_001,
+		status: "running",
+		tasks: [{ taskId: task.id, kind: "changeset", status: "completed", attempts: [attempt] }],
+		waves: [{ number: 1, base, taskIds: [task.id], status: "completed" }],
+		final: { status: "pending" },
+		accepted: false,
+		createdAt: 1,
+		updatedAt: 5,
+	};
+}
+
+function completedChangesetTask(value: RunState): ChangesetTaskState {
+	const task = value.tasks[0];
+	if (task?.kind !== "changeset") throw new Error("Expected a changeset task.");
+	return task;
+}
+
+function completedChangesetAttempt(value: RunState): ChangesetTaskAttempt {
+	const attempt = completedChangesetTask(value).attempts.at(-1);
+	if (!attempt) throw new Error("Expected a changeset attempt.");
+	return attempt;
+}
+
 test("task variants require explicit Role names and preserve text context order", () => {
 	const parsed = parseExecuteRequest(request([
 		textTask("plan", { role: "  planner  " }),
@@ -152,6 +288,108 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 		[textTask("first", { contextFrom: ["second"] }), textTask("second", { contextFrom: ["first"] })],
 	];
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
+});
+
+test("v2 completed changesets require exact terminal evidence", () => {
+	const valid = completedChangesetState();
+	assert.equal(completedChangesetTask(parseRunState(structuredClone(valid))).status, "completed");
+
+	const invalidStates: Array<{
+		name: string;
+		mutate: (value: RunState) => void;
+		error: RegExp;
+	}> = [
+		{
+			name: "worker termination is not complete",
+			mutate: (value) => {
+				const termination = completedChangesetAttempt(value).termination;
+				if (!termination) throw new Error("Expected worker termination evidence.");
+				termination.status = "terminating";
+			},
+			error: /no recorded worker termination/,
+		},
+		{
+			name: "authoritative checks do not pass",
+			mutate: (value) => {
+				const checks = completedChangesetAttempt(value).authoritativeChecks;
+				if (!checks) throw new Error("Expected authoritative checks.");
+				checks.results[0]!.code = 1;
+				checks.results[0]!.stderr = "check failed";
+				checks.passed = false;
+			},
+			error: /lacks authoritative passing checks on its exact candidate/,
+		},
+		{
+			name: "authoritative checks cover another candidate",
+			mutate: (value) => {
+				const checks = completedChangesetAttempt(value).authoritativeChecks;
+				if (!checks) throw new Error("Expected authoritative checks.");
+				const other = { ...checks.candidate, head: "c".repeat(40), index: "c".repeat(40), tree: "c".repeat(40) };
+				checks.candidate = other;
+				checks.identityAfter = other;
+			},
+			error: /lacks authoritative passing checks on its exact candidate/,
+		},
+		{
+			name: "required judgment is missing",
+			mutate: (value) => { delete completedChangesetAttempt(value).authoritativeReview; },
+			error: /lacks an exact authoritative passing review/,
+		},
+		{
+			name: "required judgment does not pass",
+			mutate: (value) => {
+				const review = completedChangesetAttempt(value).authoritativeReview;
+				if (!review) throw new Error("Expected authoritative review.");
+				review.verdict = "NEEDS_WORK";
+				review.passed = false;
+			},
+			error: /lacks an exact authoritative passing review/,
+		},
+		{
+			name: "integrated task identity is dirty",
+			mutate: (value) => {
+				const mainAfter = completedChangesetAttempt(value).integration?.mainAfter;
+				if (!mainAfter) throw new Error("Expected final task identity.");
+				mainAfter.index = "c".repeat(40);
+			},
+			error: /lacks exact integration evidence/,
+		},
+		{
+			name: "integrated task identity does not match the candidate",
+			mutate: (value) => {
+				const mainAfter = completedChangesetAttempt(value).integration?.mainAfter;
+				if (!mainAfter) throw new Error("Expected final task identity.");
+				mainAfter.head = "c".repeat(40);
+				mainAfter.index = mainAfter.head;
+				mainAfter.tree = mainAfter.head;
+			},
+			error: /lacks exact integration evidence/,
+		},
+		{
+			name: "latest attempt is still integrating",
+			mutate: (value) => {
+				const integration = completedChangesetAttempt(value).integration;
+				if (!integration) throw new Error("Expected integration evidence.");
+				integration.status = "integrating";
+			},
+			error: /lacks exact integration evidence/,
+		},
+		{
+			name: "cleanup is incomplete",
+			mutate: (value) => { completedChangesetAttempt(value).cleanup[2]!.status = "pending"; },
+			error: /has incomplete cleanup/,
+		},
+		{
+			name: "completed task has no attempt",
+			mutate: (value) => { completedChangesetTask(value).attempts = []; },
+			error: /lacks an exact owned worktree record/,
+		},
+	];
+	for (const { name, mutate, error } of invalidStates) {
+		const candidate = structuredClone(valid);
+		mutate(candidate);
+		assert.throws(() => parseRunState(candidate), error, name);
+	}
 });
 
 test("v2 state maps text task attempts exactly and rejects v1 and launch state", () => {
