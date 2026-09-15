@@ -196,7 +196,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 				thinkingLevel: prepared.thinkingLevel,
 				args: Object.freeze([...prepared.args]),
 				env: Object.freeze({ ...prepared.env }),
-				tools: prepared.tools,
+				tools: Object.freeze([...prepared.tools]),
 			}),
 			prompt: prepared.systemPrompt,
 			promptArgIndex: prepared.promptArgIndex,
