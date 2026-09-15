@@ -6,14 +6,16 @@ import {
 	readyPendingTasks,
 	resolveTextTaskContexts,
 } from "../src/runner.ts";
-import type {
-	ChangesetTaskRequest,
-	ChangesetTaskState,
-	RunState,
-	TaskRequest,
-	TaskState,
-	TextTaskRequest,
-	TextTaskState,
+import {
+	parseRunState,
+	RUN_STATE_VERSION,
+	type ChangesetTaskRequest,
+	type ChangesetTaskState,
+	type RunState,
+	type TaskRequest,
+	type TaskState,
+	type TextTaskRequest,
+	type TextTaskState,
 } from "../src/schema.ts";
 
 function textTask(
@@ -71,12 +73,39 @@ function completedTextState(taskId: string, text?: string): TextTaskState {
 }
 
 function runnerState(definitions: TaskRequest[], tasks: TaskState[]): RunState {
-	return { request: { tasks: definitions }, tasks } as unknown as RunState;
+	const main = {
+		branch: "refs/heads/main",
+		head: "a".repeat(40),
+		index: "a".repeat(40),
+		tree: "a".repeat(40),
+	};
+	return parseRunState({
+		version: RUN_STATE_VERSION,
+		request: {
+			id: "context-readiness",
+			goal: "Test dependency readiness.",
+			budgetMs: 1_000,
+			tasks: definitions,
+			finalChecks: [{ command: "check", args: [] }],
+		},
+		root: "/repo",
+		requestStartMain: main,
+		main,
+		deadlineStartedAt: 1,
+		deadline: 1_001,
+		status: "pending",
+		tasks,
+		waves: [],
+		final: { status: "pending" },
+		accepted: false,
+		createdAt: 1,
+		updatedAt: 1,
+	});
 }
 
 test("ready tasks include text and wait for every dependency source", () => {
 	const source = textTask("research");
-	const dependency = changesetTask("dependency");
+	const dependency = textTask("dependency");
 	const textConsumer = textTask("summary", { dependsOn: [dependency.id], contextFrom: [source.id] });
 	const changesetConsumer = changesetTask("change", { dependsOn: [dependency.id], contextFrom: [source.id] });
 	const definitions = [source, dependency, textConsumer, changesetConsumer];
@@ -84,7 +113,7 @@ test("ready tasks include text and wait for every dependency source", () => {
 	assert.deepEqual(
 		readyPendingTasks(runnerState(definitions, [
 			pendingTextState(source.id),
-			changesetState(dependency.id, "completed"),
+			completedTextState(dependency.id, "Dependency result."),
 			pendingTextState(textConsumer.id),
 			changesetState(changesetConsumer.id, "pending"),
 		])).map(({ taskId }) => taskId),
@@ -93,7 +122,7 @@ test("ready tasks include text and wait for every dependency source", () => {
 	assert.deepEqual(
 		readyPendingTasks(runnerState(definitions, [
 			completedTextState(source.id, "Research result."),
-			changesetState(dependency.id, "pending"),
+			pendingTextState(dependency.id),
 			pendingTextState(textConsumer.id),
 			changesetState(changesetConsumer.id, "pending"),
 		])).map(({ taskId }) => taskId),
@@ -102,7 +131,7 @@ test("ready tasks include text and wait for every dependency source", () => {
 	assert.deepEqual(
 		readyPendingTasks(runnerState(definitions, [
 			completedTextState(source.id, "Research result."),
-			changesetState(dependency.id, "completed"),
+			completedTextState(dependency.id, "Dependency result."),
 			pendingTextState(textConsumer.id),
 			changesetState(changesetConsumer.id, "pending"),
 		])).map(({ taskId }) => taskId),
