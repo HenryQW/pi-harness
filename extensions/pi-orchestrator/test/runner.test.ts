@@ -6,6 +6,7 @@ import test from "node:test";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
 	OrchestratorRunner,
+	STATUS_INSPECTION_BUDGET_MS,
 	withTransientLaunch,
 	type CheckRunResult,
 	type GitRuntime,
@@ -25,6 +26,7 @@ import {
 	parseExecuteRequest,
 	parseRunState,
 	type ChangesetTaskRequest,
+	type CleanupKind,
 	type ExecuteRequest,
 	type HostAllocationPlan,
 	type ModelClass,
@@ -52,15 +54,22 @@ class FakeRuntime {
 	maxConcurrentWorkers = 0;
 	failFinalChecks = 0;
 	failPreliminaryChecks = 0;
+	expireMainInspections = 0;
 	readonly acquisitions: RoleCall[] = [];
 	readonly launchCleanups: RoleCall[] = [];
 	readonly workerCalls: WorkerCall[] = [];
 	readonly workerAllocationCalls: string[] = [];
 	readonly changesetCallOrder: string[] = [];
+	readonly candidateInspectionCalls: string[] = [];
+	readonly checkCalls: Array<{ scope: "task" | "final"; taskId?: string }> = [];
+	readonly cleanupCalls: CleanupKind[] = [];
+	readonly cleanupFailures: Error[] = [];
 	readonly workerFailures: Error[] = [];
 	readonly terminationCalls: Array<{ workerId: string; candidate: WorkspaceIdentity }> = [];
 	readonly integrations: string[] = [];
+	readonly rebaseCalls: string[] = [];
 	readonly reviewCalls: Array<RoleCall & { scope: "task" | "final"; taskId?: string; criterion: string }> = [];
+	readonly inspectMainCalls: OperationContext[] = [];
 	readonly inspectMainFailures: Error[] = [];
 	readonly reviewVerdicts: string[] = [];
 	private readonly workerBarrierResolvers: Array<() => void> = [];
@@ -100,7 +109,12 @@ class FakeRuntime {
 		};
 	}
 
-	async inspectMain(_input: Parameters<GitRuntime["inspectMain"]>[0], _context: OperationContext): Promise<WorkspaceIdentity> {
+	async inspectMain(_input: Parameters<GitRuntime["inspectMain"]>[0], context: OperationContext): Promise<WorkspaceIdentity> {
+		this.inspectMainCalls.push(context);
+		if (this.expireMainInspections > 0) {
+			this.expireMainInspections -= 1;
+			this.clock = context.deadline;
+		}
 		const failure = this.inspectMainFailures.shift();
 		if (failure) throw failure;
 		return { ...this.main };
@@ -110,6 +124,7 @@ class FakeRuntime {
 		input: Parameters<TaskCandidateInspector["inspectTaskCandidate"]>[0],
 		_context: OperationContext,
 	): Promise<WorkspaceIdentity> {
+		this.candidateInspectionCalls.push(input.task.id);
 		const worktree = input.attempt.allocations.find((allocation) => allocation.kind === "worktree");
 		if (!worktree || worktree.kind !== "worktree" || !worktree.worktree) throw new Error("missing worktree");
 		return input.attempt.candidate
@@ -240,6 +255,7 @@ class FakeRuntime {
 	}
 
 	async runChecks(input: Parameters<GitRuntime["runChecks"]>[0], _context: OperationContext): Promise<CheckRunResult> {
+		this.checkCalls.push({ scope: input.scope, ...(input.taskId ? { taskId: input.taskId } : {}) });
 		if (input.scope === "final" && this.failFinalChecks > 0) {
 			this.failFinalChecks -= 1;
 			throw new Error("final check transport interrupted");
@@ -283,6 +299,7 @@ class FakeRuntime {
 	}
 
 	async rebase(input: Parameters<GitRuntime["rebase"]>[0], _context: OperationContext): Promise<RebaseResult> {
+		this.rebaseCalls.push(input.task.id);
 		return { outcome: "ready", base: { ...input.onto }, candidate: { ...input.candidate } };
 	}
 
@@ -292,11 +309,17 @@ class FakeRuntime {
 		return { outcome: "integrated", main: { ...this.main } };
 	}
 
-	async cleanupHost(_input: Parameters<OrchestratorRuntime["cleanupHost"]>[0], _context: OperationContext) {
+	async cleanupHost(input: Parameters<OrchestratorRuntime["cleanupHost"]>[0], _context: OperationContext) {
+		this.cleanupCalls.push(input.kind);
+		const failure = this.cleanupFailures.shift();
+		if (failure) throw failure;
 		return { outcome: "completed" as const };
 	}
 
-	async cleanupGit(_input: Parameters<GitRuntime["cleanupGit"]>[0], _context: OperationContext) {
+	async cleanupGit(input: Parameters<GitRuntime["cleanupGit"]>[0], _context: OperationContext) {
+		this.cleanupCalls.push(input.kind);
+		const failure = this.cleanupFailures.shift();
+		if (failure) throw failure;
 		return { outcome: "completed" as const };
 	}
 
@@ -434,6 +457,30 @@ function sortedCalls(calls: readonly RoleCall[]): RoleCall[] {
 	return [...calls].sort((left, right) => `${left.role}/${left.modelClass}`.localeCompare(`${right.role}/${right.modelClass}`));
 }
 
+function runtimeCallCounts(runtime: FakeRuntime) {
+	return {
+		acquisitions: runtime.acquisitions.length,
+		workerAllocations: runtime.workerAllocationCalls.length,
+		candidateInspections: runtime.candidateInspectionCalls.length,
+		workers: runtime.workerCalls.length,
+		checks: runtime.checkCalls.length,
+		terminations: runtime.terminationCalls.length,
+		reviews: runtime.reviewCalls.length,
+		rebases: runtime.rebaseCalls.length,
+		integrations: runtime.integrations.length,
+		cleanups: runtime.cleanupCalls.length,
+		mainInspections: runtime.inspectMainCalls.length,
+	};
+}
+
+function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtimeCallCounts>) {
+	const after = runtimeCallCounts(runtime);
+	return Object.fromEntries(Object.entries(after).map(([key, value]) => [
+		key,
+		value - before[key as keyof typeof before],
+	])) as ReturnType<typeof runtimeCallCounts>;
+}
+
 test("ready changeset waves run concurrently, integrate in request order, and retain exact PASS evidence", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	runtime.workerBarrierSize = 2;
@@ -561,6 +608,174 @@ test("abort terminates only the exact active worker without replay", async (t) =
 	assert.equal(abortedActive.termination?.status, "terminated");
 	assert.equal(abortedSettled.termination?.status, "terminated");
 	assertParsed(aborted.state);
+});
+
+test("status terminates interrupted and ambiguous changeset prompts without productive replay", async (t) => {
+	for (const boundary of ["interrupted", "ambiguous"] as const) {
+		await t.test(boundary, async (t) => {
+			const { root, runtime, store, runner } = await harness(t);
+			const definition = request(`status-${boundary}-prompt`, [changesetTask("change", {
+				judgment: { role: "judge/status", modelClass: "balanced", criterion: "The retained change is correct." },
+			})]);
+			runtime.workerFailures.push(new Error("worker result unavailable"));
+			await runner.execute(definition, root);
+
+			const handle = await store.load(root, definition.id);
+			const task = changesetState(handle.state, "change");
+			const attempt = task.attempts[0]!;
+			const prompt = attempt.prompts[0]!;
+			const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
+			if (!agent?.agentName) throw new Error("Expected an exact allocated worker fixture.");
+			delete attempt.termination;
+			if (boundary === "interrupted") {
+				handle.state.status = "running";
+				handle.state.waves[0]!.status = "dispatching";
+				task.status = "working";
+				task.failure = undefined;
+				prompt.status = "submitting";
+				prompt.failure = undefined;
+			}
+			assertParsed(handle.state);
+			await handle.save();
+			const callsBeforeStatus = runtimeCallCounts(runtime);
+
+			const reported = await runner.status(definition.id, root);
+			const reportedAttempt = changesetState(reported.state, "change").attempts[0]!;
+			assert.equal(reported.state.version, 2);
+			assert.equal(reported.state.status, "needs_attention");
+			assert.equal(reportedAttempt.prompts[0]?.status, "ambiguous");
+			assert.equal(reportedAttempt.termination?.status, "terminated");
+			assert.deepEqual(reported.main, { status: "current", expected: identity("a"), actual: identity("a") });
+			assert.deepEqual(reported.continuation, { id: definition.id, action: "verify", taskId: "change" });
+			assert.deepEqual(runtimeCallDelta(runtime, callsBeforeStatus), {
+				acquisitions: 0,
+				workerAllocations: 0,
+				candidateInspections: 0,
+				workers: 0,
+				checks: 0,
+				terminations: 1,
+				reviews: 0,
+				rebases: 0,
+				integrations: 0,
+				cleanups: 0,
+				mainInspections: 1,
+			});
+			assert.deepEqual(runtime.terminationCalls.at(-1), {
+				workerId: agent.agentName,
+				candidate: prompt.preCandidate,
+			});
+			assertParsed(reported.state);
+		});
+	}
+});
+
+test("status reports Main drift and inspection expiry or failure without mutation or replay", async (t) => {
+	for (const outcome of ["drift", "expiry", "unavailable"] as const) {
+		await t.test(outcome, async (t) => {
+			const { root, runtime, store, runner } = await harness(t);
+			const definition = request(`status-main-${outcome}`, [changesetTask("change")]);
+			runtime.inspectMainFailures.push(new Error("initial inspection unavailable"));
+			await runner.execute(definition, root);
+			const persistedBefore = structuredClone((await store.load(root, definition.id)).state);
+			assertParsed(persistedBefore);
+			if (outcome === "drift") runtime.main = identity("f");
+			if (outcome === "expiry") runtime.expireMainInspections = 1;
+			if (outcome === "unavailable") runtime.inspectMainFailures.push(new Error("read failed"));
+			const statusStartedAt = runtime.clock;
+			const callsBeforeStatus = runtimeCallCounts(runtime);
+
+			const reported = await runner.status(definition.id, root);
+			if (outcome === "drift") {
+				assert.deepEqual(reported.main, { status: "drifted", expected: identity("a"), actual: identity("f") });
+				assert.match(reported.text, /Main: drifted/);
+			} else {
+				assert.equal(reported.main?.status, "unavailable");
+				assert.match(reported.text, outcome === "expiry" ? /deadline is exhausted/i : /read-only Main inspection failed: read failed/i);
+			}
+			assert.equal(reported.continuation, undefined);
+			assert.deepEqual(reported.state, persistedBefore);
+			assert.deepEqual((await store.load(root, definition.id)).state, persistedBefore);
+			assert.deepEqual(runtimeCallDelta(runtime, callsBeforeStatus), {
+				acquisitions: 0,
+				workerAllocations: 0,
+				candidateInspections: 0,
+				workers: 0,
+				checks: 0,
+				terminations: 0,
+				reviews: 0,
+				rebases: 0,
+				integrations: 0,
+				cleanups: 0,
+				mainInspections: 1,
+			});
+			const inspection = runtime.inspectMainCalls.at(-1)!;
+			assert.equal(inspection.deadline, statusStartedAt + STATUS_INSPECTION_BUDGET_MS);
+			assert.equal(inspection.timeoutMs, STATUS_INSPECTION_BUDGET_MS);
+			assertParsed(reported.state);
+		});
+	}
+});
+
+test("status permits only pending cleanup recovery after integration", async (t) => {
+	const { root, runtime, store, runner } = await harness(t);
+	const definition = request("status-cleanup-only", [
+		changesetTask("integrated"),
+		changesetTask("dependent", { dependsOn: ["integrated"] }),
+	]);
+	runtime.cleanupFailures.push(new Error("cleanup interrupted"));
+	const waiting = await runner.execute(definition, root);
+	const waitingAttempt = changesetState(waiting.state, "integrated").attempts[0]!;
+	assert.equal(waitingAttempt.integration?.status, "integrated");
+	assert.ok(waitingAttempt.cleanup.every(({ status }) => status === "pending"));
+	assert.deepEqual(runtime.cleanupCalls, ["worker_tab"]);
+
+	runtime.clock = waiting.state.deadline;
+	runtime.main = identity("f");
+	const persistedBefore = structuredClone((await store.load(root, definition.id)).state);
+	assertParsed(persistedBefore);
+	const callsBeforeStatus = runtimeCallCounts(runtime);
+	const reported = await runner.status(definition.id, root);
+
+	assert.equal(reported.main?.status, "drifted");
+	assert.deepEqual(reported.continuation, { id: definition.id, action: "verify", taskId: "integrated" });
+	assert.deepEqual(reported.state, persistedBefore);
+	assert.deepEqual((await store.load(root, definition.id)).state, persistedBefore);
+	assert.deepEqual(runtimeCallDelta(runtime, callsBeforeStatus), {
+		acquisitions: 0,
+		workerAllocations: 0,
+		candidateInspections: 0,
+		workers: 0,
+		checks: 0,
+		terminations: 0,
+		reviews: 0,
+		rebases: 0,
+		integrations: 0,
+		cleanups: 0,
+		mainInspections: 1,
+	});
+
+	const callsBeforeCleanup = runtimeCallCounts(runtime);
+	const cleaned = await runner.resume(reported.continuation!, root);
+	assert.deepEqual(runtimeCallDelta(runtime, callsBeforeCleanup), {
+		acquisitions: 0,
+		workerAllocations: 0,
+		candidateInspections: 0,
+		workers: 0,
+		checks: 0,
+		terminations: 0,
+		reviews: 0,
+		rebases: 0,
+		integrations: 0,
+		cleanups: 4,
+		mainInspections: 0,
+	});
+	assert.deepEqual(runtime.cleanupCalls.slice(-4), ["worker_tab", "workspace", "worktree", "branch"]);
+	assert.equal(changesetState(cleaned.state, "integrated").status, "completed");
+	assert.equal(changesetState(cleaned.state, "dependent").status, "needs_attention");
+	assert.equal(cleaned.state.final.status, "pending");
+	assert.equal(cleaned.state.accepted, false);
+	assert.equal(cleaned.continuation, undefined);
+	assertParsed(cleaned.state);
 });
 
 test("failures enter needs_attention; retry, verify, and finalize require explicit actions", async (t) => {
