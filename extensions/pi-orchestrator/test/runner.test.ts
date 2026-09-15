@@ -49,6 +49,10 @@ function identity(character: string, branch = "refs/heads/main"): WorkspaceIdent
 type RoleCall = { role: string; modelClass: ModelClass };
 
 type WorkerCall = { taskId: string; kind: "initial" | "correction" };
+type WorkerContextCall = {
+	taskId: string;
+	contexts: Parameters<OrchestratorRuntime["runWorker"]>[0]["contexts"];
+};
 
 class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspector {
 	clock = 1_000;
@@ -62,6 +66,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	readonly acquisitions: RoleCall[] = [];
 	readonly launchCleanups: RoleCall[] = [];
 	readonly workerCalls: WorkerCall[] = [];
+	readonly workerContextCalls: WorkerContextCall[] = [];
 	readonly allocationPlanCalls: HostAllocationKind[] = [];
 	readonly worktreeAllocationCalls: string[] = [];
 	readonly workspaceAllocationCalls: string[] = [];
@@ -259,6 +264,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 		_context: OperationContext,
 	): Promise<WorkerResult> {
 		this.workerCalls.push({ taskId: input.task.id, kind: input.kind });
+		this.workerContextCalls.push({ taskId: input.task.id, contexts: structuredClone(input.contexts) });
 		this.changesetCallOrder.push(`worker:${input.kind}:${input.workerId}`);
 		this.activeWorkers += 1;
 		this.maxConcurrentWorkers = Math.max(this.maxConcurrentWorkers, this.activeWorkers);
@@ -396,6 +402,7 @@ function changesetTask(
 		role?: string;
 		modelClass?: ModelClass;
 		dependsOn?: string[];
+		contextFrom?: string[];
 		judgment?: ChangesetTaskRequest["judgment"];
 	} = {},
 ): ChangesetTaskRequest {
@@ -407,13 +414,13 @@ function changesetTask(
 		requirements: `Implement ${id}.`,
 		deliverable: `Deliver ${id}.`,
 		dependsOn: options.dependsOn ?? [],
-		contextFrom: [],
+		contextFrom: options.contextFrom ?? [],
 		checks: [{ command: `check-${id}`, args: [] }],
 		...(options.judgment ? { judgment: options.judgment } : {}),
 	};
 }
 
-function textTask(id: string, role = "researcher"): TaskRequest {
+function textTask(id: string, role = "researcher", contextFrom: string[] = []): TaskRequest {
 	return {
 		id,
 		kind: "text",
@@ -422,7 +429,7 @@ function textTask(id: string, role = "researcher"): TaskRequest {
 		requirements: `Research ${id}.`,
 		deliverable: `Return ${id}.`,
 		dependsOn: [],
-		contextFrom: [],
+		contextFrom,
 	};
 }
 
@@ -562,6 +569,142 @@ test("ready changeset waves run concurrently, integrate in request order, and re
 		{ role: "judge/final", modelClass: "balanced" },
 	]));
 	assert.deepEqual(sortedCalls(runtime.launchCleanups), sortedCalls(runtime.acquisitions));
+	assertParsed(result.state);
+});
+
+test("text producers feed ordered synthesis context into an integrated changeset", async (t) => {
+	const outputs = new Map([
+		["source-one", "First source result."],
+		["source-two", "Second source result."],
+		["synthesis", "Exact synthesized result."],
+	]);
+	const textCalls: Array<{ taskId: string; prompt: string }> = [];
+	let activeTextTasks = 0;
+	let maxConcurrentTextTasks = 0;
+	let producerStarts = 0;
+	let releaseProducers!: () => void;
+	const producersReady = new Promise<void>((resolve) => { releaseProducers = resolve; });
+	const executor: EphemeralSubagentExecutor = {
+		run: async ({ prepare }) => {
+			const prepared = await prepare();
+			const taskId = /^Task: ([^\n]+)$/m.exec(prepared.task)?.[1];
+			const output = taskId ? outputs.get(taskId) : undefined;
+			if (!taskId || output === undefined) throw new Error("Unexpected text task prompt.");
+			textCalls.push({ taskId, prompt: prepared.task });
+			activeTextTasks += 1;
+			maxConcurrentTextTasks = Math.max(maxConcurrentTextTasks, activeTextTasks);
+			try {
+				if (taskId !== "synthesis") {
+					producerStarts += 1;
+					if (producerStarts === 2) releaseProducers();
+					await producersReady;
+				}
+				return {
+					outcome: "success",
+					exitCode: 0,
+					output,
+					outputTruncated: false,
+					stderr: "",
+				};
+			} finally {
+				activeTextTasks -= 1;
+			}
+		},
+	};
+	const { root, runtime, runner } = await harness(t, { executor });
+	const definition = request("text-dataflow", [
+		textTask("source-one", "role/source-one"),
+		textTask("source-two", "role/source-two"),
+		textTask("synthesis", "role/synthesis", ["source-two", "source-one"]),
+		changesetTask("apply", {
+			role: "role/changeset",
+			contextFrom: ["synthesis"],
+			judgment: { role: "role/judgment", modelClass: "balanced", criterion: "The synthesis was applied exactly." },
+		}),
+	]);
+
+	const result = await runner.execute(definition, root);
+	const apply = changesetState(result.state, "apply");
+
+	assert.equal(maxConcurrentTextTasks, 2);
+	assert.deepEqual(result.state.waves.map(({ taskIds }) => taskIds), [
+		["source-one", "source-two"],
+		["synthesis"],
+		["apply"],
+	]);
+	assert.deepEqual(textCalls, [
+		{
+			taskId: "source-one",
+			prompt: [
+				"Task: source-one",
+				"Goal:",
+				"Deliver checked work.",
+				"",
+				"Requirements:",
+				"Research source-one.",
+				"",
+				"Deliverable:",
+				"Return source-one.",
+			].join("\n"),
+		},
+		{
+			taskId: "source-two",
+			prompt: [
+				"Task: source-two",
+				"Goal:",
+				"Deliver checked work.",
+				"",
+				"Requirements:",
+				"Research source-two.",
+				"",
+				"Deliverable:",
+				"Return source-two.",
+			].join("\n"),
+		},
+		{
+			taskId: "synthesis",
+			prompt: [
+				"Task: synthesis",
+				"Goal:",
+				"Deliver checked work.",
+				"",
+				"Requirements:",
+				"Research synthesis.",
+				"",
+				"Deliverable:",
+				"Return synthesis.",
+				"",
+				"Task data:",
+				"Context from task source-two:\nSecond source result.",
+				"",
+				"Context from task source-one:\nFirst source result.",
+			].join("\n"),
+		},
+	]);
+	assert.deepEqual(runtime.workerContextCalls, [{
+		taskId: "apply",
+		contexts: [{ taskId: "synthesis", text: "Exact synthesized result." }],
+	}]);
+	assert.deepEqual(runtime.acquisitions, [
+		{ role: "role/source-one", modelClass: "fast" },
+		{ role: "role/source-two", modelClass: "fast" },
+		{ role: "role/synthesis", modelClass: "fast" },
+		{ role: "role/changeset", modelClass: "fast" },
+		{ role: "role/judgment", modelClass: "balanced" },
+	]);
+	assert.deepEqual(runtime.reviewCalls, [{
+		role: "role/judgment",
+		modelClass: "balanced",
+		scope: "task",
+		taskId: "apply",
+		criterion: "The synthesis was applied exactly.",
+	}]);
+	assert.deepEqual(runtime.integrations, ["apply"]);
+	assert.equal(apply.status, "completed");
+	assert.equal(apply.attempts[0]?.integration?.status, "integrated");
+	assert.equal(result.state.status, "completed");
+	assert.equal(result.state.accepted, true);
+	assert.equal(result.state.final.checks?.passed, true);
 	assertParsed(result.state);
 });
 
