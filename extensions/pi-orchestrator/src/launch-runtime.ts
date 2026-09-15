@@ -1,28 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdtemp, open, readFile, realpath, rmdir, unlink } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { isDeepStrictEqual } from "node:util";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 import {
-	DefaultPackageManager,
-	getAgentDir,
-	SettingsManager,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-	CHILD_EXCLUDED_TOOL_NAMES,
-	loadRoles,
-	ROLE_MCP_POLICY_FLAG,
 	ROLE_TOOL_POLICY_FLAG,
 	resolveConfiguredRoleLaunch,
-	resolveRoleLaunch,
-	selectRoleMcpConfig,
-	type ResolvedRoleLaunch,
-	type Role as SubagentRole,
 } from "@henryqw/pi-subagent";
 import { registerModelTask } from "@henryqw/pi-task-models";
 import type {
@@ -37,15 +24,9 @@ import {
 	type WorkspaceIdentity,
 } from "./schema.ts";
 
-const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const PROMPT_FLAG = "--append-system-prompt";
-const EXTENSION_FLAG = "--extension";
-const SKILL_FLAG = "--skill";
-const PROMPT_TEMPLATE_FLAG = "--prompt-template";
-const THEME_FLAG = "--theme";
 const DIRECTORY_MODE = 0o700;
 const PROMPT_MODE = 0o600;
-const FORBIDDEN_ROLE_SOURCE_NAMES = ["pi-orchestrator", "pi-mcp-adapter"] as const;
 
 export const ORCHESTRATOR_MODEL_TASK = {
 	id: "pi-orchestrator/roleLaunch",
@@ -54,28 +35,12 @@ export const ORCHESTRATOR_MODEL_TASK = {
 	defaultProfile: "balanced",
 } as const;
 
-type LaunchPi = Pick<ExtensionAPI, "events" | "getAllTools" | "getCommands">;
-type ToolInfo = ReturnType<ExtensionAPI["getAllTools"]>[number];
-
-type KnownLaunchFiles = {
-	roleMcp: string;
-	roleTools: string;
-	multiCodex: string;
-	orchestratorEntrypoint: string;
-};
+type LaunchPi = Pick<ExtensionAPI, "events" | "getCommands">;
 
 type PreparedLaunch = {
 	launch: VerifiedLaunch;
 	prompt: string;
 	promptArgIndex: number;
-};
-
-type ResolvedRoleResources = {
-	extensions: string[];
-	skills: string[];
-	prompts: string[];
-	themes: string[];
-	mcpResources: string[];
 };
 
 export interface LaunchRuntimeOptions {
@@ -87,18 +52,6 @@ export interface LaunchRuntimeOptions {
 	now?: () => number;
 	randomToken?: () => string;
 }
-
-type PrepareResolvedRoleLaunchInput = {
-	role: string;
-	modelClass: ModelClass;
-	effectiveRole: SubagentRole;
-	launch: ResolvedRoleLaunch;
-	commands: ReturnType<ExtensionAPI["getCommands"]>;
-	tools: readonly ToolInfo[];
-	knownFiles: KnownLaunchFiles;
-	packageResources?: Omit<ResolvedRoleResources, "extensions">;
-	signal?: AbortSignal;
-};
 
 function abortIfNeeded(signal?: AbortSignal): void {
 	signal?.throwIfAborted();
@@ -113,104 +66,6 @@ function isWithin(root: string, candidate: string): boolean {
 	return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
 }
 
-function requireUnique(values: readonly string[], label: string): void {
-	if (new Set(values).size !== values.length) throw new Error(`${label} contains duplicate or ambiguous entries.`);
-}
-
-function rejectForbiddenRoleExtensionSource(value: string, role: string): void {
-	const components = value.toLowerCase().split(/[\\/:@]+/);
-	if (FORBIDDEN_ROLE_SOURCE_NAMES.some((name) => components.some((component) => component === name || component.startsWith(`${name}.`)))) {
-		throw new Error(`Role ${role} extension explicitly names the forbidden ${FORBIDDEN_ROLE_SOURCE_NAMES.join("/")} source: ${value}`);
-	}
-}
-
-function packageManager(
-	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-): DefaultPackageManager {
-	const agentDir = getAgentDir();
-	const settingsManager = SettingsManager.create(ctx.cwd, agentDir, { projectTrusted: ctx.isProjectTrusted() });
-	return new DefaultPackageManager({ cwd: ctx.cwd, agentDir, settingsManager });
-}
-
-async function resolveRoleResources(
-	sources: readonly string[],
-	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-	signal?: AbortSignal,
-): Promise<ResolvedRoleResources> {
-	abortIfNeeded(signal);
-	if (!sources.length) return { extensions: [], skills: [], prompts: [], themes: [], mcpResources: [] };
-	const resolved = await packageManager(ctx).resolveExtensionSources([...sources]);
-	abortIfNeeded(signal);
-	const resourceGroups = [resolved.extensions, resolved.skills, resolved.prompts, resolved.themes]
-		.map((resources) => resources.filter((resource) => resource.enabled));
-	const resolvedSources = new Set(resourceGroups.flat().map((resource) => resource.metadata.source));
-	const missing = sources.filter((source) => !resolvedSources.has(source));
-	if (missing.length) throw new Error(`Role extension sources resolved no resources: ${missing.join(", ")}.`);
-	return {
-		extensions: resourceGroups[0]!.map((resource) => resource.path),
-		skills: resourceGroups[1]!.map((resource) => resource.path),
-		prompts: resourceGroups[2]!.map((resource) => resource.path),
-		themes: resourceGroups[3]!.map((resource) => resource.path),
-		mcpResources: [],
-	};
-}
-
-async function resolveRoleMcpResources(
-	allowlist: readonly string[],
-	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-	signal?: AbortSignal,
-): Promise<Pick<ResolvedRoleResources, "mcpResources">> {
-	if (!allowlist.length) return { mcpResources: [] };
-	abortIfNeeded(signal);
-	const agentDir = getAgentDir();
-	const resolved = await packageManager(ctx).resolveExtensionSources(["npm:pi-mcp-adapter"]);
-	const adapters = resolved.extensions.filter((resource) => resource.enabled && resource.metadata.source === "npm:pi-mcp-adapter");
-	if (adapters.length !== 1) throw new Error("pi-mcp-adapter must resolve to exactly one enabled extension for an MCP-enabled Role.");
-	const adapter = await canonicalRegularFile(adapters[0]!.path, "pi-mcp-adapter extension", signal);
-	let configModulePath: string;
-	try {
-		configModulePath = createRequire(adapter).resolve("pi-mcp-adapter/config");
-	} catch (error) {
-		throw new Error("pi-mcp-adapter/config could not be resolved.", { cause: error });
-	}
-	const configModule = await canonicalRegularFile(configModulePath, "pi-mcp-adapter config module", signal);
-	const imported = await import(pathToFileURL(configModule).href) as {
-		loadMcpConfig?: (overridePath?: string, cwd?: string) => { mcpServers: Record<string, unknown>; settings?: Record<string, unknown> };
-	};
-	if (typeof imported.loadMcpConfig !== "function") throw new Error("pi-mcp-adapter/config does not export loadMcpConfig.");
-	selectRoleMcpConfig(imported.loadMcpConfig(join(agentDir, "mcp.json"), ctx.cwd), allowlist);
-	return { mcpResources: [adapter, configModule] };
-}
-
-async function canonicalRegularFile(path: string, label: string, signal?: AbortSignal): Promise<string> {
-	abortIfNeeded(signal);
-	if (typeof path !== "string" || !path || path.includes("\0") || !isAbsolute(path)) {
-		throw new Error(`${label} must name an absolute local file.`);
-	}
-	let info;
-	try {
-		info = await lstat(path);
-	} catch (error) {
-		if (isMissing(error)) throw new Error(`${label} is missing: ${path}`);
-		throw new Error(`${label} cannot be inspected: ${path}`, { cause: error });
-	}
-	abortIfNeeded(signal);
-	if (info.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link: ${path}`);
-	if (!info.isFile()) throw new Error(`${label} must be an existing local regular file: ${path}`);
-	let canonical: string;
-	try {
-		canonical = normalize(await realpath(path));
-	} catch (error) {
-		throw new Error(`${label} cannot be canonicalized: ${path}`, { cause: error });
-	}
-	abortIfNeeded(signal);
-	const canonicalInfo = await lstat(canonical);
-	if (canonicalInfo.isSymbolicLink() || !canonicalInfo.isFile()) {
-		throw new Error(`${label} canonical target is not a local regular file: ${canonical}`);
-	}
-	return canonical;
-}
-
 function valuesAfter(args: readonly string[], flag: string): string[] {
 	const values: string[] = [];
 	for (let index = 0; index < args.length; index += 1) {
@@ -220,222 +75,6 @@ function valuesAfter(args: readonly string[], flag: string): string[] {
 		index += 1;
 	}
 	return values;
-}
-
-function addPackageResources(launch: ResolvedRoleLaunch, resources: Omit<ResolvedRoleResources, "extensions">): ResolvedRoleLaunch {
-	const additions = [
-		"--no-prompt-templates",
-		"--no-themes",
-		...resources.skills.flatMap((path) => [SKILL_FLAG, path]),
-		...resources.prompts.flatMap((path) => [PROMPT_TEMPLATE_FLAG, path]),
-		...resources.themes.flatMap((path) => [THEME_FLAG, path]),
-	];
-	const promptIndex = launch.args.indexOf(PROMPT_FLAG);
-	if (promptIndex < 0) throw new Error(`Resolved Role launch has no ${PROMPT_FLAG}.`);
-	const args = [...launch.args];
-	args.splice(promptIndex, 0, ...additions);
-	return { ...launch, args };
-}
-
-function stripRolePrompt(rawArgs: readonly string[]): { prompt: string; promptArgIndex: number; args: string[] } {
-	const indexes = rawArgs.flatMap((arg, index) => arg === PROMPT_FLAG ? [index] : []);
-	if (indexes.length !== 1) throw new Error(`Role launch must contain exactly one ${PROMPT_FLAG} pair.`);
-	const promptArgIndex = indexes[0]!;
-	const prompt = rawArgs[promptArgIndex + 1];
-	if (prompt === undefined || !prompt.includes("\n") || !prompt.trim() || prompt.includes("\0")) {
-		throw new Error(`Role ${PROMPT_FLAG} value must be the exact multiline Role prompt.`);
-	}
-	const args = [...rawArgs.slice(0, promptArgIndex), ...rawArgs.slice(promptArgIndex + 2)];
-	if (args.includes(PROMPT_FLAG) || args.includes(prompt)) {
-		throw new Error("Sanitized Role argv must contain no prompt flag or raw Role prompt.");
-	}
-	return { prompt, promptArgIndex, args };
-}
-
-function validateRoleDefinition(role: string, effectiveRole: SubagentRole): void {
-	if (effectiveRole.name !== role) throw new Error(`Effective Role identity drifted from ${role}.`);
-	requireUnique(effectiveRole.tools, `Effective ${role} Role tools`);
-	requireUnique(effectiveRole.skills, `Effective ${role} Role Skills`);
-	requireUnique(effectiveRole.extensions, `Effective ${role} Role extensions`);
-	requireUnique(effectiveRole.mcps ?? [], `Effective ${role} Role MCPs`);
-	for (const extension of effectiveRole.extensions) rejectForbiddenRoleExtensionSource(extension, role);
-}
-
-function validateSourceInfo(tool: ToolInfo): void {
-	const sourceInfo = tool.sourceInfo as unknown;
-	if (!sourceInfo || typeof sourceInfo !== "object" || Array.isArray(sourceInfo)) {
-		throw new Error(`Tool ${tool.name} has unverifiable sourceInfo.`);
-	}
-	const source = sourceInfo as Record<string, unknown>;
-	if (typeof source.path !== "string" || typeof source.source !== "string" || !source.source
-		|| !["user", "project", "temporary"].includes(String(source.scope))
-		|| !["package", "top-level"].includes(String(source.origin))) {
-		throw new Error(`Tool ${tool.name} has unverifiable sourceInfo.`);
-	}
-}
-
-async function validateRoleTools(
-	role: SubagentRole,
-	registry: readonly ToolInfo[],
-	canonicalExtensions: readonly string[],
-	signal?: AbortSignal,
-): Promise<void> {
-	const excluded = new Set<string>(CHILD_EXCLUDED_TOOL_NAMES);
-	for (const name of role.tools) {
-		abortIfNeeded(signal);
-		if (excluded.has(name)) throw new Error(`Role ${role.name} tool ${name} is excluded from child launches.`);
-		const matches = registry.filter((tool) => tool.name === name);
-		if (matches.length === 0) throw new Error(`Role ${role.name} tool ${name} is missing from Main's effective tool registry.`);
-		if (matches.length !== 1) throw new Error(`Role ${role.name} tool ${name} is ambiguous in Main's effective tool registry.`);
-		const tool = matches[0]!;
-		validateSourceInfo(tool);
-		if (tool.sourceInfo.source === "builtin") {
-			if (tool.sourceInfo.path !== `<builtin:${name}>`
-				|| tool.sourceInfo.scope !== "temporary"
-				|| tool.sourceInfo.origin !== "top-level") {
-				throw new Error(`Built-in tool ${name} has unverifiable sourceInfo.`);
-			}
-			continue;
-		}
-		if (["sdk", "inline", "unknown"].includes(tool.sourceInfo.source.toLowerCase())) {
-			throw new Error(`Role ${role.name} tool ${name} has forbidden ${tool.sourceInfo.source} provenance.`);
-		}
-		const sourcePath = await canonicalRegularFile(tool.sourceInfo.path, `Tool ${name} provenance`, signal);
-		if (!canonicalExtensions.includes(sourcePath)) {
-			throw new Error(`Role ${role.name} tool ${name} comes from an extension not included in that child launch: ${sourcePath}`);
-		}
-	}
-}
-
-async function canonicalizeValues(values: readonly string[], label: string, signal?: AbortSignal): Promise<string[]> {
-	const canonical: string[] = [];
-	for (const [index, path] of values.entries()) {
-		canonical.push(await canonicalRegularFile(path, `${label}[${index}]`, signal));
-	}
-	requireUnique(canonical, label);
-	return canonical;
-}
-
-function assertSameValues(actual: readonly string[], expected: readonly string[], label: string): void {
-	if (!isDeepStrictEqual(actual, expected)) throw new Error(`${label} does not match the exact pi-subagent resolved launch.`);
-}
-
-async function canonicalExpectedSkills(
-	role: SubagentRole,
-	commands: ReturnType<ExtensionAPI["getCommands"]>,
-	signal?: AbortSignal,
-): Promise<string[]> {
-	const pathsByName = new Map(commands
-		.filter((command) => command.source === "skill")
-		.map((command) => [command.name, command.sourceInfo.path]));
-	const paths = role.skills.map((name) => {
-		const path = pathsByName.get(`skill:${name}`);
-		if (!path) throw new Error(`Role ${role.name} requires missing Skill ${name}.`);
-		return path;
-	});
-	return await canonicalizeValues(paths, `Role ${role.name} Skill paths`, signal);
-}
-
-function expectedResolvedExtensions(role: SubagentRole, launch: ResolvedRoleLaunch, known: KnownLaunchFiles): string[] {
-	return [
-		...role.extensions,
-		...(CODEX_ALIAS.test(launch.model.provider) ? [known.multiCodex] : []),
-		...((role.mcps ?? []).length ? [known.roleMcp] : []),
-		known.roleTools,
-	];
-}
-
-async function prepareResolvedRoleLaunch(
-	input: PrepareResolvedRoleLaunchInput,
-): Promise<PreparedLaunch> {
-	const {
-		role, modelClass, effectiveRole, launch, commands, tools, knownFiles, signal,
-		packageResources = { skills: [], prompts: [], themes: [], mcpResources: [] },
-	} = input;
-	validateRoleDefinition(role, effectiveRole);
-	if (launch.missingSkills.length) {
-		throw new Error(`Role ${role} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
-	}
-	if (Object.keys(launch.env).length) throw new Error(`Resolved ${role} launch environment must be empty.`);
-	const expectedMcps = effectiveRole.mcps ?? [];
-	const expectedMcpPolicy = expectedMcps.length ? [JSON.stringify(expectedMcps)] : [];
-	if (!isDeepStrictEqual(valuesAfter(launch.args, `--${ROLE_MCP_POLICY_FLAG}`), expectedMcpPolicy)) {
-		throw new Error(`Resolved ${role} launch MCP allowlist does not match its Role policy.`);
-	}
-	const resolvedExtensions = await canonicalizeValues(
-		valuesAfter(launch.args, EXTENSION_FLAG),
-		`Resolved ${role}/${modelClass} extensions`,
-		signal,
-	);
-	const expectedExtensions = await canonicalizeValues(
-		expectedResolvedExtensions(effectiveRole, launch, knownFiles),
-		`Expected ${role}/${modelClass} extensions`,
-		signal,
-	);
-	assertSameValues(resolvedExtensions, expectedExtensions, `Resolved ${role}/${modelClass} extensions`);
-	for (const source of resolvedExtensions) {
-		if (source === knownFiles.orchestratorEntrypoint
-			|| source.split(sep).some((component) => FORBIDDEN_ROLE_SOURCE_NAMES.includes(component as typeof FORBIDDEN_ROLE_SOURCE_NAMES[number]))) {
-			throw new Error(`Resolved ${role}/${modelClass} extension is a forbidden self source: ${source}`);
-		}
-	}
-	const resolvedSkills = await canonicalizeValues(
-		valuesAfter(launch.args, SKILL_FLAG),
-		`Resolved ${role}/${modelClass} Skill paths`,
-		signal,
-	);
-	const expectedSkills = await canonicalizeValues([
-		...await canonicalExpectedSkills(effectiveRole, commands, signal),
-		...packageResources.skills,
-	], `Expected ${role}/${modelClass} Skill paths`, signal);
-	assertSameValues(resolvedSkills, expectedSkills, `Resolved ${role}/${modelClass} Skills`);
-	const resolvedPrompts = await canonicalizeValues(
-		valuesAfter(launch.args, PROMPT_TEMPLATE_FLAG),
-		`Resolved ${role}/${modelClass} prompt paths`,
-		signal,
-	);
-	const expectedPrompts = await canonicalizeValues(packageResources.prompts, `Expected ${role}/${modelClass} prompt paths`, signal);
-	assertSameValues(resolvedPrompts, expectedPrompts, `Resolved ${role}/${modelClass} prompts`);
-	const resolvedThemes = await canonicalizeValues(
-		valuesAfter(launch.args, THEME_FLAG),
-		`Resolved ${role}/${modelClass} theme paths`,
-		signal,
-	);
-	const expectedThemes = await canonicalizeValues(packageResources.themes, `Expected ${role}/${modelClass} theme paths`, signal);
-	assertSameValues(resolvedThemes, expectedThemes, `Resolved ${role}/${modelClass} themes`);
-	const mcpResources = await canonicalizeValues(packageResources.mcpResources, `Expected ${role}/${modelClass} MCP resources`, signal);
-	const allResourcePaths = [...resolvedExtensions, ...resolvedSkills, ...resolvedPrompts, ...resolvedThemes, ...mcpResources];
-	requireUnique(allResourcePaths, `Resolved ${role}/${modelClass} resources`);
-	await validateRoleTools(effectiveRole, tools, resolvedExtensions, signal);
-
-	const stripped = stripRolePrompt(launch.args);
-	const prepared: VerifiedLaunch = Object.freeze({
-		role,
-		modelClass,
-		model: `${launch.model.provider}/${launch.model.id}`,
-		thinkingLevel: launch.thinkingLevel,
-		args: Object.freeze(stripped.args),
-		env: Object.freeze({ ...launch.env }),
-		tools: Object.freeze([...effectiveRole.tools]),
-	});
-	return Object.freeze({
-		launch: prepared,
-		prompt: stripped.prompt,
-		promptArgIndex: stripped.promptArgIndex,
-	});
-}
-
-async function knownLaunchFiles(orchestratorEntrypoint: string, signal?: AbortSignal): Promise<KnownLaunchFiles> {
-	const subagentIndex = fileURLToPath(import.meta.resolve("@henryqw/pi-subagent"));
-	const roleMcp = resolve(dirname(subagentIndex), "..", "extensions", "role-mcp.ts");
-	const roleTools = resolve(dirname(subagentIndex), "..", "extensions", "role-tools.ts");
-	const multiCodex = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
-	return {
-		roleMcp: await canonicalRegularFile(roleMcp, "pi-subagent Role MCP extension", signal),
-		roleTools: await canonicalRegularFile(roleTools, "pi-subagent Role tool-policy extension", signal),
-		multiCodex: await canonicalRegularFile(multiCodex, "pi-multi-codex provider adapter", signal),
-		orchestratorEntrypoint: await canonicalRegularFile(orchestratorEntrypoint, "pi-orchestrator entrypoint", signal),
-	};
 }
 
 async function removeTransientLaunch(
@@ -556,7 +195,6 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		role: string,
 		modelClass: ModelClass,
 		context: OperationContext,
-		knownFiles?: KnownLaunchFiles,
 	): Promise<PreparedLaunch> {
 		abortIfNeeded(context.signal);
 		const input = { role, modelClass, task: ORCHESTRATOR_MODEL_TASK };
