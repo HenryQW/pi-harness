@@ -282,10 +282,10 @@ export function registerOrchestratorExtension(
 		name: "orchestrate_execute",
 		label: "Orchestrate execute",
 		description: "Start one durable checked task graph in the current clean Git repository.",
-		promptSnippet: "Run a durable checked task graph with isolated Implementer Roles",
+		promptSnippet: "Run a durable checked task graph with isolated explicit Task Roles and optional Judgment",
 		promptGuidelines: [
 			"Use orchestrate_execute for non-trivial implementation work with explicit dependencies and authoritative checks.",
-			"Add a Reviewer judgment only when direct checks cannot establish the criterion.",
+			"Add a Judgment only when direct checks cannot establish the criterion.",
 		],
 		parameters: ExecuteRequestSchema,
 		prepareArguments: parseExecuteRequest,

@@ -1318,7 +1318,7 @@ export class OrchestratorRunner {
 			},
 		}, context));
 		const identityAfter = runtimeIdentity(result.identityAfter, "Post-review identity");
-		const verdict = boundedRuntimeText(result.verdict, "Reviewer verdict");
+		const verdict = boundedRuntimeText(result.verdict, "Judgment verdict");
 		const evidence: ReviewEvidence = {
 			phase,
 			criterion,
@@ -1390,7 +1390,7 @@ export class OrchestratorRunner {
 				attempt.authoritativeReview = review;
 				await handle.save();
 				if (!review.passed) {
-					this.attention(task, "Authoritative Reviewer did not return exact PASS on the integration candidate.");
+					this.attention(task, "Authoritative Judgment did not return exact PASS on the integration candidate.");
 					return false;
 				}
 			}
@@ -1694,7 +1694,7 @@ export class OrchestratorRunner {
 				state.final.review = review;
 				await handle.save();
 				if (!sameIdentity(review.identityAfter, identity)) {
-					await this.markSuperseded(handle, "Final Reviewer changed Main.");
+					await this.markSuperseded(handle, "Final Judgment changed Main.");
 					return this.response(state);
 				}
 				if (!review.passed) {

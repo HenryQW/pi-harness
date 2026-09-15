@@ -348,7 +348,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		tip: WorkspaceIdentity;
 		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult> {
-		if (!this.executeReview) throw new Error("Exact Reviewer execution is not configured.");
+		if (!this.executeReview) throw new Error("Exact Judgment execution is not configured.");
 		if (input.scope === "final") {
 			if (input.phase !== "final" || input.attempt) throw new Error("Final review received task-scoped evidence.");
 		} else {
@@ -397,7 +397,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 				await evidence.cleanup();
 			} catch (cleanupError) {
 				if (reviewError) {
-					throw new AggregateError([reviewError, cleanupError], "Reviewer execution failed and exact evidence cleanup also failed.");
+					throw new AggregateError([reviewError, cleanupError], "Judgment execution failed and exact evidence cleanup also failed.");
 				}
 				throw cleanupError;
 			}
