@@ -59,10 +59,13 @@ function git(cwd: string, ...args: string[]): string {
 
 const task: TaskRequest = {
 	id: "task-a",
+	kind: "changeset",
+	role: "implementer",
 	modelClass: "fast",
 	requirements: "Implement the exact task.",
 	deliverable: "Commit the complete result.",
 	dependsOn: [],
+	contextFrom: [],
 	checks: [{ command: "pnpm", args: ["test"] }],
 };
 
@@ -1382,6 +1385,7 @@ test("correction oversize uses the authoritative formatter and is definitively n
 
 	const result = await host.runWorker({
 		goal,
+		contexts: [],
 		task: nearLimitTask,
 		attempt,
 		workerId: AGENT_NAME,
@@ -1392,6 +1396,77 @@ test("correction oversize uses the authoritative formatter and is definitively n
 	assert.equal(result.outcome, "not_prompted");
 	assert.match(result.diagnostic, /assignment was not submitted.*exceeds 98304 bytes/i);
 	assert.equal(script.calls.filter(({ command }) => command === "herdr").length, 0);
+	script.done();
+});
+
+test("worker prompts preserve ordered upstream task data and reject oversized full assignments", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt } = await fullAttempt(fixture, host, script);
+	const contexts = [
+		{ taskId: "second", text: "Second result.\nKeep this exact line." },
+		{ taskId: "first", text: "First result." },
+	];
+	const contextualTask: TaskRequest = { ...task, contextFrom: ["second", "first"] };
+	const oversizedOutput = "x".repeat(96 * 1024 - Buffer.byteLength("Context from task oversized:\n"));
+	const callsBeforeOversize = script.calls.length;
+	const oversized = await host.runWorker({
+		goal: GOAL,
+		contexts: [{ taskId: "oversized", text: oversizedOutput }],
+		task: { ...task, contextFrom: ["oversized"] },
+		attempt,
+		workerId: AGENT_NAME,
+		kind: "initial",
+		preCandidate: baseIdentity(),
+	}, context());
+	assert.equal(oversized.outcome, "not_prompted");
+	assert.match(oversized.diagnostic, /Worker assignment exceeds 98304 bytes/);
+	assert.equal(script.calls.length, callsBeforeOversize);
+
+	const expectedAssignment = [
+		"Task: task-a",
+		"Goal:",
+		GOAL,
+		`Worktree: ${fixture.worktree}`,
+		"Integrated dependencies: none",
+		"",
+		"Requirements:",
+		"Implement the exact task.",
+		"",
+		"Deliverable:",
+		"Commit the complete result.",
+		"",
+		"Upstream task data:",
+		"Context from task second:",
+		"Second result.\nKeep this exact line.",
+		"",
+		"Context from task first:",
+		"First result.",
+		"",
+		"Required checks (direct command/argv):",
+		'{"command":"pnpm","args":["test"]}',
+		"",
+		"Work only in the exact worktree above. Commit the complete result and leave that worktree clean.",
+	].join("\n");
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: (args) => {
+			assert.deepEqual(args.slice(0, 3), ["agent", "prompt", AGENT_NAME]);
+			assert.equal(args[3], expectedAssignment);
+		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "done", stderr: "" } },
+	);
+	const result = await host.runWorker({
+		goal: GOAL,
+		contexts,
+		task: contextualTask,
+		attempt,
+		workerId: AGENT_NAME,
+		kind: "initial",
+		preCandidate: baseIdentity(),
+	}, context());
+	assert.equal(result.outcome, "candidate");
 	script.done();
 });
 
@@ -1419,7 +1494,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "terminal diagnostic", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
 	assert.equal(result.outcome, "candidate");
 	assert.equal(inspections, 1);
 
@@ -1434,6 +1509,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 	);
 	const correction = await host.runWorker({
 		goal: GOAL,
+		contexts: [],
 		task,
 		attempt,
 		workerId: AGENT_NAME,
@@ -1479,7 +1555,7 @@ test("normal prompt accepts a changed clean candidate from real in-flight Git in
 		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "done", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, context());
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, context());
 	assert.equal(result.outcome, "candidate");
 	assert.notEqual(result.outcome === "candidate" && result.candidate.head, preCandidate.head);
 	script.done();
@@ -1548,7 +1624,7 @@ test("delivered stall uses real in-flight Git evidence until unchanged and dirty
 		lifecycle("done", 87_000),
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "diagnostic", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, operation);
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, operation);
 	assert.equal(result.outcome, "candidate");
 	assert.notEqual(result.outcome === "candidate" && result.candidate.head, preCandidate.head);
 	assert.deepEqual(delays, [250, 250]);
@@ -1581,7 +1657,7 @@ test("delivered stall treats working dirty state as transient and exact blocked 
 		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("blocked", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: () => {}, result: { code: 0, stdout: "blocked", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 	assert.equal(result.outcome, "blocked");
 	assert.equal(inspections, 2);
 	assert.deepEqual(delays, [250]);
@@ -1611,7 +1687,7 @@ test("delivered stall fails closed on missing, malformed, mismatched, or uninspe
 				{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
 				{ command: "herdr", args: () => {}, result: lifecycle },
 			);
-			const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+			const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 			assert.equal(result.outcome, "unknown");
 			assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 			script.done();
@@ -1642,7 +1718,7 @@ test("delivered stall polling is interrupted by its request deadline or abort si
 			{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
 			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
 		);
-		const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+		const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
 		assert.equal(result.outcome, "interrupted");
 		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 		script.done();
@@ -1667,7 +1743,7 @@ test("delivered stall polling is interrupted by its request deadline or abort si
 			{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
 			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
 		);
-		const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+		const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
 		assert.equal(result.outcome, "interrupted");
 		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 		script.done();
@@ -1708,7 +1784,7 @@ test("blocked, unknown, timeout, malformed, missing, and interrupted agent paths
 			const host = runtime(fixture, script);
 			const { attempt } = await fullAttempt(fixture, host, script);
 			script.push(...steps);
-			const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+			const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 			assert.equal(result.outcome, expected);
 			assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, prompts);
 			script.done();
