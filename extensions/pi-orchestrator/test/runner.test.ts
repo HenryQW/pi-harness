@@ -51,9 +51,12 @@ class FakeRuntime {
 	workerBarrierSize = 0;
 	maxConcurrentWorkers = 0;
 	failFinalChecks = 0;
+	failPreliminaryChecks = 0;
 	readonly acquisitions: RoleCall[] = [];
 	readonly launchCleanups: RoleCall[] = [];
 	readonly workerCalls: WorkerCall[] = [];
+	readonly workerAllocationCalls: string[] = [];
+	readonly changesetCallOrder: string[] = [];
 	readonly workerFailures: Error[] = [];
 	readonly terminationCalls: Array<{ workerId: string; candidate: WorkspaceIdentity }> = [];
 	readonly integrations: string[] = [];
@@ -196,6 +199,8 @@ class FakeRuntime {
 			};
 		}
 		if (!input.acquireLaunch) throw new Error("agent launch callback is required");
+		this.workerAllocationCalls.push(input.intent.agentName);
+		this.changesetCallOrder.push(`allocate:${input.intent.agentName}`);
 		const handle = await input.acquireLaunch();
 		return await withTransientLaunch(handle, async () => ({ kind: "agent" as const, outcome: "owned" as const }));
 	}
@@ -206,6 +211,7 @@ class FakeRuntime {
 		_context: OperationContext,
 	): Promise<WorkerResult> {
 		this.workerCalls.push({ taskId: input.task.id, kind: input.kind });
+		this.changesetCallOrder.push(`worker:${input.kind}:${input.workerId}`);
 		this.activeWorkers += 1;
 		this.maxConcurrentWorkers = Math.max(this.maxConcurrentWorkers, this.activeWorkers);
 		try {
@@ -229,6 +235,7 @@ class FakeRuntime {
 			workerId: input.workerId,
 			candidate: structuredClone(input.candidate),
 		});
+		this.changesetCallOrder.push(`terminate:${input.workerId}`);
 		return { outcome: "terminated" };
 	}
 
@@ -237,8 +244,14 @@ class FakeRuntime {
 			this.failFinalChecks -= 1;
 			throw new Error("final check transport interrupted");
 		}
+		const preliminary = input.scope === "task" && !input.attempt?.termination;
+		const failed = preliminary && this.failPreliminaryChecks > 0;
+		if (failed) this.failPreliminaryChecks -= 1;
+		if (input.scope === "task") {
+			this.changesetCallOrder.push(`check:${preliminary ? "preliminary" : "authoritative"}:${failed ? "fail" : "pass"}`);
+		}
 		return {
-			results: input.checks.map((check) => ({ ...check, code: 0, killed: false, stdout: "", stderr: "" })),
+			results: input.checks.map((check) => ({ ...check, code: failed ? 1 : 0, killed: false, stdout: "", stderr: "" })),
 			identityAfter: { ...input.candidate },
 		};
 	}
@@ -246,6 +259,7 @@ class FakeRuntime {
 	async review(input: Parameters<GitRuntime["review"]>[0], _context: OperationContext) {
 		const handle = await input.acquireLaunch();
 		return await withTransientLaunch(handle, async (launch) => {
+			if (input.scope === "task") this.changesetCallOrder.push(`review:${input.phase}:${input.taskId}`);
 			this.reviewCalls.push({
 				role: launch.role,
 				modelClass: launch.modelClass,
@@ -460,6 +474,41 @@ test("ready changeset waves run concurrently, integrate in request order, and re
 		{ role: "judge/final", modelClass: "balanced" },
 	]));
 	assert.deepEqual(sortedCalls(runtime.launchCleanups), sortedCalls(runtime.acquisitions));
+	assertParsed(result.state);
+});
+
+test("a failed preliminary changeset check gets one same-worker correction before authoritative review", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.failPreliminaryChecks = 1;
+	const definition = request("preliminary-correction", [changesetTask("change", {
+		judgment: { role: "judge/correction", modelClass: "balanced", criterion: "The corrected change is correct." },
+	})]);
+
+	const result = await runner.execute(definition, root);
+	const attempt = changesetState(result.state, "change").attempts[0]!;
+	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
+	if (!agent?.agentName) throw new Error("Expected one allocated worker.");
+
+	assert.equal(result.state.version, 2);
+	assert.equal(result.state.accepted, true);
+	assert.deepEqual(runtime.workerCalls, [
+		{ taskId: "change", kind: "initial" },
+		{ taskId: "change", kind: "correction" },
+	]);
+	assert.deepEqual(runtime.workerAllocationCalls, [agent.agentName]);
+	assert.deepEqual(runtime.changesetCallOrder, [
+		`allocate:${agent.agentName}`,
+		`worker:initial:${agent.agentName}`,
+		"check:preliminary:fail",
+		`worker:correction:${agent.agentName}`,
+		"check:preliminary:pass",
+		`terminate:${agent.agentName}`,
+		"check:authoritative:pass",
+		"review:authoritative:change",
+	]);
+	assert.equal(attempt.preliminaryChecks?.passed, true);
+	assert.equal(attempt.authoritativeChecks?.passed, true);
+	assert.equal(attempt.authoritativeReview?.passed, true);
 	assertParsed(result.state);
 });
 
