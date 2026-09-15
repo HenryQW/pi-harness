@@ -8,8 +8,10 @@ import {
 	OrchestratorRunner,
 	STATUS_INSPECTION_BUDGET_MS,
 	withTransientLaunch,
+	type AllocationReconciliation,
 	type CheckRunResult,
 	type GitRuntime,
+	type HostAllocationKind,
 	type HostAllocationResult,
 	type IntegrationResult,
 	type OperationContext,
@@ -25,6 +27,7 @@ import {
 	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	parseExecuteRequest,
 	parseRunState,
+	type AllocationKind,
 	type ChangesetTaskRequest,
 	type CleanupKind,
 	type ExecuteRequest,
@@ -47,7 +50,7 @@ type RoleCall = { role: string; modelClass: ModelClass };
 
 type WorkerCall = { taskId: string; kind: "initial" | "correction" };
 
-class FakeRuntime {
+class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspector {
 	clock = 1_000;
 	main = identity("a");
 	workerBarrierSize = 0;
@@ -55,13 +58,16 @@ class FakeRuntime {
 	failFinalChecks = 0;
 	failPreliminaryChecks = 0;
 	expireMainInspections = 0;
+	preflightCalls = 0;
 	readonly acquisitions: RoleCall[] = [];
 	readonly launchCleanups: RoleCall[] = [];
 	readonly workerCalls: WorkerCall[] = [];
+	readonly allocationPlanCalls: HostAllocationKind[] = [];
 	readonly worktreeAllocationCalls: string[] = [];
 	readonly workspaceAllocationCalls: string[] = [];
 	readonly workerTabAllocationCalls: string[] = [];
 	readonly workerAllocationCalls: string[] = [];
+	readonly reconciliationCalls: AllocationKind[] = [];
 	readonly changesetCallOrder: string[] = [];
 	readonly candidateInspectionCalls: string[] = [];
 	readonly retainedTaskInspectionCalls: string[] = [];
@@ -89,6 +95,7 @@ class FakeRuntime {
 	}
 
 	async preflight(input: Parameters<OrchestratorRuntime["preflight"]>[0], _context: OperationContext) {
+		this.preflightCalls += 1;
 		return { root: input.cwd, main: { ...this.main } };
 	}
 
@@ -140,6 +147,7 @@ class FakeRuntime {
 		input: Parameters<OrchestratorRuntime["planHostAllocation"]>[0],
 		_context: OperationContext,
 	): Promise<HostAllocationPlan> {
+		this.allocationPlanCalls.push(input.kind);
 		const worktree = input.attempt.allocations.find((allocation) => allocation.kind === "worktree");
 		if (!worktree || worktree.kind !== "worktree" || !worktree.worktree) throw new Error("missing worktree");
 		if (input.kind === "workspace") {
@@ -227,6 +235,24 @@ class FakeRuntime {
 		return await withTransientLaunch(handle, async () => ({ kind: "agent" as const, outcome: "owned" as const }));
 	}
 
+	private reconcile<Kind extends AllocationKind>(kind: Kind): AllocationReconciliation<Kind> {
+		this.reconciliationCalls.push(kind);
+		return { kind, outcome: "absent" };
+	}
+
+	async reconcileWorktreeAllocation(
+		input: Parameters<GitRuntime["reconcileWorktreeAllocation"]>[0],
+		_context: OperationContext,
+	): Promise<AllocationReconciliation<"worktree">> {
+		return this.reconcile(input.intent.kind);
+	}
+
+	async reconcileHostAllocation(
+		input: Parameters<OrchestratorRuntime["reconcileHostAllocation"]>[0],
+		_context: OperationContext,
+	): Promise<AllocationReconciliation<HostAllocationKind>> {
+		return this.reconcile(input.intent.kind);
+	}
 
 	async runWorker(
 		input: Parameters<OrchestratorRuntime["runWorker"]>[0],
@@ -437,8 +463,8 @@ async function harness(
 		runtime,
 		store,
 		runner: new OrchestratorRunner(
-			runtime as unknown as OrchestratorRuntime,
-			runtime as unknown as GitRuntime & TaskCandidateInspector,
+			runtime,
+			runtime,
 			store,
 			options.executor ?? unusedTextExecutor,
 		),
@@ -467,11 +493,14 @@ function sortedCalls(calls: readonly RoleCall[]): RoleCall[] {
 
 function runtimeCallCounts(runtime: FakeRuntime) {
 	return {
+		preflights: runtime.preflightCalls,
 		acquisitions: runtime.acquisitions.length,
+		allocationPlans: runtime.allocationPlanCalls.length,
 		worktreeAllocations: runtime.worktreeAllocationCalls.length,
 		workspaceAllocations: runtime.workspaceAllocationCalls.length,
 		workerTabAllocations: runtime.workerTabAllocationCalls.length,
 		workerAllocations: runtime.workerAllocationCalls.length,
+		reconciliations: runtime.reconciliationCalls.length,
 		candidateInspections: runtime.candidateInspectionCalls.length,
 		retainedTaskInspections: runtime.retainedTaskInspectionCalls.length,
 		workers: runtime.workerCalls.length,
@@ -660,11 +689,14 @@ test("status terminates interrupted and ambiguous changeset prompts without prod
 			assert.deepEqual(reported.main, { status: "current", expected: identity("a"), actual: identity("a") });
 			assert.deepEqual(reported.continuation, { id: definition.id, action: "verify", taskId: "change" });
 			assert.deepEqual(runtimeCallDelta(runtime, callsBeforeStatus), {
+				preflights: 0,
 				acquisitions: 0,
+				allocationPlans: 0,
 				worktreeAllocations: 0,
 				workspaceAllocations: 0,
 				workerTabAllocations: 0,
 				workerAllocations: 0,
+				reconciliations: 0,
 				candidateInspections: 0,
 				retainedTaskInspections: 0,
 				workers: 0,
@@ -712,11 +744,14 @@ test("status reports Main drift and inspection expiry or failure without mutatio
 			assert.deepEqual(reported.state, persistedBefore);
 			assert.deepEqual((await store.load(root, definition.id)).state, persistedBefore);
 			assert.deepEqual(runtimeCallDelta(runtime, callsBeforeStatus), {
+				preflights: 0,
 				acquisitions: 0,
+				allocationPlans: 0,
 				worktreeAllocations: 0,
 				workspaceAllocations: 0,
 				workerTabAllocations: 0,
 				workerAllocations: 0,
+				reconciliations: 0,
 				candidateInspections: 0,
 				retainedTaskInspections: 0,
 				workers: 0,
@@ -761,11 +796,14 @@ test("status permits only pending cleanup recovery after integration", async (t)
 	assert.deepEqual(reported.state, persistedBefore);
 	assert.deepEqual((await store.load(root, definition.id)).state, persistedBefore);
 	assert.deepEqual(runtimeCallDelta(runtime, callsBeforeStatus), {
+		preflights: 0,
 		acquisitions: 0,
+		allocationPlans: 0,
 		worktreeAllocations: 0,
 		workspaceAllocations: 0,
 		workerTabAllocations: 0,
 		workerAllocations: 0,
+		reconciliations: 0,
 		candidateInspections: 0,
 		retainedTaskInspections: 0,
 		workers: 0,
@@ -781,11 +819,14 @@ test("status permits only pending cleanup recovery after integration", async (t)
 	const callsBeforeCleanup = runtimeCallCounts(runtime);
 	const cleaned = await runner.resume(reported.continuation!, root);
 	assert.deepEqual(runtimeCallDelta(runtime, callsBeforeCleanup), {
+		preflights: 0,
 		acquisitions: 0,
+		allocationPlans: 0,
 		worktreeAllocations: 0,
 		workspaceAllocations: 0,
 		workerTabAllocations: 0,
 		workerAllocations: 0,
+		reconciliations: 0,
 		candidateInspections: 0,
 		retainedTaskInspections: 0,
 		workers: 0,
