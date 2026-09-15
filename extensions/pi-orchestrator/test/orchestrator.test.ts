@@ -156,7 +156,7 @@ interface Harness {
 	getGitOptions(): CheckedGitRuntimeOptions;
 	getHostOptions(): HerdrHostRuntimeOptions;
 	getRuntimeOptions(): ComposeOrchestratorRuntimeOptions;
-	getReviewerExecutor(): NonNullable<CheckedGitRuntimeOptions["executeReview"]>;
+	getJudgmentExecutor(): NonNullable<CheckedGitRuntimeOptions["executeReview"]>;
 	getRoleContext(): ExtensionContext;
 	getProcessRunner(): DirectProcessRunner;
 }
@@ -197,7 +197,7 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 	const subagentExecutor: EphemeralSubagentExecutor = {
 		run: async () => { throw new Error("Subagent executor should not run in extension wiring tests."); },
 	};
-	const reviewerExecutor = async () => ({ verdict: "PASS" });
+	const judgmentExecutor = async () => ({ verdict: "PASS" });
 	const git = {
 		marker: "checked-git",
 		async inspectTaskCandidate(this: unknown, input: unknown, operation: OperationContext) {
@@ -253,10 +253,10 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 			factoryCalls.push("subagent");
 			return subagentExecutor;
 		},
-		createReviewerExecutor(options) {
-			factoryCalls.push("reviewer");
+		createJudgmentExecutor(options) {
+			factoryCalls.push("judgment");
 			assert.deepEqual(options, { executor: subagentExecutor });
-			return reviewerExecutor;
+			return judgmentExecutor;
 		},
 		createGitRuntime(options) {
 			factoryCalls.push("git");
@@ -300,7 +300,7 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 		getGitOptions: () => gitOptions!,
 		getHostOptions: () => hostOptions!,
 		getRuntimeOptions: () => runtimeOptions!,
-		getReviewerExecutor: () => reviewerExecutor,
+		getJudgmentExecutor: () => judgmentExecutor,
 		getRoleContext: () => runtimeOptions!.role.context(),
 		getProcessRunner: () => processRunner!,
 	};
@@ -412,19 +412,19 @@ test("Role child argv causes zero registration and dependency side effects", () 
 	assert.equal(dependencyAccesses, 0);
 });
 
-test("lazily wires one checked runtime graph, shared Subagent executor, direct processes, Reviewer adapter, and fresh context", async () => {
+test("lazily wires one checked runtime graph, shared Subagent executor, direct processes, Judgment adapter, and fresh context", async () => {
 	const harness = createHarness();
 	const initial = context("/nested/initial", { id: "initial-model" });
 	const executeSignal = new AbortController().signal;
 	const result = await executeTool(namedTool(harness, "orchestrate_execute"), EXECUTE_REQUEST, executeSignal, initial);
 
-	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "reviewer", "git", "host", "runtime", "store", "runner"]);
+	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "judgment", "git", "host", "runtime", "store", "runner"]);
 	assert.equal(harness.getRuntimeOptions().role.pi, harness.pi);
 	assert.equal(harness.getRuntimeOptions().role.orchestratorEntrypoint, "/package/extensions/orchestrator.ts");
 	assert.equal((harness.getRuntimeOptions().host as unknown as { marker: string }).marker, "herdr-host");
 	assert.equal((harness.getRuntimeOptions().git as unknown as { marker: string }).marker, "checked-git");
 	assert.equal(harness.getGitOptions().runProcess, harness.getHostOptions().runProcess);
-	assert.equal(harness.getGitOptions().executeReview, harness.getReviewerExecutor());
+	assert.equal(harness.getGitOptions().executeReview, harness.getJudgmentExecutor());
 	assert.equal(harness.getRoleContext(), initial);
 
 	const operation: OperationContext = {
@@ -465,7 +465,7 @@ test("lazily wires one checked runtime graph, shared Subagent executor, direct p
 	assert.equal(harness.getRoleContext(), settled);
 
 	await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, undefined, settled);
-	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "reviewer", "git", "host", "runtime", "store", "runner"]);
+	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "judgment", "git", "host", "runtime", "store", "runner"]);
 	assert.deepEqual(result, {
 		content: [{ type: "text", text: "bounded execute result" }],
 		details: {

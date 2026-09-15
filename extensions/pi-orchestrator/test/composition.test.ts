@@ -13,7 +13,7 @@ import {
 import {
 	ComposedOrchestratorRuntime,
 	createCanonicalGitRootResolver,
-	createExactReviewerExecutor,
+	createExactJudgmentExecutor,
 	createHostCheckedMainInspector,
 } from "../src/composition.ts";
 import type { DirectProcessOptions, DirectProcessRunner, ExactReviewExecutorInput } from "../src/git-runtime.ts";
@@ -223,7 +223,7 @@ test("canonical Git root resolver rejects malformed, non-canonical, and unrelate
 	}
 });
 
-test("exact Reviewer adapter lazily runs the exact launch, packet, cwd, and prompt", async () => {
+test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prompt", async () => {
 	let createCalls = 0;
 	let nextOutput = "PASS";
 	const prepared: Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>[] = [];
@@ -235,7 +235,7 @@ test("exact Reviewer adapter lazily runs the exact launch, packet, cwd, and prom
 			return result({ output: nextOutput });
 		},
 	};
-	const executeReview = createExactReviewerExecutor({
+	const executeReview = createExactJudgmentExecutor({
 		createExecutor: () => {
 			createCalls += 1;
 			return executor;
@@ -272,7 +272,7 @@ test("exact Reviewer adapter lazily runs the exact launch, packet, cwd, and prom
 	assert.equal(createCalls, 1);
 });
 
-test("exact Reviewer adapter rejects empty, truncated, failed, and thrown transport results", async (t) => {
+test("exact Judgment adapter rejects empty, truncated, failed, and thrown transport results", async (t) => {
 	const cases: Array<{
 		name: string;
 		value?: EphemeralSubagentResult;
@@ -290,7 +290,7 @@ test("exact Reviewer adapter rejects empty, truncated, failed, and thrown transp
 	];
 	for (const entry of cases) {
 		await t.test(entry.name, async () => {
-			const executeReview = createExactReviewerExecutor({
+			const executeReview = createExactJudgmentExecutor({
 				executor: {
 					run: async () => {
 						if (entry.error) throw entry.error;
@@ -303,7 +303,7 @@ test("exact Reviewer adapter rejects empty, truncated, failed, and thrown transp
 	}
 
 	await t.test("oversized prompt", async () => {
-		const executeReview = createExactReviewerExecutor({ executor: { run: async () => result() } });
+		const executeReview = createExactJudgmentExecutor({ executor: { run: async () => result() } });
 		await assert.rejects(
 			executeReview({ ...reviewInput(), criterion: "x".repeat(70 * 1024) }, operationContext()),
 			/exceeds 65536 bytes/i,

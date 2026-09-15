@@ -9,10 +9,10 @@ import {
 	ComposedOrchestratorRuntime,
 	createCanonicalGitRootResolver,
 	createComposedOrchestratorRuntime,
-	createExactReviewerExecutor,
+	createExactJudgmentExecutor,
 	type CanonicalGitRootResolverOptions,
 	type ComposeOrchestratorRuntimeOptions,
-	type ExactReviewerExecutorOptions,
+	type ExactJudgmentExecutorOptions,
 } from "../src/composition.ts";
 import {
 	CheckedGitRuntime,
@@ -43,7 +43,7 @@ export interface OrchestratorExtensionDependencies {
 	now(): number;
 	createSubagentExecutor(): EphemeralSubagentExecutor;
 	createRootResolver(options: CanonicalGitRootResolverOptions): NonNullable<ComposeOrchestratorRuntimeOptions["resolveRoot"]>;
-	createReviewerExecutor(options?: ExactReviewerExecutorOptions): ReturnType<typeof createExactReviewerExecutor>;
+	createJudgmentExecutor(options?: ExactJudgmentExecutorOptions): ReturnType<typeof createExactJudgmentExecutor>;
 	createGitRuntime(options: CheckedGitRuntimeOptions): CheckedGitRuntime;
 	createHostRuntime(options: HerdrHostRuntimeOptions): HerdrHostRuntime;
 	createRuntime(options: ComposeOrchestratorRuntimeOptions): ComposedOrchestratorRuntime;
@@ -65,7 +65,7 @@ const DEFAULT_DEPENDENCIES: OrchestratorExtensionDependencies = {
 		timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
 	}),
 	createRootResolver: createCanonicalGitRootResolver,
-	createReviewerExecutor: createExactReviewerExecutor,
+	createJudgmentExecutor: createExactJudgmentExecutor,
 	createGitRuntime: (options) => new CheckedGitRuntime(options),
 	createHostRuntime: (options) => new HerdrHostRuntime(options),
 	createRuntime: createComposedOrchestratorRuntime,
@@ -237,7 +237,7 @@ export function registerOrchestratorExtension(
 		const executor = dependencies.createSubagentExecutor();
 		const git = dependencies.createGitRuntime({
 			runProcess,
-			executeReview: dependencies.createReviewerExecutor({ executor }),
+			executeReview: dependencies.createJudgmentExecutor({ executor }),
 		});
 		const host = dependencies.createHostRuntime({
 			inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git),
