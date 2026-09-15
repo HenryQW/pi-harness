@@ -54,6 +54,8 @@ class FakeRuntime {
 	readonly acquisitions: RoleCall[] = [];
 	readonly launchCleanups: RoleCall[] = [];
 	readonly workerCalls: WorkerCall[] = [];
+	readonly workerFailures: Error[] = [];
+	readonly terminationCalls: Array<{ workerId: string; candidate: WorkspaceIdentity }> = [];
 	readonly integrations: string[] = [];
 	readonly reviewCalls: Array<RoleCall & { scope: "task" | "final"; taskId?: string; criterion: string }> = [];
 	readonly inspectMainFailures: Error[] = [];
@@ -208,6 +210,8 @@ class FakeRuntime {
 		this.maxConcurrentWorkers = Math.max(this.maxConcurrentWorkers, this.activeWorkers);
 		try {
 			await this.waitForWorkerBarrier();
+			const failure = this.workerFailures.shift();
+			if (failure) throw failure;
 			return {
 				outcome: "candidate",
 				candidate: identity("bcdef123456789"[this.candidateNumber++ % 15]!, `refs/heads/${input.task.id}`),
@@ -218,9 +222,13 @@ class FakeRuntime {
 	}
 
 	async terminateWorker(
-		_input: Parameters<OrchestratorRuntime["terminateWorker"]>[0],
+		input: Parameters<OrchestratorRuntime["terminateWorker"]>[0],
 		_context: OperationContext,
 	): Promise<{ outcome: "terminated" }> {
+		this.terminationCalls.push({
+			workerId: input.workerId,
+			candidate: structuredClone(input.candidate),
+		});
 		return { outcome: "terminated" };
 	}
 
@@ -453,6 +461,57 @@ test("ready changeset waves run concurrently, integrate in request order, and re
 	]));
 	assert.deepEqual(sortedCalls(runtime.launchCleanups), sortedCalls(runtime.acquisitions));
 	assertParsed(result.state);
+});
+
+test("changeset dispatch failure terminates the exact allocated worker", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerFailures.push(new Error("worker transport failed"));
+	const definition = request("dispatch-failure", [changesetTask("change")]);
+
+	const stopped = await runner.execute(definition, root);
+	const attempt = changesetState(stopped.state, "change").attempts[0]!;
+	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
+	const preCandidate = attempt.prompts[0]?.preCandidate;
+	if (!agent?.agentName || !preCandidate) throw new Error("Expected an allocated worker with a submitted prompt.");
+
+	assert.equal(stopped.state.status, "needs_attention");
+	assert.equal(attempt.prompts[0]?.status, "ambiguous");
+	assert.equal(attempt.termination?.status, "terminated");
+	assert.deepEqual(runtime.terminationCalls, [{ workerId: agent.agentName, candidate: preCandidate }]);
+	assertParsed(stopped.state);
+});
+
+test("abort terminates only the exact active worker without replay", async (t) => {
+	const { root, runtime, store, runner } = await harness(t);
+	const definition = request("abort-active", [changesetTask("active"), changesetTask("settled")]);
+	runtime.workerFailures.push(new Error("active worker transport failed"));
+	const stopped = await runner.execute(definition, root);
+	const activeTaskId = stopped.state.tasks.find((task) => task.kind === "changeset"
+		&& task.attempts[0]?.prompts[0]?.status === "ambiguous")?.taskId;
+	const settledTaskId = stopped.state.tasks.find((task) => task.taskId !== activeTaskId)?.taskId;
+	if (!activeTaskId || !settledTaskId) throw new Error("Expected one active and one settled worker fixture.");
+
+	const handle = await store.load(root, definition.id);
+	const activeAttempt = changesetState(handle.state, activeTaskId).attempts[0]!;
+	const activeAgent = activeAttempt.allocations.find((allocation) => allocation.kind === "agent");
+	const activeCandidate = activeAttempt.prompts[0]?.preCandidate;
+	if (!activeAgent?.agentName || !activeCandidate) throw new Error("Expected an exact active worker fixture.");
+	delete activeAttempt.termination;
+	await handle.save();
+	assertParsed(handle.state);
+
+	runtime.terminationCalls.length = 0;
+	const workerCallsBeforeAbort = structuredClone(runtime.workerCalls);
+	const aborted = await runner.abort(definition.id, root);
+	const abortedActive = changesetState(aborted.state, activeTaskId).attempts[0]!;
+	const abortedSettled = changesetState(aborted.state, settledTaskId).attempts[0]!;
+
+	assert.equal(aborted.state.status, "aborted");
+	assert.deepEqual(runtime.terminationCalls, [{ workerId: activeAgent.agentName, candidate: activeCandidate }]);
+	assert.deepEqual(runtime.workerCalls, workerCallsBeforeAbort);
+	assert.equal(abortedActive.termination?.status, "terminated");
+	assert.equal(abortedSettled.termination?.status, "terminated");
+	assertParsed(aborted.state);
 });
 
 test("failures enter needs_attention; retry, verify, and finalize require explicit actions", async (t) => {
