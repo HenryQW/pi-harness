@@ -5,7 +5,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import {
+	ROLE_TOOL_POLICY_FLAG,
+	type EphemeralSubagentExecutor,
+} from "@henryqw/pi-subagent";
 import {
 	registerOrchestratorExtension,
 	type OrchestratorExtensionDependencies,
@@ -46,10 +49,13 @@ const EXECUTE_REQUEST: ExecuteRequest = {
 	budgetMs: 10_000,
 	tasks: [{
 		id: "unit-one",
+		kind: "changeset",
+		role: "implementer",
 		modelClass: "fast",
 		requirements: "Implement the bounded unit.",
 		deliverable: "A checked commit.",
 		dependsOn: [],
+		contextFrom: [],
 		checks: [{ command: "pnpm", args: ["test"] }],
 	}],
 	finalChecks: [{ command: "pnpm", args: ["typecheck"] }],
@@ -63,6 +69,7 @@ const PRIVATE_STATE = {
 	accepted: false,
 	tasks: [{
 		taskId: "unit-one",
+		kind: "changeset",
 		status: "needs_attention",
 		failure: "The task needs a deliberate recovery decision.",
 		attempts: [{
@@ -149,7 +156,7 @@ interface Harness {
 	getGitOptions(): CheckedGitRuntimeOptions;
 	getHostOptions(): HerdrHostRuntimeOptions;
 	getRuntimeOptions(): ComposeOrchestratorRuntimeOptions;
-	getReviewerExecutor(): NonNullable<CheckedGitRuntimeOptions["executeReview"]>;
+	getJudgmentExecutor(): NonNullable<CheckedGitRuntimeOptions["executeReview"]>;
 	getRoleContext(): ExtensionContext;
 	getProcessRunner(): DirectProcessRunner;
 }
@@ -187,7 +194,10 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 		},
 	} as unknown as ExtensionAPI;
 
-	const reviewerExecutor = async () => ({ verdict: "PASS" });
+	const subagentExecutor: EphemeralSubagentExecutor = {
+		run: async () => { throw new Error("Subagent executor should not run in extension wiring tests."); },
+	};
+	const judgmentExecutor = async () => ({ verdict: "PASS" });
 	const git = {
 		marker: "checked-git",
 		async inspectTaskCandidate(this: unknown, input: unknown, operation: OperationContext) {
@@ -239,10 +249,14 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 				return CANONICAL_ROOT;
 			};
 		},
-		createReviewerExecutor(options) {
-			factoryCalls.push("reviewer");
-			assert.equal(options, undefined);
-			return reviewerExecutor;
+		createSubagentExecutor() {
+			factoryCalls.push("subagent");
+			return subagentExecutor;
+		},
+		createJudgmentExecutor(options) {
+			factoryCalls.push("judgment");
+			assert.deepEqual(options, { executor: subagentExecutor });
+			return judgmentExecutor;
 		},
 		createGitRuntime(options) {
 			factoryCalls.push("git");
@@ -263,11 +277,12 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 			factoryCalls.push("store");
 			return store as never;
 		},
-		createRunner(receivedRuntime, receivedGit, receivedStore) {
+		createRunner(receivedRuntime, receivedGit, receivedStore, receivedExecutor) {
 			factoryCalls.push("runner");
 			assert.equal(receivedRuntime, runtime);
 			assert.equal(receivedGit, git);
 			assert.equal(receivedStore, store);
+			assert.equal(receivedExecutor, subagentExecutor);
 			return runner as never;
 		},
 		...overrides,
@@ -285,7 +300,7 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 		getGitOptions: () => gitOptions!,
 		getHostOptions: () => hostOptions!,
 		getRuntimeOptions: () => runtimeOptions!,
-		getReviewerExecutor: () => reviewerExecutor,
+		getJudgmentExecutor: () => judgmentExecutor,
 		getRoleContext: () => runtimeOptions!.role.context(),
 		getProcessRunner: () => processRunner!,
 	};
@@ -367,7 +382,7 @@ test("registers exactly four strict tools without constructing runtime component
 	assert.deepEqual(parseIdOnly({ id: "request-one" }), { id: "request-one" });
 	assert.throws(() => parseIdOnly({ id: "request-one", extra: true }), /strict v1 schema/i);
 	assert.throws(() => parseIdOnly({ id: "Request_One" }), /strict v1 schema/i);
-	assert.throws(() => execute!.prepareArguments({ ...EXECUTE_REQUEST, extra: true }), /strict v1 schema/i);
+	assert.throws(() => execute!.prepareArguments({ ...EXECUTE_REQUEST, extra: true }), /strict task schema/i);
 	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /strict v1 action/i);
 });
 
@@ -397,19 +412,19 @@ test("Role child argv causes zero registration and dependency side effects", () 
 	assert.equal(dependencyAccesses, 0);
 });
 
-test("lazily wires one checked runtime graph, direct processes, Reviewer adapter, and fresh context", async () => {
+test("lazily wires one checked runtime graph, shared Subagent executor, direct processes, Judgment adapter, and fresh context", async () => {
 	const harness = createHarness();
 	const initial = context("/nested/initial", { id: "initial-model" });
 	const executeSignal = new AbortController().signal;
 	const result = await executeTool(namedTool(harness, "orchestrate_execute"), EXECUTE_REQUEST, executeSignal, initial);
 
-	assert.deepEqual(harness.factoryCalls, ["root", "reviewer", "git", "host", "runtime", "store", "runner"]);
+	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "judgment", "git", "host", "runtime", "store", "runner"]);
 	assert.equal(harness.getRuntimeOptions().role.pi, harness.pi);
 	assert.equal(harness.getRuntimeOptions().role.orchestratorEntrypoint, "/package/extensions/orchestrator.ts");
 	assert.equal((harness.getRuntimeOptions().host as unknown as { marker: string }).marker, "herdr-host");
 	assert.equal((harness.getRuntimeOptions().git as unknown as { marker: string }).marker, "checked-git");
 	assert.equal(harness.getGitOptions().runProcess, harness.getHostOptions().runProcess);
-	assert.equal(harness.getGitOptions().executeReview, harness.getReviewerExecutor());
+	assert.equal(harness.getGitOptions().executeReview, harness.getJudgmentExecutor());
 	assert.equal(harness.getRoleContext(), initial);
 
 	const operation: OperationContext = {
@@ -450,7 +465,7 @@ test("lazily wires one checked runtime graph, direct processes, Reviewer adapter
 	assert.equal(harness.getRoleContext(), settled);
 
 	await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, undefined, settled);
-	assert.deepEqual(harness.factoryCalls, ["root", "reviewer", "git", "host", "runtime", "store", "runner"]);
+	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "judgment", "git", "host", "runtime", "store", "runner"]);
 	assert.deepEqual(result, {
 		content: [{ type: "text", text: "bounded execute result" }],
 		details: {
@@ -463,7 +478,9 @@ test("lazily wires one checked runtime graph, direct processes, Reviewer adapter
 
 test("public recovery evidence stays bounded and omits private durable state", async () => {
 	const state = structuredClone(PRIVATE_STATE);
-	state.tasks[0]!.attempts[0]!.preliminaryChecks!.results[0]!.stderr = `${"界".repeat(1_000)}UNEXPOSED_TAIL`;
+	const task = state.tasks[0]!;
+	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
+	task.attempts[0]!.preliminaryChecks!.results[0]!.stderr = `${"界".repeat(1_000)}UNEXPOSED_TAIL`;
 	const harness = createHarness({
 		createRunner() {
 			return {
@@ -487,6 +504,83 @@ test("public recovery evidence stays bounded and omits private durable state", a
 	assert.equal(details.state.needsAttention.retainedWorktree.cwd, "/tmp/pi-task");
 	assert.doesNotMatch(JSON.stringify(result.details), /UNEXPOSED_TAIL|PRIVATE|prompt|rawArgs|SECRET_TOKEN|command-line/i);
 	assert.ok(Buffer.byteLength(JSON.stringify(result.details), "utf8") < 8 * 1024);
+});
+
+test("text recovery exposes only bounded text attempt evidence", async () => {
+	const taskFailure = `${"界".repeat(1_000)}UNEXPOSED_TASK_TAIL`;
+	const attemptFailure = `${"界".repeat(1_000)}UNEXPOSED_ATTEMPT_TAIL`;
+	const textAttempt = { number: 2, status: "failed", failure: attemptFailure };
+	for (const field of [
+		"allocations", "preliminaryChecks", "authoritativeChecks", "authoritativeReview", "cleanup", "output",
+	]) {
+		Object.defineProperty(textAttempt, field, {
+			enumerable: true,
+			get() {
+				throw new Error(`Text recovery read ${field}.`);
+			},
+		});
+	}
+	const state = {
+		...PRIVATE_STATE,
+		request: {
+			...EXECUTE_REQUEST,
+			tasks: [{
+				id: "text-one",
+				kind: "text",
+				role: "implementer",
+				modelClass: "fast",
+				requirements: "Provide a concise status.",
+				deliverable: "A concise status.",
+				dependsOn: [],
+				contextFrom: [],
+			}],
+		},
+		tasks: [{
+			taskId: "text-one",
+			kind: "text",
+			status: "needs_attention",
+			failure: taskFailure,
+			attempts: [textAttempt],
+		}],
+	} as unknown as RunState;
+	const harness = createHarness({
+		createRunner() {
+			return {
+				async execute() {
+					return { text: "bounded text recovery", state };
+				},
+			} as never;
+		},
+	});
+	const result = await executeTool(
+		namedTool(harness, "orchestrate_execute"),
+		EXECUTE_REQUEST,
+		new AbortController().signal,
+		context(CANONICAL_ROOT),
+	);
+	const recovery = (result.details as {
+		state: {
+			needsAttention: {
+				scope: string;
+				taskId: string;
+				failure: string;
+				attempt: { number: number; status: string; failure: string };
+			};
+		};
+	}).state.needsAttention;
+
+	assert.deepEqual(Object.keys(recovery).sort(), ["attempt", "failure", "scope", "taskId"]);
+	assert.equal(recovery.scope, "task");
+	assert.equal(recovery.taskId, "text-one");
+	assert.ok(Buffer.byteLength(recovery.failure, "utf8") < 600);
+	assert.match(recovery.failure, /\[truncated\]$/);
+	assert.doesNotMatch(recovery.failure, /UNEXPOSED_TASK_TAIL/);
+	assert.deepEqual(Object.keys(recovery.attempt).sort(), ["failure", "number", "status"]);
+	assert.equal(recovery.attempt.number, 2);
+	assert.equal(recovery.attempt.status, "failed");
+	assert.ok(Buffer.byteLength(recovery.attempt.failure, "utf8") < 600);
+	assert.match(recovery.attempt.failure, /\[truncated\]$/);
+	assert.doesNotMatch(recovery.attempt.failure, /UNEXPOSED_ATTEMPT_TAIL/);
 });
 
 test("execute keeps raw cwd while lookup actions use canonical root, bounded context, and signals", async () => {
@@ -583,7 +677,7 @@ test("manifest entrypoint and Main-side Skill ship with the four tools", async (
 		files?: string[];
 		pi?: { extensions?: string[]; skills?: string[] };
 	};
-	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^16.0.0");
+	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^17.0.0");
 	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.4.7");
 	assert.deepEqual(manifest.pi?.extensions, ["./extensions/orchestrator.ts"]);
 	assert.deepEqual(manifest.pi?.skills, ["./skills"]);

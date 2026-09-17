@@ -13,7 +13,6 @@ import {
 import {
 	checkBatchPasses,
 	isCleanCommitted,
-	launchKey,
 	reviewEvidencePasses,
 	sameIdentity,
 	type CheckCommand,
@@ -39,7 +38,7 @@ import {
 	type ReviewResult,
 	type TransientLaunchHandle,
 	type WorktreeAllocationResult,
-	type VerifiedReviewerLaunch,
+	type VerifiedLaunch,
 	withTransientLaunch,
 } from "./runner.ts";
 
@@ -72,7 +71,7 @@ export interface ExactReviewExecutorInput {
 	scope: "task" | "final";
 	taskId?: string;
 	criterion: string;
-	launch: VerifiedReviewerLaunch;
+	launch: VerifiedLaunch;
 	cwd: string;
 	packet: ExactReviewPacket;
 }
@@ -347,9 +346,9 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
+		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult> {
-		if (!this.executeReview) throw new Error("Exact Reviewer execution is not configured.");
+		if (!this.executeReview) throw new Error("Exact Judgment execution is not configured.");
 		if (input.scope === "final") {
 			if (input.phase !== "final" || input.attempt) throw new Error("Final review received task-scoped evidence.");
 		} else {
@@ -398,7 +397,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 				await evidence.cleanup();
 			} catch (cleanupError) {
 				if (reviewError) {
-					throw new AggregateError([reviewError, cleanupError], "Reviewer execution failed and exact evidence cleanup also failed.");
+					throw new AggregateError([reviewError, cleanupError], "Judgment execution failed and exact evidence cleanup also failed.");
 				}
 				throw cleanupError;
 			}
@@ -501,6 +500,9 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		checks: import("./schema.ts").CheckBatchEvidence;
 		review?: ReviewEvidence;
 	}, context: OperationContext): Promise<IntegrationResult> {
+		if (input.task.kind !== "changeset") {
+			return { outcome: "failed", failure: "Integration requires a changeset task." };
+		}
 		if (input.attempt.termination?.status !== "terminated") {
 			return { outcome: "failed", failure: "Integration requires exact recorded worker termination." };
 		}
@@ -513,19 +515,16 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			return { outcome: "failed", failure: "Integration requires exact persisted authoritative passing checks." };
 		}
 		if (input.task.judgment) {
-			const reviewerLaunchKey = launchKey("reviewer", input.task.judgment.modelClass);
 			if (!reviewEvidencePasses(
 				input.review,
 				"authoritative",
 				input.task.judgment.criterion,
-				reviewerLaunchKey,
 				input.expectedMain,
 				input.candidate,
 			) || !reviewEvidencePasses(
 				input.attempt.authoritativeReview,
 				"authoritative",
 				input.task.judgment.criterion,
-				reviewerLaunchKey,
 				input.expectedMain,
 				input.candidate,
 			)) return { outcome: "failed", failure: "Integration requires exact persisted authoritative PASS review evidence." };

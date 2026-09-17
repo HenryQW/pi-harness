@@ -13,7 +13,7 @@ import {
 import {
 	ComposedOrchestratorRuntime,
 	createCanonicalGitRootResolver,
-	createExactReviewerExecutor,
+	createExactJudgmentExecutor,
 	createHostCheckedMainInspector,
 } from "../src/composition.ts";
 import type { DirectProcessOptions, DirectProcessRunner, ExactReviewExecutorInput } from "../src/git-runtime.ts";
@@ -21,7 +21,7 @@ import type {
 	CoordinatorRuntime,
 	HostRuntime,
 	OperationContext,
-	VerifiedReviewerLaunch,
+	VerifiedLaunch,
 } from "../src/runner.ts";
 import type { WorkspaceIdentity } from "../src/schema.ts";
 
@@ -32,8 +32,7 @@ const IDENTITY: WorkspaceIdentity = {
 	tree: "2".repeat(40),
 };
 
-const REVIEWER_LAUNCH: VerifiedReviewerLaunch = {
-	key: "reviewer/fast",
+const REVIEWER_LAUNCH: VerifiedLaunch = {
 	role: "reviewer",
 	modelClass: "fast",
 	model: "provider/model",
@@ -41,7 +40,6 @@ const REVIEWER_LAUNCH: VerifiedReviewerLaunch = {
 	args: ["--model", "provider/model", "--thinking", "high"],
 	env: {},
 	tools: ["read", "grep", "find", "ls"],
-	fingerprint: "3".repeat(64),
 };
 
 function operationContext(timeoutMs = 20_000): OperationContext {
@@ -123,10 +121,10 @@ test("composed runtime delegates every Coordinator and Host method unchanged", a
 	const acquireLaunch = async () => ({ launch: REVIEWER_LAUNCH, cleanup: async () => {} });
 	const input = Object.freeze({ marker: "input", goal: "Keep this immutable goal unchanged.", acquireLaunch });
 	const context = operationContext();
-	for (const method of ["preflight", "recoverLaunchRecords", "acquireLaunch"] as const) {
-		const returned = await (runtime[method] as (...args: any[]) => Promise<unknown>)(input, context);
-		assert.equal(returned, values.get(`roles:${method}`));
-	}
+	const preflight = await (runtime.preflight as (...args: any[]) => Promise<unknown>)(input, context);
+	assert.equal(preflight, values.get("roles:preflight"));
+	const launch = await runtime.acquireLaunch("reviewer", "fast", context);
+	assert.equal(launch, values.get("roles:acquireLaunch"));
 	for (const method of [
 		"planHostAllocation", "allocateHost", "reconcileHostAllocation", "runWorker", "terminateWorker", "cleanupHost",
 	] as const) {
@@ -135,11 +133,13 @@ test("composed runtime delegates every Coordinator and Host method unchanged", a
 	}
 
 	assert.deepEqual(calls.map(({ owner, method }) => `${owner}:${method}`), [
-		"roles:now", "roles:randomToken", "roles:preflight", "roles:recoverLaunchRecords",
-		"roles:acquireLaunch", "host:planHostAllocation", "host:allocateHost", "host:reconcileHostAllocation",
+		"roles:now", "roles:randomToken", "roles:preflight", "roles:acquireLaunch",
+		"host:planHostAllocation", "host:allocateHost", "host:reconcileHostAllocation",
 		"host:runWorker", "host:terminateWorker", "host:cleanupHost",
 	]);
-	assert.ok(calls.slice(2).every(({ args }) => args[0] === input && args[1] === context));
+	assert.deepEqual(calls[2]!.args, [input, context]);
+	assert.deepEqual(calls[3]!.args, ["reviewer", "fast", context]);
+	assert.ok(calls.slice(4).every(({ args }) => args[0] === input && args[1] === context));
 	assert.equal(calls.find(({ method }) => method === "allocateHost")!.args[0], input);
 	assert.equal((calls.find(({ method }) => method === "allocateHost")!.args[0] as typeof input).acquireLaunch, acquireLaunch);
 	assert.equal((calls.find(({ method }) => method === "planHostAllocation")!.args[0] as typeof input).goal, input.goal);
@@ -223,7 +223,7 @@ test("canonical Git root resolver rejects malformed, non-canonical, and unrelate
 	}
 });
 
-test("exact Reviewer adapter lazily runs the exact launch, packet, cwd, and prompt", async () => {
+test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prompt", async () => {
 	let createCalls = 0;
 	let nextOutput = "PASS";
 	const prepared: Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>[] = [];
@@ -235,7 +235,7 @@ test("exact Reviewer adapter lazily runs the exact launch, packet, cwd, and prom
 			return result({ output: nextOutput });
 		},
 	};
-	const executeReview = createExactReviewerExecutor({
+	const executeReview = createExactJudgmentExecutor({
 		createExecutor: () => {
 			createCalls += 1;
 			return executor;
@@ -272,7 +272,7 @@ test("exact Reviewer adapter lazily runs the exact launch, packet, cwd, and prom
 	assert.equal(createCalls, 1);
 });
 
-test("exact Reviewer adapter rejects empty, truncated, failed, and thrown transport results", async (t) => {
+test("exact Judgment adapter rejects empty, truncated, failed, and thrown transport results", async (t) => {
 	const cases: Array<{
 		name: string;
 		value?: EphemeralSubagentResult;
@@ -290,7 +290,7 @@ test("exact Reviewer adapter rejects empty, truncated, failed, and thrown transp
 	];
 	for (const entry of cases) {
 		await t.test(entry.name, async () => {
-			const executeReview = createExactReviewerExecutor({
+			const executeReview = createExactJudgmentExecutor({
 				executor: {
 					run: async () => {
 						if (entry.error) throw entry.error;
@@ -303,7 +303,7 @@ test("exact Reviewer adapter rejects empty, truncated, failed, and thrown transp
 	}
 
 	await t.test("oversized prompt", async () => {
-		const executeReview = createExactReviewerExecutor({ executor: { run: async () => result() } });
+		const executeReview = createExactJudgmentExecutor({ executor: { run: async () => result() } });
 		await assert.rejects(
 			executeReview({ ...reviewInput(), criterion: "x".repeat(70 * 1024) }, operationContext()),
 			/exceeds 65536 bytes/i,

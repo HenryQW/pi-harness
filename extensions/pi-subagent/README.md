@@ -175,6 +175,8 @@ A Role's `modelClass` is a default. A call-level class wins.
 
 An unreadable or invalid Role fails loading fast. Duplicate Role names are rejected. A same-named user file overrides a built-in Role.
 
+A missing named Skill rejects `prepareRoleLaunch` and `resolveConfiguredRoleLaunch`. `delegate_task` returns a Role-specific workflow error and does not start a child.
+
 The package always provides these built-in Roles. Their files leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` assignment or declared default unless a call overrides it:
 
 | Role | Purpose | Isolation/use |
@@ -190,9 +192,12 @@ The package root includes these main exports:
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `loadRoles` | function | Loads built-in and user Role definitions. |
+| `RoleName` / `parseRoleName` | type/function | Normalizes arbitrary Role names and rejects empty or C0/C1 control-character values. |
 | `resolveRoleSkills` | function | Resolves a Role's named Skills from Pi's effective registry. |
 | `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
+| `resolveConfiguredRoleLaunch` | function | Resolves a configured Role and its package resources with an explicit model class. Rejects missing Role Skills. |
 | `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
+| `prepareRoleLaunch` / `finalizeRoleLaunch` | functions | Separates the stable Role prompt, exposes its immutable tool policy, and rejects missing Role Skills. |
 | `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
 | Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
 | `prepareExactReviewEvidence` | function | Create a bounded private base-to-tip patch with exact Git identity for caller-owned review. |
@@ -201,7 +206,7 @@ The executor works only inside the active Pi process. It does not discover or st
 
 `finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union. `pruned` proves zero commits, a clean tree, and removed worktree and branch. `retained` contains measured `commits` and `dirty` values. `recovery` has an actionable `note` and only completed measurements. An omitted recovery measurement is unknown.
 
-See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default.
+See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default. `resolveConfiguredRoleLaunch` requires a model class and does not use Role or task defaults.
 
 ## Limits and recovery
 

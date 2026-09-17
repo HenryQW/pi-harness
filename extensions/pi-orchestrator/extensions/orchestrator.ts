@@ -1,14 +1,18 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
+import {
+	createEphemeralSubagentExecutor,
+	ROLE_TOOL_POLICY_FLAG,
+	type EphemeralSubagentExecutor,
+} from "@henryqw/pi-subagent";
 import {
 	ComposedOrchestratorRuntime,
 	createCanonicalGitRootResolver,
 	createComposedOrchestratorRuntime,
-	createExactReviewerExecutor,
+	createExactJudgmentExecutor,
 	type CanonicalGitRootResolverOptions,
 	type ComposeOrchestratorRuntimeOptions,
-	type ExactReviewerExecutorOptions,
+	type ExactJudgmentExecutorOptions,
 } from "../src/composition.ts";
 import {
 	CheckedGitRuntime,
@@ -28,7 +32,6 @@ import {
 	type CheckBatchEvidence,
 	type ReviewEvidence,
 	type RunState,
-	type TaskAttempt,
 	type WorktreeAllocationIntent,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
@@ -38,25 +41,36 @@ const PUBLIC_EVIDENCE_MAX_BYTES = 512;
 
 export interface OrchestratorExtensionDependencies {
 	now(): number;
+	createSubagentExecutor(): EphemeralSubagentExecutor;
 	createRootResolver(options: CanonicalGitRootResolverOptions): NonNullable<ComposeOrchestratorRuntimeOptions["resolveRoot"]>;
-	createReviewerExecutor(options?: ExactReviewerExecutorOptions): ReturnType<typeof createExactReviewerExecutor>;
+	createJudgmentExecutor(options?: ExactJudgmentExecutorOptions): ReturnType<typeof createExactJudgmentExecutor>;
 	createGitRuntime(options: CheckedGitRuntimeOptions): CheckedGitRuntime;
 	createHostRuntime(options: HerdrHostRuntimeOptions): HerdrHostRuntime;
 	createRuntime(options: ComposeOrchestratorRuntimeOptions): ComposedOrchestratorRuntime;
 	createStore(): FileRunStore;
-	createRunner(runtime: ComposedOrchestratorRuntime, git: CheckedGitRuntime, store: FileRunStore): OrchestratorRunner;
+	createRunner(
+		runtime: ComposedOrchestratorRuntime,
+		git: CheckedGitRuntime,
+		store: FileRunStore,
+		executor: EphemeralSubagentExecutor,
+	): OrchestratorRunner;
 	orchestratorEntrypoint: string;
 }
 
 const DEFAULT_DEPENDENCIES: OrchestratorExtensionDependencies = {
 	now: Date.now,
+	createSubagentExecutor: () => createEphemeralSubagentExecutor({
+		maxConcurrency: 8,
+		maxTurns: 50,
+		timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
+	}),
 	createRootResolver: createCanonicalGitRootResolver,
-	createReviewerExecutor: createExactReviewerExecutor,
+	createJudgmentExecutor: createExactJudgmentExecutor,
 	createGitRuntime: (options) => new CheckedGitRuntime(options),
 	createHostRuntime: (options) => new HerdrHostRuntime(options),
 	createRuntime: createComposedOrchestratorRuntime,
 	createStore: () => new FileRunStore(),
-	createRunner: (runtime, git, store) => new OrchestratorRunner(runtime, git, store),
+	createRunner: (runtime, git, store, executor) => new OrchestratorRunner(runtime, git, store, executor),
 	orchestratorEntrypoint: fileURLToPath(import.meta.url),
 };
 
@@ -93,7 +107,22 @@ function publicFailedReview(evidence: ReviewEvidence | undefined) {
 	};
 }
 
-function publicTaskRecovery(task: RunState["tasks"][number], attempt: TaskAttempt | undefined) {
+function publicTaskRecovery(task: RunState["tasks"][number]) {
+	if (task.kind === "text") {
+		const attempt = task.attempts.at(-1);
+		return {
+			scope: "task" as const,
+			taskId: task.taskId,
+			...(task.failure ? { failure: boundedPublicText(task.failure) } : {}),
+			...(attempt ? { attempt: {
+				number: attempt.number,
+				status: attempt.status,
+				...(attempt.failure ? { failure: boundedPublicText(attempt.failure) } : {}),
+			} } : {}),
+		};
+	}
+
+	const attempt = task.attempts.at(-1);
 	const failedCheck = publicFailedCheck(
 		attempt?.authoritativeChecks?.passed === false
 			? attempt.authoritativeChecks
@@ -132,7 +161,7 @@ function publicNeedsAttention(state: RunState, preferredTaskId?: string) {
 	if (state.status !== "needs_attention") return undefined;
 	const task = state.tasks.find((candidate) => candidate.status === "needs_attention" && candidate.taskId === preferredTaskId)
 		?? state.tasks.find((candidate) => candidate.status === "needs_attention");
-	if (task) return publicTaskRecovery(task, task.attempts.at(-1));
+	if (task) return publicTaskRecovery(task);
 	if (state.final.failure || state.final.checks?.passed === false || state.final.review?.passed === false) {
 		const failedCheck = publicFailedCheck(state.final.checks);
 		const failedReview = publicFailedReview(state.final.review);
@@ -205,9 +234,10 @@ export function registerOrchestratorExtension(
 			timeout: options.timeoutMs,
 		});
 		const resolveRoot = dependencies.createRootResolver({ runProcess, now: dependencies.now });
+		const executor = dependencies.createSubagentExecutor();
 		const git = dependencies.createGitRuntime({
 			runProcess,
-			executeReview: dependencies.createReviewerExecutor(),
+			executeReview: dependencies.createJudgmentExecutor({ executor }),
 		});
 		const host = dependencies.createHostRuntime({
 			inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git),
@@ -224,7 +254,7 @@ export function registerOrchestratorExtension(
 			resolveRoot,
 		});
 		const store = dependencies.createStore();
-		const runner = dependencies.createRunner(runtime, git, store);
+		const runner = dependencies.createRunner(runtime, git, store, executor);
 		return components = { runner, resolveRoot };
 	};
 
@@ -252,10 +282,10 @@ export function registerOrchestratorExtension(
 		name: "orchestrate_execute",
 		label: "Orchestrate execute",
 		description: "Start one durable checked task graph in the current clean Git repository.",
-		promptSnippet: "Run a durable checked task graph with isolated Implementer Roles",
+		promptSnippet: "Run a durable checked task graph with isolated explicit Task Roles and optional Judgment",
 		promptGuidelines: [
 			"Use orchestrate_execute for non-trivial implementation work with explicit dependencies and authoritative checks.",
-			"Add a Reviewer judgment only when direct checks cannot establish the criterion.",
+			"Add a Judgment only when direct checks cannot establish the criterion.",
 		],
 		parameters: ExecuteRequestSchema,
 		prepareArguments: parseExecuteRequest,

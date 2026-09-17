@@ -1,9 +1,17 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	DefaultPackageManager,
+	getAgentDir,
+	parseFrontmatter,
+	SettingsManager,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
+import { selectRoleMcpConfig } from "./mcp-role.ts";
 import {
 	loadTaskModelsConfig,
 	modelReference,
@@ -19,7 +27,7 @@ import {
 } from "@henryqw/pi-task-models";
 
 export { DISPLAY_TEXT_CONTRACT, hasDisplayControlCharacters } from "./display-text.ts";
-export { fingerprintRoleMcpConfig, parseRoleMcpAllowlist, roleMcpFlagValue, selectRoleMcpConfig, type RoleMcpConfig } from "./mcp-role.ts";
+export { parseRoleMcpAllowlist, roleMcpFlagValue, selectRoleMcpConfig, type RoleMcpConfig } from "./mcp-role.ts";
 export {
 	addUsage,
 	capEphemeralSubagentOutput,
@@ -61,7 +69,6 @@ const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-mul
 const ROLE_MCP_EXTENSION = fileURLToPath(new URL("../extensions/role-mcp.ts", import.meta.url));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 export const PI_ORCHESTRATOR_PROCESS_LEASE = "PI_ORCHESTRATOR_PROCESS_LEASE";
-export const ROLE_MCP_CONFIG_SHA256_FLAG = "pi-subagent-role-mcp-config-sha256";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
@@ -73,6 +80,7 @@ export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"orchestrate_abort",
 ] as const;
 export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");
+const SYSTEM_PROMPT_FLAG = "--append-system-prompt";
 const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";
 
 export const DELEGATE_TASK = {
@@ -82,8 +90,10 @@ export const DELEGATE_TASK = {
 	defaultProfile: "fast",
 } as const satisfies ModelTask;
 
+export type RoleName = string;
+
 export interface Role {
-	name: string;
+	name: RoleName;
 	description: string;
 	modelClass?: ProfileName;
 	tools: string[];
@@ -105,6 +115,14 @@ export interface ResolvedRoleLaunch extends PiLaunch {
 	missingSkills: string[];
 }
 
+export interface PreparedRoleLaunch extends ResolvedRoleLaunch {
+	role: RoleName;
+	isolation?: "worktree";
+	tools: readonly string[];
+	systemPrompt: string;
+	promptArgIndex: number;
+}
+
 export interface CreateRoleLaunchInput {
 	role: Role;
 	route: ResolvedTaskRoute;
@@ -117,6 +135,11 @@ export interface ResolveRoleLaunchInput extends Omit<CreateRoleLaunchInput, "rou
 	task: ModelTask;
 	modelClass?: ProfileName;
 	agentDir?: string;
+}
+
+export interface ResolveConfiguredRoleLaunchInput {
+	role: string;
+	modelClass: ProfileName;
 }
 
 export interface ResolvedRoleSkills {
@@ -137,6 +160,11 @@ const cleanDisplayText = (value: unknown, field: string, source: string): string
 	}
 	return cleanText(value, field, source);
 };
+
+/** Normalize one arbitrary Role name using the Role configuration contract. */
+export function parseRoleName(value: unknown, source = "Role"): RoleName {
+	return cleanDisplayText(value, "name", source);
+}
 
 const stringList = (value: unknown, field: string, source: string): string[] => {
 	if (value === undefined) throw new Error(`${source}: ${field} is required.`);
@@ -166,8 +194,21 @@ function mcpList(value: unknown, source: string): string[] {
 	return names;
 }
 
+function roleToolPolicy(role: Role, additionalTools: readonly string[] = []): string[] {
+	return [...new Set([...role.tools, ...additionalTools].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+}
+
 function namesMcpAdapter(extension: string): boolean {
 	return extension.toLowerCase().split(/[\\/:@]+/).some((component) => component === "pi-mcp-adapter" || component.startsWith("pi-mcp-adapter."));
+}
+
+const FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES = ["pi-orchestrator", "pi-mcp-adapter"] as const;
+
+function rejectForbiddenRolePackageSource(value: string, role: Role): void {
+	const components = value.toLowerCase().split(/[\\/:@]+/);
+	if (FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES.some((name) => components.some((component) => component === name || component.startsWith(`${name}.`)))) {
+		throw new Error(`Role ${role.name} extension explicitly names the forbidden ${FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES.join("/")} source: ${value}`);
+	}
 }
 
 function roleModelClass(value: unknown, source: string): ProfileName | undefined {
@@ -176,6 +217,14 @@ function roleModelClass(value: unknown, source: string): ProfileName | undefined
 		throw new Error(`${source}: modelClass must be one of ${PROFILE_NAMES.join(", ")}.`);
 	}
 	return value as ProfileName;
+}
+
+function roleIsolation(value: unknown, source: string): "worktree" | undefined {
+	if (value === undefined) return;
+	if (cleanText(value, "isolation", source) !== "worktree") {
+		throw new Error(`${source}: isolation must be "worktree".`);
+	}
+	return "worktree";
 }
 
 // Built-in Roles resolved from the package-shipped Markdown relative to this module.
@@ -191,11 +240,10 @@ function parseRoleFile(file: string, raw: string): Role {
 		throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	const frontmatter = parsed.frontmatter;
-	const isolation = frontmatter.isolation === undefined ? undefined : cleanText(frontmatter.isolation, "isolation", file);
-	if (isolation !== undefined && isolation !== "worktree") throw new Error(`${file}: isolation must be "worktree".`);
+	const isolation = roleIsolation(frontmatter.isolation, file);
 	const modelClass = roleModelClass(frontmatter.modelClass, file);
 	return {
-		name: cleanDisplayText(frontmatter.name, "name", file),
+		name: parseRoleName(frontmatter.name, file),
 		description: cleanDisplayText(frontmatter.description, "description", file),
 		...(modelClass === undefined ? {} : { modelClass }),
 		tools: stringList(frontmatter.tools, "tools", file),
@@ -296,15 +344,50 @@ export function resolveRoleSkills(pi: Pick<ExtensionAPI, "getCommands">, role: R
 	return { paths, missing };
 }
 
+function packageManager(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): DefaultPackageManager {
+	const agentDir = getAgentDir();
+	const settingsManager = SettingsManager.create(ctx.cwd, agentDir, { projectTrusted: ctx.isProjectTrusted() });
+	return new DefaultPackageManager({ cwd: ctx.cwd, agentDir, settingsManager });
+}
+
+/** Resolve all enabled package resources selected by one Role's extension sources. */
+export async function resolveRolePackageResources(
+	role: Role,
+	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+): Promise<{ extensions: string[]; skills: string[]; prompts: string[]; themes: string[] }> {
+	const sources = role.extensions;
+	for (const source of sources) rejectForbiddenRolePackageSource(source, role);
+	if (!sources.length) return { extensions: [], skills: [], prompts: [], themes: [] };
+	const resolved = await packageManager(ctx).resolveExtensionSources([...sources]);
+	const resourceGroups = [resolved.extensions, resolved.skills, resolved.prompts, resolved.themes]
+		.map((resources) => resources.filter((resource) => resource.enabled));
+	const resolvedSources = new Set(resourceGroups.flat().map((resource) => resource.metadata.source));
+	const missing = sources.filter((source) => !resolvedSources.has(source));
+	if (missing.length) throw new Error(`Role extension sources resolved no resources: ${missing.join(", ")}.`);
+	return {
+		extensions: resourceGroups[0]!.map((resource) => resource.path),
+		skills: resourceGroups[1]!.map((resource) => resource.path),
+		prompts: resourceGroups[2]!.map((resource) => resource.path),
+		themes: resourceGroups[3]!.map((resource) => resource.path),
+	};
+}
+
 export function createRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
 	input: CreateRoleLaunchInput,
 ): ResolvedRoleLaunch {
+	return createRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role));
+}
+
+function createRoleLaunchFromSkills(
+	ctx: Pick<ExtensionContext, "isProjectTrusted">,
+	input: CreateRoleLaunchInput,
+	skills: ResolvedRoleSkills,
+): ResolvedRoleLaunch {
 	const role = input.role;
-	const skills = resolveRoleSkills(pi, role);
 	const mcps = mcpList(role.mcps, `Role ${role.name}`);
-	const tools = [...new Set([...role.tools, ...(input.tools ?? [])].map((tool) => cleanText(tool, "tool", `Role ${role.name}`)))];
+	const tools = roleToolPolicy(role, input.tools);
 	const selectedExtensions = [...role.extensions, ...(input.extensions ?? [])]
 		.map((extension) => validateExtension(extension, `Role ${role.name}`));
 	if (selectedExtensions.some(namesMcpAdapter)) {
@@ -329,7 +412,7 @@ export function createRoleLaunch(
 	args.push("--model", modelReference(input.route.model));
 	if (input.route.thinkingLevel) args.push("--thinking", input.route.thinkingLevel);
 	args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
-	args.push("--append-system-prompt", `${CHILD_IDENTITY_POLICY}\n\n${cleanText(role.systemPrompt, "system prompt", `Role ${role.name}`)}`);
+	args.push(SYSTEM_PROMPT_FLAG, `${CHILD_IDENTITY_POLICY}\n\n${cleanText(role.systemPrompt, "system prompt", `Role ${role.name}`)}`);
 	return {
 		env,
 		args,
@@ -352,4 +435,126 @@ export function resolveRoleLaunch(
 			? resolveConfiguredTaskRoute(ctx, task, agentDir)
 			: resolveTaskRoute(ctx, selectedClass, agentDir),
 	});
+}
+
+function stripRoleSystemPrompt(rawArgs: readonly string[]): {
+	args: string[];
+	systemPrompt: string;
+	promptArgIndex: number;
+} {
+	const indexes = rawArgs.flatMap((arg, index) => arg === SYSTEM_PROMPT_FLAG ? [index] : []);
+	if (indexes.length !== 1) throw new Error(`Role launch must contain exactly one ${SYSTEM_PROMPT_FLAG} pair.`);
+	const promptArgIndex = indexes[0]!;
+	const systemPrompt = rawArgs[promptArgIndex + 1];
+	if (typeof systemPrompt !== "string" || !systemPrompt.includes("\n") || !systemPrompt.trim() || systemPrompt.includes("\0")) {
+		throw new Error(`Role ${SYSTEM_PROMPT_FLAG} value must be the exact multiline Role prompt.`);
+	}
+	const args = [...rawArgs.slice(0, promptArgIndex), ...rawArgs.slice(promptArgIndex + 2)];
+	if (args.includes(SYSTEM_PROMPT_FLAG) || args.includes(systemPrompt)) {
+		throw new Error("Sanitized Role argv must contain no prompt flag or raw Role prompt.");
+	}
+	return { args, systemPrompt, promptArgIndex };
+}
+
+function prepareResolvedRoleLaunch(
+	roleDefinition: Role,
+	launch: ResolvedRoleLaunch,
+	additionalTools: readonly string[] = [],
+): PreparedRoleLaunch {
+	const role = parseRoleName(roleDefinition.name);
+	const isolation = roleIsolation(roleDefinition.isolation, `Role ${role}`);
+	const tools = Object.freeze(roleToolPolicy(roleDefinition, additionalTools));
+	const { args, systemPrompt, promptArgIndex } = stripRoleSystemPrompt(launch.args);
+	return { ...launch, args, role, isolation, tools, systemPrompt, promptArgIndex };
+}
+
+function assertNoMissingRoleSkills(role: Role, launch: ResolvedRoleLaunch): void {
+	if (!launch.missingSkills.length) return;
+	throw new Error(`Role ${parseRoleName(role.name)} requires missing Skills: ${launch.missingSkills.join(", ")}.`);
+}
+
+/** Prepare a resolved or resolvable Role launch while keeping its system prompt out of argv. */
+export function prepareRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: ResolveRoleLaunchInput,
+): PreparedRoleLaunch;
+export function prepareRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: CreateRoleLaunchInput,
+): PreparedRoleLaunch;
+export function prepareRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: ResolveRoleLaunchInput | CreateRoleLaunchInput,
+): PreparedRoleLaunch {
+	const launch = "route" in input
+		? createRoleLaunch(pi, ctx, input)
+		: resolveRoleLaunch(pi, ctx, input);
+	assertNoMissingRoleSkills(input.role, launch);
+	return prepareResolvedRoleLaunch(input.role, launch, input.tools);
+}
+
+/** Resolve and prepare a configured Role with its package-owned resources. */
+export async function resolveConfiguredRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: ResolveConfiguredRoleLaunchInput,
+): Promise<PreparedRoleLaunch> {
+	const roleName = parseRoleName(input.role);
+	if (input.modelClass === undefined) throw new Error("Configured Role launch requires an explicit modelClass.");
+	const matches = loadRoles().filter((role) => role.name === roleName);
+	if (matches.length !== 1) throw new Error(`Required configured Role ${roleName} is missing or ambiguous.`);
+	const role = matches[0]!;
+	if (role.mcps?.length) {
+		const { loadMcpConfig } = await import("pi-mcp-adapter/config");
+		selectRoleMcpConfig(loadMcpConfig(join(getAgentDir(), "mcp.json"), ctx.cwd), role.mcps);
+	}
+	const resources = await resolveRolePackageResources(role, ctx);
+	const effectiveRole: Role = { ...role, extensions: resources.extensions };
+	const namedSkills = resolveRoleSkills(pi, effectiveRole);
+	const skills: ResolvedRoleSkills = {
+		...namedSkills,
+		paths: [...new Set([...namedSkills.paths, ...resources.skills])],
+	};
+	const launch = createRoleLaunchFromSkills(ctx, {
+		role: effectiveRole,
+		route: resolveTaskRoute(ctx, input.modelClass),
+	}, skills);
+	assertNoMissingRoleSkills(effectiveRole, launch);
+	const additions = [
+		"--no-prompt-templates",
+		"--no-themes",
+		...resources.prompts.flatMap((path) => ["--prompt-template", path]),
+		...resources.themes.flatMap((path) => ["--theme", path]),
+	];
+	const promptArgIndex = launch.args.indexOf(SYSTEM_PROMPT_FLAG);
+	if (promptArgIndex < 0) throw new Error(`Resolved Role launch has no ${SYSTEM_PROMPT_FLAG}.`);
+	const args = [...launch.args];
+	args.splice(promptArgIndex, 0, ...additions);
+	return prepareResolvedRoleLaunch(effectiveRole, { ...launch, args });
+}
+
+/** Restore the system prompt pair after a caller has prepared its launch argv. */
+export function finalizeRoleLaunch(prepared: PreparedRoleLaunch): ResolvedRoleLaunch {
+	if (prepared.args.includes(SYSTEM_PROMPT_FLAG)) {
+		throw new Error(`Prepared Role launch already contains ${SYSTEM_PROMPT_FLAG}.`);
+	}
+	if (!Number.isSafeInteger(prepared.promptArgIndex)
+		|| prepared.promptArgIndex < 0 || prepared.promptArgIndex > prepared.args.length) {
+		throw new Error("Prepared Role launch has an invalid system prompt insertion index.");
+	}
+	if (typeof prepared.systemPrompt !== "string" || !prepared.systemPrompt.trim() || prepared.systemPrompt.includes("\0")) {
+		throw new Error("Prepared Role launch has an invalid system prompt.");
+	}
+	const args = [...prepared.args];
+	args.splice(prepared.promptArgIndex, 0, SYSTEM_PROMPT_FLAG, prepared.systemPrompt);
+	return {
+		env: prepared.env,
+		args,
+		model: prepared.model,
+		thinkingLevel: prepared.thinkingLevel,
+		missingSkills: prepared.missingSkills,
+	};
 }

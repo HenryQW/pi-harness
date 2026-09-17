@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 export interface RoleMcpConfig {
 	mcpServers: Record<string, unknown>;
 	settings?: Record<string, unknown>;
@@ -29,10 +27,6 @@ export function roleMcpFlagValue(args: readonly string[], flag: string): string 
 	const value = args[indexes[0]! + 1];
 	if (value === undefined) throw new Error(`${flag} requires a value.`);
 	return value;
-}
-
-export function fingerprintRoleMcpConfig(config: RoleMcpConfig): string {
-	return createHash("sha256").update(JSON.stringify(config)).digest("hex");
 }
 
 export function selectRoleMcpConfig(config: RoleMcpConfig, allowlist: readonly string[]): RoleMcpConfig {

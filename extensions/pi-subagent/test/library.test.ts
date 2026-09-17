@@ -8,8 +8,12 @@ import childToolPolicy from "../extensions/role-tools.ts";
 import {
 	createRoleLaunch,
 	EXECUTION_BUDGET_ENV,
+	finalizeRoleLaunch,
 	parseRoleMcpAllowlist,
+	prepareRoleLaunch,
+	resolveConfiguredRoleLaunch,
 	resolveRoleLaunch,
+	resolveRolePackageResources,
 	ROLE_MCP_POLICY_FLAG,
 	roleMcpFlagValue,
 	ROLE_TOOL_POLICY_FLAG,
@@ -461,6 +465,12 @@ test("Role MCP allowlists load the adapter wrapper without allowing ambient serv
 	assert.throws(() => roleMcpFlagValue([policyFlag, "[]", policyFlag, "[]"], policyFlag), /at most once/);
 	assert.deepEqual(launch.env, {});
 	assert.match(valuesAfter(launch.args, "--extension").at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
+	const noMcpLaunch = createRoleLaunch(pi, { isProjectTrusted: () => true }, {
+		role: { ...role, mcps: [] },
+		route: { model, thinkingLevel: "high" },
+	});
+	assert.equal(noMcpLaunch.args.includes(policyFlag), false);
+	assert.ok(valuesAfter(noMcpLaunch.args, "--extension").every((extension) => !/[\\/]role-mcp\.ts$/.test(extension)));
 	assert.deepEqual(selectRoleMcpConfig({
 		mcpServers: { other: { url: "https://other.test" }, docs: { url: "https://docs.test" }, browser: { command: "browser" } },
 		settings: { directTools: true, agentPluginPaths: ["./plugins"], hostConfigDiscovery: "on" },
@@ -497,9 +507,10 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		name: "reviewer",
 		description: "Reviews changes",
 		modelClass: "balanced",
-		tools: ["read"],
+		isolation: "worktree",
+		tools: ["read", "grep", "read"],
 		extensions: ["/roles/reviewer.ts"],
-		skills: ["security", "missing"],
+		skills: ["security"],
 		systemPrompt: "Review only the requested change.",
 	};
 	const pi = {
@@ -535,7 +546,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.deepEqual(launch.env, { CALLER_ID: "run-1" });
 	assert.equal(launch.model, model);
 	assert.equal(launch.thinkingLevel, "high");
-	assert.deepEqual(launch.missingSkills, ["missing"]);
+	assert.deepEqual(launch.missingSkills, []);
 	assert.deepEqual(launch.args.slice(0, 5), [
 		"--no-session", "--no-extensions", "--no-skills",
 		"--exclude-tools", "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort",
@@ -547,7 +558,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.deepEqual(valuesAfter(launch.args, "--skill"), ["/effective/security/SKILL.md"]);
 	assert.equal(launch.args.includes("--tools"), false);
 	assert.equal(launch.args.includes("--no-tools"), false);
-	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "submit"]));
+	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(["read", "grep", "submit"]));
 	assert.equal(valueAfter(launch.args, "--model"), "openai-codex-2/gpt-test");
 	assert.equal(valueAfter(launch.args, "--thinking"), "high");
 	assert.ok(launch.args.includes("--no-approve"));
@@ -558,6 +569,58 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 
 	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort");
 
+	const missingRole = { ...role, skills: [...role.skills, "missing"] };
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: missingRole, task, modelClass: "frontier", agentDir }),
+		/Role reviewer requires missing Skills: missing\./,
+	);
+
+	const prepared = prepareRoleLaunch(pi, ctx, {
+		role,
+		task,
+		modelClass: "frontier",
+		agentDir,
+		extensions: ["/caller/adapter.ts", "/roles/reviewer.ts"],
+		tools: ["submit", "read"],
+		env: { CALLER_ID: "run-1" },
+	});
+	const promptArgIndex = launch.args.indexOf("--append-system-prompt");
+	assert.equal(prepared.role, "reviewer");
+	assert.equal(prepared.isolation, "worktree");
+	assert.deepEqual(prepared.tools, ["read", "grep", "submit"]);
+	assert.equal(Object.isFrozen(prepared.tools), true);
+	assert.equal(prepared.promptArgIndex, promptArgIndex);
+	assert.equal(prepared.systemPrompt, valueAfter(launch.args, "--append-system-prompt"));
+	assert.deepEqual(prepared.args, [...launch.args.slice(0, promptArgIndex), ...launch.args.slice(promptArgIndex + 2)]);
+	assert.equal(prepared.args.includes("--append-system-prompt"), false);
+	const preparedDirectRoute = prepareRoleLaunch(pi, ctx, {
+		role,
+		route: { model, thinkingLevel: "high" },
+		extensions: ["/caller/adapter.ts", "/roles/reviewer.ts"],
+		tools: ["submit", "read"],
+		env: { CALLER_ID: "run-1" },
+	});
+	assert.deepEqual(preparedDirectRoute.args, prepared.args);
+	assert.deepEqual(preparedDirectRoute.tools, prepared.tools);
+	assert.equal(preparedDirectRoute.args.includes("--append-system-prompt"), false);
+	assert.equal(preparedDirectRoute.args.includes(preparedDirectRoute.systemPrompt), false);
+	const finalized = finalizeRoleLaunch(prepared);
+	assert.deepEqual(finalized, launch);
+	assert.deepEqual(finalizeRoleLaunch(preparedDirectRoute), launch);
+	assert.equal(finalized.args.filter((arg) => arg === "--append-system-prompt").length, 1);
+	assert.throws(
+		() => finalizeRoleLaunch({ ...prepared, args: finalized.args }),
+		/already contains --append-system-prompt/,
+	);
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: { ...role, name: "bad\0" }, task, agentDir }),
+		/Role: name/,
+	);
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: { ...role, isolation: "shared" }, task, agentDir }),
+		/Role reviewer: isolation must be "worktree"/,
+	);
+
 	const roleDefault = resolveRoleLaunch(pi, ctx, { role, task, agentDir });
 	assert.equal(roleDefault.thinkingLevel, "medium");
 	const taskDefault = resolveRoleLaunch(pi, ctx, {
@@ -566,6 +629,139 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		agentDir,
 	});
 	assert.equal(taskDefault.thinkingLevel, "high");
+});
+
+test("Role package resources resolve enabled paths; configured launches require a class, reject missing Skills, and deduplicate Skills", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-package-resources-"));
+	const agentDir = join(directory, "agent");
+	const cwd = join(directory, "project");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	t.after(async () => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(directory, { recursive: true, force: true });
+	});
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+
+	const packageDir = join(agentDir, "npm", "node_modules", "@example", "role");
+	const extension = join(packageDir, "extension.ts");
+	const skill = join(packageDir, "SKILL.md");
+	const namedSkill = join(packageDir, "named-skill.md");
+	const prompt = join(packageDir, "prompt.md");
+	const theme = join(packageDir, "theme.json");
+	await Promise.all([
+		mkdir(cwd, { recursive: true }),
+		mkdir(packageDir, { recursive: true }),
+	]);
+	await Promise.all([
+		writeFile(extension, "export default function roleExtension() {}\n"),
+		writeFile(skill, "---\nname: package-skill\ndescription: Test package Skill\n---\nUse the package Skill.\n"),
+		writeFile(namedSkill, "---\nname: named-skill\ndescription: Test named Skill\n---\nUse the named Skill.\n"),
+		writeFile(prompt, "Package prompt.\n"),
+		writeFile(theme, "{}\n"),
+		writeFile(join(packageDir, "package.json"), JSON.stringify({
+			name: "@example/role",
+			version: "1.0.0",
+			pi: {
+				extensions: ["./extension.ts"],
+				skills: ["./SKILL.md"],
+				prompts: ["./prompt.md"],
+				themes: ["./theme.json"],
+			},
+		})),
+	]);
+	const role: Role = {
+		name: "package-role",
+		description: "Uses package resources",
+		tools: [],
+		extensions: ["npm:@example/role"],
+		skills: [],
+		systemPrompt: "Do bounded work.",
+	};
+	const ctx = { cwd, isProjectTrusted: () => false };
+
+	assert.deepEqual(await resolveRolePackageResources({ ...role, extensions: [] }, ctx), {
+		extensions: [], skills: [], prompts: [], themes: [],
+	});
+	assert.deepEqual(await resolveRolePackageResources(role, ctx), {
+		extensions: [extension], skills: [skill], prompts: [prompt], themes: [theme],
+	});
+
+	await Promise.all([
+		mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true }),
+		mkdir(join(agentDir, "config", "pi-task-models"), { recursive: true }),
+	]);
+	await Promise.all([
+		writeFile(join(agentDir, "config", "pi-subagent", "package-role.md"), `---
+name: package-role
+description: Uses package resources
+modelClass: balanced
+tools: [read, grep, read]
+extensions:
+  - npm:@example/role
+skills:
+  - package-skill
+  - named-skill
+  - package-skill
+---
+Do bounded work.
+`),
+		writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
+			profiles: {
+				balanced: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "medium" } },
+				frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } },
+			},
+		})),
+	]);
+	const pi = {
+		getCommands: () => [
+			{ name: "skill:package-skill", source: "skill", sourceInfo: { path: skill } },
+			{ name: "skill:named-skill", source: "skill", sourceInfo: { path: namedSkill } },
+		],
+	} as unknown as Pick<ExtensionAPI, "getCommands">;
+	const launchCtx = {
+		...ctx,
+		model,
+		scopedModels: [],
+		modelRegistry: { getAvailable: () => [model] },
+	} as unknown as ExtensionContext;
+	await assert.rejects(
+		resolveConfiguredRoleLaunch(pi, launchCtx, { role: "package-role" } as unknown as Parameters<typeof resolveConfiguredRoleLaunch>[2]),
+		/requires an explicit modelClass/,
+	);
+	const missingNamedSkillPi = {
+		getCommands: () => [
+			{ name: "skill:package-skill", source: "skill", sourceInfo: { path: skill } },
+		],
+	} as unknown as Pick<ExtensionAPI, "getCommands">;
+	await assert.rejects(
+		resolveConfiguredRoleLaunch(missingNamedSkillPi, launchCtx, { role: "package-role", modelClass: "frontier" }),
+		/Role package-role requires missing Skills: named-skill\./,
+	);
+	const launch = await resolveConfiguredRoleLaunch(pi, launchCtx, { role: "package-role", modelClass: "frontier" });
+	assert.equal(launch.thinkingLevel, "high");
+	assert.deepEqual(launch.tools, ["read", "grep"]);
+	assert.equal(Object.isFrozen(launch.tools), true);
+	assert.equal(valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`), JSON.stringify(launch.tools));
+	assert.deepEqual(valuesAfter(launch.args, "--skill"), [skill, namedSkill]);
+
+	const emptyPackage = join(agentDir, "npm", "node_modules", "@example", "empty");
+	await mkdir(emptyPackage, { recursive: true });
+	await writeFile(join(emptyPackage, "package.json"), JSON.stringify({
+		name: "@example/empty",
+		version: "1.0.0",
+		pi: { extensions: [], skills: [], prompts: [], themes: [] },
+	}));
+	await assert.rejects(
+		resolveRolePackageResources({ ...role, extensions: ["npm:@example/empty"] }, ctx),
+		/Role extension sources resolved no resources: npm:@example\/empty\./,
+	);
+	for (const source of ["npm:pi-orchestrator", "npm:pi-mcp-adapter"]) {
+		await assert.rejects(
+			resolveRolePackageResources({ ...role, extensions: [source] }, ctx),
+			/forbidden pi-orchestrator\/pi-mcp-adapter source/,
+		);
+	}
 });
 
 function valueAfter(args: string[], flag: string): string {

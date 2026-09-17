@@ -215,7 +215,7 @@ importers:
         specifier: ^1.0.0
         version: link:../pi-multi-codex
       '@henryqw/pi-subagent':
-        specifier: ^16.0.0
+        specifier: ^17.0.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^5.1.0
@@ -271,7 +271,7 @@ importers:
         specifier: ^1.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
-        specifier: ^16.0.0
+        specifier: ^17.0.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^5.0.0

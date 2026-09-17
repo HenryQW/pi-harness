@@ -30,6 +30,7 @@ import {
 	type WorktreeAllocationPlan,
 } from "./schema.ts";
 import {
+	buildChangesetTaskPrompt,
 	type AgentAllocationResult,
 	type AllocationReconciliation,
 	type HostAllocationKind,
@@ -39,8 +40,9 @@ import {
 	type InFlightTaskCandidateInspection,
 	type InFlightTaskCandidateInspector,
 	type OperationContext,
+	type TextTaskContext,
 	type TransientLaunchHandle,
-	type VerifiedImplementerLaunch,
+	type VerifiedLaunch,
 	withTransientLaunch,
 	type WorkerResult,
 	type WorkerTabAllocationResult,
@@ -54,9 +56,10 @@ const LSOF_OPERATION_CAP_MS = 3_000;
 const PROCESS_INSPECTION_CAP_MS = 3_000;
 const GIT_INSPECTION_CAP_MS = 30_000;
 const STALLED_PROMPT_POLL_MS = 250;
+const HOST_LAYOUT_POLL_MS = 50;
+const HOST_LAYOUT_MAX_POLLS = 40;
 const OUTPUT_LIMIT = 1024 * 1024;
 const DIAGNOSTIC_LIMIT = 8 * 1024;
-const ASSIGNMENT_LIMIT = 96 * 1024;
 const LEASE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
 const PROCESS_LEASE_ENV = "PI_ORCHESTRATOR_PROCESS_LEASE";
@@ -327,37 +330,6 @@ function requireOkResponse(stdout: string, label: string): void {
 	}
 }
 
-function assignment(input: {
-	readonly goal: ExecuteRequest["goal"];
-	task: TaskRequest;
-	kind: "initial" | "correction";
-	worktreeCwd: string;
-	failure?: string;
-}): string {
-	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
-	const text = [
-		`Task: ${input.task.id}`,
-		"Goal:",
-		input.goal,
-		`Worktree: ${input.worktreeCwd}`,
-		`Integrated dependencies: ${input.task.dependsOn.length ? input.task.dependsOn.join(", ") : "none"}`,
-		"",
-		"Requirements:",
-		input.task.requirements,
-		"",
-		"Deliverable:",
-		input.task.deliverable,
-		"",
-		"Required checks (direct command/argv):",
-		checks,
-		...(input.kind === "correction" ? ["", "Correction failure:", exactString(input.failure, "correction failure")] : []),
-		"",
-		"Work only in the exact worktree above. Commit the complete result and leave that worktree clean.",
-	].join("\n");
-	if (Buffer.byteLength(text, "utf8") > ASSIGNMENT_LIMIT) throw new Error(`Worker assignment exceeds ${ASSIGNMENT_LIMIT} bytes.`);
-	return text;
-}
-
 export class HerdrHostRuntime implements HostRuntime {
 	private readonly inspectInFlightCandidate: InFlightTaskCandidateInspector["inspectInFlightTaskCandidate"];
 	private readonly execute: HostProcessRunner;
@@ -444,7 +416,8 @@ export class HerdrHostRuntime implements HostRuntime {
 		const worktree = worktreeIntent(input.attempt);
 		const worktreeCwd = exactAbsolutePath(worktree.cwd, "owned worktree cwd");
 		if (input.kind === "workspace") {
-			assignment({ goal: input.goal, task: input.task, kind: "initial", worktreeCwd });
+			if (input.task.kind !== "changeset") throw new Error("Herdr assignment requires a changeset task.");
+			buildChangesetTaskPrompt({ goal: input.goal, contexts: [], task: input.task, kind: "initial", worktreeCwd });
 			const mainRoot = exactAbsolutePath(worktree.repoRoot, "owned worktree Main root");
 			const identity = await this.repositoryIdentity(mainRoot, context);
 			return {
@@ -490,20 +463,20 @@ export class HerdrHostRuntime implements HostRuntime {
 			intent: HostAllocationIntent;
 			task: TaskRequest;
 			attempt: TaskAttempt;
-			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+			acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedLaunch>>;
 		},
 		context: OperationContext,
 	): Promise<HostAllocationResult> {
 		requireIntentIdentity(input.intent, input.attempt);
 		if (input.intent.kind === "workspace") {
-			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
+			if (input.acquireLaunch) throw new Error("Role launch acquisition is valid only at the exact agent allocation boundary.");
 			return await this.allocateWorkspace(input.intent, input.attempt, context);
 		}
 		if (input.intent.kind === "worker_tab") {
-			if (input.acquireLaunch) throw new Error("Implementer launch acquisition is valid only at the agent allocation boundary.");
+			if (input.acquireLaunch) throw new Error("Role launch acquisition is valid only at the exact agent allocation boundary.");
 			return await this.allocateWorkerTab(input.intent, input.attempt, context);
 		}
-		return await this.allocateAgent(input.intent, input.attempt, input.acquireLaunch, context);
+		return await this.allocateAgent(input.intent, input.task.role, input.attempt, input.acquireLaunch, context);
 	}
 
 	async reconcileHostAllocation(
@@ -558,7 +531,7 @@ export class HerdrHostRuntime implements HostRuntime {
 				throw new Error("Herdr tab list escaped the exact saved workspace scope.");
 			}
 			const rootTabs = tabs.filter((tab) => tab.id === allocation.workspaceRootTabId);
-			const unexpected = tabs.filter((tab) => tab.id !== allocation.workspaceRootTabId || tab.label === allocation.label);
+			const unexpected = tabs.filter((tab) => tab.label === allocation.label);
 			const holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, undefined, true);
 			const possible = [
 				...(rootTabs.length === 1 ? [] : [`workspace root tab match count ${rootTabs.length}`]),
@@ -606,6 +579,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	async runWorker(
 		input: {
 			readonly goal: ExecuteRequest["goal"];
+			readonly contexts: readonly TextTaskContext[];
 			task: TaskRequest;
 			attempt: TaskAttempt;
 			workerId: string;
@@ -623,8 +597,10 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		let text: string;
 		try {
-			text = assignment({
+			if (input.task.kind !== "changeset") throw new Error("Herdr assignment requires a changeset task.");
+			text = buildChangesetTaskPrompt({
 				goal: input.goal,
+				contexts: input.contexts,
 				task: input.task,
 				kind: input.kind,
 				worktreeCwd: allocation.worktreeCwd,
@@ -774,15 +750,6 @@ export class HerdrHostRuntime implements HostRuntime {
 			const response = await this.herdr.json(["workspace", "get", workspaceId], this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 			const workspace = parseWorkspaceInfo(response, workspaceId);
 			this.assertWorkspaceEvidence(workspace, allocation);
-			const rootTabId = exactString(allocation.rootTabId, "saved workspace root tab ID");
-			const rootPaneId = exactString(allocation.rootPaneId, "saved workspace root pane ID");
-			const tabs = await this.listTabs(workspaceId, allocation.worktreeCwd, context);
-			const panes = await this.listPanes(workspaceId, allocation.worktreeCwd, context);
-			if (tabs.length !== 1 || tabs[0]!.tab_id !== rootTabId || tabs[0]!.workspace_id !== workspaceId || tabs[0]!.pane_count !== 1
-				|| panes.length !== 1 || panes[0]!.pane_id !== rootPaneId || panes[0]!.tab_id !== rootTabId
-				|| panes[0]!.workspace_id !== workspaceId || (panes[0]!.agent !== undefined && panes[0]!.agent !== null)) {
-				return { outcome: "blocked", failure: "The exact saved workspace contains missing, mismatched, or additional resources; it was not closed." };
-			}
 			const closed = await this.herdr.exec(["workspace", "close", workspaceId], this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));
 			if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["workspace", "close"], closed)) };
 			requireOkResponse(closed.stdout, "Herdr workspace close response");
@@ -836,6 +803,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	): Promise<WorkerTabAllocationResult> {
 		assertWorkerTabIntent(allocation, attempt);
 		await this.createPrivateLease(allocation.leasePath, allocation.token);
+		await this.waitForStableWorkspacePanes(allocation.workspaceId, allocation.worktreeCwd, context);
 		const args = [
 			"tab", "create", "--workspace", allocation.workspaceId, "--cwd", allocation.worktreeCwd,
 			"--label", allocation.label, "--env", `${PROCESS_LEASE_ENV}=${allocation.leasePath}`, "--no-focus",
@@ -864,12 +832,13 @@ export class HerdrHostRuntime implements HostRuntime {
 
 	private async allocateAgent(
 		allocation: AgentAllocationIntent,
+		expectedRole: TaskRequest["role"],
 		attempt: TaskAttempt,
-		acquireLaunch: (() => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>) | undefined,
+		acquireLaunch: (() => Promise<TransientLaunchHandle<VerifiedLaunch>>) | undefined,
 		context: OperationContext,
 	): Promise<AgentAllocationResult> {
 		assertAgentIntent(allocation, attempt);
-		if (!acquireLaunch) throw new Error("Agent start requires immediate Implementer launch acquisition.");
+		if (!acquireLaunch) throw new Error("Agent start requires immediate Role launch acquisition.");
 		this.assertLeasePath(allocation.leasePath, allocation.token);
 		await this.assertPrivateLease(allocation.leasePath, false);
 		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
@@ -879,8 +848,8 @@ export class HerdrHostRuntime implements HostRuntime {
 		const options = this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
 		const handle = await acquireLaunch();
 		return await withTransientLaunch(handle, async (launch) => {
-			if (launch.role !== "implementer") throw new Error("Agent start acquisition returned the wrong Role.");
-			if (Object.keys(launch.env).length) throw new Error("Herdr Implementer launch must not receive caller Role environment variables.");
+			if (launch.role !== expectedRole) throw new Error("Agent start acquisition returned the wrong Role.");
+			if (Object.keys(launch.env).length) throw new Error("Herdr agent launch must not receive caller Role environment variables.");
 			const response = await startPiAgent(this.herdr, {
 				name: allocation.agentName,
 				pane: allocation.paneId,
@@ -1255,6 +1224,24 @@ export class HerdrHostRuntime implements HostRuntime {
 		const result = resultRecord(response, "Herdr pane list response");
 		if (result.type !== "pane_list" || !Array.isArray(result.panes)) throw new Error("Herdr pane list response is malformed.");
 		return result.panes.map((item) => record(item, "Herdr listed pane"));
+	}
+
+	private async waitForStableWorkspacePanes(workspaceId: string, cwd: string, context: OperationContext): Promise<void> {
+		let previous: string | undefined;
+		for (let poll = 0; poll < HOST_LAYOUT_MAX_POLLS; poll += 1) {
+			const snapshot = (await this.listPanes(workspaceId, cwd, context)).map((pane) => {
+				const paneId = exactString(pane.pane_id, "Herdr listed pane ID");
+				const tabId = exactString(pane.tab_id, "Herdr listed pane tab ID");
+				if (exactString(pane.workspace_id, "Herdr listed pane workspace ID") !== workspaceId) {
+					throw new Error("Herdr pane list escaped the exact saved workspace scope.");
+				}
+				return `${tabId}\0${paneId}`;
+			}).sort().join("\n");
+			if (previous === snapshot) return;
+			previous = snapshot;
+			if (poll === HOST_LAYOUT_MAX_POLLS - 1) return;
+			await this.delay(HOST_LAYOUT_POLL_MS, context.signal);
+		}
 	}
 
 	private async getTab(tabId: string, cwd: string, context: OperationContext): Promise<JsonRecord | undefined> {
