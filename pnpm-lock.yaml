@@ -271,8 +271,8 @@ importers:
         specifier: ^1.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
-        specifier: ^16.0.0
-        version: 16.1.0(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-tui@0.85.1)(typebox@1.3.21)
+        specifier: ^17.0.0
+        version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^5.0.0
         version: link:../pi-task-models
@@ -1182,39 +1182,6 @@ packages:
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
-
-  '@henryqw/pi-config-store@1.1.0':
-    resolution: {integrity: sha512-hKGZ1c7t7syQyZnKiBYfP4C9ATRLtplhHmMJ5CE1N3Qh0l+759l6UGZrUZ3r0CeDsz99vlRZeRNPYzUtfeMRNQ==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@earendil-works/pi-coding-agent': ^0.85.1
-
-  '@henryqw/pi-multi-codex@1.0.5':
-    resolution: {integrity: sha512-HpBd2j2qJf5vED7PBxMLtq+SS+cOP1pa+++UmPt967YYK5qpuKdAyN8IEnWacN8wB8j6+KRDhmizipWZ0rkd5Q==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@earendil-works/pi-ai': ^0.85.1
-      '@earendil-works/pi-coding-agent': ^0.85.1
-
-  '@henryqw/pi-process@0.1.0':
-    resolution: {integrity: sha512-Vyl0kMweLCp8WuVYXwDMqUfHaAie/eU6gxAyobo95PQwXkP8S/i9MAGN2cR8uOt5I4zjrXo4vnUJKa5wkBq20w==}
-    engines: {node: '>=22.19.0'}
-
-  '@henryqw/pi-subagent@16.1.0':
-    resolution: {integrity: sha512-VSiGx+zaEzRCTI9TRg0cww43QdTP+5RwC6M8TKXVzGRvkFt2Jz2ihHn71tfYsjssSxoyDN4F00ZjAuNlqeBAOA==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@earendil-works/pi-ai': ^0.85.1
-      '@earendil-works/pi-coding-agent': ^0.85.1
-      '@earendil-works/pi-tui': ^0.85.1
-      typebox: ^1.3.15
-
-  '@henryqw/pi-task-models@5.1.0':
-    resolution: {integrity: sha512-ZtfhmASsXRIzdjQLT58P8hgr2vrg7eXjuOIVWyA1FucwgeTd6imUyrhhUHzRsR8npTr75cbP30cb4dzPbUNeDQ==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@earendil-works/pi-ai': ^0.85.1
-      '@earendil-works/pi-coding-agent': ^0.85.1
 
   '@hono/node-server@2.1.1':
     resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
@@ -6555,37 +6522,6 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
-
-  '@henryqw/pi-config-store@1.1.0(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))':
-    dependencies:
-      '@earendil-works/pi-coding-agent': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      proper-lockfile: 4.1.2
-
-  '@henryqw/pi-multi-codex@1.0.5(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))':
-    dependencies:
-      '@earendil-works/pi-ai': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@earendil-works/pi-coding-agent': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@henryqw/pi-config-store': 1.1.0(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))
-      proper-lockfile: 4.1.2
-
-  '@henryqw/pi-process@0.1.0': {}
-
-  '@henryqw/pi-subagent@16.1.0(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-tui@0.85.1)(typebox@1.3.21)':
-    dependencies:
-      '@earendil-works/pi-ai': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@earendil-works/pi-coding-agent': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@earendil-works/pi-tui': 0.85.1
-      '@henryqw/pi-config-store': 1.1.0(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))
-      '@henryqw/pi-multi-codex': 1.0.5(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))
-      '@henryqw/pi-process': 0.1.0
-      '@henryqw/pi-task-models': 5.1.0(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))
-      typebox: 1.3.21
-
-  '@henryqw/pi-task-models@5.1.0(@earendil-works/pi-ai@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))':
-    dependencies:
-      '@earendil-works/pi-ai': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@earendil-works/pi-coding-agent': 0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@henryqw/pi-config-store': 1.1.0(@earendil-works/pi-coding-agent@0.85.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4))
 
   '@hono/node-server@2.1.1(hono@4.13.5)':
     dependencies:
