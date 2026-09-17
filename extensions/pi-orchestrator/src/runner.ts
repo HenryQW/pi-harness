@@ -39,6 +39,7 @@ import { FileRunStore, type RunStateHandle } from "./store.ts";
 
 const TRUNCATION_MARKER = "\n[truncated]";
 const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
+const CHANGESET_TASK_PROMPT_MAX_BYTES = 96 * 1024;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
@@ -504,6 +505,49 @@ function terminal(state: RunState): boolean {
 
 export type TextTaskContext = { taskId: string; text: string };
 
+/** Build one bounded changeset assignment. Call this before acquiring its Role launch. */
+export function buildChangesetTaskPrompt(input: {
+	readonly goal: ExecuteRequest["goal"];
+	readonly contexts: readonly TextTaskContext[];
+	task: ChangesetTaskRequest;
+	kind: "initial" | "correction";
+	worktreeCwd: string;
+	failure?: string;
+}): string {
+	if (input.kind === "correction"
+		&& (typeof input.failure !== "string" || !input.failure.trim() || input.failure.trim() !== input.failure || input.failure.includes("\0"))) {
+		throw new Error("correction failure must be a non-empty exact string.");
+	}
+	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
+	const upstreamTaskData = input.contexts.length
+		? ["", "Upstream task data:", formatTextTaskContexts(input.contexts, CHANGESET_TASK_PROMPT_MAX_BYTES)]
+		: [];
+	const text = [
+		`Task: ${input.task.id}`,
+		"Goal:",
+		input.goal,
+		`Worktree: ${input.worktreeCwd}`,
+		`Integrated dependencies: ${input.task.dependsOn.length ? input.task.dependsOn.join(", ") : "none"}`,
+		"",
+		"Requirements:",
+		input.task.requirements,
+		"",
+		"Deliverable:",
+		input.task.deliverable,
+		...upstreamTaskData,
+		"",
+		"Required checks (direct command/argv):",
+		checks,
+		...(input.kind === "correction" ? ["", "Correction failure:", input.failure!] : []),
+		"",
+		"Work only in the exact worktree above. Commit the complete result and leave that worktree clean.",
+	].join("\n");
+	if (Buffer.byteLength(text, "utf8") > CHANGESET_TASK_PROMPT_MAX_BYTES) {
+		throw new Error(`Worker assignment exceeds ${CHANGESET_TASK_PROMPT_MAX_BYTES} bytes.`);
+	}
+	return text;
+}
+
 /** Resolve completed text outputs in the consumer's declared context order. */
 export function resolveTextTaskContexts(
 	state: { readonly tasks: readonly TaskState[] },
@@ -927,6 +971,13 @@ export class OrchestratorRunner {
 							task: request,
 							attempt,
 							...(intent.kind === "agent" ? { acquireLaunch: async () => {
+								buildChangesetTaskPrompt({
+									goal: state.request.goal,
+									contexts: resolveTextTaskContexts(state, request),
+									task: request,
+									kind: "initial",
+									worktreeCwd: intent.worktreeCwd,
+								});
 								const launch = await this.runtime.acquireLaunch(request.role, request.modelClass, context);
 								if (launch.launch.role !== request.role || launch.launch.modelClass !== request.modelClass) {
 									await withTransientLaunch(launch, async () => {

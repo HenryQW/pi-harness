@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	buildChangesetTaskPrompt,
 	buildTextTaskPrompt,
 	formatTextTaskContexts,
 	readyPendingTasks,
@@ -152,6 +153,33 @@ test("text context resolution and formatting preserve declared source order", ()
 	assert.equal(
 		formatTextTaskContexts(contexts, 1_024),
 		"Context from task second:\nSecond result.\n\nContext from task first:\nFirst result.",
+	);
+});
+
+test("changeset prompts preserve ordered context as bounded task data", () => {
+	const task = changesetTask("change", { dependsOn: ["dependency"] });
+	const prompt = buildChangesetTaskPrompt({
+		goal: "Implement the researched change.",
+		contexts: [
+			{ taskId: "second", text: "Second result." },
+			{ taskId: "first", text: "First result." },
+		],
+		task,
+		kind: "initial",
+		worktreeCwd: "/repo/worktree",
+	});
+
+	assert.ok(prompt.indexOf("Context from task second:\nSecond result.") < prompt.indexOf("Context from task first:\nFirst result."));
+	assert.match(prompt, /Integrated dependencies: dependency/);
+	assert.throws(
+		() => buildChangesetTaskPrompt({
+			goal: "Implement the researched change.",
+			contexts: [{ taskId: "research", text: "界".repeat(33_000) }],
+			task,
+			kind: "initial",
+			worktreeCwd: "/repo/worktree",
+		}),
+		/exceeds .* UTF-8 bytes|Worker assignment exceeds/,
 	);
 });
 

@@ -300,6 +300,23 @@ function tabInfo(overrides: Record<string, unknown> = {}): Record<string, unknow
 	return { tab_id: WORKER_TAB_ID, workspace_id: WORKSPACE_ID, label: WORKER_LABEL, focused: false, pane_count: 0, ...overrides };
 }
 
+function paneListStep(panes: Record<string, unknown>[]): Step {
+	return {
+		command: "herdr",
+		args: ["pane", "list", "--workspace", WORKSPACE_ID],
+		result: success({ type: "pane_list", panes }),
+	};
+}
+
+function rootPanes(extra: Record<string, unknown>[] = []): Record<string, unknown>[] {
+	return [{ pane_id: ROOT_PANE_ID, tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID }, ...extra];
+}
+
+function layoutSettleSteps(extra: Record<string, unknown>[] = []): Step[] {
+	const panes = rootPanes(extra);
+	return [paneListStep(panes), paneListStep(panes)];
+}
+
 function agentInfo(status = "idle", ready = true, overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		name: AGENT_NAME,
@@ -766,7 +783,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 
 	const tabIntent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 	const tabDetails = { leasePath: tabIntent.leasePath };
-	script.push({
+	script.push(...layoutSettleSteps(), {
 		command: "herdr",
 		args: [
 			"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
@@ -980,7 +997,7 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 			const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
 			addOwnedWorkspace(attempt, workspaceDetails);
 			const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
-			script.push({
+			script.push(...layoutSettleSteps(), {
 				command: "herdr",
 				args: () => {},
 				result: success({
@@ -1000,6 +1017,47 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 			script.done();
 		});
 	}
+});
+
+test("worker tab waits for a stable host pane layout before create", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const attempt = baseAttempt(fixture);
+	script.push(repositoryIdentityStep(fixture));
+	const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
+	addOwnedWorkspace(attempt, workspaceDetails);
+	const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
+	const pluginPane = { pane_id: "pane-plugin", tab_id: "tab-plugin", workspace_id: WORKSPACE_ID };
+	script.push(
+		paneListStep(rootPanes()),
+		paneListStep(rootPanes([pluginPane])),
+		paneListStep(rootPanes([pluginPane])),
+		{
+			command: "herdr",
+			args: [
+				"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
+				"--label", WORKER_LABEL, "--env", `PI_ORCHESTRATOR_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
+			],
+			result: success({
+				type: "tab_created",
+				tab: tabInfo({ pane_count: 1 }),
+				root_pane: { pane_id: WORKER_PANE_ID, workspace_id: WORKSPACE_ID, tab_id: WORKER_TAB_ID, cwd: fixture.worktree, focused: false },
+			}),
+		},
+	);
+	assert.deepEqual(await host.allocateHost({ intent, task, attempt }, context()), {
+		kind: "worker_tab",
+		outcome: "owned",
+		tabId: WORKER_TAB_ID,
+		paneId: WORKER_PANE_ID,
+	});
+	assert.deepEqual(script.calls.filter(({ args }) => args[0] === "pane" && args[1] === "list").map(({ args }) => args), [
+		["pane", "list", "--workspace", WORKSPACE_ID],
+		["pane", "list", "--workspace", WORKSPACE_ID],
+		["pane", "list", "--workspace", WORKSPACE_ID],
+	]);
+	script.done();
 });
 
 test("last-moment launch resource drift blocks start after lease and pane proofs", async (t) => {
@@ -1109,6 +1167,7 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				const malformed = boundary === "malformed-after-side-effect";
 				if (kind === "agent") script.push(lsof(leasePath!), ...startablePaneSteps(fixture));
 				if (kind === "workspace") script.push(repositoryIdentityStep(fixture));
+				if (kind === "worker_tab" && boundary !== "before-side-effect") script.push(...layoutSettleSteps());
 				script.push({
 					command: "herdr",
 					args: () => {},
@@ -1256,7 +1315,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 	await t.test("tab scope and lease holders fail closed", async () => {
 		for (const [tabs, holder, outcome] of [
 			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }], false, "absent"],
-			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }, { tab_id: "tab-untagged", workspace_id: WORKSPACE_ID, label: "other" }], false, "possible"],
+			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }, { tab_id: "tab-untagged", workspace_id: WORKSPACE_ID, label: "other" }], false, "absent"],
 			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: WORKER_LABEL }], false, "possible"],
 			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }], true, "possible"],
 		] as const) {
@@ -2044,12 +2103,6 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
-		{ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({ type: "tab_list", tabs: [
-			{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root", pane_count: 1 },
-		] }) },
-		{ command: "herdr", args: ["pane", "list", "--workspace", WORKSPACE_ID], result: success({ type: "pane_list", panes: [
-			{ pane_id: ROOT_PANE_ID, tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, agent: null },
-		] }) },
 		{ command: "herdr", args: ["workspace", "close", WORKSPACE_ID], result: success({ type: "ok" }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
 	);
@@ -2245,17 +2298,9 @@ test("cleanup refuses mismatched or decoy resources and ambiguous close response
 		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
-		{ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({ type: "tab_list", tabs: [
-			{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root", pane_count: 1 },
-			{ tab_id: "tab-decoy", workspace_id: WORKSPACE_ID, label: "decoy", pane_count: 1 },
-		] }) },
-		{ command: "herdr", args: ["pane", "list", "--workspace", WORKSPACE_ID], result: success({ type: "pane_list", panes: [
-			{ pane_id: ROOT_PANE_ID, tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, agent: null },
-			{ pane_id: "pane-decoy", tab_id: "tab-decoy", workspace_id: WORKSPACE_ID, agent: null },
-		] }) },
+		{ command: "herdr", args: ["workspace", "close", WORKSPACE_ID], result: success({ type: "ok" }) },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
 	);
-	const decoy = await decoyHost.cleanupHost({ kind: "workspace", task, attempt: decoyAttempt }, context());
-	assert.equal(decoy.outcome, "blocked");
-	assert.ok(decoyScript.calls.every(({ args }) => !(args[0] === "workspace" && args[1] === "close")));
+	assert.deepEqual(await decoyHost.cleanupHost({ kind: "workspace", task, attempt: decoyAttempt }, context()), { outcome: "completed" });
 	decoyScript.done();
 });

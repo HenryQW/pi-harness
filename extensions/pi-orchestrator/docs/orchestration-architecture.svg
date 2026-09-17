@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="orchestration-architecture-title orchestration-architecture-desc">
       <title id="orchestration-architecture-title">Pi Orchestrator checked execution architecture</title>
-      <desc id="orchestration-architecture-desc">Architecture diagram showing Pi Main routing a strict request through durable orchestration, an isolated Herdr Implementer with task-scoped tools and skills, direct checks, an optional read-only Reviewer, and guarded Main integration, while recursive orchestration and unchecked Git bypasses stop at trust boundaries.</desc>
+      <desc id="orchestration-architecture-desc">Architecture diagram showing Pi Main resolving each task-selected Role just in time, returning bounded text to durable state, and sending changesets through isolated Herdr work, direct checks, optional judgment, and guarded Main integration.</desc>
       <defs>
-        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
         <style>
           .zone { fill: #e6e4de; stroke: #101828; stroke-opacity: .141; stroke-width: 1; }
           .zone-protected { fill: #1d4ed8; fill-opacity: .05; stroke: #1d4ed8; stroke-opacity: .50; stroke-width: 1; stroke-dasharray: 4 4; }
@@ -51,7 +50,7 @@
 
       <rect class="zone" x="624" y="96" width="304" height="448" rx="8"/>
       <rect class="label-mask" x="636" y="100" width="164" height="16" rx="2"/>
-      <text class="zone-label" x="644" y="112">ISOLATED TASK ATTEMPT</text>
+      <text class="zone-label" x="644" y="112">TASK EXECUTION CHANNELS</text>
 
       <rect class="zone-protected" x="960" y="96" width="280" height="472" rx="8"/>
       <rect class="label-mask" x="972" y="100" width="196" height="16" rx="2"/>
@@ -63,6 +62,7 @@
       <line class="edge" x1="420" y1="272" x2="420" y2="400"/>
       <line class="edge" x1="776" y1="272" x2="776" y2="336"/>
       <line class="edge-approved" x1="776" y1="448" x2="776" y2="472"/>
+      <line class="edge-audit" x1="656" y1="424" x2="560" y2="424"/>
       <line class="edge-approved" x1="896" y1="516" x2="992" y2="516"/>
       <path class="edge-audit" d="M1068 560 V584 Q1068 592 1060 592 H428 Q420 592 420 584 V512"/>
 
@@ -88,7 +88,13 @@
       <text class="label" x="464" y="332">CHECKPOINT</text>
 
       <rect class="label-mask" x="784" y="296" width="72" height="12" rx="2"/>
-      <text class="label" x="820" y="304">IMPLEMENT</text>
+      <text class="label" x="820" y="304">DISPATCH</text>
+
+      <rect class="label-mask" x="788" y="452" width="72" height="12" rx="2"/>
+      <text class="label-approved" x="824" y="460">CHANGESET</text>
+
+      <rect class="label-mask" x="572" y="400" width="72" height="12" rx="2"/>
+      <text class="label" x="608" y="408">TEXT RESULT</text>
 
       <rect class="label-mask" x="916" y="496" width="56" height="12" rx="2"/>
       <text class="label-approved" x="944" y="504">VERIFY</text>
@@ -123,8 +129,8 @@
       <rect class="tag-focal" x="292" y="172" width="40" height="16" rx="2"/>
       <text class="tag-text-focal" x="312" y="184">MAIN</text>
       <text class="name" x="420" y="212">Pi Orchestrator</text>
-      <text class="sub" x="420" y="236">FREEZES ROLE + MODEL ROUTES</text>
-      <text class="sub" x="420" y="252">OWNS REQUEST LIFECYCLE</text>
+      <text class="sub" x="420" y="236">PREFLIGHTS ROLE + MODEL PAIRS</text>
+      <text class="sub" x="420" y="252">RESOLVES AGAIN AT LAUNCH</text>
 
       <rect class="node-store" x="280" y="400" width="280" height="112" rx="6"/>
       <rect class="tag" x="292" y="412" width="48" height="16" rx="2"/>
@@ -133,26 +139,26 @@
       <text class="sub" x="420" y="476">CONFIG/PI-ORCHESTRATOR/STATE</text>
       <text class="sub" x="420" y="492">STRICT SCHEMA · RECOVERY EVIDENCE</text>
 
-      <!-- Isolated attempt -->
+      <!-- Task-selected Role and execution channels -->
       <rect class="node" x="656" y="160" width="240" height="112" rx="6"/>
       <rect class="tag" x="668" y="172" width="40" height="16" rx="2"/>
       <text class="tag-text" x="688" y="184">ROLE</text>
-      <text class="name" x="776" y="212">Herdr Implementer</text>
-      <text class="sub" x="776" y="236">TASK-SCOPED TOOLS + SKILLS</text>
-      <text class="sub" x="776" y="252">NO ORCHESTRATE_* RECURSION</text>
+      <text class="name" x="776" y="212">Current configured Role</text>
+      <text class="sub" x="776" y="236">TASK-SELECTED · RESOLVED JIT</text>
+      <text class="sub" x="776" y="252">TOOLS · SKILLS · MCP POLICY</text>
 
       <rect class="node-store" x="656" y="336" width="240" height="112" rx="6"/>
-      <rect class="tag" x="668" y="348" width="32" height="16" rx="2"/>
-      <text class="tag-text" x="684" y="360">GIT</text>
-      <text class="name" x="776" y="388">Isolated task worktree</text>
-      <text class="sub" x="776" y="412">ONE ATTEMPT · COMMITTED CANDIDATE</text>
-      <text class="sub" x="776" y="428">DIRTY OR AMBIGUOUS FAILS CLOSED</text>
+      <rect class="tag" x="668" y="348" width="56" height="16" rx="2"/>
+      <text class="tag-text" x="696" y="360">CHANNEL</text>
+      <text class="name" x="776" y="388">Text or changeset execution</text>
+      <text class="sub" x="776" y="412">BOUNDED TEXT · ISOLATED HERDR</text>
+      <text class="sub" x="776" y="428">MAIN DRIFT FAILS CLOSED</text>
 
-      <!-- Post-stop task gate -->
+      <!-- Post-stop changeset gate -->
       <rect class="node" x="656" y="472" width="240" height="72" rx="6"/>
       <rect class="tag" x="668" y="484" width="40" height="16" rx="2"/>
       <text class="tag-text" x="688" y="496">CHECK</text>
-      <text class="name" x="776" y="508">Post-stop checks + review</text>
+      <text class="name" x="776" y="508">Changeset checks + judgment</text>
       <text class="sub" x="776" y="528">REBASE · DIRECT ARGV · EXACT PATCH</text>
 
       <!-- Protected Main repository -->

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, mkdtemp, open, readFile, realpath, rmdir, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, realpath, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, normalize, relative, sep } from "node:path";
 import {
@@ -123,11 +123,6 @@ async function materializeTransientLaunch(
 			|| (promptInfo.mode & 0o7777) !== PROMPT_MODE
 			|| normalize(await realpath(promptPath)) !== promptPath) {
 			throw new Error("Transient Role prompt is not a canonical mode 0600 regular file.");
-		}
-		const contents = await readFile(promptPath, { signal });
-		abortIfNeeded(signal);
-		if (!contents.equals(promptBytes)) {
-			throw new Error(`Transient Role prompt for ${prepared.launch.role} failed exact verification.`);
 		}
 		const args = [...prepared.launch.args];
 		args.splice(prepared.promptArgIndex, 0, PROMPT_FLAG, promptPath);

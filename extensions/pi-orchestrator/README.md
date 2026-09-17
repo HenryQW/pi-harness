@@ -23,7 +23,8 @@ pi install npm:@henryqw/pi-orchestrator
 - Use a clean Git worktree on an attached branch with a committed `HEAD`. Task worktrees may contain ignored dependency and index artifacts created by Role tooling.
 - Use Herdr `0.9.0` or newer, with protocol version 22 or newer. Run `herdr --version` to verify the installed version.
 - Configure Pi task-model profiles for every requested model class. Run `/task-models` to verify the profiles.
-- Use `@henryqw/pi-subagent` 16 or newer for Role launch, execution, worktrees, and exact review evidence.
+- Use `@henryqw/pi-subagent` 17 or newer for Role launch, execution, worktrees, and exact judgment evidence.
+- Changeset workers wait until the new worktree workspace pane list is stable, then create a dedicated worker tab. They never use the workspace root pane.
 
 ## Works with
 
@@ -84,25 +85,29 @@ Judgment launches use the declared judgment Role without adding arguments, envir
 }
 ```
 
+Use `kind: "text"` for bounded analysis or synthesis. Text tasks omit `checks` and `judgment`. A later task lists their IDs in `contextFrom` to receive the exact outputs in that order.
+
 ## Flow
 
 The graph runs ready tasks in waves. Independent tasks run in parallel. Dependencies run in later waves.
 
-The architecture diagram shows the guarded path from the checked request through isolated Herdr work, direct checks, optional review, and Main integration.
+The architecture diagram shows both execution channels. Text returns to durable state. Changesets continue through isolated Herdr work, checks, optional judgment, and Main integration.
 
-![Architecture showing the guarded path from a checked request through isolated Herdr work to Main integration](./docs/orchestration-architecture.svg)
+![Architecture showing text and changeset tasks using task-selected Roles before checked Main integration](./docs/orchestration-architecture.svg)
 
 ### Execution and review
 
 A request accepts one to eight tasks. Every task needs an explicit kind, Role, and model class. Changeset tasks also need direct checks.
 
-`dependsOn` creates later waves. Tasks in one ready wave use separate worktrees and visible Herdr workers. Identity checks ignore Git-ignored artifacts, such as dependencies installed by `pi-deps` and indexes created by Herdr plugins. They still reject tracked changes, non-ignored untracked files, hidden index entries, gitlinks, and branch or commit drift.
+`dependsOn` creates order-only edges. `contextFrom` adds ordered text-task output as task data. Both edge types control readiness and participate in cycle checks.
+
+Ready text tasks use bounded ephemeral execution. Ready changeset tasks use separate worktrees and visible Herdr workers. Identity checks ignore Git-ignored artifacts, such as dependencies installed by `pi-deps` and indexes created by Herdr plugins. They still reject tracked changes, non-ignored untracked files, hidden index entries, gitlinks, and branch or commit drift.
 
 Preliminary validation uses checks only while the worker remains available. A settled implementation block or unchanged failed check can trigger one same-agent correction.
 
 The worker then stops. The orchestrator rebases the candidate and reruns every task check directly, without a shell.
 
-Add `judgment` only for a criterion that checks cannot decide. One read-only Reviewer runs after the rebase with exact private patch evidence. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
+Add `judgment` only for a criterion that checks cannot decide. Its selected Role runs after the rebase with exact private patch evidence. Configure that Role with read-only tools. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
 
 ## API
 
@@ -116,9 +121,9 @@ Each task and judgment names one effective Role and model class. Durable state n
 
 Pi Subagent resolves each Role's configured launch. A resolution failure during preflight or immediately before launch blocks productive work.
 
-Pi needs a file to keep a multiline Role prompt out of process arguments. The orchestrator creates a private temporary file only at the final launch boundary. It removes the file after Herdr reports readiness or after the Reviewer exits.
+Pi needs a file to keep a multiline Role prompt out of process arguments. The orchestrator creates a private temporary file only at the final launch boundary. It removes the file after Herdr reports readiness or after the judgment exits.
 
-Task goals, requirements, checks, corrections, and review packets remain task messages. They never become Role instructions.
+Task goals, requirements, upstream text, checks, corrections, and judgment packets remain task messages. They never become Role instructions.
 
 Each saved check result keeps its exact command, arguments, exit code, killed status, and Git identity. Successful batches save no output. A failed batch saves bounded output only for its first failed or killed command. If only Git identity drift fails the batch, the final command keeps bounded output.
 
@@ -138,8 +143,8 @@ Use `orchestrate_status` after interruption or when a request needs attention. T
 
 The current state schema rejects older state versions. It does not migrate them or delete prompt files that another process may still use.
 
-### Version 1 scope
+### Scope
 
-Version 1 stops after checked integration in the local repository. It does not push, open or manage pull requests, run swarms, or support old protocols and state.
+Pi Orchestrator stops after checked integration in the local repository. It does not push, open or manage pull requests, run swarms, or support old protocols and state.
 
 It does not use outboxes, delivery hosts, receipts, or broad transport machinery.
