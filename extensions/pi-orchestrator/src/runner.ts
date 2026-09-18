@@ -1,29 +1,27 @@
 import { realpathSync } from "node:fs";
-import { isDeepStrictEqual } from "node:util";
+import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
 	checkBatchPasses,
 	CLEANUP_KINDS,
 	isCleanCommitted,
-	launchKey,
 	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	MAX_POSSIBLE_RESOURCES,
 	parseExecuteRequest,
 	parseResumeRequest,
 	sameIdentity,
-	validateLaunchRecords,
 	RUN_STATE_VERSION,
 	type AllocationIntent,
 	type AllocationKind,
 	type CheckBatchEvidence,
 	type CheckCommand,
+	type ChangesetTaskRequest,
+	type ChangesetTaskState,
 	type CleanupKind,
 	type CommandEvidence,
 	type ExecuteRequest,
 	type HostAllocationIntent,
 	type HostAllocationPlan,
-	type LaunchRecord,
 	type ModelClass,
-	type NormalizedLaunchRecord,
 	type PromptRecord,
 	type ReviewEvidence,
 	type ResumeRequest,
@@ -31,6 +29,7 @@ import {
 	type TaskAttempt,
 	type TaskRequest,
 	type TaskState,
+	type TextTaskState,
 	type WaveState,
 	type WorktreeAllocationIntent,
 	type WorktreeAllocationPlan,
@@ -39,6 +38,8 @@ import {
 import { FileRunStore, type RunStateHandle } from "./store.ts";
 
 const TRUNCATION_MARKER = "\n[truncated]";
+const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
+const CHANGESET_TASK_PROMPT_MAX_BYTES = 96 * 1024;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
@@ -104,26 +105,15 @@ export type IntegrationResult =
 	| { outcome: "failed" | "drift" | "unknown"; failure: string };
 
 /** A just-in-time launch whose argv contains only an ephemeral Role prompt path. */
-export interface VerifiedLaunchBase {
-	readonly key: string;
+export interface VerifiedLaunch {
+	readonly role: string;
 	readonly modelClass: ModelClass;
 	readonly model: string;
 	readonly thinkingLevel: string;
 	readonly args: readonly string[];
 	readonly env: Readonly<Record<string, string>>;
 	readonly tools: readonly string[];
-	readonly fingerprint: string;
 }
-
-export interface VerifiedImplementerLaunch extends VerifiedLaunchBase {
-	readonly role: "implementer";
-}
-
-export interface VerifiedReviewerLaunch extends VerifiedLaunchBase {
-	readonly role: "reviewer";
-}
-
-export type VerifiedLaunch = VerifiedImplementerLaunch | VerifiedReviewerLaunch;
 
 export interface TransientLaunchHandle<Launch extends VerifiedLaunch = VerifiedLaunch> {
 	readonly launch: Launch;
@@ -168,10 +158,8 @@ export interface CoordinatorRuntime {
 	preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext): Promise<{
 		root: string;
 		main: WorkspaceIdentity;
-		launchRecords: LaunchRecord[];
 	}>;
-	recoverLaunchRecords(input: { root: string; request: ExecuteRequest; records: Record<string, NormalizedLaunchRecord> }, context: OperationContext): Promise<LaunchRecord[]>;
-	acquireLaunch(record: NormalizedLaunchRecord, context: OperationContext): Promise<TransientLaunchHandle<VerifiedLaunch>>;
+	acquireLaunch(role: string, modelClass: ModelClass, context: OperationContext): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 }
 
 export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
@@ -190,11 +178,12 @@ export interface HostRuntime {
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		/** Invoked only after pane, lease, and startability checks at the final agent-start boundary. */
-		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedImplementerLaunch>>;
+		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<HostAllocationResult>;
 	reconcileHostAllocation(input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation<HostAllocationKind>>;
 	runWorker(input: {
 		readonly goal: ExecuteRequest["goal"];
+		readonly contexts: readonly TextTaskContext[];
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		workerId: string;
@@ -264,7 +253,7 @@ export interface GitRuntime {
 		criterion: string;
 		base: WorkspaceIdentity;
 		tip: WorkspaceIdentity;
-		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedReviewerLaunch>>;
+		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult>;
 	inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	rebase(input: {
@@ -430,13 +419,25 @@ function taskRequest(state: RunState, id: string): TaskRequest {
 	return task;
 }
 
+function changesetTaskRequest(state: RunState, id: string): ChangesetTaskRequest {
+	const task = taskRequest(state, id);
+	if (task.kind !== "changeset") throw new Error(`Task ${id} is not a changeset task.`);
+	return task;
+}
+
 function taskState(state: RunState, id: string): TaskState {
 	const task = state.tasks.find((candidate) => candidate.taskId === id);
 	if (!task) throw new Error(`Unknown task ID: ${id}.`);
 	return task;
 }
 
-function latestAttempt(task: TaskState): TaskAttempt {
+function changesetTaskState(state: RunState, id: string): ChangesetTaskState {
+	const task = taskState(state, id);
+	if (task.kind !== "changeset") throw new Error(`Task ${id} is not a changeset task.`);
+	return task;
+}
+
+function latestAttempt(task: ChangesetTaskState): TaskAttempt {
 	const attempt = task.attempts.at(-1);
 	if (!attempt) throw new Error(`Task ${task.taskId} has no recorded attempt.`);
 	return attempt;
@@ -482,7 +483,7 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 	});
 }
 
-function correctionEligible(request: TaskRequest, attempt: TaskAttempt): boolean {
+function correctionEligible(request: ChangesetTaskRequest, attempt: TaskAttempt): boolean {
 	const prompt = attempt.prompts.length === 1 ? attempt.prompts[0] : undefined;
 	if (prompt?.kind !== "initial" || prompt.status !== "settled" || attempt.termination) return false;
 	if (!attempt.candidate) {
@@ -502,9 +503,111 @@ function terminal(state: RunState): boolean {
 	return state.status === "completed" || state.status === "final_failed" || state.status === "superseded" || state.status === "aborted";
 }
 
-function readyPendingTasks(state: RunState): TaskState[] {
-	return state.tasks.filter((task) => task.status === "pending"
-		&& taskRequest(state, task.taskId).dependsOn.every((dependency) => taskState(state, dependency).status === "completed"));
+export type TextTaskContext = { taskId: string; text: string };
+
+/** Build one bounded changeset assignment. Call this before acquiring its Role launch. */
+export function buildChangesetTaskPrompt(input: {
+	readonly goal: ExecuteRequest["goal"];
+	readonly contexts: readonly TextTaskContext[];
+	task: ChangesetTaskRequest;
+	kind: "initial" | "correction";
+	worktreeCwd: string;
+	failure?: string;
+}): string {
+	if (input.kind === "correction"
+		&& (typeof input.failure !== "string" || !input.failure.trim() || input.failure.trim() !== input.failure || input.failure.includes("\0"))) {
+		throw new Error("correction failure must be a non-empty exact string.");
+	}
+	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
+	const upstreamTaskData = input.contexts.length
+		? ["", "Upstream task data:", formatTextTaskContexts(input.contexts, CHANGESET_TASK_PROMPT_MAX_BYTES)]
+		: [];
+	const text = [
+		`Task: ${input.task.id}`,
+		"Goal:",
+		input.goal,
+		`Worktree: ${input.worktreeCwd}`,
+		`Integrated dependencies: ${input.task.dependsOn.length ? input.task.dependsOn.join(", ") : "none"}`,
+		"",
+		"Requirements:",
+		input.task.requirements,
+		"",
+		"Deliverable:",
+		input.task.deliverable,
+		...upstreamTaskData,
+		"",
+		"Required checks (direct command/argv):",
+		checks,
+		...(input.kind === "correction" ? ["", "Correction failure:", input.failure!] : []),
+		"",
+		"Work only in the exact worktree above. Commit the complete result and leave that worktree clean.",
+	].join("\n");
+	if (Buffer.byteLength(text, "utf8") > CHANGESET_TASK_PROMPT_MAX_BYTES) {
+		throw new Error(`Worker assignment exceeds ${CHANGESET_TASK_PROMPT_MAX_BYTES} bytes.`);
+	}
+	return text;
+}
+
+/** Resolve completed text outputs in the consumer's declared context order. */
+export function resolveTextTaskContexts(
+	state: { readonly tasks: readonly TaskState[] },
+	task: Pick<TaskRequest, "id" | "contextFrom">,
+): TextTaskContext[] {
+	return task.contextFrom.map((taskId) => {
+		const source = state.tasks.find((candidate) => candidate.taskId === taskId);
+		if (!source) throw new Error(`Context source ${taskId} for task ${task.id} is absent.`);
+		if (source.kind !== "text") throw new Error(`Context source ${taskId} for task ${task.id} is not a text task.`);
+		const attempt = source.attempts.at(-1);
+		if (source.status !== "completed" || attempt?.status !== "completed") {
+			throw new Error(`Context source ${taskId} for task ${task.id} is incomplete.`);
+		}
+		if (!attempt.output) throw new Error(`Context source ${taskId} for task ${task.id} is missing output.`);
+		return { taskId, text: attempt.output.text };
+	});
+}
+
+/** Format complete context blocks or fail; prompt data is never truncated. */
+export function formatTextTaskContexts(contexts: readonly TextTaskContext[], maxBytes: number): string {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+		throw new Error("Text task context byte cap must be a non-negative safe integer.");
+	}
+	const text = contexts.map(({ taskId, text: output }) => `Context from task ${taskId}:\n${output}`).join("\n\n");
+	if (Buffer.byteLength(text, "utf8") > maxBytes) {
+		throw new Error(`Text task context exceeds ${maxBytes} UTF-8 bytes.`);
+	}
+	return text;
+}
+
+/** Build a bounded text-task assignment with upstream output marked as task data. */
+export function buildTextTaskPrompt(
+	goal: ExecuteRequest["goal"],
+	task: Pick<TaskRequest, "id" | "requirements" | "deliverable">,
+	contexts: readonly TextTaskContext[],
+): string {
+	const assignment = [
+		`Task: ${task.id}`,
+		"Goal:",
+		goal,
+		"",
+		"Requirements:",
+		task.requirements,
+		"",
+		"Deliverable:",
+		task.deliverable,
+	].join("\n");
+	const prefix = contexts.length ? `${assignment}\n\nTask data:\n` : assignment;
+	const remainingBytes = TEXT_TASK_PROMPT_MAX_BYTES - Buffer.byteLength(prefix, "utf8");
+	if (remainingBytes < 0) throw new Error(`Text task prompt exceeds ${TEXT_TASK_PROMPT_MAX_BYTES} UTF-8 bytes.`);
+	return `${prefix}${formatTextTaskContexts(contexts, remainingBytes)}`;
+}
+
+export function readyPendingTasks(state: RunState): TaskState[] {
+	return state.tasks.filter((task) => {
+		if (task.status !== "pending") return false;
+		const request = taskRequest(state, task.taskId);
+		return [...request.dependsOn, ...request.contextFrom]
+			.every((source) => taskState(state, source).status === "completed");
+	});
 }
 
 function isDeadline(error: unknown, scope: DeadlineScope): boolean {
@@ -515,11 +618,18 @@ export class OrchestratorRunner {
 	private readonly runtime: OrchestratorRuntime;
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
+	private readonly textExecutor: EphemeralSubagentExecutor;
 
-	constructor(runtime: OrchestratorRuntime, gitRuntime: GitRuntime & TaskCandidateInspector, store = new FileRunStore()) {
+	constructor(
+		runtime: OrchestratorRuntime,
+		gitRuntime: GitRuntime & TaskCandidateInspector,
+		store = new FileRunStore(),
+		textExecutor: EphemeralSubagentExecutor,
+	) {
 		this.runtime = runtime;
 		this.gitRuntime = gitRuntime;
 		this.store = store;
+		this.textExecutor = textExecutor;
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -534,7 +644,6 @@ export class OrchestratorRunner {
 			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
 			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
 			if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
-			const launchRecords = validateLaunchRecords(request, prepared.launchRecords);
 			return await this.store.withLock(root, async () => {
 				await this.store.assertAvailable(root, request.id);
 				const createdAt = this.runtime.now();
@@ -546,15 +655,20 @@ export class OrchestratorRunner {
 					main: preparedMain,
 					deadlineStartedAt: startedAt,
 					deadline,
-					launchRecords,
 					status: "pending",
-					tasks: request.tasks.map((task) => ({
-						taskId: task.id,
-						status: "pending",
-						implementerLaunchKey: launchKey("implementer", task.modelClass),
-						...(task.judgment ? { judgmentLaunchKey: launchKey("reviewer", task.judgment.modelClass) } : {}),
-						attempts: [],
-					})),
+					tasks: request.tasks.map((task): TaskState => task.kind === "changeset"
+						? {
+							taskId: task.id,
+							kind: "changeset",
+							status: "pending",
+							attempts: [],
+						}
+						: {
+							taskId: task.id,
+							kind: "text",
+							status: "pending",
+							attempts: [],
+						}),
 					waves: [],
 					final: { status: "pending" },
 					accepted: false,
@@ -579,29 +693,42 @@ export class OrchestratorRunner {
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
 
-			if (request.action === "verify") {
-				const task = taskState(state, request.taskId);
-				const attempt = latestAttempt(task);
-				if (attempt.integration?.status === "integrated") {
-					return await this.verifyCleanupOnly(handle, task, attempt, outerSignal);
-				}
-			}
-
 			const scope = new DeadlineScope(state.deadline, () => this.runtime.now(), outerSignal);
 			try {
-				await this.requireRecoveredLaunches(state, scope);
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);
+				if (task.kind === "text") {
+					if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
+					if (request.action === "verify") throw new Error(`Text task ${task.taskId} cannot be verified.`);
+					const attempt = task.attempts.at(-1);
+					if (attempt?.status !== "failed" || task.attempts.length >= 2) {
+						throw new Error(`Text task ${task.taskId} retry requires a failed latest attempt and fewer than two attempts.`);
+					}
+					task.status = "pending";
+					task.failure = undefined;
+					if (!readyPendingTasks(state).includes(task)) {
+						throw new Error(`Text task ${task.taskId} dependencies are not completed.`);
+					}
+					return await this.run(handle, scope, task.taskId);
+				}
+				if (request.action === "verify") {
+					const attempt = latestAttempt(task);
+					if (attempt.integration?.status === "integrated") {
+						return await this.verifyCleanupOnly(handle, task, attempt, outerSignal);
+					}
+				}
 				if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
 				if (request.action === "retry") return await this.retry(handle, task, scope);
 				return await this.verifyRetainedTask(handle, task, scope);
 			} catch (error) {
 				if (request.action === "retry") {
 					const task = taskState(state, request.taskId);
-					const attempt = task.attempts.at(-1);
-					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
-						this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
-						await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+					if (task.kind === "changeset") {
+						const attempt = task.attempts.at(-1);
+						if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
+							this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
+							await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+						}
 					}
 				}
 				throw error;
@@ -620,6 +747,7 @@ export class OrchestratorRunner {
 			if (this.recoverInterrupted(state)) await handle.save();
 			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
 			for (const task of state.tasks) {
+				if (task.kind !== "changeset") continue;
 				for (const attempt of task.attempts) {
 					if (!allocationByKind(attempt, "agent")?.agentName || attempt.termination?.status === "terminated") continue;
 					await this.terminateWithSafety(
@@ -666,31 +794,18 @@ export class OrchestratorRunner {
 		});
 	}
 
-	private async requireRecoveredLaunches(state: RunState, scope: DeadlineScope): Promise<void> {
-		const records = await scope.call(async (context) => await this.runtime.recoverLaunchRecords({
-			root: state.root,
-			request: state.request,
-			records: state.launchRecords,
-		}, context));
-		const recovered = validateLaunchRecords(state.request, records);
-		if (!isDeepStrictEqual(recovered, state.launchRecords)) {
-			throw new Error("Recorded Role/model launch resources drifted; no productive action was started.");
-		}
-	}
-
-	private async run(handle: RunStateHandle, scope: DeadlineScope): Promise<RunResponse> {
+	private async run(handle: RunStateHandle, scope: DeadlineScope, forceTextTaskId?: string): Promise<RunResponse> {
 		const state = handle.state;
 		state.status = "running";
 		state.updatedAt = this.runtime.now();
-		await handle.save();
 		try {
 			while (state.tasks.some((task) => task.status !== "completed")) {
-				const attention = state.tasks.find((task) => task.status === "needs_attention");
+				const attention = forceTextTaskId ? undefined : state.tasks.find((task) => task.status === "needs_attention");
 				if (attention) {
 					state.status = "needs_attention";
 					return this.response(state);
 				}
-				const ready = readyPendingTasks(state);
+				const ready = readyPendingTasks(state).filter((task) => !forceTextTaskId || task.taskId === forceTextTaskId);
 				if (!ready.length) throw new Error("No dependency wave is ready.");
 				let actualMain: WorkspaceIdentity;
 				try {
@@ -716,6 +831,11 @@ export class OrchestratorRunner {
 				};
 				state.waves.push(wave);
 				for (const task of ready) {
+					if (task.kind === "text") {
+						task.status = "running";
+						task.attempts.push({ number: task.attempts.length + 1, status: "running" });
+						continue;
+					}
 					task.status = "allocating";
 					task.attempts.push({
 						number: task.attempts.length + 1,
@@ -729,18 +849,32 @@ export class OrchestratorRunner {
 					});
 				}
 				await handle.save();
-				await Promise.all(ready.map(async (task) => await this.dispatchTask(handle, task, scope)));
-				if (ready.some((task) => task.status !== "ready_to_integrate")) {
+				await Promise.all(ready.map(async (task) => {
+					try {
+						await this.dispatchTask(handle, task, scope);
+					} catch (error) {
+						const failure = isDeadline(error, scope)
+							? "The productive request deadline expired during task dispatch."
+							: `Task dispatch was interrupted: ${errorText(error)}`;
+						this.attention(task, bounded(failure));
+					}
+				}));
+				if (ready.some((task) => task.kind === "text"
+					? task.status !== "completed"
+					: task.status !== "ready_to_integrate")) {
 					wave.status = "needs_attention";
 					state.status = "needs_attention";
 					return this.response(state);
 				}
 				wave.status = "integrating";
 				await handle.save();
-				for (const task of ready) {
+				const readyTaskIds = new Set(ready.map((task) => task.taskId));
+				for (const request of state.request.tasks) {
+					if (request.kind !== "changeset" || !readyTaskIds.has(request.id)) continue;
+					const task = changesetTaskState(state, request.id);
 					if (!await this.integrateTask(handle, task, scope)) {
 						for (const retained of ready) {
-							if (retained.status === "ready_to_integrate"
+							if (retained.kind === "changeset" && retained.status === "ready_to_integrate"
 								&& latestAttempt(retained).termination?.status === "terminated") {
 								this.attention(retained, "Earlier same-wave integration stopped; verify the retained candidate to continue.");
 							}
@@ -752,6 +886,7 @@ export class OrchestratorRunner {
 				}
 				wave.status = "completed";
 				await handle.save();
+				forceTextTaskId = undefined;
 			}
 			return await this.runFinal(handle, scope);
 		} catch (error) {
@@ -771,8 +906,9 @@ export class OrchestratorRunner {
 	}
 
 	private async dispatchTask(handle: RunStateHandle, task: TaskState, scope: DeadlineScope): Promise<void> {
+		if (task.kind === "text") return await this.dispatchTextTask(handle, task, scope);
 		const state = handle.state;
-		const request = taskRequest(state, task.taskId);
+		const request = changesetTaskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
 		try {
 			for (const kind of ALLOCATION_KINDS) {
@@ -835,13 +971,20 @@ export class OrchestratorRunner {
 							task: request,
 							attempt,
 							...(intent.kind === "agent" ? { acquireLaunch: async () => {
-								const handle = await this.runtime.acquireLaunch(state.launchRecords[task.implementerLaunchKey]!, context);
-								if (handle.launch.role !== "implementer") {
-									await withTransientLaunch(handle, async () => {
-										throw new Error("Implementer launch acquisition returned the wrong Role.");
+								buildChangesetTaskPrompt({
+									goal: state.request.goal,
+									contexts: resolveTextTaskContexts(state, request),
+									task: request,
+									kind: "initial",
+									worktreeCwd: intent.worktreeCwd,
+								});
+								const launch = await this.runtime.acquireLaunch(request.role, request.modelClass, context);
+								if (launch.launch.role !== request.role || launch.launch.modelClass !== request.modelClass) {
+									await withTransientLaunch(launch, async () => {
+										throw new Error("Task launch acquisition returned the wrong Role or model class.");
 									});
 								}
-								return handle as TransientLaunchHandle<VerifiedImplementerLaunch>;
+								return launch;
 							} } : {}),
 						}, context));
 					}
@@ -882,9 +1025,54 @@ export class OrchestratorRunner {
 		}
 	}
 
+	private async dispatchTextTask(
+		handle: RunStateHandle,
+		task: TextTaskState,
+		scope: DeadlineScope,
+	): Promise<void> {
+		const state = handle.state;
+		const request = taskRequest(state, task.taskId);
+		if (request.kind !== "text") throw new Error(`Task ${task.taskId} is not a text task.`);
+		const attempt = task.attempts.at(-1);
+		if (!attempt || attempt.status !== "running") throw new Error(`Text task ${task.taskId} has no running attempt.`);
+		const prompt = buildTextTaskPrompt(state.request.goal, request, resolveTextTaskContexts(state, request));
+		const result = await scope.call(async (context) => {
+			const handle = await this.runtime.acquireLaunch(request.role, request.modelClass, context);
+			if (handle.launch.role !== request.role || handle.launch.modelClass !== request.modelClass) {
+				await withTransientLaunch(handle, async () => {
+					throw new Error("Text task launch acquisition returned the wrong Role or model class.");
+				});
+			}
+			return await withTransientLaunch(handle, async (verifiedLaunch) => {
+				const launch = { args: [...verifiedLaunch.args], env: { ...verifiedLaunch.env } };
+				return await this.textExecutor.run({
+					signal: context.signal,
+					prepare: async () => ({ launch, task: prompt, cwd: state.root }),
+				});
+			});
+		});
+		if (result.outcome !== "success" || result.exitCode !== 0) {
+			throw new Error("Text task executor did not complete successfully.");
+		}
+		if (result.outputTruncated !== false) throw new Error("Text task executor output was truncated.");
+		const output = result.output.trim();
+		if (!output) throw new Error("Text task executor returned empty output.");
+		if (Buffer.byteLength(output, "utf8") > MAX_PERSISTED_RUNTIME_TEXT_BYTES) {
+			throw new Error(`Text task executor output exceeds ${MAX_PERSISTED_RUNTIME_TEXT_BYTES} UTF-8 bytes.`);
+		}
+		const actualMain = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
+		if (!sameIdentity(actualMain, state.main)) throw new Error("Main drifted during text task execution.");
+		attempt.status = "completed";
+		attempt.failure = undefined;
+		attempt.output = { text: output };
+		task.status = "completed";
+		task.failure = undefined;
+		await handle.save();
+	}
+
 	private async driveWorkerSafely(
 		handle: RunStateHandle,
-		task: TaskState,
+		task: ChangesetTaskState,
 		scope: DeadlineScope,
 		initialKind: "initial" | "correction",
 	): Promise<void> {
@@ -905,12 +1093,12 @@ export class OrchestratorRunner {
 
 	private async driveWorker(
 		handle: RunStateHandle,
-		task: TaskState,
+		task: ChangesetTaskState,
 		scope: DeadlineScope,
 		initialKind: "initial" | "correction",
 	): Promise<void> {
 		const state = handle.state;
-		const request = taskRequest(state, task.taskId);
+		const request = changesetTaskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
 		const workerId = allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Worker launch has no durably recorded agent ID.");
@@ -959,6 +1147,7 @@ export class OrchestratorRunner {
 			try {
 				worker = await scope.call(async (context) => await this.runtime.runWorker({
 					goal: state.request.goal,
+					contexts: resolveTextTaskContexts(state, request),
 					task: request,
 					attempt,
 					workerId,
@@ -1032,7 +1221,7 @@ export class OrchestratorRunner {
 
 	private async terminateSettledWorker(
 		handle: RunStateHandle,
-		task: TaskState,
+		task: ChangesetTaskState,
 		workerId: string,
 		candidate: WorkspaceIdentity,
 		_scope: DeadlineScope,
@@ -1053,7 +1242,7 @@ export class OrchestratorRunner {
 
 	private async terminateWithSafety(
 		handle: RunStateHandle,
-		task: TaskState,
+		task: ChangesetTaskState,
 		attempt: TaskAttempt,
 		candidate: WorkspaceIdentity,
 		outerSignal?: AbortSignal,
@@ -1066,7 +1255,7 @@ export class OrchestratorRunner {
 		const safety = new DeadlineScope(safetyDeadline, () => this.runtime.now(), outerSignal);
 		try {
 			const result = await safety.call(async (context) => await this.runtime.terminateWorker({
-				task: taskRequest(handle.state, task.taskId), attempt, workerId, candidate,
+				task: changesetTaskRequest(handle.state, task.taskId), attempt, workerId, candidate,
 			}, context));
 			if (result.outcome !== "terminated") {
 				const failure = boundedRuntimeText(result.failure, "Worker termination failure");
@@ -1089,6 +1278,7 @@ export class OrchestratorRunner {
 	private async terminateAmbiguousPromptWorkers(handle: RunStateHandle, outerSignal?: AbortSignal): Promise<void> {
 		const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
 		for (const task of handle.state.tasks) {
+			if (task.kind !== "changeset") continue;
 			for (const attempt of task.attempts) {
 				if (!attempt.prompts.some((prompt) => prompt.status === "ambiguous")
 					|| !allocationByKind(attempt, "agent")?.agentName
@@ -1108,7 +1298,7 @@ export class OrchestratorRunner {
 		scope: DeadlineScope,
 		taskId?: string,
 	): Promise<CheckBatchEvidence> {
-		const attempt = taskId ? latestAttempt(taskState(handle.state, taskId)) : undefined;
+		const attempt = taskId ? latestAttempt(changesetTaskState(handle.state, taskId)) : undefined;
 		const result = await scope.call(async (context) => await this.gitRuntime.runChecks({
 			root: handle.state.root,
 			scope: phase === "final" ? "final" : "task",
@@ -1153,13 +1343,13 @@ export class OrchestratorRunner {
 		criterion: string,
 		base: WorkspaceIdentity,
 		tip: WorkspaceIdentity,
-		recordKey: string,
+		role: string,
+		modelClass: ModelClass,
 		phase: ReviewEvidence["phase"],
 		scope: DeadlineScope,
 		taskId?: string,
 	): Promise<ReviewEvidence> {
-		const attempt = taskId ? latestAttempt(taskState(handle.state, taskId)) : undefined;
-		const record = handle.state.launchRecords[recordKey]!;
+		const attempt = taskId ? latestAttempt(changesetTaskState(handle.state, taskId)) : undefined;
 		const result = await scope.call(async (context) => await this.gitRuntime.review({
 			root: handle.state.root,
 			scope: phase === "final" ? "final" : "task",
@@ -1169,20 +1359,19 @@ export class OrchestratorRunner {
 			base,
 			tip,
 			acquireLaunch: async () => {
-				const handle = await this.runtime.acquireLaunch(record, context);
-				if (handle.launch.role !== "reviewer") {
-					await withTransientLaunch(handle, async () => {
-						throw new Error("Reviewer launch acquisition returned the wrong Role.");
+				const launch = await this.runtime.acquireLaunch(role, modelClass, context);
+				if (launch.launch.role !== role || launch.launch.modelClass !== modelClass) {
+					await withTransientLaunch(launch, async () => {
+						throw new Error("Judgment launch acquisition returned the wrong Role or model class.");
 					});
 				}
-				return handle as TransientLaunchHandle<VerifiedReviewerLaunch>;
+				return launch;
 			},
 		}, context));
 		const identityAfter = runtimeIdentity(result.identityAfter, "Post-review identity");
-		const verdict = boundedRuntimeText(result.verdict, "Reviewer verdict");
+		const verdict = boundedRuntimeText(result.verdict, "Judgment verdict");
 		const evidence: ReviewEvidence = {
 			phase,
-			launchKey: recordKey,
 			criterion,
 			base,
 			tip,
@@ -1194,9 +1383,9 @@ export class OrchestratorRunner {
 		return evidence;
 	}
 
-	private async integrateTask(handle: RunStateHandle, task: TaskState, scope: DeadlineScope): Promise<boolean> {
+	private async integrateTask(handle: RunStateHandle, task: ChangesetTaskState, scope: DeadlineScope): Promise<boolean> {
 		const state = handle.state;
-		const request = taskRequest(state, task.taskId);
+		const request = changesetTaskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
 		if (attempt.termination?.status !== "terminated" || !attempt.candidate) {
 			this.attention(task, "Task cannot integrate before exact worker termination and candidate recording.");
@@ -1243,7 +1432,8 @@ export class OrchestratorRunner {
 					request.judgment.criterion,
 					rebasedBase,
 					rebasedCandidate,
-					task.judgmentLaunchKey!,
+					request.judgment.role,
+					request.judgment.modelClass,
 					"authoritative",
 					scope,
 					task.taskId,
@@ -1251,7 +1441,7 @@ export class OrchestratorRunner {
 				attempt.authoritativeReview = review;
 				await handle.save();
 				if (!review.passed) {
-					this.attention(task, "Authoritative Reviewer did not return exact PASS on the integration candidate.");
+					this.attention(task, "Authoritative Judgment did not return exact PASS on the integration candidate.");
 					return false;
 				}
 			}
@@ -1317,14 +1507,14 @@ export class OrchestratorRunner {
 		}
 	}
 
-	private async runCleanup(handle: RunStateHandle, task: TaskState, attempt: TaskAttempt, scope: DeadlineScope): Promise<boolean> {
+	private async runCleanup(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt, scope: DeadlineScope): Promise<boolean> {
 		for (const step of attempt.cleanup) {
 			if (step.status === "completed") continue;
 			step.status = "running";
 			step.failure = undefined;
 			await handle.save();
 			try {
-				const request = taskRequest(handle.state, task.taskId);
+				const request = changesetTaskRequest(handle.state, task.taskId);
 				let result: unknown;
 				if (step.kind === "worktree" || step.kind === "branch") {
 					const kind: GitCleanupKind = step.kind;
@@ -1358,7 +1548,7 @@ export class OrchestratorRunner {
 
 	private async verifyCleanupOnly(
 		handle: RunStateHandle,
-		task: TaskState,
+		task: ChangesetTaskState,
 		attempt: TaskAttempt,
 		outerSignal?: AbortSignal,
 	): Promise<RunResponse> {
@@ -1390,12 +1580,12 @@ export class OrchestratorRunner {
 		}
 	}
 
-	private async verifyRetainedTask(handle: RunStateHandle, task: TaskState, scope: DeadlineScope): Promise<RunResponse> {
+	private async verifyRetainedTask(handle: RunStateHandle, task: ChangesetTaskState, scope: DeadlineScope): Promise<RunResponse> {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
 		if (attempt.termination?.status !== "terminated") throw new Error("Manual verification requires exact recorded worker termination.");
 		const candidate = runtimeIdentity(await scope.call(async (context) => await this.gitRuntime.inspectRetainedTask({
-			root: handle.state.root, task: taskRequest(handle.state, task.taskId), attempt,
+			root: handle.state.root, task: changesetTaskRequest(handle.state, task.taskId), attempt,
 		}, context)), "Retained task candidate identity");
 		if (!isCleanCommitted(candidate)) throw new Error("Retained task candidate is not clean and committed.");
 		if (candidate.head === attempt.waveBase.head) throw new Error("Retained task candidate must differ from its wave base.");
@@ -1410,7 +1600,7 @@ export class OrchestratorRunner {
 		return await this.run(handle, scope);
 	}
 
-	private async retry(handle: RunStateHandle, task: TaskState, scope: DeadlineScope): Promise<RunResponse> {
+	private async retry(handle: RunStateHandle, task: ChangesetTaskState, scope: DeadlineScope): Promise<RunResponse> {
 		const attempt = task.attempts.at(-1);
 		if (!attempt) {
 			for (const pending of handle.state.tasks) {
@@ -1430,7 +1620,7 @@ export class OrchestratorRunner {
 				}
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
-			if (!correctionEligible(taskRequest(handle.state, task.taskId), attempt)) {
+			if (!correctionEligible(changesetTaskRequest(handle.state, task.taskId), attempt)) {
 				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.agentName) {
 					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
 				}
@@ -1445,7 +1635,7 @@ export class OrchestratorRunner {
 			for (const intent of attempt.allocations.filter((item) => item.status !== "owned")) {
 				let result: AllocationReconciliation;
 				try {
-					const request = taskRequest(handle.state, task.taskId);
+					const request = changesetTaskRequest(handle.state, task.taskId);
 					result = intent.kind === "worktree"
 						? await scope.call(async (context) => await this.gitRuntime.reconcileWorktreeAllocation({
 							root: handle.state.root, intent, task: request, attempt,
@@ -1478,11 +1668,12 @@ export class OrchestratorRunner {
 			await handle.save();
 			await this.dispatchTask(handle, task, scope);
 		}
-		if ((task as TaskState).status === "ready_to_integrate" && !await this.integrateTask(handle, task, scope)) {
+		const current = changesetTaskState(handle.state, task.taskId);
+		if (current.status === "ready_to_integrate" && !await this.integrateTask(handle, current, scope)) {
 			handle.state.status = "needs_attention";
 			return this.response(handle.state);
 		}
-		if ((task as TaskState).status !== "completed") {
+		if (current.status !== "completed") {
 			handle.state.status = "needs_attention";
 			await handle.save();
 			return this.response(handle.state);
@@ -1541,20 +1732,20 @@ export class OrchestratorRunner {
 				return this.response(state);
 			}
 			if (state.request.finalJudgment) {
-				const key = launchKey("reviewer", state.request.finalJudgment.modelClass);
 				const review = await this.runReview(
 					handle,
 					state.request.finalJudgment.criterion,
 					state.requestStartMain,
 					identity,
-					key,
+					state.request.finalJudgment.role,
+					state.request.finalJudgment.modelClass,
 					"final",
 					scope,
 				);
 				state.final.review = review;
 				await handle.save();
 				if (!sameIdentity(review.identityAfter, identity)) {
-					await this.markSuperseded(handle, "Final Reviewer changed Main.");
+					await this.markSuperseded(handle, "Final Judgment changed Main.");
 					return this.response(state);
 				}
 				if (!review.passed) {
@@ -1621,6 +1812,10 @@ export class OrchestratorRunner {
 		if (state.status !== "running") return false;
 		for (const task of state.tasks) {
 			if (["pending", "completed", "needs_attention"].includes(task.status)) continue;
+			if (task.kind !== "changeset") {
+				this.attention(task, "Execution was interrupted at an ambiguous boundary and will not replay automatically.");
+				continue;
+			}
 			const attempt = task.attempts.at(-1);
 			if (attempt) {
 				for (const intent of attempt.allocations) {
@@ -1644,7 +1839,7 @@ export class OrchestratorRunner {
 					attempt.integration.failure = "Integration was interrupted after intent persistence and was not adopted.";
 				}
 				if (!attempt.termination && attempt.candidate
-					&& !correctionEligible(taskRequest(state, task.taskId), attempt)) {
+					&& !correctionEligible(changesetTaskRequest(state, task.taskId), attempt)) {
 					const workerId = allocationByKind(attempt, "agent")?.agentName;
 					if (workerId) {
 						attempt.termination = {
@@ -1678,14 +1873,26 @@ export class OrchestratorRunner {
 	}
 
 	private attention(task: TaskState, failure: string): void {
+		const boundedFailure = bounded(failure);
+		if (task.kind === "text") {
+			const attempt = task.attempts.at(-1);
+			if (attempt?.status === "running") {
+				attempt.status = "failed";
+				attempt.failure = boundedFailure;
+			} else {
+				if (task.attempts.length >= 2) throw new Error(`Text task ${task.taskId} cannot record another failed attempt.`);
+				task.attempts.push({ number: task.attempts.length + 1, status: "failed", failure: boundedFailure });
+			}
+		}
 		task.status = "needs_attention";
-		task.failure = bounded(failure);
+		task.failure = boundedFailure;
 	}
 
 	private response(state: RunState, main?: MainStatus): RunResponse {
 		const completed = state.tasks.filter((task) => task.status === "completed").length;
 		const resumable = !terminal(state);
-		const cleanupAttention = state.tasks.find((task) => task.status === "needs_attention"
+		const cleanupAttention = state.tasks.find((task): task is ChangesetTaskState => task.kind === "changeset"
+			&& task.status === "needs_attention"
 			&& task.attempts.at(-1)?.integration?.status === "integrated");
 		let continuation: ResumeRequest | undefined;
 		if (resumable && cleanupAttention) {
@@ -1695,9 +1902,10 @@ export class OrchestratorRunner {
 			if (completed === state.tasks.length
 				&& (state.final.status === "pending" || state.final.status === "interrupted")) {
 				continuation = { id: state.request.id, action: "finalize" };
-			} else if (attention?.attempts.length === 0) {
+			} else if (attention?.kind === "changeset" && attention.attempts.length === 0) {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
-			} else if (attention?.attempts.at(-1)?.termination?.status === "terminated"
+			} else if (attention?.kind === "changeset"
+				&& attention.attempts.at(-1)?.termination?.status === "terminated"
 				&& attention.attempts.at(-1)?.integration?.status !== "unknown") {
 				continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
 			}

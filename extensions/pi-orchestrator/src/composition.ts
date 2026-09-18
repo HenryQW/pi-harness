@@ -110,7 +110,7 @@ export function createCanonicalGitRootResolver(
 
 function exactReviewPrompt(input: ExactReviewExecutorInput): string {
 	if (input.scope === "task" ? !input.taskId : input.taskId !== undefined) {
-		throw new Error("Reviewer scope and task ID do not match.");
+		throw new Error("Judgment scope and task ID do not match.");
 	}
 	const packet = JSON.stringify({
 		base: input.packet.base,
@@ -133,22 +133,22 @@ function exactReviewPrompt(input: ExactReviewExecutorInput): string {
 		"If you found one or more actionable issues, return concise findings and never include PASS.",
 	].join("\n");
 	if (Buffer.byteLength(prompt, "utf8") > REVIEW_PROMPT_MAX_BYTES) {
-		throw new Error(`Reviewer prompt exceeds ${REVIEW_PROMPT_MAX_BYTES} bytes.`);
+		throw new Error(`Judgment prompt exceeds ${REVIEW_PROMPT_MAX_BYTES} bytes.`);
 	}
 	return prompt;
 }
 
-export interface ExactReviewerExecutorOptions {
+export interface ExactJudgmentExecutorOptions {
 	executor?: EphemeralSubagentExecutor;
 	createExecutor?: () => EphemeralSubagentExecutor;
 }
 
-/** Adapt an already verified Reviewer launch without adding argv, environment, or resources. */
-export function createExactReviewerExecutor(
-	options: ExactReviewerExecutorOptions = {},
+/** Adapt an already verified Judgment launch without adding argv, environment, or resources. */
+export function createExactJudgmentExecutor(
+	options: ExactJudgmentExecutorOptions = {},
 ): ExactReviewExecutor {
 	if (options.executor && options.createExecutor) {
-		throw new Error("Supply either a Reviewer executor or an executor factory, not both.");
+		throw new Error("Supply either a Judgment executor or an executor factory, not both.");
 	}
 	let executor = options.executor;
 	const getExecutor = () => executor ??= options.createExecutor?.()
@@ -166,11 +166,11 @@ export function createExactReviewerExecutor(
 		});
 		context.signal.throwIfAborted();
 		if (result.outcome !== "success" || result.exitCode !== 0) {
-			throw new Error("Reviewer executor did not complete successfully.");
+			throw new Error("Judgment executor did not complete successfully.");
 		}
-		if (!result.output.trim()) throw new Error("Reviewer executor returned empty output.");
+		if (!result.output.trim()) throw new Error("Judgment executor returned empty output.");
 		if (TRUNCATED_OUTPUT_MARKER.test(result.output)) {
-			throw new Error("Reviewer executor output was truncated.");
+			throw new Error("Judgment executor output was truncated.");
 		}
 		return { verdict: result.output };
 	};
@@ -196,10 +196,6 @@ export class ComposedOrchestratorRuntime implements OrchestratorRuntime {
 
 	preflight(...args: Parameters<CoordinatorRuntime["preflight"]>): ReturnType<CoordinatorRuntime["preflight"]> {
 		return this.roles.preflight(...args);
-	}
-
-	recoverLaunchRecords(...args: Parameters<CoordinatorRuntime["recoverLaunchRecords"]>): ReturnType<CoordinatorRuntime["recoverLaunchRecords"]> {
-		return this.roles.recoverLaunchRecords(...args);
 	}
 
 	acquireLaunch(...args: Parameters<CoordinatorRuntime["acquireLaunch"]>): ReturnType<CoordinatorRuntime["acquireLaunch"]> {

@@ -9,14 +9,7 @@ import { parseRunState, type RunState } from "./schema.ts";
 const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
 /*
  * create() caps the complete initial serialization at 2 MiB. The immutable
- * request and launch records are checked against that same cap on load.
- *
- * The deterministic maximum-valid fixture in test/store.test.ts fills that
- * initial capacity and the 256 KiB request limit. It also fills all 16 attempts,
- * five allocations and 32 possible resources per attempt, every check and
- * optional evidence slot, and every runtime string with worst-case JSON escapes.
- * Diagnostic-only check output keeps that serialization below 96 MiB. Since it
- * exceeds 64 MiB, 128 MiB is the smallest power-of-two cap with real headroom.
+ * request is checked against that same cap on load.
  *
  * Saves validate and reject atomically instead of dropping valid evidence.
  * Reads use the same finite ceiling and preserve rejected files.
@@ -70,7 +63,6 @@ function assertPersistedBaseCapacity(state: RunState): void {
 		requestStartMain: state.requestStartMain,
 		deadlineStartedAt: state.deadlineStartedAt,
 		deadline: state.deadline,
-		launchRecords: state.launchRecords,
 		createdAt: state.createdAt,
 	}, null, 2);
 	if (Buffer.byteLength(contents, "utf8") > INITIAL_STATE_MAX_BYTES) {

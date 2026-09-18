@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadRoles } from "../src/index.ts";
+import { loadRoles, parseRoleName, type RoleName } from "../src/index.ts";
 
 
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {
@@ -137,6 +137,18 @@ Custom scout body.
 		mcps: [],
 		systemPrompt: "Custom scout body.",
 	});
+});
+
+test("parseRoleName accepts arbitrary names and rejects invalid display text", () => {
+	const name: RoleName = parseRoleName("  custom role/v2  ");
+	assert.equal(name, "custom role/v2");
+
+	for (const value of [undefined, "   "]) {
+		assert.throws(() => parseRoleName(value), /Role: name must be non-empty text\./);
+	}
+	for (const value of ["control\nname", "control\u009bname"]) {
+		assert.throws(() => parseRoleName(value), /Role: name must not contain C0\/C1 control characters\./);
+	}
 });
 
 test("Role display fields reject C0/C1 controls while system prompts stay multiline", async (t) => {

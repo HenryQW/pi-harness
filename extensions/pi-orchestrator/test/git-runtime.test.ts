@@ -10,11 +10,10 @@ import {
 	type DirectProcessRunner,
 	type ExactReviewExecutorInput,
 } from "../src/git-runtime.ts";
-import { sameIdentity, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type TaskRequest, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
-import type { OperationContext, TransientLaunchHandle, VerifiedReviewerLaunch } from "../src/runner.ts";
+import { sameIdentity, type ChangesetTaskRequest, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
+import type { OperationContext, TransientLaunchHandle, VerifiedLaunch } from "../src/runner.ts";
 
-const launch: VerifiedReviewerLaunch = {
-	key: "reviewer/fast",
+const launch: VerifiedLaunch = {
 	role: "reviewer",
 	modelClass: "fast",
 	model: "provider/model",
@@ -22,10 +21,9 @@ const launch: VerifiedReviewerLaunch = {
 	args: ["--model", "provider/model"],
 	env: {},
 	tools: ["read", "grep", "find", "ls"],
-	fingerprint: "1".repeat(64),
 };
 
-function acquiredReviewer(cleanup: () => Promise<void> = async () => {}): TransientLaunchHandle<VerifiedReviewerLaunch> {
+function acquiredReviewer(cleanup: () => Promise<void> = async () => {}): TransientLaunchHandle<VerifiedLaunch> {
 	return { launch, cleanup };
 }
 
@@ -53,15 +51,18 @@ function context(timeoutMs = 20_000): OperationContext {
 	return { signal, timeoutMs, deadline: Date.now() + timeoutMs };
 }
 
-function task(id: string, judgment = false): TaskRequest {
+function task(id: string, judgment = false): ChangesetTaskRequest {
 	return {
 		id,
+		kind: "changeset",
+		role: "implementer",
 		modelClass: "fast",
 		requirements: `Implement ${id}.`,
 		deliverable: `Deliver ${id}.`,
 		dependsOn: [],
+		contextFrom: [],
 		checks: [{ command: process.execPath, args: ["-e", "process.exit(0)"] }],
-		...(judgment ? { judgment: { criterion: `Review ${id}.`, modelClass: "fast" as const } } : {}),
+		...(judgment ? { judgment: { role: "reviewer", criterion: `Review ${id}.`, modelClass: "fast" as const } } : {}),
 	};
 }
 
@@ -91,7 +92,7 @@ function worktreeIntent(_id: string, token: string): WorktreeAllocationIntent {
 async function allocate(
 	runtime: CheckedGitRuntime,
 	root: string,
-	definition: TaskRequest,
+	definition: ChangesetTaskRequest,
 	waveBase: WorkspaceIdentity,
 	token: string,
 	operationContext = context(),
@@ -153,14 +154,13 @@ function checksEvidence(candidate: WorkspaceIdentity, results: Awaited<ReturnTyp
 }
 
 function reviewEvidence(
-	definition: TaskRequest,
+	definition: ChangesetTaskRequest,
 	base: WorkspaceIdentity,
 	tip: WorkspaceIdentity,
 	result: Awaited<ReturnType<CheckedGitRuntime["review"]>>,
 ): ReviewEvidence {
 	return {
 		phase: "authoritative",
-		launchKey: launch.key,
 		criterion: definition.judgment!.criterion,
 		base,
 		tip,
@@ -174,7 +174,7 @@ function reviewEvidence(
 async function prepareIntegration(
 	runtime: CheckedGitRuntime,
 	root: string,
-	definition: TaskRequest,
+	definition: ChangesetTaskRequest,
 	attempt: TaskAttempt,
 	candidate: WorkspaceIdentity,
 	onto: WorkspaceIdentity,
@@ -217,7 +217,7 @@ async function prepareIntegration(
 async function integrate(
 	runtime: CheckedGitRuntime,
 	root: string,
-	definition: TaskRequest,
+	definition: ChangesetTaskRequest,
 	attempt: TaskAttempt,
 	prepared: Awaited<ReturnType<typeof prepareIntegration>>,
 	operationContext = context(),
@@ -283,7 +283,7 @@ test("worktree allocation persists helper-derived intent before add and retains 
 });
 
 test("pre-prompt inspection proves exact owned worktree identity and fails closed on drift", async (t) => {
-	async function prepared(t: test.TestContext, definition: TaskRequest, runtime = new CheckedGitRuntime()) {
+	async function prepared(t: test.TestContext, definition: ChangesetTaskRequest, runtime = new CheckedGitRuntime()) {
 		const root = await repository(t);
 		const base = await runtime.inspectMain({ root }, context());
 		const allocated = await allocate(runtime, root, definition, base, `token-${definition.id}-000001`);

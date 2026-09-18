@@ -12,7 +12,7 @@ import {
 	type HostProcessOptions,
 	type HostProcessRunner,
 } from "../src/herdr-runtime.ts";
-import type { InFlightTaskCandidateInspection, OperationContext, VerifiedImplementerLaunch } from "../src/runner.ts";
+import type { InFlightTaskCandidateInspection, OperationContext, VerifiedLaunch } from "../src/runner.ts";
 import type {
 	AllocationKind,
 	AgentAllocationIntent,
@@ -59,10 +59,13 @@ function git(cwd: string, ...args: string[]): string {
 
 const task: TaskRequest = {
 	id: "task-a",
+	kind: "changeset",
+	role: "implementer",
 	modelClass: "fast",
 	requirements: "Implement the exact task.",
 	deliverable: "Commit the complete result.",
 	dependsOn: [],
+	contextFrom: [],
 	checks: [{ command: "pnpm", args: ["test"] }],
 };
 
@@ -297,6 +300,23 @@ function tabInfo(overrides: Record<string, unknown> = {}): Record<string, unknow
 	return { tab_id: WORKER_TAB_ID, workspace_id: WORKSPACE_ID, label: WORKER_LABEL, focused: false, pane_count: 0, ...overrides };
 }
 
+function paneListStep(panes: Record<string, unknown>[]): Step {
+	return {
+		command: "herdr",
+		args: ["pane", "list", "--workspace", WORKSPACE_ID],
+		result: success({ type: "pane_list", panes }),
+	};
+}
+
+function rootPanes(extra: Record<string, unknown>[] = []): Record<string, unknown>[] {
+	return [{ pane_id: ROOT_PANE_ID, tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID }, ...extra];
+}
+
+function layoutSettleSteps(extra: Record<string, unknown>[] = []): Step[] {
+	const panes = rootPanes(extra);
+	return [paneListStep(panes), paneListStep(panes)];
+}
+
 function agentInfo(status = "idle", ready = true, overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		name: AGENT_NAME,
@@ -330,8 +350,7 @@ function schema(overrides: Record<string, unknown> = {}): Record<string, unknown
 	};
 }
 
-const launch: VerifiedImplementerLaunch = {
-	key: "implementer/fast",
+const launch: VerifiedLaunch = {
 	role: "implementer",
 	modelClass: "fast",
 	model: "provider/model",
@@ -339,16 +358,14 @@ const launch: VerifiedImplementerLaunch = {
 	args: [
 		"--model", "provider/model",
 		"--pi-subagent-role-mcps", "[\"codegraph\"]",
-		"--pi-subagent-role-mcp-config-sha256", "a".repeat(64),
 		"--append-system-prompt", "/private/implementer.prompt",
 	],
 	env: {},
 	tools: ["read", "edit"],
-	fingerprint: "f".repeat(64),
 };
 
 function transientLaunch(cleanup: () => Promise<void> = async () => {}): {
-	launch: VerifiedImplementerLaunch;
+	launch: VerifiedLaunch;
 	cleanup(): Promise<void>;
 } {
 	return { launch, cleanup };
@@ -766,7 +783,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 
 	const tabIntent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
 	const tabDetails = { leasePath: tabIntent.leasePath };
-	script.push({
+	script.push(...layoutSettleSteps(), {
 		command: "herdr",
 		args: [
 			"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
@@ -799,8 +816,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 					...launch.args,
 				]);
 				assert.ok(args.includes("--pi-subagent-role-mcps"));
-				assert.ok(args.includes("--pi-subagent-role-mcp-config-sha256"));
-				assert.ok(!args.includes("Implementer raw prompt must stay private"));
+				assert.ok(!args.includes("Role prompt must stay private"));
 			},
 			result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
 		},
@@ -823,6 +839,63 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	assert.equal(cleanups, 1);
 	assert.equal(script.calls.some(({ command }) => command === "ps"), false, "fresh allocation must not inspect same-TTY shell helpers");
 	script.done();
+});
+
+test("agent allocation accepts the task's explicit Role and rejects launch mismatches", async (t) => {
+	const roleTask: TaskRequest = { ...task, role: "release manager" };
+	const cases: Array<{
+		name: string;
+		launchRole: string;
+		env?: Record<string, string>;
+		error?: RegExp;
+	}> = [
+		{ name: "matching non-implementer Role", launchRole: roleTask.role },
+		{ name: "mismatched Role", launchRole: "implementer", error: /wrong Role/ },
+		{ name: "caller Role environment", launchRole: roleTask.role, env: { CALLER_SECRET: "forbidden" }, error: /must not receive caller Role environment variables/ },
+	];
+
+	for (const candidate of cases) {
+		await t.test(candidate.name, async (t) => {
+			const fixture = await paths(t);
+			const script = new ScriptedProcess();
+			const host = runtime(fixture, script);
+			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+			attempt.allocations.pop();
+			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
+			await privateLease(leasePath);
+			script.push(
+				lsof(leasePath),
+				...startablePaneSteps(fixture),
+				...(candidate.error ? [] : [{
+					command: "herdr",
+					args: () => {},
+					result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
+				}]),
+			);
+			let cleanups = 0;
+			const allocated = host.allocateHost({
+				intent,
+				task: roleTask,
+				attempt,
+				acquireLaunch: async () => {
+					assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
+						["lsof-test", "-nP", "-a", "-F", "p", "--", leasePath],
+						["herdr", "pane", "get", WORKER_PANE_ID],
+						["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
+					]);
+					return {
+						launch: { ...launch, role: candidate.launchRole, env: candidate.env ?? {} },
+						cleanup: async () => { cleanups += 1; },
+					};
+				},
+			}, context());
+			if (candidate.error) await assert.rejects(allocated, candidate.error);
+			else assert.deepEqual(await allocated, { kind: "agent", outcome: "owned" });
+			assert.equal(cleanups, 1);
+			assert.equal(script.calls.filter(({ args }) => args[0] === "agent" && args[1] === "start").length, candidate.error ? 0 : 1);
+			script.done();
+		});
+	}
 });
 
 test("a native-invalid persisted agent name is rejected before startPiAgent", async (t) => {
@@ -924,7 +997,7 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 			const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
 			addOwnedWorkspace(attempt, workspaceDetails);
 			const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
-			script.push({
+			script.push(...layoutSettleSteps(), {
 				command: "herdr",
 				args: () => {},
 				result: success({
@@ -946,6 +1019,47 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 	}
 });
 
+test("worker tab waits for a stable host pane layout before create", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const attempt = baseAttempt(fixture);
+	script.push(repositoryIdentityStep(fixture));
+	const workspaceDetails = await host.planHostAllocation({ goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
+	addOwnedWorkspace(attempt, workspaceDetails);
+	const intent = await plannedIntent(host, attempt, "worker_tab", fixture, script);
+	const pluginPane = { pane_id: "pane-plugin", tab_id: "tab-plugin", workspace_id: WORKSPACE_ID };
+	script.push(
+		paneListStep(rootPanes()),
+		paneListStep(rootPanes([pluginPane])),
+		paneListStep(rootPanes([pluginPane])),
+		{
+			command: "herdr",
+			args: [
+				"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
+				"--label", WORKER_LABEL, "--env", `PI_ORCHESTRATOR_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
+			],
+			result: success({
+				type: "tab_created",
+				tab: tabInfo({ pane_count: 1 }),
+				root_pane: { pane_id: WORKER_PANE_ID, workspace_id: WORKSPACE_ID, tab_id: WORKER_TAB_ID, cwd: fixture.worktree, focused: false },
+			}),
+		},
+	);
+	assert.deepEqual(await host.allocateHost({ intent, task, attempt }, context()), {
+		kind: "worker_tab",
+		outcome: "owned",
+		tabId: WORKER_TAB_ID,
+		paneId: WORKER_PANE_ID,
+	});
+	assert.deepEqual(script.calls.filter(({ args }) => args[0] === "pane" && args[1] === "list").map(({ args }) => args), [
+		["pane", "list", "--workspace", WORKSPACE_ID],
+		["pane", "list", "--workspace", WORKSPACE_ID],
+		["pane", "list", "--workspace", WORKSPACE_ID],
+	]);
+	script.done();
+});
+
 test("last-moment launch resource drift blocks start after lease and pane proofs", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
@@ -961,7 +1075,7 @@ test("last-moment launch resource drift blocks start after lease and pane proofs
 		attempt,
 		acquireLaunch: async () => {
 			assert.equal(script.calls.length, 4);
-			throw new Error("Implementer extension fingerprint drifted");
+			throw new Error("Role extension fingerprint drifted");
 		},
 	}, context()), /fingerprint drifted/);
 	assert.ok(script.calls.every(({ args }) => !(args[0] === "agent" && args[1] === "start")));
@@ -993,7 +1107,7 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 	script.done();
 });
 
-test("aborted Implementer start still cleans its acquired launch", async (t) => {
+test("aborted agent start still cleans its acquired Role launch", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
@@ -1053,6 +1167,7 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				const malformed = boundary === "malformed-after-side-effect";
 				if (kind === "agent") script.push(lsof(leasePath!), ...startablePaneSteps(fixture));
 				if (kind === "workspace") script.push(repositoryIdentityStep(fixture));
+				if (kind === "worker_tab" && boundary !== "before-side-effect") script.push(...layoutSettleSteps());
 				script.push({
 					command: "herdr",
 					args: () => {},
@@ -1200,7 +1315,7 @@ test("unknown allocation reconciliation blocks partial, mismatched, duplicate, a
 	await t.test("tab scope and lease holders fail closed", async () => {
 		for (const [tabs, holder, outcome] of [
 			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }], false, "absent"],
-			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }, { tab_id: "tab-untagged", workspace_id: WORKSPACE_ID, label: "other" }], false, "possible"],
+			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }, { tab_id: "tab-untagged", workspace_id: WORKSPACE_ID, label: "other" }], false, "absent"],
 			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: WORKER_LABEL }], false, "possible"],
 			[[{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root" }], true, "possible"],
 		] as const) {
@@ -1386,6 +1501,7 @@ test("correction oversize uses the authoritative formatter and is definitively n
 
 	const result = await host.runWorker({
 		goal,
+		contexts: [],
 		task: nearLimitTask,
 		attempt,
 		workerId: AGENT_NAME,
@@ -1396,6 +1512,77 @@ test("correction oversize uses the authoritative formatter and is definitively n
 	assert.equal(result.outcome, "not_prompted");
 	assert.match(result.diagnostic, /assignment was not submitted.*exceeds 98304 bytes/i);
 	assert.equal(script.calls.filter(({ command }) => command === "herdr").length, 0);
+	script.done();
+});
+
+test("worker prompts preserve ordered upstream task data and reject oversized full assignments", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt } = await fullAttempt(fixture, host, script);
+	const contexts = [
+		{ taskId: "second", text: "Second result.\nKeep this exact line." },
+		{ taskId: "first", text: "First result." },
+	];
+	const contextualTask: TaskRequest = { ...task, contextFrom: ["second", "first"] };
+	const oversizedOutput = "x".repeat(96 * 1024 - Buffer.byteLength("Context from task oversized:\n"));
+	const callsBeforeOversize = script.calls.length;
+	const oversized = await host.runWorker({
+		goal: GOAL,
+		contexts: [{ taskId: "oversized", text: oversizedOutput }],
+		task: { ...task, contextFrom: ["oversized"] },
+		attempt,
+		workerId: AGENT_NAME,
+		kind: "initial",
+		preCandidate: baseIdentity(),
+	}, context());
+	assert.equal(oversized.outcome, "not_prompted");
+	assert.match(oversized.diagnostic, /Worker assignment exceeds 98304 bytes/);
+	assert.equal(script.calls.length, callsBeforeOversize);
+
+	const expectedAssignment = [
+		"Task: task-a",
+		"Goal:",
+		GOAL,
+		`Worktree: ${fixture.worktree}`,
+		"Integrated dependencies: none",
+		"",
+		"Requirements:",
+		"Implement the exact task.",
+		"",
+		"Deliverable:",
+		"Commit the complete result.",
+		"",
+		"Upstream task data:",
+		"Context from task second:",
+		"Second result.\nKeep this exact line.",
+		"",
+		"Context from task first:",
+		"First result.",
+		"",
+		"Required checks (direct command/argv):",
+		'{"command":"pnpm","args":["test"]}',
+		"",
+		"Work only in the exact worktree above. Commit the complete result and leave that worktree clean.",
+	].join("\n");
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: (args) => {
+			assert.deepEqual(args.slice(0, 3), ["agent", "prompt", AGENT_NAME]);
+			assert.equal(args[3], expectedAssignment);
+		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "done", stderr: "" } },
+	);
+	const result = await host.runWorker({
+		goal: GOAL,
+		contexts,
+		task: contextualTask,
+		attempt,
+		workerId: AGENT_NAME,
+		kind: "initial",
+		preCandidate: baseIdentity(),
+	}, context());
+	assert.equal(result.outcome, "candidate");
 	script.done();
 });
 
@@ -1423,7 +1610,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "terminal diagnostic", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
 	assert.equal(result.outcome, "candidate");
 	assert.equal(inspections, 1);
 
@@ -1438,6 +1625,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 	);
 	const correction = await host.runWorker({
 		goal: GOAL,
+		contexts: [],
 		task,
 		attempt,
 		workerId: AGENT_NAME,
@@ -1483,7 +1671,7 @@ test("normal prompt accepts a changed clean candidate from real in-flight Git in
 		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "done", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, context());
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, context());
 	assert.equal(result.outcome, "candidate");
 	assert.notEqual(result.outcome === "candidate" && result.candidate.head, preCandidate.head);
 	script.done();
@@ -1552,7 +1740,7 @@ test("delivered stall uses real in-flight Git evidence until unchanged and dirty
 		lifecycle("done", 87_000),
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "diagnostic", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, operation);
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, operation);
 	assert.equal(result.outcome, "candidate");
 	assert.notEqual(result.outcome === "candidate" && result.candidate.head, preCandidate.head);
 	assert.deepEqual(delays, [250, 250]);
@@ -1585,7 +1773,7 @@ test("delivered stall treats working dirty state as transient and exact blocked 
 		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("blocked", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: () => {}, result: { code: 0, stdout: "blocked", stderr: "" } },
 	);
-	const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 	assert.equal(result.outcome, "blocked");
 	assert.equal(inspections, 2);
 	assert.deepEqual(delays, [250]);
@@ -1615,7 +1803,7 @@ test("delivered stall fails closed on missing, malformed, mismatched, or uninspe
 				{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
 				{ command: "herdr", args: () => {}, result: lifecycle },
 			);
-			const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+			const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 			assert.equal(result.outcome, "unknown");
 			assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 			script.done();
@@ -1646,7 +1834,7 @@ test("delivered stall polling is interrupted by its request deadline or abort si
 			{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
 			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
 		);
-		const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+		const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
 		assert.equal(result.outcome, "interrupted");
 		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 		script.done();
@@ -1671,7 +1859,7 @@ test("delivered stall polling is interrupted by its request deadline or abort si
 			{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
 			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
 		);
-		const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
+		const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
 		assert.equal(result.outcome, "interrupted");
 		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 		script.done();
@@ -1712,7 +1900,7 @@ test("blocked, unknown, timeout, malformed, missing, and interrupted agent paths
 			const host = runtime(fixture, script);
 			const { attempt } = await fullAttempt(fixture, host, script);
 			script.push(...steps);
-			const result = await host.runWorker({ goal: GOAL, task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+			const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 			assert.equal(result.outcome, expected);
 			assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, prompts);
 			script.done();
@@ -1915,12 +2103,6 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
-		{ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({ type: "tab_list", tabs: [
-			{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root", pane_count: 1 },
-		] }) },
-		{ command: "herdr", args: ["pane", "list", "--workspace", WORKSPACE_ID], result: success({ type: "pane_list", panes: [
-			{ pane_id: ROOT_PANE_ID, tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, agent: null },
-		] }) },
 		{ command: "herdr", args: ["workspace", "close", WORKSPACE_ID], result: success({ type: "ok" }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
 	);
@@ -2116,17 +2298,9 @@ test("cleanup refuses mismatched or decoy resources and ambiguous close response
 		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
-		{ command: "herdr", args: ["tab", "list", "--workspace", WORKSPACE_ID], result: success({ type: "tab_list", tabs: [
-			{ tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, label: "root", pane_count: 1 },
-			{ tab_id: "tab-decoy", workspace_id: WORKSPACE_ID, label: "decoy", pane_count: 1 },
-		] }) },
-		{ command: "herdr", args: ["pane", "list", "--workspace", WORKSPACE_ID], result: success({ type: "pane_list", panes: [
-			{ pane_id: ROOT_PANE_ID, tab_id: ROOT_TAB_ID, workspace_id: WORKSPACE_ID, agent: null },
-			{ pane_id: "pane-decoy", tab_id: "tab-decoy", workspace_id: WORKSPACE_ID, agent: null },
-		] }) },
+		{ command: "herdr", args: ["workspace", "close", WORKSPACE_ID], result: success({ type: "ok" }) },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
 	);
-	const decoy = await decoyHost.cleanupHost({ kind: "workspace", task, attempt: decoyAttempt }, context());
-	assert.equal(decoy.outcome, "blocked");
-	assert.ok(decoyScript.calls.every(({ args }) => !(args[0] === "workspace" && args[1] === "close")));
+	assert.deepEqual(await decoyHost.cleanupHost({ kind: "workspace", task, attempt: decoyAttempt }, context()), { outcome: "completed" });
 	decoyScript.done();
 });

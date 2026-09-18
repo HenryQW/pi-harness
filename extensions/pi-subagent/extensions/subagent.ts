@@ -16,13 +16,13 @@ import {
 	createChildWorktree,
 	createEphemeralSubagentExecutor,
 	DELEGATE_TASK,
-	createRoleLaunch,
 	DEFAULT_MAX_TURNS,
 	EphemeralSubagentError,
 	finalizeChildWorktree,
+	finalizeRoleLaunch,
 	formatDuration,
 	loadRoles,
-	resolveRoleLaunch,
+	prepareRoleLaunch,
 	WorktreeSetupError,
 	worktreeContextNote,
 	type EphemeralSubagentActivityEvent,
@@ -620,28 +620,19 @@ export default function subagentExtension(
 
 			// Resolve against the latest known session context after each FIFO permit.
 			const launchCtx = () => latestCtx ?? ctx;
-			const resolveLaunch = (role: Role, delegation: Delegation) => {
+			const prepareLaunch = (role: Role, delegation: Delegation) => {
 				const context = launchCtx();
-				const launch = resolveRoleLaunch(pi, context, {
+				const launch = prepareRoleLaunch(pi, context, {
 					role,
 					task: DELEGATE_TASK,
 					...(delegation.modelClass === undefined ? {} : { modelClass: delegation.modelClass }),
 				});
 				if (delegation.model === undefined) return launch;
-				return createRoleLaunch(pi, context, {
+				return prepareRoleLaunch(pi, context, {
 					role,
 					route: replaceRouteModel(context, delegation.model, launch),
 				});
 			};
-			const notifyMissingSkills = (role: Role, launch: ReturnType<typeof resolveLaunch>) => {
-				if (launch.missingSkills.length) {
-					ctx.ui.notify(
-						`Subagent role ${role.name} skipped unavailable Pi skills: ${launch.missingSkills.join(", ")}.`,
-						"warning",
-					);
-				}
-			};
-
 			const foregroundWorkflow: ParsedWorkflow = { ...workflow, background: false };
 			const entries = identifyWorkflowEntries(toolCallId, foregroundWorkflow);
 			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
@@ -706,21 +697,18 @@ export default function subagentExtension(
 								// Route and effective Role resources resolve only after this entry's
 								// shared executor permit, before isolated state is created.
 								const role = reloadRole(entry.delegation.role);
-								const launch = resolveLaunch(role, entry.delegation);
-								notifyMissingSkills(role, launch);
-								model = modelReference(launch.model);
-								thinkingLevel = launch.thinkingLevel;
-								if (role.isolation === "worktree") {
+								const preparedLaunch = prepareLaunch(role, entry.delegation);
+								model = modelReference(preparedLaunch.model);
+								thinkingLevel = preparedLaunch.thinkingLevel;
+								if (preparedLaunch.isolation === "worktree") {
 									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
 								}
-								startWidgetItem(entry.id, entry.id, role.name, launch.model.id, launch.thinkingLevel, entry.delegation.name, ctx);
+								startWidgetItem(entry.id, entry.id, preparedLaunch.role, preparedLaunch.model.id, preparedLaunch.thinkingLevel, entry.delegation.name, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
-								return {
-									launch,
-									task: worktree ? `${entry.delegation.task}${worktreeContextNote(worktree)}` : entry.delegation.task,
-									cwd: worktree?.cwd ?? ctx.cwd,
-								};
+								const task = worktree ? `${entry.delegation.task}${worktreeContextNote(worktree)}` : entry.delegation.task;
+								const cwd = worktree?.cwd ?? ctx.cwd;
+								return { launch: finalizeRoleLaunch(preparedLaunch), task, cwd };
 							},
 						});
 						if (child.outcome === "failure") {

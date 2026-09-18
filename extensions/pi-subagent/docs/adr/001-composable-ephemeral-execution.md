@@ -8,8 +8,11 @@ Generic callers compose workflows with JavaScript. Fan-out and fan-in use promis
 
 Resource Policy is split at launch preparation:
 
-- Role owns base tools, extensions, and Skill names.
+- Pi Subagent alone parses and resolves effective Roles.
+- Role owns base tools, extension capability bundles, Skill names, and an exact MCP server allowlist.
 - Caller may add explicit tools, extensions, and environment through `createRoleLaunch`.
+- `resolveConfiguredRoleLaunch` reloads the current Role, package resources, Skill registry, model route, and MCP policy for each launch.
+- The prepared launch keeps the Role system prompt separate from prompt-free argv until the caller's final launch boundary.
 - The executor receives the resulting Pi Launch and does not discover resources.
 
 Built-in `implementer`, `reviewer`, and `scout` Roles ship as Markdown in `examples/roles/` and use the same parser as user Roles. For generic delegation, a same-named user Role explicitly overrides a built-in. The package does not install, copy, or write user configuration.

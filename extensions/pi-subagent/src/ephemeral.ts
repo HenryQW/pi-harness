@@ -92,6 +92,7 @@ export interface EphemeralSubagentRunInput {
 interface EphemeralSubagentResultBase {
 	exitCode: number;
 	output: string;
+	outputTruncated: boolean;
 	stderr: string;
 	stopReason?: string;
 	errorMessage?: string;
@@ -488,8 +489,13 @@ async function runPi(
 		let lineEventType: string | undefined;
 		let ignoreLine = false;
 		let output = "";
+		let outputTruncated = false;
 		const stderr = { prefix: "", totalBytes: 0 };
 		const partial = { prefix: "", totalBytes: 0 };
+		const updateOutput = (nextOutput: string) => {
+			output = nextOutput;
+			outputTruncated = partial.totalBytes > MAX_OUTPUT_BYTES;
+		};
 		let hasPartialText = false;
 		let stopReason: string | undefined;
 		let errorMessage: string | undefined;
@@ -586,6 +592,7 @@ async function runPi(
 					outcome,
 					exitCode,
 					output,
+					outputTruncated,
 					stderr: boundedText(stderr),
 					stopReason,
 					errorMessage,
@@ -708,12 +715,15 @@ async function runPi(
 				const update = record.assistantMessageEvent;
 				if (update && typeof update === "object" && !Array.isArray(update)) {
 					const assistantEvent = update as Record<string, unknown>;
-					if (assistantEvent.type === "text_start" && hasPartialText) appendBounded(partial, "\n");
+					if (assistantEvent.type === "text_start" && hasPartialText) {
+						appendBounded(partial, "\n");
+						updateOutput(boundedText(partial));
+					}
 					if (assistantEvent.type === "text_start") hasPartialText = true;
 					if (assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") {
 						hasPartialText = true;
 						appendBounded(partial, assistantEvent.delta);
-						output = boundedText(partial);
+						updateOutput(boundedText(partial));
 						invokeCallback("onUpdate", input.onUpdate, output);
 					}
 				}
@@ -742,7 +752,10 @@ async function runPi(
 			if (record.type !== "message_end") return;
 			const text = assistantText(record.message);
 			if (text !== undefined) {
-				output = capEphemeralSubagentOutput(text);
+				partial.prefix = "";
+				partial.totalBytes = 0;
+				appendBounded(partial, text);
+				updateOutput(capEphemeralSubagentOutput(text));
 				invokeCallback("onUpdate", input.onUpdate, output);
 			}
 			if (record.message && typeof record.message === "object" && !Array.isArray(record.message)) {
