@@ -12,6 +12,7 @@ const repair = "b".repeat(40);
 const base = "c".repeat(40);
 const cwd = process.cwd();
 const operationPaths = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-ci-no-operation-${index}`).join("\n") + "\n";
+const fixtureRunId = Symbol("fixtureRunId");
 
 type Check = ReturnType<typeof check>;
 type Job = ReturnType<typeof job>;
@@ -95,6 +96,7 @@ function check(id: number, jobId: number, options: {
 	const suiteId = options.suiteId ?? 61;
 	const conclusion = options.conclusion === undefined ? "failure" : options.conclusion;
 	return {
+		[fixtureRunId]: runId,
 		id,
 		url: `https://api.github.com/repos/acme/project/check-runs/${id}`,
 		details_url: `https://github.com/acme/project/actions/runs/${runId}/job/${jobId}`,
@@ -114,7 +116,6 @@ function job(id: number, checkId: number, options: {
 	stepName?: string;
 	status?: string;
 	conclusion?: string | null;
-	checkRunUrl?: string;
 } = {}) {
 	const runId = options.runId ?? 71;
 	const attempt = options.attempt ?? 2;
@@ -127,7 +128,7 @@ function job(id: number, checkId: number, options: {
 		head_sha: original,
 		url: `https://api.github.com/repos/acme/project/actions/jobs/${id}`,
 		html_url: `https://github.com/acme/project/actions/runs/${runId}/job/${id}`,
-		check_run_url: options.checkRunUrl ?? `https://api.github.com/repos/acme/project/check-runs/${checkId}`,
+		check_run_url: `https://api.github.com/repos/acme/project/check-runs/${checkId}`,
 		name: options.name ?? `job-${id}`,
 		status,
 		conclusion,
@@ -137,7 +138,7 @@ function job(id: number, checkId: number, options: {
 
 function run(snapshot: Snapshot, runId = 71) {
 	const runJob = snapshot.jobs.find((candidate) => candidate.run_id === runId);
-	const runCheck = snapshot.checks.find((candidate) => candidate.details_url.includes(`/runs/${runId}/`));
+	const runCheck = snapshot.checks.find((candidate) => candidate[fixtureRunId] === runId);
 	const attempt = runJob?.run_attempt ?? snapshot.attempt ?? 2;
 	return {
 		id: runId,
@@ -180,6 +181,19 @@ function harness(scenario: Scenario) {
 				return result(JSON.stringify(payload));
 			}
 			const snapshot = scenario.snapshots[Math.min(snapshotIndex, scenario.snapshots.length - 1)]!;
+			const runListMatch = /\/actions\/runs\?check_suite_id=(\d+)&head_sha=[a-f0-9]+&per_page=(\d+)&page=(\d+)$/.exec(endpoint);
+			if (runListMatch) {
+				const suiteId = Number(runListMatch[1]);
+				const perPage = Number(runListMatch[2]);
+				const page = Number(runListMatch[3]);
+				const runIds = [...new Set(snapshot.checks
+					.filter((candidate) => candidate.check_suite.id === suiteId)
+					.map((candidate) => candidate[fixtureRunId]))];
+				return result(JSON.stringify({
+					total_count: runIds.length,
+					workflow_runs: runIds.slice((page - 1) * perPage, page * perPage).map((runId) => run(snapshot, runId)),
+				}));
+			}
 			const runMatch = /\/actions\/runs\/(\d+)$/.exec(endpoint);
 			if (runMatch) return result(JSON.stringify(run(snapshot, Number(runMatch[1]))));
 			const jobsMatch = /\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs\?.*page=(\d+)$/.exec(endpoint);
@@ -329,14 +343,8 @@ test("proves check-run and job pagination complete and rejects bounded overflow 
 	});
 
 	await t.test("rejects a later run's declared jobs before exceeding the global record cap", async (t) => {
-		const firstJobs = Array.from({ length: 400 }, (_, index) => job(101 + index, 10_000 + index, {
-			runId: 71,
-			checkRunUrl: `https://api.github.com/repos/acme/project/check-runs/${10_000 + index}`,
-		}));
-		const secondJobs = Array.from({ length: 100 }, (_, index) => job(1_001 + index, 20_000 + index, {
-			runId: 72,
-			checkRunUrl: `https://api.github.com/repos/acme/project/check-runs/${20_000 + index}`,
-		}));
+		const firstJobs = Array.from({ length: 400 }, (_, index) => job(101 + index, 10_000 + index, { runId: 71 }));
+		const secondJobs = Array.from({ length: 100 }, (_, index) => job(1_001 + index, 20_000 + index, { runId: 72 }));
 		const app = harness({ snapshots: [{
 			checks: [check(11, 101), check(12, 1_001, { runId: 72, suiteId: 62 })],
 			jobs: [...firstJobs, ...secondJobs],
@@ -354,13 +362,7 @@ test("binds names only for display, retains immutable attempt identities, and ca
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	const evidence = await app.workflow.collect();
 	assert.equal(evidence.failures.length, 14);
-	assert.deepEqual(evidence.failures[0]!.checkRun, {
-		id: 100,
-		url: "https://api.github.com/repos/acme/project/check-runs/100",
-		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/200",
-		name: "display-name",
-		conclusion: "failure",
-	});
+	assert.deepEqual(evidence.failures[0]!.checkRuns, checks.map(({ id, name, conclusion }) => ({ id, name, conclusion })));
 	assert.deepEqual(evidence.failures[0]!.checkSuite, { id: 61 });
 	assert.deepEqual(evidence.failures[0]!.run, {
 		id: 71,
@@ -390,11 +392,22 @@ test("rejects evidence whose complete emitted metadata exceeds its byte budget",
 });
 
 test("blocks unsupported or ambiguous evidence and collects diagnosable stale failures", async (t) => {
+	await t.test("collects a query-suffixed Actions details URL by API identity", async (t) => {
+		const queried = check(11, 101);
+		queried.details_url += "?pr=307";
+		const app = harness({ snapshots: [{ checks: [queried], jobs: [job(101, 11)] }] });
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		const evidence = await app.workflow.collect();
+		assert.equal(evidence.failures[0]!.run.id, 71);
+		assert.equal(evidence.failures[0]!.job.id, 101);
+		assert.ok(app.calls.some(({ args }) => /\/actions\/runs\?check_suite_id=61&head_sha=/.test(args.at(-1) ?? "")));
+	});
+
 	await t.test("stale check and job conclusions", async (t) => {
 		const app = harness({ snapshots: [{ checks: [check(11, 101, { conclusion: "stale" })], jobs: [job(101, 11, { conclusion: "stale" })] }] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		const evidence = await app.workflow.collect();
-		assert.equal(evidence.failures[0]!.checkRun.conclusion, "stale");
+		assert.equal(evidence.failures[0]!.checkRuns[0]!.conclusion, "stale");
 		assert.equal(evidence.failures[0]!.job.conclusion, "stale");
 		assert.equal(app.logReads.get(101), 1);
 	});
@@ -409,20 +422,27 @@ test("blocks unsupported or ambiguous evidence and collects diagnosable stale fa
 		assert.equal(app.logReads.get(101), 1);
 	});
 
-	await t.test("unexpected API origin", async (t) => {
-		const foreign = check(11, 101);
-		foreign.url = "https://example.com/repos/acme/project/check-runs/11";
-		const app = harness({ snapshots: [{ checks: [foreign], jobs: [job(101, 11)] }] });
+	await t.test("ignores response URLs when API identity fields are valid", async (t) => {
+		const ignoredCheckUrls = check(11, 101);
+		ignoredCheckUrls.url = "not-an-api-identity";
+		ignoredCheckUrls.details_url = "https://example.test/not-a-job?pr=307";
+		const ignoredJobUrls = job(101, 11);
+		ignoredJobUrls.url = "not-an-api-identity";
+		ignoredJobUrls.html_url = "not-an-html-identity";
+		ignoredJobUrls.check_run_url = "not-a-check-run-identity";
+		const app = harness({ snapshots: [{ checks: [ignoredCheckUrls], jobs: [ignoredJobUrls] }] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-		await assert.rejects(app.workflow.collect(), /unexpected API origin/);
+		const evidence = await app.workflow.collect();
+		assert.equal(evidence.failures[0]!.job.id, 101);
 	});
 
-	await t.test("noncanonical decimal job identity", async (t) => {
-		const malformed = check(11, 101);
-		malformed.details_url = "https://github.com/acme/project/actions/runs/71/job/0101";
-		const app = harness({ snapshots: [{ checks: [malformed], jobs: [job(101, 11)] }] });
+	await t.test("ambiguous workflow runs for one check suite", async (t) => {
+		const app = harness({ snapshots: [{
+			checks: [check(11, 101), check(12, 102, { runId: 72 })],
+			jobs: [job(101, 11), job(102, 12, { runId: 72 })],
+		}] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-		await assert.rejects(app.workflow.collect(), /noncanonical decimal ID/);
+		await assert.rejects(app.workflow.collect(), /did not resolve to exactly one workflow run/);
 	});
 
 	await t.test("external failed provider", async (t) => {
@@ -431,14 +451,11 @@ test("blocks unsupported or ambiguous evidence and collects diagnosable stale fa
 		});
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await assert.rejects(app.workflow.collect(), /Unsupported failed check provider/);
-		assert.equal(app.calls.some(({ args }) => /\/actions\/runs\/71$/.test(args.at(-1) ?? "")), false);
+		assert.equal(app.calls.some(({ args }) => /\/actions\/runs(?:\?|\/)/.test(args.at(-1) ?? "")), false);
 	});
 
-	await t.test("duplicate immutable job mapping", async (t) => {
-		const duplicate = job(102, 12, {
-			checkRunUrl: "https://api.github.com/repos/acme/project/check-runs/11",
-		});
-		const app = harness({ snapshots: [{ checks: [check(11, 101)], jobs: [job(101, 11), duplicate] }] });
+	await t.test("duplicate immutable job identity", async (t) => {
+		const app = harness({ snapshots: [{ checks: [check(11, 101)], jobs: [job(101, 11), job(101, 12)] }] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await assert.rejects(app.workflow.collect(), /duplicate job identities|ambiguous duplicate job identities/);
 	});

@@ -1,6 +1,7 @@
 import type { Exec } from "@henryqw/pi-process";
 import {
 	inspectWorktree,
+	isRecord,
 	readHead,
 	requiredOid,
 	requiredText,
@@ -31,10 +32,6 @@ export type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
 	};
 	revalidateReadiness: (local: InspectedLocalMergeSafety) => Promise<void>;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function validateInspectionInput(input: InspectLocalMergeSafetyInput): void {
 	requiredText(input.cwd, "cwd");

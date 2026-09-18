@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
+	cloneCurrentPullRequest,
 	loadCurrentPullRequest,
 	readValidatedRemoteAuthority,
 	samePullRequestSnapshot,
@@ -9,6 +9,7 @@ import {
 	type PullRequestLoadContext,
 } from "./pr-github.ts";
 import {
+	extensionExecApi,
 	inspectWorktree,
 	isAncestor,
 	readHead,
@@ -50,9 +51,6 @@ type StepIdentity = {
 
 type JobIdentity = {
 	id: number;
-	url: string;
-	htmlUrl: string;
-	checkRunUrl: string;
 	runId: number;
 	attempt: number;
 	headOid: string;
@@ -64,8 +62,6 @@ type JobIdentity = {
 
 type CheckIdentity = {
 	id: number;
-	url: string;
-	detailsUrl: string | null;
 	suiteId: number;
 	headOid: string;
 	name: string;
@@ -76,8 +72,6 @@ type CheckIdentity = {
 
 type RunIdentity = {
 	id: number;
-	url: string;
-	htmlUrl: string;
 	attempt: number;
 	suiteId: number;
 	headOid: string;
@@ -87,7 +81,7 @@ type RunIdentity = {
 };
 
 type FailureIdentity = {
-	check: CheckIdentity;
+	checks: CheckIdentity[];
 	run: RunIdentity;
 	job: JobIdentity;
 	failedSteps: StepIdentity[];
@@ -99,7 +93,7 @@ type CiSnapshot = {
 };
 
 export type CiFailureEvidence = {
-	checkRun: { id: number; url: string; detailsUrl: string; name: string; conclusion: string };
+	checkRuns: Array<{ id: number; name: string; conclusion: string }>;
 	checkSuite: { id: number };
 	run: { id: number; url: string; attempt: number };
 	job: { id: number; url: string; name: string; conclusion: string };
@@ -137,18 +131,6 @@ export type CiPublishResult = {
 	head: string;
 	attempt: "applied";
 };
-
-function cloneAuthority(value: CurrentPullRequest): CurrentPullRequest {
-	return {
-		...value,
-		url: new URL(value.url.href),
-		conditions: { ...value.conditions },
-		local: { ...value.local },
-		base: { ...value.base },
-		head: { ...value.head },
-		target: { ...value.target },
-	};
-}
 
 function record(value: unknown, label: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} returned invalid JSON`);
@@ -204,89 +186,10 @@ function outputLine(output: string, label: string): string {
 	return requiredText(lines[0], label);
 }
 
-function secureUrl(value: unknown, label: string): URL {
-	const raw = text(value, label);
-	let url: URL;
-	try {
-		url = new URL(raw);
-	} catch {
-		throw new Error(`${label} returned an invalid URL`);
-	}
-	if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) {
-		throw new Error(`${label} returned an invalid URL`);
-	}
-	return url;
-}
-
-function pathParts(url: URL): string[] {
-	const parts = url.pathname.split("/").filter(Boolean);
-	if (parts.some((part) => !part || part === "." || part === ".." || part.includes("%"))) {
-		throw new Error("GitHub returned an invalid identity URL");
-	}
-	return parts;
-}
-
-function sameRepository(parts: readonly string[], repository: string): boolean {
-	const expected = repository.split("/");
-	return parts.length === 2 && expected.length === 2 &&
-		parts[0]!.toLowerCase() === expected[0]!.toLowerCase() &&
-		parts[1]!.toLowerCase() === expected[1]!.toLowerCase();
-}
-
-function parseApiIdentityUrl(
-	value: unknown,
-	label: string,
-	host: string,
-	repository: string,
-	kind: "check-runs" | "runs" | "jobs",
-	expectedId: number,
-): string {
-	const url = secureUrl(value, label);
-	const parts = pathParts(url);
-	const expectedHost = (host === "github.com" ? "api.github.com" : host).toLowerCase();
-	if (url.hostname.toLowerCase() !== expectedHost) throw new Error(`${label} returned an unexpected API origin`);
-	const tailSize = kind === "check-runs" ? 5 : 6;
-	const tail = parts.slice(-tailSize);
-	const valid = kind === "check-runs"
-		? tail[0] === "repos" && sameRepository(tail.slice(1, 3), repository) && tail[3] === kind
-		: tail[0] === "repos" && sameRepository(tail.slice(1, 3), repository) && tail[3] === "actions" && tail[4] === kind;
-	if (!valid || tail[tail.length - 1] !== String(expectedId)) throw new Error(`${label} did not match its immutable ID`);
+function actionsUrl(authority: CurrentPullRequest, suffix: string): string {
+	const url = new URL(authority.url.origin);
+	url.pathname = `/${authority.base.repository}/actions/${suffix}`;
 	return url.href;
-}
-
-function parseRunHtmlUrl(value: unknown, label: string, host: string, repository: string, expectedId: number): string {
-	const url = secureUrl(value, label);
-	const parts = pathParts(url);
-	if (url.hostname.toLowerCase() !== host || parts.length !== 5 || !sameRepository(parts.slice(0, 2), repository) ||
-		parts[2] !== "actions" || parts[3] !== "runs" || parts[4] !== String(expectedId)) {
-		throw new Error(`${label} did not match its immutable ID`);
-	}
-	return url.href;
-}
-
-function decimalIdentity(value: string, label: string): number {
-	const parsed = integer(Number(value), label);
-	if (String(parsed) !== value) throw new Error(`${label} returned a noncanonical decimal ID`);
-	return parsed;
-}
-
-function parseJobHtmlUrl(
-	value: unknown,
-	label: string,
-	host: string,
-	repository: string,
-): { url: string; runId: number; jobId: number } {
-	const url = secureUrl(value, label);
-	const parts = pathParts(url);
-	if (url.hostname.toLowerCase() !== host || parts.length !== 7 || !sameRepository(parts.slice(0, 2), repository) ||
-		parts[2] !== "actions" || parts[3] !== "runs" || parts[5] !== "job") {
-		throw new Error(`${label} was not an immutable GitHub Actions job URL`);
-	}
-	return {
-		url: url.href,
-		runId: decimalIdentity(parts[4]!, `${label} run ID`),
-		jobId: decimalIdentity(parts[6]!, `${label} job ID`),
-	};
 }
 
 function tailUtf8(value: string, limit: number): { text: string; truncated: boolean } {
@@ -308,24 +211,28 @@ function tailUtf8(value: string, limit: number): { text: string; truncated: bool
 }
 
 function failureEvidence(
+	authority: CurrentPullRequest,
 	failure: FailureIdentity,
 	log: { text: string; truncated: boolean },
 ): CiFailureEvidence {
-	const { check, run, job, failedSteps } = failure;
-	if (check.detailsUrl === null || check.conclusion === null || job.conclusion === null) {
+	const { checks, run, job, failedSteps } = failure;
+	if (job.conclusion === null || checks.some(({ conclusion: value }) => value === null)) {
 		throw new Error(`Failed job ${job.id} omitted required evidence identity`);
 	}
 	return {
-		checkRun: {
+		checkRuns: checks.map((check) => ({
 			id: check.id,
-			url: check.url,
-			detailsUrl: check.detailsUrl,
 			name: check.name,
-			conclusion: check.conclusion,
+			conclusion: check.conclusion!,
+		})),
+		checkSuite: { id: run.suiteId },
+		run: { id: run.id, url: actionsUrl(authority, `runs/${run.id}`), attempt: run.attempt },
+		job: {
+			id: job.id,
+			url: actionsUrl(authority, `runs/${run.id}/job/${job.id}`),
+			name: job.name,
+			conclusion: job.conclusion,
 		},
-		checkSuite: { id: check.suiteId },
-		run: { id: run.id, url: run.htmlUrl, attempt: run.attempt },
-		job: { id: job.id, url: job.htmlUrl, name: job.name, conclusion: job.conclusion },
 		failedSteps: failedSteps.map((step) => {
 			if (step.conclusion === null) throw new Error(`Failed job ${job.id} step omitted its conclusion`);
 			return { number: step.number, name: step.name, conclusion: step.conclusion };
@@ -339,17 +246,18 @@ function jsonBytes(value: unknown): number {
 }
 
 function boundedEvidenceRecord(
+	authority: CurrentPullRequest,
 	failure: FailureIdentity,
 	rawLog: { text: string; truncated: boolean },
 	maxBytes: number,
 ): CiFailureEvidence {
-	const metadata = failureEvidence(failure, { text: "", truncated: false });
+	const metadata = failureEvidence(authority, failure, { text: "", truncated: false });
 	const metadataBytes = jsonBytes(metadata);
 	if (metadataBytes > maxBytes) throw new Error(`Failed job ${failure.job.id} metadata exceeds its evidence budget`);
 	let logBytes = Math.min(Buffer.byteLength(rawLog.text, "utf8"), maxBytes - metadataBytes);
 	while (true) {
 		const retained = tailUtf8(rawLog.text, logBytes);
-		const evidence = failureEvidence(failure, {
+		const evidence = failureEvidence(authority, failure, {
 			text: retained.text,
 			truncated: rawLog.truncated || retained.truncated,
 		});
@@ -376,21 +284,16 @@ function authorityIdentity(value: CurrentPullRequest) {
 function snapshotFingerprint(authority: CurrentPullRequest, failures: FailureIdentity[]): string {
 	return createHash("sha256").update(JSON.stringify({
 		authority: authorityIdentity(authority),
-		failures: failures.map(({ check, run, job, failedSteps }) => ({
-			check,
+		failures: failures.map(({ checks, run, job, failedSteps }) => ({
+			checks,
 			run: {
 				id: run.id,
-				url: run.url,
-				htmlUrl: run.htmlUrl,
 				attempt: run.attempt,
 				suiteId: run.suiteId,
 				headOid: run.headOid,
 			},
 			job: {
 				id: job.id,
-				url: job.url,
-				htmlUrl: job.htmlUrl,
-				checkRunUrl: job.checkRunUrl,
 				runId: job.runId,
 				attempt: job.attempt,
 				headOid: job.headOid,
@@ -432,7 +335,7 @@ export class PullRequestCiFixer {
 			: requiredOid(options.authority.target.remoteOid, "remote OID");
 		if (remote !== head) throw new TypeError("CI repair requires the pull request head to match the configured remote OID");
 		this.cwd = requiredText(options.cwd, "cwd");
-		this.authority = cloneAuthority(options.authority);
+		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
 		this.exec = options.exec ?? spawnBounded;
@@ -443,14 +346,8 @@ export class PullRequestCiFixer {
 		return { cwd: this.cwd, signal: this.signal, ...extra };
 	}
 
-	private pi(): Pick<ExtensionAPI, "exec"> {
-		return {
-			exec: (command, args, options) => this.exec(command, args, {
-				cwd: options?.cwd ?? this.cwd,
-				signal: options?.signal ?? this.signal,
-				timeoutMs: options?.timeout,
-			}),
-		} as Pick<ExtensionAPI, "exec">;
+	private pi() {
+		return extensionExecApi(this.exec, this.cwd, this.signal);
 	}
 
 	private context(): PullRequestLoadContext {
@@ -506,11 +403,8 @@ export class PullRequestCiFixer {
 		if (suite.head_sha !== undefined && requiredOid(suite.head_sha, `check run ${id} suite head OID`) !== headOid) {
 			throw new Error(`Check run ${id} suite is stale for the frozen pull request head`);
 		}
-		const detailsUrl = item.details_url === null ? null : secureUrl(item.details_url, `check run ${id} details URL`).href;
 		return {
 			id,
-			url: parseApiIdentityUrl(item.url, `check run ${id} URL`, this.authority.host, this.authority.base.repository, "check-runs", id),
-			detailsUrl,
 			suiteId: integer(suite.id, `check run ${id} suite ID`),
 			headOid,
 			name: text(item.name, `check run ${id} name`),
@@ -555,8 +449,7 @@ export class PullRequestCiFixer {
 		}
 		if (expectedTotal === undefined || checks.length !== expectedTotal) throw new Error("Check-run pagination was incomplete");
 		checks.sort((left, right) => left.id - right.id);
-		if (new Set(checks.map(({ id }) => id)).size !== checks.length ||
-			new Set(checks.map(({ url }) => url)).size !== checks.length) {
+		if (new Set(checks.map(({ id }) => id)).size !== checks.length) {
 			throw new Error("Check-run pagination returned duplicate immutable identities");
 		}
 		return checks;
@@ -586,13 +479,8 @@ export class PullRequestCiFixer {
 		const steps = array(item.steps, `job ${id} steps`).map((step) => this.parseStep(step, id));
 		steps.sort((left, right) => left.number - right.number);
 		if (new Set(steps.map(({ number }) => number)).size !== steps.length) throw new Error(`Job ${id} returned duplicate step identities`);
-		const html = parseJobHtmlUrl(item.html_url, `job ${id} HTML URL`, this.authority.host, this.authority.base.repository);
-		if (html.runId !== runId || html.jobId !== id) throw new Error(`Job ${id} HTML URL did not match its immutable IDs`);
 		return {
 			id,
-			url: parseApiIdentityUrl(item.url, `job ${id} URL`, this.authority.host, this.authority.base.repository, "jobs", id),
-			htmlUrl: html.url,
-			checkRunUrl: secureUrl(item.check_run_url, `job ${id} check-run URL`).href,
 			runId,
 			attempt,
 			headOid,
@@ -603,7 +491,25 @@ export class PullRequestCiFixer {
 		};
 	}
 
-	private async readRun(runId: number, budget: { pages: number; records: number }): Promise<RunIdentity> {
+	private async readRunIdForSuite(suiteId: number, budget: { pages: number; records: number }): Promise<number> {
+		const label = `List workflow runs for check suite ${suiteId}`;
+		this.consumePage(budget);
+		const endpoint = `repos/${this.authority.base.repository}/actions/runs?check_suite_id=${suiteId}&head_sha=${this.authority.head.oid}&per_page=2&page=1`;
+		const parsed = record(parseJson(await this.api(endpoint, label), label), label);
+		const runs = array(parsed.workflow_runs, label);
+		if (integer(parsed.total_count, `${label} total`, true) !== 1 || runs.length !== 1) {
+			throw new Error(`Check suite ${suiteId} did not resolve to exactly one workflow run`);
+		}
+		this.consumeRecords(budget, 1);
+		const item = record(runs[0], label);
+		if (integer(item.check_suite_id, `${label} suite ID`) !== suiteId ||
+			requiredOid(item.head_sha, `${label} head OID`) !== this.authority.head.oid) {
+			throw new Error(`${label} returned a stale or unrelated run`);
+		}
+		return integer(item.id, `${label} run ID`);
+	}
+
+	private async readRun(runId: number, suiteId: number, budget: { pages: number; records: number }): Promise<RunIdentity> {
 		const label = `Read workflow run ${runId}`;
 		const item = record(parseJson(await this.api(
 			`repos/${this.authority.base.repository}/actions/runs/${runId}`,
@@ -620,12 +526,13 @@ export class PullRequestCiFixer {
 			throw new Error(`${label} does not belong to the frozen pull request repositories`);
 		}
 		const currentStatus = status(item.status, label);
+		if (integer(item.check_suite_id, `${label} suite ID`) !== suiteId) {
+			throw new Error(`${label} does not belong to check suite ${suiteId}`);
+		}
 		const run: RunIdentity = {
 			id: runId,
-			url: parseApiIdentityUrl(item.url, `${label} URL`, this.authority.host, this.authority.base.repository, "runs", runId),
-			htmlUrl: parseRunHtmlUrl(item.html_url, `${label} HTML URL`, this.authority.host, this.authority.base.repository, runId),
 			attempt,
-			suiteId: integer(item.check_suite_id, `${label} suite ID`),
+			suiteId,
 			headOid,
 			status: currentStatus,
 			conclusion: conclusion(item.conclusion, currentStatus, label),
@@ -660,9 +567,7 @@ export class PullRequestCiFixer {
 		}
 		if (expectedTotal === undefined || run.jobs.length !== expectedTotal) throw new Error(`Workflow run ${runId} job pagination was incomplete`);
 		run.jobs.sort((left, right) => left.id - right.id);
-		if (new Set(run.jobs.map(({ id }) => id)).size !== run.jobs.length ||
-			new Set(run.jobs.map(({ url }) => url)).size !== run.jobs.length ||
-			new Set(run.jobs.map(({ checkRunUrl }) => checkRunUrl)).size !== run.jobs.length) {
+		if (new Set(run.jobs.map(({ id }) => id)).size !== run.jobs.length) {
 			throw new Error(`Workflow run ${runId} returned duplicate job identities`);
 		}
 		return run;
@@ -678,68 +583,44 @@ export class PullRequestCiFixer {
 		const unsupported = failed.find(({ provider }) => provider !== "github-actions");
 		if (unsupported) throw new Error(`Unsupported failed check provider for immutable evidence: ${unsupported.provider}`);
 
-		const runIds = new Set<number>();
-		const detailIdentities = new Map<number, { url: string; runId: number; jobId: number }>();
+		const checksBySuite = new Map<number, CheckIdentity[]>();
 		for (const check of failed) {
-			if (check.detailsUrl === null) throw new Error(`Failed check run ${check.id} omitted its immutable job URL`);
-			const detail = parseJobHtmlUrl(
-				check.detailsUrl,
-				`check run ${check.id} details URL`,
-				this.authority.host,
-				this.authority.base.repository,
-			);
-			detailIdentities.set(check.id, detail);
-			runIds.add(detail.runId);
+			const suiteChecks = checksBySuite.get(check.suiteId) ?? [];
+			suiteChecks.push(check);
+			checksBySuite.set(check.suiteId, suiteChecks);
 		}
 
 		const runs: RunIdentity[] = [];
-		this.consumeRecords(pageBudget, runIds.size);
-		for (const runId of [...runIds].sort((left, right) => left - right)) {
-			runs.push(await this.readRun(runId, pageBudget));
+		for (const suiteId of [...checksBySuite.keys()].sort((left, right) => left - right)) {
+			const runId = await this.readRunIdForSuite(suiteId, pageBudget);
+			this.consumeRecords(pageBudget, 1);
+			runs.push(await this.readRun(runId, suiteId, pageBudget));
+		}
+		if (new Set(runs.map(({ id }) => id)).size !== runs.length) {
+			throw new Error("Check suites returned ambiguous duplicate workflow run identities");
 		}
 		const allJobs = runs.flatMap(({ jobs }) => jobs);
-		if (new Set(allJobs.map(({ id }) => id)).size !== allJobs.length ||
-			new Set(allJobs.map(({ checkRunUrl }) => checkRunUrl)).size !== allJobs.length) {
+		if (new Set(allJobs.map(({ id }) => id)).size !== allJobs.length) {
 			throw new Error("Workflow runs returned ambiguous duplicate job identities");
 		}
-		const runById = new Map(runs.map((run) => [run.id, run]));
-		for (const run of runs) {
-			for (const job of run.jobs) {
-				const linked = checks.filter((check) => check.url === job.checkRunUrl);
-				if (linked.length !== 1 || linked[0]!.detailsUrl !== job.htmlUrl || linked[0]!.suiteId !== run.suiteId ||
-					linked[0]!.status !== job.status || linked[0]!.conclusion !== job.conclusion) {
-					throw new Error(`Job ${job.id} has an incomplete, replaced, or ambiguous immutable check-run mapping`);
-				}
-			}
-		}
-		const usedJobs = new Set<number>();
+
 		const failures: FailureIdentity[] = [];
-		for (const check of failed) {
-			const detail = detailIdentities.get(check.id)!;
-			const run = runById.get(detail.runId);
-			if (!run || run.suiteId !== check.suiteId) {
-				throw new Error(`Failed check run ${check.id} has an ambiguous or stale suite-to-run mapping`);
-			}
-			const matches = run.jobs.filter((job) =>
-				job.id === detail.jobId && job.checkRunUrl === check.url && job.htmlUrl === detail.url
+		for (const run of runs) {
+			const failedJobs = run.jobs.filter(({ status: value, conclusion: result }) =>
+				value === "completed" && result !== null && FAILED_CONCLUSIONS.has(result)
 			);
-			if (matches.length !== 1 || usedJobs.has(detail.jobId)) {
-				throw new Error(`Failed check run ${check.id} has an incomplete, duplicate, or ambiguous immutable job mapping`);
+			if (!failedJobs.length) throw new Error(`Check suite ${run.suiteId} has no current failed workflow jobs`);
+			const suiteChecks = checksBySuite.get(run.suiteId)!;
+			for (const job of failedJobs) {
+				failures.push({
+					checks: suiteChecks,
+					run,
+					job,
+					failedSteps: job.steps.filter(({ conclusion: value }) => value !== null && FAILED_CONCLUSIONS.has(value)),
+				});
 			}
-			const job = matches[0]!;
-			if (job.status !== "completed" || job.conclusion !== check.conclusion ||
-				job.conclusion === null || !FAILED_CONCLUSIONS.has(job.conclusion)) {
-				throw new Error(`Failed check run ${check.id} was replaced or is stale relative to its job`);
-			}
-			usedJobs.add(job.id);
-			failures.push({
-				check,
-				run,
-				job,
-				failedSteps: job.steps.filter(({ conclusion: value }) => value !== null && FAILED_CONCLUSIONS.has(value)),
-			});
 		}
-		failures.sort((left, right) => left.check.id - right.check.id);
+		failures.sort((left, right) => left.run.id - right.run.id || left.job.id - right.job.id);
 		return {
 			fingerprint: snapshotFingerprint(fresh, failures),
 			failures,
@@ -763,7 +644,7 @@ export class PullRequestCiFixer {
 		this.state.phase = "collecting";
 		try {
 			const before = await this.readSnapshot(true);
-			const metadata = before.failures.map((failure) => failureEvidence(failure, { text: "", truncated: false }));
+			const metadata = before.failures.map((failure) => failureEvidence(this.authority, failure, { text: "", truncated: false }));
 			const metadataBytes = metadata.map(jsonBytes);
 			const metadataTotal = jsonBytes(metadata);
 			if (metadataBytes.some((bytes) => bytes > EVIDENCE_RECORD_BYTES) || metadataTotal > EVIDENCE_TOTAL_BYTES) {
@@ -776,7 +657,7 @@ export class PullRequestCiFixer {
 				const baseBytes = metadataBytes[index]!;
 				const share = Math.floor(remainingBytes / (before.failures.length - index));
 				const raw = await this.readJobLog(failure.job.id);
-				const evidence = boundedEvidenceRecord(failure, raw, Math.min(EVIDENCE_RECORD_BYTES, baseBytes + share));
+				const evidence = boundedEvidenceRecord(this.authority, failure, raw, Math.min(EVIDENCE_RECORD_BYTES, baseBytes + share));
 				remainingBytes -= jsonBytes(evidence) - baseBytes;
 				failures.push(evidence);
 			}

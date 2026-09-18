@@ -18,8 +18,6 @@ import {
 } from "../extensions/pr-comment-sweep.ts";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
 
-const operationPaths = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-sweep-no-operation-${index}`).join("\n") + "\n";
-
 function result(stdout = "", code = 0, stderr = ""): ExecResult {
 	return { stdout, stderr, code, killed: false };
 }

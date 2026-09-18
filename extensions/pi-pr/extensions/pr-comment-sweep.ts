@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	extensionConfigDir,
@@ -28,8 +27,10 @@ import {
 	type PullRequestLoadContext,
 } from "./pr-github.ts";
 import {
+	extensionExecApi,
 	inspectGitOperation,
 	isAncestor,
+	isRecord,
 	parseNulPaths,
 	parseStatusSnapshot,
 	readHead,
@@ -134,10 +135,6 @@ export type PullRequestCommentSweepOptions = {
 	newRunId?: () => string;
 	pause?: (milliseconds: number) => Promise<void>;
 };
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
 	const actual = Object.keys(value).sort();
 	const expected = [...keys].sort();
@@ -558,14 +555,8 @@ export class PullRequestCommentSweep {
 		return { cwd: this.cwd, signal: this.signal, ...extra };
 	}
 
-	private pi(): Pick<ExtensionAPI, "exec"> {
-		return {
-			exec: (command, args, options) => this.exec(command, args, {
-				cwd: options?.cwd ?? this.cwd,
-				signal: options?.signal ?? this.signal,
-				timeoutMs: options?.timeout,
-			}),
-		} as Pick<ExtensionAPI, "exec">;
+	private pi() {
+		return extensionExecApi(this.exec, this.cwd, this.signal);
 	}
 
 	private context(): PullRequestLoadContext {

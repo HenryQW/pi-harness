@@ -1,6 +1,6 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
+	cloneCurrentPullRequest,
 	loadCurrentPullRequest,
 	samePullRequestSnapshot,
 	type CurrentPullRequest,
@@ -8,6 +8,7 @@ import {
 } from "./pr-github.ts";
 import {
 	assertOnlyDeclaredStatusChanged,
+	extensionExecApi,
 	inspectWorktree,
 	isAncestor,
 	parseNulPaths,
@@ -42,18 +43,6 @@ export type UpdateBranchOptions = {
 	exec?: Exec;
 	loadCurrentPullRequest?: Load;
 };
-
-function cloneAuthority(value: CurrentPullRequest): CurrentPullRequest {
-	return {
-		...value,
-		url: new URL(value.url.href),
-		conditions: { ...value.conditions },
-		local: { ...value.local },
-		base: { ...value.base },
-		head: { ...value.head },
-		target: { ...value.target },
-	};
-}
 
 function sameAuthority(frozen: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
 	return samePullRequestSnapshot(frozen, fresh) && frozen.base.oid === fresh.base.oid &&
@@ -95,7 +84,7 @@ export class PullRequestBranchUpdater {
 			throw new TypeError("Pull request does not require a branch update");
 		}
 		this.cwd = options.cwd;
-		this.authority = cloneAuthority(options.authority);
+		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
 		this.exec = options.exec ?? spawnBounded;
@@ -106,14 +95,8 @@ export class PullRequestBranchUpdater {
 		return { cwd: this.cwd, signal: this.signal, ...extra };
 	}
 
-	private pi(): Pick<ExtensionAPI, "exec"> {
-		return {
-			exec: (command, args, options) => this.exec(command, args, {
-				cwd: options?.cwd ?? this.cwd,
-				signal: options?.signal ?? this.signal,
-				timeoutMs: options?.timeout,
-			}),
-		} as Pick<ExtensionAPI, "exec">;
+	private pi() {
+		return extensionExecApi(this.exec, this.cwd, this.signal);
 	}
 
 	private context(): PullRequestLoadContext {
@@ -133,13 +116,6 @@ export class PullRequestBranchUpdater {
 		const head = await readHead(this.exec, this.execOptions());
 		if (head !== expectedHead) throw new Error("Branch update cancelled: local HEAD changed");
 		return discovery.pullRequest;
-	}
-
-	private async liveBaseMatches(): Promise<void> {
-		const discovery = await this.load(this.pi(), this.context());
-		if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
-			throw new Error("Branch update cancelled: live base or pull request authority changed");
-		}
 	}
 
 	private async verifyMerge(originalHead: string): Promise<{ head: string; fastForward: boolean }> {

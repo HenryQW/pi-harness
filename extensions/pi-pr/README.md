@@ -172,7 +172,8 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 - A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
 - A branch update resolves the base repository ref directly. It stops if that ref moves before merge or push.
 - Before a comment-sweep push, it revalidates the configured destination, full PR identity, and local HEAD. It pushes the captured OID.
-- CI repair streams a bounded failed-step log tail and runs one narrow local reproducer before editing.
+- CI repair resolves workflow runs from check-suite IDs. It does not treat HTML details links as identity.
+- It streams a bounded failed-step log tail and runs one narrow local reproducer before editing.
 - Before push, CI repair revalidates the saved destination, open PR, failure evidence, and repair HEAD.
 - An already-published local HEAD needs no second push.
 - Direct merge requires final confirmation and a fresh readiness check.
