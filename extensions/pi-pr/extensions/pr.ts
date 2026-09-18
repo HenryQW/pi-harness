@@ -16,7 +16,6 @@ import {
 	type PrCommandDependencies,
 	type PrCommandInvocation,
 	type WorkflowPromptIdentity,
-	type WorkflowReservation,
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
 import {
@@ -27,7 +26,7 @@ import {
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
-import { runChecked } from "./pr-execution.ts";
+import { isRecord, runChecked } from "./pr-execution.ts";
 import {
 	discoveryIssueKey,
 	discoveryIssueMessage,
@@ -191,10 +190,6 @@ function matchesWorkflowPrompt(prompt: string, identity: WorkflowPromptIdentity)
 	const matchesSkill = tokens.has(`/${identity.skill}`) ||
 		(skillName !== "" && tokens.has("<skill") && tokens.has(`name="${skillName}"`));
 	return matchesSkill && tokens.has(`runId=${identity.runId}`) && tokens.has(`action=${identity.action}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseWorkspaceLabel(response: Record<string, unknown>, workspaceId: string): string {

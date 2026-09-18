@@ -1,4 +1,3 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	branchTrackingRef,
@@ -22,8 +21,10 @@ import {
 } from "./pr-routing.ts";
 import {
 	assertOnlyDeclaredStatusChanged,
+	extensionExecApi,
 	inspectWorktree,
 	isAncestor,
+	isRecord,
 	parseNulPaths,
 	readHead,
 	readRemoteOid,
@@ -93,10 +94,6 @@ function line(output: string, label: string): string {
 	const values = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
 	if (values.length !== 1 || !values[0]) throw new Error(`${label} returned invalid output`);
 	return values[0];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function graphQlResponse(output: string, action: string): Record<string, unknown> {
@@ -208,14 +205,8 @@ export class PullRequestCreator {
 		return { cwd: this.cwd, signal: this.signal, ...extra };
 	}
 
-	private pi(): Pick<ExtensionAPI, "exec"> {
-		return {
-			exec: (command, args, options) => this.exec(command, args, {
-				cwd: options?.cwd ?? this.cwd,
-				signal: options?.signal ?? this.signal,
-				timeoutMs: options?.timeout,
-			}),
-		} as Pick<ExtensionAPI, "exec">;
+	private pi() {
+		return extensionExecApi(this.exec, this.cwd, this.signal);
 	}
 
 	private context(): PullRequestLoadContext {

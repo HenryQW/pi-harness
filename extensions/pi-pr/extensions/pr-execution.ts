@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { spawnBounded, type Exec, type ExecOptions, type ExecResult } from "@henryqw/pi-process";
 import { lock } from "proper-lockfile";
@@ -15,6 +16,10 @@ const WORKTREE_LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, r
 
 export type AttemptState = "none" | "attempting" | "applied" | "blocked" | "unknown";
 export type GitWorktreeState = "clean" | "dirty" | "operation";
+
+export function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 export function requiredText(value: unknown, label: string): string {
 	if (typeof value !== "string" || !value || value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
@@ -31,6 +36,16 @@ export function requiredOid(value: unknown, label: string): string {
 
 export function commandText(command: string, args: readonly string[]): string {
 	return [command, ...args].join(" ");
+}
+
+export function extensionExecApi(exec: Exec, cwd: string, signal?: AbortSignal): Pick<ExtensionAPI, "exec"> {
+	return {
+		exec: (command, args, options) => exec(command, args, {
+			cwd: options?.cwd ?? cwd,
+			signal: options?.signal ?? signal,
+			timeoutMs: options?.timeout,
+		}),
+	} as Pick<ExtensionAPI, "exec">;
 }
 
 export async function runChecked(

@@ -18,8 +18,9 @@ The invocation authorizes one scoped edit, commit, and guarded publish.
 - Never expose raw logs, credentials, or environment values in the final report.
 
 The collect action closes after one call. It returns only current failed GitHub
-Actions jobs bound to immutable check, suite, run, attempt, job, and step IDs.
-If it blocks, report the blocker and stop.
+Actions jobs bound to immutable check-suite, run, attempt, job, and step IDs.
+It resolves runs through GitHub API fields, not HTML details links. If it blocks,
+report the blocker and stop.
 
 ## Diagnose and repair
 
@@ -49,7 +50,7 @@ If publication blocks or reports an unknown outcome, stop without another push.
 
 Report only:
 
-- **Checks:** failed check names and returned URLs.
+- **Checks:** failed check and job names with returned run and job URLs.
 - **Fix:** root cause and scoped files changed.
 - **Validation:** commands and results, including reproduction limits.
 - **Commit:** commit ID and message, or state that none was made.

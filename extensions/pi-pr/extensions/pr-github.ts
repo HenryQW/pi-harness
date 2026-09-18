@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
 import {
 	inspectWorktreeState,
+	isRecord,
 	withWorktreeLock,
 	type GitWorktreeState,
 } from "./pr-execution.ts";
@@ -96,6 +97,18 @@ export type CurrentPullRequest = PullRequest & {
 };
 
 export type CurrentPullRequestDiscovery = PullRequestDiscovery<CurrentPullRequest>;
+
+export function cloneCurrentPullRequest(value: CurrentPullRequest): CurrentPullRequest {
+	return {
+		...value,
+		url: new URL(value.url.href),
+		conditions: { ...value.conditions },
+		local: { ...value.local },
+		base: { ...value.base },
+		head: { ...value.head },
+		target: { ...value.target },
+	};
+}
 
 export type PullRequestObservation = {
 	pullRequest: { url: string; number: number; host: string };
@@ -251,10 +264,6 @@ type ListedPullRequest = {
 
 function fail(action: string, reason: string): never {
 	throw new PullRequestLoadError(`${action} failed: ${reason}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function text(value: unknown, action: string, field: string): string {
@@ -602,37 +611,13 @@ function checkOutcome(state: string): "failure" | "success" | "running" {
 	return "running";
 }
 
-function canonicalPositiveDecimal(value: string): boolean {
-	const parsed = Number(value);
-	return Number.isSafeInteger(parsed) && parsed > 0 && String(parsed) === value;
-}
-
-function isActionsJobUrl(value: unknown, pullRequestUrl: URL, repository: string): boolean {
-	if (typeof value !== "string" || !value) return false;
-	let url: URL;
-	try {
-		url = new URL(value);
-	} catch {
-		return false;
-	}
-	if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash ||
-		url.hostname.toLowerCase() !== pullRequestUrl.hostname.toLowerCase()) return false;
-	const parts = url.pathname.split("/").filter(Boolean);
-	const expected = repository.split("/");
-	return parts.length === 7 && expected.length === 2 &&
-		parts[0]!.toLowerCase() === expected[0]!.toLowerCase() &&
-		parts[1]!.toLowerCase() === expected[1]!.toLowerCase() &&
-		parts[2] === "actions" && parts[3] === "runs" && canonicalPositiveDecimal(parts[4]!) &&
-		parts[5] === "job" && canonicalPositiveDecimal(parts[6]!);
-}
-
-function isDiagnosableActionsCheck(check: Record<string, unknown>, pullRequestUrl: URL, repository: string): boolean {
+function isDiagnosableActionsCheck(check: Record<string, unknown>): boolean {
 	const workflowName = check.workflowName;
 	return typeof workflowName === "string" && !!workflowName && workflowName.trim() === workflowName &&
-		!/\p{Cc}/u.test(workflowName) && isActionsJobUrl(check.detailsUrl, pullRequestUrl, repository);
+		!/\p{Cc}/u.test(workflowName);
 }
 
-function checkState(value: unknown, pullRequestUrl: URL, repository: string): CheckState {
+function checkState(value: unknown): CheckState {
 	if (!isRecord(value) || (value.__typename !== "CheckRun" && value.__typename !== "StatusContext")) {
 		return fail("Find pull requests", "invalid statusCheckRollup");
 	}
@@ -652,14 +637,14 @@ function checkState(value: unknown, pullRequestUrl: URL, repository: string): Ch
 	return {
 		state: selected,
 		diagnosableFailure: FAILED_CHECK_STATES.has(selected) && value.__typename === "CheckRun" &&
-			isDiagnosableActionsCheck(value, pullRequestUrl, repository),
+			isDiagnosableActionsCheck(value),
 	};
 }
 
-function checkStates(value: unknown, pullRequestUrl: URL, repository: string): CheckState[] {
+function checkStates(value: unknown): CheckState[] {
 	if (value === null) return [];
 	if (!Array.isArray(value)) fail("Find pull requests", "invalid statusCheckRollup");
-	return value.map((check) => checkState(check, pullRequestUrl, repository));
+	return value.map(checkState);
 }
 
 function listedPullRequest(value: unknown): ListedPullRequest | null {
@@ -692,7 +677,7 @@ function listedPullRequest(value: unknown): ListedPullRequest | null {
 		mergeable: mergeable(value.mergeable),
 		mergeStateStatus: mergeStateStatus(value.mergeStateStatus),
 		reviewDecision: reviewDecision(value.reviewDecision),
-		checkStates: checkStates(value.statusCheckRollup, parsedUrl.url, parsedUrl.repository),
+		checkStates: checkStates(value.statusCheckRollup),
 	};
 }
 

@@ -81,7 +81,7 @@ When changes are requested or unresolved review threads exist, `/pr` dispatches 
 _Avoid_: `/sweep`, automatic comment triage, ordinary-comment routing, ledger acceptance during feedback reload
 
 **PR CI-fix workflow**:
-When a diagnosable GitHub Actions job has failed, `/pr` dispatches the package-owned `pi-pr-fix-ci` only when local HEAD equals the PR head and the worktree is clean. Other failed checks and commit statuses remain visible no-action blockers. The helper streams bounded log tails and revalidates its saved destination, open PR, failure evidence, and repair HEAD directly before one exact-OID push.
+When a diagnosable GitHub Actions job has failed, `/pr` dispatches the package-owned `pi-pr-fix-ci` only when local HEAD equals the PR head and the worktree is clean. Other failed checks and commit statuses remain visible no-action blockers. The helper resolves check-suite, workflow-run, attempt, and job IDs through GitHub API fields; HTML details links never establish identity. It streams bounded log tails and revalidates its saved destination, open PR, failure evidence, and repair HEAD directly before one exact-OID push.
 _Avoid_: CI watcher, automatic retry, rerun loop
 
 **PR merge workflow**:

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Exec, ExecOptions } from "@henryqw/pi-process";
 import {
+	isRecord,
 	runChecked,
 	requiredOid,
 	requiredText,
@@ -102,10 +103,6 @@ type Connection = {
 	hasNextPage: boolean;
 	endCursor: string | null;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function plainText(value: unknown, label: string): string {
 	if (typeof value !== "string" || value.includes("\0")) throw new Error(`${label} must be a string without NUL bytes`);

@@ -1999,7 +1999,11 @@ test("routes only diagnosable failed GitHub Actions checks through the CI fixer"
 		const { pi, context } = harness({
 			localHead: REMOTE_HEAD,
 			candidates: [pullRequest({
-				statusCheckRollup: [actionsCheck({ conclusion: "STALE", status: "COMPLETED" })],
+				statusCheckRollup: [actionsCheck({
+					conclusion: "STALE",
+					status: "COMPLETED",
+					detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101?pr=307",
+				})],
 			})],
 		});
 		const loaded = await loadCurrentPullRequest(pi, context);
