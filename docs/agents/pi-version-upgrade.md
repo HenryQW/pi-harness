@@ -107,7 +107,13 @@ For core fixes classified as `regression`, do not rewrite working source unless 
 
 Before package version bumps, fetch and merge current `origin/main` again with `update-from-main`. This prevents choosing versions relative to a stale main branch. Resolve source conflicts first and regenerate `pnpm-lock.yaml` rather than hand-merging generated lockfile sections.
 
-Using the final merged main SHA as the base, identify public packages with published-file changes and choose each required bump. If any internal `@henryqw/*` workspace gets a major bump, update every direct consumer's dependency range to the new major and include every such consumer in the release set, even when only its manifest changes.
+Record the final base immediately after that sync:
+
+```bash
+FINAL_MAIN_SHA="$(git rev-parse origin/main)"
+```
+
+Using `FINAL_MAIN_SHA` as the base, identify public packages with published-file changes and choose each required bump. If any internal `@henryqw/*` workspace gets a major bump, update every direct consumer's dependency range to the new major and include every such consumer in the release set, even when only its manifest changes.
 
 Bump each package in the final release set exactly once and only now:
 
@@ -119,7 +125,7 @@ Choose minor or major only when the actual package change requires it. After all
 
 ## 6. Validate the release set
 
-Commit the migration and version changes, then, after the final code, dependency, and version state is stable, repeat the exact target-family install and equality assertion from step 3. The assertion must pass before these checks run once:
+After the final code, dependency, and version state is stable, repeat the exact target-family install and equality assertion from step 3. The assertion must pass before these checks run once against the final working tree:
 
 ```bash
 npm ls \
@@ -127,14 +133,14 @@ npm ls \
   @earendil-works/pi-ai \
   @earendil-works/pi-coding-agent \
   @earendil-works/pi-tui
-node scripts/check-package-versions.mjs "$FINAL_MAIN_SHA" HEAD
+pnpm run check:package-versions
 pnpm test
 pnpm run typecheck
 pnpm run pack:check
-git diff --check "$FINAL_MAIN_SHA" HEAD
+git diff --check "$FINAL_MAIN_SHA"
 ```
 
-Run credentialed live tests or interactive TUI smoke tests only when the changed behavior needs them and the environment supports them. Report any skipped interactive validation explicitly.
+Create the final release commit only after these checks pass. Run credentialed live tests or interactive TUI smoke tests only when the changed behavior needs them and the environment supports them. Report any skipped interactive validation explicitly.
 
 If final-main integration changes a package version or published file, recalculate that package's bump and rerun the version check. Do not hide a failed release check with a compatibility path.
 
