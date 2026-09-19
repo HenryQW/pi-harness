@@ -108,7 +108,6 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 
 export type WorkflowEntry = {
 	id: string;
-	mode: WorkflowMode;
 	index: number;
 	delegation: Delegation;
 };
@@ -116,7 +115,6 @@ export type WorkflowEntry = {
 export function identifyWorkflowEntries(toolCallId: string, workflow: ParsedWorkflow): WorkflowEntry[] {
 	return workflow.delegations.map((delegation, index) => ({
 		id: `${toolCallId}:${workflow.mode}:${index}`,
-		mode: workflow.mode,
 		index,
 		delegation,
 	}));
