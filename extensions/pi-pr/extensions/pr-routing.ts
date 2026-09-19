@@ -93,10 +93,10 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 		return localMutationSafe(local) ? "sweep" : "none";
 	}
 	if (
-		conditions.ci === "running" ||
 		conditions.review === "pending" ||
 		conditions.policy === "pending" ||
-		!localMergeSafe(local)
+		!localMergeSafe(local) ||
+		conditions.ci === "running"
 	) return "none";
 	return "merge";
 }
