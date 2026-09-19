@@ -116,7 +116,7 @@ If Herdr lookup, JSON validation, or rename fails, the PR and normal UI refresh 
 
 Current-branch discovery reads pull requests associated with the exact push repository ref. It does not run a global branch search. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 
-A no-action state includes drafts, merged or closed pull requests, running or unsupported failed CI, pending review, and blocked merge policy. A dirty tree or mismatched local HEAD also blocks a mutating workflow.
+A no-action state includes drafts, merged or closed pull requests, unsupported failed CI, pending review, and blocked merge policy. Running CI blocks merge but not other mutating workflows. A dirty tree or mismatched local HEAD also blocks a mutating workflow.
 
 ### Route priority
 
