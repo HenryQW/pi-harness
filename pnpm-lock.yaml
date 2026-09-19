@@ -11,9 +11,6 @@ importers:
       '@types/node':
         specifier: ^26.5.0
         version: 26.5.0
-      '@types/proper-lockfile':
-        specifier: ^4.1.4
-        version: 4.1.4
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -211,9 +208,9 @@ importers:
       '@henryqw/pi-herdr':
         specifier: ^0.4.7
         version: link:../../packages/pi-herdr
-      '@henryqw/pi-multi-codex':
-        specifier: ^1.0.0
-        version: link:../pi-multi-codex
+      '@henryqw/pi-process':
+        specifier: ^0.1.0
+        version: link:../../packages/pi-process
       '@henryqw/pi-subagent':
         specifier: ^17.0.0
         version: link:../pi-subagent
