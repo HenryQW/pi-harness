@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, normalize, relative, sep } from "node:path";
 import {
@@ -12,6 +11,7 @@ import {
 	type ExactReviewExecutor,
 	type ExactReviewExecutorInput,
 } from "./git-runtime.ts";
+import { runProcess as defaultRunProcess } from "./process.ts";
 import { HerdrHostRuntime } from "./herdr-runtime.ts";
 import {
 	createRoleLaunchRuntime,
@@ -25,7 +25,6 @@ import type {
 } from "./runner.ts";
 
 const GIT_ROOT_TIMEOUT_CAP_MS = 30_000;
-const PROCESS_OUTPUT_LIMIT = 1024 * 1024;
 const REVIEW_PROMPT_MAX_BYTES = 64 * 1024;
 const TRUNCATED_OUTPUT_MARKER = /\[Output truncated: \d+ bytes omitted\]/;
 const DEFAULT_REVIEW_EXECUTOR_OPTIONS: EphemeralSubagentExecutorOptions = {
@@ -33,23 +32,6 @@ const DEFAULT_REVIEW_EXECUTOR_OPTIONS: EphemeralSubagentExecutorOptions = {
 	maxTurns: 50,
 	timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
 };
-
-const directProcess: DirectProcessRunner = (command, args, options) => new Promise((resolveResult) => {
-	execFile(command, args, {
-		cwd: options.cwd,
-		signal: options.signal,
-		timeout: options.timeoutMs,
-		maxBuffer: PROCESS_OUTPUT_LIMIT,
-		shell: false,
-	}, (error, stdout, stderr) => {
-		resolveResult({
-			code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
-			killed: Boolean(error && "killed" in error && error.killed),
-			stdout: String(stdout),
-			stderr: String(stderr),
-		});
-	});
-});
 
 function within(root: string, candidate: string): boolean {
 	const fromRoot = relative(root, candidate);
@@ -78,7 +60,7 @@ export interface CanonicalGitRootResolverOptions {
 export function createCanonicalGitRootResolver(
 	options: CanonicalGitRootResolverOptions = {},
 ): LaunchRuntimeOptions["resolveRoot"] {
-	const runProcess = options.runProcess ?? directProcess;
+	const runProcess = options.runProcess ?? defaultRunProcess;
 	const now = options.now ?? Date.now;
 	return async (cwd, context) => {
 		context.signal.throwIfAborted();

@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { chmod, lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,9 +40,9 @@ import {
 	type VerifiedLaunch,
 	withTransientLaunch,
 } from "./runner.ts";
+import { runProcess as defaultRunProcess } from "./process.ts";
 
 const GIT_OPERATION_CAP_MS = 30_000;
-const COMMAND_OUTPUT_LIMIT = 1024 * 1024;
 const DIAGNOSTIC_LIMIT = 1_000;
 const REF_TRANSACTION_MISMATCH = "pi-orchestrator: guarded fast-forward rejected unexpected ref transaction";
 
@@ -85,23 +84,6 @@ export interface CheckedGitRuntimeOptions {
 	runProcess?: DirectProcessRunner;
 	executeReview?: ExactReviewExecutor;
 }
-
-const runProcess: DirectProcessRunner = (command, args, options) => new Promise((resolve) => {
-	execFile(command, args, {
-		cwd: options.cwd,
-		signal: options.signal,
-		timeout: options.timeoutMs,
-		maxBuffer: COMMAND_OUTPUT_LIMIT,
-		shell: false,
-	}, (error, stdout, stderr) => {
-		resolve({
-			code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
-			killed: Boolean(error && "killed" in error && error.killed),
-			stdout: String(stdout),
-			stderr: String(stderr),
-		});
-	});
-});
 
 function text(error: unknown): string {
 	return (error instanceof Error ? error.message : String(error)).slice(0, DIAGNOSTIC_LIMIT);
@@ -207,7 +189,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 	private readonly executeReview?: ExactReviewExecutor;
 
 	constructor(options: CheckedGitRuntimeOptions = {}) {
-		this.execute = options.runProcess ?? runProcess;
+		this.execute = options.runProcess ?? defaultRunProcess;
 		this.executeReview = options.executeReview;
 	}
 

@@ -51,7 +51,7 @@
   "dependencies": {
     "@henryqw/pi-config-store": "^1.1.0",
     "@henryqw/pi-herdr": "^0.4.7",
-    "@henryqw/pi-multi-codex": "^1.0.0",
+    "@henryqw/pi-process": "^0.1.0",
     "@henryqw/pi-subagent": "^17.0.0",
     "@henryqw/pi-task-models": "^5.1.0",
     "proper-lockfile": "^4.1.2",
