@@ -168,19 +168,21 @@ export type GitCleanupKind = Extract<CleanupKind, "worktree" | "branch">;
 
 export interface HostRuntime {
 	planHostAllocation(input: {
+		readonly requestId: ExecuteRequest["id"];
 		readonly goal: ExecuteRequest["goal"];
 		kind: HostAllocationKind;
 		task: TaskRequest;
 		attempt: TaskAttempt;
 	}, context: OperationContext): Promise<HostAllocationPlan>;
 	allocateHost(input: {
+		requestId: ExecuteRequest["id"];
 		intent: HostAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		/** Invoked only after pane, lease, and startability checks at the final agent-start boundary. */
 		acquireLaunch?: () => Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<HostAllocationResult>;
-	reconcileHostAllocation(input: { intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation<HostAllocationKind>>;
+	reconcileHostAllocation(input: { requestId: ExecuteRequest["id"]; intent: HostAllocationIntent; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<AllocationReconciliation<HostAllocationKind>>;
 	runWorker(input: {
 		readonly goal: ExecuteRequest["goal"];
 		readonly contexts: readonly TextTaskContext[];
@@ -198,6 +200,7 @@ export interface HostRuntime {
 		candidate: WorkspaceIdentity;
 	}, context: OperationContext): Promise<{ outcome: "terminated" } | { outcome: "unknown"; failure: string }>;
 	cleanupHost(input: {
+		requestId: ExecuteRequest["id"];
 		kind: HostCleanupKind;
 		task: TaskRequest;
 		attempt: TaskAttempt;
@@ -923,6 +926,7 @@ export class OrchestratorRunner {
 					};
 				} else {
 					const plan = runtimeHostAllocationPlan(await scope.call(async (context) => await this.runtime.planHostAllocation({
+						requestId: state.request.id,
 						goal: state.request.goal,
 						kind,
 						task: request,
@@ -967,6 +971,7 @@ export class OrchestratorRunner {
 						}, context));
 					} else {
 						result = await scope.call(async (context) => await this.runtime.allocateHost({
+							requestId: state.request.id,
 							intent,
 							task: request,
 							attempt,
@@ -1523,7 +1528,9 @@ export class OrchestratorRunner {
 					}, context));
 				} else {
 					const kind: HostCleanupKind = step.kind;
-					result = await scope.call(async (context) => await this.runtime.cleanupHost({ kind, task: request, attempt }, context));
+					result = await scope.call(async (context) => await this.runtime.cleanupHost({
+					requestId: handle.state.request.id, kind, task: request, attempt,
+				}, context));
 				}
 				const reported = result as { outcome?: unknown; failure?: unknown } | null;
 				if (reported?.outcome !== "completed" && reported?.outcome !== "absent") {
@@ -1641,7 +1648,7 @@ export class OrchestratorRunner {
 							root: handle.state.root, intent, task: request, attempt,
 						}, context))
 						: await scope.call(async (context) => await this.runtime.reconcileHostAllocation({
-							intent, task: request, attempt,
+							requestId: handle.state.request.id, intent, task: request, attempt,
 						}, context));
 				} catch (error) {
 					intent.status = "unknown";

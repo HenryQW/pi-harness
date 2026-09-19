@@ -25,6 +25,7 @@ pi install npm:@henryqw/pi-orchestrator
 - Configure Pi task-model profiles for every requested model class. Run `/task-models` to verify the profiles.
 - Use `@henryqw/pi-subagent` 17 or newer for Role launch, execution, worktrees, and exact judgment evidence.
 - Changeset workers wait until the new worktree workspace pane list is stable, then create a dedicated worker tab. They never use the workspace root pane.
+- Herdr labels each workspace as `<request-id>/<task-id>#<attempt>` and its worker tab as `<role>/<model-class>`.
 
 ## Works with
 
