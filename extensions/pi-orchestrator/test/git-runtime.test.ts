@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -12,6 +12,7 @@ import {
 } from "../src/git-runtime.ts";
 import { sameIdentity, type ChangesetTaskRequest, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
 import type { OperationContext, TransientLaunchHandle, VerifiedLaunch } from "../src/runner.ts";
+import { runProcess } from "../src/process.ts";
 
 const launch: VerifiedLaunch = {
 	role: "reviewer",
@@ -31,20 +32,7 @@ function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-const directProcess: DirectProcessRunner = (command, args, options) => new Promise((resolve) => {
-	execFile(command, args, {
-		cwd: options.cwd,
-		signal: options.signal,
-		timeout: options.timeoutMs,
-		maxBuffer: 1024 * 1024,
-		shell: false,
-	}, (error, stdout, stderr) => resolve({
-		code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
-		killed: Boolean(error && "killed" in error && error.killed),
-		stdout: String(stdout),
-		stderr: String(stderr),
-	}));
-});
+const directProcess: DirectProcessRunner = runProcess;
 
 function context(timeoutMs = 20_000): OperationContext {
 	const signal = new AbortController().signal;

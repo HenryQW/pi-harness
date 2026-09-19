@@ -134,11 +134,7 @@ function branch(entriesById: Map<string, Entry>, entryId: string): Entry[] {
 }
 
 /** Deepest entry in file order whose ancestry contains tipId (tipId itself if none). */
-function deepestDescendant(
-	entriesById: Map<string, Entry>,
-	entries: Entry[],
-	anchorId: string,
-): string {
+function deepestDescendant(entries: Entry[], anchorId: string): string {
 	const onBranch = new Set([anchorId]);
 	let tip = anchorId;
 	for (const e of entries) {
@@ -217,12 +213,12 @@ export function getWindow(
 		// Explicit branch selection: resolve the branch from its tip (deepest
 		// descendant), independent of where the window centers.
 		resolveMessageCursor(entriesById, opts.branchTip); // unknown tip → throw
-		tip = deepestDescendant(entriesById, entries, opts.branchTip);
+		tip = deepestDescendant(entries, opts.branchTip);
 		if (!branch(entriesById, tip).some((e) => e.id === messageAnchor.id)) {
 			throw new Error(`anchor entry ${anchorEntryId} is not on branch ${opts.branchTip}`);
 		}
 	} else {
-		tip = deepestDescendant(entriesById, entries, anchorEntryId);
+		tip = deepestDescendant(entries, anchorEntryId);
 	}
 	const msgs = branchMessages(entriesById, tip);
 	const idx = msgs.findIndex((m) => m.entryId === anchorEntryIdMsg);

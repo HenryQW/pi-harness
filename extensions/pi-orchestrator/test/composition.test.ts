@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
 	createExactJudgmentExecutor,
 	createHostCheckedMainInspector,
 } from "../src/composition.ts";
+import { runProcess } from "../src/process.ts";
 import type { DirectProcessOptions, DirectProcessRunner, ExactReviewExecutorInput } from "../src/git-runtime.ts";
 import type {
 	CoordinatorRuntime,
@@ -50,20 +51,7 @@ function operationContext(timeoutMs = 20_000): OperationContext {
 	};
 }
 
-const directProcess: DirectProcessRunner = (command, args, options) => new Promise((resolveResult) => {
-	execFile(command, args, {
-		cwd: options.cwd,
-		signal: options.signal,
-		timeout: options.timeoutMs,
-		maxBuffer: 1024 * 1024,
-		shell: false,
-	}, (error, stdout, stderr) => resolveResult({
-		code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
-		killed: Boolean(error && "killed" in error && error.killed),
-		stdout: String(stdout),
-		stderr: String(stderr),
-	}));
-});
+const directProcess: DirectProcessRunner = runProcess;
 
 async function repository(t: test.TestContext): Promise<string> {
 	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-composition-"));

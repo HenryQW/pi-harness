@@ -259,7 +259,6 @@ export function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel)
 export function resolveTaskModelRoute(
 	ctx: ExtensionContext,
 	route: TaskModelRoute,
-	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute | undefined {
 	const model = resolveAvailableModel(availableTaskModels(ctx), route.model, ctx.model?.provider);
@@ -296,7 +295,7 @@ export function resolveConfiguredTaskRoutes(
 	if (!profile) throw taskRouteError("profile-missing", `Task ${declaration.id} profile ${profileName} is not configured. Run /task-models.`, profileName);
 	const routes: ResolvedTaskRoute[] = [];
 	for (const route of orderedProfileRoutes(profile)) {
-		const resolved = resolveTaskModelRoute(ctx, route, agentDir, thinking);
+		const resolved = resolveTaskModelRoute(ctx, route, thinking);
 		if (resolved) routes.push(resolved);
 	}
 	if (!routes.length) {

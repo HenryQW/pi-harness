@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rmdir, unlink } from "node:fs/promises";
@@ -48,6 +47,7 @@ import {
 	type WorkerTabAllocationResult,
 	type WorkspaceAllocationResult,
 } from "./runner.ts";
+import { runProcess as defaultRunProcess } from "./process.ts";
 
 const MIN_HERDR_VERSION = [0, 9, 0] as const;
 const MIN_HERDR_PROTOCOL = 22;
@@ -58,7 +58,6 @@ const GIT_INSPECTION_CAP_MS = 30_000;
 const STALLED_PROMPT_POLL_MS = 250;
 const HOST_LAYOUT_POLL_MS = 50;
 const HOST_LAYOUT_MAX_POLLS = 40;
-const OUTPUT_LIMIT = 1024 * 1024;
 const DIAGNOSTIC_LIMIT = 8 * 1024;
 const LEASE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
@@ -93,23 +92,6 @@ export interface HerdrHostRuntimeOptions {
 
 type RepositoryIdentity = Pick<WorkspaceAllocationIntent, "repoKey" | "herdrRepoRoot">;
 type JsonRecord = Record<string, unknown>;
-
-const defaultRunProcess: HostProcessRunner = (command, args, options) => new Promise((resolveResult) => {
-	execFile(command, args, {
-		cwd: options.cwd,
-		signal: options.signal,
-		timeout: options.timeoutMs,
-		maxBuffer: OUTPUT_LIMIT,
-		shell: false,
-	}, (error, stdout, stderr) => {
-		resolveResult({
-			code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
-			killed: Boolean(error && "killed" in error && error.killed),
-			stdout: String(stdout),
-			stderr: String(stderr),
-		});
-	});
-});
 
 function record(value: unknown, label: string): JsonRecord {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is malformed.`);

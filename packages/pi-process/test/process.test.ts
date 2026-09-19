@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -149,7 +149,7 @@ test("bounded spawn accepts a cwd path with surrounding whitespace", async (t) =
 	const cwd = join(parent, " cwd ");
 	await mkdir(cwd);
 	const result = await spawnBounded(process.execPath, ["-e", "process.stdout.write(process.cwd())"], { cwd });
-	assert.equal(result.stdout, cwd);
+	assert.equal(await realpath(result.stdout), await realpath(cwd));
 });
 
 test("bounded spawn rejects invalid cwd values", async () => {

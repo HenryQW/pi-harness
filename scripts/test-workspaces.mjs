@@ -27,7 +27,7 @@ function run(workspace) {
 		const args = ["--filter", workspace, "run", "test"];
 		if (workspace === "@henryqw/pi-subagent") args.push("--", "--test-concurrency=2", ...testArgs);
 		else if (testArgs.length) args.push("--", ...testArgs);
-		const child = spawn(process.execPath, [packageManagerExecPath, ...args], { stdio: "inherit" });
+		const child = spawn(packageManagerExecPath, args, { stdio: "inherit" });
 		child.once("error", (error) => {
 			console.error(`Failed to start tests for ${workspace}: ${error.message}`);
 			resolve(1);

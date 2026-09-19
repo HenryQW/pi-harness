@@ -3,7 +3,6 @@ import { setImmediate } from "node:timers/promises";
 import test from "node:test";
 import {
 	DelegationSchema,
-	identifyWorkflowEntries,
 	MAX_WORKFLOW_ENTRIES,
 	parseWorkflow,
 	runForegroundWorkflow,
@@ -169,18 +168,6 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 	assert.equal(parseWorkflow({ ...delegation("first line\nsecond line") }).delegations[0]!.task, "first line\nsecond line");
 });
 
-test("assigns deterministic mode-scoped entry identities", () => {
-	for (const [input, expected] of [
-		[delegation(), ["tool-7:single:0"]],
-		[{ tasks: [delegation("a"), delegation("b")] }, ["tool-7:parallel:0", "tool-7:parallel:1"]],
-		[{ chain: [delegation("a"), delegation("b")] }, ["tool-7:chain:0", "tool-7:chain:1"]],
-	] as const) {
-		const entries = identifyWorkflowEntries("tool-7", parseWorkflow(input));
-		assert.deepEqual(entries.map(({ id }) => id), expected);
-		assert.equal(new Set(entries.map(({ id }) => id)).size, entries.length);
-	}
-});
-
 test("runs single exactly once and refuses background workflows", async () => {
 	let calls = 0;
 	const outcomes = await runForegroundWorkflow("call", parseWorkflow(delegation()), (entry) => {
@@ -190,7 +177,7 @@ test("runs single exactly once and refuses background workflows", async () => {
 	assert.equal(calls, 1);
 	assert.deepEqual(outcomes, [{
 		status: "succeeded",
-		entry: { id: "call:single:0", mode: "single", index: 0, delegation: delegation() },
+		entry: { id: "call:single:0", index: 0, delegation: delegation() },
 		assistantOutput: "work",
 		result: "single-result",
 	}]);

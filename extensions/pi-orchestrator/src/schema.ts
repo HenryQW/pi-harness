@@ -9,7 +9,6 @@ export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
 export const MAX_POSSIBLE_RESOURCES = 32;
 
-export const MODEL_CLASSES = ["fast", "balanced", "frontier", "fav"] as const;
 export type ModelClass = Static<typeof ModelClassSchema>;
 
 const ID_PATTERN = "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$";
@@ -167,7 +166,6 @@ export type WorkerTabAllocationIntent = Static<typeof WorkerTabAllocationIntentS
 export type AgentAllocationIntent = Static<typeof AgentAllocationIntentSchema>;
 export type AllocationIntent = Static<typeof AllocationIntentSchema>;
 export type AllocationKind = AllocationIntent["kind"];
-export type AllocationStatus = AllocationIntent["status"];
 export type WorktreeAllocationPlan = WorktreeRecord;
 export type WorkspaceAllocationPlan = Pick<WorkspaceAllocationIntent, "kind" | "label" | "worktreeCwd" | "mainRoot" | "repoKey" | "herdrRepoRoot">;
 export type WorkerTabAllocationPlan = Pick<WorkerTabAllocationIntent, "kind" | "label" | "workspaceId" | "workspaceRootTabId" | "workspaceRootPaneId" | "worktreeCwd" | "leasePath">;
@@ -178,25 +176,18 @@ export type PromptRecord = Static<typeof PromptRecordSchema>;
 export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
 export type CheckBatchEvidence = Static<typeof CheckBatchEvidenceSchema>;
 export type ReviewEvidence = Static<typeof ReviewEvidenceSchema>;
-export type WorkerTermination = Static<typeof WorkerTerminationSchema>;
-export type IntegrationRecord = Static<typeof IntegrationRecordSchema>;
 
 export const CLEANUP_KINDS = ["worker_tab", "workspace", "worktree", "branch"] as const;
 export type CleanupStep = Static<typeof CleanupStepSchema>;
 export type CleanupKind = CleanupStep["kind"];
 export type ChangesetTaskAttempt = Static<typeof TaskAttemptSchema>;
 export type TaskAttempt = ChangesetTaskAttempt;
-export type TextTaskOutput = Static<typeof TextTaskOutputSchema>;
 export type TextTaskAttempt = Static<typeof TextTaskAttemptSchema>;
 export type ChangesetTaskState = Static<typeof ChangesetTaskStateSchema>;
 export type TextTaskState = Static<typeof TextTaskStateSchema>;
 export type TaskState = Static<typeof TaskStateSchema>;
-export type TaskStatus = TaskState["status"];
 export type WaveState = Static<typeof WaveStateSchema>;
-export type FinalGateState = Static<typeof FinalGateSchema>;
 export type RunState = Static<typeof RunStateSchema>;
-export type RequestStatus = RunState["status"];
-export type CleanupRecovery = NonNullable<RunState["recovery"]>;
 
 const WorkspaceSchema = Type.Object({
 	branch: RuntimeTextSchema,
