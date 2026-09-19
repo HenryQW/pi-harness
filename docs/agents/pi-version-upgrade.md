@@ -67,11 +67,13 @@ Search extension entry points, direct imports, relevant tests, and the published
 
 For every extension package:
 
-- set every existing `@earendil-works/pi-*` peer range to exactly `^<target-version>` (for example, `^0.85.0`); the caret is the published peer floor, not an exact pin;
-- use the same range style across all Pi peers;
+- keep an existing `@earendil-works/pi-*` peer range unchanged when it already includes the target;
+- when unchanged code supports both the existing range and the target, widen the range to include the new tested version without removing the supported lower bound (for adjacent `0.x` lines, for example, `>=0.84.4 <0.86.0`);
+- raise the peer floor to `^<target-version>` only when the package actually requires the target contract or a target regression fix; dropping the previous supported range is a breaking change for packages at `1.x` or later;
+- use the same range style across all Pi peers in one package;
 - do not add a Pi peer unless the package directly imports it;
 - preserve unrelated peers such as `typebox`;
-- update existing explicit README minimum-version text, without adding repetitive version prose everywhere.
+- update existing explicit README minimum-version text only when the minimum actually changes, without adding repetitive version prose everywhere.
 
 Do not bump workspace package versions yet. Run `pnpm install --lockfile-only --ignore-scripts` once to update `pnpm-lock.yaml`. pnpm has no unsaved-install equivalent, so use npm only for this temporary target-family probe without creating a package lock:
 
@@ -113,7 +115,7 @@ Record the final base immediately after that sync:
 FINAL_MAIN_SHA="$(git rev-parse origin/main)"
 ```
 
-Using `FINAL_MAIN_SHA` as the base, identify public packages with published-file changes and choose each required bump. If any internal `@henryqw/*` workspace gets a major bump, update every direct consumer's dependency range to the new major and include every such consumer in the release set, even when only its manifest changes.
+Using `FINAL_MAIN_SHA` as the base, identify public packages with published-file changes and choose each required bump. If any internal `@henryqw/*` workspace gets a major bump, update every direct consumer's dependency range to the new major and include every such consumer in the release set, even when only its manifest changes. Give that consumer a patch when it adapts while preserving its own documented contract; the dependency's major version alone does not make the consumer breaking.
 
 Bump each package in the final release set exactly once and only now:
 
@@ -121,7 +123,7 @@ Bump each package in the final release set exactly once and only now:
 pnpm --filter ./<root>/<package> version patch --no-git-tag-version
 ```
 
-Choose minor or major only when the actual package change requires it. After all workspace versions and direct consumer ranges are updated, run `pnpm install --lockfile-only --ignore-scripts` to regenerate `pnpm-lock.yaml`, before the final install or any release validation.
+Follow `docs/releasing.md` when choosing the bump. In particular, use a major only for an incompatible change to a `1.x` or later package's own documented public contract; use a minor for breaking changes during `0.x`. After all workspace versions and direct consumer ranges are updated, run `pnpm install --lockfile-only --ignore-scripts` to regenerate `pnpm-lock.yaml`, before the final install or any release validation.
 
 ## 6. Validate the release set
 

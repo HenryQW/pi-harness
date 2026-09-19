@@ -10,7 +10,7 @@ When `.codegraph/codegraph.db` exists, use `codegraph_explore` for symbol lookup
 
 ### Compatibility
 
-Extensions are opinionated tools built for the maintainer's daily work. They do not guarantee backward compatibility.
+Extensions are opinionated tools built for the maintainer's daily work. Compatibility covers each package's documented public contract, not its internal implementation or undocumented behavior. Deliberate breaking changes are allowed, but only incompatible contract changes warrant a major release.
 
 ### Pi registry authority
 
@@ -35,7 +35,11 @@ Each public workspace under `extensions/*` or `packages/*` releases independentl
 
 - Bump a package when `scripts/check-package-versions.mjs` classifies one of its changed files as published. This includes `package.json`, `README*`, licenses, source, build config, and files included by its package allowlist.
 - Root-only changes and package test-only changes do not require a bump. The private root package never releases.
-- Use patch for fixes or documentation, minor for backward-compatible features, and major for breaking changes.
+- Use patch for fixes, documentation, refactors, implementation dependency updates, and consumer dependency-range updates that preserve the consumer's own contract.
+- Use minor for backward-compatible features.
+- Use major only for an incompatible change to the documented public contract, such as exported APIs, commands or tool schemas, configuration or persisted data requiring user action, or the supported host/runtime range. An internal dependency's major release does not by itself make consumers breaking.
+- For `0.x` packages, use patch for compatible fixes and minor for features or breaking changes. Reserve `1.0.0` for an intentional stable-contract declaration.
+- Do not raise a peer dependency's minimum merely to match the development version. Preserve the supported lower bound when adding compatibility with a newer version; raising it is breaking only when the package actually requires the newer contract.
 - Bump each affected package once, after the final base sync, with `pnpm --filter ./<root>/<package> version <patch|minor|major> --no-git-tag-version`.
 - Regenerate `pnpm-lock.yaml` after manifest edits and commit it when it changes. Do not create release tags.
 - Before the final release commit or any push, run `pnpm run check:package-versions`.

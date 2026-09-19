@@ -15,7 +15,17 @@ Root-only changes and package test-only changes do not require a bump. Classify 
 
 ## Prepare versions
 
-After the final base sync, bump each affected package exactly once. Use patch for fixes or documentation, minor for backward-compatible features, and major for breaking changes.
+After the final base sync, bump each affected package exactly once. Classify the package's own documented public contract, not the size of the diff or the version of a dependency:
+
+- **Patch:** fixes, documentation, refactors, implementation dependency updates, and consumer dependency-range updates that preserve the consumer's contract.
+- **Minor:** backward-compatible features.
+- **Major:** incompatible changes to exported APIs, commands or tool schemas, configuration or persisted data that requires user action, documented behavior, or the supported host/runtime range.
+
+An internal dependency's major release does not automatically make its consumers breaking. A consumer that adapts while preserving its own contract normally receives a patch.
+
+For a `0.x` package, use patch for compatible fixes and minor for features or breaking changes. Move to `1.0.0` only when intentionally declaring its public contract stable.
+
+Do not raise a peer dependency's minimum merely to match the version used for development or validation. If the package remains compatible with the old minimum, widen the range to include the new tested version while preserving that minimum. If the package requires a newer peer contract and drops previously supported hosts, that is a breaking change for packages at `1.x` or later.
 
 ```bash
 pnpm --filter ./<root>/<package> version patch --no-git-tag-version
