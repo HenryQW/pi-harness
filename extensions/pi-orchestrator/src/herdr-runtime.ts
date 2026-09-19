@@ -241,25 +241,12 @@ function worktreeIntent(attempt: TaskAttempt): WorktreeAllocationPlan {
 	return intent.worktree;
 }
 
-const DISPLAY_PART_MAX_CHARS = 32;
-const DISPLAY_HASH_CHARS = 8;
-
-function displayHash(value: string): string {
-	return createHash("sha256").update(value).digest("hex").slice(0, DISPLAY_HASH_CHARS);
-}
-
-function displayPart(value: string): string {
-	const characters = [...value];
-	if (characters.length <= DISPLAY_PART_MAX_CHARS) return value;
-	return `${characters.slice(0, DISPLAY_PART_MAX_CHARS - DISPLAY_HASH_CHARS - 1).join("")}~${displayHash(value)}`;
-}
-
 function expectedWorkspaceLabel(requestId: ExecuteRequest["id"], task: TaskRequest, attempt: TaskAttempt): string {
-	return `${displayPart(requestId)}/${displayPart(task.id)} · #${attempt.number}-${displayHash(attempt.correlationToken)}`;
+	return `${requestId}/${task.id}#${attempt.number}`;
 }
 
 function expectedWorkerLabel(task: TaskRequest): string {
-	return `${displayPart(task.role)} · ${task.modelClass}`;
+	return `${task.role}/${task.modelClass}`;
 }
 
 function expectedAgentName(token: string): string {

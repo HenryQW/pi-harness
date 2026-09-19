@@ -37,8 +37,8 @@ const ROOT_PANE_ID = "pane-root";
 const WORKER_TAB_ID = "tab-worker";
 const WORKER_PANE_ID = "pane-worker";
 const AGENT_NAME = `o-${TOKEN}-agent`;
-const WORKSPACE_LABEL = `${REQUEST_ID}/task-a · #1-8865fea8`;
-const WORKER_LABEL = "implementer · fast";
+const WORKSPACE_LABEL = `${REQUEST_ID}/task-a#1`;
+const WORKER_LABEL = "implementer/fast";
 const GOAL = "Deliver the complete checked request.";
 const oid = (character: string): string => character.repeat(40);
 const baseIdentity = (branch = "refs/heads/task-a"): WorkspaceIdentity => ({
@@ -252,7 +252,7 @@ async function fullAttempt(paths: Paths, host: HerdrHostRuntime, script: Scripte
 async function plannedAgentName(paths: Paths, host: HerdrHostRuntime, token: string): Promise<string> {
 	const attempt = baseAttempt(paths, token);
 	addOwnedWorkspace(attempt, {
-		kind: "workspace", label: `${REQUEST_ID}/${task.id} · #1-${createHash("sha256").update(token).digest("hex").slice(0, 8)}`, worktreeCwd: paths.worktree,
+		kind: "workspace", label: `${REQUEST_ID}/${task.id}#1`, worktreeCwd: paths.worktree,
 		mainRoot: paths.root, repoKey: await realpath(paths.commonDirectory), herdrRepoRoot: await realpath(paths.repoRoot),
 	});
 	addOwnedTab(attempt, {
@@ -455,7 +455,7 @@ function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: 
 	];
 }
 
-test("host labels expose bounded request, task, attempt, Role, and model context", async (t) => {
+test("host labels expose exact request, task, attempt, Role, and model context", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
@@ -468,10 +468,10 @@ test("host labels expose bounded request, task, attempt, Role, and model context
 	const attempt = baseAttempt(fixture);
 	script.push(repositoryIdentityStep(fixture));
 	const workspace = await host.planHostAllocation({ requestId, goal: GOAL, kind: "workspace", task: labelledTask, attempt }, context()) as WorkspaceAllocationPlan;
-	assert.equal(workspace.label, "request-rrrrrrrrrrrrrrr~c7087c0a/task-tttttttttttttttttt~7d657fee · #1-8865fea8");
+	assert.equal(workspace.label, `${requestId}/${labelledTask.id}#1`);
 	addOwnedWorkspace(attempt, workspace);
 	const worker = await host.planHostAllocation({ requestId, goal: GOAL, kind: "worker_tab", task: labelledTask, attempt }, context()) as WorkerTabAllocationPlan;
-	assert.equal(worker.label, "implementation-wwwwwwww~ccd97a24 · fast");
+	assert.equal(worker.label, `${labelledTask.role}/fast`);
 	script.done();
 });
 
