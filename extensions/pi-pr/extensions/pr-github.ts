@@ -223,11 +223,6 @@ export type BranchUpstreamTarget = {
 	remoteOid: string;
 };
 
-export type BranchUpstreamConfiguration = {
-	remote: string[];
-	merge: string[];
-};
-
 type SearchSelection =
 	| { kind: "candidate"; candidate: SearchPullRequest; pullRequest: ListedPullRequest | null }
 	| { kind: "none" }
@@ -969,29 +964,6 @@ function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
 	return parseBaseRefAuthority(output, candidate.base);
 }
 
-export async function hasLocalCommit(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-): Promise<boolean> {
-	const branch = singleLine(
-		(await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])).stdout,
-		"Read current branch",
-		"branch",
-	);
-	const output = (await execute(pi, context, "Read branch history", "git", [
-		"reflog",
-		"show",
-		"--format=%H",
-		`refs/heads/${branch}`,
-	])).stdout.replace(/\r\n/g, "\n");
-	const entries = output.split("\n");
-	if (entries.at(-1) === "") entries.pop();
-	if (!entries.length) fail("Read branch history", "missing branch creation entry");
-	const commits = entries.map((entry) => oid(entry, "Read branch history", "commit"));
-	// ponytail: reflog expiry can hide old branch history; resolve the PR base if this becomes observable.
-	return commits[0] !== commits.at(-1);
-}
-
 function validatedCreationTarget(target: PullRequestTarget): PullRequestTarget {
 	if (!isRecord(target)) fail("Read creation target", "invalid target");
 	if (target.provenance !== "configured" && target.provenance !== "inferred") {
@@ -1345,22 +1317,6 @@ async function readConfigValues(
 		if (error instanceof PullRequestLoadError) return null;
 		throw error;
 	}
-}
-
-export async function readBranchUpstreamConfiguration(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	branch: string,
-): Promise<BranchUpstreamConfiguration> {
-	const checkedBranch = text(branch, "Read branch upstream", "branch");
-	const [remote, merge] = await Promise.all([
-		readConfigValues(pi, context, `branch.${checkedBranch}.remote`),
-		readConfigValues(pi, context, `branch.${checkedBranch}.merge`),
-	]);
-	if (remote === null || merge === null) {
-		throw new Error("Read branch upstream failed: invalid Git configuration");
-	}
-	return { remote, merge };
 }
 
 async function readBooleanConfigValues(
@@ -2088,42 +2044,6 @@ async function restoreConfigValue(
 
 function sameConfigValues(left: readonly string[], right: readonly string[]): boolean {
 	return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-export async function restoreBranchUpstreamConfiguration(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	target: Pick<BranchUpstreamTarget, "branch" | "remote" | "ref">,
-	original: BranchUpstreamConfiguration,
-): Promise<void> {
-	let incomplete = false;
-	for (const [key, expected, values] of [
-		[`branch.${target.branch}.remote`, target.remote, original.remote],
-		[`branch.${target.branch}.merge`, `refs/heads/${target.ref}`, original.merge],
-	] as const) {
-		try {
-			const current = await readConfigValues(pi, context, key);
-			if (current === null) incomplete = true;
-			else if (sameConfigValues(current, values)) continue;
-			else if (current.length === 1 && current[0] === expected) {
-				await restoreConfigValue(pi, context, key, expected, values);
-			} else incomplete = true;
-		} catch {
-			incomplete = true;
-		}
-	}
-	for (const [key, values] of [
-		[`branch.${target.branch}.remote`, original.remote],
-		[`branch.${target.branch}.merge`, original.merge],
-	] as const) {
-		try {
-			const current = await readConfigValues(pi, context, key);
-			if (current === null || !sameConfigValues(current, values)) incomplete = true;
-		} catch {
-			incomplete = true;
-		}
-	}
-	if (incomplete) throw new Error("Restore branch upstream failed and rollback was incomplete");
 }
 
 async function restoreLinkState(
