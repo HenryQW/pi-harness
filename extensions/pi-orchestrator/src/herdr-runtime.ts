@@ -875,6 +875,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
 		allocation: AgentAllocationIntent,
 		context: OperationContext,
+		promptMayBeInFlight = true,
 	): Promise<WorkerResult> {
 		for (;;) {
 			let lifecycle;
@@ -919,6 +920,12 @@ export class HerdrHostRuntime implements HostRuntime {
 					diagnostic: await this.diagnostic(allocation, context, "Delivered prompt settled with a candidate."),
 				};
 			}
+			if (!promptMayBeInFlight && SETTLED_AGENT_STATES.has(lifecycle.status)) {
+				return {
+					outcome: "blocked",
+					diagnostic: await this.diagnostic(allocation, context, "Settled worker did not produce an exact changed clean committed candidate."),
+				};
+			}
 
 			try {
 				await this.delay(STALLED_PROMPT_POLL_MS, context.signal);
@@ -946,7 +953,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			return { outcome: "unknown", diagnostic: `Settled worker candidate inspection failed: ${safeText(error)}` };
 		}
 		if (!inspection.valid || !inspection.clean || !this.isExpectedCandidate(input, inspection.candidate)) {
-			return await this.reconcileDeliveredPrompt(input, allocation, context);
+			return await this.reconcileDeliveredPrompt(input, allocation, context, false);
 		}
 		return {
 			outcome: "candidate",
