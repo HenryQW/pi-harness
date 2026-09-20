@@ -10,12 +10,13 @@ import {
 	withTransientLaunch,
 	type AllocationReconciliation,
 	type CheckRunResult,
+	type CoordinatorRuntime,
 	type GitRuntime,
 	type HostAllocationKind,
 	type HostAllocationResult,
+	type HostRuntime,
 	type IntegrationResult,
 	type OperationContext,
-	type OrchestratorRuntime,
 	type RebaseResult,
 	type TaskCandidateInspector,
 	type TransientLaunchHandle,
@@ -46,15 +47,23 @@ function identity(character: string, branch = "refs/heads/main"): WorkspaceIdent
 	return { branch, head: value, index: value, tree: value };
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+	for (let attempt = 0; attempt < 200; attempt += 1) {
+		if (predicate()) return;
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("Timed out waiting for the runner test condition.");
+}
+
 type RoleCall = { role: string; modelClass: ModelClass };
 
-type WorkerCall = { taskId: string; kind: "initial" | "correction" };
+type WorkerCall = { taskId: string; kind: "initial" | "correction" | "followup" };
 type WorkerContextCall = {
 	taskId: string;
-	contexts: Parameters<OrchestratorRuntime["runWorker"]>[0]["contexts"];
+	contexts: Parameters<HostRuntime["runWorker"]>[0]["contexts"];
 };
 
-class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspector {
+class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCandidateInspector {
 	clock = 1_000;
 	main = identity("a");
 	workerBarrierSize = 0;
@@ -80,6 +89,10 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	readonly cleanupCalls: CleanupKind[] = [];
 	readonly cleanupFailures: Error[] = [];
 	readonly workerFailures: Error[] = [];
+	readonly workerResults: WorkerResult[] = [];
+	workerPause?: (call: WorkerCall) => Promise<void>;
+	readonly correctionFailures: string[] = [];
+	readonly followupInstructions: string[] = [];
 	readonly terminationCalls: Array<{ workerId: string; candidate: WorkspaceIdentity }> = [];
 	readonly integrations: string[] = [];
 	readonly rebaseCalls: string[] = [];
@@ -99,7 +112,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 		return `token-${String(this.candidateNumber + 1).padStart(16, "0")}`;
 	}
 
-	async preflight(input: Parameters<OrchestratorRuntime["preflight"]>[0], _context: OperationContext) {
+	async preflight(input: Parameters<CoordinatorRuntime["preflight"]>[0], _context: OperationContext) {
 		this.preflightCalls += 1;
 		return { root: input.cwd, main: { ...this.main } };
 	}
@@ -149,7 +162,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async planHostAllocation(
-		input: Parameters<OrchestratorRuntime["planHostAllocation"]>[0],
+		input: Parameters<HostRuntime["planHostAllocation"]>[0],
 		_context: OperationContext,
 	): Promise<HostAllocationPlan> {
 		this.allocationPlanCalls.push(input.kind);
@@ -211,7 +224,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async allocateHost(
-		input: Parameters<OrchestratorRuntime["allocateHost"]>[0],
+		input: Parameters<HostRuntime["allocateHost"]>[0],
 		_context: OperationContext,
 	): Promise<HostAllocationResult> {
 		if (input.intent.kind === "workspace") {
@@ -253,25 +266,31 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async reconcileHostAllocation(
-		input: Parameters<OrchestratorRuntime["reconcileHostAllocation"]>[0],
+		input: Parameters<HostRuntime["reconcileHostAllocation"]>[0],
 		_context: OperationContext,
 	): Promise<AllocationReconciliation<HostAllocationKind>> {
 		return this.reconcile(input.intent.kind);
 	}
 
 	async runWorker(
-		input: Parameters<OrchestratorRuntime["runWorker"]>[0],
+		input: Parameters<HostRuntime["runWorker"]>[0],
 		_context: OperationContext,
 	): Promise<WorkerResult> {
-		this.workerCalls.push({ taskId: input.task.id, kind: input.kind });
+		const call = { taskId: input.task.id, kind: input.kind };
+		this.workerCalls.push(call);
 		this.workerContextCalls.push({ taskId: input.task.id, contexts: structuredClone(input.contexts) });
+		if (input.kind === "correction" && input.failure !== undefined) this.correctionFailures.push(input.failure);
+		if (input.kind === "followup" && input.instruction !== undefined) this.followupInstructions.push(input.instruction);
 		this.changesetCallOrder.push(`worker:${input.kind}:${input.workerId}`);
 		this.activeWorkers += 1;
 		this.maxConcurrentWorkers = Math.max(this.maxConcurrentWorkers, this.activeWorkers);
 		try {
+			await this.workerPause?.(call);
 			await this.waitForWorkerBarrier();
 			const failure = this.workerFailures.shift();
 			if (failure) throw failure;
+			const result = this.workerResults.shift();
+			if (result) return structuredClone(result);
 			return {
 				outcome: "candidate",
 				candidate: identity("bcdef123456789"[this.candidateNumber++ % 15]!, `refs/heads/${input.task.id}`),
@@ -282,7 +301,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async terminateWorker(
-		input: Parameters<OrchestratorRuntime["terminateWorker"]>[0],
+		input: Parameters<HostRuntime["terminateWorker"]>[0],
 		_context: OperationContext,
 	): Promise<{ outcome: "terminated" }> {
 		this.terminationCalls.push({
@@ -349,7 +368,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 		return { outcome: "integrated", main: { ...this.main } };
 	}
 
-	async cleanupHost(input: Parameters<OrchestratorRuntime["cleanupHost"]>[0], _context: OperationContext) {
+	async cleanupHost(input: Parameters<HostRuntime["cleanupHost"]>[0], _context: OperationContext) {
 		this.cleanupCalls.push(input.kind);
 		const failure = this.cleanupFailures.shift();
 		if (failure) throw failure;
@@ -403,6 +422,7 @@ function changesetTask(
 		modelClass?: ModelClass;
 		dependsOn?: string[];
 		contextFrom?: string[];
+		checks?: ChangesetTaskRequest["checks"];
 		judgment?: ChangesetTaskRequest["judgment"];
 	} = {},
 ): ChangesetTaskRequest {
@@ -415,7 +435,7 @@ function changesetTask(
 		deliverable: `Deliver ${id}.`,
 		dependsOn: options.dependsOn ?? [],
 		contextFrom: options.contextFrom ?? [],
-		checks: [{ command: `check-${id}`, args: [] }],
+		checks: options.checks ?? [{ command: `check-${id}`, args: [] }],
 		...(options.judgment ? { judgment: options.judgment } : {}),
 	};
 }
@@ -457,6 +477,7 @@ async function harness(
 	options: {
 		executor?: EphemeralSubagentExecutor;
 		createStore?: (agentDir: string) => FileRunStore;
+		onInteractiveWait?: (requestId: string, taskId: string) => void;
 	} = {},
 ) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-runner-"));
@@ -464,18 +485,20 @@ async function harness(
 	const root = join(directory, "workspace");
 	await mkdir(root);
 	const runtime = new FakeRuntime();
-	const store = options.createStore?.(join(directory, "agent")) ?? new FileRunStore(join(directory, "agent"));
-	return {
-		root,
+	const agentDir = join(directory, "agent");
+	const store = options.createStore?.(agentDir) ?? new FileRunStore(agentDir);
+	let runner!: OrchestratorRunner;
+	runner = new OrchestratorRunner(
+		runtime,
+		runtime,
 		runtime,
 		store,
-		runner: new OrchestratorRunner(
-			runtime,
-			runtime,
-			store,
-			options.executor ?? unusedTextExecutor,
-		),
-	};
+		options.executor ?? unusedTextExecutor,
+		options.onInteractiveWait ?? ((requestId, taskId) => {
+			setTimeout(() => runner.acceptCandidate(root, requestId, taskId), 0);
+		}),
+	);
+	return { root, runtime, store, agentDir, runner };
 }
 
 function changesetState(state: RunState, id: string) {
@@ -528,6 +551,190 @@ function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtim
 		value - before[key as keyof typeof before],
 	])) as ReturnType<typeof runtimeCallCounts>;
 }
+
+test("interactive changesets retain the same worker for queued follow-ups until explicit acceptance", async (t) => {
+	const waits: string[] = [];
+	const { root, runtime, runner } = await harness(t, {
+		onInteractiveWait: (requestId, taskId) => waits.push(`${requestId}/${taskId}`),
+	});
+	const definition = request("interactive-followups", [changesetTask("change", {
+		checks: [{ command: "check-change", args: Array.from({ length: 4 }, () => "x".repeat(10_000)) }],
+	})]);
+	const execution = runner.execute(definition, root);
+
+	await waitUntil(() => runtime.workerCalls.length === 1);
+	assert.throws(
+		() => runner.queueFollowup(root, definition.id, "change", "界".repeat(32_000)),
+		/Worker assignment exceeds/,
+	);
+	assert.equal(
+		runner.queueFollowup(root, definition.id, "change", "Revise the first candidate without restarting the task."),
+		"Queued follow-up for interactive-followups/change.",
+	);
+	await waitUntil(() => runtime.workerCalls.length === 2);
+	assert.equal(
+		runner.queueFollowup(root, definition.id, "change", "Polish the revision one more time."),
+		"Queued follow-up for interactive-followups/change.",
+	);
+	await waitUntil(() => runtime.workerCalls.length === 3);
+	assert.equal(
+		runner.acceptCandidate(root, definition.id, "change"),
+		"Acceptance queued for interactive-followups/change.",
+	);
+
+	const result = await execution;
+	const task = changesetState(result.state, "change");
+	assert.equal(result.state.status, "completed");
+	assert.deepEqual(runtime.workerCalls, [
+		{ taskId: "change", kind: "initial" },
+		{ taskId: "change", kind: "followup" },
+		{ taskId: "change", kind: "followup" },
+	]);
+	assert.deepEqual(runtime.followupInstructions, [
+		"Revise the first candidate without restarting the task.",
+		"Polish the revision one more time.",
+	]);
+	assert.deepEqual(task.attempts[0]?.prompts.map(({ kind, instruction }) => ({ kind, instruction })), [
+		{ kind: "initial", instruction: undefined },
+		{ kind: "followup", instruction: "Revise the first candidate without restarting the task." },
+		{ kind: "followup", instruction: "Polish the revision one more time." },
+	]);
+	assert.equal(runtime.terminationCalls.length, 1);
+	assert.deepEqual(waits, [
+		"interactive-followups/change",
+		"interactive-followups/change",
+		"interactive-followups/change",
+	]);
+	assert.throws(
+		() => runner.queueFollowup(root, definition.id, "change", "Too late."),
+		/not an active interactive changeset/,
+	);
+	assertParsed(result.state);
+});
+
+test("a durable productive lease admits status and abort but blocks concurrent execute and resume", async (t) => {
+	let ready!: () => void;
+	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
+	const { root, runtime, runner, agentDir } = await harness(t, {
+		onInteractiveWait: () => ready(),
+	});
+	const otherStore = new FileRunStore(agentDir);
+	const otherRunner = new OrchestratorRunner(
+		runtime,
+		runtime,
+		runtime,
+		otherStore,
+		unusedTextExecutor,
+	);
+	const definition = request("interactive-concurrent-abort", [changesetTask("change")]);
+	const execution = runner.execute(definition, root);
+
+	await awaitingAcceptance;
+	const persistedBeforeStatus = structuredClone((await otherStore.load(root, definition.id)).state);
+	const reported = await otherRunner.status(definition.id, root);
+	const reportedTask = changesetState(reported.state, "change");
+	assert.equal(reported.state.status, "running");
+	assert.equal(reportedTask.status, "awaiting_acceptance");
+	assert.equal(reportedTask.attempts[0]?.termination, undefined);
+	assert.deepEqual(reported.state, persistedBeforeStatus);
+	assert.deepEqual((await otherStore.load(root, definition.id)).state, persistedBeforeStatus);
+	assert.deepEqual(reported.main, { status: "current", expected: identity("a"), actual: identity("a") });
+	await assert.rejects(
+		otherRunner.execute(request("blocked-execute", [changesetTask("other")]), root),
+		/Another Pi Orchestrator productive request is active/,
+	);
+	await assert.rejects(
+		otherRunner.resume({ id: definition.id, action: "retry", taskId: "change" }, root),
+		/Another Pi Orchestrator productive request is active/,
+	);
+	await assert.rejects(
+		runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root),
+		/still active/,
+	);
+
+	const aborted = await otherRunner.abort(definition.id, root);
+	const completedExecution = await execution;
+	const abortedAttempt = changesetState(aborted.state, "change").attempts[0]!;
+	const agent = abortedAttempt.allocations.find((allocation) => allocation.kind === "agent");
+	if (!agent?.agentName || !abortedAttempt.candidate) throw new Error("Expected an exact retained worker fixture.");
+	assert.equal(aborted.state.status, "aborted");
+	assert.deepEqual(completedExecution.state, aborted.state);
+	assert.deepEqual(runtime.terminationCalls, [{ workerId: agent.agentName, candidate: abortedAttempt.candidate }]);
+	assert.equal(abortedAttempt.termination?.status, "terminated");
+	assert.throws(
+		() => runner.queueFollowup(root, definition.id, "change", "Do not revive the aborted worker."),
+		/sealed|not an active interactive changeset/,
+	);
+	assert.throws(
+		() => runner.acceptCandidate(root, definition.id, "change"),
+		/sealed|not an active interactive changeset/,
+	);
+	assertParsed(aborted.state);
+});
+
+test("rejected interactive waits adopt concurrent durable state before surfacing deadline or outer abort", async (t) => {
+	for (const rejection of ["outer", "deadline"] as const) {
+		await t.test(rejection, async (t) => {
+			let ready!: () => void;
+			const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
+			const controller = new AbortController();
+			const { root, runtime, runner, agentDir } = await harness(t, {
+				onInteractiveWait: () => ready(),
+			});
+			const definition = parseExecuteRequest({
+				...request(`interactive-${rejection}-state-change`, [changesetTask("change")]),
+				budgetMs: rejection === "deadline" ? 1_000 : 10_000,
+			});
+			const execution = runner.execute(definition, root, controller.signal);
+			await awaitingAcceptance;
+
+			let locked!: () => void;
+			const lifecycleLocked = new Promise<void>((resolve) => { locked = resolve; });
+			const concurrentStore = new FileRunStore(agentDir);
+			const mutation = concurrentStore.withLock(root, async () => {
+				locked();
+				if (rejection === "outer") controller.abort(new Error("operator interrupted the interactive wait"));
+				else await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+				const handle = await concurrentStore.load(root, definition.id);
+				handle.state.status = "aborted";
+				handle.state.accepted = false;
+				handle.state.updatedAt = runtime.now();
+				await handle.save();
+			}, { purpose: "abort" });
+			await lifecycleLocked;
+
+			const [result] = await Promise.all([execution, mutation]);
+			const durable = (await concurrentStore.load(root, definition.id)).state;
+			assert.equal(result.state.status, "aborted");
+			assert.deepEqual(result.state, durable);
+			assert.equal(changesetState(result.state, "change").status, "awaiting_acceptance");
+			assertParsed(result.state);
+		});
+	}
+});
+
+test("interrupting an interactive acceptance wait terminates the exact retained worker", async (t) => {
+	let ready!: () => void;
+	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
+	const { root, runtime, runner } = await harness(t, {
+		onInteractiveWait: () => ready(),
+	});
+	const controller = new AbortController();
+	const definition = request("interactive-interrupt", [changesetTask("change")]);
+	const execution = runner.execute(definition, root, controller.signal);
+
+	await awaitingAcceptance;
+	controller.abort(new Error("operator interrupted the interactive wait"));
+	const result = await execution;
+	const task = changesetState(result.state, "change");
+
+	assert.equal(result.state.status, "needs_attention");
+	assert.equal(task.status, "needs_attention");
+	assert.match(task.failure ?? "", /operator interrupted the interactive wait/);
+	assert.equal(runtime.terminationCalls.length, 1);
+	assert.equal(task.attempts[0]?.termination?.status, "terminated");
+	assertParsed(result.state);
+});
 
 test("ready changeset waves run concurrently, integrate in request order, and retain exact PASS evidence", async (t) => {
 	const { root, runtime, runner } = await harness(t);
@@ -741,6 +948,77 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 	assert.equal(attempt.authoritativeChecks?.passed, true);
 	assert.equal(attempt.authoritativeReview?.passed, true);
 	assertParsed(result.state);
+});
+
+test("a blocked diagnostic is normalized before same-worker correction", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerResults.push({ outcome: "blocked", diagnostic: "diagnostic\n" });
+
+	const result = await runner.execute(request("normalized-correction", [changesetTask("change")]), root);
+	const attempt = changesetState(result.state, "change").attempts[0]!;
+
+	assert.equal(result.state.status, "completed");
+	assert.deepEqual(runtime.workerCalls, [
+		{ taskId: "change", kind: "initial" },
+		{ taskId: "change", kind: "correction" },
+	]);
+	assert.deepEqual(runtime.correctionFailures, ["diagnostic"]);
+	assert.equal(attempt.prompts[0]?.failure, "diagnostic");
+	assert.equal(attempt.integration?.status, "integrated");
+	assert.deepEqual(runtime.integrations, ["change"]);
+	assertParsed(result.state);
+});
+
+test("a follow-up queued during a failing follow-up is honored", async (t) => {
+	for (const failure of ["blocked", "check"] as const) {
+		await t.test(failure, async (t) => {
+			const waits: string[] = [];
+			const { root, runtime, runner } = await harness(t, {
+				onInteractiveWait: (requestId, taskId) => waits.push(`${requestId}/${taskId}`),
+			});
+			const definition = request(`queued-after-${failure}`, [changesetTask("change")]);
+			const execution = runner.execute(definition, root);
+			await waitUntil(() => waits.length === 1);
+
+			let followupStarted!: () => void;
+			let releaseFollowup!: () => void;
+			const started = new Promise<void>((resolve) => { followupStarted = resolve; });
+			const released = new Promise<void>((resolve) => { releaseFollowup = resolve; });
+			let paused = false;
+			runtime.workerPause = async (call) => {
+				if (call.kind !== "followup" || paused) return;
+				paused = true;
+				followupStarted();
+				await released;
+			};
+			if (failure === "blocked") runtime.workerResults.push({ outcome: "blocked", diagnostic: "follow-up blocked" });
+			else runtime.failPreliminaryChecks = 1;
+
+			runner.queueFollowup(root, definition.id, "change", "First follow-up that will fail.");
+			await started;
+			runner.queueFollowup(root, definition.id, "change", "Second follow-up must still run.");
+			releaseFollowup();
+			await waitUntil(() => waits.length === 2);
+			runner.acceptCandidate(root, definition.id, "change");
+
+			const result = await execution;
+			const attempt = changesetState(result.state, "change").attempts[0]!;
+			assert.equal(result.state.status, "completed");
+			assert.deepEqual(runtime.workerCalls, [
+				{ taskId: "change", kind: "initial" },
+				{ taskId: "change", kind: "followup" },
+				{ taskId: "change", kind: "followup" },
+			]);
+			assert.deepEqual(runtime.followupInstructions, [
+				"First follow-up that will fail.",
+				"Second follow-up must still run.",
+			]);
+			assert.deepEqual(attempt.prompts.map(({ kind }) => kind), ["initial", "followup", "followup"]);
+			assert.equal(attempt.termination?.status, "terminated");
+			assert.equal(attempt.integration?.status, "integrated");
+			assertParsed(result.state);
+		});
+	}
 });
 
 test("changeset dispatch failure terminates the exact allocated worker", async (t) => {

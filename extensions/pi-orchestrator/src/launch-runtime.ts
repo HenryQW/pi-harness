@@ -45,7 +45,6 @@ export interface LaunchRuntimeOptions {
 	context(): ExtensionContext;
 	resolveRoot(cwd: string, context: OperationContext): Promise<string>;
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
-	orchestratorEntrypoint: string;
 	now?: () => number;
 	randomToken?: () => string;
 }
@@ -240,8 +239,4 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		const prepared = await this.prepareLaunch(role, modelClass, context);
 		return await materializeTransientLaunch(prepared, context.signal);
 	}
-}
-
-export function createRoleLaunchRuntime(options: LaunchRuntimeOptions): RoleLaunchRuntime {
-	return new RoleLaunchRuntime(options);
 }

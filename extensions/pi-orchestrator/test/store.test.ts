@@ -67,7 +67,7 @@ function state(root: string): RunState {
 	};
 }
 
-test("the store persists v2 text state and preserves unsupported v1 files", async () => {
+test("the store persists v2 text state, rejects duplicate creates, and preserves unsupported v1 files", async () => {
 	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
 	const plannedRoot = join(sandbox, "repo");
 	const agentDir = join(sandbox, "agent");
@@ -79,6 +79,9 @@ test("the store persists v2 text state and preserves unsupported v1 files", asyn
 		const handle = await store.create(created);
 		const contents = await readFile(handle.path, "utf8");
 		assert.doesNotMatch(contents, /launchRecords|fingerprint|LaunchRecord/);
+		await assert.rejects(store.create(created), {
+			message: `Pi Orchestrator request ${created.request.id} already exists.`,
+		});
 
 		const loaded = await store.load(root, created.request.id);
 		assert.deepEqual(loaded.state, created);
@@ -88,6 +91,42 @@ test("the store persists v2 text state and preserves unsupported v1 files", asyn
 		await writeFile(legacyPath, legacy);
 		await assert.rejects(store.load(root, "legacy-v1"), /Unsupported pi-orchestrator state version 1; expected 2/);
 		assert.equal(await readFile(legacyPath, "utf8"), legacy);
+	} finally {
+		await rm(sandbox, { recursive: true, force: true });
+	}
+});
+
+test("the lifecycle lock rejects unowned productive work while admitting owned, status, and abort operations", async () => {
+	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
+	const plannedRoot = join(sandbox, "repo");
+	const agentDir = join(sandbox, "agent");
+	await mkdir(plannedRoot);
+	const root = await realpath(plannedRoot);
+	try {
+		const owner = new FileRunStore(agentDir);
+		const contender = new FileRunStore(agentDir);
+		await owner.withProductiveRunLease(root, async (productiveRunLease) => {
+			await owner.withLock(root, async (lifecycle) => {
+				assert.equal(lifecycle.productiveRunLeaseActive, true);
+			}, { productiveRunLease });
+
+			let rejectedOperationRan = false;
+			await assert.rejects(
+				contender.withLock(root, async () => { rejectedOperationRan = true; }),
+				/Another Pi Orchestrator productive request is active/,
+			);
+			assert.equal(rejectedOperationRan, false);
+
+			for (const purpose of ["status", "abort"] as const) {
+				await contender.withLock(root, async (lifecycle) => {
+					assert.equal(lifecycle.productiveRunLeaseActive, true);
+				}, { purpose });
+			}
+		});
+
+		await contender.withLock(root, async (lifecycle) => {
+			assert.equal(lifecycle.productiveRunLeaseActive, false);
+		});
 	} finally {
 		await rm(sandbox, { recursive: true, force: true });
 	}
@@ -113,7 +152,9 @@ test("invalid and oversized state files are rejected without replacement", async
 		const oversizedPath = store.statePath(root, "oversized");
 		await writeFile(oversizedPath, "");
 		await truncate(oversizedPath, STATE_MAX_BYTES + 1);
-		await assert.rejects(store.load(root, "oversized"), new RegExp(`state exceeds ${STATE_MAX_BYTES} bytes`));
+		await assert.rejects(store.load(root, "oversized"), {
+			message: `pi-orchestrator state exceeds ${STATE_MAX_BYTES} bytes.`,
+		});
 		assert.equal((await stat(oversizedPath)).size, STATE_MAX_BYTES + 1);
 		assert.match(await readFile(handle.path, "utf8"), /request-one/);
 	} finally {

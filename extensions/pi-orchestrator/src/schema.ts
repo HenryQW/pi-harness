@@ -197,10 +197,11 @@ const WorkspaceSchema = Type.Object({
 }, { additionalProperties: false });
 
 const PromptRecordSchema = Type.Object({
-	kind: Type.Union([Type.Literal("initial"), Type.Literal("correction")]),
+	kind: Type.Union([Type.Literal("initial"), Type.Literal("correction"), Type.Literal("followup")]),
 	status: Type.Union([Type.Literal("submitting"), Type.Literal("not_sent"), Type.Literal("settled"), Type.Literal("ambiguous")]),
 	preCandidate: WorkspaceSchema,
 	candidate: Type.Optional(WorkspaceSchema),
+	instruction: Type.Optional(TextSchema),
 	failure: OptionalRuntimeTextSchema,
 	at: TimestampSchema,
 }, { additionalProperties: false });
@@ -265,7 +266,7 @@ const TaskAttemptSchema = Type.Object({
 	correlationToken: Type.String({ pattern: TOKEN_PATTERN }),
 	allocationGeneration: Type.Integer({ minimum: 1, maximum: 2 }),
 	allocations: Type.Array(AllocationIntentSchema, { maxItems: 5 }),
-	prompts: Type.Array(PromptRecordSchema, { maxItems: 2 }),
+	prompts: Type.Array(PromptRecordSchema, { maxItems: 32 }),
 	candidate: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
 	termination: Type.Optional(WorkerTerminationSchema),
@@ -281,7 +282,7 @@ const ChangesetTaskStateSchema = Type.Object({
 	taskId: IdSchema,
 	kind: Type.Literal("changeset"),
 	status: Type.Union([
-		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("ready_to_integrate"),
+		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("awaiting_acceptance"), Type.Literal("ready_to_integrate"),
 		Type.Literal("integrating"), Type.Literal("cleanup"), Type.Literal("completed"), Type.Literal("needs_attention"),
 	]),
 	attempts: Type.Array(TaskAttemptSchema, { maxItems: 2 }),
@@ -679,18 +680,32 @@ export function parseRunState(value: unknown): RunState {
 				if (attempt.authoritativeChecks.phase !== "authoritative") throw new Error(`Malformed authoritative check phase for ${definition.id}.`);
 				validateCheckBatchEvidence(attempt.authoritativeChecks, definition.checks, `Authoritative checks for ${definition.id}`);
 			}
-			if (attempt.prompts[0]?.kind === "correction" || (attempt.prompts[1] && attempt.prompts[1].kind !== "correction")) {
-				throw new Error(`Malformed correction history for ${definition.id}.`);
-			}
-			const correction = attempt.prompts[1];
 			const initialPrompt = attempt.prompts[0];
+			if (attempt.prompts.filter((prompt) => prompt.kind === "correction").length > 1) {
+				throw new Error(`Malformed repeated correction history for ${definition.id}.`);
+			}
+			if (initialPrompt && initialPrompt.kind !== "initial") {
+				throw new Error(`Malformed initial prompt history for ${definition.id}.`);
+			}
 			if (attempt.prompts.some((prompt) => !isCleanCommitted(prompt.preCandidate))
 				|| (initialPrompt && initialPrompt.preCandidate.head !== attempt.waveBase.head)) {
 				throw new Error(`Prompt history for ${definition.id} lacks a clean exact pre-prompt candidate.`);
 			}
-			const retainedCandidate = initialPrompt?.candidate ?? initialPrompt?.preCandidate;
-			if (correction && retainedCandidate && !sameIdentity(correction.preCandidate, retainedCandidate)) {
-				throw new Error(`Correction for ${definition.id} did not fence the exact retained candidate.`);
+			for (let promptIndex = 0; promptIndex < attempt.prompts.length; promptIndex += 1) {
+				const prompt = attempt.prompts[promptIndex]!;
+				if ((prompt.kind === "followup") !== (prompt.instruction !== undefined)) {
+					throw new Error(`Follow-up prompt history for ${definition.id} has invalid instruction evidence.`);
+				}
+				if (prompt.instruction !== undefined) {
+					requireExactAllocationText(prompt.instruction, `Follow-up prompt instruction for ${definition.id}`);
+				}
+				if (promptIndex === 0) continue;
+				if (prompt.kind === "initial") throw new Error(`Malformed repeated initial prompt for ${definition.id}.`);
+				const previous = attempt.prompts[promptIndex - 1]!;
+				const retainedCandidate = previous.candidate ?? previous.preCandidate;
+				if (!sameIdentity(prompt.preCandidate, retainedCandidate)) {
+					throw new Error(`Prompt ${promptIndex + 1} for ${definition.id} did not fence the exact retained candidate.`);
+				}
 			}
 			if (attempt.cleanup.some((step, cleanupIndex) => step.kind !== CLEANUP_KINDS[cleanupIndex])) {
 				throw new Error(`Malformed cleanup sequence for ${definition.id}.`);

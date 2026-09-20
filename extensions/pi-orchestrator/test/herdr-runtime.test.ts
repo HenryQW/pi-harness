@@ -7,8 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import {
-	createHerdrHostRuntime,
-	type HerdrHostRuntime,
+	HerdrHostRuntime,
 	type HostProcessOptions,
 	type HostProcessRunner,
 } from "../src/herdr-runtime.ts";
@@ -140,7 +139,7 @@ function runtime(
 		inspectInFlightTaskCandidate?: (input: TaskCandidateInput, operation: OperationContext) => Promise<InFlightTaskCandidateInspection>;
 	} = {},
 ): HerdrHostRuntime {
-	return createHerdrHostRuntime({
+	return new HerdrHostRuntime({
 		inspectInFlightTaskCandidate: timing.inspectInFlightTaskCandidate ?? (async (input, operation) => ({
 			candidate: await inspectCandidate(input, operation),
 			clean: true,
@@ -1660,6 +1659,68 @@ test("initial and correction prompts include the exact request goal", async (t) 
 	script.done();
 });
 
+test("normal prompt treats transient compaction idle and dirty Git state as in flight until changed-clean", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const delays: number[] = [];
+	const inspections: InFlightTaskCandidateInspection[] = [
+		{ candidate: baseIdentity(), clean: true, valid: true },
+		{ candidate: { ...changedIdentity(), index: oid("c") }, clean: false, valid: true },
+		{ candidate: changedIdentity(), clean: true, valid: true },
+	];
+	const host = runtime(fixture, script, async () => changedIdentity(), {
+		delay: async (milliseconds) => { delays.push(milliseconds); },
+		inspectInFlightTaskCandidate: async () => inspections.shift() ?? assert.fail("unexpected candidate inspection"),
+	});
+	const { attempt } = await fullAttempt(fixture, host, script);
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "committed after compaction", stderr: "" } },
+	);
+
+	const result = await host.runWorker({
+		goal: GOAL,
+		contexts: [],
+		task,
+		attempt,
+		workerId: AGENT_NAME,
+		kind: "initial",
+		preCandidate: baseIdentity(),
+	}, context());
+
+	assert.equal(result.outcome, "candidate");
+	assert.equal(result.outcome === "candidate" && result.candidate.head, oid("b"));
+	assert.equal(inspections.length, 0);
+	assert.deepEqual(delays, [250]);
+	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+	script.done();
+});
+
+test("normal prompt blocks a definitively settled no-op without polling", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const delays: number[] = [];
+	const host = runtime(fixture, script, async () => changedIdentity(), {
+		delay: async (milliseconds) => { delays.push(milliseconds); },
+		inspectInFlightTaskCandidate: async () => ({ candidate: baseIdentity(), clean: true, valid: true }),
+	});
+	const { attempt } = await fullAttempt(fixture, host, script);
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "no-op", stderr: "" } },
+	);
+
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	assert.equal(result.outcome, "blocked");
+	assert.deepEqual(delays, []);
+	script.done();
+});
+
 test("normal prompt accepts a changed clean candidate from real in-flight Git inspection", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
@@ -1796,7 +1857,7 @@ test("delivered stall treats working dirty state as transient and exact blocked 
 	);
 	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 	assert.equal(result.outcome, "blocked");
-	assert.equal(inspections, 2);
+	assert.equal(inspections, 1);
 	assert.deepEqual(delays, [250]);
 	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 	script.done();
@@ -1948,7 +2009,7 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	const base = runtime(fixture, script);
 	const { attempt, leasePath } = await fullAttempt(fixture, base, script);
 	await privateLease(leasePath);
-	const host = createHerdrHostRuntime({
+	const host = new HerdrHostRuntime({
 		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 		runProcess: script.run,
 		killProcess: (pid, signal) => { kills.push([pid, signal]); },
@@ -1990,7 +2051,7 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 			const seed = runtime(fixture, script);
 			const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
 			await privateLease(leasePath);
-			const host = createHerdrHostRuntime({
+			const host = new HerdrHostRuntime({
 				inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 				runProcess: script.run,
 				killProcess: (pid, signal) => { kills.push([pid, signal]); }, delay: async () => {}, now: () => 1_000,
@@ -2016,7 +2077,7 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 		command: "lsof-test", args: ["-nP", "-a", "-F", "p", "--", leasePath],
 		result: { code: 2, stdout: "", stderr: "ambiguous" },
 	});
-	const host = createHerdrHostRuntime({
+	const host = new HerdrHostRuntime({
 		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 		runProcess: script.run,
 		killProcess: (pid) => { kills.push(pid); }, delay: async () => {}, now: () => 1_000,

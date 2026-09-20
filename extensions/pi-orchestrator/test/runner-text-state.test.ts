@@ -6,8 +6,9 @@ import test from "node:test";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
 	OrchestratorRunner,
+	type CoordinatorRuntime,
 	type GitRuntime,
-	type OrchestratorRuntime,
+	type HostRuntime,
 	type TaskCandidateInspector,
 } from "../src/runner.ts";
 import type { ExecuteRequest, RunState, TaskState, TextTaskState, WorkspaceIdentity } from "../src/schema.ts";
@@ -60,7 +61,8 @@ const acquireTextLaunch = async () => ({
 
 function markAttention(task: TextTaskState, failure: string): void {
 	const runner = new OrchestratorRunner(
-		{} as OrchestratorRuntime,
+		{} as CoordinatorRuntime,
+		{} as HostRuntime,
 		{} as GitRuntime & TaskCandidateInspector,
 		undefined,
 		unavailableTextExecutor,
@@ -123,7 +125,8 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 			randomToken: () => "token-0000000000000001",
 			preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
 			acquireLaunch: acquireTextLaunch,
-		} as unknown as OrchestratorRuntime,
+		} as unknown as CoordinatorRuntime,
+		{} as HostRuntime,
 		{
 			inspectMain: async () => mainIdentity(),
 		} as unknown as GitRuntime & TaskCandidateInspector,
@@ -203,7 +206,8 @@ test("text retry saves its second attempt atomically before executor launch", as
 			randomToken: () => "token-0000000000000001",
 			preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
 			acquireLaunch: acquireTextLaunch,
-		} as unknown as OrchestratorRuntime,
+		} as unknown as CoordinatorRuntime,
+		{} as HostRuntime,
 		{
 			inspectMain: async () => mainIdentity(),
 			runChecks: async () => ({
@@ -312,7 +316,8 @@ test("text retry runs only the selected ready task while another needs attention
 			randomToken: () => "token-0000000000000001",
 			preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
 			acquireLaunch: acquireTextLaunch,
-		} as unknown as OrchestratorRuntime,
+		} as unknown as CoordinatorRuntime,
+		{} as HostRuntime,
 		{
 			inspectMain: async () => mainIdentity(),
 		} as unknown as GitRuntime & TaskCandidateInspector,
@@ -377,10 +382,15 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			const root = join(directory, "workspace");
 			await mkdir(root);
 			const store = {
-				async withLock<T>(_root: string, action: () => Promise<T>): Promise<T> {
-					return await action();
+				async withProductiveRunLease<T>(_root: string, action: (lease: unknown) => Promise<T>): Promise<T> {
+					return await action({});
 				},
-				async assertAvailable(): Promise<void> {},
+				async withLock<T>(_root: string, action: (lifecycle: unknown) => Promise<T>): Promise<T> {
+					return await action({
+						productiveRunLeaseActive: true,
+						waitUnlocked: async (operation: () => Promise<unknown>) => await operation(),
+					});
+				},
 				async create(state: RunState) {
 					return { state, save: async (): Promise<void> => {} };
 				},
@@ -391,7 +401,8 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 					randomToken: () => "token-0000000000000001",
 					preflight: async (input: { cwd: string }) => ({ root: input.cwd, main: mainIdentity() }),
 					acquireLaunch: acquireTextLaunch,
-				} as unknown as OrchestratorRuntime,
+				} as unknown as CoordinatorRuntime,
+				{} as HostRuntime,
 				{
 					inspectMain: async () => mainIdentity(),
 				} as unknown as GitRuntime & TaskCandidateInspector,

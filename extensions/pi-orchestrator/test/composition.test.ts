@@ -11,28 +11,15 @@ import {
 	type EphemeralSubagentRunInput,
 } from "@henryqw/pi-subagent";
 import {
-	ComposedOrchestratorRuntime,
 	createCanonicalGitRootResolver,
 	createExactJudgmentExecutor,
-	createHostCheckedMainInspector,
 } from "../src/composition.ts";
 import { runProcess } from "../src/process.ts";
 import type { DirectProcessOptions, DirectProcessRunner, ExactReviewExecutorInput } from "../src/git-runtime.ts";
 import type {
-	CoordinatorRuntime,
-	HostRuntime,
 	OperationContext,
 	VerifiedLaunch,
 } from "../src/runner.ts";
-import type { WorkspaceIdentity } from "../src/schema.ts";
-
-const IDENTITY: WorkspaceIdentity = {
-	branch: "refs/heads/main",
-	head: "1".repeat(40),
-	index: "2".repeat(40),
-	tree: "2".repeat(40),
-};
-
 const REVIEWER_LAUNCH: VerifiedLaunch = {
 	role: "reviewer",
 	modelClass: "fast",
@@ -80,85 +67,11 @@ function result(overrides: Partial<EphemeralSubagentResult> = {}): EphemeralSuba
 		outcome: "success",
 		exitCode: 0,
 		output: "PASS",
+		outputTruncated: false,
 		stderr: "",
 		...overrides,
 	} as EphemeralSubagentResult;
 }
-
-test("composed runtime delegates every Coordinator and Host method unchanged", async () => {
-	const calls: Array<{ owner: "roles" | "host"; method: string; args: unknown[] }> = [];
-	const values = new Map<string, object>();
-	const delegate = (owner: "roles" | "host") => new Proxy({}, {
-		get: (_target, property) => (...args: unknown[]) => {
-			const method = String(property);
-			calls.push({ owner, method, args });
-			if (method === "now") return 123;
-			if (method === "randomToken") return "token-1234567890";
-			const value = { owner, method };
-			values.set(`${owner}:${method}`, value);
-			return Promise.resolve(value);
-		},
-	});
-	const runtime = new ComposedOrchestratorRuntime(
-		delegate("roles") as unknown as CoordinatorRuntime,
-		delegate("host") as unknown as HostRuntime,
-	);
-
-	assert.equal(runtime.now(), 123);
-	assert.equal(runtime.randomToken(), "token-1234567890");
-	const acquireLaunch = async () => ({ launch: REVIEWER_LAUNCH, cleanup: async () => {} });
-	const input = Object.freeze({ marker: "input", goal: "Keep this immutable goal unchanged.", acquireLaunch });
-	const context = operationContext();
-	const preflight = await (runtime.preflight as (...args: any[]) => Promise<unknown>)(input, context);
-	assert.equal(preflight, values.get("roles:preflight"));
-	const launch = await runtime.acquireLaunch("reviewer", "fast", context);
-	assert.equal(launch, values.get("roles:acquireLaunch"));
-	for (const method of [
-		"planHostAllocation", "allocateHost", "reconcileHostAllocation", "runWorker", "terminateWorker", "cleanupHost",
-	] as const) {
-		const returned = await (runtime[method] as (...args: any[]) => Promise<unknown>)(input, context);
-		assert.equal(returned, values.get(`host:${method}`));
-	}
-
-	assert.deepEqual(calls.map(({ owner, method }) => `${owner}:${method}`), [
-		"roles:now", "roles:randomToken", "roles:preflight", "roles:acquireLaunch",
-		"host:planHostAllocation", "host:allocateHost", "host:reconcileHostAllocation",
-		"host:runWorker", "host:terminateWorker", "host:cleanupHost",
-	]);
-	assert.deepEqual(calls[2]!.args, [input, context]);
-	assert.deepEqual(calls[3]!.args, ["reviewer", "fast", context]);
-	assert.ok(calls.slice(4).every(({ args }) => args[0] === input && args[1] === context));
-	assert.equal(calls.find(({ method }) => method === "allocateHost")!.args[0], input);
-	assert.equal((calls.find(({ method }) => method === "allocateHost")!.args[0] as typeof input).acquireLaunch, acquireLaunch);
-	assert.equal((calls.find(({ method }) => method === "planHostAllocation")!.args[0] as typeof input).goal, input.goal);
-	assert.equal((calls.find(({ method }) => method === "runWorker")!.args[0] as typeof input).goal, input.goal);
-});
-
-test("role preflight inspection runs Herdr before checked Git with the resolved root", async () => {
-	const order: string[] = [];
-	const input = { root: "/canonical/repository" };
-	const context = operationContext();
-	const inspect = createHostCheckedMainInspector(
-		{
-			preflightHost: async (receivedInput, receivedContext) => {
-				assert.equal(receivedInput, input);
-				assert.equal(receivedContext, context);
-				order.push("herdr");
-			},
-		},
-		{
-			inspectMain: async (receivedInput, receivedContext) => {
-				assert.equal(receivedInput, input);
-				assert.equal(receivedContext, context);
-				order.push("git");
-				return IDENTITY;
-			},
-		},
-	);
-
-	assert.equal(await inspect(input, context), IDENTITY);
-	assert.deepEqual(order, ["herdr", "git"]);
-});
 
 test("canonical Git root resolver accepts nested cwd and propagates the shared deadline", async (t) => {
 	const root = await repository(t);
@@ -211,8 +124,7 @@ test("canonical Git root resolver rejects malformed, non-canonical, and unrelate
 	}
 });
 
-test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prompt", async () => {
-	let createCalls = 0;
+test("exact Judgment adapter runs the exact launch, packet, cwd, and prompt", async () => {
 	let nextOutput = "PASS";
 	const prepared: Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>[] = [];
 	const signals: (AbortSignal | undefined)[] = [];
@@ -223,18 +135,11 @@ test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prom
 			return result({ output: nextOutput });
 		},
 	};
-	const executeReview = createExactJudgmentExecutor({
-		createExecutor: () => {
-			createCalls += 1;
-			return executor;
-		},
-	});
-	assert.equal(createCalls, 0);
+	const executeReview = createExactJudgmentExecutor(executor);
 	const input = reviewInput();
 	const context = operationContext();
 
 	assert.deepEqual(await executeReview(input, context), { verdict: "PASS" });
-	assert.equal(createCalls, 1);
 	assert.equal(signals[0], context.signal);
 	assert.deepEqual(prepared[0]!.launch, { args: [...REVIEWER_LAUNCH.args], env: {} });
 	assert.equal(prepared[0]!.cwd, input.cwd);
@@ -257,7 +162,6 @@ test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prom
 
 	nextOutput = "Finding: invariant is not preserved.";
 	assert.deepEqual(await executeReview(input, context), { verdict: nextOutput });
-	assert.equal(createCalls, 1);
 });
 
 test("exact Judgment adapter rejects empty, truncated, failed, and thrown transport results", async (t) => {
@@ -268,7 +172,7 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 		pattern: RegExp;
 	}> = [
 		{ name: "empty", value: result({ output: " \n" }), pattern: /empty output/i },
-		{ name: "truncated", value: result({ output: "PASS\n\n[Output truncated: 42 bytes omitted]" }), pattern: /truncated/i },
+		{ name: "truncated", value: result({ outputTruncated: true }), pattern: /truncated/i },
 		{ name: "failure", value: result({ outcome: "failure", exitCode: 1, output: "Finding", errorMessage: "failed" }), pattern: /did not complete successfully/i },
 		{ name: "success with nonzero exit", value: result({ exitCode: 1 }), pattern: /did not complete successfully/i },
 		{ name: "timeout", error: new EphemeralSubagentError("timeout", "review timed out"), pattern: /review timed out/i },
@@ -279,11 +183,9 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 	for (const entry of cases) {
 		await t.test(entry.name, async () => {
 			const executeReview = createExactJudgmentExecutor({
-				executor: {
-					run: async () => {
-						if (entry.error) throw entry.error;
-						return entry.value!;
-					},
+				run: async () => {
+					if (entry.error) throw entry.error;
+					return entry.value!;
 				},
 			});
 			await assert.rejects(executeReview(reviewInput(), operationContext()), entry.pattern);
@@ -291,7 +193,7 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 	}
 
 	await t.test("oversized prompt", async () => {
-		const executeReview = createExactJudgmentExecutor({ executor: { run: async () => result() } });
+		const executeReview = createExactJudgmentExecutor({ run: async () => result() });
 		await assert.rejects(
 			executeReview({ ...reviewInput(), criterion: "x".repeat(70 * 1024) }, operationContext()),
 			/exceeds 65536 bytes/i,

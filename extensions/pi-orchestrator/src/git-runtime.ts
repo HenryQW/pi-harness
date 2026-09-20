@@ -187,6 +187,7 @@ async function pathExists(path: string): Promise<boolean> {
 export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, InFlightTaskCandidateInspector {
 	private readonly execute: DirectProcessRunner;
 	private readonly executeReview?: ExactReviewExecutor;
+	private readonly mainOperationTails = new Map<string, Promise<void>>();
 
 	constructor(options: CheckedGitRuntimeOptions = {}) {
 		this.execute = options.runProcess ?? defaultRunProcess;
@@ -194,7 +195,9 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 	}
 
 	async inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity> {
-		return await this.inspectWorkspace(input.root, false, context);
+		return await this.serializeMainOperation(input.root, context.signal, async () => {
+			return await this.inspectWorkspace(input.root, false, context);
+		});
 	}
 
 	async allocateWorktree(input: {
@@ -204,9 +207,18 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		attempt: TaskAttempt;
 		onPrepared(worktree: WorktreeAllocationPlan): Promise<void>;
 	}, context: OperationContext): Promise<WorktreeAllocationResult> {
+		return await this.serializeMainOperation(input.root, context.signal, async () => {
+			return await this.allocateWorktreeExclusive(input, context);
+		});
+	}
+
+	private async allocateWorktreeExclusive(
+		input: Parameters<GitRuntime["allocateWorktree"]>[0],
+		context: OperationContext,
+	): Promise<WorktreeAllocationResult> {
 		let prepared: WorktreeAllocationPlan | undefined;
 		let createdWorktree: WorktreeAllocationPlan | undefined;
-		const before = await this.inspectMain({ root: input.root }, context);
+		const before = await this.inspectWorkspace(input.root, false, context);
 		if (!sameIdentity(before, input.attempt.waveBase)) {
 			return { kind: "worktree", outcome: "absent", failure: "Main drifted before worktree allocation." };
 		}
@@ -222,7 +234,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 						throw new Error("pi-subagent prepared a worktree from a base other than the recorded wave base.");
 					}
 					await input.onPrepared(prepared);
-					const current = await this.inspectMain({ root: input.root }, context);
+					const current = await this.inspectWorkspace(input.root, false, context);
 					if (!sameIdentity(current, input.attempt.waveBase)) {
 						throw new Error("Main drifted after worktree preparation and before git worktree add.");
 					}
@@ -240,7 +252,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 					possibleResources: [worktree.path, worktree.branch],
 				};
 			}
-			const after = await this.inspectMain({ root: input.root }, context);
+			const after = await this.inspectWorkspace(input.root, false, context);
 			if (!sameIdentity(after, input.attempt.waveBase)) {
 				return {
 					kind: "worktree",
@@ -270,6 +282,32 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			}
 			if (prepared) return { kind: "worktree", outcome: "absent", failure: text(error) };
 			throw error;
+		}
+	}
+
+	private async serializeMainOperation<T>(root: string, signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
+		const previous = this.mainOperationTails.get(root) ?? Promise.resolve();
+		let release!: () => void;
+		const current = new Promise<void>((resolve) => { release = resolve; });
+		const tail = previous.then(async () => await current);
+		this.mainOperationTails.set(root, tail);
+		const clearTail = () => {
+			if (this.mainOperationTails.get(root) === tail) this.mainOperationTails.delete(root);
+		};
+		void tail.then(clearTail, clearTail);
+		let onAbort!: () => void;
+		const aborted = new Promise<never>((_, reject) => {
+			onAbort = () => reject(signal.reason ?? new Error("Main Git operation was interrupted."));
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+		try {
+			signal.throwIfAborted();
+			await Promise.race([previous, aborted]);
+			signal.throwIfAborted();
+			return await operation();
+		} finally {
+			signal.removeEventListener("abort", onAbort);
+			release();
 		}
 	}
 
@@ -750,8 +788,11 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 	}
 
 	private async branchTip(cwd: string, branch: string, context: OperationContext): Promise<string | undefined> {
-		if (!await this.branchExists(cwd, branch, context)) return;
-		return oid(await this.requireGit(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], cwd, context), "branch tip");
+		const args = ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`];
+		const result = await this.git(args, cwd, context);
+		if (result.code === 0 && !result.killed) return oid(result.stdout, "branch tip");
+		if (result.code === 1 && !result.killed) return;
+		throw new Error(commandFailure(args, result));
 	}
 
 	private async isAncestor(base: string, tip: string, cwd: string, context: OperationContext): Promise<boolean> {

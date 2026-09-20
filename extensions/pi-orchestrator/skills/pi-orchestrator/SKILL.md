@@ -15,6 +15,8 @@ Pi Orchestrator stops at checked integration in the local repository. It never p
 
 For `orchestrate_execute`, give every task one unique ID, kind, Role, model class, bounded requirements, deliverable, `dependsOn`, and `contextFrom`. Use `kind: "text"` for bounded output that later tasks consume. Use `kind: "changeset"` for repository work and provide at least one direct check. `contextFrom` may name only text tasks and preserves the declared order. Add task or final judgment, with its own Role and model class, only when checks cannot establish the criterion. Keep overlapping changes in one task or order them with `dependsOn`.
 
-Use `orchestrate_status` to inspect durable state. When a request needs attention, follow its evidence and use one deliberate `orchestrate_resume` action: `retry`, `verify`, or `finalize`. Use `orchestrate_abort` to stop an unfinished request. Integration starts only after the task's Herdr worker stops.
+Every changeset pauses after preliminary checks with its Herdr worker still live. The user can queue same-agent revisions with `/orchestrate-followup <request-id> <task-id> <message>` and must finish with `/orchestrate-accept <request-id> <task-id>`. Integration starts only after explicit acceptance and worker termination.
+
+Use `orchestrate_status` to inspect durable state. When a request needs attention, follow its evidence and use one deliberate `orchestrate_resume` action: `retry`, `verify`, or `finalize`. Use `orchestrate_abort` to stop an unfinished request.
 
 Never use `delegate_task` as a substitute for checked implementation orchestration. Do not add a second orchestration layer around `orchestrate_*`.

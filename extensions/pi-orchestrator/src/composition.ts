@@ -1,37 +1,16 @@
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, normalize, relative, sep } from "node:path";
-import {
-	createEphemeralSubagentExecutor,
-	type EphemeralSubagentExecutor,
-	type EphemeralSubagentExecutorOptions,
-} from "@henryqw/pi-subagent";
-import {
-	CheckedGitRuntime,
-	type DirectProcessRunner,
-	type ExactReviewExecutor,
-	type ExactReviewExecutorInput,
-} from "./git-runtime.ts";
-import { runProcess as defaultRunProcess } from "./process.ts";
-import { HerdrHostRuntime } from "./herdr-runtime.ts";
-import {
-	createRoleLaunchRuntime,
-	type LaunchRuntimeOptions,
-	RoleLaunchRuntime,
-} from "./launch-runtime.ts";
+import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import type {
-	CoordinatorRuntime,
-	HostRuntime,
-	OrchestratorRuntime,
-} from "./runner.ts";
+	DirectProcessRunner,
+	ExactReviewExecutor,
+	ExactReviewExecutorInput,
+} from "./git-runtime.ts";
+import type { LaunchRuntimeOptions } from "./launch-runtime.ts";
+import { runProcess as defaultRunProcess } from "./process.ts";
 
 const GIT_ROOT_TIMEOUT_CAP_MS = 30_000;
 const REVIEW_PROMPT_MAX_BYTES = 64 * 1024;
-const TRUNCATED_OUTPUT_MARKER = /\[Output truncated: \d+ bytes omitted\]/;
-const DEFAULT_REVIEW_EXECUTOR_OPTIONS: EphemeralSubagentExecutorOptions = {
-	maxConcurrency: 1,
-	maxTurns: 50,
-	timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
-};
 
 function within(root: string, candidate: string): boolean {
 	const fromRoot = relative(root, candidate);
@@ -120,21 +99,8 @@ function exactReviewPrompt(input: ExactReviewExecutorInput): string {
 	return prompt;
 }
 
-export interface ExactJudgmentExecutorOptions {
-	executor?: EphemeralSubagentExecutor;
-	createExecutor?: () => EphemeralSubagentExecutor;
-}
-
 /** Adapt an already verified Judgment launch without adding argv, environment, or resources. */
-export function createExactJudgmentExecutor(
-	options: ExactJudgmentExecutorOptions = {},
-): ExactReviewExecutor {
-	if (options.executor && options.createExecutor) {
-		throw new Error("Supply either a Judgment executor or an executor factory, not both.");
-	}
-	let executor = options.executor;
-	const getExecutor = () => executor ??= options.createExecutor?.()
-		?? createEphemeralSubagentExecutor(DEFAULT_REVIEW_EXECUTOR_OPTIONS);
+export function createExactJudgmentExecutor(executor: EphemeralSubagentExecutor): ExactReviewExecutor {
 	return async (input, context) => {
 		context.signal.throwIfAborted();
 		const task = exactReviewPrompt(input);
@@ -142,7 +108,7 @@ export function createExactJudgmentExecutor(
 			args: [...input.launch.args],
 			env: { ...input.launch.env },
 		};
-		const result = await getExecutor().run({
+		const result = await executor.run({
 			signal: context.signal,
 			prepare: async () => ({ launch, task, cwd: input.cwd }),
 		});
@@ -151,89 +117,9 @@ export function createExactJudgmentExecutor(
 			throw new Error("Judgment executor did not complete successfully.");
 		}
 		if (!result.output.trim()) throw new Error("Judgment executor returned empty output.");
-		if (TRUNCATED_OUTPUT_MARKER.test(result.output)) {
+		if (result.outputTruncated) {
 			throw new Error("Judgment executor output was truncated.");
 		}
 		return { verdict: result.output };
 	};
-}
-
-/** Pure delegation over the two existing policy-owning runtimes. */
-export class ComposedOrchestratorRuntime implements OrchestratorRuntime {
-	private readonly roles: CoordinatorRuntime;
-	private readonly host: HostRuntime;
-
-	constructor(roles: CoordinatorRuntime, host: HostRuntime) {
-		this.roles = roles;
-		this.host = host;
-	}
-
-	now(...args: Parameters<CoordinatorRuntime["now"]>): ReturnType<CoordinatorRuntime["now"]> {
-		return this.roles.now(...args);
-	}
-
-	randomToken(...args: Parameters<CoordinatorRuntime["randomToken"]>): ReturnType<CoordinatorRuntime["randomToken"]> {
-		return this.roles.randomToken(...args);
-	}
-
-	preflight(...args: Parameters<CoordinatorRuntime["preflight"]>): ReturnType<CoordinatorRuntime["preflight"]> {
-		return this.roles.preflight(...args);
-	}
-
-	acquireLaunch(...args: Parameters<CoordinatorRuntime["acquireLaunch"]>): ReturnType<CoordinatorRuntime["acquireLaunch"]> {
-		return this.roles.acquireLaunch(...args);
-	}
-
-	planHostAllocation(...args: Parameters<HostRuntime["planHostAllocation"]>): ReturnType<HostRuntime["planHostAllocation"]> {
-		return this.host.planHostAllocation(...args);
-	}
-
-	allocateHost(...args: Parameters<HostRuntime["allocateHost"]>): ReturnType<HostRuntime["allocateHost"]> {
-		return this.host.allocateHost(...args);
-	}
-
-	reconcileHostAllocation(...args: Parameters<HostRuntime["reconcileHostAllocation"]>): ReturnType<HostRuntime["reconcileHostAllocation"]> {
-		return this.host.reconcileHostAllocation(...args);
-	}
-
-	runWorker(...args: Parameters<HostRuntime["runWorker"]>): ReturnType<HostRuntime["runWorker"]> {
-		return this.host.runWorker(...args);
-	}
-
-	terminateWorker(...args: Parameters<HostRuntime["terminateWorker"]>): ReturnType<HostRuntime["terminateWorker"]> {
-		return this.host.terminateWorker(...args);
-	}
-
-	cleanupHost(...args: Parameters<HostRuntime["cleanupHost"]>): ReturnType<HostRuntime["cleanupHost"]> {
-		return this.host.cleanupHost(...args);
-	}
-}
-
-export interface ComposeOrchestratorRuntimeOptions {
-	role: Omit<LaunchRuntimeOptions, "resolveRoot" | "inspectMain">;
-	host: HerdrHostRuntime;
-	git: CheckedGitRuntime;
-	resolveRoot?: LaunchRuntimeOptions["resolveRoot"];
-}
-
-export function createHostCheckedMainInspector(
-	host: Pick<HerdrHostRuntime, "preflightHost">,
-	git: Pick<CheckedGitRuntime, "inspectMain">,
-): LaunchRuntimeOptions["inspectMain"] {
-	return async (input, context) => {
-		await host.preflightHost(input, context);
-		return await git.inspectMain(input, context);
-	};
-}
-
-/** Wire root, Herdr, Git, then Role preflight while leaving policy in the owning runtimes. */
-export function createComposedOrchestratorRuntime(
-	options: ComposeOrchestratorRuntimeOptions,
-): ComposedOrchestratorRuntime {
-	const roles: RoleLaunchRuntime = createRoleLaunchRuntime({
-		...options.role,
-		resolveRoot: options.resolveRoot ?? createCanonicalGitRootResolver(),
-		inspectMain: createHostCheckedMainInspector(options.host, options.git),
-	});
-	return new ComposedOrchestratorRuntime(roles, options.host);
 }

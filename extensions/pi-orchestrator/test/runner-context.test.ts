@@ -183,6 +183,33 @@ test("changeset prompts preserve ordered context as bounded task data", () => {
 	);
 });
 
+test("changeset follow-ups reuse task context with a bounded revision prompt", () => {
+	const task = changesetTask("change");
+	const prompt = buildChangesetTaskPrompt({
+		goal: "Implement the researched change.",
+		contexts: [],
+		task,
+		kind: "followup",
+		instruction: "Adjust the implementation based on the live review.",
+		worktreeCwd: "/repo/worktree",
+	});
+
+	assert.match(prompt, /Follow-up:\nAdjust the implementation based on the live review\./);
+	assert.match(prompt, /Continue the same task/);
+	assert.doesNotMatch(prompt, /Goal:\n/);
+	assert.throws(
+		() => buildChangesetTaskPrompt({
+			goal: "Implement the researched change.",
+			contexts: [],
+			task,
+			kind: "followup",
+			instruction: "  invalid  ",
+			worktreeCwd: "/repo/worktree",
+		}),
+		/follow-up instruction/,
+	);
+});
+
 test("text task prompts preserve ordered context as task data", () => {
 	const task = textTask("summary");
 	assert.equal(

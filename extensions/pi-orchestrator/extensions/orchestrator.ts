@@ -1,25 +1,18 @@
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createEphemeralSubagentExecutor,
 	ROLE_TOOL_POLICY_FLAG,
-	type EphemeralSubagentExecutor,
 } from "@henryqw/pi-subagent";
 import {
-	ComposedOrchestratorRuntime,
 	createCanonicalGitRootResolver,
-	createComposedOrchestratorRuntime,
 	createExactJudgmentExecutor,
-	type CanonicalGitRootResolverOptions,
-	type ComposeOrchestratorRuntimeOptions,
-	type ExactJudgmentExecutorOptions,
 } from "../src/composition.ts";
 import {
 	CheckedGitRuntime,
-	type CheckedGitRuntimeOptions,
 	type DirectProcessRunner,
 } from "../src/git-runtime.ts";
-import { HerdrHostRuntime, type HerdrHostRuntimeOptions } from "../src/herdr-runtime.ts";
+import { HerdrHostRuntime } from "../src/herdr-runtime.ts";
+import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../src/launch-runtime.ts";
 import { OrchestratorRunner, type OperationContext, type RunResponse } from "../src/runner.ts";
 import {
 	ExecuteRequestSchema,
@@ -39,39 +32,58 @@ import { FileRunStore } from "../src/store.ts";
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
 const PUBLIC_EVIDENCE_MAX_BYTES = 512;
 
-export interface OrchestratorExtensionDependencies {
-	now(): number;
-	createSubagentExecutor(): EphemeralSubagentExecutor;
-	createRootResolver(options: CanonicalGitRootResolverOptions): NonNullable<ComposeOrchestratorRuntimeOptions["resolveRoot"]>;
-	createJudgmentExecutor(options?: ExactJudgmentExecutorOptions): ReturnType<typeof createExactJudgmentExecutor>;
-	createGitRuntime(options: CheckedGitRuntimeOptions): CheckedGitRuntime;
-	createHostRuntime(options: HerdrHostRuntimeOptions): HerdrHostRuntime;
-	createRuntime(options: ComposeOrchestratorRuntimeOptions): ComposedOrchestratorRuntime;
-	createStore(): FileRunStore;
-	createRunner(
-		runtime: ComposedOrchestratorRuntime,
-		git: CheckedGitRuntime,
-		store: FileRunStore,
-		executor: EphemeralSubagentExecutor,
-	): OrchestratorRunner;
-	orchestratorEntrypoint: string;
+export interface OrchestratorExtensionComponents {
+	runner: OrchestratorRunner;
+	resolveRoot: LaunchRuntimeOptions["resolveRoot"];
 }
 
-const DEFAULT_DEPENDENCIES: OrchestratorExtensionDependencies = {
-	now: Date.now,
-	createSubagentExecutor: () => createEphemeralSubagentExecutor({
+export type CreateOrchestratorComponents = (options: {
+	pi: ExtensionAPI;
+	context(): ExtensionContext;
+	onInteractiveWait(requestId: string, taskId: string): void;
+}) => OrchestratorExtensionComponents;
+
+/** Construct the Main runtime graph once, sharing one executor across text tasks and Judgments. */
+export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi, context, onInteractiveWait }) => {
+	const runProcess: DirectProcessRunner = async (command, args, options) => await pi.exec(command, args, {
+		cwd: options.cwd,
+		signal: options.signal,
+		timeout: options.timeoutMs,
+	});
+	const resolveRoot = createCanonicalGitRootResolver({ runProcess });
+	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: 8,
 		maxTurns: 50,
 		timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
-	}),
-	createRootResolver: createCanonicalGitRootResolver,
-	createJudgmentExecutor: createExactJudgmentExecutor,
-	createGitRuntime: (options) => new CheckedGitRuntime(options),
-	createHostRuntime: (options) => new HerdrHostRuntime(options),
-	createRuntime: createComposedOrchestratorRuntime,
-	createStore: () => new FileRunStore(),
-	createRunner: (runtime, git, store, executor) => new OrchestratorRunner(runtime, git, store, executor),
-	orchestratorEntrypoint: fileURLToPath(import.meta.url),
+	});
+	const git = new CheckedGitRuntime({
+		runProcess,
+		executeReview: createExactJudgmentExecutor(executor),
+	});
+	const host = new HerdrHostRuntime({
+		inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git),
+		runProcess,
+	});
+	const coordinator = new RoleLaunchRuntime({
+		pi,
+		context,
+		resolveRoot,
+		inspectMain: async (input, operation) => {
+			await host.preflightHost(input, operation);
+			return await git.inspectMain(input, operation);
+		},
+	});
+	return {
+		resolveRoot,
+		runner: new OrchestratorRunner(
+			coordinator,
+			host,
+			git,
+			new FileRunStore(),
+			executor,
+			onInteractiveWait,
+		),
+	};
 };
 
 function boundedPublicText(value: string): string {
@@ -207,59 +219,34 @@ function toolResult(response: RunResponse) {
 	};
 }
 
-/** Register the Main-only Pi Orchestrator tools with injectable construction seams for tests. */
+/** Register the Main-only Pi Orchestrator surfaces around one lazy component graph. */
 export function registerOrchestratorExtension(
 	pi: ExtensionAPI,
-	injected: Partial<OrchestratorExtensionDependencies> = {},
+	componentsFactory: CreateOrchestratorComponents = createOrchestratorComponents,
 ): void {
 	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) return;
 
-	const dependencies = { ...DEFAULT_DEPENDENCIES, ...injected };
 	let latestCtx: ExtensionContext | undefined;
-	let components: {
-		runner: OrchestratorRunner;
-		resolveRoot: NonNullable<ComposeOrchestratorRuntimeOptions["resolveRoot"]>;
-	} | undefined;
+	let components: OrchestratorExtensionComponents | undefined;
 
 	const latestContext = (): ExtensionContext => {
 		if (!latestCtx) throw new Error("Pi Orchestrator cannot resolve a Role before session context exists.");
 		return latestCtx;
 	};
 
-	const getComponents = () => {
-		if (components) return components;
-		const runProcess: DirectProcessRunner = async (command, args, options) => await pi.exec(command, args, {
-			cwd: options.cwd,
-			signal: options.signal,
-			timeout: options.timeoutMs,
-		});
-		const resolveRoot = dependencies.createRootResolver({ runProcess, now: dependencies.now });
-		const executor = dependencies.createSubagentExecutor();
-		const git = dependencies.createGitRuntime({
-			runProcess,
-			executeReview: dependencies.createJudgmentExecutor({ executor }),
-		});
-		const host = dependencies.createHostRuntime({
-			inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git),
-			runProcess,
-		});
-		const runtime = dependencies.createRuntime({
-			role: {
-				pi,
-				context: latestContext,
-				orchestratorEntrypoint: dependencies.orchestratorEntrypoint,
-			},
-			host,
-			git,
-			resolveRoot,
-		});
-		const store = dependencies.createStore();
-		const runner = dependencies.createRunner(runtime, git, store, executor);
-		return components = { runner, resolveRoot };
-	};
+	const getComponents = () => components ??= componentsFactory({
+		pi,
+		context: latestContext,
+		onInteractiveWait: (requestId, taskId) => {
+			latestContext().ui.notify(
+				`Task ${requestId}/${taskId} is ready. Use /orchestrate-followup ${requestId} ${taskId} <message> or /orchestrate-accept ${requestId} ${taskId}.`,
+				"info",
+			);
+		},
+	});
 
 	const lookupRoot = async (cwd: string, signal?: AbortSignal): Promise<string> => {
-		const startedAt = dependencies.now();
+		const startedAt = Date.now();
 		const context: OperationContext = {
 			signal: signal ?? new AbortController().signal,
 			timeoutMs: LOOKUP_ROOT_TIMEOUT_MS,
@@ -276,6 +263,31 @@ export function registerOrchestratorExtension(
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		latestCtx = ctx;
+	});
+
+	pi.registerCommand("orchestrate-followup", {
+		description: "Queue a revision for an active Pi Orchestrator changeset task",
+		handler: async (args, ctx) => {
+			latestCtx = ctx;
+			const match = /^(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(args.trim());
+			if (!match) throw new Error("Usage: /orchestrate-followup <request-id> <task-id> <message>");
+			const [, requestId, taskId, instruction] = match;
+			const root = await lookupRoot(ctx.cwd);
+			ctx.ui.notify(getComponents().runner.queueFollowup(root, requestId!, taskId!, instruction!), "info");
+		},
+	});
+
+	pi.registerCommand("orchestrate-accept", {
+		description: "Accept the checked candidate for an active Pi Orchestrator changeset task",
+		handler: async (args, ctx) => {
+			latestCtx = ctx;
+			const parts = args.trim().split(/\s+/);
+			if (parts.length !== 2 || parts.some((part) => !part)) {
+				throw new Error("Usage: /orchestrate-accept <request-id> <task-id>");
+			}
+			const root = await lookupRoot(ctx.cwd);
+			ctx.ui.notify(getComponents().runner.acceptCandidate(root, parts[0]!, parts[1]!), "info");
+		},
 	});
 
 	pi.registerTool({
