@@ -16,6 +16,13 @@ const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
  */
 const STATE_MAX_BYTES = 128 * 1024 * 1024;
 const LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
+const LOCK_REACQUIRE_DELAY_MS = 25;
+
+type ReleaseLock = Awaited<ReturnType<typeof lock>>;
+
+export interface LifecycleLock {
+	waitUnlocked<T>(operation: () => Promise<T>): Promise<T>;
+}
 
 function isMissing(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
@@ -23,6 +30,21 @@ function isMissing(error: unknown): boolean {
 
 function isAlreadyPresent(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EEXIST");
+}
+
+function isLocked(error: unknown): boolean {
+	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ELOCKED");
+}
+
+async function reacquire(path: string): Promise<ReleaseLock> {
+	for (;;) {
+		try {
+			return await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		} catch (error) {
+			if (!isLocked(error)) throw error;
+			await new Promise<void>((resolve) => setTimeout(resolve, LOCK_REACQUIRE_DELAY_MS));
+		}
+	}
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -130,16 +152,31 @@ export class FileRunStore {
 		}
 	}
 
-	async withLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
+	async withLock<T>(root: string, operation: (lifecycle: LifecycleLock) => Promise<T>): Promise<T> {
 		const directory = this.stateDirectory(root);
 		await this.assertSafeDestination(root, directory);
 		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const path = this.lockPath(root);
-		const release = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		let release: ReleaseLock | undefined = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		let waitingUnlocked = false;
+		const lifecycle: LifecycleLock = {
+			waitUnlocked: async <Value>(operation: () => Promise<Value>): Promise<Value> => {
+				if (waitingUnlocked || !release) throw new Error("Lifecycle lock already has an unlocked waiter.");
+				waitingUnlocked = true;
+				await release();
+				release = undefined;
+				try {
+					return await operation();
+				} finally {
+					release = await reacquire(path);
+					waitingUnlocked = false;
+				}
+			},
+		};
 		try {
-			return await operation();
+			return await operation(lifecycle);
 		} finally {
-			await release();
+			await release?.();
 		}
 	}
 

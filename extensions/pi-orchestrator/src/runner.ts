@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
 	checkBatchPasses,
@@ -35,7 +36,7 @@ import {
 	type WorktreeAllocationPlan,
 	type WorkspaceIdentity,
 } from "./schema.ts";
-import { FileRunStore, type RunStateHandle } from "./store.ts";
+import { FileRunStore, type LifecycleLock, type RunStateHandle } from "./store.ts";
 
 const TRUNCATION_MARKER = "\n[truncated]";
 const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
@@ -345,7 +346,8 @@ class DeadlineScope {
 
 type InteractiveTaskAction =
 	| { kind: "followup"; instruction: string }
-	| { kind: "accept" };
+	| { kind: "accept" }
+	| { kind: "stop" };
 
 class InteractiveTaskControl {
 	private readonly queue: InteractiveTaskAction[] = [];
@@ -357,16 +359,23 @@ class InteractiveTaskControl {
 		onAbort(): void;
 	};
 	private acceptQueued = false;
+	private queuedFollowups = 0;
+	private notificationPending = true;
 	private sealed = false;
 
 	constructor(validateFollowup: (instruction: string) => void) {
 		this.validateFollowup = validateFollowup;
 	}
 
+	get pendingFollowups(): number {
+		return this.queuedFollowups;
+	}
+
 	followup(instruction: string): void {
 		if (this.sealed || this.acceptQueued) throw new Error("This task candidate is already sealed for integration.");
-		if (this.queue.length >= MAX_QUEUED_FOLLOWUPS) throw new Error(`A task may queue at most ${MAX_QUEUED_FOLLOWUPS} follow-ups.`);
+		if (this.queuedFollowups >= MAX_QUEUED_FOLLOWUPS) throw new Error(`A task may queue at most ${MAX_QUEUED_FOLLOWUPS} follow-ups.`);
 		this.validateFollowup(instruction);
+		this.queuedFollowups += 1;
 		this.deliver({ kind: "followup", instruction });
 	}
 
@@ -374,6 +383,26 @@ class InteractiveTaskControl {
 		if (this.sealed || this.acceptQueued) throw new Error("This task candidate is already sealed for integration.");
 		this.acceptQueued = true;
 		this.deliver({ kind: "accept" });
+	}
+
+	takeQueuedFollowup(): Extract<InteractiveTaskAction, { kind: "followup" }> | undefined {
+		const action = this.queue[0];
+		if (action?.kind !== "followup") return;
+		this.queue.shift();
+		this.consumeFollowup();
+		return action;
+	}
+
+	consumeFollowup(): void {
+		if (this.queuedFollowups <= 0) throw new Error("Interactive follow-up accounting is inconsistent.");
+		this.queuedFollowups -= 1;
+		this.notificationPending = true;
+	}
+
+	takeNotification(): boolean {
+		if (!this.notificationPending) return false;
+		this.notificationPending = false;
+		return true;
 	}
 
 	async next(signal: AbortSignal): Promise<InteractiveTaskAction> {
@@ -395,6 +424,13 @@ class InteractiveTaskControl {
 
 	seal(): void {
 		this.sealed = true;
+	}
+
+	invalidate(): void {
+		this.sealed = true;
+		this.queue.length = 0;
+		this.queuedFollowups = 0;
+		this.deliver({ kind: "stop" });
 	}
 
 	close(): void {
@@ -753,6 +789,9 @@ export class OrchestratorRunner {
 		if (!active || !["working", "awaiting_acceptance"].includes(active.task.status)) {
 			throw new Error(`Task ${taskId} is not an active interactive changeset.`);
 		}
+		if (latestAttempt(active.task).prompts.length + active.control.pendingFollowups >= MAX_WORKER_PROMPTS) {
+			throw new Error(`A task may submit at most ${MAX_WORKER_PROMPTS} worker prompts.`);
+		}
 		active.control.followup(instruction);
 		return `Queued follow-up for ${requestId}/${taskId}.`;
 	}
@@ -778,7 +817,10 @@ export class OrchestratorRunner {
 			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
 			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
 			if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
-			return await this.store.withLock(root, async () => {
+			return await this.store.withLock(root, async (lifecycle) => {
+				if (this.hasAnyActiveControl(root)) {
+					throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
+				}
 				await this.store.assertAvailable(root, request.id);
 				const createdAt = this.runtime.now();
 				const state: RunState = {
@@ -810,7 +852,7 @@ export class OrchestratorRunner {
 					updatedAt: createdAt,
 				};
 				const handle = await this.store.create(state);
-				return await this.run(handle, scope);
+				return await this.run(handle, scope, undefined, lifecycle);
 			});
 		} finally {
 			scope.close();
@@ -820,9 +862,15 @@ export class OrchestratorRunner {
 	async resume(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const request = parseResumeRequest(value);
 		root = realpathSync.native(root);
-		return await this.store.withLock(root, async () => {
+		return await this.store.withLock(root, async (lifecycle) => {
 			const handle = await this.store.load(root, request.id);
 			const state = handle.state;
+			if (this.hasActiveControl(root, request.id)) {
+				throw new Error(`Pi Orchestrator request ${request.id} is still active; use follow-up, accept, status, or abort.`);
+			}
+			if (this.hasAnyActiveControl(root)) {
+				throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
+			}
 			if (this.recoverInterrupted(state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
@@ -843,7 +891,7 @@ export class OrchestratorRunner {
 					if (!readyPendingTasks(state).includes(task)) {
 						throw new Error(`Text task ${task.taskId} dependencies are not completed.`);
 					}
-					return await this.run(handle, scope, task.taskId);
+					return await this.run(handle, scope, task.taskId, lifecycle);
 				}
 				if (request.action === "verify") {
 					const attempt = latestAttempt(task);
@@ -852,8 +900,8 @@ export class OrchestratorRunner {
 					}
 				}
 				if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
-				if (request.action === "retry") return await this.retry(handle, task, scope);
-				return await this.verifyRetainedTask(handle, task, scope);
+				if (request.action === "retry") return await this.retry(handle, task, scope, lifecycle);
+				return await this.verifyRetainedTask(handle, task, scope, lifecycle);
 			} catch (error) {
 				if (request.action === "retry") {
 					const task = taskState(state, request.taskId);
@@ -868,6 +916,7 @@ export class OrchestratorRunner {
 				throw error;
 			} finally {
 				scope.close();
+				this.closeRequestControls(root, request.id);
 			}
 		});
 	}
@@ -878,7 +927,9 @@ export class OrchestratorRunner {
 			const handle = await this.store.load(root, id);
 			const state = handle.state;
 			if (terminal(state)) return this.response(state);
-			if (this.recoverInterrupted(state)) await handle.save();
+			const activeControls = this.activeControls(root, id);
+			for (const { control } of activeControls) control.invalidate();
+			if (!activeControls.length && this.recoverInterrupted(state)) await handle.save();
 			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
 			for (const task of state.tasks) {
 				if (task.kind !== "changeset") continue;
@@ -901,7 +952,7 @@ export class OrchestratorRunner {
 		root = realpathSync.native(root);
 		return await this.store.withLock(root, async () => {
 			const handle = await this.store.load(root, id);
-			if (this.recoverInterrupted(handle.state)) await handle.save();
+			if (!this.hasActiveControl(root, id) && this.recoverInterrupted(handle.state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			const deadline = this.runtime.now() + STATUS_INSPECTION_BUDGET_MS;
 			const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
@@ -928,8 +979,14 @@ export class OrchestratorRunner {
 		});
 	}
 
-	private async run(handle: RunStateHandle, scope: DeadlineScope, forceTextTaskId?: string): Promise<RunResponse> {
+	private async run(
+		handle: RunStateHandle,
+		scope: DeadlineScope,
+		forceTextTaskId?: string,
+		lifecycle?: LifecycleLock,
+	): Promise<RunResponse> {
 		const state = handle.state;
+		let saveOnExit = true;
 		state.status = "running";
 		state.updatedAt = this.runtime.now();
 		try {
@@ -993,6 +1050,11 @@ export class OrchestratorRunner {
 						this.attention(task, bounded(failure));
 					}
 				}));
+				const stale = await this.settleInteractiveTasks(handle, ready, scope, lifecycle);
+				if (stale) {
+					saveOnExit = false;
+					return this.response(stale);
+				}
 				if (ready.some((task) => task.kind === "text"
 					? task.status !== "completed"
 					: task.status !== "ready_to_integrate")) {
@@ -1024,9 +1086,18 @@ export class OrchestratorRunner {
 			}
 			return await this.runFinal(handle, scope);
 		} catch (error) {
-			const active = state.tasks.find((task) => !["pending", "completed", "needs_attention"].includes(task.status));
-			if (active) this.attention(active, isDeadline(error, scope) ? "The productive request deadline expired." : `Execution was interrupted: ${errorText(error)}`);
-			else if (state.final.status === "running") {
+			const activeTasks = state.tasks.filter((task) => !["pending", "completed", "needs_attention"].includes(task.status));
+			if (activeTasks.length) {
+				const failure = isDeadline(error, scope) ? "The productive request deadline expired." : `Execution was interrupted: ${errorText(error)}`;
+				for (const active of activeTasks) {
+					this.attention(active, failure);
+					if (active.kind !== "changeset") continue;
+					const attempt = active.attempts.at(-1);
+					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
+						await this.terminateWithSafety(handle, active, attempt, this.terminationCandidate(attempt));
+					}
+				}
+			} else if (state.final.status === "running") {
 				state.final.status = "interrupted";
 				state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired." : `Final gate was interrupted: ${errorText(error)}`);
 			}
@@ -1034,8 +1105,11 @@ export class OrchestratorRunner {
 			state.accepted = false;
 			return this.response(state);
 		} finally {
-			state.updatedAt = this.runtime.now();
-			await handle.save();
+			this.closeRequestControls(state.root, state.request.id);
+			if (saveOnExit) {
+				state.updatedAt = this.runtime.now();
+				await handle.save();
+			}
 		}
 	}
 
@@ -1210,28 +1284,12 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
-		initialKind: "initial" | "correction",
+		initialKind: "initial" | "correction" | "followup",
+		initialInstruction?: string,
 	): Promise<void> {
-		const key = this.controlKey(handle.state.root, handle.state.request.id, task.taskId);
-		const control = this.interactiveChangesets ? new InteractiveTaskControl((instruction) => {
-			const attempt = latestAttempt(task);
-			const agent = allocationByKind(attempt, "agent");
-			if (!agent) throw new Error("Worker launch has no durably recorded agent allocation.");
-			buildChangesetTaskPrompt({
-				goal: handle.state.request.goal,
-				contexts: [],
-				task: changesetTaskRequest(handle.state, task.taskId),
-				kind: "followup",
-				instruction,
-				worktreeCwd: agent.worktreeCwd,
-			});
-		}) : undefined;
-		if (control) {
-			if (this.interactiveControls.has(key)) throw new Error(`Task ${task.taskId} already has active interactive control.`);
-			this.interactiveControls.set(key, { task, control });
-		}
+		const control = this.interactiveChangesets ? this.ensureInteractiveControl(handle, task) : undefined;
 		try {
-			await this.driveWorker(handle, task, scope, initialKind, control);
+			await this.driveWorker(handle, task, scope, initialKind, control, initialInstruction);
 		} catch (error) {
 			this.attention(task, isDeadline(error, scope)
 				? "The productive request deadline expired during worker execution."
@@ -1243,8 +1301,9 @@ export class OrchestratorRunner {
 				await handle.save();
 			}
 		} finally {
-			control?.close();
-			if (control && this.interactiveControls.get(key)?.control === control) this.interactiveControls.delete(key);
+			if (control && task.status !== "awaiting_acceptance") {
+				this.closeInteractiveControl(handle.state.root, handle.state.request.id, task.taskId, control);
+			}
 		}
 	}
 
@@ -1252,8 +1311,9 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
-		initialKind: "initial" | "correction",
+		initialKind: "initial" | "correction" | "followup",
 		control?: InteractiveTaskControl,
+		initialInstruction?: string,
 	): Promise<void> {
 		const state = handle.state;
 		const request = changesetTaskRequest(state, task.taskId);
@@ -1262,8 +1322,11 @@ export class OrchestratorRunner {
 		if (!workerId) throw new Error("Worker launch has no durably recorded agent ID.");
 		let kind: "initial" | "correction" | "followup" = initialKind;
 		let failure = task.failure;
-		let instruction: string | undefined;
+		let instruction = initialInstruction;
 		for (;;) {
+			if (kind === "followup" && instruction === undefined) {
+				throw new Error("Follow-up worker execution requires an exact queued instruction.");
+			}
 			if (kind === "correction" && !correctionEligible(request, attempt)) {
 				this.attention(task, "The same-agent correction is unavailable or already used.");
 				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
@@ -1377,16 +1440,7 @@ export class OrchestratorRunner {
 						task.status = "awaiting_acceptance";
 						task.failure = undefined;
 						await handle.save();
-						this.onInteractiveWait?.(state.request.id, task.taskId);
-						const action = await scope.call(async (context) => await control.next(context.signal));
-						if (action.kind === "followup") {
-							task.status = "working";
-							kind = "followup";
-							instruction = action.instruction;
-							failure = undefined;
-							continue;
-						}
-						control.seal();
+						return;
 					}
 					if (await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope)) {
 						task.status = "ready_to_integrate";
@@ -1396,12 +1450,78 @@ export class OrchestratorRunner {
 				}
 			}
 
-			if (!correctionEligible(request, attempt)) {
-				this.attention(task, failure ?? "Task candidate needs attention after its correction window closed.");
-				await this.terminateSettledWorker(handle, task, workerId, attempt.candidate ?? preCandidate, scope);
-				return;
+			if (correctionEligible(request, attempt)) {
+				kind = "correction";
+				instruction = undefined;
+				continue;
 			}
-			kind = "correction";
+			const queuedFollowup = control?.takeQueuedFollowup();
+			if (queuedFollowup) {
+				kind = "followup";
+				instruction = queuedFollowup.instruction;
+				task.status = "working";
+				continue;
+			}
+			this.attention(task, failure ?? "Task candidate needs attention after its correction window closed.");
+			await this.terminateSettledWorker(handle, task, workerId, attempt.candidate ?? preCandidate, scope);
+			return;
+		}
+	}
+
+	private async settleInteractiveTasks(
+		handle: RunStateHandle,
+		tasks: readonly TaskState[],
+		scope: DeadlineScope,
+		lifecycle?: LifecycleLock,
+	): Promise<RunState | undefined> {
+		for (;;) {
+			const awaiting = tasks.filter((task): task is ChangesetTaskState =>
+				task.kind === "changeset" && task.status === "awaiting_acceptance");
+			if (!awaiting.length) return;
+			if (!lifecycle) throw new Error("Interactive acceptance requires a lifecycle lock handoff.");
+			const persistedBeforeWait = (await this.store.load(handle.state.root, handle.state.request.id)).state;
+			const selected = await lifecycle.waitUnlocked(async () => {
+				for (const task of awaiting) {
+					const active = this.activeControl(handle.state.root, handle.state.request.id, task.taskId);
+					if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
+					if (active.control.takeNotification()) this.onInteractiveWait?.(handle.state.request.id, task.taskId);
+				}
+				return await scope.call(async (context) => {
+					const settled = new AbortController();
+					const signal = AbortSignal.any([context.signal, settled.signal]);
+					try {
+						return await Promise.race(awaiting.map(async (task) => {
+							const active = this.activeControl(handle.state.root, handle.state.request.id, task.taskId);
+							if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
+							return { task, control: active.control, action: await active.control.next(signal) };
+						}));
+					} finally {
+						settled.abort(new Error("Another interactive task received an action."));
+					}
+				});
+			});
+			const persistedAfterWait = (await this.store.load(handle.state.root, handle.state.request.id)).state;
+			if (selected.action.kind === "stop" || !isDeepStrictEqual(persistedAfterWait, persistedBeforeWait)) {
+				this.closeRequestControls(handle.state.root, handle.state.request.id);
+				return persistedAfterWait;
+			}
+			if (selected.action.kind === "followup") {
+				selected.control.consumeFollowup();
+				selected.task.status = "working";
+				await handle.save();
+				await this.driveWorkerSafely(handle, selected.task, scope, "followup", selected.action.instruction);
+				continue;
+			}
+			selected.control.seal();
+			const attempt = latestAttempt(selected.task);
+			const workerId = allocationByKind(attempt, "agent")?.agentName;
+			if (!workerId || !attempt.candidate) throw new Error("Acceptance requires an exact retained worker and candidate.");
+			if (await this.terminateSettledWorker(handle, selected.task, workerId, attempt.candidate, scope)) {
+				selected.task.status = "ready_to_integrate";
+				selected.task.failure = undefined;
+			}
+			await handle.save();
+			this.closeInteractiveControl(handle.state.root, handle.state.request.id, selected.task.taskId, selected.control);
 		}
 	}
 
@@ -1768,7 +1888,12 @@ export class OrchestratorRunner {
 		}
 	}
 
-	private async verifyRetainedTask(handle: RunStateHandle, task: ChangesetTaskState, scope: DeadlineScope): Promise<RunResponse> {
+	private async verifyRetainedTask(
+		handle: RunStateHandle,
+		task: ChangesetTaskState,
+		scope: DeadlineScope,
+		lifecycle: LifecycleLock,
+	): Promise<RunResponse> {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
 		if (attempt.termination?.status !== "terminated") throw new Error("Manual verification requires exact recorded worker termination.");
@@ -1785,10 +1910,15 @@ export class OrchestratorRunner {
 			handle.state.status = "needs_attention";
 			return this.response(handle.state);
 		}
-		return await this.run(handle, scope);
+		return await this.run(handle, scope, undefined, lifecycle);
 	}
 
-	private async retry(handle: RunStateHandle, task: ChangesetTaskState, scope: DeadlineScope): Promise<RunResponse> {
+	private async retry(
+		handle: RunStateHandle,
+		task: ChangesetTaskState,
+		scope: DeadlineScope,
+		lifecycle: LifecycleLock,
+	): Promise<RunResponse> {
 		const attempt = task.attempts.at(-1);
 		if (!attempt) {
 			for (const pending of handle.state.tasks) {
@@ -1798,7 +1928,7 @@ export class OrchestratorRunner {
 				}
 			}
 			await handle.save();
-			return await this.run(handle, scope);
+			return await this.run(handle, scope, undefined, lifecycle);
 		}
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be retried or adopted automatically.");
 		if (attempt.prompts.length) {
@@ -1856,6 +1986,8 @@ export class OrchestratorRunner {
 			await handle.save();
 			await this.dispatchTask(handle, task, scope);
 		}
+		const stale = await this.settleInteractiveTasks(handle, [task], scope, lifecycle);
+		if (stale) return this.response(stale);
 		const current = changesetTaskState(handle.state, task.taskId);
 		if (current.status === "ready_to_integrate" && !await this.integrateTask(handle, current, scope)) {
 			handle.state.status = "needs_attention";
@@ -1866,7 +1998,7 @@ export class OrchestratorRunner {
 			await handle.save();
 			return this.response(handle.state);
 		}
-		return await this.run(handle, scope);
+		return await this.run(handle, scope, undefined, lifecycle);
 	}
 
 	private async finalize(handle: RunStateHandle, scope: DeadlineScope): Promise<RunResponse> {
@@ -2060,6 +2192,30 @@ export class OrchestratorRunner {
 		return true;
 	}
 
+	private ensureInteractiveControl(handle: RunStateHandle, task: ChangesetTaskState): InteractiveTaskControl {
+		const key = this.controlKey(handle.state.root, handle.state.request.id, task.taskId);
+		const existing = this.interactiveControls.get(key);
+		if (existing) {
+			if (existing.task !== task) throw new Error(`Task ${task.taskId} interactive control has stale state ownership.`);
+			return existing.control;
+		}
+		const control = new InteractiveTaskControl((instruction) => {
+			const attempt = latestAttempt(task);
+			const agent = allocationByKind(attempt, "agent");
+			if (!agent) throw new Error("Worker launch has no durably recorded agent allocation.");
+			buildChangesetTaskPrompt({
+				goal: handle.state.request.goal,
+				contexts: [],
+				task: changesetTaskRequest(handle.state, task.taskId),
+				kind: "followup",
+				instruction,
+				worktreeCwd: agent.worktreeCwd,
+			});
+		});
+		this.interactiveControls.set(key, { task, control });
+		return control;
+	}
+
 	private controlKey(root: string, requestId: string, taskId: string): string {
 		return `${root}\0${requestId}\0${taskId}`;
 	}
@@ -2070,6 +2226,42 @@ export class OrchestratorRunner {
 		taskId: string,
 	): { task: ChangesetTaskState; control: InteractiveTaskControl } | undefined {
 		return this.interactiveControls.get(this.controlKey(root, requestId, taskId));
+	}
+
+	private activeControls(
+		root: string,
+		requestId: string,
+	): Array<{ task: ChangesetTaskState; control: InteractiveTaskControl }> {
+		const prefix = `${root}\0${requestId}\0`;
+		return [...this.interactiveControls.entries()]
+			.filter(([key]) => key.startsWith(prefix))
+			.map(([, active]) => active);
+	}
+
+	private hasActiveControl(root: string, requestId: string): boolean {
+		return this.activeControls(root, requestId).length > 0;
+	}
+
+	private hasAnyActiveControl(root: string): boolean {
+		const prefix = `${root}\0`;
+		return [...this.interactiveControls.keys()].some((key) => key.startsWith(prefix));
+	}
+
+	private closeInteractiveControl(
+		root: string,
+		requestId: string,
+		taskId: string,
+		control: InteractiveTaskControl,
+	): void {
+		const key = this.controlKey(root, requestId, taskId);
+		control.close();
+		if (this.interactiveControls.get(key)?.control === control) this.interactiveControls.delete(key);
+	}
+
+	private closeRequestControls(root: string, requestId: string): void {
+		for (const { task, control } of this.activeControls(root, requestId)) {
+			this.closeInteractiveControl(root, requestId, task.taskId, control);
+		}
 	}
 
 	private attention(task: TaskState, failure: string): void {
