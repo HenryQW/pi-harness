@@ -1660,6 +1660,46 @@ test("initial and correction prompts include the exact request goal", async (t) 
 	script.done();
 });
 
+test("normal prompt treats transient compaction idle and dirty Git state as in flight until changed-clean", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const delays: number[] = [];
+	const inspections: InFlightTaskCandidateInspection[] = [
+		{ candidate: baseIdentity(), clean: true, valid: true },
+		{ candidate: { ...changedIdentity(), index: oid("c") }, clean: false, valid: true },
+		{ candidate: changedIdentity(), clean: true, valid: true },
+	];
+	const host = runtime(fixture, script, async () => changedIdentity(), {
+		delay: async (milliseconds) => { delays.push(milliseconds); },
+		inspectInFlightTaskCandidate: async () => inspections.shift() ?? assert.fail("unexpected candidate inspection"),
+	});
+	const { attempt } = await fullAttempt(fixture, host, script);
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "committed after compaction", stderr: "" } },
+	);
+
+	const result = await host.runWorker({
+		goal: GOAL,
+		contexts: [],
+		task,
+		attempt,
+		workerId: AGENT_NAME,
+		kind: "initial",
+		preCandidate: baseIdentity(),
+	}, context());
+
+	assert.equal(result.outcome, "candidate");
+	assert.equal(result.outcome === "candidate" && result.candidate.head, oid("b"));
+	assert.equal(inspections.length, 0);
+	assert.deepEqual(delays, [250]);
+	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+	script.done();
+});
+
 test("normal prompt accepts a changed clean candidate from real in-flight Git inspection", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
@@ -1796,7 +1836,7 @@ test("delivered stall treats working dirty state as transient and exact blocked 
 	);
 	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 	assert.equal(result.outcome, "blocked");
-	assert.equal(inspections, 2);
+	assert.equal(inspections, 1);
 	assert.deepEqual(delays, [250]);
 	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 	script.done();

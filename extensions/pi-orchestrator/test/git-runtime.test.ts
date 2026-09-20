@@ -229,6 +229,82 @@ async function integrate(
 	return result.main;
 }
 
+test("concurrent worktree allocations serialize main-index inspection per repository", async (t) => {
+	const root = await repository(t);
+	let activeIndexOperations = 0;
+	let maxConcurrentIndexOperations = 0;
+	let collisions = 0;
+	const runtime = new CheckedGitRuntime({
+		runProcess: async (command, args, options) => {
+			const inspectsMainIndex = command === "git"
+				&& options.cwd === root
+				&& (args[0] === "update-index" || args[0] === "write-tree");
+			if (!inspectsMainIndex) return await directProcess(command, args, options);
+			activeIndexOperations += 1;
+			maxConcurrentIndexOperations = Math.max(maxConcurrentIndexOperations, activeIndexOperations);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			try {
+				if (activeIndexOperations > 1) {
+					collisions += 1;
+					return { code: 128, stdout: "", stderr: "fatal: Unable to create index.lock", killed: false };
+				}
+				return await directProcess(command, args, options);
+			} finally {
+				activeIndexOperations -= 1;
+			}
+		},
+	});
+	const waveBase = await runtime.inspectMain({ root }, context());
+	const [first, second] = await Promise.all([
+		allocate(runtime, root, task("concurrent-a"), waveBase, "token-concurrent-a"),
+		allocate(runtime, root, task("concurrent-b"), waveBase, "token-concurrent-b"),
+	]);
+
+	assert.equal(first.result.outcome, "owned");
+	assert.equal(second.result.outcome, "owned");
+	assert.equal(collisions, 0);
+	assert.equal(maxConcurrentIndexOperations, 1);
+});
+
+test("a queued main-index inspection observes cancellation without waiting for the active operation", async (t) => {
+	const root = await repository(t);
+	let releaseFirst!: () => void;
+	let markStarted!: () => void;
+	const firstStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+	const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+	let blocked = false;
+	const runtime = new CheckedGitRuntime({
+		runProcess: async (command, args, options) => {
+			if (!blocked && command === "git" && options.cwd === root && args[0] === "update-index") {
+				blocked = true;
+				markStarted();
+				await firstGate;
+			}
+			return await directProcess(command, args, options);
+		},
+	});
+	const first = runtime.inspectMain({ root }, context());
+	await firstStarted;
+
+	const controller = new AbortController();
+	const queued = runtime.inspectMain({ root }, {
+		signal: controller.signal,
+		timeoutMs: 20_000,
+		deadline: Date.now() + 20_000,
+	});
+	const queuedOutcome = queued.then(() => "resolved", () => "aborted");
+	controller.abort(new Error("cancel queued inspection"));
+	const promptOutcome = await Promise.race([
+		queuedOutcome,
+		new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
+	]);
+
+	releaseFirst();
+	await first;
+	assert.equal(promptOutcome, "aborted");
+	assert.equal(await queuedOutcome, "aborted");
+});
+
 test("worktree allocation persists helper-derived intent before add and retains setup drift", async (t) => {
 	const root = await repository(t);
 	const calls: { command: string; args: string[]; options: DirectProcessOptions }[] = [];

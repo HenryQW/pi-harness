@@ -290,6 +290,40 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
 });
 
+test("v2 follow-up prompt evidence requires exact bounded instructions", () => {
+	const valid = completedChangesetState();
+	const attempt = completedChangesetAttempt(valid);
+	const candidate = attempt.candidate!;
+	attempt.prompts.push({
+		kind: "followup",
+		status: "settled",
+		preCandidate: candidate,
+		candidate,
+		instruction: "Revise the retained candidate.",
+		at: 3,
+	});
+	assert.equal(parseRunState(structuredClone(valid)).tasks[0]?.status, "completed");
+
+	for (const instruction of [" padded ", "bad\0instruction"]) {
+		const invalid = structuredClone(valid);
+		completedChangesetAttempt(invalid).prompts.at(-1)!.instruction = instruction;
+		assert.throws(() => parseRunState(invalid), /Follow-up prompt instruction.*exact non-empty text/);
+	}
+
+	const repeatedCorrection = completedChangesetState();
+	const repeatedAttempt = completedChangesetAttempt(repeatedCorrection);
+	for (let index = 0; index < 2; index += 1) {
+		repeatedAttempt.prompts.push({
+			kind: "correction",
+			status: "settled",
+			preCandidate: repeatedAttempt.candidate!,
+			candidate: repeatedAttempt.candidate!,
+			at: 3 + index,
+		});
+	}
+	assert.throws(() => parseRunState(repeatedCorrection), /repeated correction history/);
+});
+
 test("v2 completed changesets require exact terminal evidence", () => {
 	const valid = completedChangesetState();
 	assert.equal(completedChangesetTask(parseRunState(structuredClone(valid))).status, "completed");

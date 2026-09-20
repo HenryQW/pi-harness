@@ -576,9 +576,10 @@ export class HerdrHostRuntime implements HostRuntime {
 			task: TaskRequest;
 			attempt: TaskAttempt;
 			workerId: string;
-			kind: "initial" | "correction";
+			kind: "initial" | "correction" | "followup";
 			preCandidate: WorkspaceIdentity;
 			failure?: string;
+			instruction?: string;
 		},
 		context: OperationContext,
 	): Promise<WorkerResult> {
@@ -598,6 +599,7 @@ export class HerdrHostRuntime implements HostRuntime {
 				kind: input.kind,
 				worktreeCwd: allocation.worktreeCwd,
 				...(input.failure ? { failure: input.failure } : {}),
+				...(input.instruction ? { instruction: input.instruction } : {}),
 			});
 		} catch (error) {
 			return { outcome: "not_prompted", diagnostic: `Worker assignment was not submitted: ${safeText(error)}` };
@@ -881,8 +883,15 @@ export class HerdrHostRuntime implements HostRuntime {
 			} catch (error) {
 				return {
 					outcome: this.contextInterrupted(context) ? "interrupted" : "unknown",
-					diagnostic: `Delivered stalled prompt lifecycle is unknown: ${safeText(error)}`,
+					diagnostic: `Delivered prompt lifecycle is unknown: ${safeText(error)}`,
 				};
+			}
+
+			if (lifecycle.status === "blocked") {
+				return { outcome: "blocked", diagnostic: await this.diagnostic(allocation, context, "Delivered prompt settled as blocked.") };
+			}
+			if (lifecycle.status === "unknown") {
+				return { outcome: "unknown", diagnostic: "Delivered prompt lifecycle is unknown." };
 			}
 
 			let inspection: InFlightTaskCandidateInspection;
@@ -894,18 +903,11 @@ export class HerdrHostRuntime implements HostRuntime {
 			} catch (error) {
 				return {
 					outcome: this.contextInterrupted(context) ? "interrupted" : "unknown",
-					diagnostic: `Delivered stalled prompt candidate inspection failed: ${safeText(error)}`,
+					diagnostic: `Delivered prompt candidate inspection failed: ${safeText(error)}`,
 				};
 			}
 			if (this.contextInterrupted(context)) {
-				return { outcome: "interrupted", diagnostic: "Delivered stalled prompt reconciliation was interrupted." };
-			}
-
-			if (lifecycle.status === "blocked") {
-				return { outcome: "blocked", diagnostic: await this.diagnostic(allocation, context, "Delivered stalled prompt settled as blocked.") };
-			}
-			if (lifecycle.status === "unknown") {
-				return { outcome: "unknown", diagnostic: "Delivered stalled prompt lifecycle is unknown." };
+				return { outcome: "interrupted", diagnostic: "Delivered prompt reconciliation was interrupted." };
 			}
 			if (SETTLED_AGENT_STATES.has(lifecycle.status)
 				&& inspection.valid
@@ -914,7 +916,7 @@ export class HerdrHostRuntime implements HostRuntime {
 				return {
 					outcome: "candidate",
 					candidate: inspection.candidate,
-					diagnostic: await this.diagnostic(allocation, context, "Delivered stalled prompt settled with a candidate."),
+					diagnostic: await this.diagnostic(allocation, context, "Delivered prompt settled with a candidate."),
 				};
 			}
 
@@ -923,7 +925,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			} catch (error) {
 				return {
 					outcome: this.contextInterrupted(context) ? "interrupted" : "unknown",
-					diagnostic: `Delivered stalled prompt polling failed: ${safeText(error)}`,
+					diagnostic: `Delivered prompt polling failed: ${safeText(error)}`,
 				};
 			}
 		}
@@ -944,10 +946,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			return { outcome: "unknown", diagnostic: `Settled worker candidate inspection failed: ${safeText(error)}` };
 		}
 		if (!inspection.valid || !inspection.clean || !this.isExpectedCandidate(input, inspection.candidate)) {
-			return {
-				outcome: "blocked",
-				diagnostic: await this.diagnostic(allocation, context, "Settled worker did not produce an exact changed clean committed candidate."),
-			};
+			return await this.reconcileDeliveredPrompt(input, allocation, context);
 		}
 		return {
 			outcome: "candidate",

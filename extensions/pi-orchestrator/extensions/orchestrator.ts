@@ -53,6 +53,7 @@ export interface OrchestratorExtensionDependencies {
 		git: CheckedGitRuntime,
 		store: FileRunStore,
 		executor: EphemeralSubagentExecutor,
+		onInteractiveWait: (requestId: string, taskId: string) => void,
 	): OrchestratorRunner;
 	orchestratorEntrypoint: string;
 }
@@ -70,7 +71,8 @@ const DEFAULT_DEPENDENCIES: OrchestratorExtensionDependencies = {
 	createHostRuntime: (options) => new HerdrHostRuntime(options),
 	createRuntime: createComposedOrchestratorRuntime,
 	createStore: () => new FileRunStore(),
-	createRunner: (runtime, git, store, executor) => new OrchestratorRunner(runtime, git, store, executor),
+	createRunner: (runtime, git, store, executor, onInteractiveWait) =>
+		new OrchestratorRunner(runtime, git, store, executor, true, onInteractiveWait),
 	orchestratorEntrypoint: fileURLToPath(import.meta.url),
 };
 
@@ -254,7 +256,12 @@ export function registerOrchestratorExtension(
 			resolveRoot,
 		});
 		const store = dependencies.createStore();
-		const runner = dependencies.createRunner(runtime, git, store, executor);
+		const runner = dependencies.createRunner(runtime, git, store, executor, (requestId, taskId) => {
+			latestContext().ui.notify(
+				`Task ${requestId}/${taskId} is ready. Use /orchestrate-followup ${requestId} ${taskId} <message> or /orchestrate-accept ${requestId} ${taskId}.`,
+				"info",
+			);
+		});
 		return components = { runner, resolveRoot };
 	};
 
@@ -276,6 +283,31 @@ export function registerOrchestratorExtension(
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		latestCtx = ctx;
+	});
+
+	pi.registerCommand("orchestrate-followup", {
+		description: "Queue a revision for an active Pi Orchestrator changeset task",
+		handler: async (args, ctx) => {
+			latestCtx = ctx;
+			const match = /^(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(args.trim());
+			if (!match) throw new Error("Usage: /orchestrate-followup <request-id> <task-id> <message>");
+			const [, requestId, taskId, instruction] = match;
+			const root = await lookupRoot(ctx.cwd);
+			ctx.ui.notify(getComponents().runner.queueFollowup(root, requestId!, taskId!, instruction!), "info");
+		},
+	});
+
+	pi.registerCommand("orchestrate-accept", {
+		description: "Accept the checked candidate for an active Pi Orchestrator changeset task",
+		handler: async (args, ctx) => {
+			latestCtx = ctx;
+			const parts = args.trim().split(/\s+/);
+			if (parts.length !== 2 || parts.some((part) => !part)) {
+				throw new Error("Usage: /orchestrate-accept <request-id> <task-id>");
+			}
+			const root = await lookupRoot(ctx.cwd);
+			ctx.ui.notify(getComponents().runner.acceptCandidate(root, parts[0]!, parts[1]!), "info");
+		},
 	});
 
 	pi.registerTool({

@@ -130,6 +130,7 @@ function context(cwd: string, model: unknown = undefined): ExtensionContext {
 }
 
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown;
+type RegisteredCommand = { handler(args: string, ctx: ExtensionContext): Promise<void> | void };
 type RegisteredTool = {
 	name: string;
 	parameters: unknown;
@@ -148,6 +149,7 @@ type RunnerCall = { method: string; args: unknown[] };
 interface Harness {
 	pi: ExtensionAPI;
 	tools: RegisteredTool[];
+	commands: Map<string, RegisteredCommand>;
 	handlers: Map<string, EventHandler>;
 	factoryCalls: string[];
 	runnerCalls: RunnerCall[];
@@ -159,6 +161,7 @@ interface Harness {
 	getJudgmentExecutor(): NonNullable<CheckedGitRuntimeOptions["executeReview"]>;
 	getRoleContext(): ExtensionContext;
 	getProcessRunner(): DirectProcessRunner;
+	getInteractiveWait(): (requestId: string, taskId: string) => void;
 }
 
 function response(method: string, continuation = false): RunResponse {
@@ -171,6 +174,7 @@ function response(method: string, continuation = false): RunResponse {
 
 function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {}): Harness {
 	const tools: RegisteredTool[] = [];
+	const commands = new Map<string, RegisteredCommand>();
 	const handlers = new Map<string, EventHandler>();
 	const factoryCalls: string[] = [];
 	const runnerCalls: RunnerCall[] = [];
@@ -180,6 +184,7 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 	let hostOptions: HerdrHostRuntimeOptions | undefined;
 	let runtimeOptions: ComposeOrchestratorRuntimeOptions | undefined;
 	let processRunner: DirectProcessRunner | undefined;
+	let interactiveWait: ((requestId: string, taskId: string) => void) | undefined;
 
 	const pi = {
 		on(name: string, handler: EventHandler) {
@@ -187,6 +192,9 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 		},
 		registerTool(tool: RegisteredTool) {
 			tools.push(tool);
+		},
+		registerCommand(name: string, command: RegisteredCommand) {
+			commands.set(name, command);
 		},
 		async exec(command: string, args: string[], options: unknown) {
 			execCalls.push({ command, args: [...args], options });
@@ -236,6 +244,14 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 			runnerCalls.push({ method: "abort", args });
 			return response("abort");
 		},
+		queueFollowup(...args: unknown[]) {
+			runnerCalls.push({ method: "queueFollowup", args });
+			return "follow-up queued";
+		},
+		acceptCandidate(...args: unknown[]) {
+			runnerCalls.push({ method: "acceptCandidate", args });
+			return "acceptance queued";
+		},
 	};
 
 	const dependencies: Partial<OrchestratorExtensionDependencies> = {
@@ -277,8 +293,9 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 			factoryCalls.push("store");
 			return store as never;
 		},
-		createRunner(receivedRuntime, receivedGit, receivedStore, receivedExecutor) {
+		createRunner(receivedRuntime, receivedGit, receivedStore, receivedExecutor, receivedInteractiveWait) {
 			factoryCalls.push("runner");
+			interactiveWait = receivedInteractiveWait;
 			assert.equal(receivedRuntime, runtime);
 			assert.equal(receivedGit, git);
 			assert.equal(receivedStore, store);
@@ -292,6 +309,7 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 	return {
 		pi,
 		tools,
+		commands,
 		handlers,
 		factoryCalls,
 		runnerCalls,
@@ -303,6 +321,7 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 		getJudgmentExecutor: () => judgmentExecutor,
 		getRoleContext: () => runtimeOptions!.role.context(),
 		getProcessRunner: () => processRunner!,
+		getInteractiveWait: () => interactiveWait!,
 	};
 }
 
@@ -368,6 +387,7 @@ test("registers exactly four strict tools without constructing runtime component
 		"orchestrate_resume",
 		"orchestrate_abort",
 	]);
+	assert.deepEqual([...harness.commands.keys()], ["orchestrate-followup", "orchestrate-accept"]);
 	assert.deepEqual(harness.factoryCalls, []);
 
 	const [execute, status, resume, abort] = harness.tools;
@@ -384,6 +404,39 @@ test("registers exactly four strict tools without constructing runtime component
 	assert.throws(() => parseIdOnly({ id: "Request_One" }), /strict v1 schema/i);
 	assert.throws(() => execute!.prepareArguments({ ...EXECUTE_REQUEST, extra: true }), /strict task schema/i);
 	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /strict v1 action/i);
+});
+
+test("interactive commands route follow-ups and acceptance to the active runner during streaming", async () => {
+	const harness = createHarness();
+	const notifications: Array<{ message: string; type: string }> = [];
+	const ctx = {
+		cwd: "/repo/subdir",
+		ui: { notify: (message: string, type: string) => notifications.push({ message, type }) },
+	} as unknown as ExtensionContext;
+
+	await harness.commands.get("orchestrate-followup")!.handler(
+		"request-one unit-one revise the current candidate",
+		ctx,
+	);
+	await harness.commands.get("orchestrate-accept")!.handler("request-one unit-one", ctx);
+	harness.getInteractiveWait()("request-one", "unit-one");
+
+	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup" || method === "acceptCandidate"), [
+		{ method: "queueFollowup", args: [CANONICAL_ROOT, "request-one", "unit-one", "revise the current candidate"] },
+		{ method: "acceptCandidate", args: [CANONICAL_ROOT, "request-one", "unit-one"] },
+	]);
+	assert.deepEqual(notifications, [
+		{ message: "follow-up queued", type: "info" },
+		{ message: "acceptance queued", type: "info" },
+		{
+			message: "Task request-one/unit-one is ready. Use /orchestrate-followup request-one unit-one <message> or /orchestrate-accept request-one unit-one.",
+			type: "info",
+		},
+	]);
+	await assert.rejects(
+		async () => await harness.commands.get("orchestrate-followup")!.handler("request-one unit-one", ctx),
+		/Usage: \/orchestrate-followup/,
+	);
 });
 
 test("Role child argv causes zero registration and dependency side effects", () => {
@@ -699,6 +752,7 @@ test("manifest entrypoint and Main-side Skill ship with the four tools", async (
 		registerTool(tool: { name: string }) {
 			mainTools.push(tool.name);
 		},
+		registerCommand() {},
 		on(name: string) {
 			mainEvents.push(name);
 		},
@@ -745,6 +799,7 @@ test("root active delegation sources smoke-load only generic delegation and orch
 		registerMessageRenderer() {},
 		on() {},
 		registerTool(tool: { name: string }) { toolNames.push(tool.name); },
+		registerCommand() {},
 	} as unknown as ExtensionAPI;
 	try {
 		process.env.PI_CODING_AGENT_DIR = agentDir;

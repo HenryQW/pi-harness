@@ -44,6 +44,8 @@ Call `orchestrate_execute` with a bounded request. It runs the graph through che
 | `orchestrate_status` | tool | Read one request and report workspace drift. |
 | `orchestrate_resume` | tool | Retry, verify, or finalize an unfinished request. |
 | `orchestrate_abort` | tool | Stop workers and abort an unfinished request. |
+| `/orchestrate-followup <request-id> <task-id> <message>` | command | Queue a revision in the active task's existing agent. |
+| `/orchestrate-accept <request-id> <task-id>` | command | Accept the active task's checked candidate and continue integration. |
 | `pi-orchestrator` | skill | Guide Main to choose generic delegation or checked orchestration. |
 
 Use `delegate_task` for lightweight generic delegation. Use `orchestrate_*` when implementation needs durable state, checks, dependencies, integration, or recovery.
@@ -88,6 +90,17 @@ Judgment launches use the declared judgment Role without adding arguments, envir
 
 Use `kind: "text"` for bounded analysis or synthesis. Text tasks omit `checks` and `judgment`. A later task lists their IDs in `contextFrom` to receive the exact outputs in that order.
 
+Every changeset task is interactive. After its agent commits a clean candidate and preliminary checks pass, the task keeps the same Herdr agent, tab, workspace, and worktree alive. Pi shows the exact follow-up and acceptance commands.
+
+Send bounded revisions before acceptance. A task accepts at most 32 worker prompts and queues at most 16 follow-ups at once:
+
+```text
+/orchestrate-followup repair-auth auth-runtime Keep the error copy but simplify the control flow.
+/orchestrate-accept repair-auth auth-runtime
+```
+
+A follow-up queued while the agent is working runs after the current turn settles. Acceptance queued while it is working applies to the next checked candidate. The request budget continues while it waits for input. Expiry or interruption terminates the owned worker and fails closed.
+
 ## Flow
 
 The graph runs ready tasks in waves. Independent tasks run in parallel. Dependencies run in later waves.
@@ -106,7 +119,7 @@ Ready text tasks use bounded ephemeral execution. Ready changeset tasks use sepa
 
 Preliminary validation uses checks only while the worker remains available. A settled implementation block or unchanged failed check can trigger one same-agent correction.
 
-The worker then stops. The orchestrator rebases the candidate and reruns every task check directly, without a shell.
+After preliminary checks pass, the worker stays available for same-task follow-ups. Each follow-up reuses the live conversation, must produce a new clean commit, and reruns preliminary checks. Explicit acceptance seals the candidate; late follow-ups are rejected. The worker then stops, and the orchestrator rebases the accepted candidate and reruns every task check directly, without a shell.
 
 Add `judgment` only for a criterion that checks cannot decide. Its selected Role runs after the rebase with exact private patch evidence. Configure that Role with read-only tools. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
 

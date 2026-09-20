@@ -40,6 +40,8 @@ import { FileRunStore, type RunStateHandle } from "./store.ts";
 const TRUNCATION_MARKER = "\n[truncated]";
 const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
 const CHANGESET_TASK_PROMPT_MAX_BYTES = 96 * 1024;
+const MAX_WORKER_PROMPTS = 32;
+const MAX_QUEUED_FOLLOWUPS = 16;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
@@ -189,9 +191,10 @@ export interface HostRuntime {
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		workerId: string;
-		kind: "initial" | "correction";
+		kind: "initial" | "correction" | "followup";
 		preCandidate: WorkspaceIdentity;
 		failure?: string;
+		instruction?: string;
 	}, context: OperationContext): Promise<WorkerResult>;
 	terminateWorker(input: {
 		task: TaskRequest;
@@ -340,6 +343,81 @@ class DeadlineScope {
 	}
 }
 
+type InteractiveTaskAction =
+	| { kind: "followup"; instruction: string }
+	| { kind: "accept" };
+
+class InteractiveTaskControl {
+	private readonly queue: InteractiveTaskAction[] = [];
+	private readonly validateFollowup: (instruction: string) => void;
+	private waiter?: {
+		resolve(action: InteractiveTaskAction): void;
+		reject(error: unknown): void;
+		signal: AbortSignal;
+		onAbort(): void;
+	};
+	private acceptQueued = false;
+	private sealed = false;
+
+	constructor(validateFollowup: (instruction: string) => void) {
+		this.validateFollowup = validateFollowup;
+	}
+
+	followup(instruction: string): void {
+		if (this.sealed || this.acceptQueued) throw new Error("This task candidate is already sealed for integration.");
+		if (this.queue.length >= MAX_QUEUED_FOLLOWUPS) throw new Error(`A task may queue at most ${MAX_QUEUED_FOLLOWUPS} follow-ups.`);
+		this.validateFollowup(instruction);
+		this.deliver({ kind: "followup", instruction });
+	}
+
+	accept(): void {
+		if (this.sealed || this.acceptQueued) throw new Error("This task candidate is already sealed for integration.");
+		this.acceptQueued = true;
+		this.deliver({ kind: "accept" });
+	}
+
+	async next(signal: AbortSignal): Promise<InteractiveTaskAction> {
+		signal.throwIfAborted();
+		const queued = this.queue.shift();
+		if (queued) return queued;
+		if (this.sealed) throw new Error("This task candidate is already sealed for integration.");
+		if (this.waiter) throw new Error("Interactive task control already has a waiter.");
+		return await new Promise<InteractiveTaskAction>((resolve, reject) => {
+			const onAbort = () => {
+				if (this.waiter?.onAbort !== onAbort) return;
+				this.waiter = undefined;
+				reject(signal.reason ?? new Error("Interactive task control was interrupted."));
+			};
+			this.waiter = { resolve, reject, signal, onAbort };
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+	}
+
+	seal(): void {
+		this.sealed = true;
+	}
+
+	close(): void {
+		this.sealed = true;
+		const waiter = this.waiter;
+		this.waiter = undefined;
+		if (!waiter) return;
+		waiter.signal.removeEventListener("abort", waiter.onAbort);
+		waiter.reject(new Error("Interactive task control closed."));
+	}
+
+	private deliver(action: InteractiveTaskAction): void {
+		const waiter = this.waiter;
+		if (!waiter) {
+			this.queue.push(action);
+			return;
+		}
+		this.waiter = undefined;
+		waiter.signal.removeEventListener("abort", waiter.onAbort);
+		waiter.resolve(action);
+	}
+}
+
 function bounded(value: string, maxBytes = MAX_PERSISTED_RUNTIME_TEXT_BYTES): string {
 	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
 	const contentBytes = maxBytes - Buffer.byteLength(TRUNCATION_MARKER, "utf8");
@@ -351,6 +429,13 @@ function bounded(value: string, maxBytes = MAX_PERSISTED_RUNTIME_TEXT_BYTES): st
 function boundedRuntimeText(value: unknown, field: string): string {
 	if (typeof value !== "string") throw new Error(`${field} must be text.`);
 	return bounded(value);
+}
+
+function boundedRuntimeDiagnostic(value: unknown, field: string): string {
+	if (typeof value !== "string") throw new Error(`${field} must be text.`);
+	const normalized = value.trim();
+	if (!normalized || normalized.includes("\0")) throw new Error(`${field} must be non-empty text without NUL.`);
+	return bounded(normalized);
 }
 
 function boundedPossibleResources(values: unknown): string[] | undefined {
@@ -513,19 +598,36 @@ export function buildChangesetTaskPrompt(input: {
 	readonly goal: ExecuteRequest["goal"];
 	readonly contexts: readonly TextTaskContext[];
 	task: ChangesetTaskRequest;
-	kind: "initial" | "correction";
+	kind: "initial" | "correction" | "followup";
 	worktreeCwd: string;
 	failure?: string;
+	instruction?: string;
 }): string {
 	if (input.kind === "correction"
 		&& (typeof input.failure !== "string" || !input.failure.trim() || input.failure.trim() !== input.failure || input.failure.includes("\0"))) {
 		throw new Error("correction failure must be a non-empty exact string.");
 	}
+	if (input.kind === "followup"
+		&& (typeof input.instruction !== "string" || !input.instruction.trim() || input.instruction.trim() !== input.instruction
+			|| input.instruction.includes("\0") || input.instruction.length > 32_000)) {
+		throw new Error("follow-up instruction must be non-empty exact text of at most 32000 characters.");
+	}
 	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
 	const upstreamTaskData = input.contexts.length
 		? ["", "Upstream task data:", formatTextTaskContexts(input.contexts, CHANGESET_TASK_PROMPT_MAX_BYTES)]
 		: [];
-	const text = [
+	const text = input.kind === "followup" ? [
+		`Task: ${input.task.id}`,
+		`Worktree: ${input.worktreeCwd}`,
+		"",
+		"Follow-up:",
+		input.instruction!,
+		"",
+		"Required checks (direct command/argv):",
+		checks,
+		"",
+		"Continue the same task in the exact worktree above. Commit the complete revision and leave that worktree clean.",
+	].join("\n") : [
 		`Task: ${input.task.id}`,
 		"Goal:",
 		input.goal,
@@ -622,17 +724,46 @@ export class OrchestratorRunner {
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
 	private readonly textExecutor: EphemeralSubagentExecutor;
+	private readonly interactiveChangesets: boolean;
+	private readonly onInteractiveWait?: (requestId: string, taskId: string) => void;
+	private readonly interactiveControls = new Map<string, { task: ChangesetTaskState; control: InteractiveTaskControl }>();
 
 	constructor(
 		runtime: OrchestratorRuntime,
 		gitRuntime: GitRuntime & TaskCandidateInspector,
 		store = new FileRunStore(),
 		textExecutor: EphemeralSubagentExecutor,
+		interactiveChangesets = false,
+		onInteractiveWait?: (requestId: string, taskId: string) => void,
 	) {
 		this.runtime = runtime;
 		this.gitRuntime = gitRuntime;
 		this.store = store;
 		this.textExecutor = textExecutor;
+		this.interactiveChangesets = interactiveChangesets;
+		this.onInteractiveWait = onInteractiveWait;
+	}
+
+	queueFollowup(root: string, requestId: string, taskId: string, instruction: string): string {
+		if (typeof instruction !== "string" || !instruction.trim() || instruction.trim() !== instruction
+			|| instruction.includes("\0") || instruction.length > 32_000) {
+			throw new Error("Follow-up instruction must be non-empty exact text of at most 32000 characters.");
+		}
+		const active = this.activeControl(realpathSync.native(root), requestId, taskId);
+		if (!active || !["working", "awaiting_acceptance"].includes(active.task.status)) {
+			throw new Error(`Task ${taskId} is not an active interactive changeset.`);
+		}
+		active.control.followup(instruction);
+		return `Queued follow-up for ${requestId}/${taskId}.`;
+	}
+
+	acceptCandidate(root: string, requestId: string, taskId: string): string {
+		const active = this.activeControl(realpathSync.native(root), requestId, taskId);
+		if (!active || !["working", "awaiting_acceptance"].includes(active.task.status)) {
+			throw new Error(`Task ${taskId} is not an active interactive changeset.`);
+		}
+		active.control.accept();
+		return `Acceptance queued for ${requestId}/${taskId}.`;
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -1081,8 +1212,26 @@ export class OrchestratorRunner {
 		scope: DeadlineScope,
 		initialKind: "initial" | "correction",
 	): Promise<void> {
+		const key = this.controlKey(handle.state.root, handle.state.request.id, task.taskId);
+		const control = this.interactiveChangesets ? new InteractiveTaskControl((instruction) => {
+			const attempt = latestAttempt(task);
+			const agent = allocationByKind(attempt, "agent");
+			if (!agent) throw new Error("Worker launch has no durably recorded agent allocation.");
+			buildChangesetTaskPrompt({
+				goal: handle.state.request.goal,
+				contexts: [],
+				task: changesetTaskRequest(handle.state, task.taskId),
+				kind: "followup",
+				instruction,
+				worktreeCwd: agent.worktreeCwd,
+			});
+		}) : undefined;
+		if (control) {
+			if (this.interactiveControls.has(key)) throw new Error(`Task ${task.taskId} already has active interactive control.`);
+			this.interactiveControls.set(key, { task, control });
+		}
 		try {
-			await this.driveWorker(handle, task, scope, initialKind);
+			await this.driveWorker(handle, task, scope, initialKind, control);
 		} catch (error) {
 			this.attention(task, isDeadline(error, scope)
 				? "The productive request deadline expired during worker execution."
@@ -1093,6 +1242,9 @@ export class OrchestratorRunner {
 			} else {
 				await handle.save();
 			}
+		} finally {
+			control?.close();
+			if (control && this.interactiveControls.get(key)?.control === control) this.interactiveControls.delete(key);
 		}
 	}
 
@@ -1101,14 +1253,16 @@ export class OrchestratorRunner {
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
 		initialKind: "initial" | "correction",
+		control?: InteractiveTaskControl,
 	): Promise<void> {
 		const state = handle.state;
 		const request = changesetTaskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
 		const workerId = allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Worker launch has no durably recorded agent ID.");
-		let kind = initialKind;
+		let kind: "initial" | "correction" | "followup" = initialKind;
 		let failure = task.failure;
+		let instruction: string | undefined;
 		for (;;) {
 			if (kind === "correction" && !correctionEligible(request, attempt)) {
 				this.attention(task, "The same-agent correction is unavailable or already used.");
@@ -1136,15 +1290,26 @@ export class OrchestratorRunner {
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
-			const retainedCandidate = kind === "correction"
-				? attempt.candidate ?? attempt.prompts[0]?.candidate ?? attempt.prompts[0]?.preCandidate
-				: undefined;
+			const retainedCandidate = kind === "initial"
+				? undefined
+				: attempt.candidate ?? attempt.prompts.at(-1)?.candidate ?? attempt.prompts.at(-1)?.preCandidate;
 			if (retainedCandidate && !sameIdentity(preCandidate, retainedCandidate)) {
 				this.attention(task, "The same-agent correction worktree identity drifted before prompting.");
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
-			const prompt: PromptRecord = { kind, status: "submitting", preCandidate, at: this.runtime.now() };
+			if (attempt.prompts.length >= MAX_WORKER_PROMPTS) {
+				this.attention(task, `A task may submit at most ${MAX_WORKER_PROMPTS} worker prompts.`);
+				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				return;
+			}
+			const prompt: PromptRecord = {
+				kind,
+				status: "submitting",
+				preCandidate,
+				...(kind === "followup" ? { instruction } : {}),
+				at: this.runtime.now(),
+			};
 			attempt.prompts.push(prompt);
 			task.failure = undefined;
 			await handle.save();
@@ -1159,6 +1324,7 @@ export class OrchestratorRunner {
 					kind,
 					preCandidate,
 					...(failure ? { failure } : {}),
+					...(instruction ? { instruction } : {}),
 				}, context));
 			} catch (error) {
 				prompt.status = "ambiguous";
@@ -1169,21 +1335,21 @@ export class OrchestratorRunner {
 			}
 			if (worker.outcome === "unknown" || worker.outcome === "interrupted") {
 				prompt.status = "ambiguous";
-				prompt.failure = boundedRuntimeText(worker.diagnostic, `${worker.outcome} worker diagnostic`);
+				prompt.failure = boundedRuntimeDiagnostic(worker.diagnostic, `${worker.outcome} worker diagnostic`);
 				this.attention(task, `${worker.outcome} worker result will not be replayed: ${prompt.failure}`);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			if (worker.outcome === "not_prompted") {
 				prompt.status = "not_sent";
-				prompt.failure = boundedRuntimeText(worker.diagnostic, "not-prompted worker diagnostic");
+				prompt.failure = boundedRuntimeDiagnostic(worker.diagnostic, "not-prompted worker diagnostic");
 				this.attention(task, `Worker prompt was not submitted: ${prompt.failure}`);
 				await this.terminateWithSafety(handle, task, attempt, preCandidate);
 				return;
 			}
 			prompt.status = "settled";
 			if (worker.outcome === "blocked") {
-				failure = boundedRuntimeText(worker.diagnostic, "blocked worker diagnostic");
+				failure = boundedRuntimeDiagnostic(worker.diagnostic, "blocked worker diagnostic");
 				prompt.failure = failure;
 				await handle.save();
 			} else {
@@ -1207,6 +1373,21 @@ export class OrchestratorRunner {
 					failure = undefined;
 				}
 				if (!failure) {
+					if (control) {
+						task.status = "awaiting_acceptance";
+						task.failure = undefined;
+						await handle.save();
+						this.onInteractiveWait?.(state.request.id, task.taskId);
+						const action = await scope.call(async (context) => await control.next(context.signal));
+						if (action.kind === "followup") {
+							task.status = "working";
+							kind = "followup";
+							instruction = action.instruction;
+							failure = undefined;
+							continue;
+						}
+						control.seal();
+					}
 					if (await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope)) {
 						task.status = "ready_to_integrate";
 						task.failure = undefined;
@@ -1877,6 +2058,18 @@ export class OrchestratorRunner {
 		state.accepted = false;
 		state.updatedAt = this.runtime.now();
 		return true;
+	}
+
+	private controlKey(root: string, requestId: string, taskId: string): string {
+		return `${root}\0${requestId}\0${taskId}`;
+	}
+
+	private activeControl(
+		root: string,
+		requestId: string,
+		taskId: string,
+	): { task: ChangesetTaskState; control: InteractiveTaskControl } | undefined {
+		return this.interactiveControls.get(this.controlKey(root, requestId, taskId));
 	}
 
 	private attention(task: TaskState, failure: string): void {
