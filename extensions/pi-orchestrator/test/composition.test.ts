@@ -67,6 +67,7 @@ function result(overrides: Partial<EphemeralSubagentResult> = {}): EphemeralSuba
 		outcome: "success",
 		exitCode: 0,
 		output: "PASS",
+		outputTruncated: false,
 		stderr: "",
 		...overrides,
 	} as EphemeralSubagentResult;
@@ -171,7 +172,7 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 		pattern: RegExp;
 	}> = [
 		{ name: "empty", value: result({ output: " \n" }), pattern: /empty output/i },
-		{ name: "truncated", value: result({ output: "PASS\n\n[Output truncated: 42 bytes omitted]" }), pattern: /truncated/i },
+		{ name: "truncated", value: result({ outputTruncated: true }), pattern: /truncated/i },
 		{ name: "failure", value: result({ outcome: "failure", exitCode: 1, output: "Finding", errorMessage: "failed" }), pattern: /did not complete successfully/i },
 		{ name: "success with nonzero exit", value: result({ exitCode: 1 }), pattern: /did not complete successfully/i },
 		{ name: "timeout", error: new EphemeralSubagentError("timeout", "review timed out"), pattern: /review timed out/i },

@@ -45,7 +45,6 @@ export interface LaunchRuntimeOptions {
 	context(): ExtensionContext;
 	resolveRoot(cwd: string, context: OperationContext): Promise<string>;
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
-	orchestratorEntrypoint: string;
 	now?: () => number;
 	randomToken?: () => string;
 }

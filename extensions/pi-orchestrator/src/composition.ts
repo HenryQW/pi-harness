@@ -11,7 +11,6 @@ import { runProcess as defaultRunProcess } from "./process.ts";
 
 const GIT_ROOT_TIMEOUT_CAP_MS = 30_000;
 const REVIEW_PROMPT_MAX_BYTES = 64 * 1024;
-const TRUNCATED_OUTPUT_MARKER = /\[Output truncated: \d+ bytes omitted\]/;
 
 function within(root: string, candidate: string): boolean {
 	const fromRoot = relative(root, candidate);
@@ -118,7 +117,7 @@ export function createExactJudgmentExecutor(executor: EphemeralSubagentExecutor)
 			throw new Error("Judgment executor did not complete successfully.");
 		}
 		if (!result.output.trim()) throw new Error("Judgment executor returned empty output.");
-		if (TRUNCATED_OUTPUT_MARKER.test(result.output)) {
+		if (result.outputTruncated) {
 			throw new Error("Judgment executor output was truncated.");
 		}
 		return { verdict: result.output };
