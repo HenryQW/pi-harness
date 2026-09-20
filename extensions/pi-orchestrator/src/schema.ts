@@ -450,8 +450,44 @@ export function validateGraph(tasks: readonly TaskRequest[]): void {
 	for (const task of tasks) visit(task.id);
 }
 
+type SchemaIssue = {
+	readonly instancePath: string;
+	readonly keyword?: string;
+	readonly message: string;
+	readonly params?: Readonly<Record<string, unknown>>;
+};
+
+function schemaIssuePath(issue: SchemaIssue): string {
+	const propertyKey = issue.keyword === "additionalProperties" ? "additionalProperties"
+		: issue.keyword === "required" ? "requiredProperties"
+			: undefined;
+	const properties = propertyKey ? issue.params?.[propertyKey] : undefined;
+	if (!Array.isArray(properties) || properties.length !== 1 || typeof properties[0] !== "string") {
+		return issue.instancePath;
+	}
+	const property = properties[0].replaceAll("~", "~0").replaceAll("/", "~1");
+	return `${issue.instancePath}/${property}`;
+}
+
+function schemaValidationError(label: string, issues: readonly SchemaIssue[]): Error {
+	let selected: { issue: SchemaIssue; path: string } | undefined;
+	for (const issue of issues) {
+		const path = schemaIssuePath(issue);
+		if (!selected || path.length > selected.path.length) selected = { issue, path };
+	}
+	if (!selected) return new Error(`${label}.`);
+	const rawDetail = ` at ${selected.path || "/"}: ${selected.issue.message}`;
+	const detail = rawDetail.length <= 512 ? rawDetail : `${rawDetail.slice(0, 509)}...`;
+	return new Error(`${label}${detail}.`);
+}
+
 export function parseExecuteRequest(value: unknown): ExecuteRequest {
-	if (!Check(ExecuteRequestSchema, value)) throw new Error("orchestrate_execute request must match the strict task schema.");
+	if (!Check(ExecuteRequestSchema, value)) {
+		throw schemaValidationError(
+			"orchestrate_execute request must match the strict task schema",
+			Errors(ExecuteRequestSchema, value),
+		);
+	}
 	const input = value as ExecuteRequest;
 	const request: ExecuteRequest = {
 		...input,
@@ -468,12 +504,22 @@ export function parseExecuteRequest(value: unknown): ExecuteRequest {
 }
 
 export function parseIdOnly(value: unknown): IdOnly {
-	if (!Check(IdOnlySchema, value)) throw new Error("orchestrate request ID must match the strict v1 schema.");
+	if (!Check(IdOnlySchema, value)) {
+		throw schemaValidationError(
+			"orchestrate request ID must match the strict v1 schema",
+			Errors(IdOnlySchema, value),
+		);
+	}
 	return value as IdOnly;
 }
 
 export function parseResumeRequest(value: unknown): ResumeRequest {
-	if (!Check(ResumeRequestSchema, value)) throw new Error("orchestrate_resume request must match one strict v1 action.");
+	if (!Check(ResumeRequestSchema, value)) {
+		throw schemaValidationError(
+			"orchestrate_resume request must match one strict v1 action",
+			Errors(ResumeRequestSchema, value),
+		);
+	}
 	return value as ResumeRequest;
 }
 

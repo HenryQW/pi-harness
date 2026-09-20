@@ -147,7 +147,7 @@ Runtime diagnostics and possible-resource evidence are bounded before each save.
 
 ### Recovery actions
 
-Use `orchestrate_status` after interruption or when a request needs attention. Then choose one reported action:
+Use `orchestrate_status` after interruption or when a request needs attention. It reports an exact continuation when recovery is unambiguous, including an eligible failed text-task retry. Applying that continuation still requires a deliberate `orchestrate_resume` call. Otherwise choose one reported action:
 
 - `retry` continues pre-dispatch recovery or sends one eligible correction to the same agent. It never replaces a prompted agent. A text-task retry runs only its selected ready task when others need attention.
 - `verify` checks retained task work before integration or finishes pending cleanup.

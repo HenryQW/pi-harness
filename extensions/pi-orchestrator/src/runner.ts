@@ -555,6 +555,20 @@ function taskState(state: RunState, id: string): TaskState {
 	return task;
 }
 
+function taskDependenciesCompleted(state: RunState, taskId: string): boolean {
+	const request = taskRequest(state, taskId);
+	return [...request.dependsOn, ...request.contextFrom]
+		.every((source) => taskState(state, source).status === "completed");
+}
+
+function textRetryEligible(state: RunState, task: TextTaskState): boolean {
+	const attempt = task.attempts.at(-1);
+	return task.status === "needs_attention"
+		&& attempt?.status === "failed"
+		&& task.attempts.length < 2
+		&& taskDependenciesCompleted(state, task.taskId);
+}
+
 function changesetTaskState(state: RunState, id: string): ChangesetTaskState {
 	const task = taskState(state, id);
 	if (task.kind !== "changeset") throw new Error(`Task ${id} is not a changeset task.`);
@@ -743,12 +757,7 @@ export function buildTextTaskPrompt(
 }
 
 export function readyPendingTasks(state: RunState): TaskState[] {
-	return state.tasks.filter((task) => {
-		if (task.status !== "pending") return false;
-		const request = taskRequest(state, task.taskId);
-		return [...request.dependsOn, ...request.contextFrom]
-			.every((source) => taskState(state, source).status === "completed");
-	});
+	return state.tasks.filter((task) => task.status === "pending" && taskDependenciesCompleted(state, task.taskId));
 }
 
 function isDeadline(error: unknown, scope: DeadlineScope): boolean {
@@ -889,15 +898,15 @@ export class OrchestratorRunner {
 				if (task.kind === "text") {
 					if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
 					if (request.action === "verify") throw new Error(`Text task ${task.taskId} cannot be verified.`);
-					const attempt = task.attempts.at(-1);
-					if (attempt?.status !== "failed" || task.attempts.length >= 2) {
-						throw new Error(`Text task ${task.taskId} retry requires a failed latest attempt and fewer than two attempts.`);
+					if (!textRetryEligible(state, task)) {
+						const attempt = task.attempts.at(-1);
+						if (attempt?.status !== "failed" || task.attempts.length >= 2) {
+							throw new Error(`Text task ${task.taskId} retry requires a failed latest attempt and fewer than two attempts.`);
+						}
+						throw new Error(`Text task ${task.taskId} dependencies are not completed.`);
 					}
 					task.status = "pending";
 					task.failure = undefined;
-					if (!readyPendingTasks(state).includes(task)) {
-						throw new Error(`Text task ${task.taskId} dependencies are not completed.`);
-					}
 					return await this.run(handle, scope, task.taskId, lifecycle);
 				}
 				if (request.action === "verify") {
@@ -2344,6 +2353,8 @@ export class OrchestratorRunner {
 			if (completed === state.tasks.length
 				&& (state.final.status === "pending" || state.final.status === "interrupted")) {
 				continuation = { id: state.request.id, action: "finalize" };
+			} else if (attention?.kind === "text" && textRetryEligible(state, attention)) {
+				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 			} else if (attention?.kind === "changeset" && attention.attempts.length === 0) {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 			} else if (attention?.kind === "changeset"
