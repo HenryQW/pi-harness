@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "5.0.2",
+  "version": "6.0.0",
   "description": "Run /pr to safely discover or link the current pull request, then create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
@@ -27,17 +27,19 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@earendil-works/pi-tui": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.86.0",
+    "@earendil-works/pi-tui": "^0.86.0",
     "typebox": "^1.3.15"
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^1.1.0",
+    "@henryqw/pi-config-store": "^2.0.0",
     "@henryqw/pi-herdr": "^0.4.5",
     "@henryqw/pi-process": "^0.1.0",
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.86.0",
+    "@earendil-works/pi-tui": "0.86.0",
     "@types/proper-lockfile": "^4.1.4"
   },
   "repository": {

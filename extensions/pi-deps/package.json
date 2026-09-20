@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-deps",
-  "version": "1.0.4",
+  "version": "2.0.0",
   "description": "Prepare Node and uv dependencies when opted-in Git worktrees are created.",
   "keywords": [
     "pi-package",
@@ -27,8 +27,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@earendil-works/pi-tui": "^0.85.1"
+    "@earendil-works/pi-coding-agent": "^0.86.0",
+    "@earendil-works/pi-tui": "^0.86.0"
   },
   "repository": {
     "type": "git",
@@ -45,5 +45,9 @@
     "extensions": [
       "./extensions/deps.ts"
     ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.86.0",
+    "@earendil-works/pi-tui": "0.86.0"
   }
 }

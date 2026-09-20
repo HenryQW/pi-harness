@@ -31,7 +31,6 @@ function harness(options: {
 	currentModel?: Model;
 	branch?: any[];
 	complete?: (call: CompletionCall) => Promise<any>;
-	auth?: (model: Model) => Promise<{ ok: true; apiKey?: string } | { ok: false; error: string }>;
 	exec?: (args: string[], options?: { signal?: AbortSignal; cwd?: string }) => Promise<ReturnType<typeof success>>;
 } = {}) {
 	const handlers = new Map<string, Handler>();
@@ -81,17 +80,12 @@ function harness(options: {
 		model: options.currentModel ?? defaultModel,
 		modelRegistry: {
 			getAvailable: () => models,
-			getApiKeyAndHeaders: async (model: Model) => options.auth
-				? options.auth(model)
-				: { ok: true as const, apiKey: "test-key" },
-			getProvider: () => ({
-				streamSimple: (model: Model, context: any, completionOptions: any) => ({
-					result: async () => {
-						const call = { model, context, options: completionOptions };
-						completionCalls.push(call);
-						return options.complete ? options.complete(call) : response("feat: generated title");
-					},
-				}),
+			streamSimple: (model: Model, context: any, completionOptions: any) => ({
+				result: async () => {
+					const call = { model, context, options: completionOptions };
+					completionCalls.push(call);
+					return options.complete ? options.complete(call) : response("feat: generated title");
+				},
 			}),
 		},
 		sessionManager: { getBranch: () => sessionBranch },

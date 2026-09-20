@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
-import type { BtwPayload } from "../internal/core.ts";
+import { isBtwPayload, type BtwPayload } from "../internal/core.ts";
 import {
 	MERGE_CUSTOM_TYPE,
 	MERGE_PROTOCOL_VERSION,
@@ -317,6 +317,32 @@ async function withChildEnvironment(payloadPath: string, run: () => Promise<void
 		process.argv = previousArgv;
 	}
 }
+
+test("payload validation accepts Pi 0.86 system transcript state and rejects malformed state", () => {
+	const systemMessage = {
+		role: "system" as const,
+		content: [{ type: "text" as const, text: "base prompt" }],
+		sections: { memory: "Remember this.", removed: null },
+		toolsAdded: [{
+			name: "read",
+			description: "Read a file",
+			parameters: { type: "object", properties: { path: { type: "string" } } },
+		}],
+		toolsRemoved: [{ name: "bash" }],
+		timestamp: 0,
+	};
+	const payload = fixturePayload({ messages: [systemMessage] });
+	assert.equal(isBtwPayload(payload), true);
+
+	for (const malformed of [
+		{ ...systemMessage, sections: { memory: 42 } },
+		{ ...systemMessage, toolsAdded: [{ name: "read", parameters: {} }] },
+		{ ...systemMessage, toolsAdded: [{ name: "read", description: "Read", parameters: { parse() {} } }] },
+		{ ...systemMessage, content: [{ type: "image", data: "x", mimeType: "image/png" }] },
+	]) {
+		assert.equal(isBtwPayload(fixturePayload({ messages: [malformed as never] })), false);
+	}
+});
 
 test("parent command captures native context and launches Herdr without leaking the question", async () => {
 	await withParentEnvironment(async () => {
@@ -1395,6 +1421,21 @@ test("child prefills the editor for non-auto-submit drafts and ignores a stray s
 test("child uses the native prefix when model, tools, and thinking match the parent", async () => {
 	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
 		const store = new FakeStore();
+		const leadingSystem = {
+			role: "system" as const,
+			content: "parent system prompt",
+			toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }],
+			timestamp: 0,
+		};
+		const systemUpdate = {
+			role: "system" as const,
+			content: "",
+			sections: { memory: "Remember this." },
+			timestamp: 2,
+		};
+		store.readValue = fixturePayload({
+			messages: [leadingSystem, ...store.readValue.messages, systemUpdate],
+		});
 		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
 		harness.cleanup();
 		const ctx = { model: { provider: "test-provider", id: "test-model" } };
@@ -1412,10 +1453,13 @@ test("child uses the native prefix when model, tools, and thinking match the par
 			ctx,
 		);
 		const messages = contextResult?.messages ?? [];
-		// exact parent prefix, then the bridge suffix, then the child's own messages
-		assert.deepEqual(messages[0], store.readValue.messages[0]);
-		assert.match(messages[1]?.content?.[0]?.text ?? "", /read-only snapshot of the parent session/);
-		assert.match(messages[1]?.content?.[0]?.text ?? "", /side pane/);
+		// The parent transcript remains an exact prefix, including system deltas.
+		// Pi's forced-prompt projection then collapses those deltas to the exact
+		// parent prompt without recording or duplicating a child prompt.
+		assert.deepEqual(messages.slice(0, 3), store.readValue.messages);
+		assert.equal(messages.filter((message: { role?: string }) => message.role === "system").length, 2);
+		assert.match(messages[3]?.content?.[0]?.text ?? "", /read-only snapshot of the parent session/);
+		assert.match(messages[3]?.content?.[0]?.text ?? "", /side pane/);
 		assert.equal(messages.at(-1)?.content?.[0]?.text, "side question");
 	});
 });

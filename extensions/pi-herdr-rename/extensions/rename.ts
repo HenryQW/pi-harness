@@ -153,26 +153,9 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 		messages: [{ role: "user" as const, content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
 	};
 	const complete = async (route: ResolvedTaskRoute) => {
-		let auth;
-		try {
-			auth = await ctx.modelRegistry.getApiKeyAndHeaders(route.model);
-		} catch (error) {
-			if (signal.aborted) throw error;
-			throw new RenameModelError("Couldn't authenticate rename task model.");
-		}
-		if (!auth.ok) throw new RenameModelError("Couldn't authenticate rename task model.");
-
-		const provider = ctx.modelRegistry.getProvider(route.model.provider);
-		if (!provider) throw new RenameModelError("Rename task model provider is unavailable.");
-		const model = auth.baseUrl ? { ...route.model, baseUrl: auth.baseUrl } : route.model;
-
 		let response;
 		try {
-			// streamSimple maps the shared thinking level through this registered model's metadata.
-			response = await provider.streamSimple(model, completionContext, {
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				env: auth.env,
+			response = await ctx.modelRegistry.streamSimple(route.model, completionContext, {
 				signal,
 				maxRetries: 0,
 				...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }),
