@@ -19,8 +19,18 @@ const LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0
 const LOCK_REACQUIRE_DELAY_MS = 25;
 
 type ReleaseLock = Awaited<ReturnType<typeof lock>>;
+const productiveRunLeaseBrand: unique symbol = Symbol("productiveRunLease");
+
+export interface ProductiveRunLease {
+	readonly [productiveRunLeaseBrand]: true;
+}
+
+export type LifecycleLockOptions =
+	| { readonly purpose?: "productive"; readonly productiveRunLease?: ProductiveRunLease }
+	| { readonly purpose: "status" | "abort"; readonly productiveRunLease?: never };
 
 export interface LifecycleLock {
+	readonly productiveRunLeaseActive: boolean;
 	waitUnlocked<T>(operation: () => Promise<T>): Promise<T>;
 }
 
@@ -120,6 +130,7 @@ export class RunStateHandle {
 
 export class FileRunStore {
 	private readonly agentDir?: string;
+	private readonly productiveRunLeases = new WeakMap<ProductiveRunLease, string>();
 
 	constructor(agentDir?: string) {
 		this.agentDir = agentDir;
@@ -156,7 +167,10 @@ export class FileRunStore {
 		}
 	}
 
-	async withProductiveRunLease<T>(root: string, operation: () => Promise<T>): Promise<T> {
+	async withProductiveRunLease<T>(
+		root: string,
+		operation: (lease: ProductiveRunLease) => Promise<T>,
+	): Promise<T> {
 		const directory = this.stateDirectory(root);
 		await this.assertSafeDestination(root, directory);
 		await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -170,9 +184,12 @@ export class FileRunStore {
 			}
 			throw error;
 		}
+		const lease: ProductiveRunLease = { [productiveRunLeaseBrand]: true };
+		this.productiveRunLeases.set(lease, path);
 		try {
-			return await operation();
+			return await operation(lease);
 		} finally {
+			this.productiveRunLeases.delete(lease);
 			await release();
 		}
 	}
@@ -184,28 +201,42 @@ export class FileRunStore {
 		return await check(path, { realpath: false, stale: LOCK_OPTIONS.stale, lockfilePath: `${path}.lock` });
 	}
 
-	async withLock<T>(root: string, operation: (lifecycle: LifecycleLock) => Promise<T>): Promise<T> {
+	async withLock<T>(
+		root: string,
+		operation: (lifecycle: LifecycleLock) => Promise<T>,
+		options: LifecycleLockOptions = {},
+	): Promise<T> {
 		const directory = this.stateDirectory(root);
 		await this.assertSafeDestination(root, directory);
 		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const path = this.lockPath(root);
 		let release: ReleaseLock | undefined = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
-		let waitingUnlocked = false;
-		const lifecycle: LifecycleLock = {
-			waitUnlocked: async <Value>(operation: () => Promise<Value>): Promise<Value> => {
-				if (waitingUnlocked || !release) throw new Error("Lifecycle lock already has an unlocked waiter.");
-				waitingUnlocked = true;
-				await release();
-				release = undefined;
-				try {
-					return await operation();
-				} finally {
-					release = await reacquire(path);
-					waitingUnlocked = false;
-				}
-			},
-		};
 		try {
+			const productiveRunLeaseActive = await this.hasProductiveRunLease(root);
+			const ownedProductiveRunPath = options.productiveRunLease
+				? this.productiveRunLeases.get(options.productiveRunLease)
+				: undefined;
+			if (productiveRunLeaseActive
+				&& (options.purpose ?? "productive") === "productive"
+				&& ownedProductiveRunPath !== this.productiveRunPath(root)) {
+				throw new Error("Another Pi Orchestrator productive request is active in this repository.");
+			}
+			let waitingUnlocked = false;
+			const lifecycle: LifecycleLock = {
+				productiveRunLeaseActive,
+				waitUnlocked: async <Value>(operation: () => Promise<Value>): Promise<Value> => {
+					if (waitingUnlocked || !release) throw new Error("Lifecycle lock already has an unlocked waiter.");
+					waitingUnlocked = true;
+					await release();
+					release = undefined;
+					try {
+						return await operation();
+					} finally {
+						release = await reacquire(path);
+						waitingUnlocked = false;
+					}
+				},
+			};
 			return await operation(lifecycle);
 		} finally {
 			await release?.();

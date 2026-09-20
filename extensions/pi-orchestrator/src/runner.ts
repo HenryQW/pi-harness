@@ -812,10 +812,11 @@ export class OrchestratorRunner {
 		operation: (lifecycle?: LifecycleLock) => Promise<T>,
 	): Promise<T> {
 		if (!this.interactiveChangesets) return await this.store.withLock(root, operation);
-		return await this.store.withProductiveRunLease(
-			root,
-			async () => await this.store.withLock(root, operation),
-		);
+		return await this.store.withProductiveRunLease(root, async (productiveRunLease) =>
+			await this.store.withLock(root, async (lifecycle) => {
+				if (!lifecycle) throw new Error("Interactive productive runs require lifecycle lock context.");
+				return await operation(lifecycle);
+			}, { productiveRunLease }));
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -936,14 +937,14 @@ export class OrchestratorRunner {
 
 	async abort(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		root = realpathSync.native(root);
-		return await this.store.withLock(root, async () => {
+		return await this.store.withLock(root, async (lifecycle) => {
 			const handle = await this.store.load(root, id);
 			const state = handle.state;
 			if (terminal(state)) return this.response(state);
 			const activeControls = this.activeControls(root, id);
 			for (const { control } of activeControls) control.invalidate();
 			if (!activeControls.length
-				&& !(this.interactiveChangesets && await this.store.hasProductiveRunLease(root))
+				&& !lifecycle.productiveRunLeaseActive
 				&& this.recoverInterrupted(state)) {
 				await handle.save();
 			}
@@ -962,15 +963,15 @@ export class OrchestratorRunner {
 			state.updatedAt = this.runtime.now();
 			await handle.save();
 			return this.response(state);
-		});
+		}, { purpose: "abort" });
 	}
 
 	async status(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		root = realpathSync.native(root);
-		return await this.store.withLock(root, async () => {
+		return await this.store.withLock(root, async (lifecycle) => {
 			const handle = await this.store.load(root, id);
 			if (!this.hasActiveControl(root, id)
-				&& !(this.interactiveChangesets && await this.store.hasProductiveRunLease(root))
+				&& !lifecycle.productiveRunLeaseActive
 				&& this.recoverInterrupted(handle.state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			const deadline = this.runtime.now() + STATUS_INSPECTION_BUDGET_MS;
@@ -995,7 +996,7 @@ export class OrchestratorRunner {
 			} finally {
 				scope.close();
 			}
-		});
+		}, { purpose: "status" });
 	}
 
 	private async run(

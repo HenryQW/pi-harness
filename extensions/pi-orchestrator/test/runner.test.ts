@@ -615,29 +615,32 @@ test("interactive changesets retain the same worker for queued follow-ups until 
 	assertParsed(result.state);
 });
 
-test("a durable productive lease admits cross-runner status and abort but blocks execute and resume", async (t) => {
+test("a durable productive lease admits mixed-mode status and abort but blocks default execute and resume", async (t) => {
 	let ready!: () => void;
 	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
 	const { root, runtime, runner, agentDir } = await harness(t, {
 		interactiveChangesets: true,
 		onInteractiveWait: () => ready(),
 	});
+	const otherStore = new FileRunStore(agentDir);
 	const otherRunner = new OrchestratorRunner(
 		runtime,
 		runtime,
-		new FileRunStore(agentDir),
+		otherStore,
 		unusedTextExecutor,
-		true,
 	);
 	const definition = request("interactive-concurrent-abort", [changesetTask("change")]);
 	const execution = runner.execute(definition, root);
 
 	await awaitingAcceptance;
+	const persistedBeforeStatus = structuredClone((await otherStore.load(root, definition.id)).state);
 	const reported = await otherRunner.status(definition.id, root);
 	const reportedTask = changesetState(reported.state, "change");
 	assert.equal(reported.state.status, "running");
 	assert.equal(reportedTask.status, "awaiting_acceptance");
 	assert.equal(reportedTask.attempts[0]?.termination, undefined);
+	assert.deepEqual(reported.state, persistedBeforeStatus);
+	assert.deepEqual((await otherStore.load(root, definition.id)).state, persistedBeforeStatus);
 	assert.deepEqual(reported.main, { status: "current", expected: identity("a"), actual: identity("a") });
 	await assert.rejects(
 		otherRunner.execute(request("blocked-execute", [changesetTask("other")]), root),
@@ -701,7 +704,7 @@ test("rejected interactive waits adopt concurrent durable state before surfacing
 				handle.state.accepted = false;
 				handle.state.updatedAt = runtime.now();
 				await handle.save();
-			});
+			}, { purpose: "abort" });
 			await lifecycleLocked;
 
 			const [result] = await Promise.all([execution, mutation]);
