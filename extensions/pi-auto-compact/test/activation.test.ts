@@ -664,12 +664,29 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		} as never, ctx), undefined);
 		assert.equal(compactions, 0);
 
+		const leadingSystem = {
+			role: "system",
+			content: "s".repeat(600),
+			toolsAdded: [{ name: "read", description: "Read files", parameters: { type: "object" } }],
+			timestamp: 0,
+		};
+		const promptUpdate = {
+			role: "system",
+			content: "",
+			sections: { memory: "Remember this." },
+			toolsRemoved: [{ name: "read" }],
+			timestamp: 3,
+		};
 		const messages = [
+			leadingSystem,
 			{ role: "user", content: big, timestamp: 1 },
 			{ role: "assistant", content: big, timestamp: 2 },
+			promptUpdate,
 			{ role: "toolResult", content: big, timestamp: 3 },
-			{ role: "user", content: "continue", timestamp: 4 },
-			{ role: "assistant", content: "done", timestamp: 5 },
+			{ role: "user", content: "m".repeat(200), timestamp: 4 },
+			{ role: "assistant", content: "m".repeat(200), timestamp: 5 },
+			{ role: "user", content: "continue", timestamp: 6 },
+			{ role: "assistant", content: "done", timestamp: 7 },
 		];
 		const result = handlers.get("context")?.({
 			type: "context",
@@ -677,12 +694,15 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		} as never, ctx) as { messages?: typeof messages } | undefined;
 		assert.ok(result?.messages, "oversized context must be truncated");
 
-		// Notice prepended; cut lands on a user boundary (never mid tool pair).
-		const [notice, firstKept] = result.messages;
+		// Transcript system state survives in order; the conversation cut lands on
+		// a user boundary and never retains half of an assistant/tool turn.
+		assert.equal(result.messages[0], leadingSystem);
+		assert.equal(result.messages[1], promptUpdate);
+		const [notice, firstKept] = result.messages.slice(2);
 		assert.equal(notice.role, "user");
-		assert.match(notice.content as string, /^\[Context compacted: 3 earlier messages/);
-		assert.equal(firstKept, messages[3]);
-		assert.deepEqual(result.messages.slice(1), messages.slice(3));
+		assert.match(notice.content as string, /^\[Context compacted: 5 earlier messages/);
+		assert.equal(firstKept, messages[7]);
+		assert.deepEqual(result.messages.slice(3), messages.slice(7));
 
 		// Truncation schedules exactly one compaction and blocks re-entry.
 		assert.equal(compactions, 0);

@@ -87,48 +87,59 @@ const ACTIVATION_ERROR =
 	"pi-auto-compact failed to activate: Pi built-in auto-compaction is enabled. " +
 	"Set compaction.enabled to false in Pi settings, then restart Pi.";
 
-/** Estimate current request size using same estimator Pi uses. */
+/** Estimate current request size, including Pi 0.86 transcript state. */
+function estimateMessageTokens(message: AgentMessage): number {
+	if (message.role === "system") return Math.ceil(JSON.stringify(message).length / 4);
+	return estimateTokens(message);
+}
+
 function estimateTotalTokens(messages: AgentMessage[]): number {
-	return messages.reduce((total, message) => total + estimateTokens(message), 0);
+	return messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
 }
 
 /**
- * Do not cut inside assistant/toolResult history. A user boundary is safe:
- * tool calls and their results belong to preceding turn.
- */
-function snapToUserBoundary(messages: AgentMessage[], index: number): number {
-	while (index < messages.length && messages[index].role !== "user") index++;
-	return index;
-}
-
-/**
- * Return temporary context containing newest messages plus notice.
- * This changes only request context; session history remains intact.
+ * Return temporary context containing complete newest turns plus notice.
+ * System messages are transcript state, so preserve them in their original order
+ * even when the surrounding conversation is removed.
  */
 function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[] | null {
-	let tokens = 0;
-	let cutIndex = 0;
-
+	const systemTokens = estimateTotalTokens(messages.filter((message) => message.role === "system"));
+	const suffixTokens = new Array<number>(messages.length + 1).fill(0);
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const messageTokens = estimateTokens(messages[i]);
-		if (tokens + messageTokens > keepTokens) {
-			cutIndex = snapToUserBoundary(messages, i + 1);
-			break;
-		}
-		tokens += messageTokens;
+		suffixTokens[i] = suffixTokens[i + 1] + (messages[i].role === "system" ? 0 : estimateMessageTokens(messages[i]));
 	}
 
-	if (cutIndex <= 0) return null;
+	const userBoundaries = messages.flatMap((message, index) => message.role === "user" ? [index] : []);
+	if (userBoundaries.length === 0) return null;
 
-	const removed = messages.slice(0, cutIndex);
-	return [
-		{
+	let cutIndex = userBoundaries.at(-1) as number;
+	for (const boundary of userBoundaries) {
+		const removed = messages.slice(0, boundary).filter((message) => message.role !== "system");
+		if (removed.length === 0) continue;
+		const notice: AgentMessage = {
 			role: "user",
 			content: `[Context compacted: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) were summarized. Continue with the current task.]`,
 			timestamp: Date.now(),
-		},
-		...messages.slice(cutIndex),
-	];
+		};
+		if (systemTokens + suffixTokens[boundary] + estimateMessageTokens(notice) <= keepTokens) {
+			cutIndex = boundary;
+			break;
+		}
+	}
+
+	const removed = messages.slice(0, cutIndex).filter((message) => message.role !== "system");
+	if (removed.length === 0) return null;
+	const notice: AgentMessage = {
+		role: "user",
+		content: `[Context compacted: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) were summarized. Continue with the current task.]`,
+		timestamp: Date.now(),
+	};
+	const retained: AgentMessage[] = [];
+	for (let i = 0; i < messages.length; i++) {
+		if (i === cutIndex) retained.push(notice);
+		if (messages[i].role === "system" || i >= cutIndex) retained.push(messages[i]);
+	}
+	return retained;
 }
 
 /** Final assistant turns need no automatic follow-up; tool turns do. */

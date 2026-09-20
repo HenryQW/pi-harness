@@ -20,6 +20,7 @@ import {
 } from "./add-dir-helpers.ts";
 
 const STATE_TYPE = "add-dir:state";
+const PROMPT_SECTION = "pi_add_dir";
 const DEFAULT_MAX_RESULTS = 50;
 const MAX_RESULTS = 1_000;
 
@@ -285,9 +286,9 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		if (reconstructState(ctx)) pi.sendUserMessage("/dir-reload", { expandPromptTemplates: true });
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", (event) => {
 		if (addedDirs.length === 0) return;
-		return { systemPrompt: event.systemPrompt + buildContextInjection(addedDirs) };
+		event.systemPromptOptions.sections[PROMPT_SECTION] = buildContextInjection(addedDirs);
 	});
 
 	pi.registerCommand("dir-reload", {

@@ -17,6 +17,20 @@ function memoryExtension(api: object): void {
 
 const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 const SESSION_CONTEXT = { ui: { notify() {} } };
+const MEMORY_PROMPT_SECTION = "pi_memory";
+
+type PromptEvent = {
+	systemPrompt: string;
+	systemPromptOptions: { sections: Record<string, string> };
+};
+
+function promptEvent(): PromptEvent {
+	return { systemPrompt: "base", systemPromptOptions: { sections: {} } };
+}
+
+function memoryPrompt(event: PromptEvent): string {
+	return event.systemPromptOptions.sections[MEMORY_PROMPT_SECTION] ?? "";
+}
 
 type Handler = (event: any, ctx?: any) => unknown | Promise<unknown>;
 type CapturedCommand = {
@@ -84,13 +98,10 @@ function reviewContext(): ExtensionContext {
 		scopedModels: [],
 		modelRegistry: {
 			getAvailable: () => [REVIEW_MODEL],
-			getApiKeyAndHeaders: async () => ({ ok: true as const }),
-			getProvider: () => ({
-				streamSimple: () => ({ result: async () => ({
-					stopReason: "stop",
-					content: [{ type: "text", text: JSON.stringify({ verdict: "distinct", explanation: "Distinct durable fact." }) }],
-				}) }),
-			}),
+			streamSimple: () => ({ result: async () => ({
+				stopReason: "stop",
+				content: [{ type: "text", text: JSON.stringify({ verdict: "distinct", explanation: "Distinct durable fact." }) }],
+			}) }),
 		},
 		ui: { select: async () => undefined, input: async () => undefined },
 	} as unknown as ExtensionContext;
@@ -157,19 +168,16 @@ async function withReviewFixture(
 			scopedModels: [],
 			modelRegistry: {
 				getAvailable: () => [primaryReviewModel, fallbackReviewModel],
-				getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }),
-				getProvider: () => ({
-					streamSimple: (model: { provider: string; id: string }, context: { systemPrompt: string; messages: Array<{ content: string }> }, completionOptions: Record<string, unknown>) => ({
-						result: async () => {
-							const call = { model, context, options: completionOptions, memoryDir };
-							calls.push(call);
-							const reply = options.responses?.[nextReply++] ?? JSON.stringify({ verdict: "distinct", explanation: "Distinct durable fact." });
-							return {
-								stopReason: "stop",
-								content: [{ type: "text", text: typeof reply === "function" ? await reply(call) : reply }],
-							};
-						},
-					}),
+				streamSimple: (model: { provider: string; id: string }, context: { systemPrompt: string; messages: Array<{ content: string }> }, completionOptions: Record<string, unknown>) => ({
+					result: async () => {
+						const call = { model, context, options: completionOptions, memoryDir };
+						calls.push(call);
+						const reply = options.responses?.[nextReply++] ?? JSON.stringify({ verdict: "distinct", explanation: "Distinct durable fact." });
+						return {
+							stopReason: "stop",
+							content: [{ type: "text", text: typeof reply === "function" ? await reply(call) : reply }],
+						};
+					},
 				}),
 			},
 			ui: {
@@ -418,8 +426,8 @@ test("session start only warns for missing task-model config", async () => {
 		]);
 		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "config.json"), "utf8"), { code: "ENOENT" });
 
-		await handlers.get("before_agent_start")!({ systemPrompt: "base" });
-		await handlers.get("before_agent_start")!({ systemPrompt: "base" });
+		await handlers.get("before_agent_start")!(promptEvent());
+		await handlers.get("before_agent_start")!(promptEvent());
 		assert.equal(notifications.length, 1);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -755,7 +763,9 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 
 		const before = handlers.get("before_agent_start")!;
 		// Uninitialized: silent no-op, never throws.
-		assert.equal(await before({ systemPrompt: "base" }), undefined);
+		const uninitialized = promptEvent();
+		assert.equal(await before(uninitialized), undefined);
+		assert.deepEqual(uninitialized.systemPromptOptions.sections, {});
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		assert.ok(tool);
 		const memoryTool = tool;
@@ -765,10 +775,12 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		assert.match(memoryTool.description, /complete serialized mutation must not exceed 1,000,000 UTF-8 bytes/);
 		assert.match(memoryTool.description, /may ask the user to resolve an overlap or contradiction/);
 
-		const injected = await before({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.match(injected.systemPrompt, /MEMORY \(your personal notes\).*stable fact/s);
-		assert.match(injected.systemPrompt, /USER PROFILE.*likes concise replies/s);
-		assert.match(injected.systemPrompt, /1 unexpected file in the memory directory \("MEMORY \(conflicted copy\)\.md"\)/);
+		const injected = promptEvent();
+		assert.equal(await before(injected), undefined);
+		assert.deepEqual(Object.keys(injected.systemPromptOptions.sections), [MEMORY_PROMPT_SECTION]);
+		assert.match(memoryPrompt(injected), /MEMORY \(your personal notes\).*stable fact/s);
+		assert.match(memoryPrompt(injected), /USER PROFILE.*likes concise replies/s);
+		assert.match(memoryPrompt(injected), /1 unexpected file in the memory directory \("MEMORY \(conflicted copy\)\.md"\)/);
 
 		const saved = await reviewedExecute(memoryTool, "add", { action: "add", content: "new live fact" });
 		assert.deepEqual(JSON.parse(saved.content[0]!.text), {
@@ -786,7 +798,9 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		);
 		assert.deepEqual(rendered.render(200).map((line) => line.trimEnd()), ["✓ Entry added.", "  new live fact"]);
 		assert.match(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), /new live fact/);
-		assert.doesNotMatch((await before({ systemPrompt: "base" }) as { systemPrompt: string }).systemPrompt, /new live fact/);
+		const stillFrozen = promptEvent();
+		await before(stillFrozen);
+		assert.doesNotMatch(memoryPrompt(stillFrozen), /new live fact/);
 
 		const batch = await reviewedExecute(memoryTool, "batch", {
 			operations: [
@@ -810,12 +824,14 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 			() => memoryTool.execute("remove", { action: "remove", old_text: "missing" }),
 			/Stop retrying memory calls, continue replying to the user/,
 		);
-		await before({ systemPrompt: "base" });
+		await before(promptEvent());
 		await assert.rejects(() => memoryTool.execute("remove", { action: "remove", old_text: "missing" }), /No entry matched/);
 
 		process.argv.push(CHILD_PAYLOAD_ARG);
 		try {
-			assert.equal(await before({ systemPrompt: "base" }), undefined);
+			const child = promptEvent();
+			assert.equal(await before(child), undefined);
+			assert.deepEqual(child.systemPromptOptions.sections, {});
 		} finally {
 			process.argv.pop();
 		}
@@ -843,15 +859,17 @@ test("injects the memory check without claiming the current agent performs revie
 			registerTool() {},
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
-		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.match(injected.systemPrompt, /^base\n\nMEMORY CHECK:/);
-		assert.match(injected.systemPrompt, /memory tool independently reviews the complete mutation/);
-		assert.match(injected.systemPrompt, /Exact duplicate single adds and duplicate-only add batches/);
-		assert.match(injected.systemPrompt, /deterministic exceptions that skip the model call/);
-		assert.match(injected.systemPrompt, /configured pi-memory\/reviewCandidate task route/);
-		assert.match(injected.systemPrompt, /may ask the user to resolve an overlap or contradiction/);
-		assert.match(injected.systemPrompt, /Do not perform or claim this review yourself/);
-		assert.doesNotMatch(injected.systemPrompt, /Before any single add \(action="add"\)/);
+		const injected = promptEvent();
+		assert.equal(await handlers.get("before_agent_start")!(injected), undefined);
+		const section = memoryPrompt(injected);
+		assert.match(section, /^MEMORY CHECK:/);
+		assert.match(section, /memory tool independently reviews the complete mutation/);
+		assert.match(section, /Exact duplicate single adds and duplicate-only add batches/);
+		assert.match(section, /deterministic exceptions that skip the model call/);
+		assert.match(section, /configured pi-memory\/reviewCandidate task route/);
+		assert.match(section, /may ask the user to resolve an overlap or contradiction/);
+		assert.match(section, /Do not perform or claim this review yourself/);
+		assert.doesNotMatch(section, /Before any single add \(action="add"\)/);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -1483,12 +1501,14 @@ test("errors carry match previews/usage, snapshots filter frame tokens, backups 
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		const memoryTool = tool!;
 
-		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.match(injected.systemPrompt, /\[filtered frame token\]/);
-		assert.doesNotMatch(injected.systemPrompt, /\[fake\]/);
-		assert.match(injected.systemPrompt, /frame-token-like lines were filtered out of the user snapshot/);
+		const injected = promptEvent();
+		await handlers.get("before_agent_start")!(injected);
+		const section = memoryPrompt(injected);
+		assert.match(section, /\[filtered frame token\]/);
+		assert.doesNotMatch(section, /\[fake\]/);
+		assert.match(section, /frame-token-like lines were filtered out of the user snapshot/);
 		// Only one real header per target despite poisoned entry.
-		assert.equal((injected.systemPrompt.match(/USER PROFILE \(who the user is\)/g) ?? []).length, 1);
+		assert.equal((section.match(/USER PROFILE \(who the user is\)/g) ?? []).length, 1);
 		await commands.get("dream")!.handler("", { isIdle: () => true, ui: { notify() {} } });
 		assert.ok(messages[0]!.includes(JSON.stringify({
 			memory: ["prefers dark mode", "prefers dark mode terminals"],
@@ -1541,8 +1561,9 @@ test("init failure disables extension silently; oversized and capped snapshots w
 		const memoryTool = tool!;
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		// Failed init stays visible: warning injected every turn, never thrown.
-		const failed = await before({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.match(failed.systemPrompt, /persistent memory is DISABLED this session/);
+		const failed = promptEvent();
+		assert.equal(await before(failed), undefined);
+		assert.match(memoryPrompt(failed), /persistent memory is DISABLED this session/);
 		const notifications: string[] = [];
 		await dream!.handler("", { isIdle: () => true, ui: { notify: (message: string) => notifications.push(message) } });
 		assert.match(notifications[0]!, /Cannot run \/dream: persistent memory is disabled/);
@@ -1566,10 +1587,12 @@ test("init failure disables extension silently; oversized and capped snapshots w
 				registerTool(value: CapturedTool) { tool2 = value; },
 			} as unknown as ExtensionAPI);
 			await handlers2.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
-			const injected = await handlers2.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-			assert.ok(injected.systemPrompt.includes("a".repeat(30)), "first entry within cap must be injected");
-			assert.ok(!injected.systemPrompt.includes("c".repeat(30)), "overflow entry must be omitted from snapshot");
-			assert.match(injected.systemPrompt, /over its character cap; 2 entries were omitted/);
+			const injected = promptEvent();
+			await handlers2.get("before_agent_start")!(injected);
+			const section = memoryPrompt(injected);
+			assert.ok(section.includes("a".repeat(30)), "first entry within cap must be injected");
+			assert.ok(!section.includes("c".repeat(30)), "overflow entry must be omitted from snapshot");
+			assert.match(section, /over its character cap; 2 entries were omitted/);
 		} finally {
 			await rm(root2, { recursive: true, force: true });
 		}
@@ -1604,19 +1627,22 @@ test("first oversized entry is omitted with warning; unexpected-file warnings ar
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
-		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.ok(!injected.systemPrompt.includes("x".repeat(100)), "oversized single entry must not be injected");
-		assert.match(injected.systemPrompt, /1 entry was omitted/);
-		const truncatedWarning = injected.systemPrompt.split("\n").find((line) => line.includes("at least four unexpected files"));
+		const injected = promptEvent();
+		await handlers.get("before_agent_start")!(injected);
+		const section = memoryPrompt(injected);
+		assert.ok(!section.includes("x".repeat(100)), "oversized single entry must not be injected");
+		assert.match(section, /1 entry was omitted/);
+		const truncatedWarning = section.split("\n").find((line) => line.includes("at least four unexpected files"));
 		assert.ok(truncatedWarning);
 		assert.equal((truncatedWarning.match(/"[a-e]\(1\)\.md"/g) ?? []).length, 3);
 
 		await rm(join(memoryDir, "d(1).md"));
 		await rm(join(memoryDir, "e(1).md"));
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
-		const exact = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.match(exact.systemPrompt, /3 unexpected files in the memory directory \("a\(1\)\.md", "b\(1\)\.md", "c\(1\)\.md"\)/);
-		assert.doesNotMatch(exact.systemPrompt, /at least four unexpected/);
+		const exact = promptEvent();
+		await handlers.get("before_agent_start")!(exact);
+		assert.match(memoryPrompt(exact), /3 unexpected files in the memory directory \("a\(1\)\.md", "b\(1\)\.md", "c\(1\)\.md"\)/);
+		assert.doesNotMatch(memoryPrompt(exact), /at least four unexpected/);
 		void tool;
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1643,9 +1669,10 @@ test("memory directory overlapping the backup directory fails init loudly", asyn
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
-		const injected = await handlers.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-		assert.match(injected.systemPrompt, /persistent memory is DISABLED/);
-		assert.match(injected.systemPrompt, /must not overlap the backup directory/);
+		const injected = promptEvent();
+		await handlers.get("before_agent_start")!(injected);
+		assert.match(memoryPrompt(injected), /persistent memory is DISABLED/);
+		assert.match(memoryPrompt(injected), /must not overlap the backup directory/);
 		void tool;
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1705,8 +1732,9 @@ test("ambiguous old_text retries hit the consolidation cap; symlinked overlap re
 				registerTool() {},
 			} as unknown as ExtensionAPI);
 			await handlers3.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
-			const injected = await handlers3.get("before_agent_start")!({ systemPrompt: "base" }) as { systemPrompt: string };
-			assert.match(injected.systemPrompt, /persistent memory is DISABLED/);
+			const injected = promptEvent();
+			await handlers3.get("before_agent_start")!(injected);
+			assert.match(memoryPrompt(injected), /persistent memory is DISABLED/);
 		} finally {
 			await rm(root2, { recursive: true, force: true }).catch(() => {});
 		}

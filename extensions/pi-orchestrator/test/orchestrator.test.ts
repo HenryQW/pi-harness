@@ -644,7 +644,7 @@ test("manifest entrypoint and Main-side Skill ship with the four tools", async (
 		files?: string[];
 		pi?: { extensions?: string[]; skills?: string[] };
 	};
-	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^17.0.0");
+	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^18.0.0");
 	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.4.7");
 	assert.deepEqual(manifest.pi?.extensions, ["./extensions/orchestrator.ts"]);
 	assert.deepEqual(manifest.pi?.skills, ["./skills"]);
