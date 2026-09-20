@@ -1346,7 +1346,3 @@ export class HerdrHostRuntime implements HostRuntime {
 		return context.signal.aborted || context.deadline <= this.now();
 	}
 }
-
-export function createHerdrHostRuntime(options: HerdrHostRuntimeOptions): HerdrHostRuntime {
-	return new HerdrHostRuntime(options);
-}

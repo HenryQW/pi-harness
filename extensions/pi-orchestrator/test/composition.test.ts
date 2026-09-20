@@ -211,8 +211,7 @@ test("canonical Git root resolver rejects malformed, non-canonical, and unrelate
 	}
 });
 
-test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prompt", async () => {
-	let createCalls = 0;
+test("exact Judgment adapter runs the exact launch, packet, cwd, and prompt", async () => {
 	let nextOutput = "PASS";
 	const prepared: Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>[] = [];
 	const signals: (AbortSignal | undefined)[] = [];
@@ -223,18 +222,11 @@ test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prom
 			return result({ output: nextOutput });
 		},
 	};
-	const executeReview = createExactJudgmentExecutor({
-		createExecutor: () => {
-			createCalls += 1;
-			return executor;
-		},
-	});
-	assert.equal(createCalls, 0);
+	const executeReview = createExactJudgmentExecutor(executor);
 	const input = reviewInput();
 	const context = operationContext();
 
 	assert.deepEqual(await executeReview(input, context), { verdict: "PASS" });
-	assert.equal(createCalls, 1);
 	assert.equal(signals[0], context.signal);
 	assert.deepEqual(prepared[0]!.launch, { args: [...REVIEWER_LAUNCH.args], env: {} });
 	assert.equal(prepared[0]!.cwd, input.cwd);
@@ -257,7 +249,6 @@ test("exact Judgment adapter lazily runs the exact launch, packet, cwd, and prom
 
 	nextOutput = "Finding: invariant is not preserved.";
 	assert.deepEqual(await executeReview(input, context), { verdict: nextOutput });
-	assert.equal(createCalls, 1);
 });
 
 test("exact Judgment adapter rejects empty, truncated, failed, and thrown transport results", async (t) => {
@@ -279,11 +270,9 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 	for (const entry of cases) {
 		await t.test(entry.name, async () => {
 			const executeReview = createExactJudgmentExecutor({
-				executor: {
-					run: async () => {
-						if (entry.error) throw entry.error;
-						return entry.value!;
-					},
+				run: async () => {
+					if (entry.error) throw entry.error;
+					return entry.value!;
 				},
 			});
 			await assert.rejects(executeReview(reviewInput(), operationContext()), entry.pattern);
@@ -291,7 +280,7 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 	}
 
 	await t.test("oversized prompt", async () => {
-		const executeReview = createExactJudgmentExecutor({ executor: { run: async () => result() } });
+		const executeReview = createExactJudgmentExecutor({ run: async () => result() });
 		await assert.rejects(
 			executeReview({ ...reviewInput(), criterion: "x".repeat(70 * 1024) }, operationContext()),
 			/exceeds 65536 bytes/i,

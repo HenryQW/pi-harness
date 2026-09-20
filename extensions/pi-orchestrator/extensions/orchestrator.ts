@@ -12,7 +12,6 @@ import {
 	createExactJudgmentExecutor,
 	type CanonicalGitRootResolverOptions,
 	type ComposeOrchestratorRuntimeOptions,
-	type ExactJudgmentExecutorOptions,
 } from "../src/composition.ts";
 import {
 	CheckedGitRuntime,
@@ -43,7 +42,7 @@ export interface OrchestratorExtensionDependencies {
 	now(): number;
 	createSubagentExecutor(): EphemeralSubagentExecutor;
 	createRootResolver(options: CanonicalGitRootResolverOptions): NonNullable<ComposeOrchestratorRuntimeOptions["resolveRoot"]>;
-	createJudgmentExecutor(options?: ExactJudgmentExecutorOptions): ReturnType<typeof createExactJudgmentExecutor>;
+	createJudgmentExecutor(executor: EphemeralSubagentExecutor): ReturnType<typeof createExactJudgmentExecutor>;
 	createGitRuntime(options: CheckedGitRuntimeOptions): CheckedGitRuntime;
 	createHostRuntime(options: HerdrHostRuntimeOptions): HerdrHostRuntime;
 	createRuntime(options: ComposeOrchestratorRuntimeOptions): ComposedOrchestratorRuntime;
@@ -239,7 +238,7 @@ export function registerOrchestratorExtension(
 		const executor = dependencies.createSubagentExecutor();
 		const git = dependencies.createGitRuntime({
 			runProcess,
-			executeReview: dependencies.createJudgmentExecutor({ executor }),
+			executeReview: dependencies.createJudgmentExecutor(executor),
 		});
 		const host = dependencies.createHostRuntime({
 			inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git),

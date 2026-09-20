@@ -1,10 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, normalize, relative, sep } from "node:path";
-import {
-	createEphemeralSubagentExecutor,
-	type EphemeralSubagentExecutor,
-	type EphemeralSubagentExecutorOptions,
-} from "@henryqw/pi-subagent";
+import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
 	CheckedGitRuntime,
 	type DirectProcessRunner,
@@ -14,7 +10,6 @@ import {
 import { runProcess as defaultRunProcess } from "./process.ts";
 import { HerdrHostRuntime } from "./herdr-runtime.ts";
 import {
-	createRoleLaunchRuntime,
 	type LaunchRuntimeOptions,
 	RoleLaunchRuntime,
 } from "./launch-runtime.ts";
@@ -27,11 +22,6 @@ import type {
 const GIT_ROOT_TIMEOUT_CAP_MS = 30_000;
 const REVIEW_PROMPT_MAX_BYTES = 64 * 1024;
 const TRUNCATED_OUTPUT_MARKER = /\[Output truncated: \d+ bytes omitted\]/;
-const DEFAULT_REVIEW_EXECUTOR_OPTIONS: EphemeralSubagentExecutorOptions = {
-	maxConcurrency: 1,
-	maxTurns: 50,
-	timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
-};
 
 function within(root: string, candidate: string): boolean {
 	const fromRoot = relative(root, candidate);
@@ -120,21 +110,8 @@ function exactReviewPrompt(input: ExactReviewExecutorInput): string {
 	return prompt;
 }
 
-export interface ExactJudgmentExecutorOptions {
-	executor?: EphemeralSubagentExecutor;
-	createExecutor?: () => EphemeralSubagentExecutor;
-}
-
 /** Adapt an already verified Judgment launch without adding argv, environment, or resources. */
-export function createExactJudgmentExecutor(
-	options: ExactJudgmentExecutorOptions = {},
-): ExactReviewExecutor {
-	if (options.executor && options.createExecutor) {
-		throw new Error("Supply either a Judgment executor or an executor factory, not both.");
-	}
-	let executor = options.executor;
-	const getExecutor = () => executor ??= options.createExecutor?.()
-		?? createEphemeralSubagentExecutor(DEFAULT_REVIEW_EXECUTOR_OPTIONS);
+export function createExactJudgmentExecutor(executor: EphemeralSubagentExecutor): ExactReviewExecutor {
 	return async (input, context) => {
 		context.signal.throwIfAborted();
 		const task = exactReviewPrompt(input);
@@ -142,7 +119,7 @@ export function createExactJudgmentExecutor(
 			args: [...input.launch.args],
 			env: { ...input.launch.env },
 		};
-		const result = await getExecutor().run({
+		const result = await executor.run({
 			signal: context.signal,
 			prepare: async () => ({ launch, task, cwd: input.cwd }),
 		});
@@ -230,7 +207,7 @@ export function createHostCheckedMainInspector(
 export function createComposedOrchestratorRuntime(
 	options: ComposeOrchestratorRuntimeOptions,
 ): ComposedOrchestratorRuntime {
-	const roles: RoleLaunchRuntime = createRoleLaunchRuntime({
+	const roles: RoleLaunchRuntime = new RoleLaunchRuntime({
 		...options.role,
 		resolveRoot: options.resolveRoot ?? createCanonicalGitRootResolver(),
 		inspectMain: createHostCheckedMainInspector(options.host, options.git),

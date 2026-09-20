@@ -7,8 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import {
-	createHerdrHostRuntime,
-	type HerdrHostRuntime,
+	HerdrHostRuntime,
 	type HostProcessOptions,
 	type HostProcessRunner,
 } from "../src/herdr-runtime.ts";
@@ -140,7 +139,7 @@ function runtime(
 		inspectInFlightTaskCandidate?: (input: TaskCandidateInput, operation: OperationContext) => Promise<InFlightTaskCandidateInspection>;
 	} = {},
 ): HerdrHostRuntime {
-	return createHerdrHostRuntime({
+	return new HerdrHostRuntime({
 		inspectInFlightTaskCandidate: timing.inspectInFlightTaskCandidate ?? (async (input, operation) => ({
 			candidate: await inspectCandidate(input, operation),
 			clean: true,
@@ -2010,7 +2009,7 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	const base = runtime(fixture, script);
 	const { attempt, leasePath } = await fullAttempt(fixture, base, script);
 	await privateLease(leasePath);
-	const host = createHerdrHostRuntime({
+	const host = new HerdrHostRuntime({
 		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 		runProcess: script.run,
 		killProcess: (pid, signal) => { kills.push([pid, signal]); },
@@ -2052,7 +2051,7 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 			const seed = runtime(fixture, script);
 			const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
 			await privateLease(leasePath);
-			const host = createHerdrHostRuntime({
+			const host = new HerdrHostRuntime({
 				inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 				runProcess: script.run,
 				killProcess: (pid, signal) => { kills.push([pid, signal]); }, delay: async () => {}, now: () => 1_000,
@@ -2078,7 +2077,7 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 		command: "lsof-test", args: ["-nP", "-a", "-F", "p", "--", leasePath],
 		result: { code: 2, stdout: "", stderr: "ambiguous" },
 	});
-	const host = createHerdrHostRuntime({
+	const host = new HerdrHostRuntime({
 		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
 		runProcess: script.run,
 		killProcess: (pid) => { kills.push(pid); }, delay: async () => {}, now: () => 1_000,

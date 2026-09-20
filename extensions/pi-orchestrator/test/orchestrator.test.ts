@@ -269,9 +269,9 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 			factoryCalls.push("subagent");
 			return subagentExecutor;
 		},
-		createJudgmentExecutor(options) {
+		createJudgmentExecutor(executor) {
 			factoryCalls.push("judgment");
-			assert.deepEqual(options, { executor: subagentExecutor });
+			assert.equal(executor, subagentExecutor);
 			return judgmentExecutor;
 		},
 		createGitRuntime(options) {

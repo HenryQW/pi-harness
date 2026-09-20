@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createRoleLaunchRuntime, ORCHESTRATOR_MODEL_TASK } from "../src/launch-runtime.ts";
+import { ORCHESTRATOR_MODEL_TASK, RoleLaunchRuntime } from "../src/launch-runtime.ts";
 import type { OperationContext } from "../src/runner.ts";
 import {
 	type ChangesetTaskRequest,
@@ -184,7 +184,7 @@ async function harness(t: test.TestContext) {
 	const inspectedRoots: string[] = [];
 	const preflightOrder: string[] = [];
 	let resolvedRoot: string | undefined;
-	const runtime = createRoleLaunchRuntime({
+	const runtime = new RoleLaunchRuntime({
 		pi,
 		context: () => ctx,
 		resolveRoot: async (cwd) => {

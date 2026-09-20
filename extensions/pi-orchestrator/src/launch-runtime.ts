@@ -241,7 +241,3 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		return await materializeTransientLaunch(prepared, context.signal);
 	}
 }
-
-export function createRoleLaunchRuntime(options: LaunchRuntimeOptions): RoleLaunchRuntime {
-	return new RoleLaunchRuntime(options);
-}
