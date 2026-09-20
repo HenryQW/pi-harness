@@ -380,7 +380,6 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 				async withLock<T>(_root: string, action: () => Promise<T>): Promise<T> {
 					return await action();
 				},
-				async assertAvailable(): Promise<void> {},
 				async create(state: RunState) {
 					return { state, save: async (): Promise<void> => {} };
 				},

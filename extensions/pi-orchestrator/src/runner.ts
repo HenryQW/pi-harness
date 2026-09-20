@@ -835,7 +835,6 @@ export class OrchestratorRunner {
 				throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
 			}
 			return await this.withProductiveRun(root, async (lifecycle) => {
-				await this.store.assertAvailable(root, request.id);
 				const createdAt = this.runtime.now();
 				const state: RunState = {
 					version: RUN_STATE_VERSION,

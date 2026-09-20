@@ -67,7 +67,7 @@ function state(root: string): RunState {
 	};
 }
 
-test("the store persists v2 text state and preserves unsupported v1 files", async () => {
+test("the store persists v2 text state, rejects duplicate creates, and preserves unsupported v1 files", async () => {
 	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
 	const plannedRoot = join(sandbox, "repo");
 	const agentDir = join(sandbox, "agent");
@@ -79,6 +79,9 @@ test("the store persists v2 text state and preserves unsupported v1 files", asyn
 		const handle = await store.create(created);
 		const contents = await readFile(handle.path, "utf8");
 		assert.doesNotMatch(contents, /launchRecords|fingerprint|LaunchRecord/);
+		await assert.rejects(store.create(created), {
+			message: `Pi Orchestrator request ${created.request.id} already exists.`,
+		});
 
 		const loaded = await store.load(root, created.request.id);
 		assert.deepEqual(loaded.state, created);
@@ -149,7 +152,9 @@ test("invalid and oversized state files are rejected without replacement", async
 		const oversizedPath = store.statePath(root, "oversized");
 		await writeFile(oversizedPath, "");
 		await truncate(oversizedPath, STATE_MAX_BYTES + 1);
-		await assert.rejects(store.load(root, "oversized"), new RegExp(`state exceeds ${STATE_MAX_BYTES} bytes`));
+		await assert.rejects(store.load(root, "oversized"), {
+			message: `pi-orchestrator state exceeds ${STATE_MAX_BYTES} bytes.`,
+		});
 		assert.equal((await stat(oversizedPath)).size, STATE_MAX_BYTES + 1);
 		assert.match(await readFile(handle.path, "utf8"), /request-one/);
 	} finally {

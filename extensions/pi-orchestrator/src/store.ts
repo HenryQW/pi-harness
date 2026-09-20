@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
+import { mkdir, open, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { check, lock } from "proper-lockfile";
@@ -8,8 +8,8 @@ import { parseRunState, type RunState } from "./schema.ts";
 
 const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
 /*
- * create() caps the complete initial serialization at 2 MiB. The immutable
- * request is checked against that same cap on load.
+ * create() caps the complete initial serialization at 2 MiB. Loaded requests
+ * are independently bounded by parseExecuteRequest.
  *
  * Saves validate and reject atomically instead of dropping valid evidence.
  * Reads use the same finite ceiling and preserve rejected files.
@@ -85,21 +85,6 @@ function serialize(state: RunState, maxBytes = STATE_MAX_BYTES): string {
 		throw new Error(`pi-orchestrator state exceeds ${maxBytes} bytes.`);
 	}
 	return contents;
-}
-
-function assertPersistedBaseCapacity(state: RunState): void {
-	const contents = JSON.stringify({
-		version: state.version,
-		request: state.request,
-		root: state.root,
-		requestStartMain: state.requestStartMain,
-		deadlineStartedAt: state.deadlineStartedAt,
-		deadline: state.deadline,
-		createdAt: state.createdAt,
-	}, null, 2);
-	if (Buffer.byteLength(contents, "utf8") > INITIAL_STATE_MAX_BYTES) {
-		throw new Error(`pi-orchestrator state exceeds ${INITIAL_STATE_MAX_BYTES} bytes.`);
-	}
 }
 
 export class RunStateHandle {
@@ -243,17 +228,6 @@ export class FileRunStore {
 		}
 	}
 
-	async assertAvailable(root: string, id: string): Promise<void> {
-		const path = this.statePath(root, id);
-		try {
-			await lstat(path);
-		} catch (error) {
-			if (isMissing(error)) return;
-			throw error;
-		}
-		throw new Error(`Pi Orchestrator request ${id} already exists.`);
-	}
-
 	async create(state: RunState): Promise<RunStateHandle> {
 		const path = this.statePath(state.root, state.request.id);
 		await this.assertSafeDestination(state.root, path);
@@ -278,9 +252,6 @@ export class FileRunStore {
 		const path = this.statePath(root, id);
 		let raw: string;
 		try {
-			if ((await lstat(path)).size > STATE_MAX_BYTES) {
-				throw new Error(`Text file exceeds ${STATE_MAX_BYTES} bytes: ${path}`);
-			}
 			raw = await readTextFileBounded(path, STATE_MAX_BYTES);
 		} catch (error) {
 			if (error instanceof Error && error.message === `Text file exceeds ${STATE_MAX_BYTES} bytes: ${path}`) {
@@ -289,7 +260,6 @@ export class FileRunStore {
 			throw error;
 		}
 		const state = parseRunState(JSON.parse(raw));
-		assertPersistedBaseCapacity(state);
 		if (state.root !== realpathSync.native(root) || state.request.id !== id) {
 			throw new Error("pi-orchestrator state identity does not match its repository and filename.");
 		}
