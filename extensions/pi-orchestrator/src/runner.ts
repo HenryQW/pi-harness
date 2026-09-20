@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
@@ -46,6 +47,7 @@ const MAX_QUEUED_FOLLOWUPS = 16;
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
+const INTERACTIVE_STATE_POLL_MS = 50;
 const ALLOCATION_KINDS: readonly AllocationKind[] = ["worktree", "workspace", "worker_tab", "agent"];
 
 export interface OperationContext {
@@ -817,10 +819,10 @@ export class OrchestratorRunner {
 			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
 			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
 			if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
-			return await this.store.withLock(root, async (lifecycle) => {
-				if (this.hasAnyActiveControl(root)) {
-					throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
-				}
+			if (this.hasAnyActiveControl(root)) {
+				throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
+			}
+			return await this.store.withProductiveRunLease(root, async () => await this.store.withLock(root, async (lifecycle) => {
 				await this.store.assertAvailable(root, request.id);
 				const createdAt = this.runtime.now();
 				const state: RunState = {
@@ -853,7 +855,7 @@ export class OrchestratorRunner {
 				};
 				const handle = await this.store.create(state);
 				return await this.run(handle, scope, undefined, lifecycle);
-			});
+			}));
 		} finally {
 			scope.close();
 		}
@@ -862,15 +864,15 @@ export class OrchestratorRunner {
 	async resume(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const request = parseResumeRequest(value);
 		root = realpathSync.native(root);
-		return await this.store.withLock(root, async (lifecycle) => {
+		if (this.hasActiveControl(root, request.id)) {
+			throw new Error(`Pi Orchestrator request ${request.id} is still active; use follow-up, accept, status, or abort.`);
+		}
+		if (this.hasAnyActiveControl(root)) {
+			throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
+		}
+		return await this.store.withProductiveRunLease(root, async () => await this.store.withLock(root, async (lifecycle) => {
 			const handle = await this.store.load(root, request.id);
 			const state = handle.state;
-			if (this.hasActiveControl(root, request.id)) {
-				throw new Error(`Pi Orchestrator request ${request.id} is still active; use follow-up, accept, status, or abort.`);
-			}
-			if (this.hasAnyActiveControl(root)) {
-				throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
-			}
 			if (this.recoverInterrupted(state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
@@ -918,7 +920,7 @@ export class OrchestratorRunner {
 				scope.close();
 				this.closeRequestControls(root, request.id);
 			}
-		});
+		}));
 	}
 
 	async abort(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -929,7 +931,9 @@ export class OrchestratorRunner {
 			if (terminal(state)) return this.response(state);
 			const activeControls = this.activeControls(root, id);
 			for (const { control } of activeControls) control.invalidate();
-			if (!activeControls.length && this.recoverInterrupted(state)) await handle.save();
+			if (!activeControls.length && !await this.store.hasProductiveRunLease(root) && this.recoverInterrupted(state)) {
+				await handle.save();
+			}
 			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
 			for (const task of state.tasks) {
 				if (task.kind !== "changeset") continue;
@@ -952,7 +956,9 @@ export class OrchestratorRunner {
 		root = realpathSync.native(root);
 		return await this.store.withLock(root, async () => {
 			const handle = await this.store.load(root, id);
-			if (!this.hasActiveControl(root, id) && this.recoverInterrupted(handle.state)) await handle.save();
+			if (!this.hasActiveControl(root, id)
+				&& !await this.store.hasProductiveRunLease(root)
+				&& this.recoverInterrupted(handle.state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			const deadline = this.runtime.now() + STATUS_INSPECTION_BUDGET_MS;
 			const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
@@ -1474,34 +1480,66 @@ export class OrchestratorRunner {
 		scope: DeadlineScope,
 		lifecycle?: LifecycleLock,
 	): Promise<RunState | undefined> {
+		type Selection = {
+			task: ChangesetTaskState;
+			control: InteractiveTaskControl;
+			action: InteractiveTaskAction;
+		};
+		type WaitResult = { kind: "action"; selection: Selection } | { kind: "state_changed" };
+
 		for (;;) {
 			const awaiting = tasks.filter((task): task is ChangesetTaskState =>
 				task.kind === "changeset" && task.status === "awaiting_acceptance");
 			if (!awaiting.length) return;
 			if (!lifecycle) throw new Error("Interactive acceptance requires a lifecycle lock handoff.");
 			const persistedBeforeWait = (await this.store.load(handle.state.root, handle.state.request.id)).state;
-			const selected = await lifecycle.waitUnlocked(async () => {
-				for (const task of awaiting) {
-					const active = this.activeControl(handle.state.root, handle.state.request.id, task.taskId);
-					if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
-					if (active.control.takeNotification()) this.onInteractiveWait?.(handle.state.request.id, task.taskId);
-				}
-				return await scope.call(async (context) => {
-					const settled = new AbortController();
-					const signal = AbortSignal.any([context.signal, settled.signal]);
-					try {
-						return await Promise.race(awaiting.map(async (task) => {
-							const active = this.activeControl(handle.state.root, handle.state.request.id, task.taskId);
-							if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
-							return { task, control: active.control, action: await active.control.next(signal) };
-						}));
-					} finally {
-						settled.abort(new Error("Another interactive task received an action."));
+			let result: WaitResult | undefined;
+			let waitRejected = false;
+			let waitError: unknown;
+			try {
+				result = await lifecycle.waitUnlocked(async () => {
+					for (const task of awaiting) {
+						const active = this.activeControl(handle.state.root, handle.state.request.id, task.taskId);
+						if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
+						if (active.control.takeNotification()) this.onInteractiveWait?.(handle.state.request.id, task.taskId);
 					}
+					return await scope.call(async (context): Promise<WaitResult> => {
+						const settled = new AbortController();
+						const signal = AbortSignal.any([context.signal, settled.signal]);
+						try {
+							const action = Promise.race(awaiting.map(async (task): Promise<Selection> => {
+								const active = this.activeControl(handle.state.root, handle.state.request.id, task.taskId);
+								if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
+								return { task, control: active.control, action: await active.control.next(signal) };
+							}));
+							return await Promise.race([
+								action.then((selection): WaitResult => ({ kind: "action", selection })),
+								this.waitForDurableStateChange(
+									handle.state.root,
+									handle.state.request.id,
+									persistedBeforeWait,
+									signal,
+								).then((): WaitResult => ({ kind: "state_changed" })),
+							]);
+						} finally {
+							settled.abort(new Error("The interactive wait settled."));
+						}
+					});
 				});
-			});
+			} catch (error) {
+				waitRejected = true;
+				waitError = error;
+			}
 			const persistedAfterWait = (await this.store.load(handle.state.root, handle.state.request.id)).state;
-			if (selected.action.kind === "stop" || !isDeepStrictEqual(persistedAfterWait, persistedBeforeWait)) {
+			if (!isDeepStrictEqual(persistedAfterWait, persistedBeforeWait)) {
+				this.closeRequestControls(handle.state.root, handle.state.request.id);
+				return persistedAfterWait;
+			}
+			if (waitRejected) throw waitError;
+			if (!result) throw new Error("Interactive acceptance wait ended without a result.");
+			if (result.kind === "state_changed") continue;
+			const selected = result.selection;
+			if (selected.action.kind === "stop") {
 				this.closeRequestControls(handle.state.root, handle.state.request.id);
 				return persistedAfterWait;
 			}
@@ -1522,6 +1560,19 @@ export class OrchestratorRunner {
 			}
 			await handle.save();
 			this.closeInteractiveControl(handle.state.root, handle.state.request.id, selected.task.taskId, selected.control);
+		}
+	}
+
+	private async waitForDurableStateChange(
+		root: string,
+		requestId: string,
+		persistedBeforeWait: RunState,
+		signal: AbortSignal,
+	): Promise<void> {
+		for (;;) {
+			await delay(INTERACTIVE_STATE_POLL_MS, undefined, { signal });
+			const persisted = (await this.store.load(root, requestId)).state;
+			if (!isDeepStrictEqual(persisted, persistedBeforeWait)) return;
 		}
 	}
 

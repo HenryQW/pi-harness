@@ -485,11 +485,13 @@ async function harness(
 	const root = join(directory, "workspace");
 	await mkdir(root);
 	const runtime = new FakeRuntime();
-	const store = options.createStore?.(join(directory, "agent")) ?? new FileRunStore(join(directory, "agent"));
+	const agentDir = join(directory, "agent");
+	const store = options.createStore?.(agentDir) ?? new FileRunStore(agentDir);
 	return {
 		root,
 		runtime,
 		store,
+		agentDir,
 		runner: new OrchestratorRunner(
 			runtime,
 			runtime,
@@ -613,29 +615,44 @@ test("interactive changesets retain the same worker for queued follow-ups until 
 	assertParsed(result.state);
 });
 
-test("status and abort remain usable while execute waits for interactive acceptance", async (t) => {
+test("a durable productive lease admits cross-runner status and abort but blocks execute and resume", async (t) => {
 	let ready!: () => void;
 	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
-	const { root, runtime, runner } = await harness(t, {
+	const { root, runtime, runner, agentDir } = await harness(t, {
 		interactiveChangesets: true,
 		onInteractiveWait: () => ready(),
 	});
+	const otherRunner = new OrchestratorRunner(
+		runtime,
+		runtime,
+		new FileRunStore(agentDir),
+		unusedTextExecutor,
+		true,
+	);
 	const definition = request("interactive-concurrent-abort", [changesetTask("change")]);
 	const execution = runner.execute(definition, root);
 
 	await awaitingAcceptance;
-	const reported = await runner.status(definition.id, root);
+	const reported = await otherRunner.status(definition.id, root);
 	const reportedTask = changesetState(reported.state, "change");
 	assert.equal(reported.state.status, "running");
 	assert.equal(reportedTask.status, "awaiting_acceptance");
 	assert.equal(reportedTask.attempts[0]?.termination, undefined);
 	assert.deepEqual(reported.main, { status: "current", expected: identity("a"), actual: identity("a") });
 	await assert.rejects(
+		otherRunner.execute(request("blocked-execute", [changesetTask("other")]), root),
+		/Another Pi Orchestrator productive request is active/,
+	);
+	await assert.rejects(
+		otherRunner.resume({ id: definition.id, action: "retry", taskId: "change" }, root),
+		/Another Pi Orchestrator productive request is active/,
+	);
+	await assert.rejects(
 		runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root),
 		/still active/,
 	);
 
-	const aborted = await runner.abort(definition.id, root);
+	const aborted = await otherRunner.abort(definition.id, root);
 	const completedExecution = await execution;
 	const abortedAttempt = changesetState(aborted.state, "change").attempts[0]!;
 	const agent = abortedAttempt.allocations.find((allocation) => allocation.kind === "agent");
@@ -653,6 +670,48 @@ test("status and abort remain usable while execute waits for interactive accepta
 		/sealed|not an active interactive changeset/,
 	);
 	assertParsed(aborted.state);
+});
+
+test("rejected interactive waits adopt concurrent durable state before surfacing deadline or outer abort", async (t) => {
+	for (const rejection of ["outer", "deadline"] as const) {
+		await t.test(rejection, async (t) => {
+			let ready!: () => void;
+			const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
+			const controller = new AbortController();
+			const { root, runtime, runner, agentDir } = await harness(t, {
+				interactiveChangesets: true,
+				onInteractiveWait: () => ready(),
+			});
+			const definition = parseExecuteRequest({
+				...request(`interactive-${rejection}-state-change`, [changesetTask("change")]),
+				budgetMs: rejection === "deadline" ? 1_000 : 10_000,
+			});
+			const execution = runner.execute(definition, root, controller.signal);
+			await awaitingAcceptance;
+
+			let locked!: () => void;
+			const lifecycleLocked = new Promise<void>((resolve) => { locked = resolve; });
+			const concurrentStore = new FileRunStore(agentDir);
+			const mutation = concurrentStore.withLock(root, async () => {
+				locked();
+				if (rejection === "outer") controller.abort(new Error("operator interrupted the interactive wait"));
+				else await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+				const handle = await concurrentStore.load(root, definition.id);
+				handle.state.status = "aborted";
+				handle.state.accepted = false;
+				handle.state.updatedAt = runtime.now();
+				await handle.save();
+			});
+			await lifecycleLocked;
+
+			const [result] = await Promise.all([execution, mutation]);
+			const durable = (await concurrentStore.load(root, definition.id)).state;
+			assert.equal(result.state.status, "aborted");
+			assert.deepEqual(result.state, durable);
+			assert.equal(changesetState(result.state, "change").status, "awaiting_acceptance");
+			assertParsed(result.state);
+		});
+	}
 });
 
 test("interrupting an interactive acceptance wait terminates the exact retained worker", async (t) => {

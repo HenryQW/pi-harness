@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
-import { lock } from "proper-lockfile";
+import { check, lock } from "proper-lockfile";
 import { parseRunState, type RunState } from "./schema.ts";
 
 const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
@@ -146,10 +146,42 @@ export class FileRunStore {
 		return join(this.stateDirectory(root), "lifecycle.lock");
 	}
 
+	private productiveRunPath(root: string): string {
+		return join(this.stateDirectory(root), "productive-run");
+	}
+
 	private async assertSafeDestination(root: string, destination: string): Promise<void> {
 		if (isWithin(realpathSync.native(root), await canonicalPlannedPath(destination))) {
 			throw new Error("Pi Orchestrator state directory must be outside the Git workspace.");
 		}
+	}
+
+	async withProductiveRunLease<T>(root: string, operation: () => Promise<T>): Promise<T> {
+		const directory = this.stateDirectory(root);
+		await this.assertSafeDestination(root, directory);
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		const path = this.productiveRunPath(root);
+		let release: ReleaseLock;
+		try {
+			release = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		} catch (error) {
+			if (isLocked(error)) {
+				throw new Error("Another Pi Orchestrator productive request is active in this repository.");
+			}
+			throw error;
+		}
+		try {
+			return await operation();
+		} finally {
+			await release();
+		}
+	}
+
+	async hasProductiveRunLease(root: string): Promise<boolean> {
+		const directory = this.stateDirectory(root);
+		await this.assertSafeDestination(root, directory);
+		const path = this.productiveRunPath(root);
+		return await check(path, { realpath: false, stale: LOCK_OPTIONS.stale, lockfilePath: `${path}.lock` });
 	}
 
 	async withLock<T>(root: string, operation: (lifecycle: LifecycleLock) => Promise<T>): Promise<T> {
