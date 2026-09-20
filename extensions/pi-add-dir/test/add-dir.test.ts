@@ -74,6 +74,28 @@ test("registers external skills without duplicating Pi's skill prompt", async ()
 	}
 });
 
+test("injects external context through a stable named prompt section", async () => {
+	const external = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	try {
+		await writeFile(join(external, "AGENTS.md"), "Follow external instructions.\n");
+		const branch = [{
+			type: "custom",
+			customType: "add-dir:state",
+			data: { dirs: [{ absolutePath: external, label: "external" }] },
+		}];
+		const { handlers } = loadExtension();
+		await handlers.get("session_start")!({}, extensionContext(process.cwd(), () => branch));
+		const event = { systemPrompt: "base", systemPromptOptions: { sections: {} as Record<string, string> } };
+
+		assert.equal(await handlers.get("before_agent_start")!(event, {} as ExtensionContext), undefined);
+		assert.equal(event.systemPrompt, "base");
+		assert.deepEqual(Object.keys(event.systemPromptOptions.sections), ["pi_add_dir"]);
+		assert.match(event.systemPromptOptions.sections.pi_add_dir!, /External Directories.*Follow external instructions/s);
+	} finally {
+		await rm(external, { recursive: true, force: true });
+	}
+});
+
 test("includes added directories in @ file autocomplete", async () => {
 	const external = join(tmpdir(), "external project");
 	const externalPrefix = `@"${join(external, "query")}`;

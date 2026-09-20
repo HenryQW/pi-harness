@@ -44,6 +44,7 @@ const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
 const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
 // @henryqw/pi-herdr-btw does not export internal/core.ts from its package root.
 const BTW_CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
+const PROMPT_SECTION = "pi_memory";
 const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched|[Mm]ultiple entries matched|matched multiple distinct/i;
 export const MEMORY_REVIEW_TASK = {
 	id: "pi-memory/reviewCandidate",
@@ -296,24 +297,9 @@ async function invokeReviewRoute(
 	signal: AbortSignal | undefined,
 ): Promise<CandidateReview> {
 	throwIfAborted(signal);
-	let auth;
-	try {
-		auth = await ctx.modelRegistry.getApiKeyAndHeaders(route.model);
-	} catch (error) {
-		if (signal?.aborted) throwIfAborted(signal);
-		throw new MemoryReviewError("Couldn't authenticate memory review task model.");
-	}
-	if (!auth.ok) throw new MemoryReviewError("Couldn't authenticate memory review task model.");
-	const provider = ctx.modelRegistry.getProvider(route.model.provider);
-	if (!provider) throw new MemoryReviewError("Memory review task model provider is unavailable.");
-	const model = auth.baseUrl ? { ...route.model, baseUrl: auth.baseUrl } : route.model;
 	let response;
 	try {
-		throwIfAborted(signal);
-		response = await provider.streamSimple(model, request, {
-			apiKey: auth.apiKey,
-			headers: auth.headers,
-			env: auth.env,
+		response = await ctx.modelRegistry.streamSimple(route.model, request, {
 			signal,
 			maxRetries: 0,
 			maxTokens: REVIEW_MAX_TOKENS,
@@ -998,10 +984,11 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		// Failed init stays visible every turn (correctness-critical config must
 		// not vanish silently) but as a warning line, not a per-turn throw-loop.
 		if (state.initError) {
-			return { systemPrompt: `${event.systemPrompt}\n\nWARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configPath()} and restart.` };
+			event.systemPromptOptions.sections[PROMPT_SECTION] = `WARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configPath()} and restart.`;
+			return;
 		}
 		if (!state.config || !state.stores || !state.snapshotBlocks) return;
 		const blocks = [...state.snapshotBlocks, ...state.conflictWarnings].filter(Boolean).join("\n\n");
-		return { systemPrompt: `${event.systemPrompt}\n\n${blocks ? `${blocks}\n\n` : ""}${MEMORY_CHECK}` };
+		event.systemPromptOptions.sections[PROMPT_SECTION] = `${blocks ? `${blocks}\n\n` : ""}${MEMORY_CHECK}`;
 	});
 }
