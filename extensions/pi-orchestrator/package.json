@@ -59,7 +59,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.86.0",
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.6.1",
     "@types/proper-lockfile": "^4.1.4"
   },
   "repository": {

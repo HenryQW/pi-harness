@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@types/node':
-        specifier: ^26.5.0
-        version: 26.5.0
+        specifier: ^26.6.1
+        version: 26.6.1
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -236,8 +236,8 @@ importers:
         specifier: 0.86.0
         version: 0.86.0(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
       '@types/node':
-        specifier: ^26.4.1
-        version: 26.5.0
+        specifier: ^26.6.1
+        version: 26.6.1
       '@types/proper-lockfile':
         specifier: ^4.1.4
         version: 4.1.4
@@ -387,7 +387,7 @@ importers:
     devDependencies:
       blume:
         specifier: 1.7.0
-        version: 1.7.0(@aws-sdk/credential-provider-web-identity@3.972.77)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@shikijs/themes@4.4.3)(@types/node@26.5.0)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(csstype@3.2.3)(esbuild@0.28.2)(prettier@3.9.6)(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))(ws@8.21.3)(yaml@2.9.0)
+        version: 1.7.0(@aws-sdk/credential-provider-web-identity@3.972.77)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@shikijs/themes@4.4.3)(@types/node@26.6.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(csstype@3.2.3)(esbuild@0.28.2)(prettier@3.9.6)(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))(ws@8.21.3)(yaml@2.9.0)
 
 packages:
 
@@ -2023,8 +2023,8 @@ packages:
   '@types/nlcst@2.0.3':
     resolution: {integrity: sha512-vSYNSDe6Ix3q+6Z7ri9lyWqgGhJTmzRjZRqyq15N0Z/1/UnVsno9G/N40NBijoYx2seFDIl0+B2mgAb9mezUCA==}
 
-  '@types/node@26.5.0':
-    resolution: {integrity: sha512-dVSGpriSoCgz8WnDNTuSSuSv1PC/ALXihO4ulRZt7Md8k9mlbdin3lGOcDE8SnWOgf513ByWlXd7BK4azmyg/A==}
+  '@types/node@26.6.1':
+    resolution: {integrity: sha512-VqGJBMCtdhqkBUCcBLvywI0NJ+KLuVzgNnlBUNFOQjqVxzo2lxLUNg1DSey8+u2u6ktswSAxg+s68QLzWHNOuA==}
 
   '@types/proper-lockfile@4.1.4':
     resolution: {integrity: sha512-uo2ABllncSqg9F1D4nugVl9v93RmjxF6LJzQLMLDdPaXCUIDPeOJ21Gbqi43xNKzBi/WQ0Q0dICqufzQbMjipQ==}
@@ -5495,17 +5495,17 @@ snapshots:
       github-slugger: 2.0.0
       satteri: 0.10.5
 
-  '@astrojs/mdx@8.0.1(@astrojs/markdown-satteri@0.4.1)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))':
+  '@astrojs/mdx@8.0.1(@astrojs/markdown-satteri@0.4.1)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:
       '@astrojs/internal-helpers': 0.11.0
       '@astrojs/markdown-satteri': 0.4.1
-      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
+      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
       es-module-lexer: 2.3.2
 
-  '@astrojs/node@11.1.5(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))':
+  '@astrojs/node@11.1.5(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:
       '@astrojs/internal-helpers': 0.11.0
-      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
+      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
       send: 1.2.1
       server-destroy: 1.0.1
     transitivePeerDependencies:
@@ -5515,17 +5515,17 @@ snapshots:
     dependencies:
       prismjs: 1.30.0
 
-  '@astrojs/react@6.0.5(@types/node@26.5.0)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(yaml@2.9.0)':
+  '@astrojs/react@6.0.5(@types/node@26.6.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(yaml@2.9.0)':
     dependencies:
       '@astrojs/internal-helpers': 0.11.0
       '@types/react': 19.2.18
       '@types/react-dom': 19.2.5(@types/react@19.2.18)
-      '@vitejs/plugin-react': 5.2.0(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
+      '@vitejs/plugin-react': 5.2.0(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
       devalue: 5.9.2
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
       ultrahtml: 1.7.0
-      vite: 8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
     transitivePeerDependencies:
       - '@types/node'
       - '@vitejs/devtools'
@@ -5548,14 +5548,14 @@ snapshots:
       is-docker: 4.0.0
       package-manager-detector: 1.8.0
 
-  '@astrojs/vercel@11.0.10(@aws-sdk/credential-provider-web-identity@3.972.77)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))(react@19.3.0)(ws@8.21.3)':
+  '@astrojs/vercel@11.0.10(@aws-sdk/credential-provider-web-identity@3.972.77)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))(react@19.3.0)(ws@8.21.3)':
     dependencies:
       '@astrojs/internal-helpers': 0.11.0
       '@vercel/analytics': 2.0.1(react@19.3.0)
       '@vercel/functions': 3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3)
       '@vercel/nft': 1.11.0
       '@vercel/routing-utils': 6.5.0
-      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
+      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
       esbuild: 0.28.2
       tinyglobby: 0.2.17
     transitivePeerDependencies:
@@ -6545,10 +6545,10 @@ snapshots:
       estree-walker: 2.0.2
       picomatch: 4.0.7
 
-  '@scalar/astro@0.4.18(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))':
+  '@scalar/astro@0.4.18(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:
       '@scalar/client-side-rendering': 0.4.0
-      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
+      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
 
   '@scalar/client-side-rendering@0.4.0':
     dependencies:
@@ -6918,12 +6918,12 @@ snapshots:
       postcss-selector-parser: 6.0.10
       tailwindcss: 4.3.3
 
-  '@tailwindcss/vite@4.3.3(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))':
+  '@tailwindcss/vite@4.3.3(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:
       '@tailwindcss/node': 4.3.3
       '@tailwindcss/oxide': 4.3.3
       tailwindcss: 4.3.3
-      vite: 8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
 
   '@takumi-rs/core-darwin-arm64@2.13.7':
     optional: true
@@ -7128,7 +7128,7 @@ snapshots:
 
   '@types/es-aggregate-error@1.0.6':
     dependencies:
-      '@types/node': 26.5.0
+      '@types/node': 26.6.1
 
   '@types/estree-jsx@1.0.5':
     dependencies:
@@ -7154,7 +7154,7 @@ snapshots:
     dependencies:
       '@types/unist': 3.0.3
 
-  '@types/node@26.5.0':
+  '@types/node@26.6.1':
     dependencies:
       undici-types: 8.9.0
 
@@ -7309,7 +7309,7 @@ snapshots:
     optionalDependencies:
       ajv: 6.15.0
 
-  '@vitejs/plugin-react@5.2.0(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))':
+  '@vitejs/plugin-react@5.2.0(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7)
@@ -7317,7 +7317,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.0-rc.3
       '@types/babel__core': 7.20.5
       react-refresh: 0.18.0
-      vite: 8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
     transitivePeerDependencies:
       - supports-color
 
@@ -7484,7 +7484,7 @@ snapshots:
 
   astring@1.9.0: {}
 
-  astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0):
+  astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0):
     dependencies:
       '@astrojs/compiler-rs': 0.4.0(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)
       '@astrojs/internal-helpers': 0.11.0
@@ -7534,13 +7534,13 @@ snapshots:
       ultrahtml: 1.7.0
       unifont: 0.7.5
       unstorage: 1.17.5(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))
-      vite: 8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
-      vitefu: 1.1.3(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
+      vite: 8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
+      vitefu: 1.1.3(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
       xxhash-wasm: 1.1.0
       yargs-parser: 22.0.0
       zod: 4.5.4
     optionalDependencies:
-      sharp: 0.35.4(@types/node@26.5.0)
+      sharp: 0.35.4(@types/node@26.6.1)
     transitivePeerDependencies:
       - '@azure/app-configuration'
       - '@azure/cosmos'
@@ -7609,14 +7609,14 @@ snapshots:
     dependencies:
       file-uri-to-path: 1.0.0
 
-  blume@1.7.0(@aws-sdk/credential-provider-web-identity@3.972.77)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@shikijs/themes@4.4.3)(@types/node@26.5.0)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(csstype@3.2.3)(esbuild@0.28.2)(prettier@3.9.6)(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))(ws@8.21.3)(yaml@2.9.0):
+  blume@1.7.0(@aws-sdk/credential-provider-web-identity@3.972.77)(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@shikijs/themes@4.4.3)(@types/node@26.6.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(csstype@3.2.3)(esbuild@0.28.2)(prettier@3.9.6)(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))(ws@8.21.3)(yaml@2.9.0):
     dependencies:
       '@astrojs/check': 0.9.10(prettier@3.9.6)(typescript@6.0.3)
       '@astrojs/markdown-satteri': 0.4.1
-      '@astrojs/mdx': 8.0.1(@astrojs/markdown-satteri@0.4.1)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))
-      '@astrojs/node': 11.1.5(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))
-      '@astrojs/react': 6.0.5(@types/node@26.5.0)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(yaml@2.9.0)
-      '@astrojs/vercel': 11.0.10(@aws-sdk/credential-provider-web-identity@3.972.77)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))(react@19.3.0)(ws@8.21.3)
+      '@astrojs/mdx': 8.0.1(@astrojs/markdown-satteri@0.4.1)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))
+      '@astrojs/node': 11.1.5(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))
+      '@astrojs/react': 6.0.5(@types/node@26.6.1)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(esbuild@0.28.2)(jiti@2.7.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(yaml@2.9.0)
+      '@astrojs/vercel': 11.0.10(@aws-sdk/credential-provider-web-identity@3.972.77)(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))(react@19.3.0)(ws@8.21.3)
       '@asyncapi/converter': 2.0.2
       '@clack/prompts': 1.8.1
       '@iconify-json/lucide': 1.2.132
@@ -7625,17 +7625,17 @@ snapshots:
       '@modelcontextprotocol/sdk': 1.30.0(zod@4.6.5)
       '@orama/orama': 3.1.18
       '@pierre/diffs': 1.4.2(@shikijs/themes@4.4.3)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      '@scalar/astro': 0.4.18(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))
+      '@scalar/astro': 0.4.18(astro@7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0))
       '@scalar/openapi-parser': 0.29.1
       '@scalar/openapi-types': 0.9.5
       '@shikijs/transformers': 4.4.3
       '@shikijs/twoslash': 4.4.3(typescript@6.0.3)
       '@tailwindcss/typography': 0.5.20(tailwindcss@4.3.3)
-      '@tailwindcss/vite': 4.3.3(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
+      '@tailwindcss/vite': 4.3.3(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
       '@types/mdast': 4.0.4
       '@vercel/analytics': 2.0.1(react@19.3.0)
       ai: 7.0.101(zod@4.6.5)
-      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.5.0)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
+      astro: 7.3.2(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@types/node@26.6.1)(@vercel/functions@3.9.5(@aws-sdk/credential-provider-web-identity@3.972.77)(ws@8.21.3))(jiti@2.7.0)(yaml@2.9.0)
       babel-plugin-react-compiler: 1.0.0
       chokidar: 5.0.0
       citty: 0.2.2
@@ -7677,7 +7677,7 @@ snapshots:
       robots-parser: 3.0.1
       satteri: 0.10.5
       semver: 7.8.5
-      sharp: 0.35.4(@types/node@26.5.0)
+      sharp: 0.35.4(@types/node@26.6.1)
       shiki: 4.4.3
       simple-icons: 16.31.0
       string-width: 8.2.2
@@ -9918,7 +9918,7 @@ snapshots:
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.2
-      '@types/node': 26.5.0
+      '@types/node': 26.6.1
       long: 5.3.2
 
   proxy-addr@2.0.7:
@@ -10174,7 +10174,7 @@ snapshots:
 
   setprototypeof@1.2.0: {}
 
-  sharp@0.35.4(@types/node@26.5.0):
+  sharp@0.35.4(@types/node@26.6.1):
     dependencies:
       '@img/colour': 1.1.0
       detect-libc: 2.1.2
@@ -10205,7 +10205,7 @@ snapshots:
       '@img/sharp-win32-arm64': 0.35.4
       '@img/sharp-win32-ia32': 0.35.4
       '@img/sharp-win32-x64': 0.35.4
-      '@types/node': 26.5.0
+      '@types/node': 26.6.1
 
   shebang-command@2.0.0:
     dependencies:
@@ -10619,7 +10619,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0):
+  vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0):
     dependencies:
       lightningcss: 1.33.0
       picomatch: 4.0.7
@@ -10627,15 +10627,15 @@ snapshots:
       rolldown: 1.2.6
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 26.5.0
+      '@types/node': 26.6.1
       esbuild: 0.28.2
       fsevents: 2.3.3
       jiti: 2.7.0
       yaml: 2.9.0
 
-  vitefu@1.1.3(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)):
+  vitefu@1.1.3(vite@8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)):
     optionalDependencies:
-      vite: 8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
+      vite: 8.2.2(@types/node@26.6.1)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0)
 
   volar-service-css@0.0.71(@volar/language-service@2.4.28(typescript@6.0.3)):
     dependencies:
