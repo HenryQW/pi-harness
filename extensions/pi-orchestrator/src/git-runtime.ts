@@ -291,6 +291,10 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		const current = new Promise<void>((resolve) => { release = resolve; });
 		const tail = previous.then(async () => await current);
 		this.mainOperationTails.set(root, tail);
+		const clearTail = () => {
+			if (this.mainOperationTails.get(root) === tail) this.mainOperationTails.delete(root);
+		};
+		void tail.then(clearTail, clearTail);
 		let onAbort!: () => void;
 		const aborted = new Promise<never>((_, reject) => {
 			onAbort = () => reject(signal.reason ?? new Error("Main Git operation was interrupted."));
@@ -304,7 +308,6 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		} finally {
 			signal.removeEventListener("abort", onAbort);
 			release();
-			if (this.mainOperationTails.get(root) === tail) this.mainOperationTails.delete(root);
 		}
 	}
 

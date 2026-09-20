@@ -266,21 +266,35 @@ test("concurrent worktree allocations serialize main-index inspection per reposi
 	assert.equal(maxConcurrentIndexOperations, 1);
 });
 
-test("a queued main-index inspection observes cancellation without waiting for the active operation", async (t) => {
+test("a cancelled queued main-index inspection keeps a later inspection behind the active operation", async (t) => {
 	const root = await repository(t);
 	let releaseFirst!: () => void;
 	let markStarted!: () => void;
 	const firstStarted = new Promise<void>((resolve) => { markStarted = resolve; });
 	const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-	let blocked = false;
+	let markLaterIndexStarted!: () => void;
+	const laterIndexStarted = new Promise<void>((resolve) => { markLaterIndexStarted = resolve; });
+	let updateIndexOperations = 0;
+	let activeIndexOperations = 0;
+	let maxConcurrentIndexOperations = 0;
 	const runtime = new CheckedGitRuntime({
 		runProcess: async (command, args, options) => {
-			if (!blocked && command === "git" && options.cwd === root && args[0] === "update-index") {
-				blocked = true;
-				markStarted();
-				await firstGate;
+			if (command !== "git" || options.cwd !== root || args[0] !== "update-index") {
+				return await directProcess(command, args, options);
 			}
-			return await directProcess(command, args, options);
+			activeIndexOperations += 1;
+			maxConcurrentIndexOperations = Math.max(maxConcurrentIndexOperations, activeIndexOperations);
+			try {
+				if (updateIndexOperations++ === 0) {
+					markStarted();
+					await firstGate;
+				} else {
+					markLaterIndexStarted();
+				}
+				return { code: 0, stdout: "", stderr: "", killed: false };
+			} finally {
+				activeIndexOperations -= 1;
+			}
 		},
 	});
 	const first = runtime.inspectMain({ root }, context());
@@ -294,15 +308,28 @@ test("a queued main-index inspection observes cancellation without waiting for t
 	});
 	const queuedOutcome = queued.then(() => "resolved", () => "aborted");
 	controller.abort(new Error("cancel queued inspection"));
-	const promptOutcome = await Promise.race([
-		queuedOutcome,
-		new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
-	]);
+	let later: Promise<WorkspaceIdentity> | undefined;
+	try {
+		const promptOutcome = await Promise.race([
+			queuedOutcome,
+			new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 100)),
+		]);
+		assert.equal(promptOutcome, "aborted");
 
-	releaseFirst();
-	await first;
-	assert.equal(promptOutcome, "aborted");
+		later = runtime.inspectMain({ root }, context());
+		const laterStartedBeforeRelease = await Promise.race([
+			laterIndexStarted.then(() => "started" as const),
+			new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 100)),
+		]);
+		assert.equal(laterStartedBeforeRelease, "waiting");
+	} finally {
+		releaseFirst();
+		await first;
+		if (later) await later;
+	}
+
 	assert.equal(await queuedOutcome, "aborted");
+	assert.equal(maxConcurrentIndexOperations, 1);
 });
 
 test("worktree allocation persists helper-derived intent before add and retains setup drift", async (t) => {
