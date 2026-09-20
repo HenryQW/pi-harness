@@ -11,12 +11,12 @@ import {
 	type ApiStreamOptions,
 	type AssistantMessage,
 	type AssistantMessageEvent,
-	type Context,
 	type DeferredCancelOptions,
 	type DeferredFetchOptions,
 	type Model,
 	type Provider,
 	type SimpleStreamOptions,
+	type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
@@ -708,7 +708,7 @@ function aliasModel(model: CodexModel, provider: string): CodexModel {
 	return model.provider === provider ? model : { ...model, provider };
 }
 
-function nativeContext(context: Context, alias: string): Context {
+function nativeContext(context: TranscriptContext, alias: string): TranscriptContext {
 	return {
 		...context,
 		messages: context.messages.map((message) => {
