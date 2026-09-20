@@ -146,9 +146,38 @@ function isUsage(value: unknown): boolean {
 		["input", "output", "cacheRead", "cacheWrite", "total"].every((key) => typeof cost[key] === "number");
 }
 
+function isJsonValue(value: unknown, ancestors = new Set<object>()): boolean {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (typeof value !== "object") return false;
+	if (ancestors.has(value)) return false;
+	ancestors.add(value);
+	const valid = Array.isArray(value)
+		? value.every((entry) => isJsonValue(entry, ancestors))
+		: Object.values(value).every((entry) => isJsonValue(entry, ancestors));
+	ancestors.delete(value);
+	return valid;
+}
+
+function isSystemMessage(value: Record<string, unknown>): boolean {
+	const sections = value.sections;
+	const toolsAdded = value.toolsAdded;
+	const toolsRemoved = value.toolsRemoved;
+	return isJsonValue(value) &&
+		(typeof value.content === "string" || (Array.isArray(value.content) && value.content.every(isTextContent))) &&
+		(sections === undefined || (isRecord(sections) && Object.values(sections).every((entry) => entry === null || typeof entry === "string"))) &&
+		(toolsAdded === undefined || (Array.isArray(toolsAdded) && toolsAdded.every((tool) =>
+			isRecord(tool) && typeof tool.name === "string" && typeof tool.description === "string" &&
+			isRecord(tool.parameters) && isJsonValue(tool.parameters)))) &&
+		(toolsRemoved === undefined || (Array.isArray(toolsRemoved) && toolsRemoved.every((tool) =>
+			isRecord(tool) && typeof tool.name === "string")));
+}
+
 function isAgentMessage(value: unknown): value is AgentMessage {
 	if (!isRecord(value) || typeof value.timestamp !== "number") return false;
 	switch (value.role) {
+		case "system":
+			return isSystemMessage(value);
 		case "user":
 			return isUserContent(value.content);
 		case "assistant":

@@ -6,7 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { extensionConfigDir, extensionConfigPath } from "@henryqw/pi-config-store";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import multiCodex, { parseCodexUsage } from "../extensions/multi-codex.ts";
+import { createAssistantMessageEventStream, normalizeContext } from "@earendil-works/pi-ai";
+import multiCodex, { createCodexAliasProvider, parseCodexUsage } from "../extensions/multi-codex.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 type Command = (args: string, ctx: any) => Promise<void>;
@@ -43,7 +44,7 @@ const credential = (accountId: string) => ({
 });
 
 const assistantError = (provider: string) => ({
-	role: "assistant",
+	role: "assistant" as const,
 	content: [],
 	api: "openai-codex-responses",
 	provider,
@@ -74,6 +75,60 @@ async function writeFreshCache(agentDir: string, remaining: Record<number, numbe
 		locks: [],
 	}));
 }
+
+test("alias provider preserves normalized transcript state while rewriting assistant ownership", () => {
+	const aliasId = "openai-codex-2";
+	let receivedContext: ReturnType<typeof normalizeContext> | undefined;
+	const native = {
+		id: "openai-codex",
+		name: "OpenAI Codex",
+		baseUrl: "https://example.test",
+		getModels: () => [model()],
+		stream: (_model: unknown, context: ReturnType<typeof normalizeContext>) => {
+			receivedContext = context;
+			const stream = createAssistantMessageEventStream();
+			stream.end();
+			return stream;
+		},
+		streamSimple: (_model: unknown, context: ReturnType<typeof normalizeContext>) => {
+			receivedContext = context;
+			const stream = createAssistantMessageEventStream();
+			stream.end();
+			return stream;
+		},
+	};
+	const assistant = {
+		...assistantError(aliasId),
+		stopReason: "deferred" as const,
+		deferred: { provider: aliasId, modelId: "gpt-5.3-codex", api: "openai-codex-responses", id: "response-1" },
+	};
+	const toolResult = {
+		role: "toolResult" as const,
+		toolCallId: "call-1",
+		toolName: "read",
+		content: [{ type: "text" as const, text: "result" }],
+		isError: false,
+		timestamp: 2,
+	};
+	const context = normalizeContext({
+		systemPrompt: "base prompt",
+		tools: [{ name: "read", description: "Read", parameters: { type: "object" } }],
+		messages: [assistant, toolResult],
+	});
+	const alias = createCodexAliasProvider(native as never, 2);
+
+	alias.stream(alias.getModels()[0] as never, context);
+
+	assert.ok(receivedContext);
+	assert.equal(receivedContext.messages[0], context.messages[0]);
+	assert.equal(receivedContext.messages[2], toolResult);
+	assert.notEqual(receivedContext.messages[1], assistant);
+	assert.equal(receivedContext.messages[1]?.role, "assistant");
+	if (receivedContext.messages[1]?.role === "assistant") {
+		assert.equal(receivedContext.messages[1].provider, "openai-codex");
+		assert.equal(receivedContext.messages[1].deferred?.provider, "openai-codex");
+	}
+});
 
 test("parses a reached five-hour limit without changing seven-day quota", () => {
 	const now = Date.parse("2026-03-13T12:00:00Z");
