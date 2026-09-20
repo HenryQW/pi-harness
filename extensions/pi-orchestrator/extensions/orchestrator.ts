@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createEphemeralSubagentExecutor,
@@ -73,7 +72,6 @@ export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi,
 			await host.preflightHost(input, operation);
 			return await git.inspectMain(input, operation);
 		},
-		orchestratorEntrypoint: fileURLToPath(import.meta.url),
 	});
 	return {
 		resolveRoot,

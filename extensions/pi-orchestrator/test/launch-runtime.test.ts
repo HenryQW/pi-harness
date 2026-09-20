@@ -197,7 +197,6 @@ async function harness(t: test.TestContext) {
 			inspectedRoots.push(inspected);
 			return { ...MAIN };
 		},
-		orchestratorEntrypoint: join(directory, "orchestrator-entry.ts"),
 	});
 	async function setRole(file: string, role: RoleFixture): Promise<void> {
 		const rolesDir = join(agentDir, "config", "pi-subagent");
