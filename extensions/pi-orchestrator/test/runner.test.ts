@@ -10,12 +10,13 @@ import {
 	withTransientLaunch,
 	type AllocationReconciliation,
 	type CheckRunResult,
+	type CoordinatorRuntime,
 	type GitRuntime,
 	type HostAllocationKind,
 	type HostAllocationResult,
+	type HostRuntime,
 	type IntegrationResult,
 	type OperationContext,
-	type OrchestratorRuntime,
 	type RebaseResult,
 	type TaskCandidateInspector,
 	type TransientLaunchHandle,
@@ -59,10 +60,10 @@ type RoleCall = { role: string; modelClass: ModelClass };
 type WorkerCall = { taskId: string; kind: "initial" | "correction" | "followup" };
 type WorkerContextCall = {
 	taskId: string;
-	contexts: Parameters<OrchestratorRuntime["runWorker"]>[0]["contexts"];
+	contexts: Parameters<HostRuntime["runWorker"]>[0]["contexts"];
 };
 
-class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspector {
+class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCandidateInspector {
 	clock = 1_000;
 	main = identity("a");
 	workerBarrierSize = 0;
@@ -111,7 +112,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 		return `token-${String(this.candidateNumber + 1).padStart(16, "0")}`;
 	}
 
-	async preflight(input: Parameters<OrchestratorRuntime["preflight"]>[0], _context: OperationContext) {
+	async preflight(input: Parameters<CoordinatorRuntime["preflight"]>[0], _context: OperationContext) {
 		this.preflightCalls += 1;
 		return { root: input.cwd, main: { ...this.main } };
 	}
@@ -161,7 +162,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async planHostAllocation(
-		input: Parameters<OrchestratorRuntime["planHostAllocation"]>[0],
+		input: Parameters<HostRuntime["planHostAllocation"]>[0],
 		_context: OperationContext,
 	): Promise<HostAllocationPlan> {
 		this.allocationPlanCalls.push(input.kind);
@@ -223,7 +224,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async allocateHost(
-		input: Parameters<OrchestratorRuntime["allocateHost"]>[0],
+		input: Parameters<HostRuntime["allocateHost"]>[0],
 		_context: OperationContext,
 	): Promise<HostAllocationResult> {
 		if (input.intent.kind === "workspace") {
@@ -265,14 +266,14 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async reconcileHostAllocation(
-		input: Parameters<OrchestratorRuntime["reconcileHostAllocation"]>[0],
+		input: Parameters<HostRuntime["reconcileHostAllocation"]>[0],
 		_context: OperationContext,
 	): Promise<AllocationReconciliation<HostAllocationKind>> {
 		return this.reconcile(input.intent.kind);
 	}
 
 	async runWorker(
-		input: Parameters<OrchestratorRuntime["runWorker"]>[0],
+		input: Parameters<HostRuntime["runWorker"]>[0],
 		_context: OperationContext,
 	): Promise<WorkerResult> {
 		const call = { taskId: input.task.id, kind: input.kind };
@@ -300,7 +301,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 	}
 
 	async terminateWorker(
-		input: Parameters<OrchestratorRuntime["terminateWorker"]>[0],
+		input: Parameters<HostRuntime["terminateWorker"]>[0],
 		_context: OperationContext,
 	): Promise<{ outcome: "terminated" }> {
 		this.terminationCalls.push({
@@ -367,7 +368,7 @@ class FakeRuntime implements OrchestratorRuntime, GitRuntime, TaskCandidateInspe
 		return { outcome: "integrated", main: { ...this.main } };
 	}
 
-	async cleanupHost(input: Parameters<OrchestratorRuntime["cleanupHost"]>[0], _context: OperationContext) {
+	async cleanupHost(input: Parameters<HostRuntime["cleanupHost"]>[0], _context: OperationContext) {
 		this.cleanupCalls.push(input.kind);
 		const failure = this.cleanupFailures.shift();
 		if (failure) throw failure;
@@ -476,7 +477,6 @@ async function harness(
 	options: {
 		executor?: EphemeralSubagentExecutor;
 		createStore?: (agentDir: string) => FileRunStore;
-		interactiveChangesets?: boolean;
 		onInteractiveWait?: (requestId: string, taskId: string) => void;
 	} = {},
 ) {
@@ -487,20 +487,18 @@ async function harness(
 	const runtime = new FakeRuntime();
 	const agentDir = join(directory, "agent");
 	const store = options.createStore?.(agentDir) ?? new FileRunStore(agentDir);
-	return {
-		root,
+	let runner!: OrchestratorRunner;
+	runner = new OrchestratorRunner(
+		runtime,
+		runtime,
 		runtime,
 		store,
-		agentDir,
-		runner: new OrchestratorRunner(
-			runtime,
-			runtime,
-			store,
-			options.executor ?? unusedTextExecutor,
-		options.interactiveChangesets,
-		options.onInteractiveWait,
-		),
-	};
+		options.executor ?? unusedTextExecutor,
+		options.onInteractiveWait ?? ((requestId, taskId) => {
+			setTimeout(() => runner.acceptCandidate(root, requestId, taskId), 0);
+		}),
+	);
+	return { root, runtime, store, agentDir, runner };
 }
 
 function changesetState(state: RunState, id: string) {
@@ -557,7 +555,6 @@ function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtim
 test("interactive changesets retain the same worker for queued follow-ups until explicit acceptance", async (t) => {
 	const waits: string[] = [];
 	const { root, runtime, runner } = await harness(t, {
-		interactiveChangesets: true,
 		onInteractiveWait: (requestId, taskId) => waits.push(`${requestId}/${taskId}`),
 	});
 	const definition = request("interactive-followups", [changesetTask("change", {
@@ -615,15 +612,15 @@ test("interactive changesets retain the same worker for queued follow-ups until 
 	assertParsed(result.state);
 });
 
-test("a durable productive lease admits mixed-mode status and abort but blocks default execute and resume", async (t) => {
+test("a durable productive lease admits status and abort but blocks concurrent execute and resume", async (t) => {
 	let ready!: () => void;
 	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
 	const { root, runtime, runner, agentDir } = await harness(t, {
-		interactiveChangesets: true,
 		onInteractiveWait: () => ready(),
 	});
 	const otherStore = new FileRunStore(agentDir);
 	const otherRunner = new OrchestratorRunner(
+		runtime,
 		runtime,
 		runtime,
 		otherStore,
@@ -682,7 +679,6 @@ test("rejected interactive waits adopt concurrent durable state before surfacing
 			const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
 			const controller = new AbortController();
 			const { root, runtime, runner, agentDir } = await harness(t, {
-				interactiveChangesets: true,
 				onInteractiveWait: () => ready(),
 			});
 			const definition = parseExecuteRequest({
@@ -721,7 +717,6 @@ test("interrupting an interactive acceptance wait terminates the exact retained 
 	let ready!: () => void;
 	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
 	const { root, runtime, runner } = await harness(t, {
-		interactiveChangesets: true,
 		onInteractiveWait: () => ready(),
 	});
 	const controller = new AbortController();
@@ -979,7 +974,6 @@ test("a follow-up queued during a failing follow-up is honored", async (t) => {
 		await t.test(failure, async (t) => {
 			const waits: string[] = [];
 			const { root, runtime, runner } = await harness(t, {
-				interactiveChangesets: true,
 				onInteractiveWait: (requestId, taskId) => waits.push(`${requestId}/${taskId}`),
 			});
 			const definition = request(`queued-after-${failure}`, [changesetTask("change")]);

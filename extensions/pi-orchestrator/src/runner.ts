@@ -289,8 +289,6 @@ export interface GitRuntime {
 	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }>;
 }
 
-export interface OrchestratorRuntime extends CoordinatorRuntime, HostRuntime {}
-
 export type MainStatus =
 	| { status: "current" | "drifted"; expected: WorkspaceIdentity; actual: WorkspaceIdentity }
 	| { status: "unavailable"; expected: WorkspaceIdentity; failure: string };
@@ -758,27 +756,27 @@ function isDeadline(error: unknown, scope: DeadlineScope): boolean {
 }
 
 export class OrchestratorRunner {
-	private readonly runtime: OrchestratorRuntime;
+	private readonly coordinatorRuntime: CoordinatorRuntime;
+	private readonly hostRuntime: HostRuntime;
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
 	private readonly textExecutor: EphemeralSubagentExecutor;
-	private readonly interactiveChangesets: boolean;
 	private readonly onInteractiveWait?: (requestId: string, taskId: string) => void;
 	private readonly interactiveControls = new Map<string, { task: ChangesetTaskState; control: InteractiveTaskControl }>();
 
 	constructor(
-		runtime: OrchestratorRuntime,
+		coordinatorRuntime: CoordinatorRuntime,
+		hostRuntime: HostRuntime,
 		gitRuntime: GitRuntime & TaskCandidateInspector,
 		store = new FileRunStore(),
 		textExecutor: EphemeralSubagentExecutor,
-		interactiveChangesets = false,
 		onInteractiveWait?: (requestId: string, taskId: string) => void,
 	) {
-		this.runtime = runtime;
+		this.coordinatorRuntime = coordinatorRuntime;
+		this.hostRuntime = hostRuntime;
 		this.gitRuntime = gitRuntime;
 		this.store = store;
 		this.textExecutor = textExecutor;
-		this.interactiveChangesets = interactiveChangesets;
 		this.onInteractiveWait = onInteractiveWait;
 	}
 
@@ -809,24 +807,20 @@ export class OrchestratorRunner {
 
 	private async withProductiveRun<T>(
 		root: string,
-		operation: (lifecycle?: LifecycleLock) => Promise<T>,
+		operation: (lifecycle: LifecycleLock) => Promise<T>,
 	): Promise<T> {
-		if (!this.interactiveChangesets) return await this.store.withLock(root, operation);
 		return await this.store.withProductiveRunLease(root, async (productiveRunLease) =>
-			await this.store.withLock(root, async (lifecycle) => {
-				if (!lifecycle) throw new Error("Interactive productive runs require lifecycle lock context.");
-				return await operation(lifecycle);
-			}, { productiveRunLease }));
+			await this.store.withLock(root, operation, { productiveRunLease }));
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
-		const startedAt = this.runtime.now();
+		const startedAt = this.coordinatorRuntime.now();
 		const request = parseExecuteRequest(value);
 		const deadline = startedAt + request.budgetMs;
-		const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
+		const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
 		try {
 			const canonicalCwd = realpathSync.native(cwd);
-			const prepared = await scope.call(async (context) => await this.runtime.preflight({ request, cwd: canonicalCwd }, context));
+			const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd }, context));
 			const root = realpathSync.native(prepared.root);
 			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
 			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
@@ -835,7 +829,7 @@ export class OrchestratorRunner {
 				throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
 			}
 			return await this.withProductiveRun(root, async (lifecycle) => {
-				const createdAt = this.runtime.now();
+				const createdAt = this.coordinatorRuntime.now();
 				const state: RunState = {
 					version: RUN_STATE_VERSION,
 					request,
@@ -888,7 +882,7 @@ export class OrchestratorRunner {
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
 
-			const scope = new DeadlineScope(state.deadline, () => this.runtime.now(), outerSignal);
+			const scope = new DeadlineScope(state.deadline, () => this.coordinatorRuntime.now(), outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);
@@ -947,7 +941,7 @@ export class OrchestratorRunner {
 				&& this.recoverInterrupted(state)) {
 				await handle.save();
 			}
-			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
+			const safetyDeadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS;
 			for (const task of state.tasks) {
 				if (task.kind !== "changeset") continue;
 				for (const attempt of task.attempts) {
@@ -959,7 +953,7 @@ export class OrchestratorRunner {
 			}
 			state.status = "aborted";
 			state.accepted = false;
-			state.updatedAt = this.runtime.now();
+			state.updatedAt = this.coordinatorRuntime.now();
 			await handle.save();
 			return this.response(state);
 		}, { purpose: "abort" });
@@ -973,8 +967,8 @@ export class OrchestratorRunner {
 				&& !lifecycle.productiveRunLeaseActive
 				&& this.recoverInterrupted(handle.state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
-			const deadline = this.runtime.now() + STATUS_INSPECTION_BUDGET_MS;
-			const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
+			const deadline = this.coordinatorRuntime.now() + STATUS_INSPECTION_BUDGET_MS;
+			const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
 			try {
 				let main: MainStatus;
 				try {
@@ -1001,13 +995,13 @@ export class OrchestratorRunner {
 	private async run(
 		handle: RunStateHandle,
 		scope: DeadlineScope,
-		forceTextTaskId?: string,
-		lifecycle?: LifecycleLock,
+		forceTextTaskId: string | undefined,
+		lifecycle: LifecycleLock,
 	): Promise<RunResponse> {
 		const state = handle.state;
 		let saveOnExit = true;
 		state.status = "running";
-		state.updatedAt = this.runtime.now();
+		state.updatedAt = this.coordinatorRuntime.now();
 		try {
 			while (state.tasks.some((task) => task.status !== "completed")) {
 				const attention = forceTextTaskId ? undefined : state.tasks.find((task) => task.status === "needs_attention");
@@ -1051,7 +1045,7 @@ export class OrchestratorRunner {
 						number: task.attempts.length + 1,
 						waveNumber: wave.number,
 						waveBase: wave.base,
-						correlationToken: runtimeToken(this.runtime.randomToken()),
+						correlationToken: runtimeToken(this.coordinatorRuntime.randomToken()),
 						allocationGeneration: 1,
 						allocations: [],
 						prompts: [],
@@ -1126,7 +1120,7 @@ export class OrchestratorRunner {
 		} finally {
 			this.closeRequestControls(state.root, state.request.id);
 			if (saveOnExit) {
-				state.updatedAt = this.runtime.now();
+				state.updatedAt = this.coordinatorRuntime.now();
 				await handle.save();
 			}
 		}
@@ -1149,7 +1143,7 @@ export class OrchestratorRunner {
 						status: "allocating",
 					};
 				} else {
-					const plan = runtimeHostAllocationPlan(await scope.call(async (context) => await this.runtime.planHostAllocation({
+					const plan = runtimeHostAllocationPlan(await scope.call(async (context) => await this.hostRuntime.planHostAllocation({
 						requestId: state.request.id,
 						goal: state.request.goal,
 						kind,
@@ -1194,7 +1188,7 @@ export class OrchestratorRunner {
 							},
 						}, context));
 					} else {
-						result = await scope.call(async (context) => await this.runtime.allocateHost({
+						result = await scope.call(async (context) => await this.hostRuntime.allocateHost({
 							requestId: state.request.id,
 							intent,
 							task: request,
@@ -1207,7 +1201,7 @@ export class OrchestratorRunner {
 									kind: "initial",
 									worktreeCwd: intent.worktreeCwd,
 								});
-								const launch = await this.runtime.acquireLaunch(request.role, request.modelClass, context);
+								const launch = await this.coordinatorRuntime.acquireLaunch(request.role, request.modelClass, context);
 								if (launch.launch.role !== request.role || launch.launch.modelClass !== request.modelClass) {
 									await withTransientLaunch(launch, async () => {
 										throw new Error("Task launch acquisition returned the wrong Role or model class.");
@@ -1266,7 +1260,7 @@ export class OrchestratorRunner {
 		if (!attempt || attempt.status !== "running") throw new Error(`Text task ${task.taskId} has no running attempt.`);
 		const prompt = buildTextTaskPrompt(state.request.goal, request, resolveTextTaskContexts(state, request));
 		const result = await scope.call(async (context) => {
-			const handle = await this.runtime.acquireLaunch(request.role, request.modelClass, context);
+			const handle = await this.coordinatorRuntime.acquireLaunch(request.role, request.modelClass, context);
 			if (handle.launch.role !== request.role || handle.launch.modelClass !== request.modelClass) {
 				await withTransientLaunch(handle, async () => {
 					throw new Error("Text task launch acquisition returned the wrong Role or model class.");
@@ -1306,7 +1300,7 @@ export class OrchestratorRunner {
 		initialKind: "initial" | "correction" | "followup",
 		initialInstruction?: string,
 	): Promise<void> {
-		const control = this.interactiveChangesets ? this.ensureInteractiveControl(handle, task) : undefined;
+		const control = this.ensureInteractiveControl(handle, task);
 		try {
 			await this.driveWorker(handle, task, scope, initialKind, control, initialInstruction);
 		} catch (error) {
@@ -1320,7 +1314,7 @@ export class OrchestratorRunner {
 				await handle.save();
 			}
 		} finally {
-			if (control && task.status !== "awaiting_acceptance") {
+			if (task.status !== "awaiting_acceptance") {
 				this.closeInteractiveControl(handle.state.root, handle.state.request.id, task.taskId, control);
 			}
 		}
@@ -1331,7 +1325,7 @@ export class OrchestratorRunner {
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
 		initialKind: "initial" | "correction" | "followup",
-		control?: InteractiveTaskControl,
+		control: InteractiveTaskControl,
 		initialInstruction?: string,
 	): Promise<void> {
 		const state = handle.state;
@@ -1390,14 +1384,14 @@ export class OrchestratorRunner {
 				status: "submitting",
 				preCandidate,
 				...(kind === "followup" ? { instruction } : {}),
-				at: this.runtime.now(),
+				at: this.coordinatorRuntime.now(),
 			};
 			attempt.prompts.push(prompt);
 			task.failure = undefined;
 			await handle.save();
 			let worker: WorkerResult;
 			try {
-				worker = await scope.call(async (context) => await this.runtime.runWorker({
+				worker = await scope.call(async (context) => await this.hostRuntime.runWorker({
 					goal: state.request.goal,
 					contexts: resolveTextTaskContexts(state, request),
 					task: request,
@@ -1455,16 +1449,9 @@ export class OrchestratorRunner {
 					failure = undefined;
 				}
 				if (!failure) {
-					if (control) {
-						task.status = "awaiting_acceptance";
-						task.failure = undefined;
-						await handle.save();
-						return;
-					}
-					if (await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope)) {
-						task.status = "ready_to_integrate";
-						task.failure = undefined;
-					}
+					task.status = "awaiting_acceptance";
+					task.failure = undefined;
+					await handle.save();
 					return;
 				}
 			}
@@ -1474,7 +1461,7 @@ export class OrchestratorRunner {
 				instruction = undefined;
 				continue;
 			}
-			const queuedFollowup = control?.takeQueuedFollowup();
+			const queuedFollowup = control.takeQueuedFollowup();
 			if (queuedFollowup) {
 				kind = "followup";
 				instruction = queuedFollowup.instruction;
@@ -1491,7 +1478,7 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		tasks: readonly TaskState[],
 		scope: DeadlineScope,
-		lifecycle?: LifecycleLock,
+		lifecycle: LifecycleLock,
 	): Promise<RunState | undefined> {
 		type Selection = {
 			task: ChangesetTaskState;
@@ -1504,7 +1491,6 @@ export class OrchestratorRunner {
 			const awaiting = tasks.filter((task): task is ChangesetTaskState =>
 				task.kind === "changeset" && task.status === "awaiting_acceptance");
 			if (!awaiting.length) return;
-			if (!lifecycle) throw new Error("Interactive acceptance requires a lifecycle lock handoff.");
 			const persistedBeforeWait = (await this.store.load(handle.state.root, handle.state.request.id)).state;
 			let result: WaitResult | undefined;
 			let waitRejected = false;
@@ -1616,15 +1602,15 @@ export class OrchestratorRunner {
 		attempt: TaskAttempt,
 		candidate: WorkspaceIdentity,
 		outerSignal?: AbortSignal,
-		safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS,
+		safetyDeadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS,
 	): Promise<boolean> {
 		const workerId = allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Safety termination requires an exact durably owned agent ID.");
 		attempt.termination = { status: "terminating", workerId, candidate };
 		await handle.save();
-		const safety = new DeadlineScope(safetyDeadline, () => this.runtime.now(), outerSignal);
+		const safety = new DeadlineScope(safetyDeadline, () => this.coordinatorRuntime.now(), outerSignal);
 		try {
-			const result = await safety.call(async (context) => await this.runtime.terminateWorker({
+			const result = await safety.call(async (context) => await this.hostRuntime.terminateWorker({
 				task: changesetTaskRequest(handle.state, task.taskId), attempt, workerId, candidate,
 			}, context));
 			if (result.outcome !== "terminated") {
@@ -1633,7 +1619,7 @@ export class OrchestratorRunner {
 				this.attention(task, `Worker termination is unproved: ${failure}`);
 				return false;
 			}
-			attempt.termination = { status: "terminated", workerId, candidate, at: this.runtime.now() };
+			attempt.termination = { status: "terminated", workerId, candidate, at: this.coordinatorRuntime.now() };
 			return true;
 		} catch (error) {
 			attempt.termination = { status: "unknown", workerId, candidate, failure: errorText(error) };
@@ -1646,7 +1632,7 @@ export class OrchestratorRunner {
 	}
 
 	private async terminateAmbiguousPromptWorkers(handle: RunStateHandle, outerSignal?: AbortSignal): Promise<void> {
-		const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
+		const safetyDeadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS;
 		for (const task of handle.state.tasks) {
 			if (task.kind !== "changeset") continue;
 			for (const attempt of task.attempts) {
@@ -1703,7 +1689,7 @@ export class OrchestratorRunner {
 				stderr: index === diagnosticIndex ? bounded(item.stderr) : "",
 			})),
 			passed,
-			at: this.runtime.now(),
+			at: this.coordinatorRuntime.now(),
 		};
 		return evidence;
 	}
@@ -1729,7 +1715,7 @@ export class OrchestratorRunner {
 			base,
 			tip,
 			acquireLaunch: async () => {
-				const launch = await this.runtime.acquireLaunch(role, modelClass, context);
+				const launch = await this.coordinatorRuntime.acquireLaunch(role, modelClass, context);
 				if (launch.launch.role !== role || launch.launch.modelClass !== modelClass) {
 					await withTransientLaunch(launch, async () => {
 						throw new Error("Judgment launch acquisition returned the wrong Role or model class.");
@@ -1748,7 +1734,7 @@ export class OrchestratorRunner {
 			identityAfter,
 			verdict,
 			passed: verdict === "PASS" && sameIdentity(identityAfter, tip),
-			at: this.runtime.now(),
+			at: this.coordinatorRuntime.now(),
 		};
 		return evidence;
 	}
@@ -1893,7 +1879,7 @@ export class OrchestratorRunner {
 					}, context));
 				} else {
 					const kind: HostCleanupKind = step.kind;
-					result = await scope.call(async (context) => await this.runtime.cleanupHost({
+					result = await scope.call(async (context) => await this.hostRuntime.cleanupHost({
 					requestId: handle.state.request.id, kind, task: request, attempt,
 				}, context));
 				}
@@ -1925,13 +1911,13 @@ export class OrchestratorRunner {
 		outerSignal?: AbortSignal,
 	): Promise<RunResponse> {
 		const state = handle.state;
-		const deadline = this.runtime.now() + CLEANUP_SAFETY_BUDGET_MS;
+		const deadline = this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS;
 		state.recovery = { kind: "cleanup_only", taskId: task.taskId, deadline };
 		state.status = "running";
 		task.status = "cleanup";
-		state.updatedAt = this.runtime.now();
+		state.updatedAt = this.coordinatorRuntime.now();
 		await handle.save();
-		const scope = new DeadlineScope(deadline, () => this.runtime.now(), outerSignal);
+		const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
 		try {
 			if (await this.runCleanup(handle, task, attempt, scope)) {
 				task.status = "completed";
@@ -1947,7 +1933,7 @@ export class OrchestratorRunner {
 		} finally {
 			scope.close();
 			state.recovery = undefined;
-			state.updatedAt = this.runtime.now();
+			state.updatedAt = this.coordinatorRuntime.now();
 			await handle.save();
 		}
 	}
@@ -1956,7 +1942,7 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
-		lifecycle?: LifecycleLock,
+		lifecycle: LifecycleLock,
 	): Promise<RunResponse> {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
@@ -1981,7 +1967,7 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
-		lifecycle?: LifecycleLock,
+		lifecycle: LifecycleLock,
 	): Promise<RunResponse> {
 		const attempt = task.attempts.at(-1);
 		if (!attempt) {
@@ -2022,7 +2008,7 @@ export class OrchestratorRunner {
 						? await scope.call(async (context) => await this.gitRuntime.reconcileWorktreeAllocation({
 							root: handle.state.root, intent, task: request, attempt,
 						}, context))
-						: await scope.call(async (context) => await this.runtime.reconcileHostAllocation({
+						: await scope.call(async (context) => await this.hostRuntime.reconcileHostAllocation({
 							requestId: handle.state.request.id, intent, task: request, attempt,
 						}, context));
 				} catch (error) {
@@ -2151,8 +2137,8 @@ export class OrchestratorRunner {
 			state.final.status = "passed";
 			state.status = "completed";
 			state.accepted = true;
-			state.acceptedAt = this.runtime.now();
-			state.updatedAt = this.runtime.now();
+			state.acceptedAt = this.coordinatorRuntime.now();
+			state.updatedAt = this.coordinatorRuntime.now();
 			await handle.save();
 			return this.response(state);
 		} catch (error) {
@@ -2190,7 +2176,7 @@ export class OrchestratorRunner {
 			}
 			state.status = "needs_attention";
 			state.accepted = false;
-			state.updatedAt = this.runtime.now();
+			state.updatedAt = this.coordinatorRuntime.now();
 			return true;
 		}
 		if (state.status !== "running") return false;
@@ -2252,7 +2238,7 @@ export class OrchestratorRunner {
 		state.recovery = undefined;
 		state.status = "needs_attention";
 		state.accepted = false;
-		state.updatedAt = this.runtime.now();
+		state.updatedAt = this.coordinatorRuntime.now();
 		return true;
 	}
 
@@ -2353,7 +2339,7 @@ export class OrchestratorRunner {
 		let continuation: ResumeRequest | undefined;
 		if (resumable && cleanupAttention) {
 			continuation = { id: state.request.id, action: "verify", taskId: cleanupAttention.taskId };
-		} else if (resumable && this.runtime.now() < state.deadline && (!main || main.status === "current")) {
+		} else if (resumable && this.coordinatorRuntime.now() < state.deadline && (!main || main.status === "current")) {
 			const attention = state.tasks.find((task) => task.status === "needs_attention");
 			if (completed === state.tasks.length
 				&& (state.final.status === "pending" || state.final.status === "interrupted")) {

@@ -1,23 +1,13 @@
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, normalize, relative, sep } from "node:path";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
-import {
-	CheckedGitRuntime,
-	type DirectProcessRunner,
-	type ExactReviewExecutor,
-	type ExactReviewExecutorInput,
-} from "./git-runtime.ts";
-import { runProcess as defaultRunProcess } from "./process.ts";
-import { HerdrHostRuntime } from "./herdr-runtime.ts";
-import {
-	type LaunchRuntimeOptions,
-	RoleLaunchRuntime,
-} from "./launch-runtime.ts";
 import type {
-	CoordinatorRuntime,
-	HostRuntime,
-	OrchestratorRuntime,
-} from "./runner.ts";
+	DirectProcessRunner,
+	ExactReviewExecutor,
+	ExactReviewExecutorInput,
+} from "./git-runtime.ts";
+import type { LaunchRuntimeOptions } from "./launch-runtime.ts";
+import { runProcess as defaultRunProcess } from "./process.ts";
 
 const GIT_ROOT_TIMEOUT_CAP_MS = 30_000;
 const REVIEW_PROMPT_MAX_BYTES = 64 * 1024;
@@ -133,84 +123,4 @@ export function createExactJudgmentExecutor(executor: EphemeralSubagentExecutor)
 		}
 		return { verdict: result.output };
 	};
-}
-
-/** Pure delegation over the two existing policy-owning runtimes. */
-export class ComposedOrchestratorRuntime implements OrchestratorRuntime {
-	private readonly roles: CoordinatorRuntime;
-	private readonly host: HostRuntime;
-
-	constructor(roles: CoordinatorRuntime, host: HostRuntime) {
-		this.roles = roles;
-		this.host = host;
-	}
-
-	now(...args: Parameters<CoordinatorRuntime["now"]>): ReturnType<CoordinatorRuntime["now"]> {
-		return this.roles.now(...args);
-	}
-
-	randomToken(...args: Parameters<CoordinatorRuntime["randomToken"]>): ReturnType<CoordinatorRuntime["randomToken"]> {
-		return this.roles.randomToken(...args);
-	}
-
-	preflight(...args: Parameters<CoordinatorRuntime["preflight"]>): ReturnType<CoordinatorRuntime["preflight"]> {
-		return this.roles.preflight(...args);
-	}
-
-	acquireLaunch(...args: Parameters<CoordinatorRuntime["acquireLaunch"]>): ReturnType<CoordinatorRuntime["acquireLaunch"]> {
-		return this.roles.acquireLaunch(...args);
-	}
-
-	planHostAllocation(...args: Parameters<HostRuntime["planHostAllocation"]>): ReturnType<HostRuntime["planHostAllocation"]> {
-		return this.host.planHostAllocation(...args);
-	}
-
-	allocateHost(...args: Parameters<HostRuntime["allocateHost"]>): ReturnType<HostRuntime["allocateHost"]> {
-		return this.host.allocateHost(...args);
-	}
-
-	reconcileHostAllocation(...args: Parameters<HostRuntime["reconcileHostAllocation"]>): ReturnType<HostRuntime["reconcileHostAllocation"]> {
-		return this.host.reconcileHostAllocation(...args);
-	}
-
-	runWorker(...args: Parameters<HostRuntime["runWorker"]>): ReturnType<HostRuntime["runWorker"]> {
-		return this.host.runWorker(...args);
-	}
-
-	terminateWorker(...args: Parameters<HostRuntime["terminateWorker"]>): ReturnType<HostRuntime["terminateWorker"]> {
-		return this.host.terminateWorker(...args);
-	}
-
-	cleanupHost(...args: Parameters<HostRuntime["cleanupHost"]>): ReturnType<HostRuntime["cleanupHost"]> {
-		return this.host.cleanupHost(...args);
-	}
-}
-
-export interface ComposeOrchestratorRuntimeOptions {
-	role: Omit<LaunchRuntimeOptions, "resolveRoot" | "inspectMain">;
-	host: HerdrHostRuntime;
-	git: CheckedGitRuntime;
-	resolveRoot?: LaunchRuntimeOptions["resolveRoot"];
-}
-
-export function createHostCheckedMainInspector(
-	host: Pick<HerdrHostRuntime, "preflightHost">,
-	git: Pick<CheckedGitRuntime, "inspectMain">,
-): LaunchRuntimeOptions["inspectMain"] {
-	return async (input, context) => {
-		await host.preflightHost(input, context);
-		return await git.inspectMain(input, context);
-	};
-}
-
-/** Wire root, Herdr, Git, then Role preflight while leaving policy in the owning runtimes. */
-export function createComposedOrchestratorRuntime(
-	options: ComposeOrchestratorRuntimeOptions,
-): ComposedOrchestratorRuntime {
-	const roles: RoleLaunchRuntime = new RoleLaunchRuntime({
-		...options.role,
-		resolveRoot: options.resolveRoot ?? createCanonicalGitRootResolver(),
-		inspectMain: createHostCheckedMainInspector(options.host, options.git),
-	});
-	return new ComposedOrchestratorRuntime(roles, options.host);
 }

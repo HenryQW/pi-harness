@@ -1,21 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import {
-	ROLE_TOOL_POLICY_FLAG,
-	type EphemeralSubagentExecutor,
-} from "@henryqw/pi-subagent";
-import {
+	createOrchestratorComponents,
 	registerOrchestratorExtension,
-	type OrchestratorExtensionDependencies,
+	type CreateOrchestratorComponents,
+	type OrchestratorExtensionComponents,
 } from "../extensions/orchestrator.ts";
-import type { ComposeOrchestratorRuntimeOptions } from "../src/composition.ts";
-import type { CheckedGitRuntimeOptions, DirectProcessRunner } from "../src/git-runtime.ts";
-import type { HerdrHostRuntimeOptions } from "../src/herdr-runtime.ts";
 import type { OperationContext, RunResponse } from "../src/runner.ts";
 import {
 	ExecuteRequestSchema,
@@ -151,16 +147,10 @@ interface Harness {
 	tools: RegisteredTool[];
 	commands: Map<string, RegisteredCommand>;
 	handlers: Map<string, EventHandler>;
-	factoryCalls: string[];
 	runnerCalls: RunnerCall[];
 	rootCalls: Array<{ cwd: string; context: OperationContext }>;
-	execCalls: Array<{ command: string; args: string[]; options: unknown }>;
-	getGitOptions(): CheckedGitRuntimeOptions;
-	getHostOptions(): HerdrHostRuntimeOptions;
-	getRuntimeOptions(): ComposeOrchestratorRuntimeOptions;
-	getJudgmentExecutor(): NonNullable<CheckedGitRuntimeOptions["executeReview"]>;
+	getComponentCreations(): number;
 	getRoleContext(): ExtensionContext;
-	getProcessRunner(): DirectProcessRunner;
 	getInteractiveWait(): (requestId: string, taskId: string) => void;
 }
 
@@ -172,19 +162,18 @@ function response(method: string, continuation = false): RunResponse {
 	};
 }
 
-function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {}): Harness {
+function createHarness(options: {
+	runner?: OrchestratorExtensionComponents["runner"];
+	resolveRoot?: OrchestratorExtensionComponents["resolveRoot"];
+	onCreate?: (options: Parameters<CreateOrchestratorComponents>[0]) => void;
+} = {}): Harness {
 	const tools: RegisteredTool[] = [];
 	const commands = new Map<string, RegisteredCommand>();
 	const handlers = new Map<string, EventHandler>();
-	const factoryCalls: string[] = [];
 	const runnerCalls: RunnerCall[] = [];
 	const rootCalls: Array<{ cwd: string; context: OperationContext }> = [];
-	const execCalls: Array<{ command: string; args: string[]; options: unknown }> = [];
-	let gitOptions: CheckedGitRuntimeOptions | undefined;
-	let hostOptions: HerdrHostRuntimeOptions | undefined;
-	let runtimeOptions: ComposeOrchestratorRuntimeOptions | undefined;
-	let processRunner: DirectProcessRunner | undefined;
-	let interactiveWait: ((requestId: string, taskId: string) => void) | undefined;
+	let componentCreations = 0;
+	let componentOptions: Parameters<CreateOrchestratorComponents>[0] | undefined;
 
 	const pi = {
 		on(name: string, handler: EventHandler) {
@@ -196,34 +185,8 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 		registerCommand(name: string, command: RegisteredCommand) {
 			commands.set(name, command);
 		},
-		async exec(command: string, args: string[], options: unknown) {
-			execCalls.push({ command, args: [...args], options });
-			return { code: 0, killed: false, stdout: "ok\n", stderr: "" };
-		},
 	} as unknown as ExtensionAPI;
 
-	const subagentExecutor: EphemeralSubagentExecutor = {
-		run: async () => { throw new Error("Subagent executor should not run in extension wiring tests."); },
-	};
-	const judgmentExecutor = async () => ({ verdict: "PASS" });
-	const git = {
-		marker: "checked-git",
-		async inspectTaskCandidate(this: unknown, input: unknown, operation: OperationContext) {
-			runnerCalls.push({ method: "inspectTaskCandidate", args: [this, input, operation] });
-			return { branch: "refs/heads/task", head: "1".repeat(40), index: "2".repeat(40), tree: "2".repeat(40) };
-		},
-		async inspectInFlightTaskCandidate(this: unknown, input: unknown, operation: OperationContext) {
-			runnerCalls.push({ method: "inspectInFlightTaskCandidate", args: [this, input, operation] });
-			return {
-				candidate: { branch: "refs/heads/task", head: "1".repeat(40), index: "2".repeat(40), tree: "2".repeat(40) },
-				clean: true,
-				valid: true,
-			};
-		},
-	};
-	const host = { marker: "herdr-host" };
-	const runtime = { marker: "composed-runtime" };
-	const store = { marker: "file-store" };
 	const runner = {
 		async execute(...args: unknown[]) {
 			runnerCalls.push({ method: "execute", args });
@@ -252,76 +215,32 @@ function createHarness(overrides: Partial<OrchestratorExtensionDependencies> = {
 			runnerCalls.push({ method: "acceptCandidate", args });
 			return "acceptance queued";
 		},
-	};
+	} as unknown as OrchestratorExtensionComponents["runner"];
 
-	const dependencies: Partial<OrchestratorExtensionDependencies> = {
-		now: () => 1_000,
-		orchestratorEntrypoint: "/package/extensions/orchestrator.ts",
-		createRootResolver(options) {
-			factoryCalls.push("root");
-			processRunner = options.runProcess;
-			return async (cwd, operation) => {
+	const createComponents: CreateOrchestratorComponents = (createdOptions) => {
+		componentCreations += 1;
+		componentOptions = createdOptions;
+		options.onCreate?.(createdOptions);
+		return {
+			runner: options.runner ?? runner,
+			resolveRoot: options.resolveRoot ?? (async (cwd, operation) => {
 				rootCalls.push({ cwd, context: operation });
 				return CANONICAL_ROOT;
-			};
-		},
-		createSubagentExecutor() {
-			factoryCalls.push("subagent");
-			return subagentExecutor;
-		},
-		createJudgmentExecutor(executor) {
-			factoryCalls.push("judgment");
-			assert.equal(executor, subagentExecutor);
-			return judgmentExecutor;
-		},
-		createGitRuntime(options) {
-			factoryCalls.push("git");
-			gitOptions = options;
-			return git as never;
-		},
-		createHostRuntime(options) {
-			factoryCalls.push("host");
-			hostOptions = options;
-			return host as never;
-		},
-		createRuntime(options) {
-			factoryCalls.push("runtime");
-			runtimeOptions = options;
-			return runtime as never;
-		},
-		createStore() {
-			factoryCalls.push("store");
-			return store as never;
-		},
-		createRunner(receivedRuntime, receivedGit, receivedStore, receivedExecutor, receivedInteractiveWait) {
-			factoryCalls.push("runner");
-			interactiveWait = receivedInteractiveWait;
-			assert.equal(receivedRuntime, runtime);
-			assert.equal(receivedGit, git);
-			assert.equal(receivedStore, store);
-			assert.equal(receivedExecutor, subagentExecutor);
-			return runner as never;
-		},
-		...overrides,
+			}),
+		};
 	};
-	registerOrchestratorExtension(pi, dependencies);
+	registerOrchestratorExtension(pi, createComponents);
 
 	return {
 		pi,
 		tools,
 		commands,
 		handlers,
-		factoryCalls,
 		runnerCalls,
 		rootCalls,
-		execCalls,
-		getGitOptions: () => gitOptions!,
-		getHostOptions: () => hostOptions!,
-		getRuntimeOptions: () => runtimeOptions!,
-		getJudgmentExecutor: () => judgmentExecutor,
-		getRoleContext: () => runtimeOptions!.role.context(),
-		getProcessRunner: () => processRunner!,
-		getInteractiveWait: () => interactiveWait!,
+		getComponentCreations: () => componentCreations,
+		getRoleContext: () => componentOptions!.context(),
+		getInteractiveWait: () => componentOptions!.onInteractiveWait,
 	};
 }
 
@@ -388,7 +307,7 @@ test("registers exactly four strict tools without constructing runtime component
 		"orchestrate_abort",
 	]);
 	assert.deepEqual([...harness.commands.keys()], ["orchestrate-followup", "orchestrate-accept"]);
-	assert.deepEqual(harness.factoryCalls, []);
+	assert.equal(harness.getComponentCreations(), 0);
 
 	const [execute, status, resume, abort] = harness.tools;
 	assert.equal(execute!.parameters, ExecuteRequestSchema);
@@ -449,15 +368,13 @@ test("Role child argv causes zero registration and dependency side effects", () 
 			throw new Error("child mode touched Pi");
 		},
 	}) as ExtensionAPI;
-	const dependencies = new Proxy({}, {
-		get() {
-			dependencyAccesses += 1;
-			throw new Error("child mode touched dependencies");
-		},
-	}) as Partial<OrchestratorExtensionDependencies>;
+	const createComponents: CreateOrchestratorComponents = () => {
+		dependencyAccesses += 1;
+		throw new Error("child mode touched dependencies");
+	};
 	try {
 		process.argv = [...originalArgv, `--${ROLE_TOOL_POLICY_FLAG}`, "[]"];
-		registerOrchestratorExtension(pi, dependencies);
+		registerOrchestratorExtension(pi, createComponents);
 	} finally {
 		process.argv = originalArgv;
 	}
@@ -465,44 +382,14 @@ test("Role child argv causes zero registration and dependency side effects", () 
 	assert.equal(dependencyAccesses, 0);
 });
 
-test("lazily wires one checked runtime graph, shared Subagent executor, direct processes, Judgment adapter, and fresh context", async () => {
+test("lazily creates one component graph and supplies fresh session context", async () => {
 	const harness = createHarness();
 	const initial = context("/nested/initial", { id: "initial-model" });
 	const executeSignal = new AbortController().signal;
 	const result = await executeTool(namedTool(harness, "orchestrate_execute"), EXECUTE_REQUEST, executeSignal, initial);
 
-	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "judgment", "git", "host", "runtime", "store", "runner"]);
-	assert.equal(harness.getRuntimeOptions().role.pi, harness.pi);
-	assert.equal(harness.getRuntimeOptions().role.orchestratorEntrypoint, "/package/extensions/orchestrator.ts");
-	assert.equal((harness.getRuntimeOptions().host as unknown as { marker: string }).marker, "herdr-host");
-	assert.equal((harness.getRuntimeOptions().git as unknown as { marker: string }).marker, "checked-git");
-	assert.equal(harness.getGitOptions().runProcess, harness.getHostOptions().runProcess);
-	assert.equal(harness.getGitOptions().executeReview, harness.getJudgmentExecutor());
+	assert.equal(harness.getComponentCreations(), 1);
 	assert.equal(harness.getRoleContext(), initial);
-
-	const operation: OperationContext = {
-		signal: new AbortController().signal,
-		timeoutMs: 321,
-		deadline: 1_321,
-	};
-	const candidateInput = { root: CANONICAL_ROOT, task: { id: "unit-one" }, attempt: { number: 1 } };
-	await harness.getHostOptions().inspectInFlightTaskCandidate(candidateInput as never, operation);
-	const inFlightInspection = harness.runnerCalls.find(({ method }) => method === "inspectInFlightTaskCandidate")!;
-	assert.equal(inFlightInspection.args[0], harness.getRuntimeOptions().git);
-	assert.equal(inFlightInspection.args[1], candidateInput);
-	assert.equal(inFlightInspection.args[2], operation);
-
-	const processSignal = new AbortController().signal;
-	assert.deepEqual(await harness.getProcessRunner()("git", ["status", "--short"], {
-		cwd: CANONICAL_ROOT,
-		signal: processSignal,
-		timeoutMs: 432,
-	}), { code: 0, killed: false, stdout: "ok\n", stderr: "" });
-	assert.deepEqual(harness.execCalls, [{
-		command: "git",
-		args: ["status", "--short"],
-		options: { cwd: CANONICAL_ROOT, signal: processSignal, timeout: 432 },
-	}]);
 
 	const session = context("/session", { id: "session-model" });
 	harness.handlers.get("session_start")!({ type: "session_start" }, session);
@@ -518,7 +405,7 @@ test("lazily wires one checked runtime graph, shared Subagent executor, direct p
 	assert.equal(harness.getRoleContext(), settled);
 
 	await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, undefined, settled);
-	assert.deepEqual(harness.factoryCalls, ["root", "subagent", "judgment", "git", "host", "runtime", "store", "runner"]);
+	assert.equal(harness.getComponentCreations(), 1);
 	assert.deepEqual(result, {
 		content: [{ type: "text", text: "bounded execute result" }],
 		details: {
@@ -529,19 +416,54 @@ test("lazily wires one checked runtime graph, shared Subagent executor, direct p
 	assert.doesNotMatch(JSON.stringify(result.details), /PRIVATE|prompt|rawArgs|SECRET_TOKEN|command-line/i);
 });
 
+test("production components complete host preflight before inspecting Main", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-orchestrator-components-")));
+	t.after(async () => await rm(root, { recursive: true, force: true }));
+	const previousHerdrEnv = process.env.HERDR_ENV;
+	const previousPiEnv = process.env.PI_CODING_AGENT;
+	const previousTitle = process.title;
+	delete process.env.HERDR_ENV;
+	process.env.PI_CODING_AGENT = "true";
+	process.title = "pi";
+	t.after(() => {
+		process.title = previousTitle;
+		if (previousPiEnv === undefined) delete process.env.PI_CODING_AGENT;
+		else process.env.PI_CODING_AGENT = previousPiEnv;
+		if (previousHerdrEnv === undefined) delete process.env.HERDR_ENV;
+		else process.env.HERDR_ENV = previousHerdrEnv;
+	});
+	const calls: Array<{ command: string; args: string[] }> = [];
+	const pi = {
+		events: { on() {}, emit() {} },
+		async exec(command: string, args: string[]) {
+			calls.push({ command, args });
+			if (command === "git" && args.join(" ") === "rev-parse --show-toplevel") {
+				return { code: 0, killed: false, stdout: `${root}\n`, stderr: "" };
+			}
+			throw new Error(`Unexpected process: ${command} ${args.join(" ")}`);
+		},
+	} as unknown as ExtensionAPI;
+	const { runner } = createOrchestratorComponents({
+		pi,
+		context: () => context(root),
+		onInteractiveWait() {},
+	});
+
+	await assert.rejects(runner.execute(EXECUTE_REQUEST, root), /requires HERDR_ENV=1/i);
+	assert.deepEqual(calls, [{ command: "git", args: ["rev-parse", "--show-toplevel"] }]);
+});
+
 test("public recovery evidence stays bounded and omits private durable state", async () => {
 	const state = structuredClone(PRIVATE_STATE);
 	const task = state.tasks[0]!;
 	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
 	task.attempts[0]!.preliminaryChecks!.results[0]!.stderr = `${"界".repeat(1_000)}UNEXPOSED_TAIL`;
 	const harness = createHarness({
-		createRunner() {
-			return {
-				async execute() {
-					return { text: "bounded recovery", state };
-				},
-			} as never;
-		},
+		runner: {
+			async execute() {
+				return { text: "bounded recovery", state };
+			},
+		} as never,
 	});
 	const result = await executeTool(
 		namedTool(harness, "orchestrate_execute"),
@@ -597,13 +519,11 @@ test("text recovery exposes only bounded text attempt evidence", async () => {
 		}],
 	} as unknown as RunState;
 	const harness = createHarness({
-		createRunner() {
-			return {
-				async execute() {
-					return { text: "bounded text recovery", state };
-				},
-			} as never;
-		},
+		runner: {
+			async execute() {
+				return { text: "bounded text recovery", state };
+			},
+		} as never,
 	});
 	const result = await executeTool(
 		namedTool(harness, "orchestrate_execute"),
@@ -645,21 +565,20 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 	assert.equal(harness.rootCalls.length, 0);
 	assert.deepEqual(harness.runnerCalls[0], { method: "execute", args: [EXECUTE_REQUEST, nestedCwd, signals[0]] });
 
+	const lookupStartedAt = Date.now();
 	const status = await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, signals[1], ctx);
 	const resumeRequest = { id: "request-one", action: "finalize" as const };
 	const resume = await executeTool(namedTool(harness, "orchestrate_resume"), resumeRequest, signals[2], ctx);
 	const abort = await executeTool(namedTool(harness, "orchestrate_abort"), { id: "request-one" }, signals[3], ctx);
+	const lookupFinishedAt = Date.now();
 
 	assert.deepEqual(harness.rootCalls.map(({ cwd }) => cwd), [nestedCwd, nestedCwd, nestedCwd]);
-	assert.deepEqual(harness.rootCalls.map(({ context: operation }) => ({
-		signal: operation.signal,
-		timeoutMs: operation.timeoutMs,
-		deadline: operation.deadline,
-	})), [
-		{ signal: signals[1], timeoutMs: 5_000, deadline: 6_000 },
-		{ signal: signals[2], timeoutMs: 5_000, deadline: 6_000 },
-		{ signal: signals[3], timeoutMs: 5_000, deadline: 6_000 },
-	]);
+	for (const [index, { context: operation }] of harness.rootCalls.entries()) {
+		assert.equal(operation.signal, signals[index + 1]);
+		assert.equal(operation.timeoutMs, 5_000);
+		assert.ok(operation.deadline >= lookupStartedAt + 5_000);
+		assert.ok(operation.deadline <= lookupFinishedAt + 5_000);
+	}
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method !== "execute"), [
 		{ method: "status", args: ["request-one", CANONICAL_ROOT, signals[1]] },
 		{ method: "resume", args: [resumeRequest, CANONICAL_ROOT, signals[2]] },
@@ -683,10 +602,9 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 test("missing Role context and root preflight failures stay explicit", async () => {
 	let contextGetter: (() => ExtensionContext) | undefined;
 	const missing = createHarness({
-		createRuntime(options) {
-			contextGetter = options.role.context;
+		onCreate(options) {
+			contextGetter = options.context;
 			contextGetter();
-			throw new Error("unreachable");
 		},
 	});
 	await assert.rejects(
@@ -703,19 +621,15 @@ test("missing Role context and root preflight failures stay explicit", async () 
 
 	let statusCalls = 0;
 	const failed = createHarness({
-		createRootResolver() {
-			return async () => {
-				throw new Error("canonical root preflight failed closed");
-			};
+		resolveRoot: async () => {
+			throw new Error("canonical root preflight failed closed");
 		},
-		createRunner() {
-			return {
-				async status() {
-					statusCalls += 1;
-					return response("status");
-				},
-			} as never;
-		},
+		runner: {
+			async status() {
+				statusCalls += 1;
+				return response("status");
+			},
+		} as never,
 	});
 	await assert.rejects(
 		executeTool(namedTool(failed, "orchestrate_status"), { id: "request-one" }, new AbortController().signal, context("/nested")),
