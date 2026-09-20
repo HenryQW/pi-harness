@@ -438,8 +438,8 @@ test("pre-prompt inspection proves exact owned worktree identity and fails close
 			runProcess: async (command, args, options) => {
 				const result = await directProcess(command, args, options);
 				if (recordedBranch && command === "git"
-					&& args.join(" ") === `rev-parse --verify refs/heads/${recordedBranch}^{commit}`) {
-					return { ...result, stdout: `${"f".repeat(40)}\n` };
+					&& args.join(" ") === `rev-parse --verify --quiet refs/heads/${recordedBranch}`) {
+					return { ...result, code: 128, stderr: "injected branch-tip failure" };
 				}
 				return result;
 			},
@@ -449,7 +449,7 @@ test("pre-prompt inspection proves exact owned worktree identity and fails close
 		recordedBranch = setup.intent.worktree!.branch;
 		await assert.rejects(runtime.inspectTaskCandidate({
 			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /branch no longer names its checked-out HEAD/);
+		}, context()), /failed with exit 128: injected branch-tip failure/);
 	});
 
 	await t.test("ignored dependency artifacts do not dirty a candidate", async (t) => {

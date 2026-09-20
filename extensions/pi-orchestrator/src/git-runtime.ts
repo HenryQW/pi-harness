@@ -788,8 +788,11 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 	}
 
 	private async branchTip(cwd: string, branch: string, context: OperationContext): Promise<string | undefined> {
-		if (!await this.branchExists(cwd, branch, context)) return;
-		return oid(await this.requireGit(["rev-parse", "--verify", `refs/heads/${branch}^{commit}`], cwd, context), "branch tip");
+		const args = ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`];
+		const result = await this.git(args, cwd, context);
+		if (result.code === 0 && !result.killed) return oid(result.stdout, "branch tip");
+		if (result.code === 1 && !result.killed) return;
+		throw new Error(commandFailure(args, result));
 	}
 
 	private async isAncestor(base: string, tip: string, cwd: string, context: OperationContext): Promise<boolean> {
