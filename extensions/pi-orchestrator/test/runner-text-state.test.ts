@@ -377,9 +377,6 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			const root = join(directory, "workspace");
 			await mkdir(root);
 			const store = {
-				async withProductiveRunLease<T>(_root: string, action: () => Promise<T>): Promise<T> {
-					return await action();
-				},
 				async withLock<T>(_root: string, action: () => Promise<T>): Promise<T> {
 					return await action();
 				},

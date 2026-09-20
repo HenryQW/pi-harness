@@ -807,6 +807,17 @@ export class OrchestratorRunner {
 		return `Acceptance queued for ${requestId}/${taskId}.`;
 	}
 
+	private async withProductiveRun<T>(
+		root: string,
+		operation: (lifecycle?: LifecycleLock) => Promise<T>,
+	): Promise<T> {
+		if (!this.interactiveChangesets) return await this.store.withLock(root, operation);
+		return await this.store.withProductiveRunLease(
+			root,
+			async () => await this.store.withLock(root, operation),
+		);
+	}
+
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const startedAt = this.runtime.now();
 		const request = parseExecuteRequest(value);
@@ -822,7 +833,7 @@ export class OrchestratorRunner {
 			if (this.hasAnyActiveControl(root)) {
 				throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
 			}
-			return await this.store.withProductiveRunLease(root, async () => await this.store.withLock(root, async (lifecycle) => {
+			return await this.withProductiveRun(root, async (lifecycle) => {
 				await this.store.assertAvailable(root, request.id);
 				const createdAt = this.runtime.now();
 				const state: RunState = {
@@ -855,7 +866,7 @@ export class OrchestratorRunner {
 				};
 				const handle = await this.store.create(state);
 				return await this.run(handle, scope, undefined, lifecycle);
-			}));
+			});
 		} finally {
 			scope.close();
 		}
@@ -870,7 +881,7 @@ export class OrchestratorRunner {
 		if (this.hasAnyActiveControl(root)) {
 			throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
 		}
-		return await this.store.withProductiveRunLease(root, async () => await this.store.withLock(root, async (lifecycle) => {
+		return await this.withProductiveRun(root, async (lifecycle) => {
 			const handle = await this.store.load(root, request.id);
 			const state = handle.state;
 			if (this.recoverInterrupted(state)) await handle.save();
@@ -920,7 +931,7 @@ export class OrchestratorRunner {
 				scope.close();
 				this.closeRequestControls(root, request.id);
 			}
-		}));
+		});
 	}
 
 	async abort(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -931,7 +942,9 @@ export class OrchestratorRunner {
 			if (terminal(state)) return this.response(state);
 			const activeControls = this.activeControls(root, id);
 			for (const { control } of activeControls) control.invalidate();
-			if (!activeControls.length && !await this.store.hasProductiveRunLease(root) && this.recoverInterrupted(state)) {
+			if (!activeControls.length
+				&& !(this.interactiveChangesets && await this.store.hasProductiveRunLease(root))
+				&& this.recoverInterrupted(state)) {
 				await handle.save();
 			}
 			const safetyDeadline = this.runtime.now() + TERMINATION_SAFETY_BUDGET_MS;
@@ -957,7 +970,7 @@ export class OrchestratorRunner {
 		return await this.store.withLock(root, async () => {
 			const handle = await this.store.load(root, id);
 			if (!this.hasActiveControl(root, id)
-				&& !await this.store.hasProductiveRunLease(root)
+				&& !(this.interactiveChangesets && await this.store.hasProductiveRunLease(root))
 				&& this.recoverInterrupted(handle.state)) await handle.save();
 			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			const deadline = this.runtime.now() + STATUS_INSPECTION_BUDGET_MS;
@@ -1943,7 +1956,7 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
-		lifecycle: LifecycleLock,
+		lifecycle?: LifecycleLock,
 	): Promise<RunResponse> {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
@@ -1968,7 +1981,7 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		scope: DeadlineScope,
-		lifecycle: LifecycleLock,
+		lifecycle?: LifecycleLock,
 	): Promise<RunResponse> {
 		const attempt = task.attempts.at(-1);
 		if (!attempt) {
