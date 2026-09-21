@@ -1434,7 +1434,7 @@ test("an interrupted text task remains failed until its explicit retry", async (
 	const stopped = await runner.execute(definition, root);
 	const failed = textState(stopped.state, "research");
 	assert.equal(stopped.state.status, "needs_attention");
-	assert.equal(stopped.continuation, undefined);
+	assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "research" });
 	assert.deepEqual(failed.attempts, [{
 		number: 1,
 		status: "failed",

@@ -4,6 +4,8 @@ import {
 	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	MAX_TASKS,
 	parseExecuteRequest,
+	parseIdOnly,
+	parseResumeRequest,
 	parseRunState,
 	RUN_STATE_VERSION,
 	taskDependencies,
@@ -261,16 +263,54 @@ test("task variants require explicit Role names and preserve text context order"
 	const changeset = changesetTask("change");
 	const { checks: _checks, ...changesetWithoutChecks } = changeset;
 	const { role: _role, ...textWithoutRole } = textTask("text");
-	const strictFailures: unknown[] = [
-		request([{ ...textTask("text"), checks: [{ command: "forbidden", args: [] }] } as unknown as TaskRequest]),
-		request([{ ...textTask("text"), judgment: { role: "reviewer", modelClass: "fast", criterion: "forbidden" } } as unknown as TaskRequest]),
-		request([changesetWithoutChecks as unknown as TaskRequest]),
-		request([textWithoutRole as unknown as TaskRequest]),
-		request([changesetTask("change", { judgment: { modelClass: "fast", criterion: "missing role" } as unknown as ChangesetTaskRequest["judgment"] })]),
-		request([textTask("text")], { modelClass: "fast", criterion: "missing role" } as unknown as ExecuteRequest["finalJudgment"]),
+	const strictFailures: Array<{ value: unknown; path: RegExp }> = [
+		{
+			value: request([{ ...textTask("text"), checks: [{ command: "forbidden", args: [] }] } as unknown as TaskRequest]),
+			path: / at \/tasks\/0\/checks:/,
+		},
+		{
+			value: request([{ ...textTask("text"), judgment: { role: "reviewer", modelClass: "fast", criterion: "forbidden" } } as unknown as TaskRequest]),
+			path: / at \/tasks\/0\/judgment:/,
+		},
+		{ value: request([changesetWithoutChecks as unknown as TaskRequest]), path: / at \/tasks\/0\/checks:/ },
+		{ value: request([textWithoutRole as unknown as TaskRequest]), path: / at \/tasks\/0\/role:/ },
+		{
+			value: request([changesetTask("change", {
+				judgment: { modelClass: "fast", criterion: "missing role" } as unknown as ChangesetTaskRequest["judgment"],
+			})]),
+			path: / at \/tasks\/0\/judgment\/role:/,
+		},
+		{
+			value: request([textTask("text")], {
+				modelClass: "fast",
+				criterion: "missing role",
+			} as unknown as ExecuteRequest["finalJudgment"]),
+			path: / at \/finalJudgment\/role:/,
+		},
 	];
-	for (const value of strictFailures) assert.throws(() => parseExecuteRequest(value), /strict task schema/);
+	for (const { value, path } of strictFailures) {
+		assert.throws(() => parseExecuteRequest(value), (error: unknown) => {
+			assert.match(String(error), /strict task schema/);
+			assert.match(String(error), path);
+			return true;
+		});
+	}
 	assert.throws(() => parseExecuteRequest(request([textTask("text", { role: "bad\nrole" })])), /name must not contain C0\/C1 control characters/);
+});
+
+test("tool request validation reports one bounded field path without echoing values", () => {
+	const secret = "do-not-echo-this-value";
+	assert.throws(() => parseIdOnly({ id: "Bad" }), (error: unknown) => {
+		assert.match(String(error), / at \/id:/);
+		assert.doesNotMatch(String(error), new RegExp(secret));
+		return true;
+	});
+	assert.throws(() => parseResumeRequest({ id: "request-one", action: secret, taskId: "change" }), (error: unknown) => {
+		assert.match(String(error), / at \/action:/);
+		assert.doesNotMatch(String(error), new RegExp(secret));
+		assert.ok(String(error).length < 700);
+		return true;
+	});
 });
 
 test("the graph rejects invalid context edges and detects context cycles", () => {
