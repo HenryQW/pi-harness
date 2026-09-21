@@ -74,9 +74,14 @@ test("the store persists v2 text state, rejects duplicate creates, and preserves
 	await mkdir(plannedRoot);
 	const root = await realpath(plannedRoot);
 	try {
-		const store = new FileRunStore(agentDir);
+		const savedStates: RunState[] = [];
+		const store = new FileRunStore(agentDir, (saved) => savedStates.push(saved));
 		const created = state(root);
 		const handle = await store.create(created);
+		assert.deepEqual(savedStates, [created]);
+		handle.state.updatedAt = 2;
+		await handle.save();
+		assert.deepEqual(savedStates.map(({ updatedAt }) => updatedAt), [1, 2]);
 		const contents = await readFile(handle.path, "utf8");
 		assert.doesNotMatch(contents, /launchRecords|fingerprint|LaunchRecord/);
 		await assert.rejects(store.create(created), {
@@ -84,7 +89,7 @@ test("the store persists v2 text state, rejects duplicate creates, and preserves
 		});
 
 		const loaded = await store.load(root, created.request.id);
-		assert.deepEqual(loaded.state, created);
+		assert.deepEqual(loaded.state, { ...created, updatedAt: 2 });
 
 		const legacyPath = store.statePath(root, "legacy-v1");
 		const legacy = JSON.stringify({ ...created, version: 1, launchRecords: {} });

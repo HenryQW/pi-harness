@@ -115,10 +115,12 @@ export class RunStateHandle {
 
 export class FileRunStore {
 	private readonly agentDir?: string;
+	private readonly onStateSaved?: (state: RunState) => void;
 	private readonly productiveRunLeases = new WeakMap<ProductiveRunLease, string>();
 
-	constructor(agentDir?: string) {
+	constructor(agentDir?: string, onStateSaved?: (state: RunState) => void) {
 		this.agentDir = agentDir;
+		this.onStateSaved = onStateSaved;
 	}
 
 	stateDirectory(root: string): string {
@@ -245,7 +247,9 @@ export class FileRunStore {
 			if (isAlreadyPresent(error)) throw new Error(`Pi Orchestrator request ${state.request.id} already exists.`);
 			throw error;
 		}
-		return this.handle(parseRunState(structuredClone(state)), path);
+		const saved = parseRunState(structuredClone(state));
+		this.onStateSaved?.(structuredClone(saved));
+		return this.handle(saved, path);
 	}
 
 	async load(root: string, id: string): Promise<RunStateHandle> {
@@ -291,6 +295,7 @@ export class FileRunStore {
 		return new RunStateHandle(state, path, async (contents) => {
 			await this.assertSafeDestination(state.root, path);
 			await writePrivateTextFileAtomically(path, contents);
+			this.onStateSaved?.(parseRunState(JSON.parse(contents)));
 		});
 	}
 }

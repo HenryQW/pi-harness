@@ -23,14 +23,18 @@ import {
 	parseResumeRequest,
 	sameIdentity,
 	type CheckBatchEvidence,
+	type ModelClass,
 	type ReviewEvidence,
 	type RunState,
 	type WorktreeAllocationIntent,
+	type WorkspaceAllocationIntent,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
 const PUBLIC_EVIDENCE_MAX_BYTES = 512;
+const WORKSPACE_WIDGET_KEY = "pi-orchestrator-workspaces";
+const WIDGET_FIELD_MAX_CHARS = 32;
 
 export interface OrchestratorExtensionComponents {
 	runner: OrchestratorRunner;
@@ -41,10 +45,11 @@ export type CreateOrchestratorComponents = (options: {
 	pi: ExtensionAPI;
 	context(): ExtensionContext;
 	onInteractiveWait(requestId: string, taskId: string): void;
+	onStateSaved(state: RunState): void;
 }) => OrchestratorExtensionComponents;
 
 /** Construct the Main runtime graph once, sharing one executor across text tasks and Judgments. */
-export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi, context, onInteractiveWait }) => {
+export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi, context, onInteractiveWait, onStateSaved }) => {
 	const runProcess: DirectProcessRunner = async (command, args, options) => await pi.exec(command, args, {
 		cwd: options.cwd,
 		signal: options.signal,
@@ -79,12 +84,64 @@ export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi,
 			coordinator,
 			host,
 			git,
-			new FileRunStore(),
+			new FileRunStore(undefined, onStateSaved),
 			executor,
 			onInteractiveWait,
 		),
 	};
 };
+
+function compactWidgetField(value: string): string {
+	const characters = [...value];
+	return characters.length <= WIDGET_FIELD_MAX_CHARS
+		? value
+		: `${characters.slice(0, WIDGET_FIELD_MAX_CHARS - 1).join("")}~`;
+}
+
+function workspaceBadge(role: string, modelClass: ModelClass): string {
+	const modelCode = { fast: "1", balanced: "2", frontier: "3", fav: "*" }[modelClass];
+	return `[${Array.from(role)[0]!.toUpperCase()}${modelCode}]`;
+}
+
+function workspaceStatus(status: RunState["tasks"][number]["status"]): string {
+	switch (status) {
+		case "awaiting_acceptance": return "accept";
+		case "ready_to_integrate": return "ready";
+		case "needs_attention": return "attention";
+		default: return status;
+	}
+}
+
+export function workspaceWidgetLines(state: RunState): string[] | undefined {
+	const rows = state.tasks.flatMap((taskState) => {
+		if (taskState.kind !== "changeset") return [];
+		const attempt = taskState.attempts.at(-1);
+		const allocation = [...(attempt?.allocations ?? [])].reverse().find(
+			(candidate): candidate is WorkspaceAllocationIntent =>
+				candidate.kind === "workspace" && candidate.status !== "absent",
+		);
+		const workspaceCleanup = attempt?.cleanup.find((step) => step.kind === "workspace");
+		if (!allocation || workspaceCleanup?.status === "completed") return [];
+		const task = state.request.tasks.find((candidate) => candidate.id === taskState.taskId);
+		if (!task || task.kind !== "changeset") return [];
+		const status = state.status === "aborted" ? "aborted" : workspaceStatus(taskState.status);
+		return `${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(allocation.label)} · ${status} · ${compactWidgetField(task.id)}`;
+	});
+	return rows.length ? rows : undefined;
+}
+
+function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState): void {
+	if (!ctx.hasUI) return;
+	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, workspaceWidgetLines(state));
+}
+
+function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState): void {
+	try {
+		updateWorkspaceWidget(ctx, state);
+	} catch (error) {
+		console.error("Pi Orchestrator workspace widget update failed.", error);
+	}
+}
 
 function boundedPublicText(value: string): string {
 	if (Buffer.byteLength(value, "utf8") <= PUBLIC_EVIDENCE_MAX_BYTES) return value;
@@ -205,12 +262,17 @@ function publicState(state: RunState, preferredTaskId?: string) {
 	};
 }
 
-function toolResult(response: RunResponse) {
+function toolResult(response: RunResponse, ctx: ExtensionContext) {
+	updateWorkspaceWidgetSafely(ctx, response.state);
 	const preferredTaskId = response.continuation && "taskId" in response.continuation
 		? response.continuation.taskId
 		: undefined;
+	const workspaces = workspaceWidgetLines(response.state);
+	const text = ctx.hasUI === false && workspaces
+		? `${response.text}\n\nActive workspaces:\n${workspaces.join("\n")}`
+		: response.text;
 	return {
-		content: [{ type: "text" as const, text: response.text }],
+		content: [{ type: "text" as const, text }],
 		details: {
 			state: publicState(response.state, preferredTaskId),
 			...(response.main ? { main: response.main } : {}),
@@ -243,6 +305,7 @@ export function registerOrchestratorExtension(
 				"info",
 			);
 		},
+		onStateSaved: (state) => updateWorkspaceWidgetSafely(latestContext(), state),
 	});
 
 	const lookupRoot = async (cwd: string, signal?: AbortSignal): Promise<string> => {
@@ -257,6 +320,7 @@ export function registerOrchestratorExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		latestCtx = ctx;
+		if (ctx.hasUI) ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, undefined);
 	});
 	pi.on("model_select", (event, ctx) => {
 		latestCtx = { ...ctx, model: event.model } as ExtensionContext;
@@ -303,7 +367,7 @@ export function registerOrchestratorExtension(
 		prepareArguments: parseExecuteRequest,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
-			return toolResult(await getComponents().runner.execute(params, ctx.cwd, signal));
+			return toolResult(await getComponents().runner.execute(params, ctx.cwd, signal), ctx);
 		},
 	});
 
@@ -316,7 +380,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.status(params.id, root, signal));
+			return toolResult(await getComponents().runner.status(params.id, root, signal), ctx);
 		},
 	});
 
@@ -329,7 +393,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.resume(params, root, signal));
+			return toolResult(await getComponents().runner.resume(params, root, signal), ctx);
 		},
 	});
 
@@ -342,7 +406,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.abort(params.id, root, signal));
+			return toolResult(await getComponents().runner.abort(params.id, root, signal), ctx);
 		},
 	});
 }

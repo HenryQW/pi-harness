@@ -8,6 +8,7 @@ import test from "node:test";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import {
 	HerdrHostRuntime,
+	workspaceLabel,
 	type HostProcessOptions,
 	type HostProcessRunner,
 } from "../src/herdr-runtime.ts";
@@ -36,7 +37,7 @@ const ROOT_PANE_ID = "pane-root";
 const WORKER_TAB_ID = "tab-worker";
 const WORKER_PANE_ID = "pane-worker";
 const AGENT_NAME = `o-${TOKEN}-agent`;
-const WORKSPACE_LABEL = `${REQUEST_ID}/task-a#1`;
+const WORKSPACE_LABEL = workspaceLabel({ correlationToken: TOKEN });
 const WORKER_LABEL = "implementer/fast";
 const GOAL = "Deliver the complete checked request.";
 const oid = (character: string): string => character.repeat(40);
@@ -251,7 +252,7 @@ async function fullAttempt(paths: Paths, host: HerdrHostRuntime, script: Scripte
 async function plannedAgentName(paths: Paths, host: HerdrHostRuntime, token: string): Promise<string> {
 	const attempt = baseAttempt(paths, token);
 	addOwnedWorkspace(attempt, {
-		kind: "workspace", label: `${REQUEST_ID}/${task.id}#1`, worktreeCwd: paths.worktree,
+		kind: "workspace", label: workspaceLabel(attempt), worktreeCwd: paths.worktree,
 		mainRoot: paths.root, repoKey: await realpath(paths.commonDirectory), herdrRepoRoot: await realpath(paths.repoRoot),
 	});
 	addOwnedTab(attempt, {
@@ -454,7 +455,7 @@ function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: 
 	];
 }
 
-test("host labels expose exact request, task, attempt, Role, and model context", async (t) => {
+test("workspace labels stay short and opaque while worker tabs expose Role and model context", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
@@ -467,7 +468,7 @@ test("host labels expose exact request, task, attempt, Role, and model context",
 	const attempt = baseAttempt(fixture);
 	script.push(repositoryIdentityStep(fixture));
 	const workspace = await host.planHostAllocation({ requestId, goal: GOAL, kind: "workspace", task: labelledTask, attempt }, context()) as WorkspaceAllocationPlan;
-	assert.equal(workspace.label, `${requestId}/${labelledTask.id}#1`);
+	assert.equal(workspace.label, "234567");
 	addOwnedWorkspace(attempt, workspace);
 	const worker = await host.planHostAllocation({ requestId, goal: GOAL, kind: "worker_tab", task: labelledTask, attempt }, context()) as WorkerTabAllocationPlan;
 	assert.equal(worker.label, `${labelledTask.role}/fast`);
@@ -1230,6 +1231,26 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 			});
 		}
 	}
+});
+
+test("workspace reconciliation accepts the exact legacy v2 label", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const attempt = baseAttempt(fixture);
+	const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
+	intent.status = "unknown";
+	intent.label = `${REQUEST_ID}/${task.id}#${attempt.number}`;
+	script.push(
+		repositoryIdentityStep(fixture),
+		{
+			command: "herdr",
+			args: ["worktree", "list", "--cwd", fixture.worktree],
+			result: success(worktreeListResult(fixture, [{ path: fixture.worktree, label: "task-a", open_workspace_id: null }])),
+		},
+	);
+	assert.equal((await host.reconcileHostAllocation({ requestId: REQUEST_ID, intent, task, attempt }, context())).outcome, "absent");
+	script.done();
 });
 
 test("unknown workspace reconciliation revalidates persisted Git identity before Herdr evidence", async (t) => {

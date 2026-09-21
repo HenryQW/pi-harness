@@ -223,7 +223,11 @@ function worktreeIntent(attempt: TaskAttempt): WorktreeAllocationPlan {
 	return intent.worktree;
 }
 
-function expectedWorkspaceLabel(requestId: ExecuteRequest["id"], task: TaskRequest, attempt: TaskAttempt): string {
+export function workspaceLabel(attempt: Pick<TaskAttempt, "correlationToken">): string {
+	return attempt.correlationToken.slice(-6);
+}
+
+function legacyWorkspaceLabel(requestId: ExecuteRequest["id"], task: TaskRequest, attempt: TaskAttempt): string {
 	return `${requestId}/${task.id}#${attempt.number}`;
 }
 
@@ -254,7 +258,8 @@ function assertWorkspaceIntent(
 	attempt: TaskAttempt,
 ): void {
 	const worktree = worktreeIntent(attempt);
-	if (exactString(intent.label, "workspace label") !== expectedWorkspaceLabel(requestId, task, attempt)
+	const label = exactString(intent.label, "workspace label");
+	if ((label !== workspaceLabel(attempt) && label !== legacyWorkspaceLabel(requestId, task, attempt))
 		|| exactAbsolutePath(intent.worktreeCwd, "workspace worktree cwd") !== worktree.cwd
 		|| exactAbsolutePath(intent.mainRoot, "workspace Main root") !== worktree.repoRoot) {
 		throw new Error("Workspace allocation plan drifted from the exact owned worktree.");
@@ -414,7 +419,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			const identity = await this.repositoryIdentity(mainRoot, context);
 			return {
 				kind: "workspace",
-				label: expectedWorkspaceLabel(input.requestId, input.task, input.attempt),
+				label: workspaceLabel(input.attempt),
 				worktreeCwd,
 				mainRoot,
 				...identity,
