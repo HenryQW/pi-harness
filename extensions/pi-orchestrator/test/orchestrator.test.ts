@@ -9,6 +9,7 @@ import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import {
 	createOrchestratorComponents,
 	registerOrchestratorExtension,
+	workspaceWidgetLines,
 	type CreateOrchestratorComponents,
 	type OrchestratorExtensionComponents,
 } from "../extensions/orchestrator.ts";
@@ -152,6 +153,7 @@ interface Harness {
 	getComponentCreations(): number;
 	getRoleContext(): ExtensionContext;
 	getInteractiveWait(): (requestId: string, taskId: string) => void;
+	getStateSaved(): (state: RunState) => void;
 }
 
 function response(method: string, continuation = false): RunResponse {
@@ -241,6 +243,7 @@ function createHarness(options: {
 		getComponentCreations: () => componentCreations,
 		getRoleContext: () => componentOptions!.context(),
 		getInteractiveWait: () => componentOptions!.onInteractiveWait,
+		getStateSaved: () => componentOptions!.onStateSaved,
 	};
 }
 
@@ -297,6 +300,75 @@ function expectedPublicState() {
 		updatedAt: 200,
 	};
 }
+
+function addWorkspace(state: RunState, label = "012345"): void {
+	const task = state.tasks[0]!;
+	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
+	task.attempts[0]!.allocations.push({
+		kind: "workspace",
+		generation: 1,
+		token: "0123456789abcdef",
+		status: "owned",
+		label,
+		worktreeCwd: "/tmp/pi-task",
+		mainRoot: CANONICAL_ROOT,
+		repoKey: CANONICAL_ROOT,
+		herdrRepoRoot: CANONICAL_ROOT,
+		workspaceId: "workspace-one",
+		rootTabId: "tab-one",
+		rootPaneId: "pane-one",
+	});
+}
+
+test("workspace widget lists every uncleaned workspace with status and agent context", () => {
+	const state = structuredClone(PRIVATE_STATE);
+	addWorkspace(state);
+	const firstTask = state.tasks[0]!;
+	assert.equal(firstTask.kind, "changeset");
+	if (firstTask.kind !== "changeset") return;
+	state.request.tasks.push({ ...state.request.tasks[0]!, id: "unit-two", role: "reviewer", modelClass: "balanced" });
+	const secondTask = structuredClone(firstTask);
+	secondTask.taskId = "unit-two";
+	secondTask.status = "working";
+	secondTask.attempts[0]!.allocations = secondTask.attempts[0]!.allocations.map((allocation) =>
+		allocation.kind === "workspace"
+			? { ...allocation, label: "fedcba", workspaceId: "workspace-two" }
+			: allocation);
+	state.tasks.push(secondTask);
+
+	assert.deepEqual(workspaceWidgetLines(state), [
+		"[I1] 012345 · attention · unit-one",
+		"[R2] fedcba · working · unit-two",
+	]);
+
+	firstTask.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
+	assert.deepEqual(workspaceWidgetLines(state), [
+		"[R2] fedcba · working · unit-two",
+	]);
+	secondTask.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
+	assert.equal(workspaceWidgetLines(state), undefined);
+});
+
+test("saved state updates and clears the workspace widget", async () => {
+	const widgets: Array<string[] | undefined> = [];
+	const ctx = {
+		cwd: "/repo",
+		hasUI: true,
+		ui: { setWidget: (_key: string, lines: string[] | undefined) => widgets.push(lines) },
+	} as unknown as ExtensionContext;
+	const harness = createHarness();
+	await executeTool(namedTool(harness, "orchestrate_execute"), EXECUTE_REQUEST, undefined, ctx);
+	const state = structuredClone(PRIVATE_STATE);
+	addWorkspace(state);
+
+	harness.getStateSaved()(state);
+	assert.deepEqual(widgets.at(-1), workspaceWidgetLines(state));
+	const task = state.tasks[0]!;
+	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
+	task.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
+	harness.getStateSaved()(state);
+	assert.equal(widgets.at(-1), undefined);
+});
 
 test("registers exactly four strict tools without constructing runtime components", () => {
 	const harness = createHarness();
@@ -447,6 +519,7 @@ test("production components complete host preflight before inspecting Main", asy
 		pi,
 		context: () => context(root),
 		onInteractiveWait() {},
+		onStateSaved() {},
 	});
 
 	await assert.rejects(runner.execute(EXECUTE_REQUEST, root), /requires HERDR_ENV=1/i);
