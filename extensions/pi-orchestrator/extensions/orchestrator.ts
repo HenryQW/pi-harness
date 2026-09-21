@@ -130,14 +130,19 @@ export function workspaceWidgetLines(state: RunState): string[] | undefined {
 	return rows.length ? rows : undefined;
 }
 
-function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState): void {
+function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState, rowsByRequest: Map<string, string[]>): void {
+	const key = `${state.root}\0${state.request.id}`;
+	const rows = workspaceWidgetLines(state);
+	if (rows) rowsByRequest.set(key, rows);
+	else rowsByRequest.delete(key);
 	if (!ctx.hasUI) return;
-	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, workspaceWidgetLines(state));
+	const allRows = [...rowsByRequest.values()].flat();
+	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, allRows.length ? allRows : undefined);
 }
 
-function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState): void {
+function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState, rowsByRequest: Map<string, string[]>): void {
 	try {
-		updateWorkspaceWidget(ctx, state);
+		updateWorkspaceWidget(ctx, state, rowsByRequest);
 	} catch (error) {
 		console.error("Pi Orchestrator workspace widget update failed.", error);
 	}
@@ -262,8 +267,8 @@ function publicState(state: RunState, preferredTaskId?: string) {
 	};
 }
 
-function toolResult(response: RunResponse, ctx: ExtensionContext) {
-	updateWorkspaceWidgetSafely(ctx, response.state);
+function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest: Map<string, string[]>) {
+	updateWorkspaceWidgetSafely(ctx, response.state, rowsByRequest);
 	const preferredTaskId = response.continuation && "taskId" in response.continuation
 		? response.continuation.taskId
 		: undefined;
@@ -290,6 +295,7 @@ export function registerOrchestratorExtension(
 
 	let latestCtx: ExtensionContext | undefined;
 	let components: OrchestratorExtensionComponents | undefined;
+	const workspaceRowsByRequest = new Map<string, string[]>();
 
 	const latestContext = (): ExtensionContext => {
 		if (!latestCtx) throw new Error("Pi Orchestrator cannot resolve a Role before session context exists.");
@@ -305,7 +311,7 @@ export function registerOrchestratorExtension(
 				"info",
 			);
 		},
-		onStateSaved: (state) => updateWorkspaceWidgetSafely(latestContext(), state),
+		onStateSaved: (state) => updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest),
 	});
 
 	const lookupRoot = async (cwd: string, signal?: AbortSignal): Promise<string> => {
@@ -320,6 +326,7 @@ export function registerOrchestratorExtension(
 
 	pi.on("session_start", (_event, ctx) => {
 		latestCtx = ctx;
+		workspaceRowsByRequest.clear();
 		if (ctx.hasUI) ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, undefined);
 	});
 	pi.on("model_select", (event, ctx) => {
@@ -367,7 +374,7 @@ export function registerOrchestratorExtension(
 		prepareArguments: parseExecuteRequest,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
-			return toolResult(await getComponents().runner.execute(params, ctx.cwd, signal), ctx);
+			return toolResult(await getComponents().runner.execute(params, ctx.cwd, signal), ctx, workspaceRowsByRequest);
 		},
 	});
 
@@ -380,7 +387,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.status(params.id, root, signal), ctx);
+			return toolResult(await getComponents().runner.status(params.id, root, signal), ctx, workspaceRowsByRequest);
 		},
 	});
 
@@ -393,7 +400,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.resume(params, root, signal), ctx);
+			return toolResult(await getComponents().runner.resume(params, root, signal), ctx, workspaceRowsByRequest);
 		},
 	});
 
@@ -406,7 +413,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.abort(params.id, root, signal), ctx);
+			return toolResult(await getComponents().runner.abort(params.id, root, signal), ctx, workspaceRowsByRequest);
 		},
 	});
 }

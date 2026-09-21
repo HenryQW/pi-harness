@@ -398,6 +398,10 @@ test("saved state updates and clears the workspace widget", async () => {
 
 	harness.getStateSaved()(state);
 	assert.deepEqual(widgets.at(-1), workspaceWidgetLines(state));
+	const otherState = structuredClone(PRIVATE_STATE);
+	otherState.request.id = "request-two";
+	harness.getStateSaved()(otherState);
+	assert.deepEqual(widgets.at(-1), workspaceWidgetLines(state));
 	const task = state.tasks[0]!;
 	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
 	task.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";

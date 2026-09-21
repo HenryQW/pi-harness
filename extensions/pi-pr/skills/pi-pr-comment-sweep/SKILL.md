@@ -33,9 +33,12 @@ Use the package-owned comment-sweep workflow. It exposes these closed actions:
    fresh feedback, clears the old ledger, and returns a new guard plus bounded
    IDs and kinds. Status never includes feedback bodies.
 8. Use `show` with the new guard for every returned ID. This catches new items
-   and edits that kept the same ID. Then call `record` with that guard and one
-   complete replacement ledger. Omit `ownedPaths`; the initial ownership stays
-   fixed. A stale guard or mismatched coverage fails.
+   and edits that kept the same ID. The published head is frozen: do not edit,
+   commit, move `HEAD`, or call `publish` again after this refresh. Classify any
+   new actionable feedback not fixed in the published head as `blocked`, finish
+   this sweep, then run `/pr` again for a follow-up sweep. Call `record` with the
+   refreshed guard and one complete replacement ledger. Omit `ownedPaths`; the
+   initial ownership stays fixed. A stale guard or mismatched coverage fails.
 9. Call `resolve` only with addressed, unresolved parent thread IDs. Do not
    resolve a thread classified as non-actionable or blocked. Do not post replies
    unless the user asks.
