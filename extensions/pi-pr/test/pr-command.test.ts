@@ -567,7 +567,7 @@ test("parses a leading branch base before discovery and sends only remaining cre
 	}]);
 });
 
-test("rejects a missing leading base value before discovery", async () => {
+test("rejects malformed, unknown, and conflicting options before discovery", async () => {
 	const app = harness({ states: [null] });
 	let loads = 0;
 	const handler = createPrCommandHandler(app.pi, {
@@ -577,28 +577,18 @@ test("rejects a missing leading base value before discovery", async () => {
 		},
 	});
 
-	for (const input of ["--base", "  --base \t\n"]) {
-		await assert.rejects(handler(input, app.context), /--base requires a branch/, input);
+	for (const { input, message } of [
+		{ input: "--base", message: "/pr --base requires a branch" },
+		{ input: "  --base \t\n", message: "/pr --base requires a branch" },
+		{ input: "--base=release", message: "/pr base syntax is --base <branch>" },
+		{ input: "--feedback extra", message: "/pr --feedback cannot be combined with other options or instructions" },
+		{ input: "--feedback --base main", message: "/pr --feedback cannot be combined with other options or instructions" },
+		{ input: "--base main --feedback", message: "/pr --feedback cannot be combined with other options or instructions" },
+		{ input: "--feedback=true", message: "/pr feedback syntax is --feedback" },
+		{ input: "--unknown", message: "Unknown /pr option: --unknown" },
+	]) {
+		await assert.rejects(handler(input, app.context), (error: unknown) => error instanceof Error && error.message === message, input);
 	}
-	await assert.rejects(handler("--base=release", app.context), /base syntax is --base <branch>/);
-	assert.equal(loads, 0);
-});
-
-test("rejects unknown and conflicting options before discovery", async () => {
-	const app = harness({ states: [{}] });
-	let loads = 0;
-	const handler = createPrCommandHandler(app.pi, {
-		async loadCurrentPullRequest() {
-			loads += 1;
-			return noPullRequest();
-		},
-	});
-
-	for (const input of ["--feedback extra", "--feedback --base main", "--base main --feedback"]) {
-		await assert.rejects(handler(input, app.context), /--feedback cannot be combined/, input);
-	}
-	await assert.rejects(handler("--feedback=true", app.context), /feedback syntax is --feedback/);
-	await assert.rejects(handler("--unknown", app.context), /Unknown \/pr option: --unknown/);
 	assert.equal(loads, 0);
 });
 

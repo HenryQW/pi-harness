@@ -11,18 +11,18 @@ import type { LocalMergeSafety } from "./pr-routing.ts";
 
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 
-export type InspectLocalMergeSafetyInput = {
+type InspectLocalMergeSafetyInput = {
 	exec: Exec;
 	cwd: string;
 	expectedHead: string;
 	headFetchSource: string;
 };
 
-export type InspectedLocalMergeSafety = LocalMergeSafety & {
+type InspectedLocalMergeSafety = LocalMergeSafety & {
 	headOid: string;
 };
 
-export type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
+type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
 	pullRequestId: string;
 	hostname: string;
 	expectedBase: {

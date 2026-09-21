@@ -18,7 +18,7 @@ export type PrDisplayInput = PullRequest & {
 
 export type PrStatusColor = "accent" | "warning" | "success" | "error" | "dim";
 
-export type PrFooter = {
+type PrFooter = {
 	number?: number;
 	url?: string;
 	text: string;

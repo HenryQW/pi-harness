@@ -18,19 +18,19 @@ import {
 	type RouteIntent,
 } from "./pr-routing.ts";
 
-export type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
+type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
 
-const WORKFLOWS: Record<WorkflowNextStep, { command: string }> = {
-	create: { command: "skill:pi-pr-create" },
-	"update-branch": { command: "skill:pi-pr-update-branch" },
-	sweep: { command: "skill:pi-pr-comment-sweep" },
-	"fix-ci": { command: "skill:pi-pr-fix-ci" },
+const WORKFLOWS: Record<WorkflowNextStep, string> = {
+	create: "skill:pi-pr-create",
+	"update-branch": "skill:pi-pr-update-branch",
+	sweep: "skill:pi-pr-comment-sweep",
+	"fix-ci": "skill:pi-pr-fix-ci",
 };
-export type WorkflowReservation =
+type WorkflowReservation =
 	| { route: "create"; target: PullRequestTarget; base?: string }
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
-export type WorkflowLaunchAction = "prepare" | "merge" | "start" | "resume" | "collect";
-export type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
+type WorkflowLaunchAction = "prepare" | "merge" | "start" | "resume" | "collect";
+type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
@@ -120,11 +120,11 @@ function workflowReservation(
 function packageWorkflowCommand(pi: PrCommandPi, route: WorkflowNextStep) {
 	const workflow = WORKFLOWS[route];
 	const command = pi.getCommands().find((candidate) =>
-		candidate.name === workflow.command &&
+		candidate.name === workflow &&
 		candidate.source === "skill" &&
 		candidate.sourceInfo.origin === "package"
 	);
-	if (!command) throw new Error(`${workflow.command} failed: bundled workflow is unavailable`);
+	if (!command) throw new Error(`${workflow} failed: bundled workflow is unavailable`);
 	return command;
 }
 

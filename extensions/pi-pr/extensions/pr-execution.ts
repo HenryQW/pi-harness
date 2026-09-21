@@ -6,9 +6,9 @@ import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { spawnBounded, type Exec, type ExecOptions, type ExecResult } from "@henryqw/pi-process";
 import { lock } from "proper-lockfile";
 
-export const MAX_CONFLICT_PATHS = 128;
-export const MAX_CONFLICT_PATH_BYTES = 1_024;
-export const MAX_CONFLICT_PATHS_BYTES = 32 * 1024;
+const MAX_CONFLICT_PATHS = 128;
+const MAX_CONFLICT_PATH_BYTES = 1_024;
+const MAX_CONFLICT_PATHS_BYTES = 32 * 1024;
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
@@ -34,8 +34,11 @@ export function requiredOid(value: unknown, label: string): string {
 	return parsed;
 }
 
-export function commandText(command: string, args: readonly string[]): string {
-	return [command, ...args].join(" ");
+export function parseSingleOutputLine(output: string, label: string): string {
+	const normalized = output.replace(/\r\n/g, "\n");
+	const lines = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
+	if (lines.length !== 1 || !lines[0]) throw new Error(`${label} returned invalid output`);
+	return lines[0];
 }
 
 export function extensionExecApi(exec: Exec, cwd: string, signal?: AbortSignal): Pick<ExtensionAPI, "exec"> {
@@ -58,7 +61,7 @@ export async function runChecked(
 	const result = await exec(command, args, options);
 	if (result.killed || !allowedCodes.includes(result.code)) {
 		const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command was killed" : `exit code ${result.code}`);
-		throw new Error(`${commandText(command, args)} failed: ${detail}`);
+		throw new Error(`${[command, ...args].join(" ")} failed: ${detail}`);
 	}
 	return result;
 }
@@ -160,6 +163,15 @@ export function parseNulPaths(output: string, label: string): string[] {
 	if (bytes > MAX_CONFLICT_PATHS_BYTES) throw new Error(`${label} returned too much path data`);
 	if (new Set(paths).size !== paths.length) throw new Error(`${label} returned duplicate paths`);
 	return paths;
+}
+
+export function validateResolvedConflictPaths(paths: readonly string[], expected: readonly string[]): string[] {
+	if (!Array.isArray(paths)) throw new TypeError("resolvedPaths must be an array");
+	const parsed = parseNulPaths(`${paths.join("\0")}${paths.length ? "\0" : ""}`, "Resolved conflict paths");
+	if (expected.some((path) => !parsed.includes(path))) {
+		throw new Error("Resolved paths must include every original conflict path");
+	}
+	return parsed;
 }
 
 function statusPath(record: string): { path: string; rename: boolean } {

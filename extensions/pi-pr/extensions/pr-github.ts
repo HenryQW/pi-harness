@@ -78,7 +78,7 @@ export class GitHubRateLimitError extends PullRequestLoadError {
 	}
 }
 
-export type PullRequestRef = {
+type PullRequestRef = {
 	repository: string;
 	ref: string;
 	oid: string;
@@ -118,7 +118,7 @@ export type PullRequestObservation = {
 
 export type PullRequestLoadContext = Pick<ExtensionContext, "cwd" | "signal">;
 
-export type PullRequestCreationPreflight = {
+type PullRequestCreationPreflight = {
 	head: string;
 	base: {
 		host: string;
@@ -187,7 +187,7 @@ type LinkConfiguration = {
 	mirror: string[];
 };
 
-export type PullRequestCandidate = {
+type PullRequestCandidate = {
 	number: number;
 	url: URL;
 	lifecycle: PullRequestLifecycle;
@@ -209,7 +209,7 @@ export type PullRequestPublication = {
 	body: string;
 };
 
-export type ValidatedRemoteAuthority = {
+type ValidatedRemoteAuthority = {
 	fetchSource: string;
 	host: string;
 	repository: string;

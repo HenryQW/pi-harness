@@ -52,21 +52,21 @@ const CHECK_ARGUMENTS_MAX_BYTES = 32 * 1024;
 const ATTEMPT_STATES = new Set<AttemptState>(["none", "attempting", "applied", "blocked", "unknown"]);
 const DISPOSITIONS = ["addressed", "non-actionable", "blocked"] as const;
 
-export type SweepDisposition = (typeof DISPOSITIONS)[number];
+type SweepDisposition = (typeof DISPOSITIONS)[number];
 export type SweepLedgerEntry = {
 	id: string;
 	kind: FeedbackKind;
 	disposition: SweepDisposition;
 	note: string;
 };
-export type SweepRunGuard = {
+type SweepRunGuard = {
 	epoch: number;
 	runId: string;
 	generation: number;
 	fingerprint: string;
 };
-export type SweepCheck = { command: string; args: string[] };
-export type SweepFinalProjection = {
+type SweepCheck = { command: string; args: string[] };
+type SweepFinalProjection = {
 	generation: number;
 	contentFingerprint: string;
 	items: Array<{ id: string; kind: FeedbackKind }>;
@@ -88,7 +88,7 @@ export type SweepStatus = {
 		finalize: AttemptState;
 	};
 };
-export type SweepPhase = "triage" | "recorded" | "published" | "refresh-pending" | "refreshed" | "resolving" | "resolved";
+type SweepPhase = "triage" | "recorded" | "published" | "refresh-pending" | "refreshed" | "resolving" | "resolved";
 
 type SweepAuthority = ReturnType<typeof authorityFromCurrent>;
 type ResolutionAttempt = {

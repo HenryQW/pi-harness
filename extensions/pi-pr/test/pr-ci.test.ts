@@ -382,6 +382,29 @@ test("binds names only for display, retains immutable attempt identities, and ca
 	}
 });
 
+test("retains exact and UTF-8-aligned evidence log suffixes", async (t) => {
+	const snapshots = [oneFailure()];
+	const metadataApp = harness({ snapshots, log: () => "" });
+	t.after(() => rmSync(metadataApp.agentDir, { recursive: true, force: true }));
+	const metadata = (await metadataApp.workflow.collect()).failures[0]!;
+	const limit = 20 * 1024 - Buffer.byteLength(JSON.stringify(metadata), "utf8");
+	assert.ok(limit > 7);
+
+	const exactLog = "x".repeat(limit);
+	const exactApp = harness({ snapshots, log: () => exactLog });
+	t.after(() => rmSync(exactApp.agentDir, { recursive: true, force: true }));
+	const exact = (await exactApp.workflow.collect()).failures[0]!;
+	assert.deepEqual(exact.log, { scope: "job", text: exactLog, truncated: false });
+	assert.equal(Buffer.byteLength(JSON.stringify(exact), "utf8"), 20 * 1024);
+
+	const suffix = `😀${"x".repeat(limit - 7)}`;
+	const truncatedApp = harness({ snapshots, log: () => `😀${suffix}` });
+	t.after(() => rmSync(truncatedApp.agentDir, { recursive: true, force: true }));
+	const truncated = (await truncatedApp.workflow.collect()).failures[0]!;
+	assert.deepEqual(truncated.log, { scope: "job", text: suffix, truncated: true });
+	assert.doesNotMatch(truncated.log.text, /\uFFFD/);
+});
+
 test("rejects evidence whose complete emitted metadata exceeds its byte budget", async (t) => {
 	const oversized = check(11, 101, { name: "x".repeat(8 * 1024) });
 	const oversizedJob = job(101, 11, { name: "y".repeat(8 * 1024), stepName: "z".repeat(8 * 1024) });
@@ -611,7 +634,6 @@ test("captures repair HEAD internally and pushes one explicit OID refspec with a
 		"git@github.com:acme/fork.git",
 		`${repair}:refs/heads/feature`,
 	]]);
-	assert.equal(app.workflow.state.repairHead, repair);
 	const pushIndex = app.calls.findIndex(({ command, args }) => command === "git" && args[0] === "push");
 	assert.equal(app.calls[pushIndex - 1]?.args.join(" "), "rev-parse --verify HEAD^{commit}");
 	assert.equal(app.calls.filter(({ command, args }) => command === "gh" && args[0] === "repo" && args[1] === "view").length, 4);
