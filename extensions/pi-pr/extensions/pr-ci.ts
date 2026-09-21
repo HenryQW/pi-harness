@@ -92,7 +92,7 @@ type CiSnapshot = {
 	failures: FailureIdentity[];
 };
 
-export type CiFailureEvidence = {
+type CiFailureEvidence = {
 	checkRuns: Array<{ id: number; name: string; conclusion: string }>;
 	checkSuite: { id: number };
 	run: { id: number; url: string; attempt: number };
@@ -101,20 +101,18 @@ export type CiFailureEvidence = {
 	log: { scope: "job"; text: string; truncated: boolean };
 };
 
-export type CiEvidence = {
+type CiEvidence = {
 	fingerprint: string;
 	pullRequest: { number: number; url: string; headOid: string };
 	failures: CiFailureEvidence[];
 };
 
-export type CiPushAttempt = "before-launch" | "applied" | "not-applied" | "unknown";
-export type CiFixPhase = "ready" | "collecting" | "collected" | "published" | "blocked";
+type CiPushAttempt = "before-launch" | "applied" | "not-applied" | "unknown";
+type CiFixPhase = "ready" | "collecting" | "collected" | "published" | "blocked";
 
-export type CiFixState = {
+type CiFixState = {
 	phase: CiFixPhase;
 	pushAttempt: CiPushAttempt;
-	fingerprint?: string;
-	repairHead?: string;
 };
 
 export type PullRequestCiFixOptions = {
@@ -126,7 +124,7 @@ export type PullRequestCiFixOptions = {
 	loadCurrentPullRequest?: Load;
 };
 
-export type CiPublishResult = {
+type CiPublishResult = {
 	kind: "published";
 	head: string;
 	attempt: "applied";
@@ -193,21 +191,11 @@ function actionsUrl(authority: CurrentPullRequest, suffix: string): string {
 }
 
 function tailUtf8(value: string, limit: number): { text: string; truncated: boolean } {
-	const total = Buffer.byteLength(value, "utf8");
-	if (total <= limit) return { text: value, truncated: false };
-	let start = value.length;
-	let bytes = 0;
-	while (start > 0) {
-		let previous = start - 1;
-		if (previous > 0 && value.charCodeAt(previous) >= 0xdc00 && value.charCodeAt(previous) <= 0xdfff &&
-			value.charCodeAt(previous - 1) >= 0xd800 && value.charCodeAt(previous - 1) <= 0xdbff) previous -= 1;
-		const character = value.slice(previous, start);
-		const size = Buffer.byteLength(character, "utf8");
-		if (bytes + size > limit) break;
-		bytes += size;
-		start = previous;
-	}
-	return { text: value.slice(start), truncated: true };
+	const bytes = Buffer.from(value, "utf8");
+	if (bytes.length <= limit) return { text: value, truncated: false };
+	let start = bytes.length - limit;
+	while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1;
+	return { text: bytes.subarray(start).toString("utf8"), truncated: true };
 }
 
 function failureEvidence(
@@ -669,7 +657,6 @@ export class PullRequestCiFixer {
 				throw new Error("Failed-CI evidence was replaced or became stale during collection");
 			}
 			this.collectedFingerprint = after.fingerprint;
-			this.state.fingerprint = after.fingerprint;
 			this.state.phase = "collected";
 			return {
 				fingerprint: after.fingerprint,
@@ -721,7 +708,6 @@ export class PullRequestCiFixer {
 			throw new Error("CI repair HEAD must be a new descendant of the frozen pull request head");
 		}
 		if (await readHead(this.exec, this.options()) !== repairHead) throw new Error("CI repair HEAD changed before push");
-		this.state.repairHead = repairHead;
 		return repairHead;
 	}
 

@@ -10,7 +10,9 @@ import {
 	assertOnlyDeclaredStatusChanged,
 	inspectWorktree,
 	inspectWorktreeState,
+	parseSingleOutputLine,
 	parseStatusSnapshot,
+	validateResolvedConflictPaths,
 	withWorktreeLock,
 } from "../extensions/pr-execution.ts";
 
@@ -32,6 +34,41 @@ async function worktreeLockPath(root: string, agentDir: string): Promise<string>
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", agentDir));
 	return join(lockNamespace, "worktree-locks", `${createHash("sha256").update(canonical).digest("hex")}.lock`);
 }
+
+test("parses only one nonempty CRLF-normalized output line", () => {
+	assert.equal(parseSingleOutputLine("value\r\n", "sample"), "value");
+	assert.equal(parseSingleOutputLine("value\n", "sample"), "value");
+	for (const output of ["", "\n", "value\n\n", "value\r\nnext"]) {
+		assert.throws(
+			() => parseSingleOutputLine(output, "sample"),
+			(error: unknown) => error instanceof Error && error.message === "sample returned invalid output",
+			output,
+		);
+	}
+});
+
+test("validates resolved conflict paths with shared safety limits", () => {
+	assert.deepEqual(validateResolvedConflictPaths(["src/file.ts"], ["src/file.ts"]), ["src/file.ts"]);
+	for (const { paths, expected, message } of [
+		{ paths: null as unknown as readonly string[], expected: [], message: "resolvedPaths must be an array" },
+		{ paths: ["src/file.ts"], expected: ["missing.ts"], message: "Resolved paths must include every original conflict path" },
+		{ paths: ["../outside.ts"], expected: [], message: "Resolved conflict paths returned an unsafe path" },
+		{ paths: ["src/file.ts", "src/file.ts"], expected: [], message: "Resolved conflict paths returned duplicate paths" },
+		{ paths: Array.from({ length: 129 }, (_, index) => `src/${index}.ts`), expected: [], message: "Resolved conflict paths returned more than 128 paths" },
+		{ paths: ["x".repeat(1_025)], expected: [], message: "Resolved conflict paths returned an overlong path" },
+		{
+			paths: Array.from({ length: 33 }, (_, index) => `${index.toString().padStart(2, "0")}${"x".repeat(1_022)}`),
+			expected: [],
+			message: "Resolved conflict paths returned too much path data",
+		},
+	]) {
+		assert.throws(
+			() => validateResolvedConflictPaths(paths, expected),
+			(error: unknown) => error instanceof Error && error.message === message,
+			message,
+		);
+	}
+});
 
 test("worktree inspection treats an empty-status Git operation as dirty", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-pr-operation-"));

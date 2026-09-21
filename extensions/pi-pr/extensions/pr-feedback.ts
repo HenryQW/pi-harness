@@ -9,7 +9,7 @@ import {
 import type { CurrentPullRequest } from "./pr-github.ts";
 
 export const FEEDBACK_API_PAGE_MAX_BYTES = 512 * 1024;
-export const FEEDBACK_MAX_PAGES = 100;
+const FEEDBACK_MAX_PAGES = 100;
 export const FEEDBACK_MAX_RECORDS = 1_000;
 export const FEEDBACK_SNAPSHOT_MAX_BYTES = 1024 * 1024;
 
@@ -33,15 +33,15 @@ query ThreadReplies($threadId:ID!,$cursor:String){node(id:$threadId){... on Pull
 const RESOLVE_THREAD_MUTATION = `
 mutation ResolveThread($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}`;
 
-export type FeedbackAuthor = { login: string } | null;
-export type FeedbackComment = {
+type FeedbackAuthor = { login: string } | null;
+type FeedbackComment = {
 	id: string;
 	url: string;
 	body: string;
 	createdAt: string;
 	author: FeedbackAuthor;
 };
-export type FeedbackReview = {
+type FeedbackReview = {
 	id: string;
 	url: string;
 	state: string;
@@ -49,7 +49,7 @@ export type FeedbackReview = {
 	submittedAt: string | null;
 	author: FeedbackAuthor;
 };
-export type FeedbackThread = {
+type FeedbackThread = {
 	id: string;
 	isResolved: boolean;
 	isOutdated: boolean;
@@ -77,7 +77,7 @@ export type FeedbackSnapshot = {
 	reviewThreads: FeedbackThread[];
 };
 export type FeedbackKind = "conversation_comment" | "review" | "thread" | "thread_comment";
-export type FeedbackEntry = {
+type FeedbackEntry = {
 	id: string;
 	kind: FeedbackKind;
 	node: FeedbackComment | FeedbackReview | FeedbackThread;
@@ -91,7 +91,7 @@ export type FeedbackItem =
 		kind: "thread_comment";
 		parentThread: { id: string; isResolved: boolean; isOutdated: boolean; path: string | null; line: number | null };
 	});
-export type FeedbackClientOptions = {
+type FeedbackClientOptions = {
 	exec: Exec;
 	cwd: string;
 	signal?: AbortSignal;
