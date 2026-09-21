@@ -156,10 +156,10 @@ interface Harness {
 	getStateSaved(): (state: RunState) => void;
 }
 
-function response(method: string, continuation = false): RunResponse {
+function response(method: string, continuation = false, state: RunState = PRIVATE_STATE): RunResponse {
 	return {
 		text: `bounded ${method} result`,
-		state: PRIVATE_STATE,
+		state,
 		...(continuation ? { continuation: { id: "request-one", action: "finalize" as const } } : {}),
 	};
 }
@@ -167,6 +167,7 @@ function response(method: string, continuation = false): RunResponse {
 function createHarness(options: {
 	runner?: OrchestratorExtensionComponents["runner"];
 	resolveRoot?: OrchestratorExtensionComponents["resolveRoot"];
+	responseState?: RunState;
 	onCreate?: (options: Parameters<CreateOrchestratorComponents>[0]) => void;
 } = {}): Harness {
 	const tools: RegisteredTool[] = [];
@@ -192,22 +193,22 @@ function createHarness(options: {
 	const runner = {
 		async execute(...args: unknown[]) {
 			runnerCalls.push({ method: "execute", args });
-			return response("execute", true);
+			return response("execute", true, options.responseState);
 		},
 		async status(...args: unknown[]) {
 			runnerCalls.push({ method: "status", args });
 			return {
-				...response("status"),
+				...response("status", false, options.responseState),
 				main: { status: "drifted" as const, expected: RECORDED_MAIN, actual: CURRENT_MAIN },
 			};
 		},
 		async resume(...args: unknown[]) {
 			runnerCalls.push({ method: "resume", args });
-			return response("resume", true);
+			return response("resume", true, options.responseState);
 		},
 		async abort(...args: unknown[]) {
 			runnerCalls.push({ method: "abort", args });
-			return response("abort");
+			return response("abort", false, options.responseState);
 		},
 		queueFollowup(...args: unknown[]) {
 			runnerCalls.push({ method: "queueFollowup", args });
@@ -341,12 +342,46 @@ test("workspace widget lists every uncleaned workspace with status and agent con
 		"[R2] fedcba · working · unit-two",
 	]);
 
+	state.status = "aborted";
+	const firstWorkspace = firstTask.attempts[0]!.allocations.find((allocation) => allocation.kind === "workspace")!;
+	firstWorkspace.label = "x".repeat(64);
+	assert.deepEqual(workspaceWidgetLines(state), [
+		`[I1] ${"x".repeat(31)}~ · aborted · unit-one`,
+		"[R2] fedcba · aborted · unit-two",
+	]);
+	state.status = "needs_attention";
+
 	firstTask.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
 	assert.deepEqual(workspaceWidgetLines(state), [
 		"[R2] fedcba · working · unit-two",
 	]);
 	secondTask.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
 	assert.equal(workspaceWidgetLines(state), undefined);
+});
+
+test("status restores active workspace rows and provides the non-TUI fallback", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	addWorkspace(state);
+	const widgets: Array<string[] | undefined> = [];
+	const tuiContext = {
+		cwd: "/repo",
+		hasUI: true,
+		ui: { setWidget: (_key: string, lines: string[] | undefined) => widgets.push(lines) },
+	} as unknown as ExtensionContext;
+	const harness = createHarness({ responseState: state });
+	harness.handlers.get("session_start")!({}, tuiContext);
+	assert.equal(widgets.at(-1), undefined);
+
+	await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, undefined, tuiContext);
+	assert.deepEqual(widgets.at(-1), workspaceWidgetLines(state));
+
+	const rpcResult = await executeTool(
+		namedTool(harness, "orchestrate_status"),
+		{ id: "request-one" },
+		undefined,
+		{ cwd: "/repo", hasUI: false } as ExtensionContext,
+	);
+	assert.equal(rpcResult.content[0]!.text, "bounded status result\n\nActive workspaces:\n[I1] 012345 · attention · unit-one");
 });
 
 test("saved state updates and clears the workspace widget", async () => {

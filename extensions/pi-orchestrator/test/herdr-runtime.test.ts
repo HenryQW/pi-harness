@@ -1233,6 +1233,26 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 	}
 });
 
+test("workspace reconciliation accepts the exact legacy v2 label", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const attempt = baseAttempt(fixture);
+	const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
+	intent.status = "unknown";
+	intent.label = `${REQUEST_ID}/${task.id}#${attempt.number}`;
+	script.push(
+		repositoryIdentityStep(fixture),
+		{
+			command: "herdr",
+			args: ["worktree", "list", "--cwd", fixture.worktree],
+			result: success(worktreeListResult(fixture, [{ path: fixture.worktree, label: "task-a", open_workspace_id: null }])),
+		},
+	);
+	assert.equal((await host.reconcileHostAllocation({ requestId: REQUEST_ID, intent, task, attempt }, context())).outcome, "absent");
+	script.done();
+});
+
 test("unknown workspace reconciliation revalidates persisted Git identity before Herdr evidence", async (t) => {
 	const fixture = await paths(t);
 	const driftedRepoRoot = join(fixture.directory, "reconcile-drifted-repo");

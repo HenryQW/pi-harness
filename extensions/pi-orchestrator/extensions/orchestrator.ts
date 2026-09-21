@@ -124,7 +124,8 @@ export function workspaceWidgetLines(state: RunState): string[] | undefined {
 		if (!allocation || workspaceCleanup?.status === "completed") return [];
 		const task = state.request.tasks.find((candidate) => candidate.id === taskState.taskId);
 		if (!task || task.kind !== "changeset") return [];
-		return `${workspaceBadge(task.role, task.modelClass)} ${allocation.label} · ${workspaceStatus(taskState.status)} · ${compactWidgetField(task.id)}`;
+		const status = state.status === "aborted" ? "aborted" : workspaceStatus(taskState.status);
+		return `${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(allocation.label)} · ${status} · ${compactWidgetField(task.id)}`;
 	});
 	return rows.length ? rows : undefined;
 }
@@ -132,6 +133,14 @@ export function workspaceWidgetLines(state: RunState): string[] | undefined {
 function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState): void {
 	if (!ctx.hasUI) return;
 	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, workspaceWidgetLines(state));
+}
+
+function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState): void {
+	try {
+		updateWorkspaceWidget(ctx, state);
+	} catch (error) {
+		console.error("Pi Orchestrator workspace widget update failed.", error);
+	}
 }
 
 function boundedPublicText(value: string): string {
@@ -253,12 +262,17 @@ function publicState(state: RunState, preferredTaskId?: string) {
 	};
 }
 
-function toolResult(response: RunResponse) {
+function toolResult(response: RunResponse, ctx: ExtensionContext) {
+	updateWorkspaceWidgetSafely(ctx, response.state);
 	const preferredTaskId = response.continuation && "taskId" in response.continuation
 		? response.continuation.taskId
 		: undefined;
+	const workspaces = workspaceWidgetLines(response.state);
+	const text = ctx.hasUI === false && workspaces
+		? `${response.text}\n\nActive workspaces:\n${workspaces.join("\n")}`
+		: response.text;
 	return {
-		content: [{ type: "text" as const, text: response.text }],
+		content: [{ type: "text" as const, text }],
 		details: {
 			state: publicState(response.state, preferredTaskId),
 			...(response.main ? { main: response.main } : {}),
@@ -291,13 +305,7 @@ export function registerOrchestratorExtension(
 				"info",
 			);
 		},
-		onStateSaved: (state) => {
-			try {
-				updateWorkspaceWidget(latestContext(), state);
-			} catch (error) {
-				console.error("Pi Orchestrator workspace widget update failed.", error);
-			}
-		},
+		onStateSaved: (state) => updateWorkspaceWidgetSafely(latestContext(), state),
 	});
 
 	const lookupRoot = async (cwd: string, signal?: AbortSignal): Promise<string> => {
@@ -359,7 +367,7 @@ export function registerOrchestratorExtension(
 		prepareArguments: parseExecuteRequest,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
-			return toolResult(await getComponents().runner.execute(params, ctx.cwd, signal));
+			return toolResult(await getComponents().runner.execute(params, ctx.cwd, signal), ctx);
 		},
 	});
 
@@ -372,7 +380,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.status(params.id, root, signal));
+			return toolResult(await getComponents().runner.status(params.id, root, signal), ctx);
 		},
 	});
 
@@ -385,7 +393,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.resume(params, root, signal));
+			return toolResult(await getComponents().runner.resume(params, root, signal), ctx);
 		},
 	});
 
@@ -398,7 +406,7 @@ export function registerOrchestratorExtension(
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.abort(params.id, root, signal));
+			return toolResult(await getComponents().runner.abort(params.id, root, signal), ctx);
 		},
 	});
 }
