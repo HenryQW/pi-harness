@@ -12,23 +12,25 @@ import {
 	inspectWorktree,
 	isAncestor,
 	parseNulPaths,
+	parseSingleOutputLine,
 	readHead,
 	readRemoteOid,
 	requiredOid,
 	resolveRepositoryFetchSource,
 	runChecked,
+	validateResolvedConflictPaths,
 	withWorktreeLock,
 } from "./pr-execution.ts";
 
-export type UpdateBranchPhase = "ready" | "conflict-awaiting-user" | "verified" | "published" | "blocked";
+type UpdateBranchPhase = "ready" | "conflict-awaiting-user" | "verified" | "published" | "blocked";
 
-export type UpdateBranchState = {
+type UpdateBranchState = {
 	phase: UpdateBranchPhase;
 	verifiedHead?: string;
 	conflict?: { paths: string[]; statusBaseline: string };
 };
 
-export type UpdateBranchResult =
+type UpdateBranchResult =
 	| { kind: "verified"; head: string; fastForward: boolean }
 	| { kind: "conflict"; paths: string[] }
 	| { kind: "published"; head: string };
@@ -47,23 +49,6 @@ export type UpdateBranchOptions = {
 function sameAuthority(frozen: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
 	return samePullRequestSnapshot(frozen, fresh) && frozen.base.oid === fresh.base.oid &&
 		fresh.lifecycle === "open" && (fresh.conditions.baseUpdateRequired || fresh.conditions.conflict);
-}
-
-function singleLine(output: string, label: string): string {
-	const normalized = output.replace(/\r\n/g, "\n");
-	const lines = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
-	if (lines.length !== 1 || !lines[0]) throw new Error(`${label} returned invalid output`);
-	return lines[0];
-}
-
-function validateDeclaredPaths(paths: readonly string[], expected: readonly string[]): string[] {
-	if (!Array.isArray(paths)) throw new TypeError("resolvedPaths must be an array");
-	const encoded = `${paths.join("\0")}${paths.length ? "\0" : ""}`;
-	const parsed = parseNulPaths(encoded, "Resolved conflict paths");
-	if (expected.some((path) => !parsed.includes(path))) {
-		throw new Error("Resolved paths must include every original conflict path");
-	}
-	return parsed;
 }
 
 export class PullRequestBranchUpdater {
@@ -108,7 +93,7 @@ export class PullRequestBranchUpdater {
 		if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
 			throw new Error("Branch update cancelled: frozen pull request authority changed");
 		}
-		const branch = singleLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
+		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("Branch update cancelled: current branch changed");
 		if (requireClean && await inspectWorktree(this.exec, this.execOptions()) !== "clean") {
 			throw new Error("Branch update cancelled: worktree is dirty or a Git operation is in progress");
@@ -120,7 +105,7 @@ export class PullRequestBranchUpdater {
 
 	private async verifyMerge(originalHead: string): Promise<{ head: string; fastForward: boolean }> {
 		const head = await readHead(this.exec, this.execOptions());
-		const parentsOutput = singleLine((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", "HEAD"], this.execOptions())).stdout, "merge parents");
+		const parentsOutput = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", "HEAD"], this.execOptions())).stdout, "merge parents");
 		const commits = parentsOutput.split(" ").map((value, index) => requiredOid(value, index === 0 ? "merged HEAD" : "merge parent"));
 		if (commits[0] !== head) throw new Error("Branch update merge verification returned a different HEAD");
 		let fastForward = false;
@@ -139,7 +124,7 @@ export class PullRequestBranchUpdater {
 	}
 
 	private async captureConflict(): Promise<string[]> {
-		const mergeHead = requiredOid(singleLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.execOptions())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
+		const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.execOptions())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
 		if (mergeHead !== this.authority.base.oid) throw new Error("Failed merge did not retain the frozen base");
 		const paths = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
 		if (!paths.length) throw new Error("git merge failed without bounded unmerged paths");
@@ -189,10 +174,10 @@ export class PullRequestBranchUpdater {
 		if (this.state.phase !== "conflict-awaiting-user" || !this.state.conflict) {
 			throw new Error("Branch update has no conflict awaiting continuation");
 		}
-		const paths = validateDeclaredPaths(resolvedPaths, this.state.conflict.paths);
+		const paths = validateResolvedConflictPaths(resolvedPaths, this.state.conflict.paths);
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshAuthority(this.authority.head.oid, false);
-			const mergeHead = requiredOid(singleLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.execOptions())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
+			const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.execOptions())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
 			if (mergeHead !== this.authority.base.oid) throw new Error("Branch update merge context changed");
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);

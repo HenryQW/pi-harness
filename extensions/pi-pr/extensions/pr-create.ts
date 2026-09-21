@@ -26,11 +26,13 @@ import {
 	isAncestor,
 	isRecord,
 	parseNulPaths,
+	parseSingleOutputLine,
 	readHead,
 	readRemoteOid,
 	requiredOid,
 	requiredText,
 	runChecked,
+	validateResolvedConflictPaths,
 	withWorktreeLock,
 } from "./pr-execution.ts";
 
@@ -41,7 +43,7 @@ const CREATE_PULL_REQUEST_MUTATION = "mutation($repositoryId:ID!,$baseRefName:St
 
 type Load = typeof loadCurrentPullRequest;
 
-export type CreateBaseAuthority = {
+type CreateBaseAuthority = {
 	host: string;
 	repository: string;
 	ref: string;
@@ -49,7 +51,7 @@ export type CreateBaseAuthority = {
 	fetchSource: string;
 };
 
-export type CreatePhase = "unprepared" | "prepared" | "conflict-awaiting-user" | "verified" | "pushed" | "published" | "blocked";
+type CreatePhase = "unprepared" | "prepared" | "conflict-awaiting-user" | "verified" | "pushed" | "published" | "blocked";
 
 type CrossRepositoryCreateAuthority = {
 	baseRepositoryId: string;
@@ -57,17 +59,15 @@ type CrossRepositoryCreateAuthority = {
 	headOwnerType: "Organization" | "User";
 };
 
-export type CreatePullRequestState = {
+type CreatePullRequestState = {
 	phase: CreatePhase;
 	base?: CreateBaseAuthority;
 	createAuthority?: CrossRepositoryCreateAuthority;
-	mergeHead?: string;
 	publicationHead?: string;
 	conflict?: { paths: string[]; statusBaseline: string; originalHead: string };
-	url?: string;
 };
 
-export type CreatePullRequestResult =
+type CreatePullRequestResult =
 	| { kind: "prepared"; base: CreateBaseAuthority; mergeBase: string }
 	| { kind: "verified"; head: string; fastForward: boolean }
 	| { kind: "conflict"; paths: string[] }
@@ -87,13 +87,6 @@ function sameTarget(left: PullRequestTarget, right: PullRequestTarget, expectedR
 	return left.branch === right.branch && left.remote === right.remote && left.ref === right.ref &&
 		left.repository.toLowerCase() === right.repository.toLowerCase() && left.host === right.host &&
 		left.fetchSource === right.fetchSource && right.remoteOid === expectedRemoteOid;
-}
-
-function line(output: string, label: string): string {
-	const normalized = output.replace(/\r\n/g, "\n");
-	const values = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
-	if (values.length !== 1 || !values[0]) throw new Error(`${label} returned invalid output`);
-	return values[0];
 }
 
 function graphQlResponse(output: string, action: string): Record<string, unknown> {
@@ -166,15 +159,6 @@ function parseCreatedUrl(output: string, host: string, baseRepository: string): 
 	return url;
 }
 
-function resolvedPaths(paths: readonly string[], expected: readonly string[]): string[] {
-	if (!Array.isArray(paths)) throw new TypeError("resolvedPaths must be an array");
-	const parsed = parseNulPaths(`${paths.join("\0")}${paths.length ? "\0" : ""}`, "Resolved conflict paths");
-	if (expected.some((path) => !parsed.includes(path))) {
-		throw new Error("Resolved paths must include every original conflict path");
-	}
-	return parsed;
-}
-
 export class PullRequestCreator {
 	readonly state: CreatePullRequestState = { phase: "unprepared" };
 
@@ -218,7 +202,7 @@ export class PullRequestCreator {
 		if (discovery.kind !== "none" || !sameTarget(this.target, discovery.creationTarget)) {
 			throw new Error("PR creation cancelled: fresh complete discovery is no longer none");
 		}
-		const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
+		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
 		if (branch !== this.target.branch) throw new Error("PR creation cancelled: current branch changed");
 		return discovery;
 	}
@@ -298,7 +282,7 @@ export class PullRequestCreator {
 	private async verifyMerge(originalHead: string): Promise<{ head: string; fastForward: boolean }> {
 		const base = this.state.base!;
 		const head = await readHead(this.exec, this.options());
-		const commits = line((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", head], this.options())).stdout, "merge parents")
+		const commits = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", head], this.options())).stdout, "merge parents")
 			.split(" ").map((value, index) => requiredOid(value, index ? "merge parent" : "merged HEAD"));
 		if (commits[0] !== head) throw new Error("PR creation merge verification returned a different HEAD");
 		let fastForward = false;
@@ -308,14 +292,13 @@ export class PullRequestCreator {
 		}
 		await this.requireCleanHead();
 		this.state.phase = "verified";
-		this.state.mergeHead = head;
 		delete this.state.conflict;
 		return { head, fastForward };
 	}
 
 	private async captureConflict(originalHead: string): Promise<string[]> {
 		const base = this.state.base!;
-		const mergeHead = requiredOid(line((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.options())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
+		const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.options())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
 		if (mergeHead !== base.oid) throw new Error("Failed merge did not retain the frozen base");
 		const paths = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.options())).stdout, "Unmerged paths");
 		if (!paths.length) throw new Error("git merge failed without bounded unmerged paths");
@@ -335,7 +318,6 @@ export class PullRequestCreator {
 			const originalHead = await this.requireCleanHead();
 			if (await isAncestor(this.exec, this.options(), this.state.base!.oid, originalHead)) {
 				this.state.phase = "verified";
-				this.state.mergeHead = originalHead;
 				return { kind: "verified", head: originalHead, fastForward: false };
 			}
 			this.state.phase = "blocked";
@@ -358,12 +340,12 @@ export class PullRequestCreator {
 		if (this.state.phase !== "conflict-awaiting-user" || !this.state.conflict || !this.state.base) {
 			throw new Error("PR creation has no conflict awaiting continuation");
 		}
-		const paths = resolvedPaths(pathsInput, this.state.conflict.paths);
+		const paths = validateResolvedConflictPaths(pathsInput, this.state.conflict.paths);
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			if (await readHead(this.exec, this.options()) !== this.state.conflict!.originalHead) throw new Error("PR creation merge HEAD changed");
-			const mergeHead = requiredOid(line((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.options())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
+			const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.options())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
 			if (mergeHead !== this.state.base!.oid) throw new Error("PR creation merge context changed");
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
@@ -433,7 +415,7 @@ export class PullRequestCreator {
 	private async publishedAuthority(): Promise<void> {
 		const head = this.state.publicationHead!;
 		if (this.noTarget && !this.noTargetUpstreamConfigured) {
-			const branch = line((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
+			const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout, "current branch");
 			const authority = await readValidatedRemoteAuthority(this.pi(), this.context(), this.target.remote);
 			if (branch !== this.target.branch || authority.host !== this.target.host ||
 				authority.repository.toLowerCase() !== this.target.repository.toLowerCase() ||
@@ -522,7 +504,6 @@ export class PullRequestCreator {
 				throw new Error("Published pull request did not retain canonical identity, title, and body");
 			}
 			this.state.phase = "published";
-			this.state.url = after.url.href;
 			return { kind: "published", url: after.url.href };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}

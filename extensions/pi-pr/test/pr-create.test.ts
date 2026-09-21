@@ -132,7 +132,6 @@ function creator(exec: Exec, creationTarget: PullRequestTarget, signal?: AbortSi
 		host: "github.com", repository: "acme/project", ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/project.git",
 	};
-	workflow.state.mergeHead = head;
 	return { workflow, agentDir };
 }
 

@@ -1,9 +1,9 @@
 export type PullRequestLifecycle = "open" | "merged" | "closed";
 export type CiStatus = "none" | "running" | "success" | "failure" | "failure-blocked";
 export type ReviewReadiness = "ready" | "pending";
-export type PolicyReadiness = "ready" | "pending";
-export type LocalWorktree = "clean" | "dirty";
-export type LocalHeadRelation = "equal" | "behind" | "ahead" | "diverged";
+type PolicyReadiness = "ready" | "pending";
+type LocalWorktree = "clean" | "dirty";
+type LocalHeadRelation = "equal" | "behind" | "ahead" | "diverged";
 
 export type PullRequestConditions = {
 	draft: boolean;
@@ -69,7 +69,7 @@ export type FeedbackRouteBlocker =
 	| { kind: "target-not-configured" }
 	| { kind: "worktree-dirty" }
 	| { kind: "head-not-equal"; relation: Exclude<LocalHeadRelation, "equal"> };
-export type RouteDecision =
+type RouteDecision =
 	| { kind: "selected"; nextStep: NextStep }
 	| { kind: "feedback-blocked"; nextStep: "blocked"; blocker: FeedbackRouteBlocker };
 
