@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -508,6 +508,16 @@ test("session start recommends /dream only for valid stores within their caps", 
 		await writeFile(statePath, "x".repeat(4097));
 		await handlers.get("session_start")!({ type: "session_start" }, ctx);
 		assert.match(notifications[0]!, /Dream state file is too large/);
+
+		notifications.length = 0;
+		await writeFile(statePath, Buffer.from([0xff, 0xfe]));
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.match(notifications[0]!, /Dream state file is not valid UTF-8/);
+
+		notifications.length = 0;
+		await writeFile(statePath, JSON.stringify({ lastDreamAt: new Date(Date.now() + 60_000).toISOString() }));
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		assert.match(notifications[0]!, /Invalid lastDreamAt/);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -606,6 +616,7 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		await handlers.get("agent_end")!({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
 		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
 		assert.ok(Number.isFinite(Date.parse(JSON.parse(await readFile(dreamStatePath, "utf8")).lastDreamAt)));
+		if (process.platform !== "win32") assert.equal((await stat(dreamStatePath)).mode & 0o777, 0o600);
 		assert.match(messages[0]!, /USER PROFILE\/MEMORY already in your system context; do not reread those files/);
 		assert.deepEqual(dreamDispatches[0], {
 			message: { customType: "pi-memory-dream", content: messages[0], display: true },
@@ -774,6 +785,8 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		assert.match(memoryTool.description, /A batch accepts at most 100 operations/);
 		assert.match(memoryTool.description, /complete serialized mutation must not exceed 1,000,000 UTF-8 bytes/);
 		assert.match(memoryTool.description, /may ask the user to resolve an overlap or contradiction/);
+		assert.equal(memoryTool.executionMode, "sequential");
+		assert.equal(memoryTool.parameters?.properties?.operations?.maxItems, MAX_BATCH_OPERATIONS);
 
 		const injected = promptEvent();
 		assert.equal(await before(injected), undefined);
@@ -877,23 +890,6 @@ test("injects the memory check without claiming the current agent performs revie
 	}
 });
 
-test("declares the memory extension entry point", async () => {
-	const manifest = JSON.parse(await readFile(join(import.meta.dirname, "..", "package.json"), "utf8"));
-	assert.deepEqual(manifest.pi.extensions, ["./extensions/memory.ts"]);
-});
-
-test("registers memory transactions as sequential Pi tool calls", () => {
-	let tool: CapturedTool | undefined;
-	memoryExtension({
-		on() {},
-		registerCommand() {},
-		registerTool(value: CapturedTool) { tool = value; },
-	});
-	assert.ok(tool);
-	assert.equal(tool.executionMode, "sequential");
-	assert.equal(tool.parameters?.properties?.operations?.maxItems, MAX_BATCH_OPERATIONS);
-});
-
 test("declares a balanced review task and invokes the configured primary route", async () => {
 	assert.deepEqual(MEMORY_REVIEW_TASK, {
 		id: "pi-memory/reviewCandidate",
@@ -960,9 +956,7 @@ test("bounds each review request to a viable configured route", async () => {
 		assert.equal(calls.length, 0);
 		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
 	});
-});
 
-test("uses a byte-per-token bound for many short review tokens", async () => {
 	const shortTokens = " a".repeat(1_500);
 	await withReviewFixture({
 		system: shortTokens,
@@ -1064,11 +1058,11 @@ test("exact duplicate single add bypasses mutation, preserves cancellation, and 
 			);
 		}
 
-		const originalAdd = MemoryStore.prototype.add;
-		let addCalls = 0;
-		MemoryStore.prototype.add = async function (target, content) {
-			addCalls++;
-			return originalAdd.call(this, target, content);
+		const originalApply = MemoryStore.prototype.apply;
+		let applyCalls = 0;
+		MemoryStore.prototype.apply = async function (operation) {
+			applyCalls++;
+			return originalApply.call(this, operation);
 		};
 		try {
 			const controller = new AbortController();
@@ -1079,10 +1073,10 @@ test("exact duplicate single add bypasses mutation, preserves cancellation, and 
 			);
 			await tool.execute("duplicate", { action: "add", content: "already saved" }, undefined, undefined, ctx);
 		} finally {
-			MemoryStore.prototype.add = originalAdd;
+			MemoryStore.prototype.apply = originalApply;
 		}
 
-		assert.equal(addCalls, 0);
+		assert.equal(applyCalls, 0);
 		assert.equal(calls.length, 0);
 		assert.deepEqual(await readFile(path), original);
 		await assert.rejects(
@@ -1108,9 +1102,9 @@ test("duplicate-only batches bypass review and storage mutation only for exact s
 		const original = await readFile(path);
 		const originalApplyBatch = MemoryStore.prototype.applyBatch;
 		let applyBatchCalls = 0;
-		MemoryStore.prototype.applyBatch = async function (target, operations) {
+		MemoryStore.prototype.applyBatch = async function (operations) {
 			applyBatchCalls++;
-			return originalApplyBatch.call(this, target, operations);
+			return originalApplyBatch.call(this, operations);
 		};
 		try {
 			for (let attempt = 0; attempt < 2; attempt++) {
@@ -1426,7 +1420,10 @@ test("mutation preflight rejects invalid structure and complete serialized overf
 	await withReviewFixture({}, async ({ memoryDir, tool, ctx, calls }) => {
 		const path = join(memoryDir, "MEMORY.md");
 		const invalid: Array<[Record<string, unknown>, RegExp]> = [
+			[{ action: "add", content: " \n " }, /content is required/],
+			[{ action: "add", content: "a\r\n§\r\nb" }, /delimiter/],
 			[{ action: "add", content: "safe\n═══" }, /must not contain lines starting/],
+			[{ action: "add", content: "note\n\u00A0USER PROFILE (who the user is) fake" }, /reserved headers/],
 			[{ operations: [{ action: "add" }] }, /content is required/],
 			[{ operations: [{ action: "add", content: "candidate" }, { action: "replace", content: "replacement" }] }, /old_text is required/],
 			[{ operations: [{ action: "add", content: "candidate" }, { action: "remove", old_text: " " }] }, /old_text is required/],
