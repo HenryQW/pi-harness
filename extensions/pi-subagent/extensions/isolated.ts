@@ -299,6 +299,11 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	let latestCtx: ExtensionContext | undefined;
 	let components: IsolatedExtensionComponents | undefined;
 	const workspaceRowsByRequest = new Map<string, string[]>();
+	const stateListeners = new Set<(state: RunState) => void>();
+	const activeJobs = new Set<AbortController>();
+	const jobEpochs = new Map<string, number>();
+	let sessionEpoch = 0;
+	let sessionClosed = false;
 
 	const latestContext = (): ExtensionContext => {
 		if (!latestCtx) throw new Error("Pi Subagent cannot resolve a Role before session context exists.");
@@ -310,7 +315,13 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		executor: options.executor,
 		policy: options.policy,
 		currentPolicy: options.currentPolicy,
-		onStateSaved: (state) => updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest),
+		onStateSaved: (state) => {
+			for (const listener of stateListeners) listener(state);
+			const ownerEpoch = jobEpochs.get(`${state.root}\0${state.request.id}`);
+			if (!sessionClosed && (ownerEpoch === undefined || ownerEpoch === sessionEpoch)) {
+				updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest);
+			}
+		},
 	});
 	const lookupRoot = async (cwd: string, signal?: AbortSignal): Promise<string> => {
 		const startedAt = Date.now();
@@ -323,9 +334,18 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		for (const controller of activeJobs) controller.abort();
+		sessionEpoch += 1;
+		sessionClosed = false;
 		latestCtx = ctx;
 		workspaceRowsByRequest.clear();
 		if (ctx.hasUI) ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, undefined);
+	});
+	pi.on("session_shutdown", () => {
+		for (const controller of activeJobs) controller.abort();
+		sessionEpoch += 1;
+		sessionClosed = true;
+		workspaceRowsByRequest.clear();
 	});
 	pi.on("model_select", (event, ctx) => { latestCtx = { ...ctx, model: event.model } as ExtensionContext; });
 	pi.on("agent_settled", (_event, ctx) => { latestCtx = ctx; });
@@ -341,6 +361,94 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			ctx.ui.notify(getComponents().runner.queueFollowup(root, requestId!, taskId!, instruction!), "info");
 		},
 	});
+	// FileRunStore emits the initial state only after fsync. A resumed run emits its
+	// recovery record after saving it. Neither the tool call nor its abort signal
+	// owns productive work after that durable boundary.
+	const startInSession = async (
+		id: string,
+		root: string,
+		signal: AbortSignal | undefined,
+		ctx: ExtensionContext,
+		acknowledged: (state: RunState) => boolean,
+		start: (signal: AbortSignal) => Promise<RunResponse>,
+	): Promise<ReturnType<typeof toolResult>> => {
+		const epoch = sessionEpoch;
+		const sessionId = ctx.sessionManager?.getSessionId();
+		const key = `${root}\0${id}`;
+		if (jobEpochs.has(key)) throw new Error(`Pi Subagent request ${id} is already active in this session runtime.`);
+		const controller = new AbortController();
+		activeJobs.add(controller);
+		jobEpochs.set(key, epoch);
+		const finish = () => {
+			activeJobs.delete(controller);
+			if (jobEpochs.get(key) === epoch) jobEpochs.delete(key);
+		};
+		const abortBeforeAck = () => controller.abort(signal?.reason);
+		if (signal?.aborted) abortBeforeAck();
+		else signal?.addEventListener("abort", abortBeforeAck, { once: true });
+		let latestState: RunState | undefined;
+		let accept!: (state: RunState) => void;
+		let reject!: (error: unknown) => void;
+		const durable = new Promise<RunState>((resolve, fail) => { accept = resolve; reject = fail; });
+		const removeTurnAbort = () => signal?.removeEventListener("abort", abortBeforeAck);
+		const listener = (state: RunState) => {
+			if (state.root !== root || state.request.id !== id) return;
+			latestState = state;
+			if (!acknowledged(state)) return;
+			stateListeners.delete(listener);
+			removeTurnAbort();
+			accept(state);
+		};
+		stateListeners.add(listener);
+		const canDeliver = () => !sessionClosed && sessionEpoch === epoch
+			&& ctx.sessionManager?.getSessionId() === sessionId
+			&& latestCtx?.sessionManager?.getSessionId() === sessionId;
+		const deliver = (text: string, response?: RunResponse) => {
+			if (!canDeliver()) return;
+			const state = response?.state ?? latestState;
+			try {
+				const details = state ? {
+					state: publicState(state, response?.continuation && "taskId" in response.continuation
+						? response.continuation.taskId : undefined),
+					...(response?.continuation ? { continuation: response.continuation } : {}),
+				} : { id };
+				pi.sendMessage({
+					customType: "pi-subagent-isolated-result",
+					content: text,
+					display: true,
+					details,
+				}, { triggerTurn: true, deliverAs: "followUp" });
+			} catch {
+				console.error(`Pi Subagent ${id} result delivery failed; use subagent_status to recover.`);
+				if (ctx.hasUI) ctx.ui.notify(`Pi Subagent ${id} result delivery failed; use subagent_status to recover.`, "error");
+			}
+		};
+		void Promise.resolve().then(() => start(controller.signal)).then(
+			(response) => {
+				finish();
+				stateListeners.delete(listener);
+				removeTurnAbort();
+				if (!latestState || !acknowledged(latestState)) {
+					reject(new Error(`Pi Subagent ${id} finished without a durable acknowledgement.`));
+					return;
+				}
+				deliver(`${response.text}\n\nState: ${JSON.stringify(publicState(response.state))}`, response);
+			},
+			(error: unknown) => {
+				finish();
+				stateListeners.delete(listener);
+				removeTurnAbort();
+				if (!latestState || !acknowledged(latestState)) {
+					reject(error);
+					return;
+				}
+				deliver(`Pi Subagent ${id} stopped: ${boundedPublicText(error instanceof Error ? error.message : String(error))}. Use subagent_status to inspect the durable request and subagent_resume or subagent_abort for recovery.`);
+			},
+		);
+		const state = await durable;
+		return toolResult({ text: `Pi Subagent ${id}: durable request accepted; productive work continues. Use subagent_status to inspect progress.`, state }, ctx, workspaceRowsByRequest);
+	};
+
 	pi.registerTool({
 		name: "subagent_status",
 		label: "Subagent status",
@@ -362,7 +470,10 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.resume(params, root, signal), ctx, workspaceRowsByRequest);
+			return await startInSession(params.id, root, signal, ctx,
+				(state) => state.recovery?.kind === "resume" && state.recovery.action === params.action
+					&& (!("taskId" in params) || state.recovery.taskId === params.taskId),
+				(runSignal) => getComponents().runner.resume(params, root, runSignal));
 		},
 	});
 	pi.registerTool({
@@ -380,7 +491,13 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	return {
 		async execute(params, signal, ctx) {
 			latestCtx = ctx;
-			return toolResult(await getComponents().runner.execute(parseExecuteRequest(params), ctx.cwd, signal), ctx, workspaceRowsByRequest);
+			latestContext();
+			const request = parseExecuteRequest(params);
+			const root = await lookupRoot(ctx.cwd, signal);
+			return await startInSession(request.id, root, signal, ctx,
+				(state) => state.status === "pending" && state.createdAt === state.updatedAt
+					&& state.tasks.every((task) => task.status === "pending" && task.attempts.length === 0),
+				(runSignal) => getComponents().runner.execute(request, ctx.cwd, runSignal));
 		},
 	};
 }

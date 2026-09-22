@@ -129,6 +129,12 @@ const PRIVATE_STATE = {
 	updatedAt: 200,
 } as unknown as RunState;
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+
 function context(cwd: string, model: unknown = undefined): ExtensionContext {
 	return { cwd, model } as unknown as ExtensionContext;
 }
@@ -160,6 +166,7 @@ interface Harness {
 	getComponentCreations(): number;
 	getRoleContext(): ExtensionContext;
 	getStateSaved(): (state: RunState) => void;
+	sent: Array<{ message: { content: string; details: unknown }; options: unknown }>;
 }
 
 function response(method: string, continuation = false, state: RunState = PRIVATE_STATE): RunResponse {
@@ -181,6 +188,7 @@ function createHarness(options: {
 	const handlers = new Map<string, EventHandler>();
 	const runnerCalls: RunnerCall[] = [];
 	const rootCalls: Array<{ cwd: string; context: OperationContext }> = [];
+	const sent: Harness["sent"] = [];
 	let componentCreations = 0;
 	let componentOptions: Parameters<CreateIsolatedComponents>[0] | undefined;
 
@@ -194,11 +202,20 @@ function createHarness(options: {
 		registerCommand(name: string, command: RegisteredCommand) {
 			commands.set(name, command);
 		},
+		sendMessage(message: { content: string; details: unknown }, deliveryOptions: unknown) {
+			sent.push({ message, options: deliveryOptions });
+		},
 	} as unknown as ExtensionAPI;
 
 	const runner = {
 		async execute(...args: unknown[]) {
 			runnerCalls.push({ method: "execute", args });
+			const state = structuredClone(PRIVATE_STATE);
+			state.status = "pending";
+			state.createdAt = state.updatedAt;
+			state.tasks[0]!.status = "pending";
+			state.tasks[0]!.attempts = [];
+			componentOptions!.onStateSaved(state);
 			return response("execute", true, options.responseState);
 		},
 		async status(...args: unknown[]) {
@@ -210,6 +227,9 @@ function createHarness(options: {
 		},
 		async resume(...args: unknown[]) {
 			runnerCalls.push({ method: "resume", args });
+			const state = structuredClone(PRIVATE_STATE);
+			state.recovery = { kind: "resume", action: "finalize" };
+			componentOptions!.onStateSaved(state);
 			return response("resume", true, options.responseState);
 		},
 		async abort(...args: unknown[]) {
@@ -254,6 +274,7 @@ function createHarness(options: {
 		handlers,
 		runnerCalls,
 		rootCalls,
+		sent,
 		getComponentCreations: () => componentCreations,
 		getRoleContext: () => componentOptions!.context(),
 		getStateSaved: () => componentOptions!.onStateSaved,
@@ -519,14 +540,106 @@ test("lazily creates one component graph and supplies fresh session context", as
 
 	await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, undefined, settled);
 	assert.equal(harness.getComponentCreations(), 1);
-	assert.deepEqual(result, {
-		content: [{ type: "text", text: "bounded execute result" }],
-		details: {
-			state: expectedPublicState(),
-			continuation: { id: "request-one", action: "finalize" },
-		},
-	});
+	assert.match(result.content[0]!.text, /durable request accepted/);
+	assert.equal((result.details as { state: { status: string } }).state.status, "pending");
 	assert.doesNotMatch(JSON.stringify(result.details), /PRIVATE|prompt|rawArgs|SECRET_TOKEN|command-line/i);
+});
+
+test("delegate_task and resume acknowledge only saved state, then deliver one follow-up after work completes", async () => {
+	const executeDone = deferred<RunResponse>();
+	const resumeDone = deferred<RunResponse>();
+	let save!: (state: RunState) => void;
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: {
+			async execute() {
+				const pending = structuredClone(PRIVATE_STATE);
+				pending.status = "pending";
+				pending.updatedAt = pending.createdAt;
+				pending.tasks[0]!.status = "pending";
+				pending.tasks[0]!.attempts = [];
+				save(pending);
+				return await executeDone.promise;
+			},
+			async resume() {
+				const recovering = structuredClone(PRIVATE_STATE);
+				recovering.recovery = { kind: "resume", action: "finalize" };
+				save(recovering);
+				return await resumeDone.promise;
+			},
+		} as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	const turn = new AbortController();
+	const handle = await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, turn.signal, ctx);
+	assert.match(handle.content[0]!.text, /durable request accepted/);
+	assert.equal(harness.sent.length, 0);
+	await assert.rejects(executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx), /already active/);
+	turn.abort(); // The tool's turn no longer owns the productive run.
+	executeDone.resolve(response("execute", true));
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 1);
+	assert.deepEqual(harness.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+	assert.equal((harness.sent[0]!.message.details as { state: { status: string } }).state.status, "needs_attention");
+	assert.doesNotMatch(JSON.stringify(harness.sent[0]), /PRIVATE|SECRET_TOKEN|command-line/);
+	const resumed = await executeTool(namedTool(harness, "subagent_resume"), { id: "request-one", action: "finalize" }, undefined, ctx);
+	assert.match(resumed.content[0]!.text, /durable request accepted/);
+	resumeDone.resolve(response("resume", true));
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 2);
+});
+
+test("preflight errors reject before acknowledgement; post-save failures report durable recovery", async () => {
+	const failedPreflight = createHarness({ runner: { async execute() { throw new Error("host preflight failed"); } } as never });
+	await assert.rejects(executeTool(namedTool(failedPreflight, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT)), /host preflight failed/);
+	assert.equal(failedPreflight.sent.length, 0);
+
+	let save!: (state: RunState) => void;
+	const failedRun = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async execute() {
+			const pending = structuredClone(PRIVATE_STATE);
+			pending.status = "pending";
+			pending.updatedAt = pending.createdAt;
+			pending.tasks[0]!.status = "pending";
+			pending.tasks[0]!.attempts = [];
+			save(pending);
+			throw new Error("worker launch failed");
+		} } as never,
+	});
+	await executeTool(namedTool(failedRun, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT));
+	await new Promise(setImmediate);
+	assert.equal(failedRun.sent.length, 1);
+	assert.match(failedRun.sent[0]!.message.content, /worker launch failed.*subagent_status/);
+});
+
+test("session replacement and shutdown abort old work and suppress stale isolated delivery", async () => {
+	const done = deferred<RunResponse>();
+	let runSignal: AbortSignal | undefined;
+	let save!: (state: RunState) => void;
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async execute(_request: unknown, _cwd: string, signal: AbortSignal) {
+			runSignal = signal;
+			const pending = structuredClone(PRIVATE_STATE);
+			pending.status = "pending";
+			pending.updatedAt = pending.createdAt;
+			pending.tasks[0]!.status = "pending";
+			pending.tasks[0]!.attempts = [];
+			save(pending);
+			return await done.promise;
+		} } as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	harness.handlers.get("session_shutdown")!({}, ctx);
+	assert.equal(runSignal?.aborted, true);
+	harness.handlers.get("session_start")!({}, { ...ctx, sessionManager: { getSessionId: () => "other" } } as ExtensionContext);
+	done.resolve(response("execute", true));
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 0);
 });
 
 test("production components complete host preflight before inspecting Main", async (t) => {
@@ -576,14 +689,14 @@ test("public recovery evidence stays bounded and omits private durable state", a
 	task.attempts[0]!.preliminaryChecks!.results[0]!.stderr = `${"界".repeat(1_000)}UNEXPOSED_TAIL`;
 	const harness = createHarness({
 		runner: {
-			async execute() {
+			async status() {
 				return { text: "bounded recovery", state };
 			},
 		} as never,
 	});
 	const result = await executeTool(
-		namedTool(harness, "delegate_task"),
-		EXECUTE_REQUEST,
+		namedTool(harness, "subagent_status"),
+		{ id: "request-one" },
 		new AbortController().signal,
 		context(CANONICAL_ROOT),
 	);
@@ -636,14 +749,14 @@ test("text recovery exposes only bounded text attempt evidence", async () => {
 	} as unknown as RunState;
 	const harness = createHarness({
 		runner: {
-			async execute() {
+			async status() {
 				return { text: "bounded text recovery", state };
 			},
 		} as never,
 	});
 	const result = await executeTool(
-		namedTool(harness, "delegate_task"),
-		EXECUTE_REQUEST,
+		namedTool(harness, "subagent_status"),
+		{ id: "request-one" },
 		new AbortController().signal,
 		context(CANONICAL_ROOT),
 	);
@@ -678,8 +791,10 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 	const ctx = context(nestedCwd);
 	const signals = Array.from({ length: 4 }, () => new AbortController().signal);
 	const execute = await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, signals[0], ctx);
-	assert.equal(harness.rootCalls.length, 0);
-	assert.deepEqual(harness.runnerCalls[0], { method: "execute", args: [parseExecuteRequest(EXECUTE_REQUEST), nestedCwd, signals[0]] });
+	assert.equal(harness.rootCalls.length, 1);
+	assert.deepEqual(harness.runnerCalls[0]!.method, "execute");
+	assert.deepEqual(harness.runnerCalls[0]!.args.slice(0, 2), [parseExecuteRequest(EXECUTE_REQUEST), nestedCwd]);
+	assert.notEqual(harness.runnerCalls[0]!.args[2], signals[0]);
 
 	const lookupStartedAt = Date.now();
 	const status = await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, signals[1], ctx);
@@ -688,19 +803,19 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 	const abort = await executeTool(namedTool(harness, "subagent_abort"), { id: "request-one" }, signals[3], ctx);
 	const lookupFinishedAt = Date.now();
 
-	assert.deepEqual(harness.rootCalls.map(({ cwd }) => cwd), [nestedCwd, nestedCwd, nestedCwd]);
+	assert.deepEqual(harness.rootCalls.map(({ cwd }) => cwd), [nestedCwd, nestedCwd, nestedCwd, nestedCwd]);
 	for (const [index, { context: operation }] of harness.rootCalls.entries()) {
-		assert.equal(operation.signal, signals[index + 1]);
+		assert.equal(operation.signal, signals[index]);
 		assert.equal(operation.timeoutMs, 5_000);
-		assert.ok(operation.deadline !== undefined && operation.deadline >= lookupStartedAt + 5_000);
+		assert.ok(operation.deadline !== undefined && operation.deadline >= lookupStartedAt + (index === 0 ? -100 : 5_000));
 		assert.ok(operation.deadline !== undefined && operation.deadline <= lookupFinishedAt + 5_000);
 	}
-	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method !== "execute"), [
-		{ method: "status", args: ["request-one", CANONICAL_ROOT, signals[1]] },
-		{ method: "resume", args: [resumeRequest, CANONICAL_ROOT, signals[2]] },
-		{ method: "abort", args: ["request-one", CANONICAL_ROOT, signals[3]] },
-	]);
-	assert.deepEqual(execute.content, [{ type: "text", text: "bounded execute result" }]);
+	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method !== "execute").map(({ method }) => method), ["status", "resume", "abort"]);
+	assert.deepEqual(harness.runnerCalls.find(({ method }) => method === "resume")!.args.slice(0, 2), [resumeRequest, CANONICAL_ROOT]);
+	assert.notEqual(harness.runnerCalls.find(({ method }) => method === "resume")!.args[2], signals[2]);
+	assert.deepEqual(harness.runnerCalls.find(({ method }) => method === "status")!.args, ["request-one", CANONICAL_ROOT, signals[1]]);
+	assert.deepEqual(harness.runnerCalls.find(({ method }) => method === "abort")!.args, ["request-one", CANONICAL_ROOT, signals[3]]);
+	assert.match(execute.content[0]!.text, /durable request accepted/);
 	assert.deepEqual(status, {
 		content: [{ type: "text", text: "bounded status result" }],
 		details: {
@@ -708,10 +823,7 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 			main: { status: "drifted", expected: RECORDED_MAIN, actual: CURRENT_MAIN },
 		},
 	});
-	assert.deepEqual(resume, {
-		content: [{ type: "text", text: "bounded resume result" }],
-		details: { state: expectedPublicState(), continuation: { id: "request-one", action: "finalize" } },
-	});
+	assert.match(resume.content[0]!.text, /durable request accepted/);
 	assert.deepEqual(abort, { content: [{ type: "text", text: "bounded abort result" }], details: { state: expectedPublicState() } });
 });
 
@@ -733,7 +845,8 @@ test("missing Role context and root preflight failures stay explicit", async () 
 		),
 		/Pi Subagent cannot resolve a Role before session context exists/i,
 	);
-	assert.equal(typeof contextGetter, "function");
+	assert.equal(contextGetter, undefined);
+	assert.equal(missing.getComponentCreations(), 0);
 
 	let statusCalls = 0;
 	const failed = createHarness({
