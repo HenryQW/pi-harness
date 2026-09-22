@@ -3,9 +3,9 @@
 `pi-subagent` owns both delegation paths behind `delegate_task`:
 
 ```text
-                         ┌─ direct ─── Main checkout, bounded child
+                         ┌─ direct ─── read-only Herdr tab in Main's workspace
 request + Role + route ──┤
-                         └─ isolated ─ Herdr worker, checked candidate, durable state
+                         └─ isolated ─ Herdr worktree, checked candidate, durable state
 ```
 
 Both paths resolve Roles and model routes from Pi's effective registries. They share the package's global concurrency, turn/token, timeout, and correction policy. A request cannot supply or refill execution limits.
@@ -56,19 +56,17 @@ Each entry has:
 | `role` | yes | Effective configured Role name |
 | `name` | yes | Short display name without terminal controls |
 | `task` | yes | Non-empty task packet |
-| `kind` | no | `text` (default) or `changeset` |
-| `checks` | for changesets | 1–32 exact `{ command, args }` checks |
-| `judgment` | no | Exact-snapshot reviewer Role, model class, and criterion |
+| `kind` | no | `text` only (default); direct `changeset` is rejected |
 | `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav` route |
 | `model` | no | `provider/modelId`; replaces only the route model |
 
 An explicit model must support the route's thinking level. A launched child is never retried automatically after provider or process failure.
 
-Parallel reads run concurrently and report in request order. Any writer-capable direct entry causes writers to serialize in Main's checkout. A chain is sequential, substitutes only the immediately preceding successful output, and stops at its first failure.
+Only Roles with known read-only tools and no extensions or MCP servers may run direct. A direct `changeset` or write-capable Role is rejected; use isolated mode for implementation. Parallel reads run concurrently and report in request order. A chain substitutes only the preceding successful output and stops at its first failure.
 
-Direct changesets leave changes uncommitted. Before each task, the extension records exact working-checkout evidence. Afterward it requires a changed snapshot, runs checks with finite per-command timeouts, verifies checks did not mutate the snapshot, optionally obtains exact `PASS` judgment, and verifies judgment did not mutate it. The final snapshot is checked again. Existing ambiguous Git state, hidden index differences, evidence overflow, drift, and unsupported layouts fail closed while preserving files.
+The tool returns a handle after the first exact Herdr tab is launched. The remaining tabs are launched asynchronously; their identities are recorded on the session branch. A session-owned observer awaits each exact agent's lifecycle and retrieves its final answer from its Pi session file, not its possibly truncated screen. Idle, blocked, unknown, malformed, or oversized answers fail with recoverable tab/session identity; no whole-run deadline is imposed. `/subagent-direct-recovery` shows exact launched tabs. A session switch stops observation and carries tab identity into the new branch.
 
-A direct text task assigned to a potentially writing Role records checkout state and rejects mutation. Background direct mode admits only statically read-only Roles. Background work is tied to the launching session and is aborted on shutdown.
+The result is delivered to Main with `triggerTurn: true, deliverAs: "followUp"`. Busy Main finishes its current turn before consuming the result; idle Main starts a turn. Herdr reports worker lifecycle but never prompts Main directly. Read-only workers can observe a concurrently changing checkout; consumers must account for drift rather than treating a tab as file isolation.
 
 ## Isolated contract
 
@@ -123,7 +121,7 @@ State version 4 is stored privately under:
 <agent-dir>/config/pi-subagent/state/<repository-hash>/<request-id>.json
 ```
 
-Strict parsing rejects unknown properties, malformed evidence, invalid lineage, and older versions. Writes are atomic and repository productive work uses a durable process lease. `subagent_status` is read-only. `subagent_resume` accepts only the continuation reported by state. `subagent_abort` performs exact worker termination and teardown.
+Strict parsing rejects unknown properties, malformed evidence, invalid lineage, and older versions. Writes are atomic and repository productive work uses a durable process lease. `delegate_task` and `subagent_resume` acknowledge only after durable state is saved, then continue productive work asynchronously. Completion or attention is sent as a Pi follow-up to the launching session. `subagent_status` is read-only and remains the recovery authority if a follow-up is missed. `subagent_resume` accepts only the continuation reported by state. `subagent_abort` performs exact worker termination and teardown.
 
 Productive execution has no whole-run wall-clock deadline. Long productive work and later resumes remain valid. The request retains its original policy snapshot and correction count; a resume cannot refill them. Current configuration may tighten the correction allowance. Child idle/hard runtime, subprocess I/O, status inspection, termination, cleanup, and outer abort remain bounded independently.
 

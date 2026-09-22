@@ -11,7 +11,7 @@ These rules apply to `extensions/pi-subagent` in addition to the repository-leve
 
 - Keep `createRoleLaunch` as the launch-policy boundary. It resolves Role resources, route, project trust, environment, and Pi arguments.
 - Keep the Ephemeral Executor mechanism-only. It receives a prepared launch and must not discover Roles, resources, worktrees, or workflow policy.
-- Keep `delegate_task` mode explicit. Direct mode owns compact single, parallel, and chain delegation in Main. Isolated mode owns durable checked task graphs; neither mode may silently fall back to the other.
+- Keep `delegate_task` mode explicit. Direct mode owns read-only single, parallel, and chain delegation in current-workspace Herdr tabs. Write-capable work requires isolated checked task graphs; neither mode may silently fall back to the other.
 - Keep Roles capability-focused; requests own isolation. pi-subagent owns its checked state, validation, judgment, integration, recovery, and cleanup protocol while library exports remain reusable mechanisms.
 
 ## Launches and prompts
@@ -42,13 +42,13 @@ These rules apply to `extensions/pi-subagent` in addition to the repository-leve
 
 - Give each child process, stream, timer, listener, worktree, and UI resource one lifecycle owner. Use one idempotent cleanup path from every terminal outcome.
 - Preserve discriminated outcome and status unions. Extend variants and handle them exhaustively instead of adding boolean or nullable fallback chains.
-- Tie background delivery to the launching session generation. After session replacement or shutdown, suppress stale ordinary results but still report retained isolated work needed for recovery.
+- Tie asynchronous follow-up delivery to the launching session generation. After session replacement or shutdown, suppress stale results while retaining exact direct tab identities and isolated work needed for recovery.
 
 ## UI and performance
 
 - Update compact derived UI state when events arrive. Render functions must read in-memory state only.
 - Test performance-sensitive invariants with operation counts or forbidden-operation assertions, not elapsed-time thresholds.
-- Keep foreground and background result text bounded while preserving structured identity, status, usage, and recovery details outside lossy excerpts.
+- Keep acknowledged handles and follow-up results bounded while preserving structured identity, status, usage, and recovery details outside lossy excerpts.
 
 ## Validation
 

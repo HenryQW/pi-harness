@@ -1,6 +1,6 @@
 # `@henryqw/pi-subagent`
 
-Delegate work to configured Pi Roles with one tool. Use direct mode for compact work in the current checkout. Use isolated mode for durable checked task graphs in Herdr worktrees.
+Delegate work to configured Pi Roles with one tool. Read-only direct tasks run in Herdr tabs in your current workspace; checked implementation runs in isolated Herdr worktrees. Both return a handle so Main can continue while they work.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
 
@@ -11,7 +11,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
-Isolated changeset tasks require Herdr `0.9.0` or newer. Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use.
+Delegation requires a Herdr-managed Pi session; isolated changeset tasks require Herdr `0.9.0` or newer. Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use.
 
 `@henryqw/pi-orchestrator` is retired. Isolated `delegate_task` absorbed that protocol. Remove the old package with `pi remove npm:@henryqw/pi-orchestrator`. Old orchestrator state is not migrated.
 
@@ -27,8 +27,8 @@ Every `delegate_task` call declares its mode. The extension never falls back bet
 
 | Mode | Use it for | Checkout behavior |
 | --- | --- | --- |
-| `direct` | Bounded research, analysis, review, or tightly coupled implementation | Runs in Main's current checkout. Changes remain uncommitted. |
-| `isolated` | Independently implementable checked changes, exploratory candidates, or work that must not disturb Main | Runs each changeset in an owned Herdr worktree and integrates only exact accepted evidence. |
+| `direct` | Read-only research, analysis, or review | Opens non-focused Herdr tabs in Main's current workspace. No worktree is created. |
+| `isolated` | Any implementation or checked task graph | Runs changesets in owned Herdr worktrees and integrates only exact validated evidence. |
 
 Keep trivial mechanically verifiable work in Main. Keep tightly coupled changes under one owner rather than splitting by file count.
 
@@ -45,39 +45,17 @@ A read-only task:
 }
 ```
 
-A checked implementation:
-
-```json
-{
-  "mode": "direct",
-  "role": "implementer",
-  "name": "Fix token refresh",
-  "task": "Fix the localized refresh regression. Leave the change uncommitted.",
-  "kind": "changeset",
-  "checks": [
-    { "command": "pnpm", "args": ["test", "--", "refresh"] }
-  ],
-  "judgment": {
-    "role": "reviewer",
-    "modelClass": "balanced",
-    "criterion": "The exact working snapshot fixes refresh without widening scope."
-  }
-}
-```
-
 Direct mode selects exactly one shape:
 
 ```text
 Single:   { mode: "direct", role, name, task, ... }
-Parallel: { mode: "direct", tasks: [{ role, name, task, ... }], background? }
-Chain:    { mode: "direct", chain: [{ role, name, task, ... }], background? }
+Parallel: { mode: "direct", tasks: [{ role, name, task, ... }] }
+Chain:    { mode: "direct", chain: [{ role, name, task, ... }] }
 ```
 
-Each entry defaults to `kind: "text"`. A `changeset` requires at least one exact command/argv check. Optional judgment receives private evidence for the exact working snapshot and must return `PASS`.
+Only Roles with known read-only tools and no extensions or MCP servers may run direct. Write-capable Roles and direct `changeset` tasks are rejected; use isolated mode for implementation. Parallel tasks run independently; chains replace each literal `{previous}` with the preceding successful answer and stop on failure.
 
-Parallel entries report in input order. Writer-capable entries are serialized because they share Main's checkout. Chains replace each literal `{previous}` with only the preceding successful assistant output and stop on failure.
-
-Background mode is available only for Roles proven read-only from their declared resources. It belongs to the launching session; shutdown aborts unfinished work. Direct text tasks fail if they mutate the checkout. Checked direct work rejects pre-existing or drifting evidence instead of changing the real index, committing, stashing, resetting, or cleaning files.
+The tool returns a task ID and first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues it after the current turn; if idle, it starts a turn. A blocked, stalled, unknown, or truncated result is not reported as success. Session switch or shutdown stops observation and preserves tab identities for recovery. Run `/subagent-direct-recovery` on the session branch to list exact tabs, agents, and Pi session files, including tabs launched after the first.
 
 ## Isolated checked graphs
 
@@ -126,6 +104,8 @@ An isolated request has one durable ID, one goal, and 1–8 typed tasks:
 
 `dependsOn` controls scheduling. `contextFrom` may name completed text tasks and preserves the declared order. Changesets require task checks. A graph with a changeset requires final checks. Checks and judgments bind to exact Git identities; candidate drift, Main drift, mutation during validation, ambiguity, or conflicts stop integration and retain evidence.
 
+`delegate_task` and `subagent_resume` return a durable request ID after its state is saved; productive work continues while Main is free. Pi delivers completion or attention as a follow-up message in the launching session. Use `subagent_status` if delivery is missed or you need current state.
+
 Every changeset advances automatically after its worker produces a clean candidate and preliminary checks pass. The runner records durable readiness, rebases and rechecks the exact candidate, runs any declared judgment, integrates it into Main, then terminates the worker and cleans up.
 
 You may queue a bounded same-worker revision while the task is actively working:
@@ -154,12 +134,12 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. A missing file si
 
 | Name | Contract | Default |
 | --- | --- | --- |
-| `maxSubagents` | Active child-process limit; safe integer ≥ 1 | `5` |
+| `maxSubagents` | Concurrent direct Herdr workers and ephemeral child-process limit; safe integer ≥ 1 | `5` |
 | `maxTurns` | Provider-turn limit per child; safe integer ≥ 1 | `50` |
 | `maxTokens` | Optional token limit per child; safe integer ≥ 1 | Unlimited |
 | `maxCorrections` | Same-worker automatic corrections per isolated request; safe integer ≥ 0 | `1` |
-| `timeout.idleMinutes` | Child idle timeout; positive and within Node's timer range | `10` |
-| `timeout.maxMinutes` | Child hard runtime; greater than idle and within Node's timer range | `30` |
+| `timeout.idleMinutes` | Direct worker and ephemeral child idle timeout; positive and within Node's timer range | `10` |
+| `timeout.maxMinutes` | Ephemeral child hard runtime; greater than idle and within Node's timer range | `30` |
 
 Limits come only from this global file. Request fields cannot override or replenish them. Existing durable requests keep their recorded policy, while a lower current correction limit can tighten recovery. There is intentionally no whole-run timeout setting.
 
@@ -193,6 +173,6 @@ See [Orchestration and package-author API](./docs/orchestration.md) for the deta
 
 ## Safety
 
-Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. The checkout coordinator reduces races among Pi-owned calls but cannot control unrelated external processes.
+Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. Read-only direct Roles cannot write through their declared tools. This is a capability check, not an OS sandbox; external processes and changes to Main's checkout can still make a concurrent read stale.
 
 Durable state is private under `config/pi-subagent/state/`. Malformed or older state is rejected rather than migrated silently. Retained-work reports identify exact resources for deliberate recovery.

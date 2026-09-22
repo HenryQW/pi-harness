@@ -4,8 +4,8 @@
 
 Own Role-configured Pi delegation through one `delegate_task` surface:
 
-- **direct mode** runs compact work in Main's checkout and can bind checks and judgment to exact working-change evidence;
-- **isolated mode** runs durable checked graphs with Herdr workers, exact Git identities, guarded integration, and recovery; and
+- **direct mode** runs read-only compact work in Herdr tabs in Main's workspace and returns a handle before completion;
+- **isolated mode** runs durable checked graphs with Herdr worktrees, exact Git identities, guarded integration, and recovery; and
 - the package root exposes the Role, executor, worktree, evidence, schema, state, and runtime mechanisms used by the extension.
 
 ## Domain glossary
@@ -13,7 +13,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - **Main**: the Pi session and checkout coordinating delegated work.
 - **Role**: package or user Markdown defining responsibility, tools, trusted extension sources, Skills, optional MCP names, instructions, and an optional model-class default. Roles do not select isolation.
 - **Model Class**: `fast`, `balanced`, `frontier`, or `fav`, resolved through `pi-task-models`.
-- **Direct task**: one text or changeset assignment in Main's checkout.
+- **Direct task**: one read-only assignment in a Herdr tab in Main's current workspace.
 - **Isolated request**: one durable ID, goal, and checked task graph.
 - **Candidate**: exact clean committed task-worktree identity produced by an isolated changeset worker.
 - **Readiness**: durable proof that one exact live-worker candidate passed its preliminary checks and is sealed for automatic integration; it is not a separate user approval.
@@ -33,17 +33,15 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 
 - `config/pi-subagent/config.json` is the only user execution-policy source. It owns `maxSubagents`, `maxTurns`, optional `maxTokens`, `maxCorrections`, and child idle/hard timeout.
 - Request fields cannot override or replenish policy. Durable requests store the policy snapshot and cumulative correction count; current config may tighten the correction allowance.
-- Productive execution has no whole-run wall-clock deadline. Long productive work and later resume remain valid.
-- Child idle/hard runtime, turn/token handling, outer abort, process I/O, status inspection, termination, and cleanup remain independently bounded.
+- Productive execution has no whole-run wall-clock deadline. Long productive work and later resume remain valid. Direct Herdr observation also has no whole-task elapsed deadline; worker idleness is bounded.
+- Child idle/hard runtime, turn/token handling, outer abort, process I/O, status inspection, termination, and cleanup remain independently bounded. Direct Herdr workers use idle limits, not ephemeral child hard runtime.
 - Ephemeral children share one FIFO executor pool. Queued time consumes no child timeout. Isolated Herdr Role launches receive the same non-refilling turn/token/runtime budget metadata.
 
 ### Direct evidence
 
-- Direct text work assigned to a potentially writing Role records checkout state and rejects any mutation.
-- Direct changesets run serially in Main, leave changes uncommitted, and require exact command/argv checks.
-- Checks and optional judgment bind to one exact working snapshot. Any mutation by checks or review invalidates evidence.
-- Existing ambiguous Git state, hidden index content, unsupported layout, evidence overflow, or candidate drift fails closed and preserves files.
-- Background direct mode admits only Roles proven read-only from declared tools, extensions, and MCP resources. It belongs to the launching session.
+- Direct mode admits only Roles proven read-only from declared tools, extensions, and MCP resources. Direct changesets and write-capable Roles require isolated mode.
+- Each direct worker has a recorded Herdr tab and Pi session identity. The first handle returns before completion; subsequent tab identities remain recoverable on the session branch.
+- An exact settled worker with a bounded final Pi answer produces a follow-up to Main. Blocked, unknown, idle-stalled, truncated, or ambiguous outcomes retain actionable recovery identity. Session replacement never delivers to the wrong Main session.
 
 ### Isolated lifecycle
 
