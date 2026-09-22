@@ -620,10 +620,10 @@ export class HerdrHostRuntime implements HostRuntime {
 			return { outcome: "unknown", diagnostic: `Exact worker was not interactively ready: ${ready.status}.` };
 		}
 
-		const promptOptions = this.processOptions(allocation.worktreeCwd, context);
+		const promptOptions = this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
 		const promptArgs = [
 			"agent", "prompt", allocation.agentName, text, "--wait",
-			"--until", "idle", "--until", "done", "--until", "blocked",
+			"--until", "working", "--until", "done", "--until", "blocked",
 			"--timeout", String(promptOptions.timeoutMs),
 		];
 		const prompted = await this.herdr.exec(promptArgs, promptOptions);
@@ -642,6 +642,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		} catch (error) {
 			return { outcome: "unknown", diagnostic: `Worker prompt response is malformed: ${safeText(error)}` };
 		}
+		if (settled.status === "working") return await this.reconcileDeliveredPrompt(input, allocation, context);
 		if (settled.status === "blocked") return { outcome: "blocked", diagnostic: await this.diagnostic(allocation, context, "Worker settled as blocked.") };
 		if (!SETTLED_AGENT_STATES.has(settled.status)) return { outcome: "unknown", diagnostic: `Worker prompt did not return a settled state: ${settled.status}.` };
 		return await this.candidateResult(input, allocation, context);
@@ -1048,9 +1049,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		context: OperationContext,
 		includeWorking: boolean,
 	): Promise<{ status: string; interactiveReady: boolean }> {
-		const options = includeWorking
-			? this.processOptions(allocation.worktreeCwd, context)
-			: this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
+		const options = this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS);
 		const response = await this.herdr.json([
 			"agent", "wait", allocation.agentName,
 			"--until", "idle", "--until", "done", "--until", "blocked",
@@ -1396,7 +1395,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 	}
 
-	private processOptions(cwd: string, context: OperationContext, cap = Number.POSITIVE_INFINITY): HostProcessOptions {
+	private processOptions(cwd: string, context: OperationContext, cap = HERDR_OPERATION_CAP_MS): HostProcessOptions {
 		context.signal.throwIfAborted();
 		return { cwd, signal: context.signal, timeoutMs: this.callTimeout(context, cap) };
 	}
@@ -1406,12 +1405,12 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	private callTimeout(context: OperationContext, cap: number): number {
-		const remaining = Math.min(context.timeoutMs, context.deadline - this.now(), cap);
+		const remaining = Math.min(context.timeoutMs ?? cap, context.deadline === undefined ? cap : context.deadline - this.now(), cap);
 		if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("Operation deadline is exhausted.");
 		return Math.max(1, Math.floor(remaining));
 	}
 
 	private contextInterrupted(context: OperationContext): boolean {
-		return context.signal.aborted || context.deadline <= this.now();
+		return context.signal.aborted || (context.deadline !== undefined && context.deadline <= this.now());
 	}
 }

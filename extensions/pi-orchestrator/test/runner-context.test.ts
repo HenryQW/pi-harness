@@ -85,15 +85,14 @@ function runnerState(definitions: TaskRequest[], tasks: TaskState[]): RunState {
 		request: {
 			id: "context-readiness",
 			goal: "Test dependency readiness.",
-			budgetMs: 1_000,
+
 			tasks: definitions,
 			finalChecks: [{ command: "check", args: [] }],
 		},
 		root: "/repo",
 		requestStartMain: main,
 		main,
-		deadlineStartedAt: 1,
-		deadline: 1_001,
+
 		status: "pending",
 		tasks,
 		waves: [],

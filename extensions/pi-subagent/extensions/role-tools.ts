@@ -64,14 +64,14 @@ function executionBudget(value: string | undefined): EphemeralSubagentExecutionB
 	if (Object.keys(budget).some((key) => !["maxTurns", "maxMs", "startedAt", "maxTokens"].includes(key))
 		|| !("maxTurns" in budget) || !("maxMs" in budget) || !("startedAt" in budget)
 		|| !Number.isSafeInteger(budget.maxTurns) || (budget.maxTurns as number) < 1
-		|| typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0
+		|| (budget.maxMs !== null && (typeof budget.maxMs !== "number" || !Number.isFinite(budget.maxMs) || budget.maxMs <= 0))
 		|| !Number.isSafeInteger(budget.startedAt) || (budget.startedAt as number) < 0
 		|| !maxTokensValid) {
 		throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
 	}
 	return {
 		maxTurns: budget.maxTurns as number,
-		maxMs: budget.maxMs,
+		maxMs: budget.maxMs as number | null,
 		startedAt: budget.startedAt as number,
 		...(budget.maxTokens === undefined ? {} : { maxTokens: budget.maxTokens as number }),
 	};
@@ -94,7 +94,7 @@ function messageTokens(message: unknown): number | undefined {
 }
 
 function joinBudgetParts(parts: string[]): string {
-	return `${parts.slice(0, -1).join(", ")}${parts.length > 2 ? "," : ""} and ${parts.at(-1)}`;
+	return parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")}${parts.length > 2 ? "," : ""} and ${parts.at(-1)}`;
 }
 
 export default function roleTools(pi: ExtensionAPI): void {
@@ -166,18 +166,18 @@ ${event.input.command}`;
 		const elapsedMs = Math.max(0, Date.now() - budget.startedAt);
 		const turnWarningDue = !turnWarningSent && completedTurns >= warningTurn;
 		const tokenWarningDue = warningTokens !== undefined && !tokenWarningSent && completedTokens >= warningTokens;
-		const runtimeWarningDue = !runtimeWarningSent && elapsedMs >= budget.maxMs * WARNING_RATIO;
+		const runtimeWarningDue = budget.maxMs !== null && !runtimeWarningSent && elapsedMs >= budget.maxMs * WARNING_RATIO;
 		if (!turnWarningDue && !tokenWarningDue && !runtimeWarningDue) return;
 		if (turnWarningDue) turnWarningSent = true;
 		if (tokenWarningDue) tokenWarningSent = true;
 		if (runtimeWarningDue) runtimeWarningSent = true;
 		const remainingTurns = Math.max(0, budget.maxTurns - completedTurns);
-		const remainingMinutes = Math.max(0, Math.ceil((budget.maxMs - elapsedMs) / 60_000));
-		const maxMinutes = budget.maxMs / 60_000;
+		const runtimeRemaining = budget.maxMs === null ? []
+			: [`approximately ${Math.max(0, Math.ceil((budget.maxMs - elapsedMs) / 60_000))} of ${budget.maxMs / 60_000} minutes`];
 		const parts = [
 			`${remainingTurns} of ${budget.maxTurns} turns`,
 			...(budget.maxTokens === undefined ? [] : [`${Math.max(0, budget.maxTokens - completedTokens)} of ${budget.maxTokens} tokens`]),
-			`approximately ${remainingMinutes} of ${maxMinutes} minutes`,
+			...runtimeRemaining,
 		];
 		pi.sendMessage({
 			customType: WARNING_MESSAGE_TYPE,

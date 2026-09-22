@@ -4,11 +4,15 @@ Run durable, checked local implementation graphs from Pi Main. Independent tasks
 
 This package is the sole owner of that checked protocol. `delegate_task` remains lightweight generic delegation.
 
+Runs have no elapsed-time deadline. Workers can continue through long implementations and follow-ups without a 30-minute cutoff. Cancel explicitly when work should stop.
+
 ## Install
 
-Before upgrading from Pi Orchestrator 5.x, finish or explicitly abort every unfinished schema v3 request with the matching 5.x package. Version 6 reads schema v4 only. It preserves rejected state and owned work, so do not delete state files or worker worktrees to recover them.
+Before upgrading, finish or explicitly abort unfinished requests with their matching package: 5.x for schema v3, or 6.x for schema v4. Version 7 removes `budgetMs` from requests and reads schema v5 only. It preserves rejected state and owned work, so do not delete state files or worker worktrees to recover them.
 
 Settle every unfinished Auto DAG run before upgrading. Old Auto DAG state is inert. Pi Orchestrator does not read or migrate it.
+
+Restart Pi after updating so the loaded coordinator uses the new contract. Updating package files alone does not replace an already loaded runtime.
 
 The repository installer installs all selected packages first. When Pi Orchestrator was selected, it then removes only the exact `npm:@henryqw/pi-auto-dag` source if present. A missing source needs no action.
 
@@ -25,7 +29,7 @@ pi install npm:@henryqw/pi-orchestrator
 - Use a clean Git worktree on an attached branch with a committed `HEAD`. Task worktrees may contain ignored dependency and index artifacts created by Role tooling.
 - Use Herdr `0.9.0` or newer, with protocol version 22 or newer. Run `herdr --version` to verify the installed version.
 - Configure Pi task-model profiles for every requested model class. Run `/task-models` to verify the profiles.
-- Use `@henryqw/pi-subagent` 17 or newer for Role launch, execution, worktrees, and exact judgment evidence.
+- Use `@henryqw/pi-subagent` 18.1 or newer for Role launch, execution, worktrees, and exact judgment evidence.
 - Changeset workers wait until the new worktree workspace pane list is stable, then create a dedicated worker tab. They never use the workspace root pane.
 - Herdr gives each workspace a short opaque six-character token label and labels its worker tab as `<role>/<model-class>`.
 - While workspaces are active, Pi's widget area lists each workspace label, task status, compact Role/model badge, and task ID. A row disappears after that workspace is cleaned up. Non-TUI tool results include the same active-workspace rows as plain text.
@@ -81,7 +85,6 @@ Judgment launches use the declared judgment Role without adding arguments, envir
 {
   "id": "repair-auth",
   "goal": "Repair sign-in and prove the release is ready.",
-  "budgetMs": 1800000,
   "tasks": [
     {
       "id": "auth-runtime",
@@ -163,11 +166,15 @@ Runtime diagnostics and possible-resource evidence are bounded before each save.
 
 ## Limits and recovery
 
+Execute and resume have no whole-run timer or request budget field. Task checks also have no elapsed-time cutoff; hung checks require cancellation. Text tasks and judgments retain their 10-minute idle timeout and turn limit, but no maximum elapsed runtime. Direct `delegate_task` settings are separate and unchanged.
+
+Git inspection, Herdr startup/acknowledgment and individual polling calls, status inspection, and safety termination remain bounded. A worker prompt is sent once; after acknowledgment the coordinator observes it through bounded lifecycle calls until a candidate, failure or cancellation. It does not resend a prompt because work takes a long time. Interrupting the coordinator retains worker resources; use `orchestrate_abort` to terminate them.
+
 ### Recovery actions
 
 Use `orchestrate_status` after interruption or when a request needs attention. Status is read-only: it does not reconcile, terminate, replay, or clean up workers. It reports an exact continuation only when saved evidence proves that action safe, including an eligible failed text-task retry. Applying that continuation still requires a deliberate `orchestrate_resume` call. Otherwise inspect the retained worker or abort explicitly.
 
-A resume gets a fresh bounded recovery deadline. It preserves resources when reconciliation, checks, review, integration, or termination remain uncertain. Choose one reported action:
+A resume has no elapsed-time deadline. It preserves resources when reconciliation, checks, review, integration, or termination remain uncertain. Choose one reported action:
 
 - `retry` continues pre-dispatch recovery or sends one eligible correction to the same agent. It never replaces a prompted agent. A text-task retry runs only its selected ready task when others need attention.
 - `verify` checks exact retained task work, records readiness for a precisely retained preliminarily checked candidate, continues a ready rebase or integration, reconciles post-integration termination, or finishes pending cleanup.
@@ -175,7 +182,7 @@ A resume gets a fresh bounded recovery deadline. It preserves resources when rec
 
 `orchestrate_abort` terminates owned workers and records an aborted request. It does not claim uncertain cleanup succeeded.
 
-State schema v4 rejects v3 and all older state without modifying files or cleaning resources. To recover an unfinished v3 request, use the matching 5.x package to finish or explicitly abort it before upgrading. Never delete state or worker worktrees as a migration shortcut.
+State schema v5 rejects v4 and all older state without modifying files or cleaning resources. To recover an unfinished request, use its matching package to finish or explicitly abort it before upgrading: 6.x for v4, or 5.x for v3. Never edit version fields or delete state or worker worktrees as a migration shortcut.
 
 ### Scope
 

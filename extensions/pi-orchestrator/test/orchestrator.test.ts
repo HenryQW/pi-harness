@@ -43,7 +43,7 @@ const CURRENT_MAIN = {
 const EXECUTE_REQUEST: ExecuteRequest = {
 	id: "request-one",
 	goal: "Deliver checked work.",
-	budgetMs: 10_000,
+
 	tasks: [{
 		id: "unit-one",
 		kind: "changeset",
@@ -671,8 +671,8 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 	for (const [index, { context: operation }] of harness.rootCalls.entries()) {
 		assert.equal(operation.signal, signals[index + 1]);
 		assert.equal(operation.timeoutMs, 5_000);
-		assert.ok(operation.deadline >= lookupStartedAt + 5_000);
-		assert.ok(operation.deadline <= lookupFinishedAt + 5_000);
+		assert.ok(operation.deadline! >= lookupStartedAt + 5_000);
+		assert.ok(operation.deadline! <= lookupFinishedAt + 5_000);
 	}
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method !== "execute"), [
 		{ method: "status", args: ["request-one", CANONICAL_ROOT, signals[1]] },
@@ -739,7 +739,7 @@ test("manifest entrypoint and Main-side Skill ship with the four tools", async (
 		files?: string[];
 		pi?: { extensions?: string[]; skills?: string[] };
 	};
-	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^18.0.0");
+	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^18.1.0");
 	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.4.7");
 	assert.deepEqual(manifest.pi?.extensions, ["./extensions/orchestrator.ts"]);
 	assert.deepEqual(manifest.pi?.skills, ["./skills"]);

@@ -369,8 +369,8 @@ test("worktree allocation persists helper-derived intent before add and retains 
 	assert.ok(first.intent.worktree && await readFile(join(first.intent.worktree.path, "base.txt"), "utf8") === "base\n");
 	assert.ok(calls.every((call) => Array.isArray(call.args)
 		&& call.options.signal === operationContext.signal
-		&& call.options.timeoutMs > 0
-		&& call.options.timeoutMs <= operationContext.timeoutMs));
+		&& call.options.timeoutMs! > 0
+		&& call.options.timeoutMs! <= operationContext.timeoutMs!));
 
 	const mismatchedBase = { ...waveBase, head: "f".repeat(40) };
 	const mismatch = await allocate(runtime, root, task("mismatch"), mismatchedBase, "token-mismatch-01", operationContext);
@@ -692,7 +692,7 @@ test("same-wave units use one authoritative packet from each integration base", 
 	assert.match(packets[1]!.patch, /second\.txt/);
 	assert.doesNotMatch(packets[1]!.patch, /first\.txt/);
 	assert.equal(finalMain.head, secondPrepared.candidate.head);
-	assert.ok(seenContexts.every((item) => item.signal instanceof AbortSignal && item.timeoutMs > 0));
+	assert.ok(seenContexts.every((item) => item.signal instanceof AbortSignal && item.timeoutMs! > 0));
 });
 
 test("final review resolves a canonical Main worktree root without changing the launch subdirectory", async (t) => {
@@ -735,8 +735,8 @@ test("final review resolves a canonical Main worktree root without changing the 
 		&& JSON.stringify(args) === JSON.stringify(["rev-parse", "--show-toplevel"])
 		&& options.cwd === subdirectory
 		&& options.signal === operationContext.signal
-		&& options.timeoutMs > 0
-		&& options.timeoutMs <= operationContext.timeoutMs));
+		&& options.timeoutMs! > 0
+		&& options.timeoutMs! <= operationContext.timeoutMs!));
 });
 
 test("Reviewer launch cleanup runs after success, failure, and abort, and cleanup errors surface", async (t) => {

@@ -51,8 +51,8 @@ const ALLOCATION_KINDS: readonly AllocationKind[] = ["worktree", "workspace", "w
 
 export interface OperationContext {
 	readonly signal: AbortSignal;
-	readonly timeoutMs: number;
-	readonly deadline: number;
+	readonly timeoutMs?: number;
+	readonly deadline?: number;
 }
 
 export interface CommandResult extends CheckCommand {
@@ -342,19 +342,20 @@ type ProductiveLifecycle = {
 };
 
 class DeadlineScope {
-	readonly deadline: number;
+	readonly deadline: number | undefined;
 	readonly signal: AbortSignal;
 	private readonly now: () => number;
 	private readonly controller = new AbortController();
-	private readonly timer: NodeJS.Timeout;
+	private readonly timer?: NodeJS.Timeout;
 
-	constructor(deadline: number, now: () => number, outerSignal?: AbortSignal) {
+	constructor(deadline: number | undefined, now: () => number, outerSignal?: AbortSignal) {
 		this.deadline = deadline;
 		this.now = now;
 		this.signal = outerSignal ? AbortSignal.any([this.controller.signal, outerSignal]) : this.controller.signal;
-		const remaining = Math.max(0, deadline - now());
-		this.timer = setTimeout(() => this.controller.abort(new DeadlineExpired()), remaining);
-		this.timer.unref();
+		if (deadline !== undefined) {
+			this.timer = setTimeout(() => this.controller.abort(new DeadlineExpired()), Math.max(0, deadline - now()));
+			this.timer.unref();
+		}
 	}
 
 	async call<T>(operation: (context: OperationContext) => Promise<T>): Promise<T> {
@@ -368,12 +369,12 @@ class DeadlineScope {
 		clearTimeout(this.timer);
 	}
 
-	private remaining(): number {
-		return Math.max(0, this.deadline - this.now());
+	private remaining(): number | undefined {
+		return this.deadline === undefined ? undefined : Math.max(0, this.deadline - this.now());
 	}
 
 	private throwIfExpired(): void {
-		if (this.remaining() <= 0) throw new DeadlineExpired();
+		if (this.deadline !== undefined && this.deadline <= this.now()) throw new DeadlineExpired();
 		this.signal.throwIfAborted();
 	}
 }
@@ -868,10 +869,8 @@ export class OrchestratorRunner {
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
-		const startedAt = this.coordinatorRuntime.now();
 		const request = parseExecuteRequest(value);
-		const deadline = startedAt + request.budgetMs;
-		const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
+		const scope = new DeadlineScope(undefined, () => this.coordinatorRuntime.now(), outerSignal);
 		try {
 			const canonicalCwd = realpathSync.native(cwd);
 			const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd }, context));
@@ -890,8 +889,6 @@ export class OrchestratorRunner {
 					root,
 					requestStartMain: preparedMain,
 					main: preparedMain,
-					deadlineStartedAt: startedAt,
-					deadline,
 					status: "pending",
 					tasks: request.tasks.map((task): TaskState => task.kind === "changeset"
 						? {
@@ -937,21 +934,18 @@ export class OrchestratorRunner {
 				const state = loaded.state;
 				if (this.recoverInterrupted(state)) await loaded.save();
 				if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
-				const recoveryDeadline = this.coordinatorRuntime.now() + state.request.budgetMs;
 				state.recovery = {
 					kind: "resume",
 					action: request.action,
 					...("taskId" in request ? { taskId: request.taskId } : {}),
-					deadline: recoveryDeadline,
 				};
 				state.updatedAt = this.coordinatorRuntime.now();
 				await loaded.save();
 				return loaded;
 			}, { productiveRunLease: lifecycle.lease });
 			const state = handle.state;
-			const recoveryDeadline = state.recovery!.deadline;
 
-			const scope = new DeadlineScope(recoveryDeadline, () => this.coordinatorRuntime.now(), outerSignal);
+			const scope = new DeadlineScope(undefined, () => this.coordinatorRuntime.now(), outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);

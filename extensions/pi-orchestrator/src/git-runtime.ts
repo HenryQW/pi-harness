@@ -51,7 +51,7 @@ type ProcessResult = { code: number; killed: boolean; stdout: string; stderr: st
 export interface DirectProcessOptions {
 	cwd: string;
 	signal: AbortSignal;
-	timeoutMs: number;
+	timeoutMs?: number;
 	stdin?: string;
 }
 
@@ -835,7 +835,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			const result = await this.execute("git", ["patch-id", "--stable"], {
 				cwd,
 				signal: context.signal,
-				timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs),
+				timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs ?? GIT_OPERATION_CAP_MS),
 				stdin: patch,
 			});
 			if (result.code !== 0 || result.killed || result.stderr.trim()) {
@@ -877,7 +877,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			const result = await this.execute("git", [...args], {
 				cwd,
 				signal: signal ?? context.signal,
-				timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs),
+				timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs ?? GIT_OPERATION_CAP_MS),
 			});
 			return { code: result.code, stdout: result.stdout, stderr: result.stderr };
 		};
@@ -888,7 +888,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		const result = await this.execute("git", [...args], {
 			cwd,
 			signal: context.signal,
-			timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs),
+			timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs ?? GIT_OPERATION_CAP_MS),
 		});
 		context.signal.throwIfAborted();
 		return result;

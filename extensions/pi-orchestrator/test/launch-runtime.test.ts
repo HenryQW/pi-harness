@@ -70,7 +70,7 @@ function request(tasks: TaskRequest[], finalJudgment?: Judgment): ExecuteRequest
 	return {
 		id: "request-one",
 		goal: "Deliver checked work.",
-		budgetMs: 60_000,
+
 		tasks,
 		finalChecks: [{ command: "node", args: ["--version"] }],
 		...(finalJudgment === undefined ? {} : { finalJudgment }),

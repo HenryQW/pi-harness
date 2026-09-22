@@ -61,7 +61,7 @@ export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi,
 	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: 8,
 		maxTurns: 50,
-		timeout: { idleMs: 10 * 60_000, maxMs: 30 * 60_000 },
+		timeout: { idleMs: 10 * 60_000, maxMs: null },
 	});
 	const git = new CheckedGitRuntime({
 		runProcess,

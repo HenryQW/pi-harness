@@ -3,7 +3,7 @@ import { parseRoleName, type RoleName } from "@henryqw/pi-subagent";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-export const RUN_STATE_VERSION = 4;
+export const RUN_STATE_VERSION = 5;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
@@ -66,7 +66,6 @@ export const TaskRequestSchema = Type.Union([TextTaskRequestSchema, ChangesetTas
 export const ExecuteRequestSchema = Type.Object({
 	id: IdSchema,
 	goal: TextSchema,
-	budgetMs: Type.Integer({ minimum: 1_000, maximum: 2_147_483_647 }),
 	tasks: Type.Array(TaskRequestSchema, { minItems: 1, maxItems: MAX_TASKS }),
 	finalChecks: Type.Array(CheckCommandSchema, { minItems: 1, maxItems: 32 }),
 	finalJudgment: Type.Optional(JudgmentSchema),
@@ -358,8 +357,6 @@ const RunStateSchema = Type.Object({
 	root: TextSchema,
 	requestStartMain: WorkspaceSchema,
 	main: WorkspaceSchema,
-	deadlineStartedAt: TimestampSchema,
-	deadline: TimestampSchema,
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"), Type.Literal("completed"),
 		Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
@@ -371,7 +368,6 @@ const RunStateSchema = Type.Object({
 		kind: Type.Literal("resume"),
 		action: Type.Union([Type.Literal("retry"), Type.Literal("verify"), Type.Literal("finalize")]),
 		taskId: Type.Optional(IdSchema),
-		deadline: TimestampSchema,
 	}, { additionalProperties: false })),
 	accepted: Type.Boolean(),
 	acceptedAt: Type.Optional(TimestampSchema),
@@ -725,10 +721,8 @@ export function parseRunState(value: unknown): RunState {
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
-	if (state.deadlineStartedAt > state.createdAt
-		|| state.createdAt > state.updatedAt
-		|| state.deadline !== state.deadlineStartedAt + request.budgetMs) {
-		throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} deadline.`);
+	if (state.createdAt > state.updatedAt) {
+		throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} timestamps.`);
 	}
 	if (state.tasks.length !== request.tasks.length) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task count.`);
 	for (let index = 0; index < request.tasks.length; index += 1) {
@@ -1020,7 +1014,6 @@ export function parseRunState(value: unknown): RunState {
 		validateCheckBatchEvidence(state.final.checks, request.finalChecks, "Final checks");
 	}
 	if (state.recovery) {
-		if (state.recovery.deadline <= state.updatedAt) throw new Error("Malformed expired recovery deadline.");
 		if (state.recovery.action === "finalize" ? state.recovery.taskId !== undefined : !state.recovery.taskId
 			|| !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
 			throw new Error("Malformed resume recovery target.");

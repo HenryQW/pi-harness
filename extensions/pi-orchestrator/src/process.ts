@@ -5,7 +5,7 @@ const OUTPUT_LIMIT_BYTES = 1024 * 1024;
 type ProcessOptions = {
 	cwd: string;
 	signal: AbortSignal;
-	timeoutMs: number;
+	timeoutMs?: number;
 	stdin?: string;
 };
 
@@ -13,7 +13,7 @@ type ProcessOptions = {
 export const runProcess = async (command: string, args: string[], options: ProcessOptions) => await spawnBounded(command, args, {
 	cwd: options.cwd,
 	signal: options.signal,
-	timeoutMs: options.timeoutMs,
+	timeoutMs: options.timeoutMs ?? null,
 	...(options.stdin === undefined ? {} : { stdin: options.stdin }),
 	stdoutLimitBytes: OUTPUT_LIMIT_BYTES,
 	stderrLimitBytes: OUTPUT_LIMIT_BYTES,

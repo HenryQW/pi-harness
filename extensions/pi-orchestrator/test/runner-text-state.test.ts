@@ -136,7 +136,7 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 	const request: ExecuteRequest = {
 		id: "text-failure",
 		goal: "Retain failed text-task state.",
-		budgetMs: 1_000,
+
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -171,7 +171,7 @@ test("text retry saves its second attempt atomically before executor launch", as
 	const request: ExecuteRequest = {
 		id: "text-retry",
 		goal: "Retry a failed text task without an invalid intermediate state.",
-		budgetMs: 1_000,
+
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -264,7 +264,7 @@ test("text retry runs only the selected ready task while another needs attention
 	const request: ExecuteRequest = {
 		id: "text-retry-with-attention",
 		goal: "Retry one failed text task without scheduling another.",
-		budgetMs: 1_000,
+
 		tasks: [
 			{
 				id: otherId,
@@ -443,7 +443,7 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			const result = await runner.execute({
 				id: `mixed-${kinds.join("-")}`,
 				goal: "Keep wave failure attribution exact.",
-				budgetMs: 1_000,
+
 				tasks: kinds.map((kind) => kind === "text" ? text : changeset),
 				finalChecks: [{ command: "true", args: [] }],
 			} satisfies ExecuteRequest, root);

@@ -1646,10 +1646,11 @@ test("initial and correction prompts include the exact request goal", async (t) 
 			assert.ok(args[3]!.includes(`Goal:\n${GOAL}\nWorktree:`));
 			assert.ok(!args[3]!.includes("Correction failure:"));
 			assert.match(args[3]!, new RegExp(fixture.worktree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-			assert.deepEqual(args.slice(4), ["--wait", "--until", "idle", "--until", "done", "--until", "blocked", "--timeout", "90000"]);
-			assert.equal(options.timeoutMs, 90_000);
-			assert.ok(options.timeoutMs > 30_000 && options.timeoutMs <= operation.deadline - 1_000);
-		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+			assert.deepEqual(args.slice(4), ["--wait", "--until", "working", "--until", "done", "--until", "blocked", "--timeout", "30000"]);
+			assert.equal(options.timeoutMs, 30_000);
+			assert.ok(options.timeoutMs <= 30_000 && options.timeoutMs <= operation.deadline - 1_000);
+		}, result: success({ type: "agent_prompted", agent: agentInfo("working", false, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: (args) => assert.deepEqual(args.slice(0, 3), ["agent", "wait", AGENT_NAME]), result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "terminal diagnostic", stderr: "" } },
 	);
 	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, operation);
@@ -1781,7 +1782,7 @@ test("normal prompt accepts a changed clean candidate from real in-flight Git in
 	script.done();
 });
 
-test("delivered stall uses real in-flight Git evidence until unchanged and dirty states become changed-clean", async (t) => {
+test("delivered prompt remains observable past 30 minutes until real Git evidence becomes changed-clean", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
 	git(fixture.root, "config", "user.name", "Orchestrator Test");
@@ -1805,7 +1806,7 @@ test("delivered stall uses real in-flight Git evidence until unchanged and dirty
 			inspectInFlightTaskCandidate: gitRuntime.inspectInFlightTaskCandidate.bind(gitRuntime),
 			delay: async (milliseconds) => {
 				delays.push(milliseconds);
-				now += 1_000;
+				now += 31 * 60_000;
 				if (delays.length === 1) {
 					await writeFile(join(fixture.worktree, "candidate.txt"), "dirty\n");
 				} else {
@@ -1822,26 +1823,26 @@ test("delivered stall uses real in-flight Git evidence until unchanged and dirty
 	worktree.baseCommit = waveBase.head;
 	worktree.repoRoot = fixture.root;
 	const preCandidate = await gitRuntime.inspectTaskCandidate({ root: fixture.root, task, attempt }, context());
-	const operation = { ...context(), deadline: 101_000, timeoutMs: 90_000 };
+	const operation: OperationContext = { signal: new AbortController().signal };
 	const lifecycle = (status: "idle" | "done", timeoutMs: number): Step => ({
 		command: "herdr",
 		args: (args, options) => {
 			assert.deepEqual(args.slice(-6), ["--until", "working", "--until", "unknown", "--timeout", String(timeoutMs)]);
 			assert.equal(options.timeoutMs, timeoutMs);
-			assert.ok(timeoutMs > 30_000 && timeoutMs <= operation.deadline - now);
+			assert.ok(timeoutMs <= 30_000);
 		},
 		result: success({ type: "agent_info", agent: agentInfo(status, true, { cwd: fixture.worktree }) }),
 	});
 	script.push(
 		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: (args, options) => {
-			assert.equal(args.at(-1), "90000");
-			assert.equal(options.timeoutMs, 90_000);
+			assert.equal(args.at(-1), "30000");
+			assert.equal(options.timeoutMs, 30_000);
 			now = 12_000;
 		}, result: failure("agent_prompt_stalled") },
-		lifecycle("idle", 89_000),
-		lifecycle("done", 88_000),
-		lifecycle("done", 87_000),
+		lifecycle("idle", 30_000),
+		lifecycle("done", 30_000),
+		lifecycle("done", 30_000),
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "diagnostic", stderr: "" } },
 	);
 	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate }, operation);

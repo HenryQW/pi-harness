@@ -223,6 +223,15 @@ test("child budget warnings use executor time and apply each threshold once", ()
 		for (let turn = 1; turn < 40; turn++) terminal.turnEnd(continuing);
 		terminal.turnEnd({ ...continuing, message: { role: "assistant", content: [] } });
 		assert.deepEqual(terminal.sent, []);
+
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 50, maxMs: null, startedAt: 0 });
+		const untimed = policy();
+		now = 2 * 60 * 60_000;
+		for (let turn = 1; turn < 40; turn++) untimed.turnEnd(continuing);
+		assert.equal(untimed.sent.length, 0);
+		untimed.turnEnd(continuing);
+		assert.match(untimed.sent[0]!.message.content, /^\*\*Execution budget warning:\*\* 10 of 50 turns remain/);
+		assert.doesNotMatch(untimed.sent[0]!.message.content, /minutes/);
 	} finally {
 		Date.now = originalNow;
 		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];

@@ -220,10 +220,10 @@ importers:
         specifier: ^0.4.7
         version: link:../../packages/pi-herdr
       '@henryqw/pi-process':
-        specifier: ^0.1.0
+        specifier: ^0.2.0
         version: link:../../packages/pi-process
       '@henryqw/pi-subagent':
-        specifier: ^18.0.0
+        specifier: ^18.1.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^7.0.0
@@ -255,7 +255,7 @@ importers:
         version: link:../../packages/pi-herdr
       '@henryqw/pi-process':
         specifier: ^0.1.0
-        version: link:../../packages/pi-process
+        version: 0.1.0
       proper-lockfile:
         specifier: ^4.1.2
         version: 4.1.2
@@ -324,7 +324,7 @@ importers:
         version: link:../pi-multi-codex
       '@henryqw/pi-process':
         specifier: ^0.1.0
-        version: link:../../packages/pi-process
+        version: 0.1.0
       '@henryqw/pi-task-models':
         specifier: ^7.0.0
         version: link:../pi-task-models
@@ -1067,6 +1067,10 @@ packages:
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
+
+  '@henryqw/pi-process@0.1.0':
+    resolution: {integrity: sha512-Vyl0kMweLCp8WuVYXwDMqUfHaAie/eU6gxAyobo95PQwXkP8S/i9MAGN2cR8uOt5I4zjrXo4vnUJKa5wkBq20w==}
+    engines: {node: '>=22.19.0'}
 
   '@hono/node-server@2.1.1':
     resolution: {integrity: sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg==}
@@ -6313,6 +6317,8 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
+
+  '@henryqw/pi-process@0.1.0': {}
 
   '@hono/node-server@2.1.1(hono@4.13.5)':
     dependencies:

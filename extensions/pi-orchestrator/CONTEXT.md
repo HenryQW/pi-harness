@@ -6,7 +6,7 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 
 ## Domain glossary
 
-- **Request**: one immutable goal, task graph, productive deadline, final checks, and optional final judgment.
+- **Request**: one immutable goal, task graph, final checks, and optional final judgment, with no elapsed-time execution deadline.
 - **Text Task**: one bounded textual result that later tasks may consume through `contextFrom`.
 - **Changeset Task**: one bounded repository change with requirements, deliverable, dependencies, direct checks, and optional judgment.
 - **Wave**: ready tasks whose `dependsOn` and `contextFrom` predecessors completed. Tasks run concurrently; only changesets integrate, in declared request order.
@@ -39,9 +39,9 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - Durable check evidence keeps every exact command, argument array, exit status, killed status, and before/after identity. Only one failed-batch diagnostic result may retain bounded output.
 - Judgment uses pi-subagent's exact `{base, tip, patchPath}` evidence and accepts only exact `PASS`.
 - Main identity is checked at each rebase, integration, and final boundary. Movement during ready work records another exact rebase; unproved drift fails closed and preserves recovery evidence.
-- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Runtime evidence is bounded before persistence. Reads validate strict state schema v4, reject v3 and older versions without mutation or cleanup, and never migrate another format.
+- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Runtime evidence is bounded before persistence. Reads validate strict state schema v5, reject v4 and older versions without mutation or cleanup, and never migrate another format.
 - `orchestrate_status` is non-destructive. It reports saved state, Main identity, and only continuations proven safe; it does not reconcile, replay, terminate, or clean up.
-- `orchestrate_resume` permits only `retry`, `verify`, or `finalize` under a fresh bounded recovery deadline. Uncertain recovery retains the worker and resources. `orchestrate_abort` is the only pre-integration path that terminates owned workers.
+- `orchestrate_resume` permits only `retry`, `verify`, or `finalize` without an elapsed-time execution deadline. Individual I/O, status and safety termination operations remain bounded. Uncertain recovery retains the worker and resources. `orchestrate_abort` is the only pre-integration path that terminates owned workers.
 - Cleanup records uncertainty. The runtime never reports unknown resources as absent or force-deletes recoverable work.
 - Role child launches register no `orchestrate_*` tools. Main registers exactly execute, status, resume, and abort.
 - The package stops at checked local integration. Automatic progression does not authorize publishing, deployment, pushing, pull requests, destructive work outside the request, swarms, old-state migration, or old protocols.

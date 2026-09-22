@@ -164,7 +164,7 @@ const executorOptions = {
 };
 ```
 
-Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency`, `maxTurns`, and configured `maxTokens` must be safe integers >= 1. `idleMs` and `maxMs` must be positive. `maxMs` must exceed `idleMs`. Omitted `maxTurns` defaults to 50. Omitted `maxTokens` is unlimited.
+Concurrency is FIFO. `run` accepts optional `signal`, `onUpdate(text)`, `onTokens(number)`, and `onActivity(event)` callbacks plus required `prepare()`. A queued run receives its permit before `prepare` executes, so resource and route resolution can use the latest Pi state. Queued time does not consume child timeout. `maxConcurrency`, `maxTurns`, and configured `maxTokens` must be safe integers >= 1. `idleMs` must be positive. A numeric `maxMs` must be positive and exceed `idleMs`; `maxMs: null` disables maximum elapsed runtime while retaining idle timeout, turn/token limits and explicit cancellation. Omitted `maxTurns` defaults to 50. Omitted `maxTokens` is unlimited.
 
 One executor applies `maxTokens` independently to every `run`; it is not a shared pool. `run` has no token override. The built-in extension reads its global value only from `config/pi-subagent/config.json`.
 

@@ -202,7 +202,7 @@ The package root includes these main exports:
 | Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
 | `prepareExactReviewEvidence` | function | Create a bounded private base-to-tip patch with exact Git identity for caller-owned review. |
 
-The executor works only inside the active Pi process. It does not discover or start a standalone Node.js Pi installation.
+The executor works only inside the active Pi process. It does not discover or start a standalone Node.js Pi installation. Library callers may pass `timeout.maxMs: null` to disable maximum elapsed runtime while retaining idle timeout, turn/token limits and cancellation. This does not change `delegate_task`'s configured timeout defaults.
 
 `finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union. `pruned` proves zero commits, a clean tree, and removed worktree and branch. `retained` contains measured `commits` and `dirty` values. `recovery` has an actionable `note` and only completed measurements. An omitted recovery measurement is unknown.
 

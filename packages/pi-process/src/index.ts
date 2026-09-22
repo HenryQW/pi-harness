@@ -15,7 +15,8 @@ export type ExecResult = {
 export type ExecOptions = {
 	cwd: string;
 	signal?: AbortSignal;
-	timeoutMs?: number;
+	/** Omit for the default timeout; null disables elapsed-time expiry. */
+	timeoutMs?: number | null;
 	stdoutLimitBytes?: number;
 	stdoutTailBytes?: number;
 	stderrLimitBytes?: number;
@@ -58,13 +59,13 @@ function decode(chunks: Buffer[], bytes: number, label: string): string {
 	}
 }
 
-/** Run one argv-only child process with bounded streaming output, cancellation, and a deadline. */
+/** Run one argv-only child process with bounded streaming output and cancellation. */
 export const spawnBounded: Exec = async (command, args, options) => {
 	requiredText(command, "command");
 	validatedArguments(args);
 	requiredCwd(options.cwd);
 	options.signal?.throwIfAborted();
-	const timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS, "timeoutMs");
+	const timeoutMs = options.timeoutMs === null ? undefined : positiveInteger(options.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS, "timeoutMs");
 	const stdoutLimit = positiveInteger(options.stdoutLimitBytes ?? DEFAULT_OUTPUT_LIMIT_BYTES, "stdoutLimitBytes");
 	const stdoutTailLimit = options.stdoutTailBytes === undefined
 		? undefined
@@ -144,7 +145,8 @@ export const spawnBounded: Exec = async (command, args, options) => {
 				stop(new Error(`${command} stdout was not valid UTF-8`));
 			}
 		};
-		const timer = setTimeout(() => stop(new Error(`${command} timed out after ${timeoutMs}ms`)), timeoutMs);
+		const timer = timeoutMs === undefined ? undefined
+			: setTimeout(() => stop(new Error(`${command} timed out after ${timeoutMs}ms`)), timeoutMs);
 		const abort = (): void => stop(options.signal?.reason instanceof Error
 			? options.signal.reason
 			: new DOMException("The operation was aborted", "AbortError"));

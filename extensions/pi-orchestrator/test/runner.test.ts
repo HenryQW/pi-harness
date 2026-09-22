@@ -147,6 +147,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 		this.inspectMainCalls.push(context);
 		if (this.expireMainInspections > 0) {
 			this.expireMainInspections -= 1;
+			assert.ok(context.deadline !== undefined);
 			this.clock = context.deadline;
 		}
 		const failure = this.inspectMainFailures.shift();
@@ -489,7 +490,7 @@ function request(
 	return parseExecuteRequest({
 		id,
 		goal: "Deliver checked work.",
-		budgetMs: 10_000,
+
 		tasks,
 		finalChecks: [{ command: "check-final", args: [] }],
 		...(finalJudgment ? { finalJudgment } : {}),
@@ -576,7 +577,7 @@ function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtim
 	])) as ReturnType<typeof runtimeCallCounts>;
 }
 
-test("queued follow-ups reuse the same worker before automatic readiness seals the candidate", async (t) => {
+test("queued follow-ups reuse the same worker beyond 30 minutes before automatic readiness seals the candidate", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	let releaseInitial!: () => void;
 	const initialPaused = new Promise<void>((resolve) => { releaseInitial = resolve; });
@@ -589,6 +590,7 @@ test("queued follow-ups reuse the same worker before automatic readiness seals t
 	const execution = runner.execute(definition, root);
 
 	await waitUntil(() => runtime.workerCalls.length === 1);
+	runtime.clock += 2 * 60 * 60_000;
 	assert.throws(
 		() => runner.queueFollowup(root, definition.id, "change", "界".repeat(32_000)),
 		/Worker assignment exceeds/,
@@ -847,47 +849,39 @@ test("parallel wave completions cannot overwrite a concurrent abort", async (t) 
 	assertParsed(aborted.state);
 });
 
-test("paused worker results adopt a concurrent durable abort before surfacing cancellation or deadline", async (t) => {
-	for (const rejection of ["outer", "deadline"] as const) {
-		await t.test(rejection, async (t) => {
-			let releaseWorker!: () => void;
-			const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
-			const controller = new AbortController();
-			const { root, runtime, runner, agentDir } = await harness(t);
-			runtime.workerPause = async () => await workerPaused;
-			const definition = parseExecuteRequest({
-				...request(`paused-${rejection}-state-change`, [changesetTask("change")]),
-				budgetMs: rejection === "deadline" ? 1_000 : 10_000,
-			});
-			const execution = runner.execute(definition, root, controller.signal);
-			await waitUntil(() => runtime.workerCalls.length === 1);
+test("paused worker results adopt a concurrent durable abort before surfacing cancellation", async (t) => {
+	let releaseWorker!: () => void;
+	const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
+	const controller = new AbortController();
+	const { root, runtime, runner, agentDir } = await harness(t);
+	runtime.workerPause = async () => await workerPaused;
+	const definition = parseExecuteRequest(request("paused-outer-state-change", [changesetTask("change")]));
+	const execution = runner.execute(definition, root, controller.signal);
+	await waitUntil(() => runtime.workerCalls.length === 1);
 
-			let locked!: () => void;
-			const lifecycleLocked = new Promise<void>((resolve) => { locked = resolve; });
-			const concurrentStore = new FileRunStore(agentDir);
-			const mutation = concurrentStore.withLock(root, async () => {
-				locked();
-				if (rejection === "outer") controller.abort(new Error("operator interrupted worker execution"));
-				else await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
-				releaseWorker();
-				await waitUntil(() => runtime.workerCalls.length === 1);
-				const handle = await concurrentStore.load(root, definition.id);
-				handle.state.status = "aborted";
-				handle.state.accepted = false;
-				handle.state.updatedAt = runtime.now();
-				await handle.save();
-			}, { purpose: "abort" });
-			await lifecycleLocked;
+	let locked!: () => void;
+	const lifecycleLocked = new Promise<void>((resolve) => { locked = resolve; });
+	const concurrentStore = new FileRunStore(agentDir);
+	const mutation = concurrentStore.withLock(root, async () => {
+		locked();
+		controller.abort(new Error("operator interrupted worker execution"));
+		releaseWorker();
+		await waitUntil(() => runtime.workerCalls.length === 1);
+		const handle = await concurrentStore.load(root, definition.id);
+		handle.state.status = "aborted";
+		handle.state.accepted = false;
+		handle.state.updatedAt = runtime.now();
+		await handle.save();
+	}, { purpose: "abort" });
+	await lifecycleLocked;
 
-			const [result] = await Promise.all([execution, mutation]);
-			const durable = (await concurrentStore.load(root, definition.id)).state;
-			assert.equal(result.state.status, "aborted");
-			assert.deepEqual(result.state, durable);
-			assert.equal(changesetState(result.state, "change").status, "working");
-			assert.deepEqual(runtime.integrations, []);
-			assertParsed(result.state);
-		});
-	}
+	const [result] = await Promise.all([execution, mutation]);
+	const durable = (await concurrentStore.load(root, definition.id)).state;
+	assert.equal(result.state.status, "aborted");
+	assert.deepEqual(result.state, durable);
+	assert.equal(changesetState(result.state, "change").status, "working");
+	assert.deepEqual(runtime.integrations, []);
+	assertParsed(result.state);
 });
 
 test("interrupting paused worker execution retains the exact worker", async (t) => {
@@ -1162,7 +1156,7 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
 	if (!agent?.agentName) throw new Error("Expected one allocated worker.");
 
-	assert.equal(result.state.version, 4);
+	assert.equal(result.state.version, 5);
 	assert.equal(result.state.accepted, true);
 	assert.deepEqual(runtime.workerCalls, [
 		{ taskId: "change", kind: "initial" },
@@ -1352,7 +1346,7 @@ test("status preserves interrupted and ambiguous changeset prompts without produ
 
 			const reported = await runner.status(definition.id, root);
 			const reportedAttempt = changesetState(reported.state, "change").attempts[0]!;
-			assert.equal(reported.state.version, 4);
+			assert.equal(reported.state.version, 5);
 			assert.equal(reported.state.status, boundary === "interrupted" ? "running" : "needs_attention");
 			assert.equal(reportedAttempt.prompts[0]?.status, boundary === "interrupted" ? "submitting" : "ambiguous");
 			assert.equal(reportedAttempt.termination, undefined);
@@ -1451,7 +1445,7 @@ test("status permits only pending cleanup recovery after integration", async (t)
 	assert.ok(waitingAttempt.cleanup.every(({ status }) => status === "pending"));
 	assert.deepEqual(runtime.cleanupCalls, ["worker_tab"]);
 
-	runtime.clock = waiting.state.deadline;
+	runtime.clock += 2 * 60 * 60_000;
 	runtime.main = identity("f");
 	const persistedBefore = structuredClone((await store.load(root, definition.id)).state);
 	assertParsed(persistedBefore);

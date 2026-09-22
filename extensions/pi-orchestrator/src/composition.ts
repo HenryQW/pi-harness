@@ -35,7 +35,7 @@ export interface CanonicalGitRootResolverOptions {
 	now?: () => number;
 }
 
-/** Resolve one canonical Git top-level with the request's signal and remaining deadline. */
+/** Resolve one canonical Git top-level with cancellation and bounded Git I/O. */
 export function createCanonicalGitRootResolver(
 	options: CanonicalGitRootResolverOptions = {},
 ): LaunchRuntimeOptions["resolveRoot"] {
@@ -43,7 +43,8 @@ export function createCanonicalGitRootResolver(
 	const now = options.now ?? Date.now;
 	return async (cwd, context) => {
 		context.signal.throwIfAborted();
-		const remaining = Math.min(GIT_ROOT_TIMEOUT_CAP_MS, context.timeoutMs, context.deadline - now());
+		const remaining = Math.min(GIT_ROOT_TIMEOUT_CAP_MS, context.timeoutMs ?? GIT_ROOT_TIMEOUT_CAP_MS,
+			context.deadline === undefined ? GIT_ROOT_TIMEOUT_CAP_MS : context.deadline - now());
 		if (!Number.isFinite(remaining) || remaining < 1) throw new Error("The productive request deadline is exhausted.");
 		const result = await runProcess("git", ["rev-parse", "--show-toplevel"], {
 			cwd,

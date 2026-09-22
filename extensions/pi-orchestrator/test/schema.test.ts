@@ -59,7 +59,7 @@ function request(tasks: TaskRequest[], finalJudgment?: ExecuteRequest["finalJudg
 	return {
 		id: "request-one",
 		goal: "Deliver checked work.",
-		budgetMs: 1_000,
+
 		tasks,
 		finalChecks: [{ command: "check-final", args: [] }],
 		...(finalJudgment ? { finalJudgment } : {}),
@@ -83,8 +83,7 @@ function state(requestValue: ExecuteRequest): RunState {
 		root: "/repo",
 		requestStartMain: main,
 		main,
-		deadlineStartedAt: 1,
-		deadline: 1_001,
+
 		status: "pending",
 		tasks: requestValue.tasks.map((task): RunState["tasks"][number] => task.kind === "text"
 			? {
@@ -223,8 +222,7 @@ function completedChangesetState(): RunState {
 		root: "/repo",
 		requestStartMain: base,
 		main: mainAfter,
-		deadlineStartedAt: 1,
-		deadline: 1_001,
+
 		status: "running",
 		tasks: [{ taskId: task.id, kind: "changeset", status: "completed", attempts: [attempt] }],
 		waves: [{ number: 1, base, taskIds: [task.id], status: "completed" }],
@@ -275,6 +273,7 @@ test("task variants require explicit Role names and preserve text context order"
 	const { checks: _checks, ...changesetWithoutChecks } = changeset;
 	const { role: _role, ...textWithoutRole } = textTask("text");
 	const strictFailures: Array<{ value: unknown; path: RegExp }> = [
+		{ value: { ...request([textTask("text")]), budgetMs: 1_800_000 }, path: / at \/budgetMs:/ },
 		{
 			value: request([{ ...textTask("text"), checks: [{ command: "forbidden", args: [] }] } as unknown as TaskRequest]),
 			path: / at \/tasks\/0\/checks:/,
@@ -341,7 +340,7 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
 });
 
-test("v4 follow-up prompt evidence requires exact bounded instructions", () => {
+test("v5 follow-up prompt evidence requires exact bounded instructions", () => {
 	const valid = completedChangesetState();
 	const attempt = completedChangesetAttempt(valid);
 	const candidate = attempt.candidate!;
@@ -375,7 +374,7 @@ test("v4 follow-up prompt evidence requires exact bounded instructions", () => {
 	assert.throws(() => parseRunState(repeatedCorrection), /repeated correction history/);
 });
 
-test("v4 completed changesets require exact terminal evidence", () => {
+test("v5 completed changesets require exact terminal evidence", () => {
 	const valid = completedChangesetState();
 	assert.equal(completedChangesetTask(parseRunState(structuredClone(valid))).status, "completed");
 
@@ -514,7 +513,7 @@ test("v4 completed changesets require exact terminal evidence", () => {
 	assert.throws(() => parseRunState(interruptedFinalization), /lacks exact integration evidence/);
 });
 
-test("v4 state maps text task attempts exactly and rejects older and launch state", () => {
+test("v5 state maps text task attempts exactly and rejects older and launch state", () => {
 	const definition = parseExecuteRequest(request([
 		textTask("research"),
 		changesetTask("change", { contextFrom: ["research"] }),
@@ -592,20 +591,20 @@ test("v4 state maps text task attempts exactly and rejects older and launch stat
 
 	const oldTaskField = structuredClone(valid) as RunState & { tasks: Array<Record<string, unknown>> };
 	oldTaskField.tasks[1]!.implementerLaunchKey = "implementer/balanced";
-	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-orchestrator v4 state/);
+	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-orchestrator v5 state/);
 
 	const oldLaunchState = { ...structuredClone(valid), launchRecords: {} };
-	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-orchestrator v4 state/);
+	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-orchestrator v5 state/);
 
 	const v3 = { ...structuredClone(valid), version: 3 };
-	assert.throws(() => parseRunState(v3), /Unsupported pi-orchestrator state version 3; expected 4/);
+	assert.throws(() => parseRunState(v3), /Unsupported pi-orchestrator state version 3; expected 5/);
 	const v2 = { ...structuredClone(valid), version: 2 };
-	assert.throws(() => parseRunState(v2), /Unsupported pi-orchestrator state version 2; expected 4/);
+	assert.throws(() => parseRunState(v2), /Unsupported pi-orchestrator state version 2; expected 5/);
 	const v1 = { ...structuredClone(valid), version: 1, launchRecords: {} };
-	assert.throws(() => parseRunState(v1), /Unsupported pi-orchestrator state version 1; expected 4/);
+	assert.throws(() => parseRunState(v1), /Unsupported pi-orchestrator state version 1; expected 5/);
 });
 
-test("v4 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
+test("v5 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
 	const definition = parseExecuteRequest(request([textTask("research")]));
 	const valid = state(definition);
 	const character = "界";
