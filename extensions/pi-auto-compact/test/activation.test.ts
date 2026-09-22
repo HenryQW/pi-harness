@@ -658,8 +658,8 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		);
 
 		// Below threshold: no truncation, no compaction.
-		assert.equal(handlers.get("context")?.({
-			type: "context",
+		assert.equal(handlers.get("context_with_system")?.({
+			type: "context_with_system",
 			messages: [{ role: "user", content: "hello", timestamp: 1 }],
 		} as never, ctx), undefined);
 		assert.equal(compactions, 0);
@@ -688,8 +688,8 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 			{ role: "user", content: "continue", timestamp: 6 },
 			{ role: "assistant", content: "done", timestamp: 7 },
 		];
-		const result = handlers.get("context")?.({
-			type: "context",
+		const result = handlers.get("context_with_system")?.({
+			type: "context_with_system",
 			messages,
 		} as never, ctx) as { messages?: typeof messages } | undefined;
 		assert.ok(result?.messages, "oversized context must be truncated");
@@ -708,8 +708,8 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		assert.equal(compactions, 0);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(compactions, 1);
-		assert.equal(handlers.get("context")?.({
-			type: "context",
+		assert.equal(handlers.get("context_with_system")?.({
+			type: "context_with_system",
 			messages,
 		} as never, ctx), undefined);
 		assert.equal(compactions, 1);

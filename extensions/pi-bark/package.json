@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-bark",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Send Pi session status and agent output to Bark on iOS.",
   "keywords": [
     "pi-package",
@@ -33,7 +33,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.86.0"
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.88.0"
   },
   "repository": {
     "type": "git",
@@ -55,6 +55,6 @@
     "@henryqw/pi-config-store": "^2.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.86.0"
+    "@earendil-works/pi-coding-agent": "0.87.0"
   }
 }

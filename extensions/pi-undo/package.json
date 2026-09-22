@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-undo",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Rewind Pi conversation context to the latest user prompt.",
   "keywords": [
     "pi-package",
@@ -24,7 +24,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.86.0"
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.88.0"
   },
   "repository": {
     "type": "git",
@@ -43,6 +43,6 @@
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.86.0"
+    "@earendil-works/pi-coding-agent": "0.87.0"
   }
 }

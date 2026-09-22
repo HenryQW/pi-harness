@@ -87,7 +87,7 @@ const ACTIVATION_ERROR =
 	"pi-auto-compact failed to activate: Pi built-in auto-compaction is enabled. " +
 	"Set compaction.enabled to false in Pi settings, then restart Pi.";
 
-/** Estimate current request size, including Pi 0.86 transcript state. */
+/** Estimate current request size, including Pi system transcript state. */
 function estimateMessageTokens(message: AgentMessage): number {
 	if (message.role === "system") return Math.ceil(JSON.stringify(message).length / 4);
 	return estimateTokens(message);
@@ -234,7 +234,7 @@ export default function (pi: ExtensionAPI) {
 
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
-	pi.on("context", (event, ctx) => {
+	pi.on("context_with_system", (event, ctx) => {
 		if (!active || compactionPending) return;
 
 		const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow ?? 0;

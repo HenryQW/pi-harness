@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-notes",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Persistent notes in a Pi widget, managed with /note commands.",
   "keywords": [
     "pi-package",
@@ -24,8 +24,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.86.0",
-    "@earendil-works/pi-tui": "^0.86.0"
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.88.0",
+    "@earendil-works/pi-tui": ">=0.86.0 <0.88.0"
   },
   "repository": {
     "type": "git",
@@ -48,7 +48,7 @@
     "@henryqw/pi-config-store": "^2.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.86.0",
-    "@earendil-works/pi-tui": "0.86.0"
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@earendil-works/pi-tui": "0.87.0"
   }
 }
