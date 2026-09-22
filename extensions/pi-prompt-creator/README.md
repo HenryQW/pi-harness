@@ -53,7 +53,7 @@ Branch changes reset the input counter. Automatic analysis and candidate widgets
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
 
-Automatic analysis sends the current conversation to the child model configured through `/task-models`.
+Manual and automatic analysis send Pi's current model-visible session context to the child model configured through `/task-models`. Session context edits that omit or replace messages are honored; original text removed from model context is not sent to the child. Request-local `context` and `context_with_system` transformations are not included.
 
 Its payload includes the active compaction or branch summary, user text, successfully completed assistant text, and effective prompt names and descriptions.
 
