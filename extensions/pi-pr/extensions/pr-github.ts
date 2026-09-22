@@ -197,8 +197,6 @@ type PullRequestCandidate = {
 	headOid: string;
 };
 
-type SearchPullRequest = PullRequestCandidate;
-
 export type PullRequestPublication = {
 	number: number;
 	url: URL;
@@ -224,7 +222,7 @@ export type BranchUpstreamTarget = {
 };
 
 type SearchSelection =
-	| { kind: "candidate"; candidate: SearchPullRequest; pullRequest: ListedPullRequest | null }
+	| { kind: "candidate"; candidate: PullRequestCandidate; pullRequest: ListedPullRequest | null }
 	| { kind: "none" }
 	| { kind: "ambiguous"; urls: URL[] }
 	| { kind: "oid-mismatch"; urls: URL[] }
@@ -232,7 +230,7 @@ type SearchSelection =
 
 type SearchPage = {
 	totalCount: number;
-	candidates: SearchPullRequest[];
+	candidates: PullRequestCandidate[];
 	cursors: string[];
 	hasNextPage: boolean;
 	endCursor: string | null;
@@ -676,7 +674,7 @@ function listedPullRequest(value: unknown): ListedPullRequest | null {
 	};
 }
 
-function searchPullRequest(value: unknown, host: string): SearchPullRequest {
+function searchPullRequest(value: unknown, host: string): PullRequestCandidate {
 	if (!isRecord(value) || value.__typename !== "PullRequest") {
 		fail("Find pull requests", "invalid GitHub CLI output");
 	}
@@ -742,7 +740,7 @@ function parseSearchPage(output: string, pushTarget: Pick<PushTarget, "repositor
 		!Array.isArray(search.edges) || search.edges.length > PR_DISCOVERY_PAGE_SIZE ||
 		!isRecord(search.pageInfo)
 	) fail("Find pull requests", "invalid GitHub CLI output");
-	const candidates: SearchPullRequest[] = [];
+	const candidates: PullRequestCandidate[] = [];
 	const cursors: string[] = [];
 	for (const edge of search.edges) {
 		if (!isRecord(edge)) fail("Find pull requests", "invalid GitHub CLI output");
@@ -766,7 +764,7 @@ function parseSearchPage(output: string, pushTarget: Pick<PushTarget, "repositor
 	};
 }
 
-function matchingSearchPullRequests(candidates: SearchPullRequest[], pushTarget: PushTarget): SearchPullRequest[] {
+function matchingSearchPullRequests(candidates: PullRequestCandidate[], pushTarget: PushTarget): PullRequestCandidate[] {
 	return candidates.filter((candidate) =>
 		candidate.url.hostname.toLowerCase() === pushTarget.repository.host &&
 		candidate.headRepository !== null &&
@@ -775,7 +773,7 @@ function matchingSearchPullRequests(candidates: SearchPullRequest[], pushTarget:
 	);
 }
 
-function selectSearchPullRequest(candidates: SearchPullRequest[], pushTarget: PushTarget): SearchSelection {
+function selectSearchPullRequest(candidates: PullRequestCandidate[], pushTarget: PushTarget): SearchSelection {
 	const matching = matchingSearchPullRequests(candidates, pushTarget);
 	const open = matching.filter((candidate) => candidate.lifecycle === "open");
 	if (open.length > 1) return { kind: "ambiguous", urls: open.map(({ url }) => url) };
@@ -1681,9 +1679,9 @@ async function enumerateSearchPullRequests(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: Pick<PushTarget, "repository" | "ref">,
-): Promise<SearchPullRequest[] | null> {
+): Promise<PullRequestCandidate[] | null> {
 	const [owner, name] = target.repository.nameWithOwner.split("/");
-	const candidates: SearchPullRequest[] = [];
+	const candidates: PullRequestCandidate[] = [];
 	const cursors = new Set<string>();
 	let totalCount: number | null = null;
 	let endCursor: string | null = null;

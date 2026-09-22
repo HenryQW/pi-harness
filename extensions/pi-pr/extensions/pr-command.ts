@@ -288,9 +288,12 @@ export function createPrCommandHandler(
 		const discovery = await load(pi, ctx, undefined, undefined, base);
 		commandInvocation?.assertCurrent();
 		const decision = deriveRouteDecision(discovery, intent);
+		if (decision.kind === "feedback-blocked") {
+			onRouteResolved?.("blocked");
+			throw new Error(feedbackBlockerMessage(decision.blocker));
+		}
 		const nextStep = decision.nextStep;
 		onRouteResolved?.(nextStep);
-		if (decision.kind === "feedback-blocked") throw new Error(feedbackBlockerMessage(decision.blocker));
 		if (base !== undefined && nextStep !== "create") {
 			throw new Error("/pr --base is accepted only for pull request creation");
 		}

@@ -26,7 +26,7 @@ import {
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
-import { isRecord, runChecked } from "./pr-execution.ts";
+import { isRecord, parseSingleOutputLine, runChecked } from "./pr-execution.ts";
 import {
 	discoveryIssueKey,
 	discoveryIssueMessage,
@@ -48,7 +48,7 @@ const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
 const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
 const WORKFLOW_ROUTES = new Set(["create", "update-branch", "sweep", "fix-ci"]);
-const DELEGATED_TOOLS = new Set(["delegate_task", "delegate_flow", "delegate_flow_continue"]);
+const DELEGATED_TOOLS = new Set(["delegate_task"]);
 const CLOSED = { additionalProperties: false } as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -171,10 +171,7 @@ type PullRequestExtensionDependencies = {
 
 async function canonicalWorktree(cwd: string, signal?: AbortSignal): Promise<string> {
 	const result = await runChecked(spawnBounded, "git", ["rev-parse", "--show-toplevel"], { cwd, signal });
-	const normalized = result.stdout.replace(/\r\n/g, "\n");
-	const lines = (normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized).split("\n");
-	if (lines.length !== 1 || !lines[0]) throw new Error("Git worktree root resolution returned invalid output");
-	return await realpath(lines[0]);
+	return await realpath(parseSingleOutputLine(result.stdout, "Git worktree root resolution"));
 }
 
 function toolResult(value: unknown) {

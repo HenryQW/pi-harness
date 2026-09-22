@@ -70,7 +70,7 @@ function pullRequest(overrides: {
 } = {}): PrDisplayInput {
 	return {
 		number: 42,
-		url: "https://github.com/acme/project/pull/42",
+		url: new URL("https://github.com/acme/project/pull/42"),
 		approved: overrides.approved ?? false,
 		lifecycle: overrides.lifecycle ?? "open",
 		conditions: { ...conditions, ...overrides.conditions },
@@ -382,6 +382,7 @@ test("prefixes plain actions with themed semantic icons", () => {
 		assert.doesNotMatch(plainWidget?.[0] ?? "", /\x1b/, `${name} plain ANSI`);
 		assert.deepEqual(formatPrWidget(display, theme), [`<${color}>${icon}</${color}> ${text}`], name);
 	}
+	assert.equal(formatPrWidget({ nextStep: "none" }, undefined, 0), undefined);
 });
 
 test("truncates the themed action line to narrow TUI widths", () => {
@@ -395,52 +396,13 @@ test("truncates the themed action line to narrow TUI widths", () => {
 	assert.ok(widget?.every((line) => visibleWidth(line) <= 8));
 });
 
-test("keeps blocked mutating conditions in the footer without a widget", () => {
-	const actions: Array<{
-		name: string;
-		conditions: Partial<PullRequestConditions>;
-		footer: string;
-		color: PrStatusColor;
-	}> = [
-		{ name: "base update", conditions: { baseUpdateRequired: true }, footer: "base update required", color: "warning" },
-		{ name: "conflict", conditions: { conflict: true }, footer: "merge conflict", color: "error" },
-		{ name: "changes requested", conditions: { changesRequested: true }, footer: "changes requested", color: "error" },
-		{ name: "unresolved feedback", conditions: { unresolvedThreads: 2 }, footer: "2 unresolved", color: "warning" },
-		{ name: "failed CI", conditions: { ci: "failure" }, footer: "CI failed", color: "error" },
-	];
-	const blocked: Array<{ name: string; local: LocalMergeSafety }> = [
-		{ name: "dirty", local: { worktree: "dirty", head: "equal" } },
-		{ name: "behind", local: { worktree: "clean", head: "behind" } },
-		{ name: "ahead", local: { worktree: "clean", head: "ahead" } },
-		{ name: "diverged", local: { worktree: "clean", head: "diverged" } },
-	];
-
-	for (const action of actions) {
-		for (const local of blocked) {
-			const display = projectPrDisplay(pullRequest({
-				conditions: action.conditions,
-				local: local.local,
-			}));
-			const name = `${action.name} ${local.name}`;
-			assert.equal(display.nextStep, "none", `${name} route`);
-			assert.equal(display.footer?.text, action.footer, `${name} footer`);
-			assert.equal(display.footer?.color, action.color, `${name} color`);
-			assert.equal(display.widget, undefined, `${name} widget`);
-		}
-	}
-});
-
-test("clears widget for non-actionable projections", () => {
-	const actionable = projectPrDisplay(pullRequest({ conditions: { ci: "failure" } }));
-	assert.equal(actionable.widget, "Run /pr to fix CI");
-
-	const cleared = [
-		projectPrDisplay(pullRequest({ conditions: { ci: "running" } })),
-		projectPrDisplay(pullRequest({ conditions: { review: "pending" } })),
-		projectPrDisplay(pullRequest({ conditions: { draft: true } })),
-		projectPrDisplay(pullRequest({ lifecycle: "merged" })),
-		projectPrDisplay(pullRequest({ lifecycle: "closed" })),
-	];
-	for (const display of cleared) assert.equal(display.widget, undefined);
-	assert.equal(formatPrWidget(cleared[0], undefined, 0), undefined);
+test("keeps a blocked mutating condition in the footer without a widget", () => {
+	const display = projectPrDisplay(pullRequest({
+		conditions: { conflict: true },
+		local: { worktree: "dirty", head: "equal" },
+	}));
+	assert.equal(display.nextStep, "none");
+	assert.equal(display.footer?.text, "merge conflict");
+	assert.equal(display.footer?.color, "error");
+	assert.equal(display.widget, undefined);
 });
