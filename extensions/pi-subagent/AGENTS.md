@@ -1,56 +1,29 @@
 # Pi Subagent maintenance rules
 
-These rules apply to `extensions/pi-subagent` in addition to the repository-level instructions.
+Follow [ADR 016](../../docs/adr/016-pi-subagent-architecture.md) and the [orchestration/API contract](docs/orchestration.md). These implementation boundaries supplement the repository rules.
 
-## Sources of truth
+## Sources and boundaries
 
-- Define related names, limits, and statuses once as typed readonly values. Derive CLI strings, sets, schemas, and display forms from that source instead of maintaining parallel literals.
-- Continue using Pi's effective registries as the authority for Skills, models, and tools. Do not add package-owned discovery catalogs.
+- Define related names, limits, and statuses once as typed readonly values; derive schemas and display forms rather than duplicating literals. Use Pi's effective registries for Skills, models, and tools, not package catalogs.
+- `createRoleLaunch` owns launch policy: Role resources, route, trust, environment, and Pi arguments. The Ephemeral Executor receives a prepared launch and owns only execution mechanics.
+- `delegate_task` owns flat single, parallel, and chain delegation. Library callers own durable state, checks, review, integration, retry, and cleanup policy.
 
-## Architecture boundaries
+## Launches
 
-- Keep `createRoleLaunch` as the launch-policy boundary. It resolves Role resources, route, project trust, environment, and Pi arguments.
-- Keep the Ephemeral Executor mechanism-only. It receives a prepared launch and must not discover Roles, resources, worktrees, or workflow policy.
-- Keep `delegate_task` generic and caller-composable. It owns only flat single, parallel, and chain delegation.
-- Library callers own implementation protocols, durable state, checks, review decisions, integration, retry, and cleanup policy. pi-subagent supplies Role, executor, worktree, and exact-evidence APIs without claiming that orchestration.
+- Put stable child identity and Role instructions before per-run task, paths, and recovery guidance in prompts.
+- Route precedence is call `modelClass` > Role `modelClass` > configured Model Task assignment/default. Main uses `extensions/model-class-policy.ts` for explicit classes; direct `model` replaces only the route model, not its thinking level. Apply the same policy in every delegation tool.
+- Fail before launch on malformed config or unavailable explicitly requested resources, naming the missing value and provider. Launch only through active Pi; no standalone discovery or fallback runtime.
+- Disable ambient child extensions and Skills. An explicitly selected Role or caller extension activates all its registered tools and Pi-discovered Skills, alongside named Role Skills. Exclude Main-only delegation/orchestration tools, and verify explicit tool names against the final registry.
 
-## Launches and prompts
+## Executor and evidence
 
-- Keep stable child identity and Role instructions separate from per-run task text, cwd/worktree paths, review packets, and recovery guidance. Stable prompt material must precede variable material to preserve clear ownership and provider cache reuse.
-- Route precedence is explicit call-level `modelClass` > Role `modelClass` > configured Model Task assignment or declared default. Main follows `extensions/model-class-policy.ts` when selecting an explicit class. A direct `model` replaces only the selected route model. The route owns its exact thinking level. Reuse this policy in every delegation tool.
-- Fail fast on malformed configuration and unavailable explicitly requested resources. Name the invalid or unavailable values and their provider requirement. Do not silently launch an under-capable child.
-- Launch only through the active Pi process invocation. Do not add standalone Pi discovery, install probing, shell execution, or a fallback child runtime.
-- Ambient child extensions and Skills stay disabled. An explicitly selected Role or caller extension is a trusted atomic capability bundle. Activate every tool it registers and every Skill supplied through its Pi package metadata or dynamic `resources_discover`, alongside separately named Role Skills.
-- Keep Main-only delegation and orchestration tools excluded from every child. Retain final-registry verification for explicit Role and caller tool names.
+- Acquire a FIFO permit before preparing launch state. Queue time must not create worktrees, resolve queued resources, start timeouts, or occupy an active slot.
+- Start idle and maximum deadlines when the child starts; only recognized Pi JSON events renew idle. Maximum runtime wins. Bound output and JSON events, preserving valid UTF-8 and aggregate Usage on every terminal outcome without double counting.
+- Observer callback failure is a typed executor failure: terminate the child and release the permit. Give each process, stream, timer, listener, worktree, and UI resource one owner and one idempotent cleanup path.
+- Worktree helpers are policy-neutral; cleanup is non-forced and reports retained or uncertain work. `prepareExactReviewEvidence` derives Git identity and a private exact base-to-tip patch; callers own review decisions. Never weaken OID, patch bounds, private-file, or clean-state checks.
 
-## Executor protocol
+## Results and validation
 
-- Acquire an executor permit before preparing launch-specific state. FIFO queue time must not create worktrees, resolve queued resources, start child timeouts, or consume an active slot.
-- Start idle and maximum deadlines only when the child starts. Only recognized Pi JSON events renew the idle deadline. Maximum runtime always wins.
-- Keep assistant output and stderr bounded on valid UTF-8 boundaries. Keep consumed JSON events bounded.
-- Preserve aggregate child `Usage` on success, launched failures, aborts, timeouts, protocol failures, and callback failures without double counting turns.
-- Treat observer callback failure as a typed executor failure, terminate the child, and release the permit.
-
-## Worktrees and exact evidence
-
-- Keep low-level worktree helpers policy-neutral. Callers own when to allocate, retain, integrate, or clean worktrees.
-- Cleanup is non-forced. Preserve actionable recovery evidence when committed, dirty, switched, or unmeasurable work cannot be safely removed.
-- `prepareExactReviewEvidence` derives candidate identity from Git and creates a private exact base-to-tip patch. Callers own the review criterion, verdict parser, approval rule, and integration decision.
-- Never weaken exact OID, bounded patch, private-file, or clean-state checks for caller convenience.
-
-## Lifecycle and state
-
-- Give each child process, stream, timer, listener, worktree, and UI resource one lifecycle owner. Use one idempotent cleanup path from every terminal outcome.
-- Preserve discriminated outcome and status unions. Extend variants and handle them exhaustively instead of adding boolean or nullable fallback chains.
-- Tie background delivery to the launching session generation. After session replacement or shutdown, suppress stale ordinary results but still report retained isolated work needed for recovery.
-
-## UI and performance
-
-- Update compact derived UI state when events arrive. Render functions must read in-memory state only.
-- Test performance-sensitive invariants with operation counts or forbidden-operation assertions, not elapsed-time thresholds.
-- Keep foreground and background result text bounded while preserving structured identity, status, usage, and recovery details outside lossy excerpts.
-
-## Validation
-
-- Test policy at its owning layer: pure parsing and planning directly, executor protocol in `ephemeral.test.ts`, generic orchestration in `subagent.test.ts`, and worktree or evidence mechanics in their focused suites.
-- Prefer one regression that exercises the real failure boundary. Do not add broad timing assertions when deterministic state or operation counts prove the contract.
+- Keep discriminated outcome/status unions exhaustive. Tie background delivery to the launching session generation: suppress stale ordinary results after replacement or shutdown, but report retained isolated work for recovery.
+- Update compact UI state on events; rendering reads memory only. Bound visible text while preserving structured identity, status, usage, and recovery details.
+- Test policy at its owning layer: parsing/planning directly, executor protocol in `ephemeral.test.ts`, delegation in `subagent.test.ts`, and worktree/evidence mechanics in their focused suites. Prove performance invariants with operation counts or forbidden-operation assertions, not timing thresholds.
