@@ -8,8 +8,6 @@ Start locked Node and uv dependency installs whenever Git creates a worktree for
 pi install npm:@henryqw/pi-deps
 ```
 
-Node 22.19 or newer, Git, and each selected package manager must be available on the `PATH` used by Git.
-
 ## Use
 
 Run `/deps` in a trusted repository to enable preparation. Create a worktree, then open Pi there.
