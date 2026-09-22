@@ -16,7 +16,10 @@ const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
  */
 const STATE_MAX_BYTES = 128 * 1024 * 1024;
 const LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
-const LOCK_REACQUIRE_DELAY_MS = 25;
+const LIFECYCLE_LOCK_OPTIONS = {
+	...LOCK_OPTIONS,
+	retries: { forever: true, factor: 1, minTimeout: 25, maxTimeout: 25 },
+} as const;
 
 type ReleaseLock = Awaited<ReturnType<typeof lock>>;
 const productiveRunLeaseBrand: unique symbol = Symbol("productiveRunLease");
@@ -31,7 +34,6 @@ export type LifecycleLockOptions =
 
 export interface LifecycleLock {
 	readonly productiveRunLeaseActive: boolean;
-	waitUnlocked<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 function isMissing(error: unknown): boolean {
@@ -44,17 +46,6 @@ function isAlreadyPresent(error: unknown): boolean {
 
 function isLocked(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ELOCKED");
-}
-
-async function reacquire(path: string): Promise<ReleaseLock> {
-	for (;;) {
-		try {
-			return await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
-		} catch (error) {
-			if (!isLocked(error)) throw error;
-			await new Promise<void>((resolve) => setTimeout(resolve, LOCK_REACQUIRE_DELAY_MS));
-		}
-	}
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -197,7 +188,7 @@ export class FileRunStore {
 		await this.assertSafeDestination(root, directory);
 		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const path = this.lockPath(root);
-		let release: ReleaseLock | undefined = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		const release: ReleaseLock = await lock(path, { ...LIFECYCLE_LOCK_OPTIONS, lockfilePath: `${path}.lock` });
 		try {
 			const productiveRunLeaseActive = await this.hasProductiveRunLease(root);
 			const ownedProductiveRunPath = options.productiveRunLease
@@ -208,25 +199,10 @@ export class FileRunStore {
 				&& ownedProductiveRunPath !== this.productiveRunPath(root)) {
 				throw new Error("Another Pi Orchestrator productive request is active in this repository.");
 			}
-			let waitingUnlocked = false;
-			const lifecycle: LifecycleLock = {
-				productiveRunLeaseActive,
-				waitUnlocked: async <Value>(operation: () => Promise<Value>): Promise<Value> => {
-					if (waitingUnlocked || !release) throw new Error("Lifecycle lock already has an unlocked waiter.");
-					waitingUnlocked = true;
-					await release();
-					release = undefined;
-					try {
-						return await operation();
-					} finally {
-						release = await reacquire(path);
-						waitingUnlocked = false;
-					}
-				},
-			};
+			const lifecycle: LifecycleLock = { productiveRunLeaseActive };
 			return await operation(lifecycle);
 		} finally {
-			await release?.();
+			await release();
 		}
 	}
 

@@ -6,6 +6,8 @@ This package is the sole owner of that checked protocol. `delegate_task` remains
 
 ## Install
 
+Before upgrading from Pi Orchestrator 5.x, finish or explicitly abort every unfinished schema v3 request with the matching 5.x package. Version 6 reads schema v4 only. It preserves rejected state and owned work, so do not delete state files or worker worktrees to recover them.
+
 Settle every unfinished Auto DAG run before upgrading. Old Auto DAG state is inert. Pi Orchestrator does not read or migrate it.
 
 The repository installer installs all selected packages first. When Pi Orchestrator was selected, it then removes only the exact `npm:@henryqw/pi-auto-dag` source if present. A missing source needs no action.
@@ -58,8 +60,7 @@ Call `orchestrate_execute` with a bounded request. It runs the graph through che
 | `orchestrate_status` | tool | Read durable recovery state and report Main drift without mutation. |
 | `orchestrate_resume` | tool | Deliberately retry, verify, or finalize an unfinished request. |
 | `orchestrate_abort` | tool | Explicitly terminate owned workers and abort an unfinished request. |
-| `/orchestrate-followup <request-id> <task-id> <message>` | command | Queue a revision in the active task's existing agent. |
-| `/orchestrate-accept <request-id> <task-id>` | command | Accept the active task's checked candidate and continue integration. |
+| `/orchestrate-followup <request-id> <task-id> <message>` | command | Optionally queue a revision while the active task is still working. |
 | `pi-orchestrator` | skill | Guide Main to choose generic delegation or checked orchestration. |
 
 Use `delegate_task` for lightweight generic delegation. Use `orchestrate_*` when implementation needs durable state, checks, dependencies, integration, or recovery.
@@ -104,16 +105,17 @@ Judgment launches use the declared judgment Role without adding arguments, envir
 
 Use `kind: "text"` for bounded analysis or synthesis. Text tasks omit `checks` and `judgment`. A later task lists their IDs in `contextFrom` to receive the exact outputs in that order.
 
-Every changeset task is interactive. After its agent commits a clean candidate and preliminary checks pass, the task keeps the same Herdr agent, tab, workspace, and worktree alive. Pi shows the exact follow-up and acceptance commands.
+Every changeset advances automatically after its agent produces a clean candidate and preliminary checks pass. The orchestrator records durable readiness, rebases and rechecks the exact candidate, runs any declared judgment, integrates it into Main, then terminates the worker and cleans up.
 
-Send bounded revisions before acceptance. A task accepts at most 32 worker prompts and queues at most 16 follow-ups at once:
+You may queue a bounded same-agent revision while the task is actively working. A task accepts at most 32 worker prompts and queues at most 16 follow-ups at once:
 
 ```text
 /orchestrate-followup repair-auth auth-runtime Keep the error copy but simplify the control flow.
-/orchestrate-accept repair-auth auth-runtime
 ```
 
-A follow-up queued while the agent is working runs after the current turn settles. Acceptance queued while it is working applies to the next checked candidate. The request budget continues while it waits for input. Expiry, interruption, ambiguity, failed review, and Main drift retain the owned worker and fail closed.
+A queued follow-up runs after the current turn settles and must produce a new clean commit that passes preliminary checks again. When no queued revision remains, the checked candidate seals immediately; there is no guaranteed post-completion editing window. Late follow-ups fail visibly. After sealing, use the reported recovery workflow for retained failed work, or start a new bounded request after the current run settles.
+
+Expiry, cancellation, ambiguity, failed checks or judgment, and Main drift retain the owned worker and fail closed. Automatic progression does not expand permission boundaries: the package still stops after checked local integration and never publishes, deploys, pushes, or opens a pull request.
 
 ## Flow
 
@@ -133,9 +135,9 @@ Ready text tasks use bounded ephemeral execution. Ready changeset tasks use sepa
 
 Preliminary validation uses checks only while the worker remains available. A settled implementation block or unchanged failed check can trigger one same-agent correction.
 
-After preliminary checks pass, the worker stays available for same-task follow-ups. Each follow-up reuses the live conversation, must produce a new clean commit, and reruns preliminary checks. Explicit acceptance seals the candidate; late follow-ups are rejected.
+After each successful preliminary check batch, the orchestrator drains any follow-up already queued for the same live worker. Each revision must produce a new clean commit and reruns preliminary checks. When the queue is empty, it atomically seals the candidate and persists exact readiness evidence without waiting for input.
 
-The worker remains live while the orchestrator records each exact rebase, reruns every task check directly without a shell, runs any judgment, and integrates the candidate into Main. If Main moves during that sequence, the orchestrator records and checks another exact rebase. After exact integration is durably recorded, it terminates that worker and then cleans up its resources.
+The worker remains live while the orchestrator records each exact rebase, reruns every task check directly without a shell, runs any judgment, and integrates the candidate into Main. If Main moves during that sequence, the orchestrator records and checks another exact rebase. After exact integration is durably recorded, it terminates that worker and then cleans up its resources. Independent ready tasks still dispatch in parallel waves, and changesets integrate in declared request order after their wave settles.
 
 Add `judgment` only for a criterion that checks cannot decide. Its selected Role runs after the rebase with exact private patch evidence while the task worker remains live. Configure the judgment Role with read-only tools. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
 
@@ -168,12 +170,12 @@ Use `orchestrate_status` after interruption or when a request needs attention. S
 A resume gets a fresh bounded recovery deadline. It preserves resources when reconciliation, checks, review, integration, or termination remain uncertain. Choose one reported action:
 
 - `retry` continues pre-dispatch recovery or sends one eligible correction to the same agent. It never replaces a prompted agent. A text-task retry runs only its selected ready task when others need attention.
-- `verify` checks exact retained task work, continues an accepted rebase or integration, reconciles post-integration termination, or finishes pending cleanup.
+- `verify` checks exact retained task work, records readiness for a precisely retained preliminarily checked candidate, continues a ready rebase or integration, reconciles post-integration termination, or finishes pending cleanup.
 - `finalize` reruns the final gate when Main still matches the recorded identity.
 
 `orchestrate_abort` terminates owned workers and records an aborted request. It does not claim uncertain cleanup succeeded.
 
-State schema v3 rejects v2 and all older state. It does not migrate them or delete prompt files that another process may still use.
+State schema v4 rejects v3 and all older state without modifying files or cleaning resources. To recover an unfinished v3 request, use the matching 5.x package to finish or explicitly abort it before upgrading. Never delete state or worker worktrees as a migration shortcut.
 
 ### Scope
 

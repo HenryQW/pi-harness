@@ -376,8 +376,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			if (!input.attempt || input.phase !== "authoritative") {
 				throw new Error("Task review requires exact authoritative attempt evidence.");
 			}
-			if (!input.attempt.acceptance || input.attempt.termination) {
-				throw new Error("Authoritative review requires exact durable acceptance and a live worker.");
+			if (!input.attempt.readiness || input.attempt.termination) {
+				throw new Error("Authoritative review requires exact durable readiness and a live worker.");
 			}
 			const expectedBase = input.attempt.integrationBase;
 			const expectedTip = input.attempt.integrationCandidate;
@@ -552,8 +552,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (input.task.kind !== "changeset") {
 			return { outcome: "failed", failure: "Integration requires a changeset task." };
 		}
-		if (!input.attempt.acceptance || input.attempt.termination) {
-			return { outcome: "failed", failure: "Integration requires exact durable acceptance and a live worker." };
+		if (!input.attempt.readiness || input.attempt.termination) {
+			return { outcome: "failed", failure: "Integration requires exact durable readiness and a live worker." };
 		}
 		if (!input.attempt.integrationBase || !sameIdentity(input.attempt.integrationBase, input.expectedMain)
 			|| !input.attempt.integrationCandidate || !sameIdentity(input.attempt.integrationCandidate, input.candidate)) {

@@ -45,12 +45,11 @@ export interface OrchestratorExtensionComponents {
 export type CreateOrchestratorComponents = (options: {
 	pi: ExtensionAPI;
 	context(): ExtensionContext;
-	onInteractiveWait(requestId: string, taskId: string): void;
 	onStateSaved(state: RunState): void;
 }) => OrchestratorExtensionComponents;
 
 /** Construct the Main runtime graph once, sharing one executor across text tasks and Judgments. */
-export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi, context, onInteractiveWait, onStateSaved }) => {
+export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi, context, onStateSaved }) => {
 	const runProcess: DirectProcessRunner = async (command, args, options) => options.stdin === undefined
 		? await pi.exec(command, args, {
 			cwd: options.cwd,
@@ -89,7 +88,6 @@ export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi,
 			git,
 			new FileRunStore(undefined, onStateSaved),
 			executor,
-			onInteractiveWait,
 		),
 	};
 };
@@ -108,7 +106,6 @@ function workspaceBadge(role: string, modelClass: ModelClass): string {
 
 function workspaceStatus(status: RunState["tasks"][number]["status"]): string {
 	switch (status) {
-		case "awaiting_acceptance": return "accept";
 		case "ready_to_integrate": return "ready";
 		case "needs_attention": return "attention";
 		default: return status;
@@ -308,12 +305,6 @@ export function registerOrchestratorExtension(
 	const getComponents = () => components ??= componentsFactory({
 		pi,
 		context: latestContext,
-		onInteractiveWait: (requestId, taskId) => {
-			latestContext().ui.notify(
-				`Task ${requestId}/${taskId} is ready. Use /orchestrate-followup ${requestId} ${taskId} <message> or /orchestrate-accept ${requestId} ${taskId}.`,
-				"info",
-			);
-		},
 		onStateSaved: (state) => updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest),
 	});
 
@@ -351,18 +342,6 @@ export function registerOrchestratorExtension(
 		},
 	});
 
-	pi.registerCommand("orchestrate-accept", {
-		description: "Accept the checked candidate for an active Pi Orchestrator changeset task",
-		handler: async (args, ctx) => {
-			latestCtx = ctx;
-			const parts = args.trim().split(/\s+/);
-			if (parts.length !== 2 || parts.some((part) => !part)) {
-				throw new Error("Usage: /orchestrate-accept <request-id> <task-id>");
-			}
-			const root = await lookupRoot(ctx.cwd);
-			ctx.ui.notify(getComponents().runner.acceptCandidate(root, parts[0]!, parts[1]!), "info");
-		},
-	});
 
 	pi.registerTool({
 		name: "orchestrate_execute",
