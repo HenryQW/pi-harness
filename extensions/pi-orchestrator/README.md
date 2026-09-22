@@ -25,7 +25,21 @@ pi install npm:@henryqw/pi-orchestrator
 - Configure Pi task-model profiles for every requested model class. Run `/task-models` to verify the profiles.
 - Use `@henryqw/pi-subagent` 17 or newer for Role launch, execution, worktrees, and exact judgment evidence.
 - Changeset workers wait until the new worktree workspace pane list is stable, then create a dedicated worker tab. They never use the workspace root pane.
-- Herdr labels each workspace as `<request-id>/<task-id>#<attempt>` and its worker tab as `<role>/<model-class>`.
+- Herdr gives each workspace a short opaque six-character token label and labels its worker tab as `<role>/<model-class>`.
+- While workspaces are active, Pi's widget area lists each workspace label, task status, compact Role/model badge, and task ID. A row disappears after that workspace is cleaned up. Non-TUI tool results include the same active-workspace rows as plain text.
+
+The widget combines the Role initial and model profile code in one badge. For example, `[I1] 8f3a2c · working · implement-api` is an implementer using the fast profile. Custom Roles use their uppercase first character, so Roles with the same initial share a code.
+
+| Position | Code | Meaning |
+| --- | --- | --- |
+| Role | `I` | `implementer` |
+| Role | `R` | `reviewer` |
+| Role | `S` | `scout` |
+| Role | `<initial>` | Uppercase first character of any custom Role |
+| Profile | `1` | `fast` |
+| Profile | `2` | `balanced` |
+| Profile | `3` | `frontier` |
+| Profile | `*` | `fav` |
 
 ## Works with
 
