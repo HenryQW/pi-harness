@@ -504,6 +504,44 @@ test("parallel tabs persist exact identities across a session switch without a f
 	});
 });
 
+test("switch during first direct launch carries tab identity without delivering a stale result", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			for (const stage of ["tab", "agent"] as const) {
+				let entered!: () => void;
+				let release!: () => void;
+				const reached = new Promise<void>((resolve) => { entered = resolve; });
+				const gate = new Promise<void>((resolve) => { release = resolve; });
+				const fake = fakeHerdr(cwd);
+				const app = harness({ cwd, herdr: async (args) => {
+					const response = await fake.exec(args);
+					if (args[0] === stage && args[1] === (stage === "tab" ? "create" : "start")) {
+						entered();
+						await gate;
+					}
+					return response;
+				} });
+				await app.handlers.get("session_start")?.({}, app.ctx);
+				const launching = app.tool.execute(`switch-${stage}`, { role: "worker", name: "Check", task: "inspect" }, undefined, undefined, app.ctx);
+				const rejected = assert.rejects(launching, /Direct launch|Launching session changed/);
+				await reached;
+				const originalBranch = app.sessionEntries;
+				app.switchBranch();
+				const switched = app.handlers.get("session_start")?.({}, app.ctx);
+				release();
+				await Promise.all([rejected, switched]);
+				assert.equal(app.sentMessages.length, 0);
+				assert.equal(app.sessionEntries.length, 1);
+				assert.equal(app.sessionEntries[0]!.data.tabId, "w-test:t2");
+				assert.equal(originalBranch.length, stage === "agent" ? 1 : 0);
+				await app.commands.get("subagent-direct-recovery")!.handler("", app.ctx);
+				assert.match(app.notifications.at(-1)!.message, /tab w-test:t2 .* session .*session.jsonl/);
+			}
+		});
+	});
+});
+
 test("session shutdown cancels the exact direct agent and suppresses a late result", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);

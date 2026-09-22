@@ -469,6 +469,11 @@ export default function subagentExtension(
 			const handles: DirectHandle[] = [];
 			const tabs: DirectTabRecord[] = [];
 			const tabByEntry = new Map<string, DirectTabRecord>();
+			let resolveSettled!: () => void;
+			const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+			// Register before Herdr can create a tab: session switches must await this
+			// launch, including its identity callback, before copying recovery records.
+			directTasks.set(taskId, { controller, settled, handles, tabs });
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
 				const role = loadRoles().find((candidate) => candidate.name === entry.delegation.role);
@@ -498,16 +503,22 @@ export default function subagentExtension(
 			let first: DirectHandle;
 			const abortLaunch = () => controller.abort(signal?.reason);
 			signal?.addEventListener("abort", abortLaunch, { once: true });
-			try { first = await launch(workflow.mode === "chain" ? {
-				...entries[0]!, delegation: { ...entries[0]!.delegation, task: entries[0]!.delegation.task.replaceAll("{previous}", "") },
-			} : entries[0]!, controller.signal); }
-			catch (error) { controller.abort(); finishWidgetItem(entries[0]!.id, "failure"); throw boundedError(error); }
-			finally { signal?.removeEventListener("abort", abortLaunch); }
-			if (launchEpoch !== sessionEpoch || controller.signal.aborted) {
-				await first.cancel();
-				throw new Error(`Launching session changed during direct start; inspect Herdr tab ${first.tabId}.`);
-			}
-			const settled = (async () => {
+			try {
+				first = await launch(workflow.mode === "chain" ? {
+					...entries[0]!, delegation: { ...entries[0]!.delegation, task: entries[0]!.delegation.task.replaceAll("{previous}", "") },
+				} : entries[0]!, controller.signal);
+				if (launchEpoch !== sessionEpoch || controller.signal.aborted) {
+					await first.cancel();
+					throw new Error(`Launching session changed during direct start; inspect Herdr tab ${first.tabId}.`);
+				}
+			} catch (error) {
+				controller.abort();
+				finishWidgetItem(entries[0]!.id, "failure");
+				directTasks.delete(taskId);
+				resolveSettled();
+				throw boundedError(error);
+			} finally { signal?.removeEventListener("abort", abortLaunch); }
+			void (async () => {
 				try {
 					await new Promise<void>((resolve) => setImmediate(resolve));
 					let active = 0;
@@ -552,9 +563,9 @@ export default function subagentExtension(
 					}
 					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, workflow.mode, [...states.values()], tabs);
 					directTasks.delete(taskId);
+					resolveSettled();
 				}
 			})();
-			directTasks.set(taskId, { controller, settled, handles, tabs });
 			return {
 				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${taskId}\nHerdr tab: ${first.tabId} · pane: ${first.paneId} · agent: ${first.name}\nExact session: ${first.sessionFile}\nAll launched tabs: /subagent-direct-recovery (on this session branch).\n${entries.length} task(s); result will arrive in one follow-up message.`) }],
 				details: { taskId, mode: workflow.mode, tabId: first.tabId, sessionFile: first.sessionFile,
