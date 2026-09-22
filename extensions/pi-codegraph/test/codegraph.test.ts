@@ -57,16 +57,18 @@ function harness(cwd: string, options: {
 			}
 		},
 	} as unknown as ExtensionAPI;
+	const widgets: { key: string; content: string | string[] | undefined }[] = [];
 	const ctx = {
 		cwd,
 		hasUI: options.hasUI ?? true,
 		ui: {
 			notify: (message: string, level: string) => notices.push({ message, level }),
+			setWidget: (_key: string, content: string | string[] | undefined) => widgets.push({ key: _key, content }),
 			setStatus: (_key: string, text: string | undefined) => options.onStatus?.(text),
 		},
 	} as unknown as ExtensionContext;
 	codegraphExtension(pi);
-	return { start: () => start({}, ctx), notices, calls };
+	return { start: () => start({}, ctx), notices, calls, widgets };
 }
 
 test("initializes an opted-in linked worktree at its root once, including nested launches", async (t) => {
@@ -80,7 +82,7 @@ test("initializes an opted-in linked worktree at its root once, including nested
 	assert.deepEqual(run.calls.filter(({ command, args }) => command === "codegraph" && args[0] === "init"), [
 		{ command: "codegraph", args: ["init", "--yes", worktree], cwd: worktree },
 	]);
-	assert.deepEqual(run.notices, [{ message: "CodeGraph worktree index ready.", level: "info" }]);
+	assert.deepEqual(run.widgets, [{ key: "pi-codegraph", content: ["pi-codegraph: index ready"] }]);
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
