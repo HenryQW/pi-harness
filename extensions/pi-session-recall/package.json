@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-session-recall",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Local FTS5 search over past Pi sessions plus a skill for turning recurring work into deterministic automation.",
   "keywords": [
     "pi-package",
@@ -27,9 +27,9 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.86.0",
-    "@earendil-works/pi-coding-agent": "^0.86.0",
-    "@earendil-works/pi-tui": "^0.86.0",
+    "@earendil-works/pi-ai": ">=0.86.0 <0.88.0",
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.88.0",
+    "@earendil-works/pi-tui": ">=0.86.0 <0.88.0",
     "typebox": "^1.3.15"
   },
   "repository": {
@@ -55,8 +55,8 @@
     "@henryqw/pi-config-store": "^2.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.86.0",
-    "@earendil-works/pi-coding-agent": "0.86.0",
-    "@earendil-works/pi-tui": "0.86.0"
+    "@earendil-works/pi-ai": "0.87.0",
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@earendil-works/pi-tui": "0.87.0"
   }
 }
