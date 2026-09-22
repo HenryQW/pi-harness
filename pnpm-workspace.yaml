@@ -12,9 +12,9 @@ allowBuilds:
   '@scarf/scarf': false
 
 minimumReleaseAgeExclude:
-  - '@earendil-works/chord@0.86.0'
-  - '@earendil-works/pi-agent-core@0.86.0'
-  - '@earendil-works/pi-ai@0.86.0'
-  - '@earendil-works/pi-coding-agent@0.86.0'
-  - '@earendil-works/pi-telemetry@0.86.0'
-  - '@earendil-works/pi-tui@0.86.0'
+  - '@earendil-works/chord@0.86.0 || 0.87.0'
+  - '@earendil-works/pi-agent-core@0.86.0 || 0.87.0'
+  - '@earendil-works/pi-ai@0.86.0 || 0.87.0'
+  - '@earendil-works/pi-coding-agent@0.86.0 || 0.87.0'
+  - '@earendil-works/pi-telemetry@0.86.0 || 0.87.0'
+  - '@earendil-works/pi-tui@0.86.0 || 0.87.0'
