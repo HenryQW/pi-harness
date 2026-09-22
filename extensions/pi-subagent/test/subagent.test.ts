@@ -186,6 +186,7 @@ function harness(options: {
 	let renders = 0;
 	const notifications: Array<{ message: string; type: string }> = [];
 	const sentMessages: Array<{ message: any; options: any }> = [];
+	let sessionEntries: any[] = [];
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const commands = new Map<string, { handler: (...args: any[]) => any }>();
 	const tui = { requestRender: () => { renders++; } };
@@ -225,6 +226,7 @@ function harness(options: {
 		registerMessageRenderer(customType: string, renderer: typeof messageRenderer) {
 			if (customType === "subagent-direct-result") messageRenderer = renderer;
 		},
+		appendEntry(customType: string, data: unknown) { sessionEntries.push({ type: "custom", customType, data }); },
 		sendMessage(message: any, deliveryOptions: any) {
 			if (options.sendMessageError) throw options.sendMessageError;
 			sentMessages.push({ message, options: deliveryOptions });
@@ -248,6 +250,7 @@ function harness(options: {
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: { getAvailable: () => options.availableModels ?? [model] },
 		scopedModels: options.scopedModels ?? [],
+		sessionManager: { getBranch: () => sessionEntries },
 		ui: {
 			notify: (message: string, type: string) => notifications.push({ message, type }),
 			setWidget: (_key: string, content: any) => {
@@ -266,6 +269,8 @@ function harness(options: {
 		},
 		notifications,
 		sentMessages,
+		get sessionEntries() { return sessionEntries; },
+		switchBranch() { sessionEntries = []; },
 		ctx,
 		handlers,
 		commands,
@@ -293,7 +298,7 @@ Do bounded work.
 `);
 }
 
-function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exact answer", waitGate?: Promise<void>) {
+function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
 	const calls: string[][] = [];
 	const sessions = new Map<string, { path: string; prompt?: string; pane: string; tab: string }>();
 	let next = 1;
@@ -302,6 +307,15 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exac
 		const identity = sessions.get(name)!;
 		return { name, agent: "pi", agent_status: status, cwd, interactive_ready: true,
 			pane_id: identity.pane, tab_id: identity.tab, workspace_id: "w-test" };
+	};
+	const persist = async (name: string) => {
+		const identity = sessions.get(name)!;
+		const text = answer(identity.prompt!);
+		await writeFile(identity.path, [
+			{ type: "session", id: "session" },
+			{ type: "message", id: "user", parentId: "session", message: { role: "user", content: [{ type: "text", text: identity.prompt }] } },
+			{ type: "message", id: "final", parentId: "user", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } },
+		].map((line) => JSON.stringify(line)).join("\n") + "\n");
 	};
 	return {
 		calls,
@@ -322,17 +336,13 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exac
 			}
 			if (args[0] === "agent" && args[1] === "prompt") {
 				sessions.get(args[2]!)!.prompt = args[3]!;
-				return response({ type: "agent_prompted", agent: agent(args[2]!, "working") });
+				if (promptStatus === "done" || promptStatus === "idle") await persist(args[2]!);
+				return response({ type: "agent_prompted", agent: agent(args[2]!, promptStatus) });
 			}
 			if (args[0] === "agent" && args[1] === "wait") {
+				if (waitTimeout) return { code: 1, stdout: JSON.stringify({ error: { code: "timeout" } }), stderr: "" };
 				await waitGate;
-				const identity = sessions.get(args[2]!)!;
-				const text = answer(identity.prompt!);
-				await writeFile(identity.path, [
-					{ type: "session", id: "session" },
-					{ type: "message", id: "user", parentId: "session", message: { role: "user", content: [{ type: "text", text: identity.prompt }] } },
-					{ type: "message", id: "final", parentId: "user", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } },
-				].map((line) => JSON.stringify(line)).join("\n") + "\n");
+				await persist(args[2]!);
 				return response({ type: "agent_info", agent: agent(args[2]!, "done") });
 			}
 			if (args[0] === "agent" && args[1] === "send-keys") return response({ type: "ok" });
@@ -369,6 +379,34 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
 			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt").length, 1);
 			assert.ok(fake.calls.some((args) => args.includes("--no-focus") && args.includes(cwd)));
+		});
+	});
+});
+
+test("direct prompt acknowledges before turn settlement and accepts an already settled native session", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, () => "exact answer", gate);
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			const result = await app.tool.execute("ack", { role: "worker", name: "Ack", task: "inspect" }, undefined, undefined, app.ctx);
+			assert.match(result.content[0].text, /Herdr tab:/);
+			assert.equal(app.sentMessages.length, 0);
+			assert.ok(fake.calls.every((args) => args[1] !== "prompt" || !args.includes("--wait")));
+			release();
+			await waitFor(() => app.sentMessages.length === 1);
+			for (const status of ["idle", "done"]) {
+				const instant = fakeHerdr(cwd, () => "instant answer", undefined, status);
+				const other = harness({ cwd, herdr: instant.exec });
+				other.handlers.get("session_start")?.({}, other.ctx);
+				await other.tool.execute(`instant-${status}`, { role: "worker", name: "Instant", task: "inspect" }, undefined, undefined, other.ctx);
+				await waitFor(() => other.sentMessages.length === 1);
+				assert.match(other.sentMessages[0]!.message.content, /instant answer/);
+				assert.equal(instant.calls.filter((args) => args[1] === "wait").length, 0);
+			}
 		});
 	});
 });
@@ -414,6 +452,54 @@ test("parallel direct delegation returns after first verified tab and delivers o
 			assert.match(message.content, /empty final answer/);
 			assert.match(message.content, /recover from Herdr tab/);
 			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+		});
+	});
+});
+
+test("repeated Herdr wait timeouts stop after idle policy without imposing a task lifetime", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ timeout: { idleMinutes: 0.0001 } }));
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, undefined, undefined, "working", true);
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("idle", { role: "worker", name: "Idle", task: "inspect" }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.match(app.sentMessages[0]!.message.content, /made no progress/);
+			assert.match(app.sentMessages[0]!.message.content, /recover from Herdr tab w-test:t2/);
+			assert.ok(fake.calls.some((args) => args[1] === "wait"));
+			assert.equal(app.sentMessages[0]!.message.details.tabs[0].tabId, "w-test:t2");
+		});
+	});
+});
+
+test("parallel tabs persist exact identities across a session switch without a follow-up", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, () => "late answer", gate);
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("parallel-switch", { tasks: [
+				{ role: "worker", name: "First", task: "first" },
+				{ role: "worker", name: "Second", task: "second" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sessionEntries.length === 2);
+			const originalBranch = app.sessionEntries;
+			app.switchBranch();
+			const switched = app.handlers.get("session_start")?.({}, app.ctx);
+			release();
+			await switched;
+			assert.equal(app.sentMessages.length, 0);
+			await app.commands.get("subagent-direct-recovery")!.handler("", app.ctx);
+			for (const record of app.sessionEntries) {
+				assert.match(app.notifications.at(-1)!.message, new RegExp(`tab ${record.data.tabId} .* session ${record.data.sessionFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+			}
+			assert.deepEqual(originalBranch.map(({ data }) => data.tabId), ["w-test:t2", "w-test:t3"]);
+			assert.deepEqual(app.sessionEntries.map(({ data }) => data.tabId), ["w-test:t2", "w-test:t3"]);
 		});
 	});
 });

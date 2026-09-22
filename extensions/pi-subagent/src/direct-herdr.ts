@@ -79,7 +79,9 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 	return text;
 }
 
-export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string) {
+export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile">;
+
+export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, idleMs: number) {
 	if (process.env.HERDR_ENV !== "1") throw new Error("Direct delegation requires a Herdr-managed Pi pane (HERDR_ENV=1).");
 	const workspaceId = field(process.env.HERDR_WORKSPACE_ID, "HERDR_WORKSPACE_ID");
 	const callerPane = field(process.env.HERDR_PANE_ID, "HERDR_PANE_ID");
@@ -95,7 +97,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string) {
 		return field(agent.agent_status, "agent state");
 	};
 	return {
-		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal): Promise<DirectHandle> {
+		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void): Promise<DirectHandle> {
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
 			if (pane.pane_id !== callerPane || pane.workspace_id !== workspaceId) throw new Error("Herdr caller pane no longer matches the launching workspace.");
@@ -115,31 +117,78 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string) {
 				throw new Error(`Herdr tab ${tabId} has unverified identity, cwd or focus; inspect it before retrying.`);
 			}
 			try {
+				// Record the tab before the agent start can outlive an aborted launch.
+				onTab({ name, tabId, paneId, sessionFile });
+				signal.throwIfAborted();
 				const started = await startPiAgent(herdr, { name, pane: paneId,
 					args: [...sessionArgs, "--session", sessionFile], options: options(signal), shouldRetry: () => false });
 				if (started.code !== 0 || started.killed) throw new Error(`Herdr agent start failed: ${started.stderr.slice(0, 1000)}`);
 				if (inspect(JSON.parse(started.stdout), "agent_started", name, paneId, tabId) !== "idle") throw new Error("Herdr agent was not idle after start.");
 				const prompt = `${task}\n\nDirect text boundary: inspect only. Do not modify files, the Git index, HEAD, branches, or worktrees.\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
-				const accepted = await herdr.json(["agent", "prompt", name, prompt, "--wait", "--until", "working", "--until", "idle", "--until", "done", "--until", "blocked", "--until", "unknown", "--timeout", String(OPERATION_MS - 1000)], options(signal));
+				// Native prompt without --wait acknowledges submission, not completion of the turn.
+				const accepted = await herdr.json(["agent", "prompt", name, prompt], options(signal));
 				const state = inspect(accepted, "agent_prompted", name, paneId, tabId);
 				if (state === "blocked" || state === "unknown") throw new Error(`Herdr agent became ${state}; inspect it before retrying.`);
 				return {
 				name, tabId, paneId, sessionFile, prompt,
 				async answer(maxBytes) {
+					const readAnswer = async () => {
+						const info = await stat(sessionFile);
+						if (info.size > SESSION_LIMIT) throw new Error(`Pi session in tab ${tabId} exceeds 16 MiB; inspect ${sessionFile} for recovery.`);
+						return exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, maxBytes);
+					};
+					const maybeAnswer = async () => {
+						try { return await readAnswer(); } catch (error) {
+							if (signal.aborted || !(error instanceof Error)
+								|| (!('code' in error && error.code === "ENOENT")
+									&& !error.message.includes("did not persist an exact successful final answer"))) throw error;
+							return undefined;
+						}
+					};
 					let current = state;
-					while (current === "working") {
-						const args = ["agent", "wait", name, "--until", "idle", "--until", "done", "--until", "blocked", "--until", "unknown", "--timeout", String(OPERATION_MS - 1000)];
+					let deadline = Date.now() + idleMs;
+					let sessionSize = 0;
+					const observeProgress = async () => {
+						const info = await stat(sessionFile).catch((error: NodeJS.ErrnoException) => {
+							if (error.code === "ENOENT") return undefined;
+							throw error;
+						});
+						if (info && info.size > SESSION_LIMIT) throw new Error(`Pi session in tab ${tabId} exceeds 16 MiB; inspect ${sessionFile} for recovery.`);
+						if (info && info.size > sessionSize) {
+							sessionSize = info.size;
+							deadline = Date.now() + idleMs;
+						}
+					};
+					while (current === "working" || current === "idle") {
+						// A turn may finish before observation begins (or between waits).
+						if (current === "idle") {
+							const answer = await maybeAnswer();
+							if (answer !== undefined) return answer;
+						}
+						await observeProgress();
+						const remaining = deadline - Date.now();
+						if (remaining <= 0) throw new Error(`Herdr agent in tab ${tabId} made no progress for ${idleMs}ms; inspect ${sessionFile} before retrying.`);
+						const args = ["agent", "wait", name,
+							...(current === "idle" ? ["--until", "working"] : ["--until", "idle"]),
+							"--until", "done", "--until", "blocked", "--until", "unknown",
+							"--timeout", String(Math.max(1, Math.min(current === "idle" ? 1000 : OPERATION_MS - 1000, remaining)))];
 						const waited = await herdr.exec(args, options(signal));
 						if (waited.code !== 0 || waited.killed) {
-							if (!waited.killed && hasHerdrErrorCode(waited, "timeout")) continue;
+							if (!waited.killed && hasHerdrErrorCode(waited, "timeout")) {
+								if (current === "idle") {
+									const answer = await maybeAnswer();
+									if (answer !== undefined) return answer;
+								}
+								continue;
+							}
 							throw new Error(herdrCommandFailure(args, waited));
 						}
-						current = inspect(JSON.parse(waited.stdout), "agent_info", name, paneId, tabId);
+						const next = inspect(JSON.parse(waited.stdout), "agent_info", name, paneId, tabId);
+						if (next !== current) deadline = Date.now() + idleMs;
+						current = next;
 					}
-					if (current !== "done" && current !== "idle") throw new Error(`Herdr agent in tab ${tabId} became ${current}; inspect it before retrying.`);
-					const info = await stat(sessionFile);
-					if (info.size > SESSION_LIMIT) throw new Error(`Pi session in tab ${tabId} exceeds 16 MiB; inspect ${sessionFile} for recovery.`);
-					return exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, maxBytes);
+					if (current !== "done") throw new Error(`Herdr agent in tab ${tabId} became ${current}; inspect it before retrying.`);
+					return readAnswer();
 				},
 				async cancel() {
 					await herdr.json(["agent", "send-keys", name, "ctrl+c"], options());

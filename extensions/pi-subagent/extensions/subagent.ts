@@ -9,7 +9,7 @@ import { registerIsolatedExtension } from "./isolated.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { formatWorkflowResult, presentWorkflowEntryStatus, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskSchema, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
-import { createDirectHerdr, type DirectHandle } from "../src/direct-herdr.ts";
+import { createDirectHerdr, type DirectHandle, type DirectTab } from "../src/direct-herdr.ts";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
@@ -139,6 +139,8 @@ function replaceRouteModel(ctx: ExtensionContext, reference: string, route: Reso
 }
 
 const DIRECT_RESULT_TYPE = "subagent-direct-result";
+const DIRECT_TAB_TYPE = "subagent-direct-tab";
+type DirectTabRecord = DirectTab & { taskId: string; entryId: string };
 
 function boundedError(error: unknown): Error {
 	const message = capOutput(error instanceof Error ? error.message : String(error));
@@ -160,7 +162,7 @@ export default function subagentExtension(
 	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) return;
 	registerModelTask(pi, DELEGATE_TASK);
 	pi.registerMessageRenderer(DIRECT_RESULT_TYPE, (message, { expanded, outputPad }, theme) => {
-		const details = message.details as BackgroundWorkflowTransportDetails | undefined;
+		const details = message.details as (BackgroundWorkflowTransportDetails & { tabs?: readonly DirectTabRecord[] }) | undefined;
 		const content = typeof message.content === "string"
 			? message.content
 			: message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
@@ -180,6 +182,7 @@ export default function subagentExtension(
 		return new Text([
 			theme.fg(color, `${glyph} ${subject} ${state}`),
 			...rows,
+			...(details.tabs?.length ? ["Recovery: /subagent-direct-recovery (exact tabs and sessions)"] : []),
 			...(expanded ? ["", raw] : []),
 		].join("\n"), outputPad, 0);
 	});
@@ -232,7 +235,17 @@ export default function subagentExtension(
 		currentPolicy,
 	});
 	let directSequence = 0;
-	const directTasks = new Map<string, { controller: AbortController; settled: Promise<void>; handles: DirectHandle[] }>();
+	const directTasks = new Map<string, { controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[] }>();
+	pi.registerCommand("subagent-direct-recovery", {
+		description: "Show exact Herdr tabs and Pi session files launched on this session branch",
+		handler: async (_args, ctx) => {
+			const records = ctx.sessionManager.getBranch().flatMap((entry) => entry.type === "custom" && entry.customType === DIRECT_TAB_TYPE && entry.data
+				? [entry.data as DirectTabRecord] : []);
+			ctx.ui.notify(records.length ? records.map(({ taskId, entryId, name, tabId, paneId, sessionFile }) =>
+				`${taskId} · ${entryId} · tab ${tabId} · pane ${paneId} · agent ${name} · session ${sessionFile}`).join("\n")
+				: "No direct Herdr tab identities recorded on this session branch. An interrupted launch may still require inspecting the Herdr workspace.", "info");
+		},
+	});
 	let latestCtx: ExtensionContext | undefined;
 	let sessionEpoch = 0;
 	let widgetInstalled = false;
@@ -317,6 +330,17 @@ export default function subagentExtension(
 				await Promise.allSettled(handles.map((handle) => handle.cancel()));
 			}
 			await Promise.allSettled(previous.map(({ settled }) => settled));
+			// A switch discards the old session's ordinary follow-up. Carry exact
+			// recovery identities into the new branch as well as the original one.
+			const recorded = new Set(ctx.sessionManager.getBranch().flatMap((entry) =>
+				entry.type === "custom" && entry.customType === DIRECT_TAB_TYPE && entry.data
+					? [(entry.data as DirectTabRecord).tabId] : []));
+			for (const { tabs } of previous) for (const tab of tabs) {
+				if (!recorded.has(tab.tabId)) {
+					pi.appendEntry(DIRECT_TAB_TYPE, tab);
+					recorded.add(tab.tabId);
+				}
+			}
 		}
 		latestCtx = ctx;
 		ensureWidget(ctx);
@@ -367,16 +391,19 @@ export default function subagentExtension(
 		taskId: string,
 		mode: ParsedWorkflow["mode"],
 		entries: readonly WorkflowTransportEntry[],
+		tabs: readonly DirectTabRecord[],
 	): void => {
 		const stale = launchEpoch !== sessionEpoch;
 		if (stale) return;
 		const transport = formatWorkflowResult(mode, entries);
 		const outcome: BackgroundWorkflowTransportDetails["outcome"] = transport.failed ? "failed" : "completed";
-		const content = transport.text;
-		const details: BackgroundWorkflowTransportDetails = {
+		const content = [transport.text, ...(tabs.length ? ["Recovery (also available via /subagent-direct-recovery):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile }) =>
+			`- ${taskId} · ${entryId} · tab ${tabId} · pane ${paneId} · agent ${name} · session ${sessionFile}`)] : [])].join("\n");
+		const details: BackgroundWorkflowTransportDetails & { tabs: readonly DirectTabRecord[] } = {
 			...transport.details,
 			taskId,
 			outcome,
+			tabs: [...tabs],
 			...(transport.usage === undefined ? {} : { usage: transport.usage }),
 		};
 		try {
@@ -431,7 +458,7 @@ export default function subagentExtension(
 				if (roleCanWrite(role)) throw new Error(`Role ${role.name} exposes write-capable or unverified resources. Use mode isolated for this Role; direct is read-only.`);
 			}
 			const policy = currentPolicy();
-			const herdr = createDirectHerdr(pi, ctx.cwd);
+			const herdr = createDirectHerdr(pi, ctx.cwd, policy.childIdleMs);
 			const entries = identifyWorkflowEntries(toolCallId, workflow);
 			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
 				id: entry.id, index: entry.index, name: entry.delegation.name, role: entry.delegation.role, status: "pending",
@@ -440,7 +467,8 @@ export default function subagentExtension(
 			const controller = new AbortController();
 			const launchEpoch = sessionEpoch;
 			const handles: DirectHandle[] = [];
-			const handleByEntry = new Map<string, DirectHandle>();
+			const tabs: DirectTabRecord[] = [];
+			const tabByEntry = new Map<string, DirectTabRecord>();
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
 				const role = loadRoles().find((candidate) => candidate.name === entry.delegation.role);
@@ -455,9 +483,14 @@ export default function subagentExtension(
 				states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
 				model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
 				startWidgetItem(entry.id, taskId, role.name, prepared.model.id, prepared.thinkingLevel, entry.delegation.name, ctx);
-				const handle = await herdr.start(finalizeRoleLaunch(prepared), `d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, entry.delegation.name, entry.delegation.task, activeSignal);
+				const handle = await herdr.start(finalizeRoleLaunch(prepared), `d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, entry.delegation.name, entry.delegation.task, activeSignal, (tab) => {
+					const record = { taskId, entryId: entry.id, ...tab };
+					// Persist before agent start, including launches interrupted by a session switch.
+					pi.appendEntry(DIRECT_TAB_TYPE, record);
+					tabs.push(record);
+					tabByEntry.set(entry.id, record);
+				});
 				handles.push(handle);
-				handleByEntry.set(entry.id, handle);
 				return handle;
 			};
 			// The first tab is verified before returning a handle; subsequent independent
@@ -500,7 +533,7 @@ export default function subagentExtension(
 							const base = states.get(entry.id)!;
 							states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
 								...(base.model ? { model: base.model } : {}), ...(base.thinkingLevel ? { thinkingLevel: base.thinkingLevel } : {}),
-								status: "rejected", failure: capOutput(`${error instanceof Error ? error.message : String(error)}${handleByEntry.has(entry.id) ? `; recover from Herdr tab ${handleByEntry.get(entry.id)!.tabId} or ${handleByEntry.get(entry.id)!.sessionFile}` : ""}`) });
+								status: "rejected", failure: `${tabByEntry.has(entry.id) ? `recover from Herdr tab ${tabByEntry.get(entry.id)!.tabId}, agent ${tabByEntry.get(entry.id)!.name}, session ${tabByEntry.get(entry.id)!.sessionFile}: ` : ""}${capOutput(error instanceof Error ? error.message : String(error))}` });
 							finishWidgetItem(entry.id, "failure");
 							throw error;
 						} finally { release(); }
@@ -517,13 +550,13 @@ export default function subagentExtension(
 							status: "skipped",
 						});
 					}
-					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, workflow.mode, [...states.values()]);
+					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, workflow.mode, [...states.values()], tabs);
 					directTasks.delete(taskId);
 				}
 			})();
-			directTasks.set(taskId, { controller, settled, handles });
+			directTasks.set(taskId, { controller, settled, handles, tabs });
 			return {
-				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${taskId}\nHerdr tab: ${first.tabId} · agent: ${first.name}\nExact session: ${first.sessionFile}\n${entries.length} task(s); result will arrive in one follow-up message.`) }],
+				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${taskId}\nHerdr tab: ${first.tabId} · pane: ${first.paneId} · agent: ${first.name}\nExact session: ${first.sessionFile}\nAll launched tabs: /subagent-direct-recovery (on this session branch).\n${entries.length} task(s); result will arrive in one follow-up message.`) }],
 				details: { taskId, mode: workflow.mode, tabId: first.tabId, sessionFile: first.sessionFile,
 					entries: entries.map(({ id, index, delegation }) => ({ id, index, name: delegation.name, role: delegation.role })) },
 			};
