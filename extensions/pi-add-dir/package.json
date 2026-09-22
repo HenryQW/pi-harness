@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-add-dir",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Add external directories to a Pi session with context, skills, and file search.",
   "keywords": [
     "pi-package",
@@ -45,6 +45,9 @@
       "./extensions/add-dir.ts"
     ],
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-add-dir/example.png"
+  },
+  "dependencies": {
+    "@henryqw/pi-config-store": "^2.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.86.0",
