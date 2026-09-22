@@ -70,7 +70,7 @@ It recommends `/dream` when either store is at least 70% full and the last dream
 
 `/dream` shows a compact tool block. It hides its internal instructions and live entries.
 
-It records its completed run time in `~/.pi/agent/config/pi-memory/dream.json`. It validates live state first and reuses unchanged memory snapshots. It gives the current session agent live memory entries and instructions to edit only the agent-global `~/.pi/agent/SYSTEM.md`, never a project `.pi/SYSTEM.md`.
+It records its completed run time in `~/.pi/agent/config/pi-memory/dream.json`. It reads both stores from the configured memory directory for every run (by default, `~/.pi/agent/config/pi-memory/memory/`) and gives the current session agent their live entries. It instructs the agent to edit only the agent-global `~/.pi/agent/SYSTEM.md`, never a project `.pi/SYSTEM.md`.
 
 That global file must already exist and be readable. Establish it deliberately and completely, because a partial SYSTEM replaces Pi's default prompt.
 
