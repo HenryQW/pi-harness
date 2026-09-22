@@ -1,4 +1,6 @@
-import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { lstatSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	Text,
 	truncateToWidth,
@@ -18,11 +20,32 @@ import {
 	type AddedDir,
 	type DirContext,
 } from "./add-dir-helpers.ts";
+import { createAddDirConfigStore } from "./add-dir-config.ts";
 
 const STATE_TYPE = "add-dir:state";
 const PROMPT_SECTION = "pi_add_dir";
 const DEFAULT_MAX_RESULTS = 50;
 const MAX_RESULTS = 1_000;
+const PROJECT_CONFIG_KEY = "pi-add-dir.directory";
+const PROJECT_CONFIG_RETRIES = 3;
+const DIR_ADD_USAGE = "Usage: /dir-add [--project | --global] <path>";
+
+type DirSource = "session" | "project" | "global";
+
+interface ScopedDir extends AddedDir {
+	source: DirSource;
+	storedPath: string;
+	inactiveReason?: string;
+}
+
+interface ExtensionOptions {
+	agentDir?: string;
+}
+
+interface ParsedAddArgs {
+	source: DirSource;
+	path: string;
+}
 
 const AddDirectoryParams = Type.Object({
 	path: Type.String({ description: "Absolute or relative path to the directory to add", minLength: 1 }),
@@ -67,6 +90,45 @@ function readState(data: unknown): AddedDir[] {
 	if (!data || typeof data !== "object") return [];
 	const dirs = (data as { dirs?: unknown }).dirs;
 	return Array.isArray(dirs) ? dirs.filter(isAddedDir) : [];
+}
+
+function parseAddArgs(args: string | undefined): ParsedAddArgs {
+	const input = args?.trim() ?? "";
+	if (!input) return { source: "session", path: "" };
+	for (const source of ["project", "global"] as const) {
+		const flag = `--${source}`;
+		if (input === flag) return { source, path: "" };
+		if (input.startsWith(`${flag} `)) return { source, path: input.slice(flag.length).trim() };
+	}
+	if (input.startsWith("--")) throw new Error(DIR_ADD_USAGE);
+	return { source: "session", path: input };
+}
+
+function validateStoredPaths(paths: string[], source: DirSource): void {
+	if (
+		paths.some(
+			(path) => typeof path !== "string" || !isAbsolute(path) || path.length === 0 || /\p{C}/u.test(path),
+		)
+	) {
+		throw new Error(`Invalid ${source} pi-add-dir configuration: expected absolute paths.`);
+	}
+}
+
+function hasGitMarker(cwd: string): boolean {
+	let directory = resolveDir(cwd, cwd);
+	while (true) {
+		try {
+			lstatSync(join(directory, ".git"));
+			return true;
+		} catch (error) {
+			if (!error || typeof error !== "object" || !("code" in error) || (error.code !== "ENOENT" && error.code !== "ENOTDIR")) {
+				throw error;
+			}
+		}
+		const parent = dirname(directory);
+		if (parent === directory) return false;
+		directory = parent;
+	}
 }
 
 function isWithinDir(dir: string, candidate: string): boolean {
@@ -153,9 +215,27 @@ export function createExternalAutocompleteProvider(
 	};
 }
 
-export default function addDirExtension(pi: ExtensionAPI): void {
-	let addedDirs: AddedDir[] = [];
+export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOptions = {}): void {
+	const globalStore = createAddDirConfigStore(options.agentDir);
+	let sessionDirs: AddedDir[] = [];
+	let projectPaths: string[] = [];
+	let globalPaths: string[] = [];
+	let managedDirs: ScopedDir[] = [];
+	let addedDirs: ScopedDir[] = [];
 	let currentCwd = "";
+
+	function globalConfigError(error: unknown): Error {
+		const message = error instanceof Error ? error.message : String(error);
+		return new Error(`Cannot load pi-add-dir global config at ${globalStore.path}: ${message}`, { cause: error });
+	}
+
+	function loadGlobalPaths(): string[] {
+		try {
+			return globalStore.loadSync().value.directories;
+		} catch (error) {
+			throw globalConfigError(error);
+		}
+	}
 
 	function updateWidget(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
@@ -185,91 +265,277 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 		}));
 	}
 
-	function reconstructState(ctx: ExtensionContext): boolean {
+	function warn(ctx: ExtensionContext, message: string): void {
+		if (ctx.hasUI) ctx.ui.notify(message, "warning");
+		else console.error(`pi-add-dir: ${message.slice(0, 1_000)}`);
+	}
+
+	function rebuildDirs(ctx: ExtensionContext, showWarnings = false): boolean {
+		const previous = addedDirs.map(({ absolutePath, source }) => `${source}\0${absolutePath}`);
+		const cwdPath = resolveDir(ctx.cwd, ctx.cwd);
+		const nextManaged: ScopedDir[] = [];
+		const nextActive: ScopedDir[] = [];
+
+		for (const dir of sessionDirs) {
+			const absolutePath = resolveDir(dir.absolutePath, ctx.cwd);
+			if (nextActive.some((existing) => existing.absolutePath === absolutePath)) continue;
+			const scoped = {
+				absolutePath,
+				label: basename(absolutePath) || absolutePath,
+				source: "session",
+				storedPath: dir.absolutePath,
+			} satisfies ScopedDir;
+			nextManaged.push(scoped);
+			nextActive.push(scoped);
+		}
+
+		for (const [source, paths] of [
+			["project", projectPaths],
+			["global", globalPaths],
+		] as const) {
+			for (const storedPath of paths) {
+				let absolutePath = storedPath;
+				let inactiveReason: string | undefined;
+				try {
+					absolutePath = resolveDir(storedPath, ctx.cwd);
+					if (!dirExists(absolutePath)) inactiveReason = "directory does not exist";
+				} catch (error) {
+					inactiveReason = error instanceof Error ? error.message : String(error);
+				}
+				const duplicate = nextActive.find((dir) => dir.absolutePath === absolutePath);
+				if (!inactiveReason && duplicate) inactiveReason = `shadowed by ${duplicate.source} scope`;
+				if (
+					!inactiveReason &&
+					(isWithinDir(cwdPath, absolutePath) || isWithinDir(absolutePath, cwdPath))
+				) {
+					inactiveReason = "overlaps current working directory scope";
+				}
+				const overlap = !inactiveReason
+					? nextActive.find(
+							(dir) =>
+								isWithinDir(dir.absolutePath, absolutePath) || isWithinDir(absolutePath, dir.absolutePath),
+						)
+					: undefined;
+				if (overlap) inactiveReason = `overlaps ${overlap.source} directory ${overlap.absolutePath}`;
+				const scoped = {
+					absolutePath,
+					label: basename(absolutePath) || absolutePath,
+					source,
+					storedPath,
+					...(inactiveReason ? { inactiveReason } : {}),
+				} satisfies ScopedDir;
+				nextManaged.push(scoped);
+				if (!inactiveReason) nextActive.push(scoped);
+				else if (showWarnings) warn(ctx, `Skipped ${source} external directory ${storedPath}: ${inactiveReason}.`);
+			}
+		}
+
+		managedDirs = nextManaged;
+		addedDirs = nextActive;
 		currentCwd = ctx.cwd;
+		updateWidget(ctx);
+		const next = addedDirs.map(({ absolutePath, source }) => `${source}\0${absolutePath}`);
+		return previous.length !== next.length || previous.some((value, index) => value !== next[index]);
+	}
+
+	function reconstructState(ctx: ExtensionContext, showWarnings = false): boolean {
 		const stateEntry = [...ctx.sessionManager.getBranch()]
 			.reverse()
 			.find((entry) => entry.type === "custom" && entry.customType === STATE_TYPE);
-		const nextDirs = stateEntry?.type === "custom" ? readState(stateEntry.data) : [];
-		const changed =
-			addedDirs.length !== nextDirs.length ||
-			addedDirs.some(
-				(dir, index) =>
-					dir.absolutePath !== nextDirs[index]?.absolutePath || dir.label !== nextDirs[index]?.label,
-			);
-		addedDirs = nextDirs;
-		updateWidget(ctx);
-		return changed;
+		sessionDirs = stateEntry?.type === "custom" ? readState(stateEntry.data) : [];
+		return rebuildDirs(ctx, showWarnings);
 	}
 
 	function persistState(): void {
-		pi.appendEntry(STATE_TYPE, { dirs: addedDirs.map((dir) => ({ ...dir })) });
+		pi.appendEntry(STATE_TYPE, { dirs: sessionDirs.map((dir) => ({ ...dir })) });
 	}
 
-	function addDir(
+	async function readProjectPaths(cwd: string, required: boolean): Promise<string[]> {
+		const probe = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"], { cwd });
+		if (probe.killed) throw new Error("Git repository check was interrupted.");
+		if (probe.code !== 0 || probe.stdout.trim() !== "true") {
+			if (hasGitMarker(cwd)) {
+				throw new Error(`Cannot inspect Git repository: ${probe.stderr.trim() || `git exited ${probe.code}`}`);
+			}
+			if (required) throw new Error("Project-persistent directories require a Git repository.");
+			return [];
+		}
+		const result = await pi.exec("git", ["config", "--local", "-z", "--get-all", PROJECT_CONFIG_KEY], { cwd });
+		if (result.killed) throw new Error("Reading project pi-add-dir configuration was interrupted.");
+		if (result.code === 1 && result.stdout.length === 0) return [];
+		if (result.code !== 0) {
+			throw new Error(`Cannot read project pi-add-dir configuration: ${result.stderr.trim() || `git exited ${result.code}`}`);
+		}
+		const paths = result.stdout.split("\0").filter((path) => path.length > 0);
+		validateStoredPaths(paths, "project");
+		return [...new Set(paths)];
+	}
+
+	async function mutateProjectConfig(args: string[], cwd: string, action: string): Promise<void> {
+		for (let attempt = 0; attempt < PROJECT_CONFIG_RETRIES; attempt += 1) {
+			const result = await pi.exec("git", ["config", "--local", ...args], { cwd });
+			if (!result.killed && result.code === 0) return;
+			const lockContention = /could not lock config file|unable to create .*\.lock/i.test(result.stderr);
+			if (result.killed || !lockContention || attempt === PROJECT_CONFIG_RETRIES - 1) {
+				throw new Error(`Cannot ${action}: ${result.stderr.trim() || "git config was interrupted"}`);
+			}
+			await delay(25 * (attempt + 1));
+		}
+	}
+
+	async function writePersistentPath(source: "project" | "global", absolutePath: string, ctx: ExtensionContext): Promise<void> {
+		if (source === "global") {
+			try {
+				const config = await globalStore.update((current) => ({
+					directories: current.directories.includes(absolutePath)
+						? current.directories
+						: [...current.directories, absolutePath],
+				}));
+				globalPaths = config.directories;
+				return;
+			} catch (error) {
+				throw globalConfigError(error);
+			}
+		}
+		projectPaths = await readProjectPaths(ctx.cwd, true);
+		if (projectPaths.some((path) => resolveDir(path, ctx.cwd) === absolutePath)) return;
+		await mutateProjectConfig(
+			["--replace-all", "--fixed-value", PROJECT_CONFIG_KEY, absolutePath, absolutePath],
+			ctx.cwd,
+			"save project directory",
+		);
+		projectPaths = await readProjectPaths(ctx.cwd, true);
+	}
+
+	async function addDir(
 		dirPath: string,
+		source: DirSource,
 		cwd: string,
 		ctx: ExtensionContext,
-	): { ok: boolean; message: string; hasNewSkills: boolean; absolutePath?: string; context?: DirContext } {
+	): Promise<{ ok: boolean; message: string; resourcesChanged: boolean; absolutePath?: string; context?: DirContext }> {
 		const input = dirPath.trim();
-		if (!input) return { ok: false, message: "Directory path must not be blank.", hasNewSkills: false };
+		if (!input) return { ok: false, message: "Directory path must not be blank.", resourcesChanged: false };
 
 		let absolutePath: string;
 		try {
 			absolutePath = resolveDir(input, cwd);
 			if (!dirExists(absolutePath)) {
-				return { ok: false, message: `Directory does not exist: ${absolutePath}`, hasNewSkills: false };
+				return { ok: false, message: `Directory does not exist: ${absolutePath}`, resourcesChanged: false };
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return { ok: false, message: `Cannot access directory: ${message}`, hasNewSkills: false };
+			return { ok: false, message: `Cannot access directory: ${message}`, resourcesChanged: false };
 		}
-		if (addedDirs.some((dir) => dir.absolutePath === absolutePath)) {
-			return { ok: false, message: `Already added: ${absolutePath}`, hasNewSkills: false };
+		if (source !== "session" && /\p{C}/u.test(absolutePath)) {
+			return { ok: false, message: "Persistent directory paths must not contain control characters.", resourcesChanged: false };
+		}
+		const exact = managedDirs.filter((dir) => dir.absolutePath === absolutePath);
+		const sessionMatch = exact.find((dir) => dir.source === "session");
+		const persistentMatch = exact.find((dir) => dir.source !== "session");
+		if (persistentMatch || (source === "session" && sessionMatch)) {
+			return {
+				ok: false,
+				message: `Already added in ${persistentMatch?.source ?? "session"} scope: ${absolutePath}`,
+				resourcesChanged: false,
+			};
 		}
 		const cwdPath = resolveDir(cwd, cwd);
 		if (isWithinDir(cwdPath, absolutePath) || isWithinDir(absolutePath, cwdPath)) {
-			return {
-				ok: false,
-				message: "Directory overlaps current working directory scope.",
-				hasNewSkills: false,
-			};
+			return { ok: false, message: "Directory overlaps current working directory scope.", resourcesChanged: false };
 		}
 		const overlap = addedDirs.find(
-			(dir) => isWithinDir(dir.absolutePath, absolutePath) || isWithinDir(absolutePath, dir.absolutePath),
+			(dir) =>
+				dir.absolutePath !== absolutePath &&
+				(isWithinDir(dir.absolutePath, absolutePath) || isWithinDir(absolutePath, dir.absolutePath)),
 		);
 		if (overlap) {
 			return {
 				ok: false,
 				message: `Directory overlaps already-added directory: ${overlap.absolutePath}`,
-				hasNewSkills: false,
+				resourcesChanged: false,
 			};
 		}
 
+		const previousSkillPaths = collectSkillPaths(addedDirs);
 		const context = scanDirContext(absolutePath);
 		const label = basename(absolutePath) || absolutePath;
-		addedDirs.push({ absolutePath, label });
-		persistState();
-		updateWidget(ctx);
+		try {
+			if (source === "session") {
+				sessionDirs.push({ absolutePath, label });
+				persistState();
+			} else {
+				const previousSessionDirs = sessionDirs;
+				if (sessionMatch) {
+					sessionDirs = sessionDirs.filter((dir) => resolveDir(dir.absolutePath, ctx.cwd) !== absolutePath);
+					try {
+						persistState();
+					} catch (error) {
+						sessionDirs = previousSessionDirs;
+						throw error;
+					}
+				}
+				try {
+					await writePersistentPath(source, absolutePath, ctx);
+				} catch (error) {
+					if (sessionMatch) {
+						sessionDirs = previousSessionDirs;
+						try {
+							persistState();
+						} catch (recoveryError) {
+							const recoveryMessage = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+							throw new Error(`Persistent write failed and session recovery failed: ${recoveryMessage}`, { cause: error });
+						}
+					}
+					throw error;
+				}
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return { ok: false, message, resourcesChanged: false };
+		}
+		rebuildDirs(ctx);
+		const nextSkillPaths = new Set(collectSkillPaths(addedDirs));
+		const resourcesChanged =
+			previousSkillPaths.length !== nextSkillPaths.size || previousSkillPaths.some((path) => !nextSkillPaths.has(path));
 
-		const hasNewSkills = context.skills.size > 0;
 		return {
 			ok: true,
-			message: `Added ${label} (${absolutePath}).${contextSummary(context)}`,
-			hasNewSkills,
+			message: `Added ${label} (${absolutePath}) to ${source} scope.${contextSummary(context)}`,
+			resourcesChanged,
 			absolutePath,
 			context,
 		};
 	}
 
-	function removeDir(absolutePath: string, ctx: ExtensionContext): { ok: boolean; message: string } {
-		const index = addedDirs.findIndex((dir) => dir.absolutePath === absolutePath);
-		if (index < 0) return { ok: false, message: `Not found: ${absolutePath}` };
-
-		const [removed] = addedDirs.splice(index, 1);
-		persistState();
-		updateWidget(ctx);
-		return { ok: true, message: `Removed ${removed!.label} (${removed!.absolutePath}). Reloading resources...` };
+	async function removeDir(dir: ScopedDir, ctx: ExtensionContext): Promise<{ ok: boolean; message: string }> {
+		try {
+			if (dir.source === "session") {
+				sessionDirs = sessionDirs.filter(
+					(candidate) => resolveDir(candidate.absolutePath, ctx.cwd) !== dir.absolutePath,
+				);
+				persistState();
+			} else if (dir.source === "global") {
+				try {
+					const config = await globalStore.update((current) => ({
+						directories: current.directories.filter((path) => path !== dir.storedPath),
+					}));
+					globalPaths = config.directories;
+				} catch (error) {
+					throw globalConfigError(error);
+				}
+			} else {
+				await mutateProjectConfig(
+					["--unset-all", "--fixed-value", PROJECT_CONFIG_KEY, dir.storedPath],
+					ctx.cwd,
+					"remove project directory",
+				);
+				projectPaths = projectPaths.filter((path) => path !== dir.storedPath);
+			}
+		} catch (error) {
+			return { ok: false, message: error instanceof Error ? error.message : String(error) };
+		}
+		rebuildDirs(ctx);
+		return { ok: true, message: `Removed ${dir.label} (${dir.storedPath}) from ${dir.source} scope. Reloading resources...` };
 	}
 
 	pi.on("resources_discover", (event) => {
@@ -279,7 +545,9 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		reconstructState(ctx);
+		globalPaths = loadGlobalPaths();
+		projectPaths = await readProjectPaths(ctx.cwd, false);
+		reconstructState(ctx, true);
 		ctx.ui.addAutocompleteProvider((current) => createExternalAutocompleteProvider(current, () => addedDirs));
 	});
 	pi.on("session_tree", async (_event, ctx) => {
@@ -300,37 +568,45 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("dir-add", {
-		description: "Add an external directory to this session",
+		description: "Add an external directory to this session, project, or global scope",
 		handler: async (args, ctx) => {
-			let inputPath = args?.trim();
-			if (!inputPath) {
+			let parsed: ParsedAddArgs;
+			try {
+				parsed = parseAddArgs(args);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				return;
+			}
+			if (!parsed.path) {
 				const prompted = await ctx.ui.input("Directory path:", "");
 				if (!prompted) return;
-				inputPath = prompted;
+				parsed.path = prompted;
 			}
 
-			const result = addDir(inputPath, ctx.cwd, ctx);
-			const message = result.ok && result.hasNewSkills ? `${result.message} Reloading to register skills...` : result.message;
+			const result = await addDir(parsed.path, parsed.source, ctx.cwd, ctx);
+			const message = result.ok && result.resourcesChanged ? `${result.message} Reloading external skills...` : result.message;
 			ctx.ui.notify(message, result.ok ? "info" : "error");
-			if (result.ok && result.hasNewSkills) await ctx.reload();
+			if (result.ok && result.resourcesChanged) await ctx.reload();
 		},
 	});
 
 	pi.registerCommand("dir-ls", {
 		description: "List external directories and select one to remove",
 		handler: async (_args, ctx) => {
-			if (addedDirs.length === 0) {
+			if (managedDirs.length === 0) {
 				ctx.ui.notify("No external directories added. Use /dir-add <path> to add one.", "info");
 				return;
 			}
 
-			const choices = addedDirs.map((dir) => `${dir.label} - ${dir.absolutePath}`);
+			const choices = managedDirs.map(
+				(dir) => `[${dir.source}] ${dir.label} - ${dir.storedPath}${dir.inactiveReason ? ` (inactive: ${dir.inactiveReason})` : ""}`,
+			);
 			const selected = await ctx.ui.select("External directories — select one to remove:", choices);
 			const selectedIndex = selected === undefined ? -1 : choices.indexOf(selected);
-			const absolutePath = selectedIndex >= 0 ? addedDirs[selectedIndex]?.absolutePath : undefined;
-			if (!absolutePath) return;
+			const dir = selectedIndex >= 0 ? managedDirs[selectedIndex] : undefined;
+			if (!dir) return;
 
-			const result = removeDir(absolutePath, ctx);
+			const result = await removeDir(dir, ctx);
 			ctx.ui.notify(result.message, result.ok ? "info" : "error");
 			if (result.ok) await ctx.reload();
 		},
@@ -352,7 +628,7 @@ export default function addDirExtension(pi: ExtensionAPI): void {
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const inputPath = params.path.trim();
-			const result = addDir(inputPath, ctx.cwd, ctx);
+			const result = await addDir(inputPath, "session", ctx.cwd, ctx);
 			if (!result.ok) throw new Error(result.message);
 
 			const absolutePath = result.absolutePath!;
