@@ -11,8 +11,8 @@ Record the requested outcome, allowed scope and exclusions, local delegation/che
 
 Keep trivial, mechanically verifiable work in Main. Choose the user-requested mode when one is explicit. Otherwise:
 
-- Use `mode: direct` for bounded research, analysis, review, and tightly coupled implementation. Direct implementation is serial in Main's checkout, leaves changes uncommitted, and starts only from a clean attached Git checkout when checks or judgment are requested.
-- Use `mode: isolated` for independently implementable checked changes with useful parallelism, an exploratory or discardable candidate, or work that must leave Main undisturbed. A single isolated task is valid.
+- Use `mode: direct` for bounded read-only research, analysis, and review with known read-only Roles.
+- Use `mode: isolated` for implementation and other writing tasks, independently checked changes, or an exploratory or discardable candidate. A single isolated task is valid.
 - Keep one implementation owner for tightly coupled work. Size alone does not justify splitting it.
 - Never silently fall back from isolated to direct. Scope growth requires a checkpoint and replan, not migration of dirty work.
 
@@ -20,9 +20,7 @@ Roles describe responsibility and capabilities; they do not select isolation. Ba
 
 # Direct requests
 
-Use one compact `role`/`name`/`task` packet, `tasks` for independent packets, or `chain` for dependent packets. Text is the default kind. Declare `kind: changeset` for mutation and provide direct command/argv checks. Add judgment only when checks cannot establish a criterion. Background execution is only for provably read-only direct work.
-
-Checked direct work binds checks and judgment to exact working-change evidence without changing the real index, committing, or creating a worktree. Existing dirty work, external Git content filters, unsupported Git layouts, oversized evidence, hidden index state, or candidate drift block validation and preserve user files. A failed request retains its changes.
+Use one compact `role`/`name`/`task` packet, `tasks` for independent packets, or `chain` for dependent packets. Only text tasks are accepted; a write-capable Role, `kind: changeset`, checks, and judgment require isolated mode. The tool returns a handle after launching Herdr tabs in the current workspace. Main receives the verified result as a follow-up after the workflow finishes, without interrupting an active turn. If observation stops, run `/subagent-direct-recovery` to inspect the exact tabs and session files.
 
 # Isolated requests
 
@@ -34,4 +32,4 @@ The same isolated worker stays live through same-worktree rebase, authoritative 
 
 Use `subagent_status` to inspect durable state without mutation. Use only the continuation reported by `subagent_resume`; a resume does not reset the request's recorded policy or correction count. Use `subagent_abort` for explicit teardown. Status, abort, process I/O, termination, and verified post-integration cleanup keep finite safety budgets.
 
-All direct and isolated launches share the global policy in `config/pi-subagent/config.json`: productive concurrency, per-child turns/tokens, child idle/hard timeout, and the request-wide correction cap. Productive requests have no whole-run wall-clock deadline. Request fields cannot replenish or override limits.
+All launches use the global policy in `config/pi-subagent/config.json`: productive concurrency, per-child turns/tokens, and idle timeout. Ephemeral children also have a hard runtime limit; isolated requests have a correction cap. Productive requests have no whole-run wall-clock deadline. Request fields cannot replenish or override limits.

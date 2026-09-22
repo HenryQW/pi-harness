@@ -3,7 +3,7 @@ import { DISPLAY_TEXT_CONTRACT } from "@henryqw/pi-subagent";
 import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
-import { CheckCommandSchema, ExecuteRequestSchema, JudgmentSchema, parseExecuteRequest, type ExecuteRequest } from "../src/schema.ts";
+import { ExecuteRequestSchema, parseExecuteRequest, type ExecuteRequest } from "../src/schema.ts";
 import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
 export const MAX_WORKFLOW_ENTRIES = 8;
@@ -12,15 +12,13 @@ const RoleSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pa
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
 const ModelSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Designated model as provider/modelId; replaces the selected route model" });
 const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
-const DirectKindSchema = StringEnum(["text", "changeset"] as const);
+const DirectKindSchema = StringEnum(["text"] as const);
 
 export const DelegationSchema = Type.Object({
 	role: RoleSchema,
 	name: TaskNameSchema,
 	task: TaskSchema,
 	kind: Type.Optional(DirectKindSchema),
-	checks: Type.Optional(Type.Array(CheckCommandSchema, { minItems: 1, maxItems: 32 })),
-	judgment: Type.Optional(JudgmentSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
 }, { additionalProperties: false });
@@ -31,8 +29,6 @@ export const DirectWorkflowSchema = Type.Object({
 	name: Type.Optional(TaskNameSchema),
 	task: Type.Optional(TaskSchema),
 	kind: Type.Optional(DirectKindSchema),
-	checks: Type.Optional(Type.Array(CheckCommandSchema, { minItems: 1, maxItems: 32 })),
-	judgment: Type.Optional(JudgmentSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
 	tasks: Type.Optional(Type.Array(DelegationSchema, { minItems: 1, maxItems: MAX_WORKFLOW_ENTRIES })),
@@ -42,7 +38,7 @@ export const DirectWorkflowSchema = Type.Object({
 export const DelegateTaskSchema = Type.Union([DirectWorkflowSchema, ExecuteRequestSchema]);
 export const WorkflowSchema = DirectWorkflowSchema;
 
-export type Delegation = Static<typeof DelegationSchema> & { kind: "text" | "changeset" };
+export type Delegation = Static<typeof DelegationSchema> & { kind: "text" };
 export type WorkflowMode = "single" | "parallel" | "chain";
 export type ParsedWorkflow =
 	| { mode: "single"; delegations: [Delegation] }
@@ -51,7 +47,7 @@ export type ParsedWorkflow =
 export type ParsedDelegateTask = { mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest };
 
 type DirectInput = Static<typeof DirectWorkflowSchema>;
-const DELEGATION_KEYS = ["role", "name", "task", "kind", "checks", "judgment", "model", "modelClass"] as const;
+const DELEGATION_KEYS = ["role", "name", "task", "kind", "model", "modelClass"] as const;
 
 function text(value: string, path: string): string {
 	const normalized = value.trim();
@@ -60,17 +56,11 @@ function text(value: string, path: string): string {
 }
 
 function normalizeDelegation(value: Static<typeof DelegationSchema>, path: string): Delegation {
-	const kind = value.kind ?? "text";
-	if (kind === "changeset") throw new Error(`${path}.kind=changeset requires mode isolated; direct delegation is read-only.`);
-	if (kind === "text" && value.checks !== undefined) throw new Error(`${path}.checks is only valid for a direct changeset.`);
-	if (kind === "text" && value.judgment !== undefined) throw new Error(`${path}.judgment is only valid for a direct changeset.`);
 	return {
 		role: text(value.role, `${path}.role`),
 		name: normalizeTaskName(value.name, `${path}.name`),
 		task: text(value.task, `${path}.task`),
-		kind,
-		...(value.checks === undefined ? {} : { checks: value.checks.map((check) => ({ command: text(check.command, `${path}.checks.command`), args: [...check.args] })) }),
-		...(value.judgment === undefined ? {} : { judgment: { ...value.judgment, role: text(value.judgment.role, `${path}.judgment.role`), criterion: text(value.judgment.criterion, `${path}.judgment.criterion`) } }),
+		kind: "text",
 		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
 	};
@@ -93,7 +83,7 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 	const mode = workflowMode(value);
 	if (!Check(DirectWorkflowSchema, value)) {
 		const issue = Errors(DirectWorkflowSchema, value)[0];
-		throw new Error(`direct workflow must match the declared tool schema${issue ? ` at ${issue.instancePath || "/"}: ${issue.message}` : ""}.`);
+		throw new Error(`direct workflow must match the declared tool schema${issue ? ` at ${issue.instancePath || "/"}: ${issue.message}` : ""}. Direct mode is read-only; use mode isolated for changesets.`);
 	}
 	if (!mode) throw new Error("direct workflow must select exactly one of single, tasks, or chain.");
 	const input = value as DirectInput;

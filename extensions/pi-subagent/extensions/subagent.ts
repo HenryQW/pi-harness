@@ -221,8 +221,7 @@ export default function subagentExtension(
 			const parsed = parseDelegateTask(input);
 			if (parsed.mode === "isolated") return true;
 			const roles = new Map(loadRoles().map((role) => [role.name, role]));
-			return parsed.workflow.delegations.some((delegation) => delegation.kind === "changeset"
-				|| roleCanWrite(roles.get(delegation.role) ?? { name: delegation.role } as Role));
+			return parsed.workflow.delegations.some((delegation) => roleCanWrite(roles.get(delegation.role) ?? { name: delegation.role } as Role));
 		} catch {
 			return true;
 		}

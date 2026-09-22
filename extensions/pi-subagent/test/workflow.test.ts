@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
+import { Check } from "typebox/value";
 import {
 	DelegationSchema,
 	MAX_WORKFLOW_ENTRIES,
@@ -341,11 +342,18 @@ test("chain parent abort rethrows its reason without launching a later step", as
 });
 
 
-test("direct kind changeset is rejected with isolated-mode guidance in every shape", () => {
+test("direct schema excludes changesets and their writer-only fields in every shape", () => {
 	for (const value of [
 		{ ...delegation(), kind: "changeset" },
 		{ tasks: [{ ...delegation(), kind: "changeset" }] },
 		{ chain: [{ ...delegation(), kind: "changeset" }] },
-	]) assert.throws(() => parseWorkflow(value), /requires mode isolated/);
+		{ ...delegation(), checks: [{ command: "true", args: [] }] },
+		{ tasks: [{ ...delegation(), checks: [{ command: "true", args: [] }] }] },
+		{ chain: [{ ...delegation(), checks: [{ command: "true", args: [] }] }] },
+	]) {
+		assert.equal(Check(WorkflowSchema, { mode: "direct", ...value }), false);
+		assert.throws(() => parseWorkflow(value), /declared tool schema/);
+	}
+	assert.throws(() => parseWorkflow({ ...delegation(), kind: "changeset" }), /use mode isolated for changesets/);
 	assert.throws(() => parseWorkflow({ ...delegation(), background: false }), /declared tool schema/);
 });

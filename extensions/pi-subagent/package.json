@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "19.0.0",
+  "version": "20.0.0",
   "description": "Delegate bounded direct work or durable checked isolated task graphs to Pi roles.",
   "keywords": [
     "pi-package",
