@@ -267,6 +267,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 	function warn(ctx: ExtensionContext, message: string): void {
 		if (ctx.hasUI) ctx.ui.notify(message, "warning");
+		else console.error(`pi-add-dir: ${message.slice(0, 1_000)}`);
 	}
 
 	function rebuildDirs(ctx: ExtensionContext, showWarnings = false): boolean {
@@ -359,13 +360,13 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			if (required) throw new Error("Project-persistent directories require a Git repository.");
 			return [];
 		}
-		const result = await pi.exec("git", ["config", "--local", "--get-all", PROJECT_CONFIG_KEY], { cwd });
+		const result = await pi.exec("git", ["config", "--local", "-z", "--get-all", PROJECT_CONFIG_KEY], { cwd });
 		if (result.killed) throw new Error("Reading project pi-add-dir configuration was interrupted.");
-		if (result.code === 1 && !result.stdout.trim()) return [];
+		if (result.code === 1 && result.stdout.length === 0) return [];
 		if (result.code !== 0) {
 			throw new Error(`Cannot read project pi-add-dir configuration: ${result.stderr.trim() || `git exited ${result.code}`}`);
 		}
-		const paths = result.stdout.split(/\r?\n/).filter((path) => path.length > 0);
+		const paths = result.stdout.split("\0").filter((path) => path.length > 0);
 		validateStoredPaths(paths, "project");
 		return [...new Set(paths)];
 	}
@@ -411,22 +412,22 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 		source: DirSource,
 		cwd: string,
 		ctx: ExtensionContext,
-	): Promise<{ ok: boolean; message: string; hasNewSkills: boolean; absolutePath?: string; context?: DirContext }> {
+	): Promise<{ ok: boolean; message: string; resourcesChanged: boolean; absolutePath?: string; context?: DirContext }> {
 		const input = dirPath.trim();
-		if (!input) return { ok: false, message: "Directory path must not be blank.", hasNewSkills: false };
+		if (!input) return { ok: false, message: "Directory path must not be blank.", resourcesChanged: false };
 
 		let absolutePath: string;
 		try {
 			absolutePath = resolveDir(input, cwd);
 			if (!dirExists(absolutePath)) {
-				return { ok: false, message: `Directory does not exist: ${absolutePath}`, hasNewSkills: false };
+				return { ok: false, message: `Directory does not exist: ${absolutePath}`, resourcesChanged: false };
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return { ok: false, message: `Cannot access directory: ${message}`, hasNewSkills: false };
+			return { ok: false, message: `Cannot access directory: ${message}`, resourcesChanged: false };
 		}
 		if (source !== "session" && /\p{C}/u.test(absolutePath)) {
-			return { ok: false, message: "Persistent directory paths must not contain control characters.", hasNewSkills: false };
+			return { ok: false, message: "Persistent directory paths must not contain control characters.", resourcesChanged: false };
 		}
 		const exact = managedDirs.filter((dir) => dir.absolutePath === absolutePath);
 		const sessionMatch = exact.find((dir) => dir.source === "session");
@@ -435,12 +436,12 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			return {
 				ok: false,
 				message: `Already added in ${persistentMatch?.source ?? "session"} scope: ${absolutePath}`,
-				hasNewSkills: false,
+				resourcesChanged: false,
 			};
 		}
 		const cwdPath = resolveDir(cwd, cwd);
 		if (isWithinDir(cwdPath, absolutePath) || isWithinDir(absolutePath, cwdPath)) {
-			return { ok: false, message: "Directory overlaps current working directory scope.", hasNewSkills: false };
+			return { ok: false, message: "Directory overlaps current working directory scope.", resourcesChanged: false };
 		}
 		const overlap = addedDirs.find(
 			(dir) =>
@@ -451,10 +452,11 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			return {
 				ok: false,
 				message: `Directory overlaps already-added directory: ${overlap.absolutePath}`,
-				hasNewSkills: false,
+				resourcesChanged: false,
 			};
 		}
 
+		const previousSkillPaths = collectSkillPaths(addedDirs);
 		const context = scanDirContext(absolutePath);
 		const label = basename(absolutePath) || absolutePath;
 		try {
@@ -489,14 +491,17 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return { ok: false, message, hasNewSkills: false };
+			return { ok: false, message, resourcesChanged: false };
 		}
 		rebuildDirs(ctx);
+		const nextSkillPaths = new Set(collectSkillPaths(addedDirs));
+		const resourcesChanged =
+			previousSkillPaths.length !== nextSkillPaths.size || previousSkillPaths.some((path) => !nextSkillPaths.has(path));
 
 		return {
 			ok: true,
 			message: `Added ${label} (${absolutePath}) to ${source} scope.${contextSummary(context)}`,
-			hasNewSkills: context.skills.size > 0,
+			resourcesChanged,
 			absolutePath,
 			context,
 		};
@@ -579,9 +584,9 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			}
 
 			const result = await addDir(parsed.path, parsed.source, ctx.cwd, ctx);
-			const message = result.ok && result.hasNewSkills ? `${result.message} Reloading to register skills...` : result.message;
+			const message = result.ok && result.resourcesChanged ? `${result.message} Reloading external skills...` : result.message;
 			ctx.ui.notify(message, result.ok ? "info" : "error");
-			if (result.ok && result.hasNewSkills) await ctx.reload();
+			if (result.ok && result.resourcesChanged) await ctx.reload();
 		},
 	});
 

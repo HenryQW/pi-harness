@@ -32,12 +32,24 @@ Added directories give Pi these resources:
 
 `/dir-add` reloads when it finds skills. `add_directory` reports when a reload is needed and always remains session-local.
 
-## Persistence and trust
+## Config
 
-Global directories live in Pi's private `config/pi-add-dir/config.json`. Project directories use the repository's local Git config under the repeatable key `pi-add-dir.directory`. Git local config is shared by linked worktrees, cannot be injected by cloning a repository, and remains machine-local. `/dir-add --project` therefore requires a Git repository.
+Package-owned: `~/.pi/agent/config/pi-add-dir/config.json`
 
-Both persistent scopes are explicit because added directories can inject `AGENTS.md`, `CLAUDE.md`, and skills. Missing directories and directories that overlap the current workspace remain configured but are skipped with a warning. Fix or remove them through `/dir-ls`. Invalid global configuration stops loading and is not overwritten.
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `directories` | Directories loaded for every workspace. `/dir-add --global` updates this list. | Array of unique absolute paths without control characters. | `[]` |
+
+A missing file uses the default. Invalid config stops loading and is not overwritten. Reload Pi after editing the file manually.
+
+## State and storage
+
+Session directories live in the current session branch. Project directories use the repository's repeatable local Git config key `pi-add-dir.directory`. Local Git config is shared by linked worktrees, cannot be injected by cloning a repository, and remains machine-local. `/dir-add --project` therefore requires a Git repository.
+
+Persistent scopes are explicit because added directories can inject `AGENTS.md`, `CLAUDE.md`, and skills.
 
 ## Limits and recovery
 
 Search supports basename and relative-path globs. It skips `.git` and `node_modules`. It uses Node filesystem traversal and returns at most 1,000 results per call.
+
+Missing directories and directories that overlap the current workspace remain configured but are skipped with a warning. Fix or remove them through `/dir-ls`.

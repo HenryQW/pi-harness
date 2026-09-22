@@ -110,6 +110,7 @@ function interactiveContext(
 	getBranch: () => unknown[],
 	options: {
 		notifications?: Array<{ message: string; level: string }>;
+		reload?: () => Promise<void>;
 		select?: (title: string, choices: string[]) => Promise<string | undefined>;
 	} = {},
 ): ExtensionContext {
@@ -128,7 +129,7 @@ function interactiveContext(
 			},
 			select: options.select ?? (async () => undefined),
 		},
-		async reload() {},
+		reload: options.reload ?? (async () => {}),
 	} as unknown as ExtensionContext;
 }
 
@@ -367,6 +368,25 @@ test("shares project directories across linked Git worktrees", async () => {
 	}
 });
 
+test("rejects a project Git config value containing a newline", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-git-newline-"));
+	const repo = join(root, "repo");
+	const external = join(root, "external");
+	try {
+		await mkdir(repo);
+		await mkdir(external);
+		await git(repo, ["init", "-q"]);
+		await git(repo, ["config", "--local", "--add", "pi-add-dir.directory", `${external}\n/etc`]);
+		const { handlers } = loadExtension({ agentDir: join(root, "agent"), exec: realExec });
+		await assert.rejects(
+			handlers.get("session_start")!({}, extensionContext(repo, () => [])),
+			/Invalid project pi-add-dir configuration/,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("keeps concurrent project additions idempotent", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-concurrent-"));
 	const repo = join(root, "repo");
@@ -429,6 +449,33 @@ test("keeps concurrent global additions idempotent", async () => {
 	}
 });
 
+test("reloads when a concurrent global update changes external skills", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-global-resources-"));
+	const cwd = join(root, "project");
+	const skillDir = join(root, "skills");
+	const plainDir = join(root, "plain");
+	const agentDir = join(root, "agent");
+	let reloads = 0;
+	try {
+		await mkdir(cwd);
+		await mkdir(join(skillDir, ".pi", "skills", "demo"), { recursive: true });
+		await mkdir(plainDir);
+		await writeFile(join(skillDir, ".pi", "skills", "demo", "SKILL.md"), "---\ndescription: Demo\n---\n");
+		const { commands, handlers } = loadExtension({ agentDir });
+		const ctx = interactiveContext(cwd, () => [], {
+			reload: async () => {
+				reloads += 1;
+			},
+		});
+		await handlers.get("session_start")!({}, ctx);
+		await createAddDirConfigStore(agentDir).save({ directories: [resolveDir(skillDir, cwd)] });
+		await commands.get("dir-add")!.handler(`--global ${plainDir}`, ctx as ExtensionCommandContext);
+		assert.equal(reloads, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("retries transient project config lock contention", async () => {
 	const cwd = await mkdtemp(join(tmpdir(), "pi-add-dir-project-"));
 	const external = await mkdtemp(join(tmpdir(), "pi-add-dir-external-"));
@@ -438,7 +485,7 @@ test("retries transient project config lock contention", async () => {
 		const exec = async (_command: string, args: string[]): Promise<ExecResult> => {
 			if (args[0] === "rev-parse") return { code: 0, killed: false, stdout: "true\n", stderr: "" };
 			if (args.includes("--get-all")) {
-				return { code: saved ? 0 : 1, killed: false, stdout: saved ? `${resolveDir(external, cwd)}\n` : "", stderr: "" };
+				return { code: saved ? 0 : 1, killed: false, stdout: saved ? `${resolveDir(external, cwd)}\0` : "", stderr: "" };
 			}
 			mutationAttempts += 1;
 			if (mutationAttempts === 1) {
@@ -591,6 +638,25 @@ test("warns and preserves missing or overlapping global directories", async () =
 		assert.equal(notifications.filter(({ level }) => level === "warning").length, 2);
 		assert.deepEqual(createAddDirConfigStore(agentDir).loadSync().value.directories, [missing, cwd]);
 	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+		await rm(cwd, { recursive: true, force: true });
+	}
+});
+
+test("writes skipped-directory warnings to stderr without UI", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-add-dir-agent-"));
+	const cwd = await mkdtemp(join(tmpdir(), "pi-add-dir-project-"));
+	const missing = join(agentDir, "missing");
+	const messages: string[] = [];
+	const originalConsoleError = console.error;
+	try {
+		await createAddDirConfigStore(agentDir).save({ directories: [missing] });
+		console.error = (...args: unknown[]) => messages.push(args.map(String).join(" "));
+		const { handlers } = loadExtension({ agentDir });
+		await handlers.get("session_start")!({}, extensionContext(cwd, () => []));
+		assert.deepEqual(messages, [`pi-add-dir: Skipped global external directory ${missing}: directory does not exist.`]);
+	} finally {
+		console.error = originalConsoleError;
 		await rm(agentDir, { recursive: true, force: true });
 		await rm(cwd, { recursive: true, force: true });
 	}
