@@ -1248,7 +1248,7 @@ export class OrchestratorRunner {
 							},
 						}, context));
 					} else {
-						result = await this.callProductive(handle, scope, async (context) => await this.hostRuntime.allocateHost({
+						const allocate = async (context: OperationContext) => await this.hostRuntime.allocateHost({
 							requestId: state.request.id,
 							intent,
 							task: request,
@@ -1269,7 +1269,18 @@ export class OrchestratorRunner {
 								}
 								return launch;
 							} } : {}),
-						}, context));
+						}, context);
+						result = intent.kind === "agent"
+							? await this.withLifecycleLock(handle, async () => {
+								const allocated = await scope.call(allocate);
+								if (allocated.kind !== intent.kind) throw new Error("Agent allocation returned the wrong result kind.");
+								if (allocated.outcome === "owned") {
+									applyOwnedAllocationResult(intent, allocated);
+									await handle.save();
+								}
+								return allocated;
+							})
+							: await this.callProductive(handle, scope, allocate);
 					}
 				} catch (error) {
 					this.rethrowStopped(error);
@@ -1292,8 +1303,10 @@ export class OrchestratorRunner {
 					await this.saveProductive(handle);
 					return;
 				}
-				applyOwnedAllocationResult(intent, result);
-				await this.saveProductive(handle);
+				if (intent.kind !== "agent") {
+					applyOwnedAllocationResult(intent, result);
+					await this.saveProductive(handle);
+				}
 			}
 			task.status = "working";
 			await this.saveProductive(handle);

@@ -719,6 +719,53 @@ test("the active follow-up queue remains bounded", async (t) => {
 	assertParsed(result.state);
 });
 
+test("abort during agent startup waits for durable ownership and terminates that agent", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	let allocationStarted!: () => void;
+	let releaseAllocation!: () => void;
+	let abortQueued!: () => void;
+	const started = new Promise<void>((resolve) => { allocationStarted = resolve; });
+	const released = new Promise<void>((resolve) => { releaseAllocation = resolve; });
+	const queued = new Promise<void>((resolve) => { abortQueued = resolve; });
+	const allocateHost = runtime.allocateHost.bind(runtime);
+	runtime.allocateHost = async (input, context) => {
+		const result = await allocateHost(input, context);
+		if (input.intent.kind === "agent") {
+			allocationStarted();
+			await released;
+		}
+		return result;
+	};
+	// Order lock requests explicitly so the race does not depend on filesystem timing.
+	const withLock = store.withLock.bind(store);
+	let pending: Promise<unknown> = Promise.resolve();
+	store.withLock = (root, operation, options) => {
+		const result = pending.then(() => withLock(root, operation, options));
+		pending = result.then(() => undefined, () => undefined);
+		if (options?.purpose === "abort") abortQueued();
+		return result;
+	};
+	const definition = request("abort-agent-startup", [changesetTask("change")]);
+	const execution = runner.execute(definition, root);
+	await started;
+	const abortRunner = new OrchestratorRunner(runtime, runtime, runtime, store, unusedTextExecutor);
+	const aborting = abortRunner.abort(definition.id, root);
+	await queued;
+	releaseAllocation();
+	const aborted = await aborting;
+	const result = await execution;
+	const attempt = changesetState(aborted.state, "change").attempts[0]!;
+	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
+	assert.equal(agent?.status, "owned");
+	assert.equal(attempt.termination?.status, "terminated");
+	assert.deepEqual(runtime.terminationCalls, [{ workerId: "change-agent", candidate: attempt.waveBase }]);
+	assert.deepEqual(runtime.workerCalls, []);
+	assert.deepEqual(runtime.integrations, []);
+	assert.equal(aborted.state.status, "aborted");
+	assert.deepEqual(result.state, aborted.state);
+	assertParsed(aborted.state);
+});
+
 test("a productive lease admits read-only status and abort during a paused worker but blocks execute and resume", async (t) => {
 	let releaseWorker!: () => void;
 	const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
