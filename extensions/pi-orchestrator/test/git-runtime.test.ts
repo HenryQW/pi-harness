@@ -179,7 +179,7 @@ async function prepareIntegration(
 		passed: true,
 		at: Date.now(),
 	};
-	attempt.acceptance = { candidate, base: attempt.waveBase, at: Date.now() };
+	attempt.readiness = { candidate, base: attempt.waveBase, at: Date.now() };
 	const rebased = await runtime.rebase({ root, task: definition, attempt, candidate, sourceBase: attempt.waveBase, onto }, operationContext);
 	if (rebased.outcome !== "ready") assert.fail(rebased.failure);
 	attempt.candidate = rebased.candidate;
@@ -850,7 +850,7 @@ test("failed checks, Reviewer findings or mutation, and Main drift cannot integr
 	assert.equal(failed.results[0]!.code, 7);
 	assert.ok(sameIdentity(failed.identityAfter, candidate));
 	allocated.attempt.candidateBase = base;
-	allocated.attempt.acceptance = { candidate, base, at: Date.now() };
+	allocated.attempt.readiness = { candidate, base, at: Date.now() };
 	allocated.attempt.integrationBase = base;
 	allocated.attempt.integrationCandidate = candidate;
 	const findings = await runtime.review({

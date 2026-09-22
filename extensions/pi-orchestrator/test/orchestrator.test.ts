@@ -152,7 +152,6 @@ interface Harness {
 	rootCalls: Array<{ cwd: string; context: OperationContext }>;
 	getComponentCreations(): number;
 	getRoleContext(): ExtensionContext;
-	getInteractiveWait(): (requestId: string, taskId: string) => void;
 	getStateSaved(): (state: RunState) => void;
 }
 
@@ -214,10 +213,6 @@ function createHarness(options: {
 			runnerCalls.push({ method: "queueFollowup", args });
 			return "follow-up queued";
 		},
-		acceptCandidate(...args: unknown[]) {
-			runnerCalls.push({ method: "acceptCandidate", args });
-			return "acceptance queued";
-		},
 	} as unknown as OrchestratorExtensionComponents["runner"];
 
 	const createComponents: CreateOrchestratorComponents = (createdOptions) => {
@@ -243,7 +238,6 @@ function createHarness(options: {
 		rootCalls,
 		getComponentCreations: () => componentCreations,
 		getRoleContext: () => componentOptions!.context(),
-		getInteractiveWait: () => componentOptions!.onInteractiveWait,
 		getStateSaved: () => componentOptions!.onStateSaved,
 	};
 }
@@ -417,7 +411,7 @@ test("registers exactly four strict tools without constructing runtime component
 		"orchestrate_resume",
 		"orchestrate_abort",
 	]);
-	assert.deepEqual([...harness.commands.keys()], ["orchestrate-followup", "orchestrate-accept"]);
+	assert.deepEqual([...harness.commands.keys()], ["orchestrate-followup"]);
 	assert.equal(harness.getComponentCreations(), 0);
 
 	const [execute, status, resume, abort] = harness.tools;
@@ -436,7 +430,7 @@ test("registers exactly four strict tools without constructing runtime component
 	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /strict v1 action/i);
 });
 
-test("interactive commands route follow-ups and acceptance to the active runner during streaming", async () => {
+test("the follow-up command routes optional revisions to the active runner", async () => {
 	const harness = createHarness();
 	const notifications: Array<{ message: string; type: string }> = [];
 	const ctx = {
@@ -448,21 +442,11 @@ test("interactive commands route follow-ups and acceptance to the active runner 
 		"request-one unit-one revise the current candidate",
 		ctx,
 	);
-	await harness.commands.get("orchestrate-accept")!.handler("request-one unit-one", ctx);
-	harness.getInteractiveWait()("request-one", "unit-one");
 
-	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup" || method === "acceptCandidate"), [
+	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup"), [
 		{ method: "queueFollowup", args: [CANONICAL_ROOT, "request-one", "unit-one", "revise the current candidate"] },
-		{ method: "acceptCandidate", args: [CANONICAL_ROOT, "request-one", "unit-one"] },
 	]);
-	assert.deepEqual(notifications, [
-		{ message: "follow-up queued", type: "info" },
-		{ message: "acceptance queued", type: "info" },
-		{
-			message: "Task request-one/unit-one is ready. Use /orchestrate-followup request-one unit-one <message> or /orchestrate-accept request-one unit-one.",
-			type: "info",
-		},
-	]);
+	assert.deepEqual(notifications, [{ message: "follow-up queued", type: "info" }]);
 	await assert.rejects(
 		async () => await harness.commands.get("orchestrate-followup")!.handler("request-one unit-one", ctx),
 		/Usage: \/orchestrate-followup/,
@@ -557,7 +541,6 @@ test("production components complete host preflight before inspecting Main", asy
 	const { runner } = createOrchestratorComponents({
 		pi,
 		context: () => context(root),
-		onInteractiveWait() {},
 		onStateSaved() {},
 	});
 

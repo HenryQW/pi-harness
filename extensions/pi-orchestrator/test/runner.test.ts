@@ -298,7 +298,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 			if (result) return structuredClone(result);
 			return {
 				outcome: "candidate",
-				candidate: identity("bcdef123456789"[this.candidateNumber++ % 15]!, `refs/heads/${input.task.id}`),
+				candidate: identity("bcdef1234567890"[this.candidateNumber++ % 15]!, `refs/heads/${input.task.id}`),
 			};
 		} finally {
 			this.activeWorkers -= 1;
@@ -419,6 +419,8 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 
 class RecordingStore extends FileRunStore {
 	readonly snapshots: RunState[] = [];
+	beforeSave?: (state: RunState) => void;
+	afterSave?: (state: RunState) => void;
 
 	override async create(state: RunState): Promise<RunStateHandle> {
 		return this.record(await super.create(state));
@@ -432,8 +434,10 @@ class RecordingStore extends FileRunStore {
 		const save = handle.save.bind(handle);
 		handle.save = async () => {
 			const snapshot = structuredClone(handle.state);
+			this.beforeSave?.(snapshot);
 			await save();
 			this.snapshots.push(snapshot);
+			this.afterSave?.(snapshot);
 		};
 		return handle;
 	}
@@ -501,7 +505,6 @@ async function harness(
 	options: {
 		executor?: EphemeralSubagentExecutor;
 		createStore?: (agentDir: string) => FileRunStore;
-		onInteractiveWait?: (requestId: string, taskId: string) => void;
 	} = {},
 ) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-runner-"));
@@ -518,9 +521,6 @@ async function harness(
 		runtime,
 		store,
 		options.executor ?? unusedTextExecutor,
-		options.onInteractiveWait ?? ((requestId, taskId) => {
-			setTimeout(() => runner.acceptCandidate(root, requestId, taskId), 0);
-		}),
 	);
 	return { root, runtime, store, agentDir, runner };
 }
@@ -576,12 +576,14 @@ function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtim
 	])) as ReturnType<typeof runtimeCallCounts>;
 }
 
-test("interactive changesets retain the same worker for queued follow-ups until explicit acceptance", async (t) => {
-	const waits: string[] = [];
-	const { root, runtime, runner } = await harness(t, {
-		onInteractiveWait: (requestId, taskId) => waits.push(`${requestId}/${taskId}`),
-	});
-	const definition = request("interactive-followups", [changesetTask("change", {
+test("queued follow-ups reuse the same worker before automatic readiness seals the candidate", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	let releaseInitial!: () => void;
+	const initialPaused = new Promise<void>((resolve) => { releaseInitial = resolve; });
+	runtime.workerPause = async (call) => {
+		if (call.kind === "initial") await initialPaused;
+	};
+	const definition = request("automatic-followups", [changesetTask("change", {
 		checks: [{ command: "check-change", args: Array.from({ length: 4 }, () => "x".repeat(10_000)) }],
 	})]);
 	const execution = runner.execute(definition, root);
@@ -593,18 +595,13 @@ test("interactive changesets retain the same worker for queued follow-ups until 
 	);
 	assert.equal(
 		runner.queueFollowup(root, definition.id, "change", "Revise the first candidate without restarting the task."),
-		"Queued follow-up for interactive-followups/change.",
+		"Queued follow-up for automatic-followups/change.",
 	);
-	await waitUntil(() => runtime.workerCalls.length === 2);
 	assert.equal(
 		runner.queueFollowup(root, definition.id, "change", "Polish the revision one more time."),
-		"Queued follow-up for interactive-followups/change.",
+		"Queued follow-up for automatic-followups/change.",
 	);
-	await waitUntil(() => runtime.workerCalls.length === 3);
-	assert.equal(
-		runner.acceptCandidate(root, definition.id, "change"),
-		"Acceptance queued for interactive-followups/change.",
-	);
+	releaseInitial();
 
 	const result = await execution;
 	const task = changesetState(result.state, "change");
@@ -623,42 +620,169 @@ test("interactive changesets retain the same worker for queued follow-ups until 
 		{ kind: "followup", instruction: "Revise the first candidate without restarting the task." },
 		{ kind: "followup", instruction: "Polish the revision one more time." },
 	]);
+	assert.equal(task.attempts[0]?.readiness?.candidate.head, task.attempts[0]?.prompts[2]?.candidate?.head);
 	assert.equal(runtime.terminationCalls.length, 1);
-	assert.deepEqual(waits, [
-		"interactive-followups/change",
-		"interactive-followups/change",
-		"interactive-followups/change",
-	]);
 	assert.throws(
 		() => runner.queueFollowup(root, definition.id, "change", "Too late."),
-		/not an active interactive changeset/,
+		/not an active unsealed changeset/,
 	);
 	assertParsed(result.state);
 });
 
-test("a durable productive lease admits status and abort but blocks concurrent execute and resume", async (t) => {
-	let ready!: () => void;
-	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
-	const { root, runtime, runner, agentDir } = await harness(t, {
-		onInteractiveWait: () => ready(),
+test("a follow-up admitted during final preliminary-evidence persistence is rechecked before sealing", async (t) => {
+	let store!: RecordingStore;
+	const { root, runtime, runner } = await harness(t, {
+		createStore: (agentDir) => (store = new RecordingStore(agentDir)),
 	});
-	const otherStore = new FileRunStore(agentDir);
-	const otherRunner = new OrchestratorRunner(
-		runtime,
-		runtime,
-		runtime,
-		otherStore,
-		unusedTextExecutor,
+	const definition = request("save-boundary-followup", [changesetTask("change")]);
+	let queued = false;
+	store.afterSave = (state) => {
+		const task = changesetState(state, "change");
+		const attempt = task.attempts[0];
+		if (queued || task.status !== "working" || !attempt?.preliminaryChecks?.passed || attempt.readiness) return;
+		queued = true;
+		runner.queueFollowup(root, definition.id, "change", "Revision admitted while checked evidence is saving.");
+	};
+
+	const result = await runner.execute(definition, root);
+	const attempt = changesetState(result.state, "change").attempts[0]!;
+	assert.equal(queued, true);
+	assert.deepEqual(runtime.workerCalls, [
+		{ taskId: "change", kind: "initial" },
+		{ taskId: "change", kind: "followup" },
+	]);
+	assert.deepEqual(runtime.followupInstructions, ["Revision admitted while checked evidence is saving."]);
+	assert.equal(runtime.checkCalls.filter(({ scope }) => scope === "task").length, 3);
+	assert.deepEqual(attempt.readiness?.candidate, attempt.prompts[1]?.candidate);
+	assert.equal(result.state.status, "completed");
+	assertParsed(result.state);
+});
+
+test("failed readiness persistence returns attention without integrating or terminating the worker", async (t) => {
+	let store!: RecordingStore;
+	const { root, runtime, runner } = await harness(t, {
+		createStore: (agentDir) => (store = new RecordingStore(agentDir)),
+	});
+	let failed = false;
+	store.beforeSave = (state) => {
+		const attempt = changesetState(state, "change").attempts[0];
+		if (failed || !attempt?.readiness) return;
+		failed = true;
+		throw new Error("simulated readiness persistence failure");
+	};
+
+	const result = await runner.execute(request("readiness-save-failure", [changesetTask("change")]), root);
+	const task = changesetState(result.state, "change");
+	assert.equal(failed, true);
+	assert.equal(result.state.status, "needs_attention");
+	assert.equal(task.status, "needs_attention");
+	assert.match(task.failure ?? "", /simulated readiness persistence failure/);
+	assert.ok(task.attempts[0]?.readiness);
+	assert.deepEqual(runtime.integrations, []);
+	assert.deepEqual(runtime.terminationCalls, []);
+	assert.deepEqual(result.continuation, { id: "readiness-save-failure", action: "verify", taskId: "change" });
+	assertParsed(result.state);
+
+	const retained = await store.load(root, "readiness-save-failure");
+	delete changesetState(retained.state, "change").attempts[0]!.readiness;
+	await retained.save();
+	const recovered = await runner.resume(result.continuation!, root);
+	assert.equal(recovered.state.status, "completed");
+	assert.deepEqual(runtime.workerCalls, [{ taskId: "change", kind: "initial" }]);
+	assert.deepEqual(runtime.integrations, ["change"]);
+	assertParsed(recovered.state);
+});
+
+test("the active follow-up queue remains bounded", async (t) => {
+	let releaseWorker!: () => void;
+	const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerPause = async (call) => {
+		if (call.kind === "initial") await workerPaused;
+	};
+	const definition = request("bounded-followups", [changesetTask("change")]);
+	const execution = runner.execute(definition, root);
+	await waitUntil(() => runtime.workerCalls.length === 1);
+	for (let index = 0; index < 16; index += 1) {
+		runner.queueFollowup(root, definition.id, "change", `Queued revision ${index + 1}.`);
+	}
+	assert.throws(
+		() => runner.queueFollowup(root, definition.id, "change", "One revision too many."),
+		/may queue at most 16 follow-ups/,
 	);
-	const definition = request("interactive-concurrent-abort", [changesetTask("change")]);
+	releaseWorker();
+
+	const result = await execution;
+	assert.equal(result.state.status, "completed");
+	assert.equal(runtime.followupInstructions.length, 16);
+	assert.equal(runtime.checkCalls.filter(({ scope }) => scope === "task").length, 18);
+	assertParsed(result.state);
+});
+
+test("abort during agent startup waits for durable ownership and terminates that agent", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	let allocationStarted!: () => void;
+	let releaseAllocation!: () => void;
+	let abortQueued!: () => void;
+	const started = new Promise<void>((resolve) => { allocationStarted = resolve; });
+	const released = new Promise<void>((resolve) => { releaseAllocation = resolve; });
+	const queued = new Promise<void>((resolve) => { abortQueued = resolve; });
+	const allocateHost = runtime.allocateHost.bind(runtime);
+	runtime.allocateHost = async (input, context) => {
+		const result = await allocateHost(input, context);
+		if (input.intent.kind === "agent") {
+			allocationStarted();
+			await released;
+		}
+		return result;
+	};
+	// Order lock requests explicitly so the race does not depend on filesystem timing.
+	const withLock = store.withLock.bind(store);
+	let pending: Promise<unknown> = Promise.resolve();
+	store.withLock = (root, operation, options) => {
+		const result = pending.then(() => withLock(root, operation, options));
+		pending = result.then(() => undefined, () => undefined);
+		if (options?.purpose === "abort") abortQueued();
+		return result;
+	};
+	const definition = request("abort-agent-startup", [changesetTask("change")]);
+	const execution = runner.execute(definition, root);
+	await started;
+	const abortRunner = new OrchestratorRunner(runtime, runtime, runtime, store, unusedTextExecutor);
+	const aborting = abortRunner.abort(definition.id, root);
+	await queued;
+	releaseAllocation();
+	const aborted = await aborting;
+	const result = await execution;
+	const attempt = changesetState(aborted.state, "change").attempts[0]!;
+	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
+	assert.equal(agent?.status, "owned");
+	assert.equal(attempt.termination?.status, "terminated");
+	assert.deepEqual(runtime.terminationCalls, [{ workerId: "change-agent", candidate: attempt.waveBase }]);
+	assert.deepEqual(runtime.workerCalls, []);
+	assert.deepEqual(runtime.integrations, []);
+	assert.equal(aborted.state.status, "aborted");
+	assert.deepEqual(result.state, aborted.state);
+	assertParsed(aborted.state);
+});
+
+test("a productive lease admits read-only status and abort during a paused worker but blocks execute and resume", async (t) => {
+	let releaseWorker!: () => void;
+	const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
+	const { root, runtime, runner, agentDir } = await harness(t);
+	runtime.workerPause = async () => await workerPaused;
+	const otherStore = new FileRunStore(agentDir);
+	const otherRunner = new OrchestratorRunner(runtime, runtime, runtime, otherStore, unusedTextExecutor);
+	const definition = request("concurrent-abort", [changesetTask("change")]);
 	const execution = runner.execute(definition, root);
 
-	await awaitingAcceptance;
+	await waitUntil(() => runtime.workerCalls.length === 1);
 	const persistedBeforeStatus = structuredClone((await otherStore.load(root, definition.id)).state);
 	const reported = await otherRunner.status(definition.id, root);
 	const reportedTask = changesetState(reported.state, "change");
 	assert.equal(reported.state.status, "running");
-	assert.equal(reportedTask.status, "awaiting_acceptance");
+	assert.equal(reportedTask.status, "working");
+	assert.equal(reportedTask.attempts[0]?.prompts[0]?.status, "submitting");
 	assert.equal(reportedTask.attempts[0]?.termination, undefined);
 	assert.deepEqual(reported.state, persistedBeforeStatus);
 	assert.deepEqual((await otherStore.load(root, definition.id)).state, persistedBeforeStatus);
@@ -677,48 +801,76 @@ test("a durable productive lease admits status and abort but blocks concurrent e
 	);
 
 	const aborted = await otherRunner.abort(definition.id, root);
+	releaseWorker();
 	const completedExecution = await execution;
 	const abortedAttempt = changesetState(aborted.state, "change").attempts[0]!;
 	const agent = abortedAttempt.allocations.find((allocation) => allocation.kind === "agent");
-	if (!agent?.agentName || !abortedAttempt.candidate) throw new Error("Expected an exact retained worker fixture.");
+	if (!agent?.agentName) throw new Error("Expected an exact retained worker fixture.");
 	assert.equal(aborted.state.status, "aborted");
 	assert.deepEqual(completedExecution.state, aborted.state);
-	assert.deepEqual(runtime.terminationCalls, [{ workerId: agent.agentName, candidate: abortedAttempt.candidate }]);
+	assert.deepEqual(runtime.integrations, []);
+	assert.deepEqual(runtime.terminationCalls, [{ workerId: agent.agentName, candidate: abortedAttempt.prompts[0]!.preCandidate }]);
 	assert.equal(abortedAttempt.termination?.status, "terminated");
 	assert.throws(
 		() => runner.queueFollowup(root, definition.id, "change", "Do not revive the aborted worker."),
-		/sealed|not an active interactive changeset/,
-	);
-	assert.throws(
-		() => runner.acceptCandidate(root, definition.id, "change"),
-		/sealed|not an active interactive changeset/,
+		/sealed|not an active unsealed changeset/,
 	);
 	assertParsed(aborted.state);
 });
 
-test("rejected interactive waits adopt concurrent durable state before surfacing deadline or outer abort", async (t) => {
+test("parallel wave completions cannot overwrite a concurrent abort", async (t) => {
+	let releaseWorkers!: () => void;
+	const workersPaused = new Promise<void>((resolve) => { releaseWorkers = resolve; });
+	const { root, runtime, runner, agentDir } = await harness(t);
+	runtime.workerPause = async () => await workersPaused;
+	const definition = request("parallel-abort", [changesetTask("first"), changesetTask("second")]);
+	const execution = runner.execute(definition, root);
+	await waitUntil(() => runtime.workerCalls.length === 2);
+
+	const abortRunner = new OrchestratorRunner(
+		runtime,
+		runtime,
+		runtime,
+		new FileRunStore(agentDir),
+		unusedTextExecutor,
+	);
+	const aborted = await abortRunner.abort(definition.id, root);
+	releaseWorkers();
+	const result = await execution;
+
+	assert.equal(aborted.state.status, "aborted");
+	assert.deepEqual(result.state, aborted.state);
+	assert.equal(runtime.terminationCalls.length, 2);
+	assert.deepEqual(runtime.integrations, []);
+	assert.ok(aborted.state.tasks.every((task) => task.kind !== "changeset"
+		|| task.attempts[0]?.termination?.status === "terminated"));
+	assertParsed(aborted.state);
+});
+
+test("paused worker results adopt a concurrent durable abort before surfacing cancellation or deadline", async (t) => {
 	for (const rejection of ["outer", "deadline"] as const) {
 		await t.test(rejection, async (t) => {
-			let ready!: () => void;
-			const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
+			let releaseWorker!: () => void;
+			const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
 			const controller = new AbortController();
-			const { root, runtime, runner, agentDir } = await harness(t, {
-				onInteractiveWait: () => ready(),
-			});
+			const { root, runtime, runner, agentDir } = await harness(t);
+			runtime.workerPause = async () => await workerPaused;
 			const definition = parseExecuteRequest({
-				...request(`interactive-${rejection}-state-change`, [changesetTask("change")]),
+				...request(`paused-${rejection}-state-change`, [changesetTask("change")]),
 				budgetMs: rejection === "deadline" ? 1_000 : 10_000,
 			});
 			const execution = runner.execute(definition, root, controller.signal);
-			await awaitingAcceptance;
+			await waitUntil(() => runtime.workerCalls.length === 1);
 
 			let locked!: () => void;
 			const lifecycleLocked = new Promise<void>((resolve) => { locked = resolve; });
 			const concurrentStore = new FileRunStore(agentDir);
 			const mutation = concurrentStore.withLock(root, async () => {
 				locked();
-				if (rejection === "outer") controller.abort(new Error("operator interrupted the interactive wait"));
+				if (rejection === "outer") controller.abort(new Error("operator interrupted worker execution"));
 				else await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+				releaseWorker();
+				await waitUntil(() => runtime.workerCalls.length === 1);
 				const handle = await concurrentStore.load(root, definition.id);
 				handle.state.status = "aborted";
 				handle.state.accepted = false;
@@ -731,30 +883,31 @@ test("rejected interactive waits adopt concurrent durable state before surfacing
 			const durable = (await concurrentStore.load(root, definition.id)).state;
 			assert.equal(result.state.status, "aborted");
 			assert.deepEqual(result.state, durable);
-			assert.equal(changesetState(result.state, "change").status, "awaiting_acceptance");
+			assert.equal(changesetState(result.state, "change").status, "working");
+			assert.deepEqual(runtime.integrations, []);
 			assertParsed(result.state);
 		});
 	}
 });
 
-test("interrupting an interactive acceptance wait retains the exact worker", async (t) => {
-	let ready!: () => void;
-	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
-	const { root, runtime, runner } = await harness(t, {
-		onInteractiveWait: () => ready(),
-	});
+test("interrupting paused worker execution retains the exact worker", async (t) => {
+	let releaseWorker!: () => void;
+	const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerPause = async () => await workerPaused;
 	const controller = new AbortController();
-	const definition = request("interactive-interrupt", [changesetTask("change")]);
+	const definition = request("worker-interrupt", [changesetTask("change")]);
 	const execution = runner.execute(definition, root, controller.signal);
 
-	await awaitingAcceptance;
-	controller.abort(new Error("operator interrupted the interactive wait"));
+	await waitUntil(() => runtime.workerCalls.length === 1);
+	controller.abort(new Error("operator interrupted worker execution"));
+	releaseWorker();
 	const result = await execution;
 	const task = changesetState(result.state, "change");
 
 	assert.equal(result.state.status, "needs_attention");
 	assert.equal(task.status, "needs_attention");
-	assert.match(task.failure ?? "", /operator interrupted the interactive wait/);
+	assert.match(task.failure ?? "", /operator interrupted worker execution/);
 	assert.equal(runtime.terminationCalls.length, 0);
 	assert.equal(task.attempts[0]?.termination, undefined);
 	assertParsed(result.state);
@@ -1009,7 +1162,7 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
 	if (!agent?.agentName) throw new Error("Expected one allocated worker.");
 
-	assert.equal(result.state.version, 3);
+	assert.equal(result.state.version, 4);
 	assert.equal(result.state.accepted, true);
 	assert.deepEqual(runtime.workerCalls, [
 		{ taskId: "change", kind: "initial" },
@@ -1032,8 +1185,8 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 		"cleanup-git:branch",
 	]);
 	assert.equal(attempt.preliminaryChecks?.passed, true);
-	assert.deepEqual(attempt.acceptance?.candidate, attempt.prompts[1]?.candidate);
-	assert.ok((attempt.acceptance?.at ?? 0) > (attempt.prompts[1]?.at ?? Number.MAX_SAFE_INTEGER));
+	assert.deepEqual(attempt.readiness?.candidate, attempt.prompts[1]?.candidate);
+	assert.ok((attempt.readiness?.at ?? 0) > (attempt.prompts[1]?.at ?? Number.MAX_SAFE_INTEGER));
 	assert.equal(attempt.authoritativeChecks?.passed, true);
 	assert.equal(attempt.authoritativeReview?.passed, true);
 	assertParsed(result.state);
@@ -1061,34 +1214,31 @@ test("a blocked diagnostic is normalized before same-worker correction", async (
 test("a follow-up queued during a failing follow-up is honored", async (t) => {
 	for (const failure of ["blocked", "check"] as const) {
 		await t.test(failure, async (t) => {
-			const waits: string[] = [];
-			const { root, runtime, runner } = await harness(t, {
-				onInteractiveWait: (requestId, taskId) => waits.push(`${requestId}/${taskId}`),
-			});
-			const definition = request(`queued-after-${failure}`, [changesetTask("change")]);
-			const execution = runner.execute(definition, root);
-			await waitUntil(() => waits.length === 1);
-
+			let releaseInitial!: () => void;
 			let followupStarted!: () => void;
 			let releaseFollowup!: () => void;
+			const initialPaused = new Promise<void>((resolve) => { releaseInitial = resolve; });
 			const started = new Promise<void>((resolve) => { followupStarted = resolve; });
-			const released = new Promise<void>((resolve) => { releaseFollowup = resolve; });
-			let paused = false;
+			const followupPaused = new Promise<void>((resolve) => { releaseFollowup = resolve; });
+			let pausedFollowup = false;
+			const { root, runtime, runner } = await harness(t);
 			runtime.workerPause = async (call) => {
-				if (call.kind !== "followup" || paused) return;
-				paused = true;
+				if (call.kind === "initial") await initialPaused;
+				if (call.kind !== "followup" || pausedFollowup) return;
+				pausedFollowup = true;
 				followupStarted();
-				await released;
+				await followupPaused;
 			};
+			const definition = request(`queued-after-${failure}`, [changesetTask("change")]);
+			const execution = runner.execute(definition, root);
+			await waitUntil(() => runtime.workerCalls.length === 1);
+			runner.queueFollowup(root, definition.id, "change", "First follow-up that will fail.");
+			releaseInitial();
+			await started;
 			if (failure === "blocked") runtime.workerResults.push({ outcome: "blocked", diagnostic: "follow-up blocked" });
 			else runtime.failPreliminaryChecks = 1;
-
-			runner.queueFollowup(root, definition.id, "change", "First follow-up that will fail.");
-			await started;
 			runner.queueFollowup(root, definition.id, "change", "Second follow-up must still run.");
 			releaseFollowup();
-			await waitUntil(() => waits.length === 2);
-			runner.acceptCandidate(root, definition.id, "change");
 
 			const result = await execution;
 			const attempt = changesetState(result.state, "change").attempts[0]!;
@@ -1128,7 +1278,7 @@ test("changeset dispatch failure retains the exact allocated worker", async (t) 
 	assertParsed(stopped.state);
 });
 
-test("abort terminates only the exact active worker without replay", async (t) => {
+test("abort terminates all exact retained workers without replay", async (t) => {
 	const { root, runtime, store, runner } = await harness(t);
 	const definition = request("abort-active", [changesetTask("active"), changesetTask("settled")]);
 	runtime.workerFailures.push(new Error("active worker transport failed"));
@@ -1143,6 +1293,10 @@ test("abort terminates only the exact active worker without replay", async (t) =
 	const activeAgent = activeAttempt.allocations.find((allocation) => allocation.kind === "agent");
 	const activeCandidate = activeAttempt.prompts[0]?.preCandidate;
 	if (!activeAgent?.agentName || !activeCandidate) throw new Error("Expected an exact active worker fixture.");
+	const settledAttempt = changesetState(handle.state, settledTaskId).attempts[0]!;
+	const settledAgent = settledAttempt.allocations.find((allocation) => allocation.kind === "agent");
+	const settledCandidate = settledAttempt.candidate;
+	if (!settledAgent?.agentName || !settledCandidate) throw new Error("Expected an exact settled worker fixture.");
 	delete activeAttempt.termination;
 	await handle.save();
 	assertParsed(handle.state);
@@ -1154,8 +1308,13 @@ test("abort terminates only the exact active worker without replay", async (t) =
 	const abortedSettled = changesetState(aborted.state, settledTaskId).attempts[0]!;
 
 	assert.equal(aborted.state.status, "aborted");
-	assert.equal(runtime.terminationCalls.length, 2);
-	assert.deepEqual(runtime.terminationCalls[0], { workerId: activeAgent.agentName, candidate: activeCandidate });
+	assert.deepEqual(
+		[...runtime.terminationCalls].sort((left, right) => left.workerId.localeCompare(right.workerId)),
+		[
+			{ workerId: activeAgent.agentName, candidate: activeCandidate },
+			{ workerId: settledAgent.agentName, candidate: settledCandidate },
+		].sort((left, right) => left.workerId.localeCompare(right.workerId)),
+	);
 	assert.deepEqual(runtime.workerCalls, workerCallsBeforeAbort);
 	assert.equal(abortedActive.termination?.status, "terminated");
 	assert.equal(abortedSettled.termination?.status, "terminated");
@@ -1193,7 +1352,7 @@ test("status preserves interrupted and ambiguous changeset prompts without produ
 
 			const reported = await runner.status(definition.id, root);
 			const reportedAttempt = changesetState(reported.state, "change").attempts[0]!;
-			assert.equal(reported.state.version, 3);
+			assert.equal(reported.state.version, 4);
 			assert.equal(reported.state.status, boundary === "interrupted" ? "running" : "needs_attention");
 			assert.equal(reportedAttempt.prompts[0]?.status, boundary === "interrupted" ? "submitting" : "ambiguous");
 			assert.equal(reportedAttempt.termination, undefined);
