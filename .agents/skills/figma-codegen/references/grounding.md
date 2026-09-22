@@ -47,7 +47,11 @@ the obvious ones. These are ordered by how easily they're silently dropped.
   (`{unit,value}` → `leading-*`; absent = font default), `letterSpacing` (`{unit,value}` →
   `tracking-*`; absent = 0), `paragraphSpacing` (px between the paragraphs `characters` splits into
   at `\n` → margin between the `<p>`s you emit; absent = 0, the paragraphs butt together),
-  `paragraphIndent` (px first-line indent → `text-indent`), and `textWrapStyle` — Figma's values are
+  `paragraphIndent` (px first-line indent → `text-indent`), `fontVariationSettings` — a variable
+  font's axis values (`{ wght: 650, slnt: -4 }`), keyed by OpenType tag exactly like CSS
+  `font-variation-settings`, so `wght` is the real weight and the named `fontStyle` beside it may
+  still read `Regular`; **two bundles differing only here are two different weights, and taking the
+  weight from `fontStyle` ships both at 400** — and `textWrapStyle` — Figma's values are
   CSS `text-wrap`'s verbatim, so `BALANCE` → `text-wrap: balance` (even line lengths; a designer sets
   it on headings and pull quotes) and `PRETTY` → `text-wrap: pretty` (no orphan last word); absent =
   `auto`, the browser default. Per-node (inline, not in the bundle):
@@ -65,7 +69,8 @@ the obvious ones. These are ordered by how easily they're silently dropped.
     block with per-paragraph wrapping, not inline rich text.
   - **Mixed (inline) styling → read `segments`.** When a value reads `"mixed"` (e.g. `fontSize` or
     `textDecoration`), the node carries `segments` — each a run of uniform styling with its own
-    `characters`, `fontName`, `fontSize`, `fills` (hex), `textDecoration`, `textCase` over offsets
+    `characters`, `fontName` (with `variationSettings` when the family is variable), `fontSize`,
+    `fills` (hex), `textDecoration`, `textCase` over offsets
     `start`/`end` (plus per-run `lineHeight`/`letterSpacing` when they differ). These describe runs
     **within** the node's `characters` (not extra text) — emit each as its own span: the
     underlined/coloured `Privacy Policy` inside a sentence, the bold word in a label, the smaller
@@ -158,7 +163,8 @@ the obvious ones. These are ordered by how easily they're silently dropped.
   a `layout` object with the _exact_ spacing; don't reverse-engineer padding/gap/justify from child
   `x/y/w/h`. `mode` `HORIZONTAL`/`VERTICAL` → `flex-row`/`flex-col`; `padding*` → `p-*`; for H/V
   `itemSpacing` → `gap`, `primaryAxisAlignItems`/`counterAxisAlignItems` → `justify-*`/`items-*`
-  (`SPACE_BETWEEN` → `justify-between`). When `layoutWrap: 'WRAP'` (a tag cloud / chip group /
+  (`SPACE_BETWEEN` → `justify-between`, `SPACE_EVENLY` → `justify-evenly`, `SPACE_AROUND` →
+  `justify-around` — three distinct distributions, not synonyms). When `layoutWrap: 'WRAP'` (a tag cloud / chip group /
   gallery) the frame also carries the cross-axis row spacing: `counterAxisSpacing` is the gap
   **between wrapped rows** (→ `flex-wrap` + the row part of `gap-x/gap-y`; with a single `gap` only
   when it equals `itemSpacing`), and `counterAxisAlignContent: 'SPACE_BETWEEN'` distributes the rows
