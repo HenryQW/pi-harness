@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	BorderedLoader,
+	buildSessionContext,
 	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -62,6 +63,7 @@ The object must have exactly these keys. name must start with a lowercase ASCII 
 type Config = { automatic: boolean; inputThreshold: number };
 export type PromptCandidate = { name: string; markdown: string };
 type ConversationItem = { role: "summary" | "user" | "assistant"; text: string };
+type ContextMessage = ReturnType<typeof buildSessionContext>["messages"][number];
 type ExistingPrompt = { name: string; description: string };
 type AnalysisPayload = { currentConversation: ConversationItem[]; existingPrompts: ExistingPrompt[] };
 type ActiveRun = { controller: AbortController; branchGeneration: number };
@@ -133,19 +135,19 @@ function messageText(content: unknown): string {
 		.join("\n");
 }
 
-function conversationItem(entry: SessionEntry): ConversationItem | undefined {
-	if (entry.type === "compaction" || entry.type === "branch_summary") {
-		return entry.summary.trim() ? { role: "summary", text: entry.summary } : undefined;
+function conversationItem(message: ContextMessage): ConversationItem | undefined {
+	if (message.role === "compactionSummary" || message.role === "branchSummary") {
+		return message.summary.trim() ? { role: "summary", text: message.summary } : undefined;
 	}
-	if (entry.type !== "message" || (entry.message.role !== "user" && entry.message.role !== "assistant")) return;
-	if (entry.message.role === "assistant" && entry.message.stopReason !== "stop") return;
-	const text = messageText(entry.message.content);
-	return text.trim() ? { role: entry.message.role, text } : undefined;
+	if (message.role !== "user" && message.role !== "assistant") return;
+	if (message.role === "assistant" && message.stopReason !== "stop") return;
+	const text = messageText(message.content);
+	return text.trim() ? { role: message.role, text } : undefined;
 }
 
-function boundedConversation(entries: SessionEntry[], maxChars: number): ConversationItem[] {
-	const items = entries.flatMap((entry, index) => {
-		const item = conversationItem(entry);
+function boundedConversation(messages: ContextMessage[], maxChars: number): ConversationItem[] {
+	const items = messages.flatMap((message, index) => {
+		const item = conversationItem(message);
 		return item ? [{ index, item, chars: JSON.stringify(item).length }] : [];
 	});
 	let summaryIndex = -1;
@@ -178,7 +180,7 @@ function analysisPayload(pi: ExtensionAPI, ctx: ExtensionContext): AnalysisPaylo
 	const payload: AnalysisPayload = { currentConversation: [], existingPrompts: [] };
 	const envelopeChars = JSON.stringify(payload).length;
 	payload.currentConversation = boundedConversation(
-		ctx.sessionManager.buildContextEntries(),
+		buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages,
 		MAX_PAYLOAD_CHARS - envelopeChars,
 	);
 	let used = JSON.stringify(payload).length;
