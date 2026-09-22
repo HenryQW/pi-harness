@@ -510,8 +510,8 @@ function escapeDisplayControls(text: string): string {
 	});
 }
 
-function renderBlock(target: Target, entries: string[], config: MemoryConfig, warnings: string[]): { block: string; sanitized: boolean } {
-	if (!entries.length) return { block: "", sanitized: false };
+function renderBlock(target: Target, entries: string[], config: MemoryConfig, warnings: string[]): { block: string } {
+	if (!entries.length) return { block: "" };
 	const limit = target === "user" ? config.userCharLimit : config.memoryCharLimit;
 	// Sanitize BEFORE budgeting: expansion from frame-token replacement must
 	// count against the cap, or many short reserved lines could inflate the
@@ -547,10 +547,10 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 	}
 	// Everything omitted (e.g. one entry larger than the whole cap): no block,
 	// the standalone warning above still reaches the prompt.
-	if (!kept.length) return { block: "", sanitized };
+	if (!kept.length) return { block: "" };
 	const usageText = usage(used, limit);
 	const header = target === "user" ? "USER PROFILE (who the user is)" : "MEMORY (your personal notes)";
-	return { block: `${SEPARATOR}\n${header} [${usageText}]\n${SEPARATOR}\n${content}`, sanitized };
+	return { block: `${SEPARATOR}\n${header} [${usageText}]\n${SEPARATOR}\n${content}` };
 }
 
 export default function memoryExtension(pi: ExtensionAPI): void {
@@ -563,9 +563,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	const state: {
 		config?: MemoryConfig;
 		stores?: Record<Target, MemoryStore>;
-		initialEntries?: Record<Target, string[]>;
 		snapshotBlocks?: string[];
-		snapshotSanitized?: boolean;
 		conflictWarnings: string[];
 		initError?: string;
 		dream: "idle" | "pending" | "succeeded" | "failed";
@@ -662,18 +660,11 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Cannot run /dream: agent-global SYSTEM.md is ${system} (${JSON.stringify(systemPath)}).`, "warning");
 				return;
 			}
-			const btwChild = process.argv.includes(BTW_CHILD_PAYLOAD_ARG);
-			const unchanged = !btwChild && !state.snapshotSanitized && state.initialEntries
-				&& entries.memory.join(ENTRY_DELIMITER) === state.initialEntries.memory.join(ENTRY_DELIMITER)
-				&& entries.user.join(ENTRY_DELIMITER) === state.initialEntries.user.join(ENTRY_DELIMITER);
-			const memoryMessage = unchanged
-				? "Use USER PROFILE/MEMORY already in your system context; do not reread those files."
-				: `Live entries by target:\n${JSON.stringify(entries)}`;
 			state.dream = "pending";
 			try {
 				pi.sendMessage({
 					customType: DREAM_MESSAGE_TYPE,
-					content: `${DREAM_INSTRUCTION}\n\n${memoryMessage}\n\nRead ${JSON.stringify(systemPath)} before semantic deduplication or editing. Edit only ${JSON.stringify(systemPath)}; never edit a project SYSTEM.md.`,
+					content: `${DREAM_INSTRUCTION}\n\nLive entries by target:\n${JSON.stringify(entries)}\n\nRead ${JSON.stringify(systemPath)} before semantic deduplication or editing. Edit only ${JSON.stringify(systemPath)}; never edit a project SYSTEM.md.`,
 					display: true,
 				}, { triggerTurn: true });
 			} catch (error) {
@@ -744,9 +735,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.rememberQueue = [];
 		state.config = undefined;
 		state.stores = undefined;
-		state.initialEntries = undefined;
 		state.snapshotBlocks = undefined;
-		state.snapshotSanitized = undefined;
 		state.conflictWarnings = [];
 		state.initError = undefined;
 		state.dream = "idle";
@@ -820,9 +809,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const rendered = [renderBlock("memory", memory.entries, config, conflictWarnings), renderBlock("user", user.entries, config, conflictWarnings)];
 			state.config = config;
 			state.stores = stores;
-			state.initialEntries = { memory: [...memory.entries], user: [...user.entries] };
 			state.snapshotBlocks = rendered.map(({ block }) => block);
-			state.snapshotSanitized = rendered.some(({ sanitized }) => sanitized);
 			state.conflictWarnings = conflictWarnings;
 
 			const memoryChars = memory.entries.join(ENTRY_DELIMITER).length;

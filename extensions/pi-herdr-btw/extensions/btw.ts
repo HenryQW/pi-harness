@@ -203,14 +203,15 @@ async function configureChild(
 		if (cache.mode === "native") {
 			return {
 				messages: [
+					...(payload.messages[0]?.role === "system" ? [] : event.messages.slice(0, 1)),
 					...payload.messages,
 					buildNativeBridgeMessage(SIDE_PANE_INSTRUCTIONS),
-					...event.messages,
+					...event.messages.slice(1),
 				],
 			};
 		}
 		return {
-			messages: [buildParentContextMessage(contextDocument ?? ""), ...event.messages],
+			messages: [event.messages[0], buildParentContextMessage(contextDocument ?? ""), ...event.messages.slice(1)],
 		};
 	});
 

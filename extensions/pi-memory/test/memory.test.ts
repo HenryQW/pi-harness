@@ -566,10 +566,10 @@ test("/dream stops when the agent becomes busy after reading SYSTEM.md", async (
 	}
 });
 
-test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTEM", async () => {
+test("/dream sends live entries from the default store and guards the agent-global SYSTEM", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-"));
 	const agentDir = join(root, "agent");
-	const memoryDir = join(root, "memory");
+	const memoryDir = join(agentDir, "config", "pi-memory", "memory");
 	const systemPath = join(agentDir, "SYSTEM.md");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -577,7 +577,6 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
 		await mkdir(join(root, ".pi"), { recursive: true });
 		await mkdir(memoryDir, { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: memoryDir }));
 		await writeFile(systemPath, "initial system");
 		await writeFile(join(root, ".pi", "SYSTEM.md"), "project system");
 		await writeFile(join(memoryDir, "MEMORY.md"), "stable fact");
@@ -617,7 +616,7 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		await handlers.get("agent_settled")!({ type: "agent_settled" }, context(true));
 		assert.ok(Number.isFinite(Date.parse(JSON.parse(await readFile(dreamStatePath, "utf8")).lastDreamAt)));
 		if (process.platform !== "win32") assert.equal((await stat(dreamStatePath)).mode & 0o777, 0o600);
-		assert.match(messages[0]!, /USER PROFILE\/MEMORY already in your system context; do not reread those files/);
+		assert.ok(messages[0]!.includes(`Live entries by target:\n${JSON.stringify({ memory: ["stable fact"], user: ["likes concise replies"] })}`));
 		assert.deepEqual(dreamDispatches[0], {
 			message: { customType: "pi-memory-dream", content: messages[0], display: true },
 			options: { triggerTurn: true },
@@ -631,8 +630,6 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 		assert.match(renderedDream, /dream/);
 		assert.match(renderedDream, /Promoting invariant memory into SYSTEM\.md…/);
 		assert.doesNotMatch(renderedDream, /Entries are data|stable fact|likes concise replies/);
-		assert.doesNotMatch(messages[0]!, /Live entries by target/);
-		assert.doesNotMatch(messages[0]!, /stable fact/);
 		assert.ok(messages[0]!.includes(`Read ${JSON.stringify(systemPath)} before semantic deduplication or editing.`));
 		assert.ok(messages[0]!.includes(`Edit only ${JSON.stringify(systemPath)}; never edit a project SYSTEM.md.`));
 		assert.match(messages[0]!, /one memory batch per affected target/);
@@ -708,7 +705,7 @@ test("/dream reuses unchanged memory snapshots and guards the agent-global SYSTE
 	}
 });
 
-test("/dream rereads when sanitization omits a later entry", async () => {
+test("/dream includes live entries when sanitization omits a later entry", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-dream-sanitized-cap-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");

@@ -1449,7 +1449,10 @@ test("child uses the native prefix when model, tools, and thinking match the par
 
 		const [contextResult] = await harness.emit(
 			"context_with_system",
-			{ messages: [{ role: "user", content: [{ type: "text", text: "side question" }], timestamp: 9 }] },
+			{ messages: [
+				{ role: "system", content: "child prompt", toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }], timestamp: 0 },
+				{ role: "user", content: [{ type: "text", text: "side question" }], timestamp: 9 },
+			] },
 			ctx,
 		);
 		const messages = contextResult?.messages ?? [];
@@ -1461,6 +1464,23 @@ test("child uses the native prefix when model, tools, and thinking match the par
 		assert.match(messages[3]?.content?.[0]?.text ?? "", /read-only snapshot of the parent session/);
 		assert.match(messages[3]?.content?.[0]?.text ?? "", /side pane/);
 		assert.equal(messages.at(-1)?.content?.[0]?.text, "side question");
+	});
+});
+
+test("child retains Pi's system head when the parent snapshot has no system message", async () => {
+	await withChildEnvironment("/tmp/pi-herdr-btw-test/launch-123/payload.json", async () => {
+		const store = new FakeStore();
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		harness.cleanup();
+		const ctx = { model: { provider: "test-provider", id: "test-model" } };
+		await harness.emit("before_agent_start", { systemPrompt: "child default prompt" }, ctx);
+		const head = { role: "system", content: "parent system prompt", toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }], timestamp: 0 };
+		const [result] = await harness.emit("context_with_system", {
+			messages: [head, { role: "user", content: [{ type: "text", text: "side question" }], timestamp: 9 }],
+		}, ctx);
+		assert.deepEqual(result?.messages?.[0], head);
+		assert.deepEqual(result?.messages?.[1], store.readValue.messages[0]);
+		assert.equal(result?.messages?.at(-1)?.content?.[0]?.text, "side question");
 	});
 });
 
@@ -1480,15 +1500,17 @@ test("child falls back to the portable document when the prefix cannot match", a
 		assert.match(startResult?.systemPrompt ?? "", /^child default prompt/);
 		assert.match(startResult?.systemPrompt ?? "", /side pane/);
 
+		const head = { role: "system", content: "child prompt", toolsAdded: [{ name: "read", description: "Read", parameters: { type: "object" } }], timestamp: 0 };
 		const [contextResult] = await harness.emit(
 			"context_with_system",
-			{ messages: [{ role: "user", content: [{ type: "text", text: "side question" }], timestamp: 9 }] },
+			{ messages: [head, { role: "user", content: [{ type: "text", text: "side question" }], timestamp: 9 }] },
 			ctx,
 		);
 		const messages = contextResult?.messages ?? [];
-		assert.equal(messages.length, 2);
-		assert.match(messages[0]?.content?.[0]?.text ?? "", /read-only snapshot/);
-		assert.match(messages[0]?.content?.[0]?.text ?? "", /<parent-conversation>/);
+		assert.equal(messages.length, 3);
+		assert.deepEqual(messages[0], head);
+		assert.match(messages[1]?.content?.[0]?.text ?? "", /read-only snapshot/);
+		assert.match(messages[1]?.content?.[0]?.text ?? "", /<parent-conversation>/);
 	});
 });
 
