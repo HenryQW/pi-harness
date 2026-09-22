@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readTextFileBounded } from "@henryqw/pi-config-store";
@@ -118,28 +118,13 @@ async function requireCleanHead(cwd, signal, pullRequest, expectedHead = pullReq
 async function writeSnapshotAtomically(path, contents, signal) {
 	signal.throwIfAborted();
 	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-	let file;
-	let created = false;
 	try {
-		file = await open(temporaryPath, "wx", 0o600);
-		created = true;
-		signal.throwIfAborted();
-		if (process.platform !== "win32") await file.chmod(0o600);
-		signal.throwIfAborted();
-		await file.writeFile(contents, { encoding: "utf8", signal });
-		signal.throwIfAborted();
-		await file.sync();
-		signal.throwIfAborted();
-		await file.close();
-		file = undefined;
+		await writeFile(temporaryPath, contents, { encoding: "utf8", flag: "wx", mode: 0o600, flush: true, signal });
+		if (process.platform !== "win32") await chmod(temporaryPath, 0o600);
 		signal.throwIfAborted();
 		await rename(temporaryPath, path);
 	} catch (error) {
-		try {
-			await file?.close();
-		} finally {
-			if (created) await rm(temporaryPath, { force: true });
-		}
+		await rm(temporaryPath, { force: true });
 		throw error;
 	}
 }

@@ -115,10 +115,8 @@ export async function withWorktreeLock<T>(
 		cwd: requiredText(cwd, "cwd"),
 		signal: options.signal,
 	});
-	const normalizedRoot = rootResult.stdout.replace(/\r\n/g, "\n");
-	const rootLines = (normalizedRoot.endsWith("\n") ? normalizedRoot.slice(0, -1) : normalizedRoot).split("\n");
-	if (rootLines.length !== 1 || !rootLines[0]) throw new Error("Git worktree root resolution returned invalid output");
-	const canonical = requiredText(await realpath(rootLines[0]), "canonical Git worktree root");
+	const root = parseSingleOutputLine(rootResult.stdout, "Git worktree root resolution");
+	const canonical = requiredText(await realpath(root), "canonical Git worktree root");
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", options.agentDir));
 	const lockDirectory = join(lockNamespace, "worktree-locks");
 	const identity = createHash("sha256").update(canonical).digest("hex");

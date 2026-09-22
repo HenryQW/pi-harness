@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	extensionConfigDir,
@@ -32,6 +33,7 @@ import {
 	isAncestor,
 	isRecord,
 	parseNulPaths,
+	parseSingleOutputLine,
 	parseStatusSnapshot,
 	readHead,
 	readRemoteOid,
@@ -342,16 +344,12 @@ function parseProjection(value: unknown): SweepFinalProjection {
 	};
 }
 
-function sameProjection(left: SweepFinalProjection, right: SweepFinalProjection): boolean {
-	return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function projectionMatches(snapshot: FeedbackSnapshot, projection: SweepFinalProjection): boolean {
 	if (feedbackContentFingerprint(snapshot) !== projection.contentFingerprint) return false;
 	const items = feedbackEntries(snapshot).map(({ id, kind }) => ({ id, kind })).sort((left, right) =>
 		left.id.localeCompare(right.id) || left.kind.localeCompare(right.kind));
 	const threads = snapshot.reviewThreads.map(({ id, isResolved }) => ({ id, isResolved })).sort((left, right) => left.id.localeCompare(right.id));
-	return JSON.stringify(items) === JSON.stringify(projection.items) && JSON.stringify(threads) === JSON.stringify(projection.threads);
+	return isDeepStrictEqual(items, projection.items) && isDeepStrictEqual(threads, projection.threads);
 }
 
 function resolutionAttempt(value: unknown, index: number): ResolutionAttempt {
@@ -463,7 +461,7 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		throw new Error("push attempt head does not match publication head");
 	}
 	if (hasFinalProjection !== (projection !== null)) throw new Error("sweep phase and final projection are inconsistent");
-	if (projection && (!ledger || !sameProjection(projection, buildProjection(feedback.generation, snapshot, ledger)))) {
+	if (projection && (!ledger || !isDeepStrictEqual(projection, buildProjection(feedback.generation, snapshot, ledger)))) {
 		throw new Error("final projection does not match feedback and ledger coverage");
 	}
 	return state;
@@ -503,13 +501,6 @@ function status(state: SweepState): SweepStatus {
 			finalize: state.attempts.finalize.state,
 		},
 	};
-}
-
-function oneLine(output: string, label: string): string {
-	const normalized = output.replace(/\r\n/g, "\n");
-	const lines = normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
-	if (lines.length !== 1 || !lines[0]) throw new Error(`${label} returned invalid output`);
-	return lines[0];
 }
 
 function onlyResolutionChanged(before: FeedbackSnapshot, after: FeedbackSnapshot, threadId: string): boolean {
@@ -564,7 +555,7 @@ export class PullRequestCommentSweep {
 	}
 
 	private async location(): Promise<{ root: string; id: string; path: string }> {
-		const top = oneLine((await runChecked(this.exec, "git", ["rev-parse", "--show-toplevel"], this.options())).stdout, "Git worktree root");
+		const top = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--show-toplevel"], this.options())).stdout, "Git worktree root");
 		const root = await realpath(top);
 		const id = createHash("sha256").update(root).digest("hex");
 		return { root, id, path: join(extensionConfigDir("pi-pr", this.agentDir), "sweep", id, STATE_FILE) };
@@ -1016,7 +1007,7 @@ export class PullRequestCommentSweep {
 				throw new Error("Comment sweep is not ready to finalize");
 			}
 			const projection = parseProjection(projectionInput);
-			if (!sameProjection(projection, state.projection)) throw new Error("Final projection does not match the declared refreshed projection");
+			if (!isDeepStrictEqual(projection, state.projection)) throw new Error("Final projection does not match the declared refreshed projection");
 			const checks = parseChecks(checksInput);
 			if (state.attempts.resolutions.some(({ state: attempt }) => attempt !== "applied")) {
 				throw new Error("Comment sweep has unresolved or unknown mutation attempts");
@@ -1026,7 +1017,7 @@ export class PullRequestCommentSweep {
 			}
 			await this.freshProjection(state);
 			const alreadyChecked = state.attempts.finalize.state === "applied" &&
-				JSON.stringify(state.attempts.finalize.checks) === JSON.stringify(checks);
+				isDeepStrictEqual(state.attempts.finalize.checks, checks);
 			if (!alreadyChecked) {
 				state.attempts.finalize = { state: "attempting", checks };
 				await this.save(location, state);

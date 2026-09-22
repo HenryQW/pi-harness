@@ -126,11 +126,6 @@ test("routes discovery states without mutating ambiguous targets", () => {
 	assert.equal(deriveDiscoveryNextStep({ kind: "inactive" }), "none");
 });
 
-test("ordinary conversation comments do not route", () => {
-	const candidate = { ...pullRequest(), comments: [{ body: "Looks good" }] };
-	assert.equal(deriveNextStep(candidate), "merge");
-});
-
 test("central routing applies explicit feedback intent without changing automatic priority", () => {
 	const target = {
 		provenance: "configured" as const,
@@ -147,12 +142,12 @@ test("central routing applies explicit feedback intent without changing automati
 		pullRequest: { ...candidate, target: { ...target, provenance } },
 	});
 	const conversationOnly = { ...pullRequest(), comments: [{ body: "Please fix this" }] };
-	assert.equal(deriveRouteDecision(discovery(conversationOnly), "automatic").nextStep, "merge");
-	assert.equal(deriveRouteDecision(discovery(conversationOnly), "feedback").nextStep, "sweep");
+	assert.deepEqual(deriveRouteDecision(discovery(conversationOnly), "automatic"), { kind: "selected", nextStep: "merge" });
+	assert.deepEqual(deriveRouteDecision(discovery(conversationOnly), "feedback"), { kind: "selected", nextStep: "sweep" });
 
 	const failedCi = discovery(pullRequest({ conditions: { ci: "failure" } }));
-	assert.equal(deriveRouteDecision(failedCi, "automatic").nextStep, "fix-ci");
-	assert.equal(deriveRouteDecision(failedCi, "feedback").nextStep, "sweep");
+	assert.deepEqual(deriveRouteDecision(failedCi, "automatic"), { kind: "selected", nextStep: "fix-ci" });
+	assert.deepEqual(deriveRouteDecision(failedCi, "feedback"), { kind: "selected", nextStep: "sweep" });
 
 	const blockers = [
 		{ name: "closed", candidate: discovery(pullRequest({ lifecycle: "closed" })), kind: "pull-request-not-open" },
