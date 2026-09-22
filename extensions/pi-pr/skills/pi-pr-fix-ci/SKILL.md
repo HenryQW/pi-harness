@@ -25,7 +25,7 @@ report the blocker and stop.
 ## Diagnose and repair
 
 1. Inspect the workflow and repository files implicated by the returned evidence.
-2. Run the narrowest existing local reproducer before editing when one is available.
+2. Run the narrowest existing local reproducer before editing when one is available. For package failures, reproduce with an empty dependency cache; do not use offline installs that still resolve registry metadata. Assemble bundled local package resources deterministically.
 3. Find the root cause. Do not guess from a check name alone.
 4. Stop if the evidence is insufficient or the fix needs a product decision.
 5. Edit only the files needed for the diagnosed failure.
