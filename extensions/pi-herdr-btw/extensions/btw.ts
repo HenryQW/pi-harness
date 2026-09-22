@@ -198,7 +198,7 @@ async function configureChild(
 		return { systemPrompt: `${event.systemPrompt}\n\n${SIDE_PANE_INSTRUCTIONS}` };
 	});
 
-	pi.on("context", (event) => {
+	pi.on("context_with_system", (event) => {
 		if (!payload) return;
 		if (cache.mode === "native") {
 			return {
