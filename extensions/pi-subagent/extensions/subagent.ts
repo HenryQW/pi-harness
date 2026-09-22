@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { type Component, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, finalizeRoleLaunch, ROLE_TOOL_POLICY_FLAG, type EphemeralSubagentTimeout, type Role } from "@henryqw/pi-subagent";
-import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy, type SubagentTimeoutConfig } from "./config.ts";
+import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
 import { createCheckoutAdmission, roleCanWrite } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
@@ -15,21 +15,9 @@ const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
 const MAX_WIDGET_LINES = 6;
 const MAX_WIDGET_GROUP_ROWS = 3;
-const DEFAULT_TIMEOUT_POLICY = {
-	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
-	maxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
-};
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type TimeoutPolicy = EphemeralSubagentTimeout;
-
-/** Merge validated config-file timeout fields over defaults; absent keys keep defaults. */
-export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined): TimeoutPolicy {
-	return {
-		idleMs: partial?.idleMinutes === undefined ? DEFAULT_TIMEOUT_POLICY.idleMs : partial.idleMinutes * 60_000,
-		maxMs: partial?.maxMinutes === undefined ? DEFAULT_TIMEOUT_POLICY.maxMs : partial.maxMinutes * 60_000,
-	};
-}
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
 type WidgetItem = {
 	role: string;
@@ -403,7 +391,6 @@ export default function subagentExtension(
 			taskId,
 			outcome,
 			tabs: [...tabs],
-			...(transport.usage === undefined ? {} : { usage: transport.usage }),
 		};
 		try {
 			// Queue behind the current turn, then trigger one follow-up turn.
@@ -527,7 +514,7 @@ export default function subagentExtension(
 						active++;
 						return () => { active--; queue.shift()?.(); };
 					};
-					await runForegroundWorkflow<string>(toolCallId, workflow, async (entry) => {
+					await runForegroundWorkflow(toolCallId, workflow, async (entry) => {
 						const release = await permit();
 						try {
 							controller.signal.throwIfAborted();
@@ -538,7 +525,7 @@ export default function subagentExtension(
 								...(base.model ? { model: base.model } : {}), ...(base.thinkingLevel ? { thinkingLevel: base.thinkingLevel } : {}),
 								status: "succeeded", assistantOutput: answer });
 							finishWidgetItem(entry.id, "success");
-							return { ok: true, assistantOutput: answer, result: answer };
+							return answer;
 						} catch (error) {
 							const base = states.get(entry.id)!;
 							states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,

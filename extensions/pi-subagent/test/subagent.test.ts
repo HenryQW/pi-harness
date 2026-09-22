@@ -375,7 +375,12 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			const result = await app.tool.execute("call", { role: "worker", name: "Check", task: "inspect" }, undefined, undefined, app.ctx);
 			assert.match(result.content[0].text, /Herdr tab: w-test:t2/);
 			await waitFor(() => app.sentMessages.length === 1);
-			assert.match(app.sentMessages[0]!.message.content, /exact answer/);
+			const message = app.sentMessages[0]!.message;
+			assert.ok(message.content.startsWith("Delegation completed · 1 completed\n✓ [1/1] Check · worker — exact answer\nResults:\n- [1/1] Check · worker · result:\nexact answer\nRecovery (also available via /subagent-direct-recovery):\n"));
+			assert.match(message.content, /tab w-test:t2 · pane w-test:p2/);
+			assert.deepEqual(message.details.entries.map(({ id, index, name, role, status, summary }: any) => ({ id, index, name, role, status, summary })), [
+				{ id: "call:single:0", index: 0, name: "Check", role: "worker", status: "succeeded", summary: "exact answer" },
+			]);
 			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
 			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt").length, 1);
 			assert.ok(fake.calls.some((args) => args.includes("--no-focus") && args.includes(cwd)));
@@ -449,6 +454,12 @@ test("parallel direct delegation returns after first verified tab and delivers o
 			await waitFor(() => app.sentMessages.length === 1);
 			const message = app.sentMessages[0]!.message;
 			assert.deepEqual(message.details.entries.map(({ status }: any) => status), ["succeeded", "rejected"]);
+			assert.deepEqual(message.details.entries.map(({ id, index, name, role }: any) => ({ id, index, name, role })), [
+				{ id: "parallel:parallel:0", index: 0, name: "First", role: "worker" },
+				{ id: "parallel:parallel:1", index: 1, name: "Second", role: "worker" },
+			]);
+			assert.equal(message.details.entries[0].summary, "exact answer");
+			assert.match(message.details.entries[1].summary, /recover from Herdr tab w-test:t3/);
 			assert.match(message.content, /empty final answer/);
 			assert.match(message.content, /recover from Herdr tab/);
 			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });

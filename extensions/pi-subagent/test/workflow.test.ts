@@ -3,23 +3,16 @@ import { setImmediate } from "node:timers/promises";
 import test from "node:test";
 import { Check } from "typebox/value";
 import {
-	DelegationSchema,
 	MAX_WORKFLOW_ENTRIES,
 	parseWorkflow as parseDirectWorkflow,
 	runForegroundWorkflow,
 	WorkflowSchema,
-	type DelegationExecution,
 } from "../extensions/workflow.ts";
-import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
-import { DISPLAY_TEXT_CONTRACT } from "../src/index.ts";
 
 const delegation = (task = "work") => ({ role: "worker", name: "Test work", task, kind: "text" as const });
 const parseWorkflow = (value: unknown) => parseDirectWorkflow(
 	value && typeof value === "object" && !Array.isArray(value) ? { mode: "direct", ...value } : value,
 );
-const succeeded = <T>(assistantOutput: string, result: T): DelegationExecution<T> => ({ ok: true, assistantOutput, result });
-const failed = <T>(result: T): DelegationExecution<T> => ({ ok: false, result });
-
 function deferred<T>() {
 	let resolve!: (value: T) => void;
 	let reject!: (reason?: unknown) => void;
@@ -29,27 +22,6 @@ function deferred<T>() {
 	});
 	return { promise, resolve, reject };
 }
-
-test("schemas expose strict delegation fields and top-level workflow modes", () => {
-	assert.throws(() => parseDirectWorkflow(delegation()), /required properties mode/);
-	const delegationSchema = DelegationSchema as any;
-	const workflowSchema = WorkflowSchema as any;
-	assert.equal(delegationSchema.additionalProperties, false);
-	assert.equal(delegationSchema.properties.name.maxLength, TASK_NAME_CONTRACT.maxLength);
-	assert.equal(delegationSchema.properties.name.description, TASK_NAME_CONTRACT.description);
-	assert.equal(delegationSchema.properties.name.pattern, DISPLAY_TEXT_CONTRACT.pattern);
-	assert.equal(delegationSchema.properties.role.pattern, DISPLAY_TEXT_CONTRACT.pattern);
-	assert.equal(delegationSchema.properties.model.pattern, DISPLAY_TEXT_CONTRACT.pattern);
-	assert.equal(workflowSchema.additionalProperties, false);
-	assert.equal("background" in workflowSchema.properties, false);
-	assert.equal("background" in delegationSchema.properties, false);
-	assert.equal("thinking" in delegationSchema.properties, false);
-	assert.equal("thinking" in workflowSchema.properties, false);
-	assert.equal(workflowSchema.properties.tasks.minItems, 1);
-	assert.equal(workflowSchema.properties.tasks.maxItems, MAX_WORKFLOW_ENTRIES);
-	assert.equal(workflowSchema.properties.chain.minItems, 1);
-	assert.equal(workflowSchema.properties.chain.maxItems, MAX_WORKFLOW_ENTRIES);
-});
 
 test("parses and normalizes each explicit workflow mode", () => {
 	assert.deepEqual(parseWorkflow({
@@ -96,6 +68,7 @@ test("rejects caller thinking in every workflow mode", () => {
 });
 
 test("rejects every workflow shape boundary at runtime", () => {
+	assert.throws(() => parseDirectWorkflow(delegation()), /required properties mode/);
 	const nine = Array.from({ length: MAX_WORKFLOW_ENTRIES + 1 }, () => delegation());
 	const schemaInvalid = [
 		null,
@@ -170,64 +143,35 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 	assert.equal(parseWorkflow({ ...delegation("first line\nsecond line") }).delegations[0]!.task, "first line\nsecond line");
 });
 
-test("runs single exactly once", async () => {
-	let calls = 0;
-	const outcomes = await runForegroundWorkflow("call", parseWorkflow(delegation()), (entry) => {
-		calls++;
-		return succeeded(entry.delegation.task, "single-result");
+test("runs single exactly once without returning discarded outcomes", async () => {
+	const calls: string[] = [];
+	const result = await runForegroundWorkflow("call", parseWorkflow(delegation()), (entry) => {
+		calls.push(entry.id);
+		return entry.delegation.task;
 	});
-	assert.equal(calls, 1);
-	assert.deepEqual(outcomes, [{
-		status: "succeeded",
-		entry: { id: "call:single:0", index: 0, delegation: delegation() },
-		assistantOutput: "work",
-		result: "single-result",
-	}]);
-
+	assert.deepEqual(calls, ["call:single:0"]);
+	assert.equal(result, undefined);
 });
 
-test("runs parallel entries concurrently, all-settled, and in stable input order", async () => {
-	const gates = Array.from({ length: 3 }, () => deferred<DelegationExecution<string>>());
-	const started: number[] = [];
+test("runs parallel entries concurrently and waits for every callback after a failure", async () => {
+	const gates = Array.from({ length: 3 }, () => deferred<string>());
+	const started: string[] = [];
 	const running = runForegroundWorkflow("call", parseWorkflow({
 		tasks: [delegation("zero"), delegation("one"), delegation("two")],
 	}), async (entry) => {
-		started.push(entry.index);
+		started.push(entry.id);
 		return await gates[entry.index]!.promise;
 	});
 	await setImmediate();
-	assert.deepEqual(started, [0, 1, 2]);
-
-	gates[2]!.resolve(succeeded("output-2", "result-2"));
-	gates[0]!.resolve(succeeded("output-0", "result-0"));
-	gates[1]!.resolve(failed("child failed"));
-	const outcomes = await running;
-	assert.deepEqual(outcomes.map(({ entry }) => entry.id), ["call:parallel:0", "call:parallel:1", "call:parallel:2"]);
-	assert.deepEqual(outcomes.map(({ status }) => status), ["succeeded", "failed", "succeeded"]);
-	assert.deepEqual(outcomes.map((outcome) => outcome.status === "rejected" ? undefined : outcome.result), [
-		"result-0",
-		"child failed",
-		"result-2",
-	]);
-});
-
-test("keeps thrown callback rejection distinct from child failure without short-circuiting parallel work", async () => {
-	const infrastructure = new Error("parent aborted");
-	infrastructure.name = "AbortError";
-	const called: number[] = [];
-	const outcomes = await runForegroundWorkflow<string>("call", parseWorkflow({
-		tasks: [delegation("child"), delegation("abort"), delegation("success")],
-	}), (entry) => {
-		called.push(entry.index);
-		if (entry.index === 0) return failed("child process failed");
-		if (entry.index === 1) throw infrastructure;
-		return succeeded("done", "ok");
-	});
-	assert.deepEqual(called, [0, 1, 2]);
-	assert.deepEqual(outcomes.map(({ status }) => status), ["failed", "rejected", "succeeded"]);
-	assert.equal(outcomes[0]!.status === "failed" && outcomes[0].result, "child process failed");
-	assert.equal(outcomes[1]!.status, "rejected");
-	if (outcomes[1]!.status === "rejected") assert.equal(outcomes[1].reason, infrastructure);
+	assert.deepEqual(started, ["call:parallel:0", "call:parallel:1", "call:parallel:2"]);
+	let settled = false;
+	void running.then(() => { settled = true; });
+	gates[1]!.reject(new Error("worker failed"));
+	gates[2]!.resolve("two");
+	await setImmediate();
+	assert.equal(settled, false);
+	gates[0]!.resolve("zero");
+	assert.equal(await running, undefined);
 });
 
 test("parallel parent abort starts nothing when pre-aborted and otherwise waits for cleanup", async () => {
@@ -239,13 +183,13 @@ test("parallel parent abort starts nothing when pre-aborted and otherwise waits 
 		tasks: [delegation("never")],
 	}), () => {
 		calls++;
-		return succeeded("unexpected", "unexpected");
+		return "unexpected";
 	}, preAborted.signal), (error) => error === preAbortReason);
 	assert.equal(calls, 0);
 
 	const controller = new AbortController();
 	const reason = new Error("parent aborted");
-	const gates = Array.from({ length: 3 }, () => deferred<DelegationExecution<string>>());
+	const gates = Array.from({ length: 3 }, () => deferred<string>());
 	const started: number[] = [];
 	const cleaned: number[] = [];
 	const running = runForegroundWorkflow("call", parseWorkflow({
@@ -266,11 +210,11 @@ test("parallel parent abort starts nothing when pre-aborted and otherwise waits 
 	let settled = false;
 	void running.then(() => { settled = true; }, () => { settled = true; });
 	controller.abort(reason);
-	gates[0]!.resolve(succeeded("zero", "zero"));
-	gates[1]!.resolve(succeeded("one", "one"));
+	gates[0]!.resolve("zero");
+	gates[1]!.resolve("one");
 	await setImmediate();
 	assert.equal(settled, false);
-	gates[2]!.resolve(succeeded("two", "two"));
+	gates[2]!.resolve("two");
 	await assert.rejects(running, (error) => error === reason);
 	assert.deepEqual(cleaned, [0, 1, 2]);
 });
@@ -278,14 +222,16 @@ test("parallel parent abort starts nothing when pre-aborted and otherwise waits 
 test("chains immediate successful assistant output by explicit placeholder only", async () => {
 	const seenTasks: string[] = [];
 	const outputs = ["one $& {previous}", "two", "three", "four"];
-	const outcomes = await runForegroundWorkflow("call", parseWorkflow({ chain: [
+	const ids: string[] = [];
+	await runForegroundWorkflow("call", parseWorkflow({ chain: [
 		delegation("first:{previous}"),
 		delegation("twice [{previous}] [{previous}]"),
 		delegation("fixed task"),
 		delegation("last {previous}"),
 	] }), (entry) => {
+		ids.push(entry.id);
 		seenTasks.push(entry.delegation.task);
-		return succeeded(outputs[entry.index]!, entry.index);
+		return outputs[entry.index]!;
 	});
 	assert.deepEqual(seenTasks, [
 		"first:",
@@ -293,38 +239,34 @@ test("chains immediate successful assistant output by explicit placeholder only"
 		"fixed task",
 		"last three",
 	]);
-	assert.deepEqual(outcomes.map(({ status }) => status), ["succeeded", "succeeded", "succeeded", "succeeded"]);
-	assert.deepEqual(outcomes.map(({ entry }) => entry.id), ["call:chain:0", "call:chain:1", "call:chain:2", "call:chain:3"]);
+	assert.deepEqual(ids, ["call:chain:0", "call:chain:1", "call:chain:2", "call:chain:3"]);
 });
 
 test("chain fails fast on child failure and thrown callback rejection", async () => {
 	const childCalls: number[] = [];
-	const childOutcomes = await runForegroundWorkflow("call", parseWorkflow({
+	await runForegroundWorkflow("call", parseWorkflow({
 		chain: [delegation("first"), delegation("second"), delegation("never")],
 	}), (entry) => {
 		childCalls.push(entry.index);
-		return entry.index === 0 ? succeeded("first output", "ok") : failed("child failed");
+		if (entry.index === 1) throw new Error("child failed");
+		return "first output";
 	});
 	assert.deepEqual(childCalls, [0, 1]);
-	assert.deepEqual(childOutcomes.map(({ status }) => status), ["succeeded", "failed"]);
 
-	const infrastructure = new Error("launch failed");
 	const thrownCalls: number[] = [];
-	const thrownOutcomes = await runForegroundWorkflow("call", parseWorkflow({
+	await runForegroundWorkflow("call", parseWorkflow({
 		chain: [delegation("first"), delegation("never")],
 	}), (entry) => {
 		thrownCalls.push(entry.index);
-		throw infrastructure;
+		throw new Error("launch failed");
 	});
 	assert.deepEqual(thrownCalls, [0]);
-	assert.equal(thrownOutcomes[0]!.status, "rejected");
-	if (thrownOutcomes[0]!.status === "rejected") assert.equal(thrownOutcomes[0].reason, infrastructure);
 });
 
 test("chain parent abort rethrows its reason without launching a later step", async () => {
 	const controller = new AbortController();
 	const reason = new Error("parent aborted");
-	const first = deferred<DelegationExecution<string>>();
+	const first = deferred<string>();
 	const calls: number[] = [];
 	const running = runForegroundWorkflow("call", parseWorkflow({
 		chain: [delegation("first"), delegation("never")],

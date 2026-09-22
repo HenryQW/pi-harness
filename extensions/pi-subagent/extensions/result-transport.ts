@@ -1,10 +1,4 @@
-import type { Usage } from "@earendil-works/pi-ai";
-import {
-	addUsage,
-	capEphemeralSubagentOutput,
-	type EphemeralSubagentResult,
-	type WorktreePayload,
-} from "@henryqw/pi-subagent";
+import { capEphemeralSubagentOutput } from "@henryqw/pi-subagent";
 import type { WorkflowEntry, WorkflowMode } from "./workflow.ts";
 
 const EVIDENCE_PREVIEW_CODE_POINTS = 256;
@@ -18,17 +12,11 @@ type TransportEntryBase = {
 	role: WorkflowEntry["delegation"]["role"];
 	model?: string;
 	thinkingLevel?: string;
-	worktreePayload?: WorktreePayload;
-	usage?: Usage;
 };
 
 export type WorkflowTransportEntry =
 	| TransportEntryBase & { status: "pending" | "skipped"; assistantOutput?: never; failure?: never }
-	| TransportEntryBase & {
-		status: "running" | "succeeded";
-		assistantOutput: EphemeralSubagentResult["output"];
-		failure?: never;
-	}
+	| TransportEntryBase & { status: "running" | "succeeded"; assistantOutput: string; failure?: never }
 	| TransportEntryBase & { status: "failed" | "rejected"; assistantOutput?: never; failure: string };
 
 export type WorkflowTransportEntryDetails = {
@@ -40,7 +28,6 @@ export type WorkflowTransportEntryDetails = {
 	summary?: string;
 	model?: string;
 	thinkingLevel?: string;
-	worktree?: WorktreePayload;
 };
 
 export type WorkflowTransportDetails = {
@@ -52,17 +39,14 @@ export type BackgroundWorkflowTransportDetails = WorkflowTransportDetails & {
 	taskId: string;
 	outcome: "completed" | "failed" | "aborted";
 	recovery?: true;
-	usage?: Usage;
 };
 
 export type WorkflowTransport = {
 	text: string;
 	details: WorkflowTransportDetails;
-	usage?: Usage;
 	failed: boolean;
 };
 
-type TransportKind = "result" | "update" | "background" | "abort";
 type Evidence = { heading: string; preview: string; remainder: string };
 
 function compareEntries(left: WorkflowTransportEntry, right: WorkflowTransportEntry): number {
@@ -80,23 +64,16 @@ function workflowTitle(mode: WorkflowMode): string {
 	return "Delegation chain";
 }
 
-function statusCounts(entries: readonly WorkflowTransportEntry[], kind: TransportKind): string[] {
+function statusCounts(entries: readonly WorkflowTransportEntry[]): string[] {
 	const count = (statuses: WorkflowTransportStatus[]) => entries.filter(({ status }) => statuses.includes(status)).length;
-	const labels = kind === "update"
-		? [["running"], ["succeeded"], ["failed", "rejected"], ["pending"], ["skipped"]] as const
-		: [["failed", "rejected"], ["succeeded"], ["skipped"]] as const;
-	const words = kind === "update" ? ["running", "completed", "failed", "queued", "skipped"] : ["failed", "completed", "skipped"];
-	return labels.flatMap((statuses, index) => {
+	return ([
+		[["failed", "rejected"], "failed"],
+		[["succeeded"], "completed"],
+		[["skipped"], "skipped"],
+	] as const).flatMap(([statuses, word]) => {
 		const total = count([...statuses]);
-		return total ? [`${total} ${words[index]}`] : [];
+		return total ? [`${total} ${word}`] : [];
 	});
-}
-
-function heading(mode: WorkflowMode, entries: readonly WorkflowTransportEntry[], kind: TransportKind, failed: boolean): string {
-	const title = kind === "background" ? `Background ${workflowTitle(mode).toLowerCase()}` : workflowTitle(mode);
-	if (kind === "update") return [title, ...statusCounts(entries, kind)].join(" · ");
-	const outcome = kind === "abort" ? "stopped" : failed ? "failed" : "completed";
-	return [`${title} ${outcome}`, ...statusCounts(entries, kind)].join(" · ");
 }
 
 export function displaySummary(text: string): string {
@@ -136,37 +113,24 @@ function evidenceFor(entry: WorkflowTransportEntry, position: number, total: num
 	};
 }
 
-function formatWorkflowTransport(
-	mode: WorkflowMode,
-	entries: readonly WorkflowTransportEntry[],
-	kind: TransportKind,
-): WorkflowTransport {
+export function formatWorkflowResult(mode: WorkflowMode, entries: readonly WorkflowTransportEntry[]): WorkflowTransport {
 	const ordered = [...entries].sort(compareEntries);
-	if (kind !== "update" && ordered.some(({ status }) => status === "pending" || status === "running")) {
+	if (ordered.some(({ status }) => status === "pending" || status === "running")) {
 		throw new TypeError("Final workflow transport requires terminal entry states.");
 	}
 	const failed = ordered.some(({ status }) => status === "failed" || status === "rejected");
 	const positioned = ordered.map((entry, index) => ({ entry, position: index + 1 }));
-	const recoveries = positioned.flatMap(({ entry, position }) => {
-		const worktree = entry.worktreePayload;
-		return worktree === undefined || worktree.outcome === "pruned" ? [] : [{ entry, position, worktree }];
-	});
-	const evidence = kind === "update" ? [] : positioned.flatMap(({ entry, position }) => {
+	const evidence = positioned.flatMap(({ entry, position }) => {
 		const value = evidenceFor(entry, position, ordered.length);
 		return value ? [value] : [];
 	});
 	const lines = [
-		heading(mode, ordered, kind, failed),
+		[`${workflowTitle(mode)} ${failed ? "failed" : "completed"}`, ...statusCounts(ordered)].join(" · "),
 		...positioned.map(({ entry, position }) => {
 			const { glyph, fallback } = presentWorkflowEntryStatus(entry.status);
 			const summary = displaySummary(sourceFor(entry) ?? "") || fallback;
 			return `${glyph} [${position}/${ordered.length}] ${entry.name} · ${entry.role} — ${summary}`;
 		}),
-		...(recoveries.length ? [
-			"Recovery:",
-			...recoveries.map(({ entry, position, worktree }) =>
-				`- [${position}/${ordered.length}] ${entry.name} · worktree ${JSON.stringify(worktree.path)} · branch ${JSON.stringify(worktree.branch)}`),
-		] : []),
 		...(evidence.length ? [
 			"Results:",
 			...evidence.flatMap(({ heading, preview }) => [heading, preview]),
@@ -176,8 +140,6 @@ function formatWorkflowTransport(
 			] : []),
 		] : []),
 	];
-	let usage: Usage | undefined;
-	for (const entry of ordered) if (entry.usage) usage = addUsage(usage, entry.usage);
 	return {
 		text: capEphemeralSubagentOutput(lines.join("\n")),
 		details: {
@@ -193,61 +155,9 @@ function formatWorkflowTransport(
 					...(source === undefined ? {} : { summary: displaySummary(source) }),
 					...(entry.model === undefined ? {} : { model: entry.model }),
 					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
-					...(entry.worktreePayload === undefined ? {} : { worktree: { ...entry.worktreePayload } }),
 				};
 			}),
 		},
-		...(usage === undefined ? {} : { usage }),
 		failed,
 	};
-}
-
-export function formatWorkflowResult(
-	mode: WorkflowMode,
-	entries: readonly WorkflowTransportEntry[],
-): WorkflowTransport {
-	return formatWorkflowTransport(mode, entries, "result");
-}
-
-export function formatWorkflowUpdate(
-	mode: WorkflowMode,
-	entries: readonly WorkflowTransportEntry[],
-): WorkflowTransport {
-	return formatWorkflowTransport(mode, entries, "update");
-}
-
-export function formatBackgroundWorkflowResult(
-	mode: WorkflowMode,
-	entries: readonly WorkflowTransportEntry[],
-): WorkflowTransport {
-	return formatWorkflowTransport(mode, entries, "background");
-}
-
-export class WorkflowFailureError extends Error {
-	override name = "WorkflowFailureError";
-	readonly details: WorkflowTransportDetails;
-	readonly usage?: Usage;
-	readonly failed = true;
-
-	constructor(mode: WorkflowMode, entries: readonly WorkflowTransportEntry[]) {
-		const transport = formatWorkflowResult(mode, entries);
-		if (!transport.failed) throw new TypeError("WorkflowFailureError requires a failed or rejected entry.");
-		super(transport.text);
-		this.details = transport.details;
-		this.usage = transport.usage;
-	}
-}
-
-export class WorkflowAbortedError extends Error {
-	override name = "AbortError";
-	readonly details: WorkflowTransportDetails;
-	readonly usage?: Usage;
-	readonly failed = true;
-
-	constructor(mode: WorkflowMode, entries: readonly WorkflowTransportEntry[], cause: unknown) {
-		const transport = formatWorkflowTransport(mode, entries, "abort");
-		super(transport.text, { cause });
-		this.details = transport.details;
-		this.usage = transport.usage;
-	}
 }

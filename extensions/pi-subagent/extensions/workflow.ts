@@ -107,53 +107,43 @@ export function identifyWorkflowEntries(toolCallId: string, workflow: ParsedWork
 	return workflow.delegations.map((delegation, index) => ({ id: `${toolCallId}:${workflow.mode}:${index}`, index, delegation }));
 }
 
-export type DelegationExecution<T> = { ok: true; assistantOutput: string; result: T } | { ok: false; result: T };
-export type DelegationRunner<T> = (entry: WorkflowEntry) => DelegationExecution<T> | Promise<DelegationExecution<T>>;
-export type WorkflowEntryOutcome<T> =
-	| { status: "succeeded"; entry: WorkflowEntry; assistantOutput: string; result: T }
-	| { status: "failed"; entry: WorkflowEntry; result: T }
-	| { status: "rejected"; entry: WorkflowEntry; reason: unknown };
+export type DelegationRunner = (entry: WorkflowEntry) => string | Promise<string>;
 
-async function runEntry<T>(entry: WorkflowEntry, run: DelegationRunner<T>): Promise<WorkflowEntryOutcome<T>> {
+async function runEntry(entry: WorkflowEntry, run: DelegationRunner): Promise<string | undefined> {
 	try {
-		const execution = await run(entry);
-		return execution.ok ? { status: "succeeded", entry, assistantOutput: execution.assistantOutput, result: execution.result }
-			: { status: "failed", entry, result: execution.result };
-	} catch (reason) {
-		return { status: "rejected", entry, reason };
+		return await run(entry);
+	} catch {
+		return undefined;
 	}
 }
 
-export async function runForegroundWorkflow<T>(
+export async function runForegroundWorkflow(
 	toolCallId: string,
 	workflow: ParsedWorkflow,
-	run: DelegationRunner<T>,
+	run: DelegationRunner,
 	signal?: AbortSignal,
-): Promise<WorkflowEntryOutcome<T>[]> {
+): Promise<void> {
 	signal?.throwIfAborted();
 	const entries = identifyWorkflowEntries(toolCallId, workflow);
 	if (workflow.mode === "single") {
-		const outcome = await runEntry(entries[0]!, run);
+		await runEntry(entries[0]!, run);
 		signal?.throwIfAborted();
-		return [outcome];
+		return;
 	}
 	if (workflow.mode === "parallel") {
-		const outcomes = await Promise.all(entries.map((entry) => runEntry(entry, run)));
+		await Promise.all(entries.map((entry) => runEntry(entry, run)));
 		signal?.throwIfAborted();
-		return outcomes;
+		return;
 	}
-	const outcomes: WorkflowEntryOutcome<T>[] = [];
 	let previous = "";
 	for (const entry of entries) {
-		const selected = workflow.mode === "chain" ? {
+		const selected = {
 			...entry,
 			delegation: { ...entry.delegation, task: entry.delegation.task.replaceAll("{previous}", () => previous) },
-		} : entry;
-		const outcome = await runEntry(selected, run);
+		};
+		const output = await runEntry(selected, run);
 		signal?.throwIfAborted();
-		outcomes.push(outcome);
-		if (outcome.status !== "succeeded" && workflow.mode === "chain") break;
-		if (outcome.status === "succeeded") previous = outcome.assistantOutput;
+		if (output === undefined) break;
+		previous = output;
 	}
-	return outcomes;
 }

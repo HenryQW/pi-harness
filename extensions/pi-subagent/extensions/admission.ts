@@ -12,8 +12,6 @@ export function roleCanWrite(role: Role): boolean {
 
 export interface CheckoutAdmission {
 	register(pi: ExtensionAPI, directCanWrite: (input: unknown) => boolean): void;
-	isReserved(toolCallId: string): boolean;
-	release(toolCallId: string): void;
 }
 
 async function checkoutKey(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string> {
@@ -64,7 +62,5 @@ export function createCheckoutAdmission(): CheckoutAdmission {
 				checkoutByCall.clear();
 			});
 		},
-		isReserved: (toolCallId) => checkoutByCall.has(toolCallId),
-		release,
 	};
 }

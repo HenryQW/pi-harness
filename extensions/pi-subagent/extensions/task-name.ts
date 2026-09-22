@@ -1,4 +1,4 @@
-import { DISPLAY_TEXT_CONTRACT, hasDisplayControlCharacters } from "@henryqw/pi-subagent";
+import { DISPLAY_TEXT_CONTRACT } from "@henryqw/pi-subagent";
 import { Type, type Static } from "typebox";
 
 const TASK_NAME_MAX_LENGTH = 29 as const;
@@ -22,7 +22,6 @@ export const TaskNameSchema = Type.String({
 export type TaskName = Static<typeof TaskNameSchema>;
 
 export function normalizeTaskName(value: TaskName, path: string): TaskName {
-	if (hasDisplayControlCharacters(value)) throw new Error(`${path} must not contain C0/C1 control characters.`);
 	const normalized = value.trim();
 	if (!normalized) throw new Error(`${path} must be non-empty text.`);
 	return normalized;
