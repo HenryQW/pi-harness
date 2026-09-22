@@ -1,0 +1,31 @@
+{
+  "name": "@henryqw/pi-codegraph",
+  "version": "0.1.0",
+  "description": "Initialize CodeGraph indexes in opted-in Git worktrees and expose CodeGraph through pi-mcp-adapter.",
+  "keywords": ["pi-package", "pi", "codegraph", "mcp", "worktree"],
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "license": "MIT",
+  "files": ["LICENSE", "extensions", "mcp.json", "README.md"],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2024 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/codegraph.ts test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.87.0 <0.88.0",
+    "pi-mcp-adapter": ">=2.36.0 <3.0.0"
+  },
+  "devDependencies": { "@earendil-works/pi-coding-agent": "0.87.0" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenryQW/pi-harness.git",
+    "directory": "extensions/pi-codegraph"
+  },
+  "bugs": { "url": "https://github.com/HenryQW/pi-harness/issues" },
+  "publishConfig": { "access": "public" },
+  "pi": {
+    "extensions": ["./extensions/codegraph.ts"],
+    "mcp": "./mcp.json"
+  }
+}
