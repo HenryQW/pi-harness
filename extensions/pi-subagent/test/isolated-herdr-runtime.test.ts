@@ -115,7 +115,7 @@ class ScriptedProcess {
 type Paths = { directory: string; root: string; repoRoot: string; commonDirectory: string; worktree: string; leases: string };
 
 async function paths(t: test.TestContext): Promise<Paths> {
-	const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-orchestrator-herdr-")));
+	const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-herdr-")));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "main");
 	const repoRoot = join(directory, "repo");
@@ -1746,8 +1746,8 @@ test("normal prompt blocks a definitively settled no-op without polling", async 
 test("normal prompt accepts a changed clean candidate from real in-flight Git inspection", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
-	git(fixture.root, "config", "user.name", "Orchestrator Test");
-	git(fixture.root, "config", "user.email", "orchestrator@example.com");
+	git(fixture.root, "config", "user.name", "Subagent Test");
+	git(fixture.root, "config", "user.email", "subagent@example.com");
 	await writeFile(join(fixture.root, "base.txt"), "base\n");
 	git(fixture.root, "add", "base.txt");
 	git(fixture.root, "commit", "-qm", "base");
@@ -1784,8 +1784,8 @@ test("normal prompt accepts a changed clean candidate from real in-flight Git in
 test("delivered stall uses real in-flight Git evidence until unchanged and dirty states become changed-clean", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
-	git(fixture.root, "config", "user.name", "Orchestrator Test");
-	git(fixture.root, "config", "user.email", "orchestrator@example.com");
+	git(fixture.root, "config", "user.name", "Subagent Test");
+	git(fixture.root, "config", "user.email", "subagent@example.com");
 	await writeFile(join(fixture.root, "base.txt"), "base\n");
 	git(fixture.root, "add", "base.txt");
 	git(fixture.root, "commit", "-qm", "base");
@@ -2329,7 +2329,7 @@ test("lease cleanup preserves artifacts on schema-valid persisted identity drift
 				const token = "fedcba9876543210fedcba98";
 				const leasePath = join(paths.leases, token, `${"e".repeat(32)}.lease`);
 				intent.token = token;
-				intent.label = `pi-orchestrator-${token}-worker`;
+				intent.label = `pi-subagent-${token}-worker`;
 				intent.leasePath = leasePath;
 				return leasePath;
 			},

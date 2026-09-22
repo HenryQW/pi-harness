@@ -99,7 +99,6 @@ export interface ExecutionPolicySnapshot {
 	maxTokens?: number;
 	childIdleMs: number;
 	childMaxMs: number;
-	runMaxMs: number;
 	maxCorrections: number;
 }
 export type ResumeRequest = Static<typeof ResumeRequestSchema>;
@@ -373,7 +372,6 @@ const ExecutionPolicySnapshotSchema = Type.Object({
 	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
 	childIdleMs: Type.Number({ exclusiveMinimum: 0, maximum: 2_147_483_647 }),
 	childMaxMs: Type.Number({ exclusiveMinimum: 0, maximum: 2_147_483_647 }),
-	runMaxMs: Type.Number({ exclusiveMinimum: 0, maximum: 2_147_483_647 }),
 	maxCorrections: Type.Integer({ minimum: 0 }),
 }, { additionalProperties: false });
 
@@ -385,8 +383,6 @@ const RunStateSchema = Type.Object({
 	root: TextSchema,
 	requestStartMain: WorkspaceSchema,
 	main: WorkspaceSchema,
-	deadlineStartedAt: TimestampSchema,
-	deadline: TimestampSchema,
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"), Type.Literal("completed"),
 		Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
@@ -398,7 +394,6 @@ const RunStateSchema = Type.Object({
 		kind: Type.Literal("resume"),
 		action: Type.Union([Type.Literal("retry"), Type.Literal("verify"), Type.Literal("finalize")]),
 		taskId: Type.Optional(IdSchema),
-		deadline: TimestampSchema,
 	}, { additionalProperties: false })),
 	accepted: Type.Boolean(),
 	acceptedAt: Type.Optional(TimestampSchema),
@@ -759,11 +754,8 @@ export function parseRunState(value: unknown): RunState {
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
-	if (state.deadlineStartedAt > state.createdAt
-		|| state.createdAt > state.updatedAt
-		|| state.deadline !== state.deadlineStartedAt + state.policy.runMaxMs
-		|| state.correctionCount > state.policy.maxCorrections) {
-		throw new Error(`Malformed pi-subagent v${RUN_STATE_VERSION} deadline or correction policy.`);
+	if (state.createdAt > state.updatedAt || state.correctionCount > state.policy.maxCorrections) {
+		throw new Error(`Malformed pi-subagent v${RUN_STATE_VERSION} timestamps or correction policy.`);
 	}
 	const recordedCorrections = state.tasks.reduce((count, task) => count + (task.kind === "changeset"
 		? task.attempts.reduce((sum, attempt) => sum + attempt.prompts.filter((prompt) => prompt.kind === "correction").length, 0)
@@ -1059,7 +1051,6 @@ export function parseRunState(value: unknown): RunState {
 		validateCheckBatchEvidence(state.final.checks, request.finalChecks, "Final checks");
 	}
 	if (state.recovery) {
-		if (state.recovery.deadline <= state.updatedAt) throw new Error("Malformed expired recovery deadline.");
 		if (state.recovery.action === "finalize" ? state.recovery.taskId !== undefined : !state.recovery.taskId
 			|| !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
 			throw new Error("Malformed resume recovery target.");

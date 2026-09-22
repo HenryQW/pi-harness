@@ -326,12 +326,59 @@ export interface RunResponse {
 
 class DeadlineExpired extends Error {
 	constructor() {
-		super("The productive request deadline is exhausted.");
+		super("The safety operation deadline is exhausted.");
 		this.name = "DeadlineExpired";
 	}
 }
 
-class DeadlineScope {
+interface RuntimeScope {
+	readonly signal: AbortSignal;
+	call<T>(operation: (context: OperationContext) => Promise<T>): Promise<T>;
+	wait<T>(operation: (context: OperationContext) => Promise<T>): Promise<T>;
+}
+
+class ProductiveScope implements RuntimeScope {
+	readonly signal: AbortSignal;
+	private readonly timeoutMs: number;
+	private readonly now: () => number;
+
+	constructor(timeoutMs: number, now: () => number, outerSignal?: AbortSignal) {
+		this.timeoutMs = timeoutMs;
+		this.now = now;
+		this.signal = outerSignal ?? new AbortController().signal;
+	}
+
+	async call<T>(operation: (context: OperationContext) => Promise<T>): Promise<T> {
+		this.signal.throwIfAborted();
+		const startedAt = this.now();
+		const deadline = startedAt + this.timeoutMs;
+		const controller = new AbortController();
+		const signal = AbortSignal.any([this.signal, controller.signal]);
+		const timer = setTimeout(() => controller.abort(new DeadlineExpired()), this.timeoutMs);
+		timer.unref();
+		try {
+			const result = await operation({ signal, timeoutMs: this.timeoutMs, deadline });
+			if (this.now() >= deadline) throw new DeadlineExpired();
+			signal.throwIfAborted();
+			return result;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	async wait<T>(operation: (context: OperationContext) => Promise<T>): Promise<T> {
+		this.signal.throwIfAborted();
+		const result = await operation({
+			signal: this.signal,
+			timeoutMs: this.timeoutMs,
+			deadline: this.now() + this.timeoutMs,
+		});
+		this.signal.throwIfAborted();
+		return result;
+	}
+}
+
+class DeadlineScope implements RuntimeScope {
 	readonly deadline: number;
 	readonly signal: AbortSignal;
 	private readonly now: () => number;
@@ -352,6 +399,10 @@ class DeadlineScope {
 		const result = await operation({ signal: this.signal, timeoutMs: this.remaining(), deadline: this.deadline });
 		this.throwIfExpired();
 		return result;
+	}
+
+	async wait<T>(operation: (context: OperationContext) => Promise<T>): Promise<T> {
+		return await this.call(operation);
 	}
 
 	close(): void {
@@ -813,7 +864,7 @@ export function readyPendingTasks(state: RunState): TaskState[] {
 	return state.tasks.filter((task) => task.status === "pending" && taskDependenciesCompleted(state, task.taskId));
 }
 
-function isDeadline(error: unknown, scope: DeadlineScope): boolean {
+function isDeadline(error: unknown, scope: RuntimeScope): boolean {
 	return error instanceof DeadlineExpired || scope.signal.reason instanceof DeadlineExpired;
 }
 
@@ -823,7 +874,6 @@ export class IsolatedRunner {
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
 	private readonly textExecutor: EphemeralSubagentExecutor;
-	private readonly policy: ExecutionPolicySnapshot;
 	private readonly currentPolicy: () => ExecutionPolicySnapshot;
 	private readonly onInteractiveWait?: (requestId: string, taskId: string) => void;
 	private readonly interactiveControls = new Map<string, { task: ChangesetTaskState; control: InteractiveTaskControl }>();
@@ -837,7 +887,7 @@ export class IsolatedRunner {
 		onInteractiveWait?: (requestId: string, taskId: string) => void,
 		policy: ExecutionPolicySnapshot = {
 			maxSubagents: 5, maxTurns: 50, childIdleMs: 600_000, childMaxMs: 1_800_000,
-			runMaxMs: 1_800_000, maxCorrections: 1,
+			maxCorrections: 1,
 		},
 		currentPolicy: () => ExecutionPolicySnapshot = () => policy,
 	) {
@@ -847,7 +897,6 @@ export class IsolatedRunner {
 		this.store = store;
 		this.textExecutor = textExecutor;
 		this.onInteractiveWait = onInteractiveWait;
-		this.policy = Object.freeze({ ...policy });
 		this.currentPolicy = currentPolicy;
 	}
 
@@ -885,58 +934,51 @@ export class IsolatedRunner {
 	}
 
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
-		const startedAt = this.coordinatorRuntime.now();
 		const request = parseExecuteRequest(value);
-		const deadline = startedAt + this.policy.runMaxMs;
-		const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
-		try {
-			const canonicalCwd = realpathSync.native(cwd);
-			const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd }, context));
-			const root = realpathSync.native(prepared.root);
-			if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
-			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
-			if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
-			if (this.hasAnyActiveControl(root)) {
-				throw new Error("Another Pi Subagent request is awaiting interactive input in this repository.");
-			}
-			return await this.withProductiveRun(root, async (lifecycle) => {
-				const createdAt = this.coordinatorRuntime.now();
-				const state: RunState = {
-					version: RUN_STATE_VERSION,
-					request,
-					policy: this.policy,
-					correctionCount: 0,
-					root,
-					requestStartMain: preparedMain,
-					main: preparedMain,
-					deadlineStartedAt: startedAt,
-					deadline,
-					status: "pending",
-					tasks: request.tasks.map((task): TaskState => task.kind === "changeset"
-						? {
-							taskId: task.id,
-							kind: "changeset",
-							status: "pending",
-							attempts: [],
-						}
-						: {
-							taskId: task.id,
-							kind: "text",
-							status: "pending",
-							attempts: [],
-						}),
-					waves: [],
-					final: { status: "pending" },
-					accepted: false,
-					createdAt,
-					updatedAt: createdAt,
-				};
-				const handle = await this.store.create(state);
-				return await this.run(handle, scope, undefined, lifecycle);
-			});
-		} finally {
-			scope.close();
+		const policy = Object.freeze({ ...this.currentPolicy() });
+		const scope = new ProductiveScope(policy.childMaxMs, () => this.coordinatorRuntime.now(), outerSignal);
+		const canonicalCwd = realpathSync.native(cwd);
+		const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd }, context));
+		const root = realpathSync.native(prepared.root);
+		if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
+		const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
+		if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
+		if (this.hasAnyActiveControl(root)) {
+			throw new Error("Another Pi Subagent request is awaiting interactive input in this repository.");
 		}
+		return await this.withProductiveRun(root, async (lifecycle) => {
+			const createdAt = this.coordinatorRuntime.now();
+			const state: RunState = {
+				version: RUN_STATE_VERSION,
+				request,
+				policy,
+				correctionCount: 0,
+				root,
+				requestStartMain: preparedMain,
+				main: preparedMain,
+				status: "pending",
+				tasks: request.tasks.map((task): TaskState => task.kind === "changeset"
+					? {
+						taskId: task.id,
+						kind: "changeset",
+						status: "pending",
+						attempts: [],
+					}
+					: {
+						taskId: task.id,
+						kind: "text",
+						status: "pending",
+						attempts: [],
+					}),
+				waves: [],
+				final: { status: "pending" },
+				accepted: false,
+				createdAt,
+				updatedAt: createdAt,
+			};
+			const handle = await this.store.create(state);
+			return await this.run(handle, scope, undefined, lifecycle);
+		});
 	}
 
 	async resume(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -954,27 +996,21 @@ export class IsolatedRunner {
 			if (this.recoverInterrupted(state)) await handle.save();
 			if (terminal(state)) throw new Error(`Pi Subagent request ${request.id} is terminal (${state.status}); create a new request.`);
 			const current = this.currentPolicy();
-			const recoveryDeadline = Math.min(state.deadline, state.deadlineStartedAt + current.runMaxMs);
 			const cleanupTask = "taskId" in request ? taskState(state, request.taskId) : undefined;
 			const cleanupAttempt = cleanupTask?.kind === "changeset" ? cleanupTask.attempts.at(-1) : undefined;
 			const cleanupOnly = request.action === "verify" && cleanupTask?.kind === "changeset"
 				&& cleanupAttempt?.integration?.status === "integrated";
-			if (!cleanupOnly && this.coordinatorRuntime.now() >= recoveryDeadline) {
-				throw new Error(`Pi Subagent request ${request.id} exhausted its original productive deadline; retained work may be inspected with status or torn down with abort.`);
-			}
-			const operationDeadline = cleanupOnly
-				? this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS
-				: recoveryDeadline;
 			state.recovery = {
 				kind: "resume",
 				action: request.action,
 				...("taskId" in request ? { taskId: request.taskId } : {}),
-				deadline: operationDeadline,
 			};
 			state.updatedAt = this.coordinatorRuntime.now();
 			await handle.save();
 
-			const scope = new DeadlineScope(operationDeadline, () => this.coordinatorRuntime.now(), outerSignal);
+			const scope: RuntimeScope = cleanupOnly
+				? new DeadlineScope(this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS, () => this.coordinatorRuntime.now(), outerSignal)
+				: new ProductiveScope(Math.min(state.policy.childMaxMs, current.childMaxMs), () => this.coordinatorRuntime.now(), outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);
@@ -1002,7 +1038,7 @@ export class IsolatedRunner {
 				if (request.action === "retry") return await this.retry(handle, task, scope, lifecycle);
 				return await this.verifyRetainedTask(handle, task, scope, lifecycle);
 			} finally {
-				scope.close();
+				if (scope instanceof DeadlineScope) scope.close();
 				this.closeRequestControls(root, request.id);
 				state.recovery = undefined;
 				state.updatedAt = this.coordinatorRuntime.now();
@@ -1073,7 +1109,7 @@ export class IsolatedRunner {
 
 	private async run(
 		handle: RunStateHandle,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		forceTextTaskId: string | undefined,
 		lifecycle: LifecycleLock,
 	): Promise<RunResponse> {
@@ -1095,7 +1131,7 @@ export class IsolatedRunner {
 					actualMain = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 				} catch (error) {
 					const failure = isDeadline(error, scope)
-						? "The productive request deadline expired before dependency-wave dispatch."
+						? "The operation safety deadline expired before dependency-wave dispatch."
 						: `Main inspection failed before dependency-wave dispatch: ${errorText(error)}`;
 					for (const task of ready) this.attention(task, failure);
 					state.status = "needs_attention";
@@ -1138,7 +1174,7 @@ export class IsolatedRunner {
 						await this.dispatchTask(handle, task, scope);
 					} catch (error) {
 						const failure = isDeadline(error, scope)
-							? "The productive request deadline expired during task dispatch."
+							? "The operation safety deadline expired during task dispatch."
 							: `Task dispatch was interrupted: ${errorText(error)}`;
 						this.attention(task, bounded(failure));
 					}
@@ -1180,11 +1216,11 @@ export class IsolatedRunner {
 		} catch (error) {
 			const activeTasks = state.tasks.filter((task) => !["pending", "completed", "needs_attention"].includes(task.status));
 			if (activeTasks.length) {
-				const failure = isDeadline(error, scope) ? "The productive request deadline expired." : `Execution was interrupted: ${errorText(error)}`;
+				const failure = isDeadline(error, scope) ? "The operation safety deadline expired." : `Execution was interrupted: ${errorText(error)}`;
 				for (const active of activeTasks) this.attention(active, failure);
 			} else if (state.final.status === "running") {
 				state.final.status = "interrupted";
-				state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired." : `Final gate was interrupted: ${errorText(error)}`);
+				state.final.failure = bounded(isDeadline(error, scope) ? "The operation safety deadline expired." : `Final gate was interrupted: ${errorText(error)}`);
 			}
 			state.status = "needs_attention";
 			state.accepted = false;
@@ -1198,7 +1234,7 @@ export class IsolatedRunner {
 		}
 	}
 
-	private async dispatchTask(handle: RunStateHandle, task: TaskState, scope: DeadlineScope): Promise<void> {
+	private async dispatchTask(handle: RunStateHandle, task: TaskState, scope: RuntimeScope): Promise<void> {
 		if (task.kind === "text") return await this.dispatchTextTask(handle, task, scope);
 		const state = handle.state;
 		const request = changesetTaskRequest(state, task.taskId);
@@ -1310,7 +1346,7 @@ export class IsolatedRunner {
 			await handle.save();
 			await this.driveWorkerSafely(handle, task, scope, "initial");
 		} catch (error) {
-			this.attention(task, isDeadline(error, scope) ? "The productive request deadline expired during allocation." : `Task allocation was interrupted: ${errorText(error)}`);
+			this.attention(task, isDeadline(error, scope) ? "The operation safety deadline expired during allocation." : `Task allocation was interrupted: ${errorText(error)}`);
 			await handle.save();
 		}
 	}
@@ -1318,7 +1354,7 @@ export class IsolatedRunner {
 	private async dispatchTextTask(
 		handle: RunStateHandle,
 		task: TextTaskState,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 	): Promise<void> {
 		const state = handle.state;
 		const request = taskRequest(state, task.taskId);
@@ -1326,13 +1362,14 @@ export class IsolatedRunner {
 		const attempt = task.attempts.at(-1);
 		if (!attempt || attempt.status !== "running") throw new Error(`Text task ${task.taskId} has no running attempt.`);
 		const prompt = buildTextTaskPrompt(state.request.goal, request, resolveTextTaskContexts(state, request));
-		const { result, cleanup } = await scope.call(async (context) => {
+		const result = await scope.call(async (context) => {
 			const isolated = await createChildWorktree(
 				state.root,
 				`${state.request.id}-${task.taskId}-text-${attempt.number}`,
 				undefined,
 				context.signal,
 			);
+			if (!isolated) throw new Error("Explicit isolated text work requires a Git checkout with a committed HEAD; it never falls back to Main.");
 			let result;
 			try {
 				const launchHandle = await this.coordinatorRuntime.acquireLaunch(request.role, request.modelClass, context);
@@ -1354,9 +1391,8 @@ export class IsolatedRunner {
 					throw new Error(`Isolated text task changed its checkout; work was retained at ${cleanup.path} on ${cleanup.branch}.`);
 				}
 			}
-			return { result: result!, cleanup: true };
+			return result!;
 		});
-		void cleanup;
 		if (result.outcome !== "success" || result.exitCode !== 0) {
 			throw new Error("Text task executor did not complete successfully.");
 		}
@@ -1384,7 +1420,7 @@ export class IsolatedRunner {
 	private async driveWorkerSafely(
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		initialKind: "initial" | "correction" | "followup",
 		initialInstruction?: string,
 	): Promise<void> {
@@ -1393,7 +1429,7 @@ export class IsolatedRunner {
 			await this.driveWorker(handle, task, scope, initialKind, control, initialInstruction);
 		} catch (error) {
 			this.attention(task, isDeadline(error, scope)
-				? "The productive request deadline expired during worker execution."
+				? "The child operation safety deadline expired during worker execution."
 				: `Worker execution was interrupted: ${errorText(error)}`);
 			await handle.save();
 		} finally {
@@ -1406,7 +1442,7 @@ export class IsolatedRunner {
 	private async driveWorker(
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		initialKind: "initial" | "correction" | "followup",
 		control: InteractiveTaskControl,
 		initialInstruction?: string,
@@ -1592,7 +1628,7 @@ export class IsolatedRunner {
 	private async settleInteractiveTasks(
 		handle: RunStateHandle,
 		tasks: readonly TaskState[],
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		lifecycle: LifecycleLock,
 	): Promise<RunState | undefined> {
 		type Selection = {
@@ -1621,7 +1657,7 @@ export class IsolatedRunner {
 						if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
 						if (active.control.takeNotification()) this.onInteractiveWait?.(handle.state.request.id, task.taskId);
 					}
-					return await scope.call(async (context): Promise<WaitResult> => {
+					return await scope.wait(async (context): Promise<WaitResult> => {
 						const settled = new AbortController();
 						const signal = AbortSignal.any([context.signal, settled.signal]);
 						try {
@@ -1750,7 +1786,7 @@ export class IsolatedRunner {
 		checks: CheckCommand[],
 		candidate: WorkspaceIdentity,
 		phase: CheckBatchEvidence["phase"],
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		taskId?: string,
 	): Promise<CheckBatchEvidence> {
 		const attempt = taskId ? latestAttempt(changesetTaskState(handle.state, taskId)) : undefined;
@@ -1801,7 +1837,7 @@ export class IsolatedRunner {
 		role: string,
 		modelClass: ModelClass,
 		phase: ReviewEvidence["phase"],
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		taskId?: string,
 	): Promise<ReviewEvidence> {
 		const attempt = taskId ? latestAttempt(changesetTaskState(handle.state, taskId)) : undefined;
@@ -1838,7 +1874,7 @@ export class IsolatedRunner {
 		return evidence;
 	}
 
-	private async integrateTask(handle: RunStateHandle, task: ChangesetTaskState, scope: DeadlineScope): Promise<boolean> {
+	private async integrateTask(handle: RunStateHandle, task: ChangesetTaskState, scope: RuntimeScope): Promise<boolean> {
 		const state = handle.state;
 		const request = changesetTaskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
@@ -2024,7 +2060,7 @@ export class IsolatedRunner {
 			return await this.finalizeIntegratedTask(handle, task, attempt, scope);
 		} catch (error) {
 			this.attention(task, isDeadline(error, scope)
-				? "The productive request deadline expired before integration completed."
+				? "The operation safety deadline expired before integration completed."
 				: `Integration was interrupted: ${errorText(error)}`);
 			return false;
 		} finally {
@@ -2036,7 +2072,7 @@ export class IsolatedRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		attempt: TaskAttempt,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		failure: string,
 	): Promise<boolean> {
 		this.prepareCorrectionAfterAuthoritativeFailure(attempt);
@@ -2046,7 +2082,7 @@ export class IsolatedRunner {
 		if (handle.state.request.approval !== "scoped" || !this.correctionAllowed(handle.state, request, attempt)) return false;
 		task.status = "working";
 		await this.driveWorkerSafely(handle, task, scope, "correction");
-		if (task.status !== "awaiting_acceptance") return false;
+		if ((task as ChangesetTaskState).status !== "awaiting_acceptance") return false;
 		await this.recordScopedAcceptance(handle, task);
 		return await this.integrateTask(handle, task, scope);
 	}
@@ -2069,7 +2105,7 @@ export class IsolatedRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		attempt: TaskAttempt,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 	): Promise<boolean> {
 		const transition = attempt.acceptance
 			? latestTransitionAfter(attempt, attempt.acceptance!.at)
@@ -2114,7 +2150,7 @@ export class IsolatedRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		attempt: TaskAttempt,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 	): Promise<boolean> {
 		const candidate = attempt.integrationCandidate;
 		const integration = attempt.integration;
@@ -2164,7 +2200,7 @@ export class IsolatedRunner {
 				}
 			}
 			if (attempt.termination?.status !== "terminated"
-				&& !await this.terminateWithSafety(handle, task, attempt, candidate, scope.signal, scope.deadline)) return false;
+				&& !await this.terminateWithSafety(handle, task, attempt, candidate, scope.signal)) return false;
 		}
 		task.status = "cleanup";
 		await handle.save();
@@ -2175,7 +2211,7 @@ export class IsolatedRunner {
 		return true;
 	}
 
-	private async runCleanup(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt, scope: DeadlineScope): Promise<boolean> {
+	private async runCleanup(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt, scope: RuntimeScope): Promise<boolean> {
 		if (attempt.termination?.status !== "terminated") {
 			this.attention(task, "Cleanup is blocked until exact worker termination is durably recorded.");
 			return false;
@@ -2224,7 +2260,7 @@ export class IsolatedRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		attempt: TaskAttempt,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 	): Promise<RunResponse> {
 		handle.state.status = "running";
 		if (await this.finalizeIntegratedTask(handle, task, attempt, scope)) {
@@ -2244,7 +2280,7 @@ export class IsolatedRunner {
 	private async verifyRetainedTask(
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		lifecycle: LifecycleLock,
 	): Promise<RunResponse> {
 		const attempt = latestAttempt(task);
@@ -2293,7 +2329,7 @@ export class IsolatedRunner {
 	private async retry(
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
-		scope: DeadlineScope,
+		scope: RuntimeScope,
 		lifecycle: LifecycleLock,
 	): Promise<RunResponse> {
 		const attempt = task.attempts.at(-1);
@@ -2372,7 +2408,7 @@ export class IsolatedRunner {
 		return await this.run(handle, scope, undefined, lifecycle);
 	}
 
-	private async finalize(handle: RunStateHandle, scope: DeadlineScope): Promise<RunResponse> {
+	private async finalize(handle: RunStateHandle, scope: RuntimeScope): Promise<RunResponse> {
 		const state = handle.state;
 		if (state.tasks.some((task) => task.status !== "completed")) throw new Error("Finalization requires every task to be completed.");
 		if (state.final.status !== "pending" && state.final.status !== "interrupted") {
@@ -2388,7 +2424,7 @@ export class IsolatedRunner {
 		return await this.runFinal(handle, scope);
 	}
 
-	private async runFinal(handle: RunStateHandle, scope: DeadlineScope): Promise<RunResponse> {
+	private async runFinal(handle: RunStateHandle, scope: RuntimeScope): Promise<RunResponse> {
 		const state = handle.state;
 		state.status = "running";
 		state.final.status = "running";
@@ -2406,14 +2442,15 @@ export class IsolatedRunner {
 			}
 			state.final.identity = identity;
 			await handle.save();
-			const checks = await this.runCheckBatch(handle, state.request.finalChecks, identity, "final", scope);
+			const finalChecks = state.request.finalChecks ?? [];
+			const checks = await this.runCheckBatch(handle, finalChecks, identity, "final", scope);
 			state.final.checks = checks;
 			await handle.save();
 			if (!sameIdentity(checks.identityAfter, identity)) {
 				await this.markSuperseded(handle, "Final checks changed Main.");
 				return this.response(state);
 			}
-			if (!checkBatchPasses(checks, state.request.finalChecks, identity)) {
+			if (!checkBatchPasses(checks, finalChecks, identity)) {
 				await this.markFinalFailed(handle, "A definitive final check failed.");
 				return this.response(state);
 			}
@@ -2464,7 +2501,7 @@ export class IsolatedRunner {
 			return this.response(state);
 		} catch (error) {
 			state.final.status = "interrupted";
-			state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired during the final gate." : `Final gate was interrupted without a definitive result: ${errorText(error)}`);
+			state.final.failure = bounded(isDeadline(error, scope) ? "The operation safety deadline expired during the final gate." : `Final gate was interrupted without a definitive result: ${errorText(error)}`);
 			state.status = "needs_attention";
 			state.accepted = false;
 			await handle.save();

@@ -12,7 +12,6 @@ export interface SubagentConfig {
 	maxSubagents?: number;
 	maxTurns?: number;
 	maxTokens?: number;
-	runMaxMinutes?: number;
 	maxCorrections?: number;
 	timeout?: SubagentTimeoutConfig;
 }
@@ -30,7 +29,6 @@ export interface EffectiveExecutionPolicy {
 	maxTokens?: number;
 	childIdleMs: number;
 	childMaxMs: number;
-	runMaxMs: number;
 	maxCorrections: number;
 }
 
@@ -44,11 +42,10 @@ export const DEFAULT_TIMEOUT_CONFIG = { idleMinutes: 10, maxMinutes: 30 } as con
 export const DEFAULT_EXECUTION_POLICY = {
 	maxSubagents: 5,
 	maxTurns: 50,
-	runMaxMinutes: 30,
 	maxCorrections: 1,
 } as const;
 const INTEGER_FIELDS = ["maxSubagents", "maxTurns", "maxTokens"] as const;
-const POLICY_FIELDS = ["runMaxMinutes", "maxCorrections"] as const;
+const POLICY_FIELDS = ["maxCorrections"] as const;
 const TIMEOUT_FIELDS = ["idleMinutes", "maxMinutes"] as const;
 
 export const configPath = (agentDir = getAgentDir()): string =>
@@ -71,11 +68,6 @@ function parseSubagentConfig(parsed: unknown, path: string): ParsedSubagentConfi
 		if (value === undefined) continue;
 		if (typeof value === "number" && Number.isSafeInteger(value) && value >= 1) config[key] = value;
 		else problems.push(`${key} must be a safe integer >= 1, got ${JSON.stringify(value)}`);
-	}
-	if (record.runMaxMinutes !== undefined) {
-		if (!positive(record.runMaxMinutes) || record.runMaxMinutes * 60_000 > MAX_TIMER_DELAY_MS) {
-			problems.push(`runMaxMinutes must be a positive number within ${MAX_TIMER_DELAY_MS} ms, got ${JSON.stringify(record.runMaxMinutes)}`);
-		} else config.runMaxMinutes = record.runMaxMinutes;
 	}
 	if (record.maxCorrections !== undefined) {
 		if (!Number.isSafeInteger(record.maxCorrections) || (record.maxCorrections as number) < 0) {
@@ -125,7 +117,6 @@ export function resolveExecutionPolicy(loaded: LoadedSubagentConfig): EffectiveE
 		...(loaded.config.maxTokens === undefined ? {} : { maxTokens: loaded.config.maxTokens }),
 		childIdleMs: (timeout?.idleMinutes ?? DEFAULT_TIMEOUT_CONFIG.idleMinutes) * 60_000,
 		childMaxMs: (timeout?.maxMinutes ?? DEFAULT_TIMEOUT_CONFIG.maxMinutes) * 60_000,
-		runMaxMs: (loaded.config.runMaxMinutes ?? DEFAULT_EXECUTION_POLICY.runMaxMinutes) * 60_000,
 		maxCorrections: loaded.config.maxCorrections ?? DEFAULT_EXECUTION_POLICY.maxCorrections,
 	});
 }

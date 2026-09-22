@@ -41,7 +41,7 @@ function operationContext(timeoutMs = 20_000): OperationContext {
 const directProcess: DirectProcessRunner = runProcess;
 
 async function repository(t: test.TestContext): Promise<string> {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-composition-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-composition-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: directory });
 	return await realpath(directory);
@@ -105,7 +105,7 @@ test("canonical Git root resolver accepts nested cwd and propagates the shared d
 test("canonical Git root resolver rejects malformed, non-canonical, and unrelated output", async (t) => {
 	const root = await repository(t);
 	const nested = join(root, "nested");
-	const unrelated = await realpath(await mkdtemp(join(tmpdir(), "pi-orchestrator-unrelated-")));
+	const unrelated = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-unrelated-")));
 	t.after(async () => await rm(unrelated, { recursive: true, force: true }));
 	await mkdir(nested);
 	const canonicalNested = await realpath(nested);

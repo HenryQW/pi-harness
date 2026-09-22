@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="orchestration-architecture-title orchestration-architecture-desc">
-      <title id="orchestration-architecture-title">Pi Orchestrator checked execution architecture</title>
+      <title id="orchestration-architecture-title">Pi Subagent checked execution architecture</title>
       <desc id="orchestration-architecture-desc">Architecture diagram showing Pi Main resolving each task-selected Role just in time, returning bounded text to durable state, and sending changesets through isolated Herdr work, direct checks, optional judgment, and guarded Main integration.</desc>
       <defs>
         <style>
@@ -128,7 +128,7 @@
       <rect class="node-focal" x="280" y="160" width="280" height="112" rx="6"/>
       <rect class="tag-focal" x="292" y="172" width="40" height="16" rx="2"/>
       <text class="tag-text-focal" x="312" y="184">MAIN</text>
-      <text class="name" x="420" y="212">Pi Orchestrator</text>
+      <text class="name" x="420" y="212">Pi Subagent</text>
       <text class="sub" x="420" y="236">PREFLIGHTS ROLE + MODEL PAIRS</text>
       <text class="sub" x="420" y="252">RESOLVES AGAIN AT LAUNCH</text>
 
@@ -136,7 +136,7 @@
       <rect class="tag" x="292" y="412" width="48" height="16" rx="2"/>
       <text class="tag-text" x="316" y="424">AUDIT</text>
       <text class="name" x="420" y="452">Durable request state</text>
-      <text class="sub" x="420" y="476">CONFIG/PI-ORCHESTRATOR/STATE</text>
+      <text class="sub" x="420" y="476">CONFIG/PI-SUBAGENT/STATE</text>
       <text class="sub" x="420" y="492">STRICT SCHEMA · RECOVERY EVIDENCE</text>
 
       <!-- Task-selected Role and execution channels -->

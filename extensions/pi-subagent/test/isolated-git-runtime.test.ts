@@ -55,11 +55,11 @@ function task(id: string, judgment = false): ChangesetTaskRequest {
 }
 
 async function repository(t: test.TestContext): Promise<string> {
-	const root = await mkdtemp(join(tmpdir(), "pi-orchestrator-git-"));
+	const root = await mkdtemp(join(tmpdir(), "pi-subagent-git-"));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
 	git(root, "init", "-q", "-b", "main");
-	git(root, "config", "user.name", "Orchestrator Test");
-	git(root, "config", "user.email", "orchestrator@example.com");
+	git(root, "config", "user.name", "Subagent Test");
+	git(root, "config", "user.email", "subagent@example.com");
 	await writeFile(join(root, "base.txt"), "base\n");
 	git(root, "add", "base.txt");
 	git(root, "commit", "-qm", "base");
@@ -1007,7 +1007,7 @@ test("fast-forward failure preserves Main and exact retained work", async (t) =>
 	assert.equal(git(allocated.intent.worktree!.cwd, "rev-parse", "HEAD"), candidate.head);
 	const mergeCommand = commands.find((command) => command.includes("merge"));
 	assert.equal(mergeCommand?.[1], "-c");
-	assert.match(mergeCommand?.[2] ?? "", /^core\.hooksPath=.*pi-orchestrator-ref-guard-/);
+	assert.match(mergeCommand?.[2] ?? "", /^core\.hooksPath=.*pi-subagent-ref-guard-/);
 	assert.deepEqual(mergeCommand?.slice(mergeCommand.indexOf("merge")), [
 		"merge", "--no-overwrite-ignore", "--no-autostash", "--ff-only", candidate.head,
 	]);

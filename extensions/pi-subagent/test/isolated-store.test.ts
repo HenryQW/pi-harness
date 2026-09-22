@@ -27,7 +27,8 @@ function request(): ExecuteRequest {
 	return parseExecuteRequest({
 		id: "request-one",
 		goal: "Persist the text task.",
-		budgetMs: 1_000,
+		mode: "isolated",
+		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -47,11 +48,17 @@ function state(root: string): RunState {
 	return {
 		version: RUN_STATE_VERSION,
 		request: request(),
+		policy: {
+			maxSubagents: 5,
+			maxTurns: 50,
+			childIdleMs: 600_000,
+			childMaxMs: 1_800_000,
+			maxCorrections: 1,
+		},
+		correctionCount: 0,
 		root,
 		requestStartMain: main,
 		main,
-		deadlineStartedAt: 1,
-		deadline: 1_001,
 		status: "pending",
 		tasks: [{
 			taskId: "research",
@@ -67,8 +74,8 @@ function state(root: string): RunState {
 	};
 }
 
-test("the store persists v3 text state, rejects duplicate creates, and preserves unsupported older files", async () => {
-	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
+test("the store persists v4 text state, rejects duplicate creates, and preserves unsupported older files", async () => {
+	const sandbox = await mkdtemp(join(tmpdir(), "pi-subagent-store-"));
 	const plannedRoot = join(sandbox, "repo");
 	const agentDir = join(sandbox, "agent");
 	await mkdir(plannedRoot);
@@ -91,11 +98,11 @@ test("the store persists v3 text state, rejects duplicate creates, and preserves
 		const loaded = await store.load(root, created.request.id);
 		assert.deepEqual(loaded.state, { ...created, updatedAt: 2 });
 
-		for (const version of [1, 2]) {
+		for (const version of [1, 2, 3]) {
 			const legacyPath = store.statePath(root, `legacy-v${version}`);
 			const legacy = JSON.stringify({ ...created, version, launchRecords: {} });
 			await writeFile(legacyPath, legacy);
-			await assert.rejects(store.load(root, `legacy-v${version}`), new RegExp(`Unsupported pi-orchestrator state version ${version}; expected 3`));
+			await assert.rejects(store.load(root, `legacy-v${version}`), new RegExp(`Unsupported pi-subagent state version ${version}; expected 4`));
 			assert.equal(await readFile(legacyPath, "utf8"), legacy);
 		}
 	} finally {
@@ -104,7 +111,7 @@ test("the store persists v3 text state, rejects duplicate creates, and preserves
 });
 
 test("the lifecycle lock rejects unowned productive work while admitting owned, status, and abort operations", async () => {
-	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
+	const sandbox = await mkdtemp(join(tmpdir(), "pi-subagent-store-"));
 	const plannedRoot = join(sandbox, "repo");
 	const agentDir = join(sandbox, "agent");
 	await mkdir(plannedRoot);
@@ -140,7 +147,7 @@ test("the lifecycle lock rejects unowned productive work while admitting owned, 
 });
 
 test("invalid and oversized state files are rejected without replacement", async () => {
-	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
+	const sandbox = await mkdtemp(join(tmpdir(), "pi-subagent-store-"));
 	const plannedRoot = join(sandbox, "repo");
 	const agentDir = join(sandbox, "agent");
 	await mkdir(plannedRoot);
@@ -153,14 +160,14 @@ test("invalid and oversized state files are rejected without replacement", async
 		const malformedPath = store.statePath(root, "malformed");
 		const malformed = "{}\n";
 		await writeFile(malformedPath, malformed);
-		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v3 state/);
+		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-subagent v4 state/);
 		assert.equal(await readFile(malformedPath, "utf8"), malformed);
 
 		const oversizedPath = store.statePath(root, "oversized");
 		await writeFile(oversizedPath, "");
 		await truncate(oversizedPath, STATE_MAX_BYTES + 1);
 		await assert.rejects(store.load(root, "oversized"), {
-			message: `pi-orchestrator state exceeds ${STATE_MAX_BYTES} bytes.`,
+			message: `pi-subagent state exceeds ${STATE_MAX_BYTES} bytes.`,
 		});
 		assert.equal((await stat(oversizedPath)).size, STATE_MAX_BYTES + 1);
 		assert.match(await readFile(handle.path, "utf8"), /request-one/);

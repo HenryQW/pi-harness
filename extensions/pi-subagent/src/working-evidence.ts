@@ -12,11 +12,14 @@ const GIT_TIMEOUT_MS = 30_000;
 const OUTPUT_LIMIT = REVIEW_MAX_PATCH_BYTES + 1;
 const MANIFEST_MAX_BYTES = 512 * 1024;
 
-export interface WorkingSnapshotIdentity {
+export interface WorkingCheckoutState {
 	head: string;
 	indexHash: string;
-	tree: string;
 	rawManifestHash: string;
+}
+
+export interface WorkingSnapshotIdentity extends WorkingCheckoutState {
+	tree: string;
 }
 
 export interface WorkingCheckoutBaseline extends WorkingSnapshotIdentity {
@@ -208,19 +211,34 @@ async function capture(worktree: string, directory: string, signal?: AbortSignal
 	};
 }
 
-export async function captureWorkingCheckoutBaseline(worktree: string, signal?: AbortSignal): Promise<WorkingCheckoutBaseline> {
-	const canonical = await realpath(worktree);
-	const root = await realpath(line(await git(["rev-parse", "--show-toplevel"], canonical, undefined, signal), "checkout root"));
-	if (root !== canonical) throw new Error("Checked direct changesets require the attached Git worktree root as cwd.");
-	const branch = await command(["symbolic-ref", "-q", "HEAD"], canonical, process.env, signal, 64 * 1024);
+async function canonicalRoot(cwd: string, signal?: AbortSignal): Promise<string> {
+	const canonical = await realpath(cwd);
+	return await realpath(line(await git(["rev-parse", "--show-toplevel"], canonical, undefined, signal), "checkout root"));
+}
+
+/** Capture mutation-detection identity without requiring a clean checkout or constructing Git objects. */
+export async function captureWorkingCheckoutState(cwd: string, signal?: AbortSignal): Promise<WorkingCheckoutState> {
+	const worktree = await canonicalRoot(cwd, signal);
+	const before = await actualIdentity(worktree, signal);
+	const manifest = await rawManifest(worktree, signal);
+	const after = await actualIdentity(worktree, signal);
+	if (before.head !== after.head || before.indexHash !== after.indexHash) {
+		throw new Error("Working checkout changed while direct state was being captured.");
+	}
+	return { ...before, rawManifestHash: manifest.digest };
+}
+
+export async function captureWorkingCheckoutBaseline(cwd: string, signal?: AbortSignal): Promise<WorkingCheckoutBaseline> {
+	const worktree = await canonicalRoot(cwd, signal);
+	const branch = await command(["symbolic-ref", "-q", "HEAD"], worktree, process.env, signal, 64 * 1024);
 	if (branch.code !== 0) throw new Error("Checked direct changesets require an attached branch.");
-	if ((await git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], canonical, undefined, signal)).length) {
+	if ((await git(["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"], worktree, undefined, signal)).length) {
 		throw new Error("Checked direct changesets require a clean initial checkout; settle existing work or choose authorized isolated mode. No files were stashed, reset, or deleted.");
 	}
 	const owned = await makeDirectory();
 	try {
-		const captured = await capture(canonical, owned.directory, signal);
-		return { worktree: canonical, ...captured.identity };
+		const captured = await capture(worktree, owned.directory, signal);
+		return { worktree, ...captured.identity };
 	} finally {
 		await owned.cleanup();
 	}
@@ -258,6 +276,10 @@ export async function prepareWorkingChangeEvidence(
 	}
 }
 
+export function sameWorkingCheckoutState(left: WorkingCheckoutState, right: WorkingCheckoutState): boolean {
+	return left.head === right.head && left.indexHash === right.indexHash && left.rawManifestHash === right.rawManifestHash;
+}
+
 export function sameWorkingSnapshot(left: WorkingSnapshotIdentity, right: WorkingSnapshotIdentity): boolean {
-	return left.head === right.head && left.indexHash === right.indexHash && left.tree === right.tree && left.rawManifestHash === right.rawManifestHash;
+	return sameWorkingCheckoutState(left, right) && left.tree === right.tree;
 }

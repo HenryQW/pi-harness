@@ -66,6 +66,11 @@ export const createIsolatedComponents: CreateIsolatedComponents = ({
 		resolveRoot,
 		preflightHost: async ({ root }, operation) => await host.preflightHost({ root }, operation),
 		inspectMain: async (input, operation) => await git.inspectMain(input, operation),
+		executionBudget: () => ({
+			maxTurns: policy.maxTurns,
+			maxMs: policy.childMaxMs,
+			...(policy.maxTokens === undefined ? {} : { maxTokens: policy.maxTokens }),
+		}),
 	});
 	return {
 		resolveRoot,
@@ -371,7 +376,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_resume",
 		label: "Subagent resume",
-		description: "Resume one unfinished isolated request within its original global limits.",
+		description: "Resume one unfinished isolated request without resetting its recorded policy or correction count.",
 		parameters: ResumeRequestSchema,
 		prepareArguments: parseResumeRequest,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

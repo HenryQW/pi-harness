@@ -11,8 +11,8 @@ These rules apply to `extensions/pi-subagent` in addition to the repository-leve
 
 - Keep `createRoleLaunch` as the launch-policy boundary. It resolves Role resources, route, project trust, environment, and Pi arguments.
 - Keep the Ephemeral Executor mechanism-only. It receives a prepared launch and must not discover Roles, resources, worktrees, or workflow policy.
-- Keep `delegate_task` generic and caller-composable. It owns only flat single, parallel, and chain delegation.
-- Library callers own implementation protocols, durable state, checks, review decisions, integration, retry, and cleanup policy. pi-subagent supplies Role, executor, worktree, and exact-evidence APIs without claiming that orchestration.
+- Keep `delegate_task` mode explicit. Direct mode owns compact single, parallel, and chain delegation in Main. Isolated mode owns durable checked task graphs; neither mode may silently fall back to the other.
+- Keep Roles capability-focused; requests own isolation. pi-subagent owns its checked state, validation, judgment, integration, recovery, and cleanup protocol while library exports remain reusable mechanisms.
 
 ## Launches and prompts
 
@@ -26,7 +26,7 @@ These rules apply to `extensions/pi-subagent` in addition to the repository-leve
 ## Executor protocol
 
 - Acquire an executor permit before preparing launch-specific state. FIFO queue time must not create worktrees, resolve queued resources, start child timeouts, or consume an active slot.
-- Start idle and maximum deadlines only when the child starts. Only recognized Pi JSON events renew the idle deadline. Maximum runtime always wins.
+- Start idle and maximum deadlines only when an ephemeral child starts. Only recognized Pi JSON events renew the idle deadline. Maximum runtime always wins. Do not introduce a whole-request productive deadline; retained child, I/O, status, termination, and cleanup safety bounds remain local.
 - Keep assistant output and stderr bounded on valid UTF-8 boundaries. Keep consumed JSON events bounded.
 - Preserve aggregate child `Usage` on success, launched failures, aborts, timeouts, protocol failures, and callback failures without double counting turns.
 - Treat observer callback failure as a typed executor failure, terminate the child, and release the permit.
@@ -52,5 +52,5 @@ These rules apply to `extensions/pi-subagent` in addition to the repository-leve
 
 ## Validation
 
-- Test policy at its owning layer: pure parsing and planning directly, executor protocol in `ephemeral.test.ts`, generic orchestration in `subagent.test.ts`, and worktree or evidence mechanics in their focused suites.
+- Test policy at its owning layer: pure parsing and planning directly, executor protocol in `ephemeral.test.ts`, direct delegation in `subagent.test.ts`, checked orchestration in isolated runner/runtime suites, and worktree or evidence mechanics in their focused suites.
 - Prefer one regression that exercises the real failure boundary. Do not add broad timing assertions when deterministic state or operation counts prove the contract.

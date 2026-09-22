@@ -65,10 +65,13 @@ export {
 } from "./review-evidence.ts";
 export {
 	captureWorkingCheckoutBaseline,
+	captureWorkingCheckoutState,
 	prepareWorkingChangeEvidence,
+	sameWorkingCheckoutState,
 	sameWorkingSnapshot,
 	type PreparedWorkingChangeEvidence,
 	type WorkingCheckoutBaseline,
+	type WorkingCheckoutState,
 	type WorkingSnapshotIdentity,
 } from "./working-evidence.ts";
 
@@ -93,7 +96,7 @@ const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execut
 export const DELEGATE_TASK = {
 	id: "pi-subagent/delegateTask",
 	label: "Subagent delegation",
-	purpose: "Launch an isolated Pi subagent.",
+	purpose: "Launch direct or checked isolated Pi delegation.",
 	defaultProfile: "fast",
 } as const satisfies ModelTask;
 

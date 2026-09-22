@@ -11,8 +11,8 @@ PI_MIN_VERSION="0.85.1"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
 HERDR_LATEST_URL="https://herdr.dev/latest.json"
 HERDR_MIN_VERSION="0.7.4"
-HERDR_ORCHESTRATOR_MIN_VERSION="0.9.0"
-ORCHESTRATOR_PACKAGE="@henryqw/pi-orchestrator"
+HERDR_SUBAGENT_MIN_VERSION="0.9.0"
+SUBAGENT_PACKAGE="@henryqw/pi-subagent"
 LEGACY_AUTO_DAG_SOURCE="npm:@henryqw/pi-auto-dag"
 
 # BEGIN GENERATED EXTENSIONS
@@ -31,7 +31,6 @@ EXTENSIONS='
 @henryqw/pi-multi-codex
 @henryqw/pi-notes
 @henryqw/pi-open-in
-@henryqw/pi-orchestrator
 @henryqw/pi-pr
 @henryqw/pi-prompt-creator
 @henryqw/pi-rtk-test
@@ -286,11 +285,11 @@ ensure_pi() {
 
 select_herdr_minimum() {
   required_herdr_version=$HERDR_MIN_VERSION
-  orchestrator_selected=false
+  subagent_selected=false
   for extension in $selected_extensions; do
-    if [ "$extension" = "$ORCHESTRATOR_PACKAGE" ]; then
-      required_herdr_version=$HERDR_ORCHESTRATOR_MIN_VERSION
-      orchestrator_selected=true
+    if [ "$extension" = "$SUBAGENT_PACKAGE" ]; then
+      required_herdr_version=$HERDR_SUBAGENT_MIN_VERSION
+      subagent_selected=true
       return 0
     fi
   done
@@ -435,7 +434,7 @@ choose_extensions() {
 }
 
 remove_legacy_auto_dag() {
-  [ "$orchestrator_selected" = true ] || return 0
+  [ "$subagent_selected" = true ] || return 0
 
   if ! installed_sources=$("$pi_bin" list); then
     die "Could not list installed Pi package sources before checking for the retired Auto DAG package."

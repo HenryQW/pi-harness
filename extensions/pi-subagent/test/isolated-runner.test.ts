@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -485,7 +486,8 @@ function request(
 	return parseExecuteRequest({
 		id,
 		goal: "Deliver checked work.",
-		budgetMs: 10_000,
+		mode: "isolated",
+		approval: "supervised",
 		tasks,
 		finalChecks: [{ command: "check-final", args: [] }],
 		...(finalJudgment ? { finalJudgment } : {}),
@@ -496,6 +498,14 @@ const unusedTextExecutor: EphemeralSubagentExecutor = {
 	run: async () => { throw new Error("Unexpected text executor invocation."); },
 };
 
+async function initializeRepository(root: string): Promise<void> {
+	await mkdir(root);
+	await writeFile(join(root, "README.md"), "fixture\n");
+	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+	execFileSync("git", ["add", "README.md"], { cwd: root });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], { cwd: root });
+}
+
 async function harness(
 	t: test.TestContext,
 	options: {
@@ -504,10 +514,10 @@ async function harness(
 		onInteractiveWait?: (requestId: string, taskId: string) => void;
 	} = {},
 ) {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-runner-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-runner-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "workspace");
-	await mkdir(root);
+	await initializeRepository(root);
 	const runtime = new FakeRuntime();
 	const agentDir = join(directory, "agent");
 	const store = options.createStore?.(agentDir) ?? new FileRunStore(agentDir);
@@ -575,6 +585,23 @@ function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtim
 		value - before[key as keyof typeof before],
 	])) as ReturnType<typeof runtimeCallCounts>;
 }
+
+test("scoped changesets accept the exact checked candidate without an interactive wait", async (t) => {
+	let waits = 0;
+	const { root, runner } = await harness(t, { onInteractiveWait: () => { waits += 1; } });
+	const definition = parseExecuteRequest({
+		...request("scoped-acceptance", [changesetTask("change")]),
+		approval: "scoped",
+	});
+
+	const result = await runner.execute(definition, root);
+	const attempt = changesetState(result.state, "change").attempts[0]!;
+	assert.equal(waits, 0);
+	assert.equal(result.state.status, "completed");
+	assert.equal(attempt.acceptance?.candidate.head, attempt.candidate?.head);
+	assert.equal(attempt.integration?.status, "integrated");
+	assertParsed(result.state);
+});
 
 test("interactive changesets retain the same worker for queued follow-ups until explicit acceptance", async (t) => {
 	const waits: string[] = [];
@@ -696,45 +723,37 @@ test("a durable productive lease admits status and abort but blocks concurrent e
 	assertParsed(aborted.state);
 });
 
-test("rejected interactive waits adopt concurrent durable state before surfacing deadline or outer abort", async (t) => {
-	for (const rejection of ["outer", "deadline"] as const) {
-		await t.test(rejection, async (t) => {
-			let ready!: () => void;
-			const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
-			const controller = new AbortController();
-			const { root, runtime, runner, agentDir } = await harness(t, {
-				onInteractiveWait: () => ready(),
-			});
-			const definition = parseExecuteRequest({
-				...request(`interactive-${rejection}-state-change`, [changesetTask("change")]),
-				budgetMs: rejection === "deadline" ? 1_000 : 10_000,
-			});
-			const execution = runner.execute(definition, root, controller.signal);
-			await awaitingAcceptance;
+test("rejected interactive waits adopt concurrent durable state before surfacing outer abort", async (t) => {
+	let ready!: () => void;
+	const awaitingAcceptance = new Promise<void>((resolve) => { ready = resolve; });
+	const controller = new AbortController();
+	const { root, runtime, runner, agentDir } = await harness(t, {
+		onInteractiveWait: () => ready(),
+	});
+	const definition = request("interactive-outer-state-change", [changesetTask("change")]);
+	const execution = runner.execute(definition, root, controller.signal);
+	await awaitingAcceptance;
 
-			let locked!: () => void;
-			const lifecycleLocked = new Promise<void>((resolve) => { locked = resolve; });
-			const concurrentStore = new FileRunStore(agentDir);
-			const mutation = concurrentStore.withLock(root, async () => {
-				locked();
-				if (rejection === "outer") controller.abort(new Error("operator interrupted the interactive wait"));
-				else await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
-				const handle = await concurrentStore.load(root, definition.id);
-				handle.state.status = "aborted";
-				handle.state.accepted = false;
-				handle.state.updatedAt = runtime.now();
-				await handle.save();
-			}, { purpose: "abort" });
-			await lifecycleLocked;
+	let locked!: () => void;
+	const lifecycleLocked = new Promise<void>((resolve) => { locked = resolve; });
+	const concurrentStore = new FileRunStore(agentDir);
+	const mutation = concurrentStore.withLock(root, async () => {
+		locked();
+		controller.abort(new Error("operator interrupted the interactive wait"));
+		const handle = await concurrentStore.load(root, definition.id);
+		handle.state.status = "aborted";
+		handle.state.accepted = false;
+		handle.state.updatedAt = runtime.now();
+		await handle.save();
+	}, { purpose: "abort" });
+	await lifecycleLocked;
 
-			const [result] = await Promise.all([execution, mutation]);
-			const durable = (await concurrentStore.load(root, definition.id)).state;
-			assert.equal(result.state.status, "aborted");
-			assert.deepEqual(result.state, durable);
-			assert.equal(changesetState(result.state, "change").status, "awaiting_acceptance");
-			assertParsed(result.state);
-		});
-	}
+	const [result] = await Promise.all([execution, mutation]);
+	const durable = (await concurrentStore.load(root, definition.id)).state;
+	assert.equal(result.state.status, "aborted");
+	assert.deepEqual(result.state, durable);
+	assert.equal(changesetState(result.state, "change").status, "awaiting_acceptance");
+	assertParsed(result.state);
 });
 
 test("interrupting an interactive acceptance wait retains the exact worker", async (t) => {
@@ -921,7 +940,11 @@ test("text producers feed ordered synthesis context into an integrated changeset
 		["synthesis"],
 		["apply"],
 	]);
-	assert.deepEqual(textCalls, [
+	const orderedTextCalls = [
+		...textCalls.filter(({ taskId }) => taskId !== "synthesis").sort((left, right) => left.taskId.localeCompare(right.taskId)),
+		...textCalls.filter(({ taskId }) => taskId === "synthesis"),
+	];
+	assert.deepEqual(orderedTextCalls, [
 		{
 			taskId: "source-one",
 			prompt: [
@@ -974,9 +997,11 @@ test("text producers feed ordered synthesis context into an integrated changeset
 		taskId: "apply",
 		contexts: [{ taskId: "synthesis", text: "Exact synthesized result." }],
 	}]);
-	assert.deepEqual(runtime.acquisitions, [
+	assert.deepEqual(sortedCalls(runtime.acquisitions.slice(0, 2)), sortedCalls([
 		{ role: "role/source-one", modelClass: "fast" },
 		{ role: "role/source-two", modelClass: "fast" },
+	]));
+	assert.deepEqual(runtime.acquisitions.slice(2), [
 		{ role: "role/synthesis", modelClass: "fast" },
 		{ role: "role/changeset", modelClass: "fast" },
 		{ role: "role/judgment", modelClass: "balanced" },
@@ -1009,7 +1034,7 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
 	if (!agent?.agentName) throw new Error("Expected one allocated worker.");
 
-	assert.equal(result.state.version, 3);
+	assert.equal(result.state.version, 4);
 	assert.equal(result.state.accepted, true);
 	assert.deepEqual(runtime.workerCalls, [
 		{ taskId: "change", kind: "initial" },
@@ -1193,7 +1218,7 @@ test("status preserves interrupted and ambiguous changeset prompts without produ
 
 			const reported = await runner.status(definition.id, root);
 			const reportedAttempt = changesetState(reported.state, "change").attempts[0]!;
-			assert.equal(reported.state.version, 3);
+			assert.equal(reported.state.version, 4);
 			assert.equal(reported.state.status, boundary === "interrupted" ? "running" : "needs_attention");
 			assert.equal(reportedAttempt.prompts[0]?.status, boundary === "interrupted" ? "submitting" : "ambiguous");
 			assert.equal(reportedAttempt.termination, undefined);
@@ -1292,7 +1317,7 @@ test("status permits only pending cleanup recovery after integration", async (t)
 	assert.ok(waitingAttempt.cleanup.every(({ status }) => status === "pending"));
 	assert.deepEqual(runtime.cleanupCalls, ["worker_tab"]);
 
-	runtime.clock = waiting.state.deadline;
+	runtime.clock += 10_000;
 	runtime.main = identity("f");
 	const persistedBefore = structuredClone((await store.load(root, definition.id)).state);
 	assertParsed(persistedBefore);
@@ -1366,6 +1391,8 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		assert.equal(changesetState(stopped.state, "change").attempts.length, 0);
 		assert.equal(runtime.workerCalls.length, 0);
 		assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "change" });
+		assert.equal(Object.hasOwn(stopped.state, "deadline"), false);
+		runtime.clock += 31 * 60_000;
 
 		const resumed = await runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root);
 		assert.equal(resumed.state.accepted, true);
@@ -1420,7 +1447,7 @@ test("text dispatch uses the injected executor and persists a valid running inte
 		run: async ({ prepare }) => {
 			const prepared = await prepare();
 			preparedTask = prepared.task;
-			persistedAtLaunch = (await store!.load(prepared.cwd, "text-success")).state;
+			persistedAtLaunch = structuredClone(store!.snapshots.at(-1)!);
 			return {
 				outcome: "success",
 				exitCode: 0,

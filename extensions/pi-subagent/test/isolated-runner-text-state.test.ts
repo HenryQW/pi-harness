@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -17,6 +18,14 @@ import { FileRunStore } from "../src/store.ts";
 function mainIdentity(): WorkspaceIdentity {
 	const oid = "a".repeat(40);
 	return { branch: "refs/heads/main", head: oid, index: oid, tree: oid };
+}
+
+async function initializeRepository(root: string): Promise<void> {
+	await mkdir(root);
+	await writeFile(join(root, "README.md"), "fixture\n");
+	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+	execFileSync("git", ["add", "README.md"], { cwd: root });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], { cwd: root });
 }
 
 type AttentionRunner = {
@@ -114,10 +123,10 @@ test("text attention appends a failure despite running task state without a runn
 });
 
 test("text dispatch failure persists its failed running attempt", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "workspace");
-	await mkdir(root);
+	await initializeRepository(root);
 	const store = new FileRunStore(join(directory, "agent"));
 	const runner = new IsolatedRunner(
 		{
@@ -136,7 +145,8 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 	const request: ExecuteRequest = {
 		id: "text-failure",
 		goal: "Retain failed text-task state.",
-		budgetMs: 1_000,
+		mode: "isolated",
+		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -163,15 +173,16 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 });
 
 test("text retry saves its second attempt atomically before executor launch", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "workspace");
-	await mkdir(root);
+	await initializeRepository(root);
 	const store = new RecordingRunStore(join(directory, "agent"));
 	const request: ExecuteRequest = {
 		id: "text-retry",
 		goal: "Retry a failed text task without an invalid intermediate state.",
-		budgetMs: 1_000,
+		mode: "isolated",
+		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -254,17 +265,18 @@ test("text retry saves its second attempt atomically before executor launch", as
 });
 
 test("text retry runs only the selected ready task while another needs attention", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "workspace");
-	await mkdir(root);
+	await initializeRepository(root);
 	const store = new FileRunStore(join(directory, "agent"));
 	const otherId = "other";
 	const selectedId = "selected";
 	const request: ExecuteRequest = {
 		id: "text-retry-with-attention",
 		goal: "Retry one failed text task without scheduling another.",
-		budgetMs: 1_000,
+		mode: "isolated",
+		approval: "scoped",
 		tasks: [
 			{
 				id: otherId,
@@ -377,10 +389,10 @@ test("text retry runs only the selected ready task while another needs attention
 test("mixed waves settle and attribute dispatch failures in either task order", async (t) => {
 	for (const kinds of [["changeset", "text"], ["text", "changeset"]] as const) {
 		await t.test(kinds.join(" then "), async (t) => {
-			const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+			const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 			t.after(async () => await rm(directory, { recursive: true, force: true }));
 			const root = join(directory, "workspace");
-			await mkdir(root);
+			await initializeRepository(root);
 			const store = {
 				async withProductiveRunLease<T>(_root: string, action: (lease: unknown) => Promise<T>): Promise<T> {
 					return await action({});
@@ -440,7 +452,8 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			const result = await runner.execute({
 				id: `mixed-${kinds.join("-")}`,
 				goal: "Keep wave failure attribution exact.",
-				budgetMs: 1_000,
+				mode: "isolated",
+		approval: "scoped",
 				tasks: kinds.map((kind) => kind === "text" ? text : changeset),
 				finalChecks: [{ command: "true", args: [] }],
 			} satisfies ExecuteRequest, root);
