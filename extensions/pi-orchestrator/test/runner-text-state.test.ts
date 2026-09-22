@@ -229,7 +229,7 @@ test("text retry saves its second attempt atomically before executor launch", as
 	assert.equal(retried.state.accepted, true);
 	assert.equal(launches, 2);
 
-	const firstProductiveSave = store.saved[0]!;
+	const firstProductiveSave = store.saved.find((snapshot) => snapshot.status === "running")!;
 	const taskAtFirstSave = firstProductiveSave.tasks[0]!;
 	if (taskAtFirstSave.kind !== "text") throw new Error("Expected a text task.");
 	assert.equal(firstProductiveSave.status, "running");

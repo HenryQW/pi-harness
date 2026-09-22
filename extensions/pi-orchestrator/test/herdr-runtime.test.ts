@@ -178,6 +178,7 @@ function baseAttempt(paths: Paths, token = TOKEN): TaskAttempt {
 			},
 		}],
 		prompts: [],
+		transitions: [],
 		cleanup: ["worker_tab", "workspace", "worktree", "branch"].map((kind) => ({
 			kind: kind as "worker_tab" | "workspace" | "worktree" | "branch",
 			status: "pending" as const,
@@ -2013,6 +2014,10 @@ test("blocked, unknown, timeout, malformed, missing, and interrupted agent paths
 
 function terminationPrefix(fixture: Paths): Step[] {
 	return [
+		{ command: "herdr", args: ["agent", "list"], result: success({
+			type: "agent_list",
+			agents: [agentInfo("idle", true, { cwd: fixture.worktree })],
+		}) },
 		{ command: "herdr", args: ["pane", "process-info", "--pane", WORKER_PANE_ID], result: success({
 			type: "pane_process_info",
 			process_info: { pane_id: WORKER_PANE_ID, foreground_processes: [{ pid: 999, name: "pi", cmdline: "secret must not be logged" }] },
@@ -2055,6 +2060,74 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	assert.deepEqual(delays, [250, 100, 50]);
 	assert.ok(!JSON.stringify(script.calls).includes("secret must not be logged"));
 	script.done();
+});
+
+test("termination refuses a stale pane that no longer belongs to the exact saved agent", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const seed = runtime(fixture, script);
+	const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
+	await privateLease(leasePath);
+	const host = new HerdrHostRuntime({
+		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
+		runProcess: script.run,
+		killProcess: () => {}, delay: async () => {}, now: () => 1_000,
+		env: {}, leaseDirectory: fixture.leases, lsofCommand: "lsof-test",
+	});
+	script.push({ command: "herdr", args: ["agent", "list"], result: success({
+		type: "agent_list",
+		agents: [agentInfo("idle", true, { cwd: fixture.worktree, name: "replacement-agent" })],
+	}) });
+	const result = await host.terminateWorker({ task, attempt, workerId: AGENT_NAME, candidate: changedIdentity() }, context());
+	assert.equal(result.outcome, "unknown");
+	assert.ok(!script.calls.some(({ args }) => args[0] === "pane" && args[1] === "close"));
+	script.done();
+});
+
+test("termination reconciliation proves exact active or absent worker state", async (t) => {
+	for (const expected of ["active", "terminated"] as const) {
+		await t.test(expected, async (t) => {
+			const fixture = await paths(t);
+			const script = new ScriptedProcess();
+			const seed = runtime(fixture, script);
+			const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
+			await privateLease(leasePath);
+			const delays: number[] = [];
+			const host = new HerdrHostRuntime({
+				inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
+				runProcess: script.run,
+				killProcess: () => {},
+				delay: async (milliseconds) => { delays.push(milliseconds); },
+				now: () => 1_000,
+				env: {},
+				leaseDirectory: fixture.leases,
+				lsofCommand: "lsof-test",
+			});
+			script.push({ command: "herdr", args: ["agent", "list"], result: success({
+				type: "agent_list",
+				agents: expected === "active" ? [agentInfo("idle", true, { cwd: fixture.worktree })] : [],
+			}) });
+			if (expected === "active") {
+				script.push(
+					{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: success({ type: "pane_info", pane: { pane_id: WORKER_PANE_ID } }) },
+					{ command: "herdr", args: ["pane", "process-info", "--pane", WORKER_PANE_ID], result: success({
+						type: "pane_process_info", process_info: { pane_id: WORKER_PANE_ID, foreground_processes: [] },
+					}) },
+				);
+			} else {
+				script.push(
+					{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+					lsof(leasePath),
+					lsof(leasePath),
+				);
+			}
+			assert.deepEqual(await host.reconcileWorkerTermination({
+				task, attempt, workerId: AGENT_NAME, candidate: changedIdentity(),
+			}, context()), { outcome: expected });
+			assert.deepEqual(delays, expected === "terminated" ? [50] : []);
+			script.done();
+		});
+	}
 });
 
 test("termination quarantines ambiguity, late holders, and survivors without signaling unrelated PIDs", async (t) => {
