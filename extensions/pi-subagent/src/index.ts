@@ -63,21 +63,28 @@ export {
 	type PreparedReviewEvidence,
 	type PrepareExactReviewEvidenceInput,
 } from "./review-evidence.ts";
+export {
+	captureWorkingCheckoutBaseline,
+	prepareWorkingChangeEvidence,
+	sameWorkingSnapshot,
+	type PreparedWorkingChangeEvidence,
+	type WorkingCheckoutBaseline,
+	type WorkingSnapshotIdentity,
+} from "./working-evidence.ts";
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_MCP_EXTENSION = fileURLToPath(new URL("../extensions/role-mcp.ts", import.meta.url));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
-export const PI_ORCHESTRATOR_PROCESS_LEASE = "PI_ORCHESTRATOR_PROCESS_LEASE";
+export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
 	"ask_question",
-	"orchestrate_execute",
-	"orchestrate_status",
-	"orchestrate_resume",
-	"orchestrate_abort",
+	"subagent_status",
+	"subagent_resume",
+	"subagent_abort",
 ] as const;
 export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");
 const SYSTEM_PROMPT_FLAG = "--append-system-prompt";
@@ -97,7 +104,6 @@ export interface Role {
 	description: string;
 	modelClass?: ProfileName;
 	tools: string[];
-	isolation?: string;
 	extensions: string[];
 	skills: string[];
 	mcps?: string[];
@@ -117,7 +123,6 @@ export interface ResolvedRoleLaunch extends PiLaunch {
 
 export interface PreparedRoleLaunch extends ResolvedRoleLaunch {
 	role: RoleName;
-	isolation?: "worktree";
 	tools: readonly string[];
 	systemPrompt: string;
 	promptArgIndex: number;
@@ -202,7 +207,7 @@ function namesMcpAdapter(extension: string): boolean {
 	return extension.toLowerCase().split(/[\\/:@]+/).some((component) => component === "pi-mcp-adapter" || component.startsWith("pi-mcp-adapter."));
 }
 
-const FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES = ["pi-orchestrator", "pi-mcp-adapter"] as const;
+const FORBIDDEN_ROLE_PACKAGE_SOURCE_NAMES = ["pi-subagent", "pi-mcp-adapter"] as const;
 
 function rejectForbiddenRolePackageSource(value: string, role: Role): void {
 	const components = value.toLowerCase().split(/[\\/:@]+/);
@@ -219,12 +224,9 @@ function roleModelClass(value: unknown, source: string): ProfileName | undefined
 	return value as ProfileName;
 }
 
-function roleIsolation(value: unknown, source: string): "worktree" | undefined {
+function rejectRetiredRoleIsolation(value: unknown, source: string): void {
 	if (value === undefined) return;
-	if (cleanText(value, "isolation", source) !== "worktree") {
-		throw new Error(`${source}: isolation must be "worktree".`);
-	}
-	return "worktree";
+	throw new Error(`${source}: Role isolation is retired; select mode \"isolated\" on delegate_task instead.`);
 }
 
 // Built-in Roles resolved from the package-shipped Markdown relative to this module.
@@ -240,14 +242,13 @@ function parseRoleFile(file: string, raw: string): Role {
 		throw new Error(`${file}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	const frontmatter = parsed.frontmatter;
-	const isolation = roleIsolation(frontmatter.isolation, file);
+	rejectRetiredRoleIsolation(frontmatter.isolation, file);
 	const modelClass = roleModelClass(frontmatter.modelClass, file);
 	return {
 		name: parseRoleName(frontmatter.name, file),
 		description: cleanDisplayText(frontmatter.description, "description", file),
 		...(modelClass === undefined ? {} : { modelClass }),
 		tools: stringList(frontmatter.tools, "tools", file),
-		isolation,
 		extensions: extensionList(frontmatter.extensions, file),
 		skills: stringList(frontmatter.skills, "skills", file),
 		mcps: mcpList(frontmatter.mcps, file),
@@ -461,10 +462,10 @@ function prepareResolvedRoleLaunch(
 	additionalTools: readonly string[] = [],
 ): PreparedRoleLaunch {
 	const role = parseRoleName(roleDefinition.name);
-	const isolation = roleIsolation(roleDefinition.isolation, `Role ${role}`);
+	rejectRetiredRoleIsolation((roleDefinition as Role & { isolation?: unknown }).isolation, `Role ${role}`);
 	const tools = Object.freeze(roleToolPolicy(roleDefinition, additionalTools));
 	const { args, systemPrompt, promptArgIndex } = stripRoleSystemPrompt(launch.args);
-	return { ...launch, args, role, isolation, tools, systemPrompt, promptArgIndex };
+	return { ...launch, args, role, tools, systemPrompt, promptArgIndex };
 }
 
 function assertNoMissingRoleSkills(role: Role, launch: ResolvedRoleLaunch): void {
@@ -557,3 +558,11 @@ export function finalizeRoleLaunch(prepared: PreparedRoleLaunch): ResolvedRoleLa
 		missingSkills: prepared.missingSkills,
 	};
 }
+
+export * from "./composition.ts";
+export * from "./git-runtime.ts";
+export * from "./herdr-runtime.ts";
+export { ISOLATED_MODEL_TASK, RoleLaunchRuntime, type LaunchRuntimeOptions } from "./launch-runtime.ts";
+export * from "./runner.ts";
+export * from "./schema.ts";
+export * from "./store.ts";

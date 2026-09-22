@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ORCHESTRATOR_MODEL_TASK, RoleLaunchRuntime } from "../src/launch-runtime.ts";
+import { ISOLATED_MODEL_TASK, RoleLaunchRuntime } from "../src/launch-runtime.ts";
 import type { OperationContext } from "../src/runner.ts";
 import {
 	type ChangesetTaskRequest,
@@ -240,7 +240,7 @@ test("preflight registers its Model Task and resolves each distinct explicit Rol
 	const discovered: unknown[] = [];
 	fixture.events.on("@henryqw/pi-task-models:model-task-response", (value) => discovered.push(value));
 	fixture.events.emit("@henryqw/pi-task-models:model-task-request", { requestId: "request-12345678" });
-	assert.deepEqual((discovered[0] as { task: unknown }).task, ORCHESTRATOR_MODEL_TASK);
+	assert.deepEqual((discovered[0] as { task: unknown }).task, ISOLATED_MODEL_TASK);
 
 	await fixture.setRole("author.md", { name: "change author" });
 	await fixture.setRole("reviewer.md", { name: "audit reviewer" });

@@ -1,7 +1,8 @@
 import { realpathSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
+import type { EphemeralSubagentExecutor } from "./ephemeral.ts";
+import { createChildWorktree, finalizeChildWorktree } from "./worktree.ts";
 import {
 	checkBatchPasses,
 	CLEANUP_KINDS,
@@ -22,6 +23,7 @@ import {
 	type CleanupKind,
 	type CommandEvidence,
 	type ExecuteRequest,
+	type ExecutionPolicySnapshot,
 	type HostAllocationIntent,
 	type HostAllocationPlan,
 	type ModelClass,
@@ -815,12 +817,14 @@ function isDeadline(error: unknown, scope: DeadlineScope): boolean {
 	return error instanceof DeadlineExpired || scope.signal.reason instanceof DeadlineExpired;
 }
 
-export class OrchestratorRunner {
+export class IsolatedRunner {
 	private readonly coordinatorRuntime: CoordinatorRuntime;
 	private readonly hostRuntime: HostRuntime;
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
 	private readonly textExecutor: EphemeralSubagentExecutor;
+	private readonly policy: ExecutionPolicySnapshot;
+	private readonly currentPolicy: () => ExecutionPolicySnapshot;
 	private readonly onInteractiveWait?: (requestId: string, taskId: string) => void;
 	private readonly interactiveControls = new Map<string, { task: ChangesetTaskState; control: InteractiveTaskControl }>();
 
@@ -831,6 +835,11 @@ export class OrchestratorRunner {
 		store = new FileRunStore(),
 		textExecutor: EphemeralSubagentExecutor,
 		onInteractiveWait?: (requestId: string, taskId: string) => void,
+		policy: ExecutionPolicySnapshot = {
+			maxSubagents: 5, maxTurns: 50, childIdleMs: 600_000, childMaxMs: 1_800_000,
+			runMaxMs: 1_800_000, maxCorrections: 1,
+		},
+		currentPolicy: () => ExecutionPolicySnapshot = () => policy,
 	) {
 		this.coordinatorRuntime = coordinatorRuntime;
 		this.hostRuntime = hostRuntime;
@@ -838,6 +847,8 @@ export class OrchestratorRunner {
 		this.store = store;
 		this.textExecutor = textExecutor;
 		this.onInteractiveWait = onInteractiveWait;
+		this.policy = Object.freeze({ ...policy });
+		this.currentPolicy = currentPolicy;
 	}
 
 	queueFollowup(root: string, requestId: string, taskId: string, instruction: string): string {
@@ -876,7 +887,7 @@ export class OrchestratorRunner {
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const startedAt = this.coordinatorRuntime.now();
 		const request = parseExecuteRequest(value);
-		const deadline = startedAt + request.budgetMs;
+		const deadline = startedAt + this.policy.runMaxMs;
 		const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
 		try {
 			const canonicalCwd = realpathSync.native(cwd);
@@ -886,13 +897,15 @@ export class OrchestratorRunner {
 			const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
 			if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
 			if (this.hasAnyActiveControl(root)) {
-				throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
+				throw new Error("Another Pi Subagent request is awaiting interactive input in this repository.");
 			}
 			return await this.withProductiveRun(root, async (lifecycle) => {
 				const createdAt = this.coordinatorRuntime.now();
 				const state: RunState = {
 					version: RUN_STATE_VERSION,
 					request,
+					policy: this.policy,
+					correctionCount: 0,
 					root,
 					requestStartMain: preparedMain,
 					main: preparedMain,
@@ -930,27 +943,38 @@ export class OrchestratorRunner {
 		const request = parseResumeRequest(value);
 		root = realpathSync.native(root);
 		if (this.hasActiveControl(root, request.id)) {
-			throw new Error(`Pi Orchestrator request ${request.id} is still active; use follow-up, accept, status, or abort.`);
+			throw new Error(`Pi Subagent request ${request.id} is still active; use follow-up, accept, status, or abort.`);
 		}
 		if (this.hasAnyActiveControl(root)) {
-			throw new Error("Another Pi Orchestrator request is awaiting interactive input in this repository.");
+			throw new Error("Another Pi Subagent request is awaiting interactive input in this repository.");
 		}
 		return await this.withProductiveRun(root, async (lifecycle) => {
 			const handle = await this.store.load(root, request.id);
 			const state = handle.state;
 			if (this.recoverInterrupted(state)) await handle.save();
-			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
-			const recoveryDeadline = this.coordinatorRuntime.now() + state.request.budgetMs;
+			if (terminal(state)) throw new Error(`Pi Subagent request ${request.id} is terminal (${state.status}); create a new request.`);
+			const current = this.currentPolicy();
+			const recoveryDeadline = Math.min(state.deadline, state.deadlineStartedAt + current.runMaxMs);
+			const cleanupTask = "taskId" in request ? taskState(state, request.taskId) : undefined;
+			const cleanupAttempt = cleanupTask?.kind === "changeset" ? cleanupTask.attempts.at(-1) : undefined;
+			const cleanupOnly = request.action === "verify" && cleanupTask?.kind === "changeset"
+				&& cleanupAttempt?.integration?.status === "integrated";
+			if (!cleanupOnly && this.coordinatorRuntime.now() >= recoveryDeadline) {
+				throw new Error(`Pi Subagent request ${request.id} exhausted its original productive deadline; retained work may be inspected with status or torn down with abort.`);
+			}
+			const operationDeadline = cleanupOnly
+				? this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS
+				: recoveryDeadline;
 			state.recovery = {
 				kind: "resume",
 				action: request.action,
 				...("taskId" in request ? { taskId: request.taskId } : {}),
-				deadline: recoveryDeadline,
+				deadline: operationDeadline,
 			};
 			state.updatedAt = this.coordinatorRuntime.now();
 			await handle.save();
 
-			const scope = new DeadlineScope(recoveryDeadline, () => this.coordinatorRuntime.now(), outerSignal);
+			const scope = new DeadlineScope(operationDeadline, () => this.coordinatorRuntime.now(), outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);
@@ -1302,21 +1326,37 @@ export class OrchestratorRunner {
 		const attempt = task.attempts.at(-1);
 		if (!attempt || attempt.status !== "running") throw new Error(`Text task ${task.taskId} has no running attempt.`);
 		const prompt = buildTextTaskPrompt(state.request.goal, request, resolveTextTaskContexts(state, request));
-		const result = await scope.call(async (context) => {
-			const handle = await this.coordinatorRuntime.acquireLaunch(request.role, request.modelClass, context);
-			if (handle.launch.role !== request.role || handle.launch.modelClass !== request.modelClass) {
-				await withTransientLaunch(handle, async () => {
-					throw new Error("Text task launch acquisition returned the wrong Role or model class.");
+		const { result, cleanup } = await scope.call(async (context) => {
+			const isolated = await createChildWorktree(
+				state.root,
+				`${state.request.id}-${task.taskId}-text-${attempt.number}`,
+				undefined,
+				context.signal,
+			);
+			let result;
+			try {
+				const launchHandle = await this.coordinatorRuntime.acquireLaunch(request.role, request.modelClass, context);
+				if (launchHandle.launch.role !== request.role || launchHandle.launch.modelClass !== request.modelClass) {
+					await withTransientLaunch(launchHandle, async () => {
+						throw new Error("Text task launch acquisition returned the wrong Role or model class.");
+					});
+				}
+				result = await withTransientLaunch(launchHandle, async (verifiedLaunch) => {
+					const launch = { args: [...verifiedLaunch.args], env: { ...verifiedLaunch.env } };
+					return await this.textExecutor.run({
+						signal: context.signal,
+						prepare: async () => ({ launch, task: prompt, cwd: isolated.cwd }),
+					});
 				});
+			} finally {
+				const cleanup = await finalizeChildWorktree(isolated);
+				if (cleanup.outcome !== "pruned") {
+					throw new Error(`Isolated text task changed its checkout; work was retained at ${cleanup.path} on ${cleanup.branch}.`);
+				}
 			}
-			return await withTransientLaunch(handle, async (verifiedLaunch) => {
-				const launch = { args: [...verifiedLaunch.args], env: { ...verifiedLaunch.env } };
-				return await this.textExecutor.run({
-					signal: context.signal,
-					prepare: async () => ({ launch, task: prompt, cwd: state.root }),
-				});
-			});
+			return { result: result!, cleanup: true };
 		});
+		void cleanup;
 		if (result.outcome !== "success" || result.exitCode !== 0) {
 			throw new Error("Text task executor did not complete successfully.");
 		}
@@ -1334,6 +1374,11 @@ export class OrchestratorRunner {
 		task.status = "completed";
 		task.failure = undefined;
 		await handle.save();
+	}
+
+	private correctionAllowed(state: RunState, request: ChangesetTaskRequest, attempt: TaskAttempt): boolean {
+		const effectiveMaximum = Math.min(state.policy.maxCorrections, this.currentPolicy().maxCorrections);
+		return state.correctionCount < effectiveMaximum && correctionEligible(request, attempt);
 	}
 
 	private async driveWorkerSafely(
@@ -1378,7 +1423,7 @@ export class OrchestratorRunner {
 			if (kind === "followup" && instruction === undefined) {
 				throw new Error("Follow-up worker execution requires an exact queued instruction.");
 			}
-			if (kind === "correction" && !correctionEligible(request, attempt)) {
+			if (kind === "correction" && !this.correctionAllowed(state, request, attempt)) {
 				this.attention(task, "The same-agent correction is unavailable or already used.");
 				await handle.save();
 				return;
@@ -1434,6 +1479,7 @@ export class OrchestratorRunner {
 				at: nextAttemptEventAt(attempt, this.coordinatorRuntime.now()),
 			};
 			attempt.prompts.push(prompt);
+			if (kind === "correction") state.correctionCount += 1;
 			task.failure = undefined;
 			await handle.save();
 			let worker: WorkerResult;
@@ -1504,7 +1550,7 @@ export class OrchestratorRunner {
 				}
 			}
 
-			if (correctionEligible(request, attempt)) {
+			if (this.correctionAllowed(state, request, attempt)) {
 				kind = "correction";
 				instruction = undefined;
 				continue;
@@ -1520,6 +1566,27 @@ export class OrchestratorRunner {
 			await handle.save();
 			return;
 		}
+	}
+
+	private async recordScopedAcceptance(handle: RunStateHandle, task: ChangesetTaskState): Promise<void> {
+		const active = this.activeControl(handle.state.root, handle.state.request.id, task.taskId);
+		if (!active || active.task !== task) throw new Error(`Task ${task.taskId} lost its interactive control.`);
+		active.control.seal();
+		const attempt = latestAttempt(task);
+		const workerId = allocationByKind(attempt, "agent")?.agentName;
+		if (!workerId || attempt.termination || !attempt.candidate || !attempt.candidateBase
+			|| !checkBatchPasses(attempt.preliminaryChecks, changesetTaskRequest(handle.state, task.taskId).checks, attempt.candidate)) {
+			throw new Error("Scoped acceptance requires an exact live owned worker and passing candidate lineage.");
+		}
+		attempt.acceptance = {
+			candidate: attempt.candidate,
+			base: attempt.candidateBase,
+			at: nextAttemptEventAt(attempt, this.coordinatorRuntime.now()),
+		};
+		task.status = "ready_to_integrate";
+		task.failure = undefined;
+		await handle.save();
+		this.closeInteractiveControl(handle.state.root, handle.state.request.id, task.taskId, active.control);
 	}
 
 	private async settleInteractiveTasks(
@@ -1539,6 +1606,10 @@ export class OrchestratorRunner {
 			const awaiting = tasks.filter((task): task is ChangesetTaskState =>
 				task.kind === "changeset" && task.status === "awaiting_acceptance");
 			if (!awaiting.length) return;
+			if (handle.state.request.approval === "scoped") {
+				for (const task of awaiting) await this.recordScopedAcceptance(handle, task);
+				continue;
+			}
 			const persistedBeforeWait = (await this.store.load(handle.state.root, handle.state.request.id)).state;
 			let result: WaitResult | undefined;
 			let waitRejected = false;
@@ -1871,9 +1942,10 @@ export class OrchestratorRunner {
 				await handle.save();
 			}
 			if (!checkBatchPasses(checks, request.checks, integrationCandidate)) {
-				this.prepareCorrectionAfterAuthoritativeFailure(attempt);
-				this.attention(task, "Authoritative checks did not pass on the exact integration candidate.");
-				return false;
+				return await this.handleAuthoritativeFailure(
+					handle, task, attempt, scope,
+					"Authoritative checks did not pass on the exact integration candidate.",
+				);
 			}
 			let review = attempt.authoritativeReview;
 			if (request.judgment && !reviewEvidencePasses(
@@ -1896,9 +1968,10 @@ export class OrchestratorRunner {
 			if (request.judgment && !reviewEvidencePasses(
 				review, "authoritative", request.judgment.criterion, integrationBase, integrationCandidate,
 			)) {
-				this.prepareCorrectionAfterAuthoritativeFailure(attempt);
-				this.attention(task, "Authoritative Judgment did not return exact PASS on the integration candidate.");
-				return false;
+				return await this.handleAuthoritativeFailure(
+					handle, task, attempt, scope,
+					"Authoritative Judgment did not return exact PASS on the integration candidate.",
+				);
 			}
 			attempt.integration = { status: "integrating", expectedMain: integrationBase, candidate: integrationCandidate };
 			await handle.save();
@@ -1957,6 +2030,25 @@ export class OrchestratorRunner {
 		} finally {
 			await handle.save();
 		}
+	}
+
+	private async handleAuthoritativeFailure(
+		handle: RunStateHandle,
+		task: ChangesetTaskState,
+		attempt: TaskAttempt,
+		scope: DeadlineScope,
+		failure: string,
+	): Promise<boolean> {
+		this.prepareCorrectionAfterAuthoritativeFailure(attempt);
+		this.attention(task, failure);
+		await handle.save();
+		const request = changesetTaskRequest(handle.state, task.taskId);
+		if (handle.state.request.approval !== "scoped" || !this.correctionAllowed(handle.state, request, attempt)) return false;
+		task.status = "working";
+		await this.driveWorkerSafely(handle, task, scope, "correction");
+		if (task.status !== "awaiting_acceptance") return false;
+		await this.recordScopedAcceptance(handle, task);
+		return await this.integrateTask(handle, task, scope);
 	}
 
 	private prepareCorrectionAfterAuthoritativeFailure(attempt: TaskAttempt): void {
@@ -2220,7 +2312,7 @@ export class OrchestratorRunner {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
-			if (!correctionEligible(changesetTaskRequest(handle.state, task.taskId), attempt)) {
+			if (!this.correctionAllowed(handle.state, changesetTaskRequest(handle.state, task.taskId), attempt)) {
 				throw new Error("The same-agent correction is unavailable or already used.");
 			}
 			task.status = "working";
@@ -2562,7 +2654,7 @@ export class OrchestratorRunner {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 			} else if (attention?.kind === "changeset") {
 				const attempt = attention.attempts.at(-1);
-				if (attempt && correctionEligible(changesetTaskRequest(state, attention.taskId), attempt)) {
+				if (attempt && this.correctionAllowed(state, changesetTaskRequest(state, attention.taskId), attempt)) {
 					continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 				} else if (attempt?.integration?.status === "integrated"
 					|| attempt?.acceptance
@@ -2577,7 +2669,7 @@ export class OrchestratorRunner {
 			: state.tasks.find((task) => task.status === "needs_attention");
 		return {
 			text: bounded([
-				`Pi Orchestrator ${state.request.id}: ${state.status}.`,
+				`Pi Subagent ${state.request.id}: ${state.status}.`,
 				`Tasks: ${completed}/${state.tasks.length} completed. Accepted: ${state.accepted}.`,
 				...(main?.status === "current" ? ["Main: current at the recorded exact identity."] : []),
 				...(main?.status === "drifted" ? [

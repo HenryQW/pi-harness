@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
-	OrchestratorRunner,
+	IsolatedRunner,
 	STATUS_INSPECTION_BUDGET_MS,
 	withTransientLaunch,
 	type AllocationReconciliation,
@@ -511,8 +511,8 @@ async function harness(
 	const runtime = new FakeRuntime();
 	const agentDir = join(directory, "agent");
 	const store = options.createStore?.(agentDir) ?? new FileRunStore(agentDir);
-	let runner!: OrchestratorRunner;
-	runner = new OrchestratorRunner(
+	let runner!: IsolatedRunner;
+	runner = new IsolatedRunner(
 		runtime,
 		runtime,
 		runtime,
@@ -643,7 +643,7 @@ test("a durable productive lease admits status and abort but blocks concurrent e
 		onInteractiveWait: () => ready(),
 	});
 	const otherStore = new FileRunStore(agentDir);
-	const otherRunner = new OrchestratorRunner(
+	const otherRunner = new IsolatedRunner(
 		runtime,
 		runtime,
 		runtime,
@@ -665,11 +665,11 @@ test("a durable productive lease admits status and abort but blocks concurrent e
 	assert.deepEqual(reported.main, { status: "current", expected: identity("a"), actual: identity("a") });
 	await assert.rejects(
 		otherRunner.execute(request("blocked-execute", [changesetTask("other")]), root),
-		/Another Pi Orchestrator productive request is active/,
+		/Another Pi Subagent productive request is active/,
 	);
 	await assert.rejects(
 		otherRunner.resume({ id: definition.id, action: "retry", taskId: "change" }, root),
-		/Another Pi Orchestrator productive request is active/,
+		/Another Pi Subagent productive request is active/,
 	);
 	await assert.rejects(
 		runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root),

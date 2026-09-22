@@ -5,10 +5,10 @@ import {
 	createChildWorktree,
 	inspectIndexFlags,
 	inspectWorktreeDirty,
-	prepareExactReviewEvidence,
 	WorktreeSetupError,
 	type WorktreeInfo,
-} from "@henryqw/pi-subagent";
+} from "./worktree.ts";
+import { prepareExactReviewEvidence } from "./review-evidence.ts";
 import {
 	checkBatchPasses,
 	isCleanCommitted,
@@ -44,7 +44,7 @@ import { runProcess as defaultRunProcess } from "./process.ts";
 
 const GIT_OPERATION_CAP_MS = 30_000;
 const DIAGNOSTIC_LIMIT = 1_000;
-const REF_TRANSACTION_MISMATCH = "pi-orchestrator: guarded fast-forward rejected unexpected ref transaction";
+const REF_TRANSACTION_MISMATCH = "pi-subagent: guarded fast-forward rejected unexpected ref transaction";
 
 type ProcessResult = { code: number; killed: boolean; stdout: string; stderr: string };
 
@@ -226,7 +226,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		try {
 			const created = await createChildWorktree(
 				input.root,
-				`orchestrator-${input.task.id}-${input.intent.token}`,
+				`isolated-${input.task.id}-${input.intent.token}`,
 				this.gitRunner(context),
 				context.signal,
 				async (info) => {
@@ -582,7 +582,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		const main = await this.inspectMain({ root: input.root }, context);
 		if (!sameIdentity(main, input.expectedMain)) return { outcome: "drift", failure: "Main drifted before fast-forward integration." };
 		await this.inspectTask(input.root, input.task, input.attempt, input.candidate, input.expectedMain.head, context);
-		const hookDirectory = await mkdtemp(join(tmpdir(), "pi-orchestrator-ref-guard-"));
+		const hookDirectory = await mkdtemp(join(tmpdir(), "pi-subagent-ref-guard-"));
 		const hookPath = join(hookDirectory, "reference-transaction");
 		const args = ["-c", `core.hooksPath=${hookDirectory}`, "merge", "--no-overwrite-ignore", "--no-autostash", "--ff-only", input.candidate.head];
 		let merged: ProcessResult;
@@ -805,7 +805,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 
 	private async assertNoGitlinks(cwd: string, context: OperationContext): Promise<void> {
 		if (await this.hasGitlinks(cwd, context)) {
-			throw new Error("Pi Orchestrator does not support Git repositories containing mode-160000 gitlinks.");
+			throw new Error("Pi Subagent does not support Git repositories containing mode-160000 gitlinks.");
 		}
 	}
 

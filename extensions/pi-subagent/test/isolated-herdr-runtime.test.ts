@@ -809,7 +809,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		command: "herdr",
 		args: [
 			"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
-			"--label", WORKER_LABEL, "--env", `PI_ORCHESTRATOR_PROCESS_LEASE=${tabDetails.leasePath}`, "--no-focus",
+			"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${tabDetails.leasePath}`, "--no-focus",
 		],
 		result: success({
 			type: "tab_created",
@@ -1059,7 +1059,7 @@ test("worker tab waits for a stable host pane layout before create", async (t) =
 			command: "herdr",
 			args: [
 				"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
-				"--label", WORKER_LABEL, "--env", `PI_ORCHESTRATOR_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
+				"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
 			],
 			result: success({
 				type: "tab_created",

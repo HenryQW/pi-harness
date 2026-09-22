@@ -11,7 +11,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	capEphemeralSubagentOutput as capOutput,
 	EphemeralSubagentError,
-	PI_ORCHESTRATOR_PROCESS_LEASE,
+	PI_SUBAGENT_PROCESS_LEASE,
 	ROLE_TOOL_POLICY_FLAG,
 } from "@henryqw/pi-subagent";
 import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
@@ -41,9 +41,9 @@ type Tool = {
 type ToolCallHandler = (event: any) => unknown;
 
 function loadRoleTools(processLease: string | undefined): { events: string[]; toolCall?: ToolCallHandler } {
-	const previousLease = process.env[PI_ORCHESTRATOR_PROCESS_LEASE];
-	if (processLease === undefined) delete process.env[PI_ORCHESTRATOR_PROCESS_LEASE];
-	else process.env[PI_ORCHESTRATOR_PROCESS_LEASE] = processLease;
+	const previousLease = process.env[PI_SUBAGENT_PROCESS_LEASE];
+	if (processLease === undefined) delete process.env[PI_SUBAGENT_PROCESS_LEASE];
+	else process.env[PI_SUBAGENT_PROCESS_LEASE] = processLease;
 	const events: string[] = [];
 	let toolCall: ToolCallHandler | undefined;
 	try {
@@ -56,8 +56,8 @@ function loadRoleTools(processLease: string | undefined): { events: string[]; to
 		} as unknown as ExtensionAPI);
 		return { events, toolCall };
 	} finally {
-		if (previousLease === undefined) delete process.env[PI_ORCHESTRATOR_PROCESS_LEASE];
-		else process.env[PI_ORCHESTRATOR_PROCESS_LEASE] = previousLease;
+		if (previousLease === undefined) delete process.env[PI_SUBAGENT_PROCESS_LEASE];
+		else process.env[PI_SUBAGENT_PROCESS_LEASE] = previousLease;
 	}
 }
 
@@ -71,7 +71,7 @@ test("process lease survives caller fd 9 reuse in descendants", async (t) => {
 	await chmod(lease, 0o600);
 	await writeFile(probe, `import { fstatSync, readdirSync, statSync } from "node:fs";
 const sameFile = (left, right) => left.dev === right.dev && left.ino === right.ino;
-const lease = statSync(process.env.${PI_ORCHESTRATOR_PROCESS_LEASE});
+const lease = statSync(process.env.${PI_SUBAGENT_PROCESS_LEASE});
 const callerLock = statSync(process.env.PI_SUBAGENT_CALLER_LOCK);
 if (!sameFile(fstatSync(9), callerLock)) throw new Error("caller fd 9 was not preserved");
 for (const entry of readdirSync("/dev/fd")) {
@@ -98,7 +98,7 @@ throw new Error("process lease descriptor was not inherited");
 	execFileSync("/bin/bash", ["-c", bash.input.command], {
 		env: {
 			...process.env,
-			[PI_ORCHESTRATOR_PROCESS_LEASE]: lease,
+			[PI_SUBAGENT_PROCESS_LEASE]: lease,
 			PI_SUBAGENT_CALLER_LOCK: callerLock,
 			PI_SUBAGENT_LEASE_PROBE: probe,
 			PI_SUBAGENT_NODE: process.execPath,
@@ -126,14 +126,14 @@ test("process lease rejects invalid paths, file types, owners, and modes", async
 	const link = join(dir, "link");
 	await symlink(regular, link);
 	for (const path of ["", "relative", `${dir}/newline\npath`, `${dir}/nul\0path`, join(dir, "missing"), dir, link, badMode]) {
-		assert.throws(() => loadRoleTools(path), /PI_ORCHESTRATOR_PROCESS_LEASE/);
+		assert.throws(() => loadRoleTools(path), /PI_SUBAGENT_PROCESS_LEASE/);
 	}
 	const getuid = process.getuid;
 	if (!getuid) return;
 	const currentUid = getuid();
 	process.getuid = () => currentUid === 0 ? 1 : 0;
 	try {
-		assert.throws(() => loadRoleTools(regular), /PI_ORCHESTRATOR_PROCESS_LEASE/);
+		assert.throws(() => loadRoleTools(regular), /PI_SUBAGENT_PROCESS_LEASE/);
 	} finally {
 		process.getuid = getuid;
 	}

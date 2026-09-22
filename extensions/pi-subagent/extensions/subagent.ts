@@ -13,26 +13,32 @@ import {
 } from "@henryqw/pi-task-models";
 import {
 	capEphemeralSubagentOutput as capOutput,
-	createChildWorktree,
+	captureWorkingCheckoutBaseline,
 	createEphemeralSubagentExecutor,
 	DELEGATE_TASK,
-	DEFAULT_MAX_TURNS,
 	EphemeralSubagentError,
-	finalizeChildWorktree,
 	finalizeRoleLaunch,
 	formatDuration,
 	loadRoles,
 	prepareRoleLaunch,
-	WorktreeSetupError,
-	worktreeContextNote,
+	prepareWorkingChangeEvidence,
+	sameWorkingSnapshot,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentResult,
 	type EphemeralSubagentTimeout,
 	type Role,
-	type WorktreeInfo,
-	type WorktreePayload,
+	type WorkingCheckoutBaseline,
 } from "@henryqw/pi-subagent";
-import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import {
+	DEFAULT_EXECUTION_POLICY,
+	DEFAULT_TIMEOUT_CONFIG,
+	readSubagentConfig,
+	resolveExecutionPolicy,
+	type EffectiveExecutionPolicy,
+	type SubagentTimeoutConfig,
+} from "./config.ts";
+import { createCheckoutAdmission, roleCanWrite } from "./admission.ts";
+import { registerIsolatedExtension } from "./isolated.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -45,10 +51,10 @@ import {
 	type WorkflowTransportEntry,
 } from "./result-transport.ts";
 import {
+	DelegateTaskSchema,
 	identifyWorkflowEntries,
-	parseWorkflow,
+	parseDelegateTask,
 	runForegroundWorkflow,
-	WorkflowSchema,
 	type Delegation,
 	type ParsedWorkflow,
 	type WorkflowEntry,
@@ -271,35 +277,55 @@ export default function subagentExtension(
 		].join("\n"), outputPad, 0);
 	});
 	const widgetItems = new Map<string, WidgetItem>();
-	// Each child is a full Pi process issuing its own model calls; cap parallel
-	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
-	// maxSubagents > default 5. Invalid present config falls back to the default
-	// and is reported at session start; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
-	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
-	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
-	if (maxSubagentsRaw !== undefined) {
-		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes —
-		// and digit strings that overflow to Infinity, which would disable the cap.
-		if (!/^\d+$/.test(maxSubagentsRaw) || !/^[1-9]\d*$/.test(maxSubagentsRaw)) {
-			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`));
-		}
-		const parsed = Number.parseInt(maxSubagentsRaw, 10);
-		if (!Number.isSafeInteger(parsed)) {
-			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS exceeds the supported range, got ${JSON.stringify(maxSubagentsRaw)}.`));
-		}
-		maxActiveSubagents = parsed;
+	let initialPolicy: EffectiveExecutionPolicy;
+	try {
+		initialPolicy = resolveExecutionPolicy(loadedConfig);
+	} catch {
+		initialPolicy = {
+			maxSubagents: DEFAULT_EXECUTION_POLICY.maxSubagents,
+			maxTurns: DEFAULT_EXECUTION_POLICY.maxTurns,
+			childIdleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
+			childMaxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
+			runMaxMs: DEFAULT_EXECUTION_POLICY.runMaxMinutes * 60_000,
+			maxCorrections: DEFAULT_EXECUTION_POLICY.maxCorrections,
+		};
 	}
-	let backgroundSequence = 0;
-	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
-	// config file over defaults.
-	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
+	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? {
+		idleMs: initialPolicy.childIdleMs,
+		maxMs: initialPolicy.childMaxMs,
+	};
+	const effectiveInitialPolicy: EffectiveExecutionPolicy = {
+		...initialPolicy,
+		childIdleMs: timeoutPolicy.idleMs,
+		childMaxMs: timeoutPolicy.maxMs,
+	};
 	const executor = createEphemeralSubagentExecutor({
-		maxConcurrency: maxActiveSubagents,
-		maxTurns: loadedConfig.config.maxTurns ?? DEFAULT_MAX_TURNS,
-		maxTokens: loadedConfig.config.maxTokens,
+		maxConcurrency: effectiveInitialPolicy.maxSubagents,
+		maxTurns: effectiveInitialPolicy.maxTurns,
+		maxTokens: effectiveInitialPolicy.maxTokens,
 		timeout: timeoutPolicy,
 	});
+	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(readSubagentConfig());
+	const canWrite = (input: unknown): boolean => {
+		try {
+			const parsed = parseDelegateTask(input);
+			if (parsed.mode === "isolated") return true;
+			const roles = new Map(loadRoles().map((role) => [role.name, role]));
+			return parsed.workflow.delegations.some((delegation) => delegation.kind === "changeset"
+				|| roleCanWrite(roles.get(delegation.role) ?? { name: delegation.role } as Role));
+		} catch {
+			return true;
+		}
+	};
+	const admission = createCheckoutAdmission();
+	admission.register(pi, canWrite);
+	const isolatedSurface = registerIsolatedExtension(pi, {
+		executor,
+		policy: effectiveInitialPolicy,
+		currentPolicy,
+	});
+	let backgroundSequence = 0;
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, { controller: AbortController; settled: Promise<void> }>();
@@ -700,9 +726,6 @@ export default function subagentExtension(
 								const preparedLaunch = prepareLaunch(role, entry.delegation);
 								model = modelReference(preparedLaunch.model);
 								thinkingLevel = preparedLaunch.thinkingLevel;
-								if (preparedLaunch.isolation === "worktree") {
-									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
-								}
 								startWidgetItem(entry.id, entry.id, preparedLaunch.role, preparedLaunch.model.id, preparedLaunch.thinkingLevel, entry.delegation.name, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);

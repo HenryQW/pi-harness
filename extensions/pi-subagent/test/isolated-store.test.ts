@@ -85,7 +85,7 @@ test("the store persists v3 text state, rejects duplicate creates, and preserves
 		const contents = await readFile(handle.path, "utf8");
 		assert.doesNotMatch(contents, /launchRecords|fingerprint|LaunchRecord/);
 		await assert.rejects(store.create(created), {
-			message: `Pi Orchestrator request ${created.request.id} already exists.`,
+			message: `Pi Subagent request ${created.request.id} already exists.`,
 		});
 
 		const loaded = await store.load(root, created.request.id);
@@ -120,7 +120,7 @@ test("the lifecycle lock rejects unowned productive work while admitting owned, 
 			let rejectedOperationRan = false;
 			await assert.rejects(
 				contender.withLock(root, async () => { rejectedOperationRan = true; }),
-				/Another Pi Orchestrator productive request is active/,
+				/Another Pi Subagent productive request is active/,
 			);
 			assert.equal(rejectedOperationRan, false);
 

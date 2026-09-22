@@ -1,6 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, normalize, relative, sep } from "node:path";
-import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
+import type { EphemeralSubagentExecutor } from "./ephemeral.ts";
 import type {
 	DirectProcessRunner,
 	ExactReviewExecutor,

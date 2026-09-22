@@ -61,7 +61,7 @@ const HOST_LAYOUT_MAX_POLLS = 40;
 const DIAGNOSTIC_LIMIT = 8 * 1024;
 const LEASE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
-const PROCESS_LEASE_ENV = "PI_ORCHESTRATOR_PROCESS_LEASE";
+const PROCESS_LEASE_ENV = "PI_SUBAGENT_PROCESS_LEASE";
 const CORRELATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const HERDR_AGENT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 const SETTLED_AGENT_STATES = new Set(["idle", "done"]);
@@ -347,14 +347,14 @@ export class HerdrHostRuntime implements HostRuntime {
 		this.now = options.now ?? Date.now;
 		this.randomId = options.randomId ?? (() => randomBytes(16).toString("hex"));
 		this.env = options.env ?? process.env;
-		this.leaseDirectory = resolve(options.leaseDirectory ?? join(extensionConfigDir("pi-orchestrator"), "leases"));
+		this.leaseDirectory = resolve(options.leaseDirectory ?? join(extensionConfigDir("pi-subagent"), "leases"));
 		this.lsofCommand = options.lsofCommand ?? "lsof";
 	}
 
 	/** Fail-closed Herdr caller/capability gate. This method creates no state or host resource. */
 	async preflightHost(input: { root: string }, context: OperationContext): Promise<void> {
 		context.signal.throwIfAborted();
-		if (this.env.HERDR_ENV !== "1") throw new Error("Pi Orchestrator requires HERDR_ENV=1.");
+		if (this.env.HERDR_ENV !== "1") throw new Error("Pi Subagent requires HERDR_ENV=1.");
 		const paneId = exactString(this.env.HERDR_PANE_ID, "HERDR_PANE_ID");
 		const root = await realpath(input.root);
 

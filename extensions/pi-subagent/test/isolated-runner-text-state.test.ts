@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
-	OrchestratorRunner,
+	IsolatedRunner,
 	type CoordinatorRuntime,
 	type GitRuntime,
 	type HostRuntime,
@@ -60,7 +60,7 @@ const acquireTextLaunch = async () => ({
 });
 
 function markAttention(task: TextTaskState, failure: string): void {
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{} as CoordinatorRuntime,
 		{} as HostRuntime,
 		{} as GitRuntime & TaskCandidateInspector,
@@ -119,7 +119,7 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 	const root = join(directory, "workspace");
 	await mkdir(root);
 	const store = new FileRunStore(join(directory, "agent"));
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{
 			now: () => 1,
 			randomToken: () => "token-0000000000000001",
@@ -200,7 +200,7 @@ test("text retry saves its second attempt atomically before executor launch", as
 			};
 		},
 	};
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{
 			now: () => 1,
 			randomToken: () => "token-0000000000000001",
@@ -310,7 +310,7 @@ test("text retry runs only the selected ready task while another needs attention
 			};
 		},
 	};
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{
 			now: () => 1,
 			randomToken: () => "token-0000000000000001",
@@ -395,7 +395,7 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 					return { state, save: async (): Promise<void> => {} };
 				},
 			} as unknown as FileRunStore;
-			const runner = new OrchestratorRunner(
+			const runner = new IsolatedRunner(
 				{
 					now: () => 1,
 					randomToken: () => "token-0000000000000001",

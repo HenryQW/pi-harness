@@ -7,12 +7,12 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import {
-	createOrchestratorComponents,
-	registerOrchestratorExtension,
+	createIsolatedComponents,
+	registerIsolatedExtension,
 	workspaceWidgetLines,
-	type CreateOrchestratorComponents,
-	type OrchestratorExtensionComponents,
-} from "../extensions/orchestrator.ts";
+	type CreateIsolatedComponents,
+	type IsolatedExtensionComponents,
+} from "../extensions/isolated.ts";
 import type { OperationContext, RunResponse } from "../src/runner.ts";
 import {
 	ExecuteRequestSchema,
@@ -165,10 +165,10 @@ function response(method: string, continuation = false, state: RunState = PRIVAT
 }
 
 function createHarness(options: {
-	runner?: OrchestratorExtensionComponents["runner"];
-	resolveRoot?: OrchestratorExtensionComponents["resolveRoot"];
+	runner?: IsolatedExtensionComponents["runner"];
+	resolveRoot?: IsolatedExtensionComponents["resolveRoot"];
 	responseState?: RunState;
-	onCreate?: (options: Parameters<CreateOrchestratorComponents>[0]) => void;
+	onCreate?: (options: Parameters<CreateIsolatedComponents>[0]) => void;
 } = {}): Harness {
 	const tools: RegisteredTool[] = [];
 	const commands = new Map<string, RegisteredCommand>();
@@ -176,7 +176,7 @@ function createHarness(options: {
 	const runnerCalls: RunnerCall[] = [];
 	const rootCalls: Array<{ cwd: string; context: OperationContext }> = [];
 	let componentCreations = 0;
-	let componentOptions: Parameters<CreateOrchestratorComponents>[0] | undefined;
+	let componentOptions: Parameters<CreateIsolatedComponents>[0] | undefined;
 
 	const pi = {
 		on(name: string, handler: EventHandler) {
@@ -218,9 +218,9 @@ function createHarness(options: {
 			runnerCalls.push({ method: "acceptCandidate", args });
 			return "acceptance queued";
 		},
-	} as unknown as OrchestratorExtensionComponents["runner"];
+	} as unknown as IsolatedExtensionComponents["runner"];
 
-	const createComponents: CreateOrchestratorComponents = (createdOptions) => {
+	const createComponents: CreateIsolatedComponents = (createdOptions) => {
 		componentCreations += 1;
 		componentOptions = createdOptions;
 		options.onCreate?.(createdOptions);
@@ -232,7 +232,7 @@ function createHarness(options: {
 			}),
 		};
 	};
-	registerOrchestratorExtension(pi, createComponents);
+	registerIsolatedExtension(pi, createComponents);
 
 	return {
 		pi,
@@ -479,13 +479,13 @@ test("Role child argv causes zero registration and dependency side effects", () 
 			throw new Error("child mode touched Pi");
 		},
 	}) as ExtensionAPI;
-	const createComponents: CreateOrchestratorComponents = () => {
+	const createComponents: CreateIsolatedComponents = () => {
 		dependencyAccesses += 1;
 		throw new Error("child mode touched dependencies");
 	};
 	try {
 		process.argv = [...originalArgv, `--${ROLE_TOOL_POLICY_FLAG}`, "[]"];
-		registerOrchestratorExtension(pi, createComponents);
+		registerIsolatedExtension(pi, createComponents);
 	} finally {
 		process.argv = originalArgv;
 	}
@@ -554,7 +554,7 @@ test("production components complete host preflight before inspecting Main", asy
 			throw new Error(`Unexpected process: ${command} ${args.join(" ")}`);
 		},
 	} as unknown as ExtensionAPI;
-	const { runner } = createOrchestratorComponents({
+	const { runner } = createIsolatedComponents({
 		pi,
 		context: () => context(root),
 		onInteractiveWait() {},
@@ -727,7 +727,7 @@ test("missing Role context and root preflight failures stay explicit", async () 
 			undefined,
 			undefined as unknown as ExtensionContext,
 		),
-		/Pi Orchestrator cannot resolve a Role before session context exists/i,
+		/Pi Subagent cannot resolve a Role before session context exists/i,
 	);
 	assert.equal(typeof contextGetter, "function");
 
