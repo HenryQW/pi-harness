@@ -62,11 +62,8 @@ export class PullRequestBranchUpdater {
 	private readonly load: Load;
 
 	constructor(options: UpdateBranchOptions) {
-		if (!options.authority || options.authority.lifecycle !== "open" || options.authority.target.provenance !== "configured") {
+		if (!options.authority || options.authority.target.provenance !== "configured") {
 			throw new TypeError("Branch update requires a configured open pull request");
-		}
-		if (!options.authority.conditions.baseUpdateRequired && !options.authority.conditions.conflict) {
-			throw new TypeError("Pull request does not require a branch update");
 		}
 		this.cwd = options.cwd;
 		this.authority = cloneCurrentPullRequest(options.authority);

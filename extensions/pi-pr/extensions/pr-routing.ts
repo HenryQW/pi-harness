@@ -71,7 +71,7 @@ export type FeedbackRouteBlocker =
 	| { kind: "head-not-equal"; relation: Exclude<LocalHeadRelation, "equal"> };
 type RouteDecision =
 	| { kind: "selected"; nextStep: NextStep }
-	| { kind: "feedback-blocked"; nextStep: "blocked"; blocker: FeedbackRouteBlocker };
+	| { kind: "feedback-blocked"; blocker: FeedbackRouteBlocker };
 
 function localMutationSafe(local: LocalMergeSafety): boolean {
 	return local.worktree === "clean" && local.head === "equal";
@@ -122,25 +122,24 @@ export function deriveRouteDecision(
 ): RouteDecision {
 	if (intent === "automatic") return { kind: "selected", nextStep: deriveAutomaticNextStep(discovery) };
 	if (discovery.kind === "blocked") {
-		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "discovery-blocked" } };
+		return { kind: "feedback-blocked", blocker: { kind: "discovery-blocked" } };
 	}
 	if (discovery.kind !== "current") {
-		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "pull-request-unavailable" } };
+		return { kind: "feedback-blocked", blocker: { kind: "pull-request-unavailable" } };
 	}
 	const pullRequest = discovery.pullRequest;
 	if (pullRequest.lifecycle !== "open") {
-		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "pull-request-not-open" } };
+		return { kind: "feedback-blocked", blocker: { kind: "pull-request-not-open" } };
 	}
 	if (pullRequest.target.provenance !== "configured") {
-		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "target-not-configured" } };
+		return { kind: "feedback-blocked", blocker: { kind: "target-not-configured" } };
 	}
 	if (pullRequest.local.worktree !== "clean") {
-		return { kind: "feedback-blocked", nextStep: "blocked", blocker: { kind: "worktree-dirty" } };
+		return { kind: "feedback-blocked", blocker: { kind: "worktree-dirty" } };
 	}
 	if (pullRequest.local.head !== "equal") {
 		return {
 			kind: "feedback-blocked",
-			nextStep: "blocked",
 			blocker: { kind: "head-not-equal", relation: pullRequest.local.head },
 		};
 	}
@@ -148,5 +147,5 @@ export function deriveRouteDecision(
 }
 
 export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
-	return deriveRouteDecision(discovery).nextStep;
+	return deriveAutomaticNextStep(discovery);
 }

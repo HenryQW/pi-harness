@@ -11,7 +11,7 @@ import {
 
 export type PrDisplayInput = PullRequest & {
 	number: number;
-	url: string | URL;
+	url: URL;
 	approved: boolean;
 	target: PullRequestTarget;
 };
@@ -140,7 +140,7 @@ export function projectPrDisplay(
 		nextStep,
 		footer: {
 			number: input.number,
-			url: typeof input.url === "string" ? input.url : input.url.href,
+			url: input.url.href,
 			...footerStatus(input),
 		},
 		widget: widgetText(input, nextStep),

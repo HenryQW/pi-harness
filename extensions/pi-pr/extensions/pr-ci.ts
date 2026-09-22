@@ -12,6 +12,7 @@ import {
 	extensionExecApi,
 	inspectWorktree,
 	isAncestor,
+	parseSingleOutputLine,
 	readHead,
 	readRemoteOid,
 	requiredOid,
@@ -177,13 +178,6 @@ function parseJson(output: string, label: string): unknown {
 	}
 }
 
-function outputLine(output: string, label: string): string {
-	const normalized = output.replace(/\r\n/g, "\n");
-	const lines = (normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized).split("\n");
-	if (lines.length !== 1 || !lines[0]) throw new Error(`${label} returned invalid output`);
-	return requiredText(lines[0], label);
-}
-
 function actionsUrl(authority: CurrentPullRequest, suffix: string): string {
 	const url = new URL(authority.url.origin);
 	url.pathname = `/${authority.base.repository}/actions/${suffix}`;
@@ -312,9 +306,7 @@ export class PullRequestCiFixer {
 	private collectedFingerprint?: string;
 
 	constructor(options: PullRequestCiFixOptions) {
-		if (!options.authority || options.authority.lifecycle !== "open" ||
-			options.authority.target.provenance !== "configured" || options.authority.conditions.ci !== "failure" ||
-			options.authority.local.worktree !== "clean" || options.authority.local.head !== "equal") {
+		if (!options.authority || options.authority.target.provenance !== "configured") {
 			throw new TypeError("CI repair requires a configured failed pull request with a clean equal local HEAD");
 		}
 		const head = requiredOid(options.authority.head.oid, "pull request head OID");
@@ -357,10 +349,10 @@ export class PullRequestCiFixer {
 	}
 
 	private async requireOriginalLocal(): Promise<void> {
-		const branch = outputLine(
+		const branch = requiredText(parseSingleOutputLine(
 			(await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout,
 			"current branch",
-		);
+		), "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("CI repair cancelled: current branch changed");
 		if (await inspectWorktree(this.exec, this.options()) !== "clean") {
 			throw new Error("CI repair requires a clean worktree with no Git operation in progress");
@@ -695,10 +687,10 @@ export class PullRequestCiFixer {
 		await this.requireCollectedEvidence();
 		const original = this.authority.head.oid;
 		await this.requireSavedDestination(original);
-		const branch = outputLine(
+		const branch = requiredText(parseSingleOutputLine(
 			(await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout,
 			"current branch",
-		);
+		), "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("CI repair publish cancelled: current branch changed");
 		if (await inspectWorktree(this.exec, this.options()) !== "clean") {
 			throw new Error("CI repair publish requires a clean worktree with no Git operation in progress");

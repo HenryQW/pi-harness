@@ -173,9 +173,7 @@ export class PullRequestCreator {
 	private explicitBase?: string;
 
 	constructor(options: CreatePullRequestOptions) {
-		if (!options.target || options.target.remoteOid !== null && !requiredOid(options.target.remoteOid, "remote OID")) {
-			throw new TypeError("PR creation requires a validated creation target");
-		}
+		if (options.target.remoteOid !== null) requiredOid(options.target.remoteOid, "remote OID");
 		this.cwd = options.cwd;
 		this.target = { ...options.target };
 		this.noTarget = options.target.provenance === "inferred" && options.target.remoteOid === null;
