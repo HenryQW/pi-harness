@@ -107,7 +107,10 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			// Pi's native session is the exact answer channel. Herdr screen output is diagnostic only.
 			const sessionArgs = launch.args.filter((arg) => arg !== "--no-session");
 			if (sessionArgs.length !== launch.args.length - 1) throw new Error("Role launch must contain exactly one --no-session option.");
-			const created = result(await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--no-focus"], options(signal)), "tab_created");
+			signal.throwIfAborted();
+			// Tab creation is bounded but not session-cancellable: Herdr may create it
+			// before the CLI responds, and aborting the CLI loses the exact tab ID.
+			const created = result(await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--no-focus"], options()), "tab_created");
 			const tab = object(created.tab, "created tab");
 			const workerPane = object(created.root_pane, "created pane");
 			const tabId = field(tab.tab_id, "tab id");
@@ -124,6 +127,9 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 					args: [...sessionArgs, "--session", sessionFile], options: options(signal), shouldRetry: () => false });
 				if (started.code !== 0 || started.killed) throw new Error(`Herdr agent start failed: ${started.stderr.slice(0, 1000)}`);
 				if (inspect(JSON.parse(started.stdout), "agent_started", name, paneId, tabId) !== "idle") throw new Error("Herdr agent was not idle after start.");
+				// A canceled start may have succeeded server-side; retain its tab but
+				// never submit a new prompt after cancellation.
+				signal.throwIfAborted();
 				const prompt = `${task}\n\nDirect text boundary: inspect only. Do not modify files, the Git index, HEAD, branches, or worktrees.\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
 				// Native prompt without --wait acknowledges submission, not completion of the turn.
 				const accepted = await herdr.json(["agent", "prompt", name, prompt], options(signal));

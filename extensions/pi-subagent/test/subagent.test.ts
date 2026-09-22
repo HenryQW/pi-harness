@@ -177,7 +177,7 @@ function harness(options: {
 	timeoutPolicy?: { idleMs: number; maxMs: number };
 	cwd?: string;
 	sendMessageError?: Error;
-	herdr?: (args: string[]) => Promise<any>;
+	herdr?: (args: string[], options?: { signal?: AbortSignal; timeout?: number }) => Promise<any>;
 } = {}) {
 	let tool: Tool | undefined;
 	const tools = new Map<string, Tool>();
@@ -195,7 +195,7 @@ function harness(options: {
 		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 		exec(command: string, args: string[], execOptions?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
-			if (command === "herdr" && options.herdr) return options.herdr(args);
+			if (command === "herdr" && options.herdr) return options.herdr(args, execOptions);
 			return new Promise((resolve) => {
 				execFile(command, args, execOptions, (error, stdout, stderr) => resolve({
 					stdout: String(stdout),
@@ -504,21 +504,27 @@ test("parallel tabs persist exact identities across a session switch without a f
 	});
 });
 
-test("switch during first direct launch carries tab identity without delivering a stale result", async () => {
+test("switch during tab creation retains exact identity before cancellation; unknown start/prompt outcomes retain recovery", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
-			for (const stage of ["tab", "agent"] as const) {
+			for (const stage of ["tab", "start", "start-ack", "prompt"] as const) {
 				let entered!: () => void;
 				let release!: () => void;
 				const reached = new Promise<void>((resolve) => { entered = resolve; });
 				const gate = new Promise<void>((resolve) => { release = resolve; });
 				const fake = fakeHerdr(cwd);
-				const app = harness({ cwd, herdr: async (args) => {
-					const response = await fake.exec(args);
-					if (args[0] === stage && args[1] === (stage === "tab" ? "create" : "start")) {
+				const app = harness({ cwd, herdr: async (args, options) => {
+					const response = await fake.exec(args); // Herdr has already applied the operation.
+					if (args[0] === (stage === "tab" ? "tab" : "agent") && args[1] === (stage === "tab" ? "create" : stage === "start-ack" ? "start" : stage)) {
 						entered();
-						await gate;
+						if (stage === "tab") {
+							assert.equal(options?.signal, undefined, "tab creation must survive cancellation to return its identity");
+							await gate;
+						} else {
+							await Promise.race([gate, new Promise<void>((resolve) => options?.signal?.addEventListener("abort", () => resolve(), { once: true }))]);
+							if (options?.signal?.aborted && stage !== "start-ack") return { code: -1, stdout: "", stderr: "", killed: true };
+						}
 					}
 					return response;
 				} });
@@ -529,12 +535,17 @@ test("switch during first direct launch carries tab identity without delivering 
 				const originalBranch = app.sessionEntries;
 				app.switchBranch();
 				const switched = app.handlers.get("session_start")?.({}, app.ctx);
+				if (stage === "tab") {
+					assert.equal(app.sessionEntries.length, 0);
+					assert.equal(fake.calls.some(([kind, action]) => kind === "agent" && action === "start"), false);
+				}
 				release();
 				await Promise.all([rejected, switched]);
 				assert.equal(app.sentMessages.length, 0);
 				assert.equal(app.sessionEntries.length, 1);
 				assert.equal(app.sessionEntries[0]!.data.tabId, "w-test:t2");
-				assert.equal(originalBranch.length, stage === "agent" ? 1 : 0);
+				assert.equal(originalBranch.length, stage === "tab" ? 0 : 1);
+				assert.equal(fake.calls.filter(([kind, action]) => kind === "agent" && action === "prompt").length, stage === "prompt" ? 1 : 0);
 				await app.commands.get("subagent-direct-recovery")!.handler("", app.ctx);
 				assert.match(app.notifications.at(-1)!.message, /tab w-test:t2 .* session .*session.jsonl/);
 			}
