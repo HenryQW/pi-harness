@@ -13,6 +13,8 @@ pi install npm:@henryqw/pi-subagent
 
 Isolated changeset tasks require Herdr `0.9.0` or newer. Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use.
 
+`@henryqw/pi-orchestrator` is retired. Isolated `delegate_task` absorbed that protocol. Remove the old package with `pi remove npm:@henryqw/pi-orchestrator`. Old orchestrator state is not migrated.
+
 Install `pi-mcp-adapter` only when a Role declares an MCP server allowlist:
 
 ```bash

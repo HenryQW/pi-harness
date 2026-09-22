@@ -24,7 +24,7 @@ Execution policy comes only from `config/pi-subagent/config.json`. Request field
 
 Pi remains Role and model resource authority. Herdr owns isolated worker processes. The extension stops at checked local integration and never pushes, publishes, deploys, or opens a pull request.
 
-The previous separate package and its tool names are removed rather than retained as aliases. Older durable formats are rejected explicitly; there is no silent migration or fallback.
+The previous separate package and its tool names are removed rather than retained as aliases. Older durable formats are rejected explicitly; there is no silent migration or fallback. The retired package record lives in [`deprecated/pi-orchestrator`](../../deprecated/pi-orchestrator/README.md).
 
 ## Consequences
 

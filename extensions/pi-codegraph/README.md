@@ -50,7 +50,7 @@ Do not remove an active lock. Existing indexes without an extension-owned lock a
 
 Only Git worktree-root indexes and the default `.codegraph` directory are supported. An alternate `CODEGRAPH_DIR` is rejected. Nested monorepo indexes are not initialized automatically. The primary checkout must remain present and indexed for automatic opt-in detection.
 
-The extension does not add ignore rules, delete indexes, or prune worktrees. Add `.codegraph/` to your own ignore rules if needed. Pi Subagent and Pi Orchestrator conservatively treat ignored files as retained work: an indexed worker worktree may require manual cleanup. This package does not weaken those data-loss safeguards.
+The extension does not add ignore rules, delete indexes, or prune worktrees. Add `.codegraph/` to your own ignore rules if needed. Pi Subagent conservatively treats ignored files as retained work: an indexed worker worktree may require manual cleanup. This package does not weaken those data-loss safeguards.
 
 ## Existing MCP configuration
 

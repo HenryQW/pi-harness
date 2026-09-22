@@ -92,7 +92,12 @@ printf '${name} ${version}\\n'
 `;
 }
 
-function legacyPi({ installFails = false, uninstallFails = false, removalPersists = false } = {}) {
+function legacyPi({
+  installFails = false,
+  uninstallFails = false,
+  removalPersists = false,
+  packageSource = "npm:@henryqw/pi-auto-dag",
+} = {}) {
   return `#!/bin/sh
 printf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"
 marker="$PI_HARNESS_TEST_DIR/pi-initialized"
@@ -106,7 +111,7 @@ case "$1" in
   install)
     ${installFails ? "[ \"$2\" != \"npm:@henryqw/pi-herdr-btw\" ] || exit 1" : ":"}
     ;;
-  list) [ ! -f "$source" ] || printf 'User packages:\\n  npm:@henryqw/pi-auto-dag\\n    /tmp/pi-auto-dag\\n' ;;
+  list) [ ! -f "$source" ] || printf 'User packages:\\n  ${packageSource}\\n    /tmp/legacy-package\\n' ;;
   uninstall)
     ${uninstallFails ? "exit 1" : removalPersists ? ":" : "rm -f \"$source\""}
     ;;
@@ -144,6 +149,7 @@ test("installer stays synchronized with every public Pi package", () => {
   assert.ok(!names.includes("@henryqw/pi-config-store"));
   assert.ok(!names.includes("@henryqw/pi-herdr"));
   assert.ok(!names.includes("@henryqw/pi-auto-dag"));
+  assert.ok(!names.includes("@henryqw/pi-orchestrator"));
   assert.ok(names.includes("@henryqw/pi-subagent"));
 });
 
@@ -317,6 +323,20 @@ test("a pi-subagent upgrade removes only the exact retired npm source after inst
       "pi list",
     ]);
   }, { extensions: ["@henryqw/pi-subagent", "@henryqw/pi-herdr-btw"] });
+});
+
+test("a pi-subagent upgrade removes the retired orchestrator source after installation", () => {
+  withInstaller(legacyPi({ packageSource: "npm:@henryqw/pi-orchestrator" }), compatibleHerdr, ({ commands, runInstaller }) => {
+    assert.equal(runInstaller().status, 0);
+    assert.deepEqual(commands(), [
+      "pi --version",
+      "herdr --version",
+      "pi install npm:@henryqw/pi-subagent",
+      "pi list",
+      "pi uninstall npm:@henryqw/pi-orchestrator",
+      "pi list",
+    ]);
+  }, { extensions: ["@henryqw/pi-subagent"] });
 });
 
 test("legacy cleanup does not run when a selected replacement install fails", () => {
