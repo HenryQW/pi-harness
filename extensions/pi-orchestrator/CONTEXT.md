@@ -31,15 +31,15 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - Each changeset attempt owns one worktree, one Herdr workspace, one worker tab, and one agent. The worker tab is created after the workspace pane list is stable, and it is never the worktree root pane. Each allocation stores kind-specific plan and result fields before non-idempotent creation.
 - Task identity ignores Git-ignored dependency, build, and index artifacts created by Role tooling. It still rejects tracked changes, non-ignored untracked files, hidden index entries, gitlinks, and branch or commit drift.
 - A task worker receives one initial assignment. One correction is allowed only after a settled prompt or an unchanged failed check candidate.
-- Ready tasks run in parallel. Text tasks complete in place. Changeset preliminary validation uses direct checks only, then the Herdr worker must stop before declared-order integration.
-- After worker termination and rebase, task checks run again. One ephemeral exact judgment runs only when the task declares it.
+- Ready tasks run in parallel. Text tasks complete in place. Changeset preliminary validation uses direct checks only. Explicit acceptance records the exact checked candidate while its Herdr worker remains live.
+- Each accepted changeset records an exact rebase chain, then runs task checks and any declared ephemeral judgment again. The worker remains live through guarded Main integration. Only durable exact integration permits termination, and only exact termination permits cleanup.
 - Task and final checks are authoritative. Checks run directly from exact command and argument arrays without a shell.
 - Durable check evidence keeps every exact command, argument array, exit status, killed status, and before/after identity. Only one failed-batch diagnostic result may retain bounded output.
 - Judgment uses pi-subagent's exact `{base, tip, patchPath}` evidence and accepts only exact `PASS`.
-- Main identity is checked at each integration and final boundary. Drift fails closed and preserves recovery evidence.
-- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Runtime evidence is bounded before persistence. Reads validate the strict schema, reject old versions, and never migrate another format.
-- `orchestrate_status` may reconcile interrupted state and terminate ambiguous owned workers. It starts no productive replacement attempt.
-- `orchestrate_resume` permits only `retry`, `verify`, or `finalize`. `orchestrate_abort` terminates owned workers before recording abort.
+- Main identity is checked at each rebase, integration, and final boundary. Movement during accepted work records another exact rebase; unproved drift fails closed and preserves recovery evidence.
+- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Runtime evidence is bounded before persistence. Reads validate strict state schema v3, reject v2 and older versions, and never migrate another format.
+- `orchestrate_status` is non-destructive. It reports saved state, Main identity, and only continuations proven safe; it does not reconcile, replay, terminate, or clean up.
+- `orchestrate_resume` permits only `retry`, `verify`, or `finalize` under a fresh bounded recovery deadline. Uncertain recovery retains the worker and resources. `orchestrate_abort` is the only pre-integration path that terminates owned workers.
 - Cleanup records uncertainty. The runtime never reports unknown resources as absent or force-deletes recoverable work.
 - Role child launches register no `orchestrate_*` tools. Main registers exactly execute, status, resume, and abort.
 - The package stops at checked local integration. It does not push, manage pull requests, run swarms, migrate old state, or support old protocols.

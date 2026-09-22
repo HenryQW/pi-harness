@@ -3,7 +3,7 @@ import { parseRoleName, type RoleName } from "@henryqw/pi-subagent";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-export const RUN_STATE_VERSION = 2;
+export const RUN_STATE_VERSION = 3;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
@@ -176,6 +176,8 @@ export type PromptRecord = Static<typeof PromptRecordSchema>;
 export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
 export type CheckBatchEvidence = Static<typeof CheckBatchEvidenceSchema>;
 export type ReviewEvidence = Static<typeof ReviewEvidenceSchema>;
+export type RebaseTransition = Static<typeof RebaseTransitionSchema>;
+export type WorkerTermination = Static<typeof WorkerTerminationSchema>;
 
 export const CLEANUP_KINDS = ["worker_tab", "workspace", "worktree", "branch"] as const;
 export type CleanupStep = Static<typeof CleanupStepSchema>;
@@ -243,6 +245,23 @@ const WorkerTerminationSchema = Type.Object({
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
+const AcceptanceSchema = Type.Object({
+	candidate: WorkspaceSchema,
+	base: WorkspaceSchema,
+	at: TimestampSchema,
+}, { additionalProperties: false });
+
+const RebaseTransitionSchema = Type.Object({
+	kind: Type.Literal("rebase"),
+	status: Type.Union([Type.Literal("rebasing"), Type.Literal("rebased"), Type.Literal("unknown")]),
+	sourceBase: WorkspaceSchema,
+	from: WorkspaceSchema,
+	onto: WorkspaceSchema,
+	to: Type.Optional(WorkspaceSchema),
+	at: TimestampSchema,
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
 const IntegrationRecordSchema = Type.Object({
 	status: Type.Union([Type.Literal("integrating"), Type.Literal("integrated"), Type.Literal("failed"), Type.Literal("unknown")]),
 	expectedMain: WorkspaceSchema,
@@ -268,7 +287,10 @@ const TaskAttemptSchema = Type.Object({
 	allocations: Type.Array(AllocationIntentSchema, { maxItems: 5 }),
 	prompts: Type.Array(PromptRecordSchema, { maxItems: 32 }),
 	candidate: Type.Optional(WorkspaceSchema),
+	candidateBase: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
+	acceptance: Type.Optional(AcceptanceSchema),
+	transitions: Type.Array(RebaseTransitionSchema, { maxItems: 32 }),
 	termination: Type.Optional(WorkerTerminationSchema),
 	integrationBase: Type.Optional(WorkspaceSchema),
 	integrationCandidate: Type.Optional(WorkspaceSchema),
@@ -346,8 +368,9 @@ const RunStateSchema = Type.Object({
 	waves: Type.Array(WaveStateSchema, { maxItems: MAX_TASKS }),
 	final: FinalGateSchema,
 	recovery: Type.Optional(Type.Object({
-		kind: Type.Literal("cleanup_only"),
-		taskId: IdSchema,
+		kind: Type.Literal("resume"),
+		action: Type.Union([Type.Literal("retry"), Type.Literal("verify"), Type.Literal("finalize")]),
+		taskId: Type.Optional(IdSchema),
 		deadline: TimestampSchema,
 	}, { additionalProperties: false })),
 	accepted: Type.Boolean(),
@@ -607,11 +630,13 @@ function requireCompletedTaskEvidence(taskState: ChangesetTaskState, request: Ch
 	if (!worktree || !hasWorktreePlan(worktree)) {
 		throw new Error(`Completed task ${request.id} lacks an exact owned worktree record.`);
 	}
-	if (!attempt?.candidate || !attempt.integrationCandidate || !attempt.integrationBase) {
-		throw new Error(`Completed task ${request.id} has no integration candidate.`);
+	if (!attempt?.candidate || !attempt.candidateBase || !attempt.acceptance
+		|| !attempt.integrationCandidate || !attempt.integrationBase) {
+		throw new Error(`Completed task ${request.id} has no accepted integration candidate.`);
 	}
-	if (attempt.termination?.status !== "terminated") {
-		throw new Error(`Completed task ${request.id} has no recorded worker termination.`);
+	if (attempt.termination?.status !== "terminated"
+		|| !sameIdentity(attempt.termination.candidate, attempt.integrationCandidate)) {
+		throw new Error(`Completed task ${request.id} has no exact recorded worker termination.`);
 	}
 	if (attempt.authoritativeChecks?.phase !== "authoritative"
 		|| !checkBatchPasses(attempt.authoritativeChecks, request.checks, attempt.integrationCandidate)) {
@@ -726,6 +751,117 @@ export function parseRunState(value: unknown): RunState {
 				if (attempt.authoritativeChecks.phase !== "authoritative") throw new Error(`Malformed authoritative check phase for ${definition.id}.`);
 				validateCheckBatchEvidence(attempt.authoritativeChecks, definition.checks, `Authoritative checks for ${definition.id}`);
 			}
+			if ((attempt.candidate === undefined) !== (attempt.candidateBase === undefined)) {
+				throw new Error(`Candidate and candidate base for ${definition.id} must be recorded together.`);
+			}
+			if (attempt.candidate && (!isCleanCommitted(attempt.candidate) || !isCleanCommitted(attempt.candidateBase!))) {
+				throw new Error(`Candidate lineage for ${definition.id} must be clean and committed.`);
+			}
+			if (attempt.acceptance) {
+				if (!attempt.candidate || !attempt.candidateBase
+					|| !sameIdentity(attempt.acceptance.candidate, attempt.candidate)
+					|| !sameIdentity(attempt.acceptance.base, attempt.candidateBase)
+					|| !checkBatchPasses(attempt.preliminaryChecks, definition.checks, attempt.candidate)) {
+					throw new Error(`Acceptance for ${definition.id} does not match exact passing preliminary evidence.`);
+				}
+			}
+			for (let transitionIndex = 0; transitionIndex < attempt.transitions.length; transitionIndex += 1) {
+				const transition = attempt.transitions[transitionIndex]!;
+				if (![transition.sourceBase, transition.from, transition.onto].every(isCleanCommitted)
+					|| (transition.to && !isCleanCommitted(transition.to))) {
+					throw new Error(`Rebase transition ${transitionIndex + 1} for ${definition.id} has an unclean identity.`);
+				}
+				if (transitionIndex > 0 && transition.at < attempt.transitions[transitionIndex - 1]!.at) {
+					throw new Error(`Rebase transitions for ${definition.id} are not chronological.`);
+				}
+				if (transition.status === "rebased" ? !transition.to || transition.failure !== undefined
+					: transition.status === "rebasing" ? transition.to !== undefined || transition.failure !== undefined
+						: !transition.failure?.trim()) {
+					throw new Error(`Rebase transition ${transitionIndex + 1} for ${definition.id} has inconsistent status evidence.`);
+				}
+			}
+			if ((attempt.integrationBase === undefined) !== (attempt.integrationCandidate === undefined)) {
+				throw new Error(`Integration lineage for ${definition.id} must be recorded together.`);
+			}
+			if (attempt.acceptance) {
+				let base = attempt.acceptance.base;
+				let candidate = attempt.acceptance.candidate;
+				const acceptedTransitions = attempt.transitions.filter(({ at }) => at > attempt.acceptance!.at);
+				for (let transitionIndex = 0; transitionIndex < acceptedTransitions.length; transitionIndex += 1) {
+					const transition = acceptedTransitions[transitionIndex]!;
+					if (!sameIdentity(transition.sourceBase, base) || !sameIdentity(transition.from, candidate)) {
+						throw new Error(`Accepted rebase transition ${transitionIndex + 1} for ${definition.id} breaks exact lineage.`);
+					}
+					if (transition.status !== "rebased" || !transition.to) {
+						if (transitionIndex !== acceptedTransitions.length - 1) {
+							throw new Error(`Unresolved rebase transition for ${definition.id} is not the latest accepted transition.`);
+						}
+						break;
+					}
+					base = transition.onto;
+					candidate = transition.to;
+				}
+				if (attempt.integrationBase && attempt.integrationCandidate
+					&& (!acceptedTransitions.length
+						|| !sameIdentity(attempt.integrationBase, base) || !sameIdentity(attempt.integrationCandidate, candidate))) {
+					throw new Error(`Integration candidate for ${definition.id} does not match its exact accepted rebase lineage.`);
+				}
+			}
+			if (attempt.integration) {
+				const integration = attempt.integration;
+				const acceptedTransitions = attempt.acceptance
+					? attempt.transitions.filter(({ at }) => at > attempt.acceptance!.at)
+					: [];
+				const finalTransition = acceptedTransitions.at(-1);
+				if (!attempt.acceptance || !attempt.integrationBase || !attempt.integrationCandidate
+					|| finalTransition?.status !== "rebased" || !finalTransition.to
+					|| !sameIdentity(finalTransition.onto, attempt.integrationBase)
+					|| !sameIdentity(finalTransition.to, attempt.integrationCandidate)
+					|| !sameIdentity(integration.expectedMain, attempt.integrationBase)
+					|| !sameIdentity(integration.candidate, attempt.integrationCandidate)) {
+					throw new Error(`Integration record for ${definition.id} does not match its exact candidate lineage.`);
+				}
+				if (integration.status === "integrated") {
+					if (!integration.mainAfter || integration.failure !== undefined
+						|| integration.mainAfter.branch !== integration.expectedMain.branch
+						|| integration.mainAfter.head !== integration.candidate.head
+						|| !isCleanCommitted(integration.mainAfter)) {
+						throw new Error(`Integrated task ${definition.id} lacks exact integration evidence.`);
+					}
+					if (!checkBatchPasses(attempt.authoritativeChecks, definition.checks, integration.candidate)) {
+						throw new Error(`Integrated task ${definition.id} lacks authoritative passing checks on its exact candidate.`);
+					}
+					if (definition.judgment && !reviewEvidencePasses(
+						attempt.authoritativeReview,
+						"authoritative",
+						definition.judgment.criterion,
+						integration.expectedMain,
+						integration.candidate,
+					)) {
+						throw new Error(`Integrated task ${definition.id} lacks an exact authoritative passing review.`);
+					}
+				} else if (integration.status === "integrating"
+					? integration.mainAfter !== undefined || integration.failure !== undefined
+					: !integration.failure?.trim() || (integration.status === "failed" && integration.mainAfter !== undefined)) {
+					throw new Error(`Integration record for ${definition.id} has inconsistent status evidence.`);
+				}
+			}
+			if (attempt.termination) {
+				const termination = attempt.termination;
+				const ownedAgent = [...attempt.allocations].reverse().find((allocation) => allocation.kind === "agent");
+				if (!ownedAgent || ownedAgent.status !== "owned" || termination.workerId !== ownedAgent.agentName) {
+					throw new Error(`Worker termination for ${definition.id} does not match the exact owned agent.`);
+				}
+				if (termination.status === "terminated" ? termination.at === undefined || termination.failure !== undefined
+					: termination.status === "terminating" ? termination.at !== undefined || termination.failure !== undefined
+						: termination.at !== undefined || !termination.failure?.trim()) {
+					throw new Error(`Worker termination for ${definition.id} has inconsistent status evidence.`);
+				}
+				if (attempt.integrationCandidate && attempt.integration
+					&& !sameIdentity(termination.candidate, attempt.integrationCandidate)) {
+					throw new Error(`Worker termination for ${definition.id} does not match the exact integration candidate.`);
+				}
+			}
 			const initialPrompt = attempt.prompts[0];
 			if (attempt.prompts.filter((prompt) => prompt.kind === "correction").length > 1) {
 				throw new Error(`Malformed repeated correction history for ${definition.id}.`);
@@ -737,6 +873,7 @@ export function parseRunState(value: unknown): RunState {
 				|| (initialPrompt && initialPrompt.preCandidate.head !== attempt.waveBase.head)) {
 				throw new Error(`Prompt history for ${definition.id} lacks a clean exact pre-prompt candidate.`);
 			}
+			let transitionCursor = 0;
 			for (let promptIndex = 0; promptIndex < attempt.prompts.length; promptIndex += 1) {
 				const prompt = attempt.prompts[promptIndex]!;
 				if ((prompt.kind === "followup") !== (prompt.instruction !== undefined)) {
@@ -748,9 +885,24 @@ export function parseRunState(value: unknown): RunState {
 				if (promptIndex === 0) continue;
 				if (prompt.kind === "initial") throw new Error(`Malformed repeated initial prompt for ${definition.id}.`);
 				const previous = attempt.prompts[promptIndex - 1]!;
-				const retainedCandidate = previous.candidate ?? previous.preCandidate;
-				if (!sameIdentity(prompt.preCandidate, retainedCandidate)) {
-					throw new Error(`Prompt ${promptIndex + 1} for ${definition.id} did not fence the exact retained candidate.`);
+				let retainedCandidate = previous.candidate ?? previous.preCandidate;
+				while (!sameIdentity(prompt.preCandidate, retainedCandidate)) {
+					const transition = attempt.transitions[transitionCursor++];
+					if (!transition || transition.status !== "rebased" || !transition.to
+						|| !sameIdentity(transition.from, retainedCandidate)) {
+						throw new Error(`Prompt ${promptIndex + 1} for ${definition.id} lacks one contiguous completed rebase chain.`);
+					}
+					retainedCandidate = transition.to;
+				}
+				while (true) {
+					const noOp = attempt.transitions[transitionCursor];
+					if (!noOp || noOp.status !== "rebased" || !noOp.to || noOp.at > prompt.at
+						|| !sameIdentity(noOp.from, retainedCandidate) || !sameIdentity(noOp.to, retainedCandidate)) break;
+					transitionCursor += 1;
+				}
+				const extra = attempt.transitions[transitionCursor];
+				if (extra && extra.at <= prompt.at && sameIdentity(extra.from, retainedCandidate)) {
+					throw new Error(`Prompt ${promptIndex + 1} for ${definition.id} only partially consumed its rebase chain.`);
 				}
 			}
 			if (attempt.cleanup.some((step, cleanupIndex) => step.kind !== CLEANUP_KINDS[cleanupIndex])) {
@@ -867,8 +1019,12 @@ export function parseRunState(value: unknown): RunState {
 		if (state.final.checks.phase !== "final") throw new Error("Malformed final check phase.");
 		validateCheckBatchEvidence(state.final.checks, request.finalChecks, "Final checks");
 	}
-	if (state.recovery && !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
-		throw new Error("Malformed cleanup-only recovery task.");
+	if (state.recovery) {
+		if (state.recovery.deadline <= state.updatedAt) throw new Error("Malformed expired recovery deadline.");
+		if (state.recovery.action === "finalize" ? state.recovery.taskId !== undefined : !state.recovery.taskId
+			|| !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
+			throw new Error("Malformed resume recovery target.");
+		}
 	}
 	if (state.status === "completed" && !state.accepted) {
 		throw new Error("A completed request must be accepted with exact final evidence.");

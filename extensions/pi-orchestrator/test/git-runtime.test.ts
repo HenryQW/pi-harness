@@ -10,7 +10,7 @@ import {
 	type DirectProcessRunner,
 	type ExactReviewExecutorInput,
 } from "../src/git-runtime.ts";
-import { sameIdentity, type ChangesetTaskRequest, type CheckBatchEvidence, type CommandEvidence, type ReviewEvidence, type TaskAttempt, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
+import { sameIdentity, type ChangesetTaskRequest, type CheckBatchEvidence, type CommandEvidence, type RebaseTransition, type ReviewEvidence, type TaskAttempt, type WorktreeAllocationIntent, type WorktreeRecord, type WorkspaceIdentity } from "../src/schema.ts";
 import type { OperationContext, TransientLaunchHandle, VerifiedLaunch } from "../src/runner.ts";
 import { runProcess } from "../src/process.ts";
 
@@ -94,6 +94,7 @@ async function allocate(
 		allocationGeneration: 1,
 		allocations: [intent],
 		prompts: [],
+		transitions: [],
 		cleanup: ["worker_tab", "workspace", "worktree", "branch"].map((kind) => ({ kind: kind as any, status: "pending" })),
 	};
 	const result = await runtime.allocateWorktree({
@@ -168,9 +169,21 @@ async function prepareIntegration(
 	onto: WorkspaceIdentity,
 	operationContext = context(),
 ): Promise<{ base: WorkspaceIdentity; candidate: WorkspaceIdentity; checks: CheckBatchEvidence; review?: ReviewEvidence }> {
-	recordExactWorkerTermination(attempt, candidate);
-	const rebased = await runtime.rebase({ root, task: definition, attempt, candidate, onto }, operationContext);
+	attempt.candidate = candidate;
+	attempt.candidateBase = attempt.waveBase;
+	attempt.preliminaryChecks = {
+		phase: "preliminary",
+		candidate,
+		identityAfter: candidate,
+		results: definition.checks.map((check) => ({ ...check, code: 0, killed: false, stdout: "", stderr: "" })),
+		passed: true,
+		at: Date.now(),
+	};
+	attempt.acceptance = { candidate, base: attempt.waveBase, at: Date.now() };
+	const rebased = await runtime.rebase({ root, task: definition, attempt, candidate, sourceBase: attempt.waveBase, onto }, operationContext);
 	if (rebased.outcome !== "ready") assert.fail(rebased.failure);
+	attempt.candidate = rebased.candidate;
+	attempt.candidateBase = rebased.base;
 	attempt.integrationBase = rebased.base;
 	attempt.integrationCandidate = rebased.candidate;
 	const checkResult = await runtime.runChecks({
@@ -226,6 +239,7 @@ async function integrate(
 		candidate: prepared.candidate,
 		mainAfter: result.main,
 	};
+	recordExactWorkerTermination(attempt, prepared.candidate);
 	return result.main;
 }
 
@@ -595,10 +609,53 @@ test("rebase accepts a freshly inspected manual repair after exact prior worker 
 	allocated.attempt.candidate = repairedCandidate;
 
 	const rebased = await runtime.rebase({
-		root, task: definition, attempt: allocated.attempt, candidate: repairedCandidate, onto: base,
+		root, task: definition, attempt: allocated.attempt, candidate: repairedCandidate, sourceBase: allocated.attempt.waveBase, onto: base,
 	}, context());
 	assert.equal(rebased.outcome, "ready");
 	if (rebased.outcome === "ready") assert.deepEqual(rebased.candidate, repairedCandidate);
+});
+
+test("interrupted rebase reconciliation proves not-started and patch-equivalent completion", async (t) => {
+	const root = await repository(t);
+	const runtime = new CheckedGitRuntime();
+	const base = await runtime.inspectMain({ root }, context());
+	const definition = task("reconcile-rebase");
+	const allocated = await allocate(runtime, root, definition, base, "token-reconcile-001");
+	await commit(allocated.intent.worktree!.cwd, "task.txt", "task\n");
+	const candidate = await runtime.inspectRetainedTask({ root, task: definition, attempt: allocated.attempt }, context());
+	await commit(root, "main.txt", "main\n");
+	const onto = await runtime.inspectMain({ root }, context());
+	const transition: RebaseTransition = {
+		kind: "rebase",
+		status: "rebasing",
+		sourceBase: base,
+		from: candidate,
+		onto,
+		at: Date.now(),
+	};
+
+	assert.deepEqual(await runtime.reconcileRebase({
+		root, task: definition, attempt: allocated.attempt, transition,
+	}, context()), { outcome: "not_started" });
+
+	const rebased = await runtime.rebase({
+		root, task: definition, attempt: allocated.attempt, candidate, sourceBase: base, onto,
+	}, context());
+	assert.equal(rebased.outcome, "ready");
+	const reconciled = await runtime.reconcileRebase({
+		root, task: definition, attempt: allocated.attempt, transition,
+	}, context());
+	assert.equal(reconciled.outcome, "rebased");
+	if (reconciled.outcome === "rebased" && rebased.outcome === "ready") {
+		assert.deepEqual(reconciled.candidate, rebased.candidate);
+	}
+
+	await writeFile(join(allocated.intent.worktree!.cwd, "uncommitted.txt"), "dirty\n");
+	const dirty = await runtime.reconcileRebase({
+		root, task: definition, attempt: allocated.attempt, transition,
+	}, context());
+	assert.equal(dirty.outcome, "unknown");
+	assert.match(dirty.outcome === "unknown" ? dirty.failure : "", /not clean/);
 });
 
 test("same-wave units use one authoritative packet from each integration base", async (t) => {
@@ -735,48 +792,38 @@ test("Reviewer launch cleanup runs after success, failure, and abort, and cleanu
 	}, context()), /prompt cleanup failed/);
 });
 
-test("rebase conflicts retain exact work and report whether abort succeeded", async (t) => {
-	for (const abortFails of [false, true]) {
-		await t.test(abortFails ? "abort failure" : "abort success", async (t) => {
-			const root = await repository(t);
-			const commands: string[][] = [];
-			const runtime = new CheckedGitRuntime({
-				runProcess: async (command, args, options) => {
-					commands.push([command, ...args]);
-					if (abortFails && command === "git" && args[0] === "rebase" && args[1] === "--abort") {
-						return { code: 1, killed: false, stdout: "", stderr: "cannot abort" };
-					}
-					return await directProcess(command, args, options);
-				},
-			});
-			const base = await runtime.inspectMain({ root }, context());
-			const firstTask = task("first");
-			const secondTask = task("second");
-			const first = await allocate(runtime, root, firstTask, base, `token-first-conf${abortFails ? "1" : "0"}`);
-			const second = await allocate(runtime, root, secondTask, base, `token-second-con${abortFails ? "1" : "0"}`);
-			await commit(first.intent.worktree!.cwd, "base.txt", "first\n");
-			await commit(second.intent.worktree!.cwd, "base.txt", "second\n");
-			const firstCandidate = await runtime.inspectRetainedTask({ root, task: firstTask, attempt: first.attempt }, context());
-			const firstPrepared = await prepareIntegration(runtime, root, firstTask, first.attempt, firstCandidate, base);
-			const firstMain = await integrate(runtime, root, firstTask, first.attempt, firstPrepared);
-			const secondCandidate = await runtime.inspectRetainedTask({ root, task: secondTask, attempt: second.attempt }, context());
-			recordExactWorkerTermination(second.attempt, secondCandidate);
-			const rebased = await runtime.rebase({ root, task: secondTask, attempt: second.attempt, candidate: secondCandidate, onto: firstMain }, context());
-			assert.equal(rebased.outcome, "blocked");
-			assert.match(rebased.outcome === "blocked" ? rebased.failure : "", abortFails ? /abort failed/ : /abort restored/);
-			assert.deepEqual(commands.find((command) => command[1] === "rebase" && command[2] !== "--abort")?.slice(1), [
-				"rebase", "--no-update-refs", "--no-autostash", firstMain.head,
-			]);
-			assert.ok(commands.some((command) => command[1] === "rebase" && command[2] === "--abort"));
-			if (!abortFails) {
-				assert.equal(git(second.intent.worktree!.cwd, "rev-parse", "HEAD"), secondCandidate.head);
-				assert.equal(git(second.intent.worktree!.cwd, "status", "--porcelain"), "");
-			} else {
-				assert.notEqual(git(second.intent.worktree!.cwd, "status", "--porcelain"), "");
-			}
-			assert.ok(commands.every((command) => !command.includes("--force") && !command.includes("reset") && !command.includes("stash")));
-		});
-	}
+test("rebase conflicts retain exact conflict work without destructive recovery", async (t) => {
+	const root = await repository(t);
+	const commands: string[][] = [];
+	const runtime = new CheckedGitRuntime({
+		runProcess: async (command, args, options) => {
+			commands.push([command, ...args]);
+			return await directProcess(command, args, options);
+		},
+	});
+	const base = await runtime.inspectMain({ root }, context());
+	const firstTask = task("first");
+	const secondTask = task("second");
+	const first = await allocate(runtime, root, firstTask, base, "token-first-conflict");
+	const second = await allocate(runtime, root, secondTask, base, "token-second-conflic");
+	await commit(first.intent.worktree!.cwd, "base.txt", "first\n");
+	await commit(second.intent.worktree!.cwd, "base.txt", "second\n");
+	const firstCandidate = await runtime.inspectRetainedTask({ root, task: firstTask, attempt: first.attempt }, context());
+	const firstPrepared = await prepareIntegration(runtime, root, firstTask, first.attempt, firstCandidate, base);
+	const firstMain = await integrate(runtime, root, firstTask, first.attempt, firstPrepared);
+	const secondCandidate = await runtime.inspectRetainedTask({ root, task: secondTask, attempt: second.attempt }, context());
+	const rebased = await runtime.rebase({
+		root, task: secondTask, attempt: second.attempt, candidate: secondCandidate,
+		sourceBase: second.attempt.waveBase, onto: firstMain,
+	}, context());
+	assert.equal(rebased.outcome, "blocked");
+	assert.match(rebased.outcome === "blocked" ? rebased.failure : "", /conflict state were retained without abort, reset, stash, or discard/);
+	assert.deepEqual(commands.find((command) => command[1] === "rebase")?.slice(1), [
+		"rebase", "--no-update-refs", "--no-autostash", firstMain.head,
+	]);
+	assert.ok(!commands.some((command) => command[1] === "rebase" && command[2] === "--abort"));
+	assert.notEqual(git(second.intent.worktree!.cwd, "status", "--porcelain"), "");
+	assert.ok(commands.every((command) => !command.includes("--force") && !command.includes("reset") && !command.includes("stash")));
 });
 
 test("failed checks, Reviewer findings or mutation, and Main drift cannot integrate", async (t) => {
@@ -802,7 +849,8 @@ test("failed checks, Reviewer findings or mutation, and Main drift cannot integr
 	}, context());
 	assert.equal(failed.results[0]!.code, 7);
 	assert.ok(sameIdentity(failed.identityAfter, candidate));
-	recordExactWorkerTermination(allocated.attempt, candidate);
+	allocated.attempt.candidateBase = base;
+	allocated.attempt.acceptance = { candidate, base, at: Date.now() };
 	allocated.attempt.integrationBase = base;
 	allocated.attempt.integrationCandidate = candidate;
 	const findings = await runtime.review({
