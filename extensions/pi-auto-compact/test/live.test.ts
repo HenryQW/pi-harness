@@ -12,8 +12,6 @@ type JsonLineIterator = AsyncIterator<string>;
 
 const live = process.env.PI_AUTO_COMPACT_LIVE === "1";
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const resumeMessageType = "pi-auto-compact/resume";
-const resumeMessage = "Auto-compact ran. Continue the current task.";
 
 function record(value: unknown, label: string): JsonObject {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -28,15 +26,6 @@ function parseModelSpec(spec: string): { provider: string; modelId: string } {
 		throw new Error(`PI_AUTO_COMPACT_MODEL must be provider/model, got ${spec}`);
 	}
 	return { provider: spec.slice(0, separator), modelId: spec.slice(separator + 1) };
-}
-
-function contentText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content.map((block) => {
-		const item = record(block, "content block");
-		return typeof item.text === "string" ? item.text : "";
-	}).join("");
 }
 
 function send(stdin: NodeJS.WritableStream, message: JsonObject): void {
@@ -75,7 +64,7 @@ async function waitForExit(process: ReturnType<typeof spawn>): Promise<void> {
 	await new Promise<void>((resolveExit) => process.once("close", () => resolveExit()));
 }
 
-test("real Pi compacts and resumes the task", { skip: !live }, async () => {
+test("real Pi persists compaction and finishes the task", { skip: !live }, async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-"));
 	const sessionDir = join(tempRoot, "sessions");
 	const authFile = resolve(
@@ -126,32 +115,20 @@ test("real Pi compacts and resumes the task", { skip: !live }, async () => {
 			const largePrompt = "Remember this context. " +
 				"alpha beta gamma delta epsilon zeta eta theta iota kappa lambda. ".repeat(promptRepeat);
 			send(child.stdin, { id: "large", type: "prompt", message: largePrompt });
-			await readUntil(lines, (event) => event.type === "compaction_end", 180_000);
-			await readUntil(lines, (event) => event.type === "agent_start", 30_000);
 			await readUntil(lines, (event) => event.type === "agent_settled", 180_000);
 
-			send(child.stdin, { id: "messages", type: "get_messages" });
-			const response = await readUntil(
-				lines,
-				(event) => event.type === "response" && event.id === "messages",
-				30_000,
-			);
-			const data = record(response.data, "get_messages response data");
-			const messages = data.messages;
-			if (!Array.isArray(messages)) throw new Error("get_messages must return messages");
-			const resumeIndex = messages.findIndex(
-				(message) => {
-					const item = record(message, "session message");
-					return item.role === "custom" &&
-						item.customType === resumeMessageType &&
-						contentText(item.content).includes(resumeMessage);
-				},
-			);
-			assert.notEqual(resumeIndex, -1, "custom resume message must persist in session");
-			assert.ok(
-				messages.slice(resumeIndex + 1).some((message) => record(message, "session message").role === "assistant"),
-				"assistant must respond after resume message",
-			);
+			send(child.stdin, { id: "entries", type: "get_entries" });
+			const response = await readUntil(lines,
+				(event) => event.type === "response" && event.id === "entries", 30_000);
+			const data = record(response.data, "get_entries response data");
+			const entries = data.entries;
+			if (!Array.isArray(entries)) throw new Error("get_entries must return entries");
+			assert.ok(entries.some((entry) => record(entry, "session entry").type === "compaction"),
+				"a native or emergency compaction checkpoint must persist");
+			assert.ok(entries.some((entry) => {
+				const item = record(entry, "session entry");
+				return item.type === "message" && record(item.message, "session message").role === "assistant";
+			}), "the task must receive an assistant response");
 		} finally {
 			child.kill("SIGTERM");
 			await waitForExit(child);
