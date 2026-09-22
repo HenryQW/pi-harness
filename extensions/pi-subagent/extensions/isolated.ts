@@ -301,7 +301,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	const workspaceRowsByRequest = new Map<string, string[]>();
 	const stateListeners = new Set<(state: RunState) => void>();
 	const activeJobs = new Set<AbortController>();
-	const jobEpochs = new Map<string, number>();
+	const jobOwners = new Map<string, () => boolean>();
 	let sessionEpoch = 0;
 	let sessionClosed = false;
 
@@ -317,8 +317,8 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		currentPolicy: options.currentPolicy,
 		onStateSaved: (state) => {
 			for (const listener of stateListeners) listener(state);
-			const ownerEpoch = jobEpochs.get(`${state.root}\0${state.request.id}`);
-			if (!sessionClosed && (ownerEpoch === undefined || ownerEpoch === sessionEpoch)) {
+			const owner = jobOwners.get(`${state.root}\0${state.request.id}`);
+			if (!sessionClosed && (owner === undefined || owner())) {
 				updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest);
 			}
 		},
@@ -375,13 +375,16 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		const epoch = sessionEpoch;
 		const sessionId = ctx.sessionManager?.getSessionId();
 		const key = `${root}\0${id}`;
-		if (jobEpochs.has(key)) throw new Error(`Pi Subagent request ${id} is already active in this session runtime.`);
+		if (jobOwners.has(key)) throw new Error(`Pi Subagent request ${id} is already active in this session runtime.`);
+		const canDeliver = () => !sessionClosed && sessionEpoch === epoch
+			&& ctx.sessionManager?.getSessionId() === sessionId
+			&& latestCtx?.sessionManager?.getSessionId() === sessionId;
 		const controller = new AbortController();
 		activeJobs.add(controller);
-		jobEpochs.set(key, epoch);
+		jobOwners.set(key, canDeliver);
 		const finish = () => {
 			activeJobs.delete(controller);
-			if (jobEpochs.get(key) === epoch) jobEpochs.delete(key);
+			if (jobOwners.get(key) === canDeliver) jobOwners.delete(key);
 		};
 		const abortBeforeAck = () => controller.abort(signal?.reason);
 		if (signal?.aborted) abortBeforeAck();
@@ -400,9 +403,6 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			accept(state);
 		};
 		stateListeners.add(listener);
-		const canDeliver = () => !sessionClosed && sessionEpoch === epoch
-			&& ctx.sessionManager?.getSessionId() === sessionId
-			&& latestCtx?.sessionManager?.getSessionId() === sessionId;
 		const deliver = (text: string, response?: RunResponse) => {
 			if (!canDeliver()) return;
 			const state = response?.state ?? latestState;
@@ -446,6 +446,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			},
 		);
 		const state = await durable;
+		if (!canDeliver()) throw new Error(`Pi Subagent ${id} was saved, but its launching session changed before acknowledgement. Use subagent_status to inspect the durable request.`);
 		return toolResult({ text: `Pi Subagent ${id}: durable request accepted; productive work continues. Use subagent_status to inspect progress.`, state }, ctx, workspaceRowsByRequest);
 	};
 

@@ -642,6 +642,46 @@ test("session replacement and shutdown abort old work and suppress stale isolate
 	assert.equal(harness.sent.length, 0);
 });
 
+test("resume saved before session replacement cannot acknowledge or paint the new session", async () => {
+	const done = deferred<RunResponse>();
+	const widgets: Array<string[] | undefined> = [];
+	const oldCtx = {
+		...context(CANONICAL_ROOT), hasUI: true,
+		ui: { setWidget: (_key: string, rows: string[] | undefined) => { widgets.push(rows); } },
+		sessionManager: { getSessionId: () => "origin" },
+	} as unknown as ExtensionContext;
+	const newCtx = {
+		...oldCtx, sessionManager: { getSessionId: () => "other" },
+	} as ExtensionContext;
+	let save!: (state: RunState) => void;
+	let runSignal: AbortSignal | undefined;
+	let harness!: Harness;
+	harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async resume(_request: unknown, _root: string, signal: AbortSignal) {
+			runSignal = signal;
+			const recovering = structuredClone(PRIVATE_STATE);
+			recovering.recovery = { kind: "resume", action: "finalize" };
+			addWorkspace(recovering);
+			save(recovering); // Durable save resolves the acknowledgement promise.
+			harness.handlers.get("session_start")!({}, newCtx); // Switch before the tool can return it.
+			save(recovering); // Late writes from the old job must not paint the new widget.
+			return await done.promise;
+		} } as never,
+	});
+	harness.handlers.get("session_start")!({}, oldCtx);
+	await assert.rejects(
+		executeTool(namedTool(harness, "subagent_resume"), { id: "request-one", action: "finalize" }, undefined, oldCtx),
+		/saved.*launching session changed.*subagent_status/i,
+	);
+	assert.equal(runSignal?.aborted, true);
+	assert.deepEqual(widgets, [undefined, ["[I1] 012345 · attention · unit-one"], undefined]);
+	assert.equal(harness.sent.length, 0);
+	done.resolve(response("resume", true));
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 0);
+});
+
 test("production components complete host preflight before inspecting Main", async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-components-")));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
