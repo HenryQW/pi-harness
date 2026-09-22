@@ -1,29 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import {
-	capEphemeralSubagentOutput as capOutput,
-	EphemeralSubagentError,
-	PI_SUBAGENT_PROCESS_LEASE,
-	ROLE_TOOL_POLICY_FLAG,
-} from "@henryqw/pi-subagent";
-import { MODEL_CLASS_GUIDANCE } from "../extensions/model-class-policy.ts";
-import {
-	formatBackgroundWorkflowResult,
-	WorkflowAbortedError,
-	WorkflowFailureError,
-	type BackgroundWorkflowTransportDetails,
-} from "../extensions/result-transport.ts";
+import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import roleTools from "../extensions/role-tools.ts";
-import subagentExtension, { MAX_WIDGET_ACTIVE_TOOLS } from "../extensions/subagent.ts";
-import { DelegateTaskSchema, parseWorkflow } from "../extensions/workflow.ts";
-import { loadRoles } from "../src/index.ts";
+import subagentExtension from "../extensions/subagent.ts";
 
 type Tool = {
 	name: string;
@@ -138,30 +122,6 @@ test("process lease rejects invalid paths, file types, owners, and modes", async
 	}
 });
 
-function singleEvidence(text: string, _details: any, kind: "assistant" | "failure"): string {
-	const match = /^- \[1\/1\] .+? · (result|failure):\n/m.exec(text);
-	assert.ok(match);
-	assert.equal(match[1], kind === "assistant" ? "result" : "failure");
-	const contentStart = match.index + match[0].length;
-	const continued = text.indexOf("\nMore detail:\n", contentStart);
-	if (continued === -1) return text.slice(contentStart);
-	const remainder = text.indexOf(match[0], continued);
-	assert.notEqual(remainder, -1);
-	return text.slice(contentStart, continued) + text.slice(remainder + match[0].length);
-}
-
-function singleOutput(result: any): string {
-	return singleEvidence(result.content[0].text, result.details, "assistant");
-}
-
-function assertTruncated(actual: string, original: string): void {
-	assert.ok(Buffer.byteLength(actual, "utf8") <= 50 * 1024);
-	const marker = /\n\n\[Output truncated: (\d+) bytes omitted\]$/.exec(actual);
-	assert.ok(marker);
-	const prefix = actual.slice(0, -marker[0].length);
-	assert.equal(Number(marker[1]), Buffer.byteLength(original, "utf8") - Buffer.byteLength(prefix, "utf8"));
-}
-
 async function environment(run: (agentDir: string) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-test-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -217,6 +177,7 @@ function harness(options: {
 	timeoutPolicy?: { idleMs: number; maxMs: number };
 	cwd?: string;
 	sendMessageError?: Error;
+	herdr?: (args: string[]) => Promise<any>;
 } = {}) {
 	let tool: Tool | undefined;
 	const tools = new Map<string, Tool>();
@@ -232,9 +193,10 @@ function harness(options: {
 	const api = {
 		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
-		exec(command: string, args: string[], options?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
+		exec(command: string, args: string[], execOptions?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
+			if (command === "herdr" && options.herdr) return options.herdr(args);
 			return new Promise((resolve) => {
-				execFile(command, args, options, (error, stdout, stderr) => resolve({
+				execFile(command, args, execOptions, (error, stdout, stderr) => resolve({
 					stdout: String(stdout),
 					stderr: String(stderr),
 					code: error ? (typeof error.code === "number" ? error.code : -1) : 0,
@@ -261,7 +223,7 @@ function harness(options: {
 			tool = wrapped;
 		},
 		registerMessageRenderer(customType: string, renderer: typeof messageRenderer) {
-			if (customType === "subagent-background-result") messageRenderer = renderer;
+			if (customType === "subagent-direct-result") messageRenderer = renderer;
 		},
 		sendMessage(message: any, deliveryOptions: any) {
 			if (options.sendMessageError) throw options.sendMessageError;
@@ -299,7 +261,7 @@ function harness(options: {
 		get widget() { return widget; },
 		get renders() { return renders; },
 		renderMessage(message: any, expanded = false) {
-			assert.ok(messageRenderer, "background result renderer was not registered");
+			assert.ok(messageRenderer, "direct result renderer was not registered");
 			return messageRenderer(message, { expanded, outputPad: 0 }, theme).render(120).join("\n");
 		},
 		notifications,
@@ -318,24 +280,6 @@ async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
 	}
 }
 
-const WIDGET_STATUS_ROW = /^  (?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|[✓✗■]) /;
-
-function workingWidgetRows(lines: string[]): string[] {
-	return lines.filter((line) => /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /.test(line));
-}
-
-function assertWidgetHierarchy(lines: string[]): void {
-	for (const [index, line] of lines.entries()) {
-		if (line.startsWith("… ") || WIDGET_STATUS_ROW.test(line)) continue;
-		assert.match(lines[index + 1] ?? "", WIDGET_STATUS_ROW);
-	}
-}
-
-async function setMaxSubagents(agentDir: string, maxSubagents: number): Promise<void> {
-	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-	await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxSubagents }));
-}
-
 async function writeWorkerRole(agentDir: string): Promise<void> {
 	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
 	await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
@@ -349,1920 +293,171 @@ Do bounded work.
 `);
 }
 
-async function initializedRepository(t: import("node:test").TestContext): Promise<string> {
-	const repo = await mkdtemp(join(tmpdir(), "pi-subagent-repo-"));
-	t.after(async () => { await rm(repo, { recursive: true, force: true }); });
-	execFileSync("git", ["init", "-q"], { cwd: repo });
-	await mkdir(join(repo, "extensions", "worker"), { recursive: true });
-	await Promise.all([
-		writeFile(join(repo, "README.md"), "test\n"),
-		writeFile(join(repo, "extensions", "worker", "package.json"), "{}\n"),
-	]);
-	execFileSync("git", ["add", "."], { cwd: repo });
-	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "init"], { cwd: repo });
-	return repo;
-}
-
-async function blockedPiRunner(agentDir: string, activeTasks: string[] = []) {
-	const started = join(agentDir, "children-started");
-	const release = join(agentDir, "children-release");
-	await Promise.all([mkdir(started), mkdir(release)]);
-	const runner = join(agentDir, "fake-pi.mjs");
-	await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const task = process.argv.at(-1)?.replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-if (!task) throw new Error("Missing delegated task.");
-const event = (value) => console.log(JSON.stringify(value));
-writeFileSync(join(${JSON.stringify(started)}, task), "");
-const release = join(${JSON.stringify(release)}, task);
-const active = ${JSON.stringify(activeTasks)}.includes(task);
-if (active) event({ type: "message_start", message: { role: "assistant", content: [] } });
-const activity = active ? setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 25) : undefined;
-const timer = setInterval(() => {
-	if (!existsSync(release)) return;
-	clearInterval(timer);
-	if (activity) clearInterval(activity);
-	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } });
-}, 10);
-`);
-	process.argv[1] = runner;
+function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exact answer", waitGate?: Promise<void>) {
+	const calls: string[][] = [];
+	const sessions = new Map<string, { path: string; prompt?: string; pane: string; tab: string }>();
+	let next = 1;
+	const response = (result: any) => ({ code: 0, stdout: JSON.stringify({ id: "mock", result }), stderr: "" });
+	const agent = (name: string, status: string) => {
+		const identity = sessions.get(name)!;
+		return { name, agent: "pi", agent_status: status, cwd, interactive_ready: true,
+			pane_id: identity.pane, tab_id: identity.tab, workspace_id: "w-test" };
+	};
 	return {
-		started: () => readdirSync(started).sort(),
-		release: (task: string) => writeFile(join(release, task), ""),
+		calls,
+		async exec(args: string[]) {
+			calls.push(args);
+			if (args[0] === "pane" && args[1] === "current") return response({ type: "pane_current", pane: { pane_id: "w-test:p1", workspace_id: "w-test" } });
+			if (args[0] === "tab" && args[1] === "create") {
+				const tab = `w-test:t${++next}`;
+				return response({ type: "tab_created", tab: { tab_id: tab, workspace_id: "w-test", focused: false },
+					root_pane: { pane_id: `w-test:p${next}`, tab_id: tab, workspace_id: "w-test", cwd, focused: false } });
+			}
+			if (args[0] === "agent" && args[1] === "start") {
+				const name = args[2]!;
+				const pane = args[args.indexOf("--pane") + 1]!;
+				const path = args[args.indexOf("--session") + 1]!;
+				sessions.set(name, { path, pane, tab: `w-test:t${next}` });
+				return response({ type: "agent_started", agent: agent(name, "idle") });
+			}
+			if (args[0] === "agent" && args[1] === "prompt") {
+				sessions.get(args[2]!)!.prompt = args[3]!;
+				return response({ type: "agent_prompted", agent: agent(args[2]!, "working") });
+			}
+			if (args[0] === "agent" && args[1] === "wait") {
+				await waitGate;
+				const identity = sessions.get(args[2]!)!;
+				const text = answer(identity.prompt!);
+				await writeFile(identity.path, [
+					{ type: "session", id: "session" },
+					{ type: "message", id: "user", parentId: "session", message: { role: "user", content: [{ type: "text", text: identity.prompt }] } },
+					{ type: "message", id: "final", parentId: "user", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } },
+				].map((line) => JSON.stringify(line)).join("\n") + "\n");
+				return response({ type: "agent_info", agent: agent(args[2]!, "done") });
+			}
+			if (args[0] === "agent" && args[1] === "send-keys") return response({ type: "ok" });
+			throw new Error(`Unexpected Herdr call: ${args.join(" ")}`);
+		},
 	};
 }
 
-test("delegate_task description exposes built-in roles with an empty user config", async () => {
-	await environment(async () => {
-		const app = harness();
-		assert.match(app.tool.description, /implementer: Implements and validates one bounded change/);
-		assert.match(app.tool.description, /reviewer: Reviews one bounded change for correctness without changing files/);
-		assert.match(app.tool.description, /scout: Maps relevant code and evidence for one bounded task without changing files/);
-	});
-});
-
-test("delegate_task guidance owns explicit routing and automatic readiness", async () => {
-	await environment(async () => {
-		const guidance = harness().tool.promptGuidelines?.join("\n") ?? "";
-		assert.match(guidance, /trivial mechanically verifiable work in Main/i);
-		assert.match(guidance, /mode direct.*bounded research, analysis, review, or tightly coupled implementation/is);
-		assert.match(guidance, /mode isolated.*independently implementable checked changes.*exploratory candidate.*Main must remain undisturbed/is);
-		assert.match(guidance, /Authorize outcome, scope, exclusions.*once/is);
-		assert.match(guidance, /automatically seal and record exact readiness/is);
-		assert.match(guidance, /\/subagent-followup.*only while the task is actively working/is);
-		assert.doesNotMatch(guidance, /subagent-accept|supervised isolation/i);
-		assert.match(guidance, /compact role\/name\/task packet.*tasks.*chain/is);
-		assert.doesNotMatch(guidance, /3–5|minimum number|quota/i);
-	});
-});
-
-test("role config rejects repository-relative extension sources", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "unsafe.md"), `---
-name: unsafe
-description: Loads repository code
-extensions: [./extensions/review.ts]
-tools: []
-skills: []
----
-Review code.
-`);
-		assert.throws(() => loadRoles(agentDir), /extension.*absolute|extension.*source/i);
-	});
-});
-
-test("role launches exclude subagent tools and preserve selected tools", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "reviewer.md"), `---
-name: reviewer
-description: Reviews focused changes
-modelClass: frontier
-tools: [read, grep]
-extensions:
-  - /user/extensions/review.ts
-skills:
-  - security
----
-Review only requested change.
-`);
-		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: { frontier: { primary: { model: "test/text-model", thinkingLevel: "high" } } },
-		}));
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);
-const prompt = args[args.indexOf("--append-system-prompt") + 1];
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ args, prompt, cwd: process.cwd() }) }], stopReason: "end" } }));
-`);
-		process.argv[1] = runner;
-
-		assert.deepEqual(loadRoles(agentDir).map(({ name }) => name), ["implementer", "reviewer", "scout"]);
-		const app = harness({
-			skills: [{ name: "security", path: "/effective/skills/security/SKILL.md" }],
-			trusted: false,
-		});
-		assert.match(app.tool.description, /reviewer: Reviews focused changes \(modelClass: frontier\)/);
-		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)));
-		const updates: any[] = [];
-		const result = await app.tool.execute(
-			"call-1",
-			{ role: "reviewer", name: "Test delegated task", task: "inspect auth", modelClass: "frontier" },
-			undefined,
-			(update: any) => updates.push(update),
-			app.ctx,
-		);
-		const child = JSON.parse(singleOutput(result));
-		assert.equal(child.cwd, await realpath("/tmp"));
-		assert.equal(child.prompt, "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only requested change.");
-		assert.equal(child.args.filter((arg: string) => arg === "--append-system-prompt").length, 1);
-		const extensionArgs = child.args.filter((value: string, index: number) => child.args[index - 1] === "--extension");
-		const policyExtension = extensionArgs.at(-1)!;
-		assert.match(policyExtension, /pi-subagent\/extensions\/role-tools\.ts$/);
-		assert.deepEqual(child.args, [
-			"--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills",
-			"--exclude-tools", "delegate_task,ask_question,subagent_status,subagent_resume,subagent_abort",
-			"--extension", "/user/extensions/review.ts",
-			"--extension", policyExtension,
-			"--skill", "/effective/skills/security/SKILL.md",
-			`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(["read", "grep"]),
-			"--model", "test/text-model",
-			"--thinking", "high",
-			"--no-approve",
-			"--append-system-prompt", "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only requested change.",
-			"Task: inspect auth\n\nDirect text boundary: inspect only. Do not modify files, the Git index, HEAD, branches, or worktrees.",
-		]);
-		assert.ok(updates.length >= 2);
-		assert.ok(updates.every((update) => update.content[0].text.startsWith("Delegation ·") && !update.content[0].text.includes("id=")));
-		assert.deepEqual(app.notifications, []);
-	});
-});
-
-test("missing Role Skills reject delegation before the child starts", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "reviewer.md"), `---
-name: reviewer
-description: Reviews focused changes
-tools: [read]
-extensions: []
-skills: [unavailable-skill]
----
-Review only requested change.
-`);
-		const marker = join(agentDir, "child-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "started");`);
-		process.argv[1] = runner;
-
-		const app = harness();
-		const error = await app.tool.execute(
-			"missing-skill",
-			{ role: "reviewer", name: "Test delegated task", task: "inspect auth" },
-			undefined,
-			undefined,
-			app.ctx,
-		).then(
-			() => assert.fail("expected missing-Skill rejection"),
-			(reason) => reason,
-		);
-		assert.ok(error instanceof WorkflowFailureError);
-		assert.equal(error.details.entries[0]?.status, "rejected");
-		assert.equal(error.details.entries[0]?.summary, "Role reviewer requires missing Skills: unavailable-skill.");
-		assert.match(error.message, /Role reviewer requires missing Skills: unavailable-skill\./);
-		assert.equal(existsSync(marker), false);
-		assert.deepEqual(app.notifications, []);
-	});
-});
-
-test("direct delegation stays in the selected checkout subdirectory", async (t) => {
-	const repo = await initializedRepository(t);
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ cwd: process.cwd() }) }], stopReason: "end" } }));`);
-		process.argv[1] = runner;
-
-		const cwd = join(repo, "extensions", "worker");
-		const app = harness({ cwd });
-		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
-		assert.equal(JSON.parse(singleOutput(result)).cwd, await realpath(cwd));
-		assert.equal(result.details.entries[0].worktree, undefined);
-		assert.equal(existsSync(join(repo, ".worktrees")), false);
-	});
-});
-
-test("empty Role tools install a tool policy", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Uses only extension tools
-extensions:
-  - /user/extensions/company-tools.ts
-tools: []
-skills: []
----
-Do bounded work.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx);
-		const args = JSON.parse(singleOutput(result));
-		assert.equal(args.includes("--tools"), false);
-		assert.equal(args.includes("--no-tools"), false);
-		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
-		assert.equal(args[args.indexOf("--extension") + 1], "/user/extensions/company-tools.ts");
-		assert.equal(args.filter((value: string, index: number) => args[index - 1] === "--extension").some((path: string) => path.endsWith("/pi-subagent/extensions/role-tools.ts")), true);
-	});
-});
-
-test("empty role tools leave only loaded extension tools", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "thinker.md"), `---
-name: thinker
-description: Reasons without tools
-tools: []
-extensions: []
-skills: []
----
-Return a plan.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const result = await app.tool.execute("call-1", { role: "thinker", name: "Test delegated task", task: "plan" }, undefined, undefined, app.ctx);
-		const args = JSON.parse(singleOutput(result));
-		assert.equal(args.includes("--tools"), false);
-		assert.equal(args.includes("--no-tools"), false);
-		assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], "[]");
-		assert.equal(args[args.indexOf("--exclude-tools") + 1], "delegate_task,ask_question,subagent_status,subagent_resume,subagent_abort");
-	});
-});
-
-test("Role and call model classes preserve selected route thinking", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-modelClass: balanced
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		const availableModels = [
-			{ provider: "provider", id: "fast-model", input: ["text"], reasoning: false },
-			{ provider: "provider", id: "balanced-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
-			{ provider: "provider", id: "frontier-model", input: ["text"], reasoning: true, thinkingLevelMap: { max: "max" } },
-			{ provider: "provider", id: "fav-model", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } },
-			{ provider: "provider", id: "direct-model", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium", max: "max" } },
-		];
-		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: {
-				fast: { primary: { model: "provider/fast-model", thinkingLevel: "off" } },
-				balanced: { primary: { model: "provider/balanced-model", thinkingLevel: "medium" } },
-				frontier: { primary: { model: "provider/frontier-model", thinkingLevel: "max" } },
-				fav: { primary: { model: "provider/fav-model", thinkingLevel: "high" } },
-			},
-			tasks: {},
-		}));
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
-		process.argv[1] = runner;
-		const app = harness({ availableModels });
-		assert.equal(app.commands.has("subagent"), false);
-
-		const explicit = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx);
-		const explicitArgs = JSON.parse(singleOutput(explicit));
-		assert.equal(explicitArgs[explicitArgs.indexOf("--model") + 1], "provider/frontier-model");
-		assert.equal(explicitArgs[explicitArgs.indexOf("--thinking") + 1], "max");
-
-		const favorite = await app.tool.execute("call-fav", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "fav" }, undefined, undefined, app.ctx);
-		const favoriteArgs = JSON.parse(singleOutput(favorite));
-		assert.equal(favoriteArgs[favoriteArgs.indexOf("--model") + 1], "provider/fav-model");
-		assert.equal(favoriteArgs[favoriteArgs.indexOf("--thinking") + 1], "high");
-
-		const omitted = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "inspect code" }, undefined, undefined, app.ctx);
-		const omittedArgs = JSON.parse(singleOutput(omitted));
-		assert.equal(omittedArgs[omittedArgs.indexOf("--model") + 1], "provider/balanced-model");
-		assert.equal(omittedArgs[omittedArgs.indexOf("--thinking") + 1], "medium");
-
-		const direct = await app.tool.execute("call-3", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/direct-model" }, undefined, undefined, app.ctx);
-		const directArgs = JSON.parse(singleOutput(direct));
-		assert.equal(directArgs[directArgs.indexOf("--model") + 1], "provider/direct-model");
-		assert.equal(directArgs[directArgs.indexOf("--thinking") + 1], "medium");
-		assert.equal(directArgs.filter((arg: string) => arg === "--append-system-prompt").length, 1);
-
-		const directExplicit = await app.tool.execute("call-3-explicit", {
-			role: "worker",
-			name: "Test delegated task",
-			task: "inspect code",
-			model: "provider/direct-model",
-			modelClass: "frontier",
-		}, undefined, undefined, app.ctx);
-		const directExplicitArgs = JSON.parse(singleOutput(directExplicit));
-		assert.equal(directExplicitArgs[directExplicitArgs.indexOf("--model") + 1], "provider/direct-model");
-		assert.equal(directExplicitArgs[directExplicitArgs.indexOf("--thinking") + 1], "max");
-
-		const background = await app.tool.execute("call-4", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "fav", background: true }, undefined, undefined, app.ctx);
-		assert.match(background.content[0]!.text, /Background delegation started/);
-		await waitFor(() => app.sentMessages.length === 1);
-		const backgroundArgs = JSON.parse(singleEvidence(app.sentMessages[0]!.message.content, app.sentMessages[0]!.message.details, "assistant"));
-		assert.equal(backgroundArgs[backgroundArgs.indexOf("--model") + 1], "provider/fav-model");
-		assert.equal(backgroundArgs[backgroundArgs.indexOf("--thinking") + 1], "high");
-	});
-});
-
-test("unknown designated model lists available models", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: { fast: { primary: { model: "provider/alpha", thinkingLevel: "medium" } } },
-		}));
-		const availableModels = [
-			{ provider: "provider", id: "alpha", input: ["text"], reasoning: true, thinkingLevelMap: { medium: "medium" } },
-			{ provider: "provider", id: "beta", input: ["text"], reasoning: false },
-		];
-		const app = harness({ availableModels });
-
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", model: "provider/gamma" }, undefined, undefined, app.ctx),
-			/Available models: provider\/alpha, provider\/beta/,
-		);
-	});
-});
-
-test("canonical Codex route follows active account alias in isolated child", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: { frontier: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" } } },
-		}));
-		const canonical = { ...model, provider: "openai-codex", id: "gpt-test" };
-		const alias = { ...canonical, provider: "openai-codex-2" };
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
-		process.argv[1] = runner;
-		const app = harness({ availableModels: [canonical, alias], currentModel: alias });
-		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect", modelClass: "frontier" }, undefined, undefined, app.ctx);
-		const args = JSON.parse(singleOutput(result)) as string[];
-		assert.equal(args[args.indexOf("--model") + 1], "openai-codex-2/gpt-test");
-		const extensions = args.flatMap((value, index) => value === "--extension" ? [args[index + 1]] : []);
-		assert.ok(extensions.some((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")));
-	});
-});
-
-test("direct models honor scoped route thinking before launch", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: { fast: { primary: { model: "p/route", thinkingLevel: "high" } } },
-		}));
-		const marker = join(agentDir, "child-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "started");`);
-		process.argv[1] = runner;
-		const route = { ...model, provider: "p", id: "route", reasoning: true, thinkingLevelMap: { high: "high" } };
-		const pinned = { ...model, provider: "p", id: "pinned", reasoning: true, thinkingLevelMap: { low: "low", high: "high" } };
-		const app = harness({ scopedModels: [
-			{ model: route, thinkingLevel: "high" },
-			{ model: pinned, thinkingLevel: "low" },
-		] });
-
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", model: "p/pinned" }, undefined, undefined, app.ctx),
-			/cannot use route thinking high/,
-		);
-		assert.equal(existsSync(marker), false);
-	});
-});
-
-test("validates every Role and route before direct child launch", async (t) => {
-	const repo = await initializedRepository(t);
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const marker = join(agentDir, "child-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "started");`);
-		process.argv[1] = runner;
-		const app = harness({ cwd: repo });
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect code", modelClass: "frontier" }, undefined, undefined, app.ctx),
-			/Run \/task-models/,
-		);
-		await assert.rejects(
-			app.tool.execute("call-2", { tasks: [
-				{ role: "worker", name: "Test delegated task", task: "must not start" },
-				{ role: "missing", name: "Test delegated task", task: "invalid" },
-			] }, undefined, undefined, app.ctx),
-			/Unknown Subagent role: missing/,
-		);
-		assert.equal(existsSync(marker), false);
-		assert.equal(existsSync(join(repo, ".worktrees")), false);
-	});
-});
-
-test("uses a profile fallback when the primary thinking level is unavailable before launch", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: {
-				balanced: {
-					primary: { model: "provider/primary", thinkingLevel: "high" },
-					fallback: { model: "provider/fallback", thinkingLevel: "low" },
-				},
-			},
-			tasks: { "pi-subagent/delegateTask": "balanced" },
-		}));
-		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
-		const fallback = { provider: "provider", id: "fallback", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low" } };
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const args = process.argv.slice(2);\nconsole.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(args) }], stopReason: "end" } }));\n`);
-		process.argv[1] = runner;
-		const app = harness({ availableModels: [primary, fallback] });
-		const result = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect" }, undefined, undefined, app.ctx);
-		const args = JSON.parse(singleOutput(result));
-		assert.equal(args[args.indexOf("--model") + 1], "provider/fallback");
-		assert.equal(args[args.indexOf("--thinking") + 1], "low");
-	});
-});
-
-test("does not retry a child after launch failure", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
-		const marker = join(agentDir, "child-launches");
-		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-			profiles: {
-				balanced: {
-					primary: { model: "provider/primary", thinkingLevel: "off" },
-					fallback: { model: "provider/fallback", thinkingLevel: "off" },
-				},
-			},
-			tasks: { "pi-subagent/delegateTask": "balanced" },
-		}));
-		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
-		const fallback = { provider: "provider", id: "fallback", input: ["text"], reasoning: false };
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(marker)}, "1");\nprocess.exit(2);\n`);
-		process.argv[1] = runner;
-		const app = harness({ availableModels: [primary, fallback] });
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "inspect" }, undefined, undefined, app.ctx),
-			(error: unknown) => error instanceof WorkflowFailureError && /Subagent exited with code 2/.test(error.message),
-		);
-		assert.equal(await readFile(marker, "utf8"), "1");
-	});
-});
-
-test("widget renders task headings with indented status rows and clears terminal rows on input", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		for (const [name, description] of [["scout", "Finds code"], ["worker", "Does work"]]) {
-			await writeFile(join(agentDir, "config", "pi-subagent", `${name}.md`), `---
-name: ${name}
-description: ${description}
-tools: [read]
-extensions: []
-skills: []
----
-Return concise findings.
-`);
+async function herdrEnvironment(run: (cwd: string) => Promise<void>) {
+	const previous = [process.env.HERDR_ENV, process.env.HERDR_WORKSPACE_ID, process.env.HERDR_PANE_ID];
+	process.env.HERDR_ENV = "1";
+	process.env.HERDR_WORKSPACE_ID = "w-test";
+	process.env.HERDR_PANE_ID = "w-test:p1";
+	try { await run(await realpath("/tmp")); }
+	finally {
+		for (const [index, key] of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"].entries()) {
+			if (previous[index] === undefined) delete process.env[key];
+			else process.env[key] = previous[index];
 		}
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `
-const event = (value) => console.log(JSON.stringify(value));
-event({ type: "message_update", usage: { totalTokens: 1_100 } });
-setTimeout(() => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], usage: { totalTokens: 100 }, stopReason: "end" } }), 120);
-`);
-		process.argv[1] = runner;
-		const app = harness({ ui: true });
-		const completed = app.tool.execute("call-1", { role: "scout", name: "Normalize worktree paths", task: "Normalize Windows registered-worktree paths now" }, undefined, undefined, app.ctx);
-		await waitFor(() => app.widget?.render(160).join("\n").includes("1.1k tok") ?? false);
-		const wide = app.widget!.render(160);
-		assert.equal(wide.length, 2);
-		assert.ok(wide.every((line) => visibleWidth(line) <= 160));
-		assert.equal(wide[0], "Normalize worktree paths");
-		assert.match(wide[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\] thinking… · text-model·low · 1\.1k tok ·/);
-		assert.doesNotMatch(wide[1]!, /Normalize worktree paths|working|registered-worktree/);
-		assert.doesNotMatch(wide.join("\n"), /test\//);
-		const narrow = app.widget!.render(24);
-		assert.equal(narrow.length, 2);
-		assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-		assert.match(narrow[0]!, /^Normalize worktree/);
-		assert.match(narrow[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[S\]/);
-		assertWidgetHierarchy(narrow);
-		const tiny = app.widget!.render(1);
-		assert.equal(tiny.length, 2);
-		assert.ok(tiny.every((line) => visibleWidth(line) <= 1));
-		await completed;
-		await new Promise((resolve) => setTimeout(resolve, 1_100));
-		const terminal = app.widget!.render(160);
-		assert.equal(terminal.length, 2);
-		assert.equal(terminal[0], "Normalize worktree paths");
-		assert.match(terminal[1]!, /^  ✓ \[S\] Done · 1 turn/);
-		assert.doesNotMatch(terminal[1]!, /complete|registered-worktree|Normalize worktree paths/);
-
-		await writeFile(runner, `setTimeout(() => console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } })), 300);`);
-		const running = app.tool.execute("call-2", { role: "worker", name: "Keep worker active", task: "keep working" }, undefined, undefined, app.ctx);
-		await waitFor(() => app.widget?.render(100).join("\n").includes("[W]") ?? false);
-		const activeFirst = app.widget!.render(160);
-		assert.equal(activeFirst[0], "Keep worker active");
-		assert.match(activeFirst[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\] thinking…/);
-		assert.equal(activeFirst[2], "Normalize worktree paths");
-		assert.match(activeFirst[3]!, /^  ✓ \[S\] Done/);
-		await app.handlers.get("input")?.({ source: "extension", text: "injected" }, app.ctx);
-		assert.match(app.widget!.render(100).join("\n"), /Normalize worktree paths\n  ✓ \[S\] Done/);
-		await app.handlers.get("input")?.({ source: "interactive", text: "next" }, app.ctx);
-		const afterInput = app.widget!.render(100).join("\n");
-		assert.doesNotMatch(afterInput, /Normalize worktree paths/);
-		assert.match(afterInput, /Keep worker active\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\]/);
-		await running;
-		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-	});
-});
-
-test("widget keeps same-named tasks separate with indented status rows", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const tasks = ["alpha", "beta"];
-		const name = "Inspect matching names";
-		const runner = await blockedPiRunner(agentDir, tasks);
-		const app = harness({ ui: true });
-		const running = app.tool.execute("same-name", { tasks: [
-			{ role: "scout", name, task: tasks[0]! },
-			{ role: "worker", name, task: tasks[1]! },
-		] }, undefined, undefined, app.ctx);
-		try {
-			await waitFor(() => runner.started().length === 2);
-			const wide = app.widget!.render(160);
-			assert.equal(wide.length, 4);
-			assert.deepEqual(wide.filter((line) => line === name), [name, name]);
-			assertWidgetHierarchy(wide);
-			const childRows = wide.filter((line) => WIDGET_STATUS_ROW.test(line));
-			assert.deepEqual(childRows.map((line) => /\[[SW]\]/.exec(line)?.[0]), ["[S]", "[W]"]);
-			assert.ok(childRows.every((line) => !line.includes(name)));
-			const narrow = app.widget!.render(24);
-			assert.equal(narrow.length, 4);
-			assert.ok(narrow.every((line) => visibleWidth(line) <= 24));
-			assertWidgetHierarchy(narrow);
-		} finally {
-			await Promise.all(tasks.map((task) => runner.release(task)));
-			await Promise.allSettled([running]);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
-	});
-});
-
-test("widget renders deterministic live activity across overlapping tools", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const stages = join(agentDir, "widget-activity-stages");
-		await mkdir(stages);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const stages = ${JSON.stringify(stages)};
-const event = (value) => console.log(JSON.stringify(value));
-const waitFor = (stage, next) => {
-	const timer = setInterval(() => {
-		if (!existsSync(join(stages, stage))) return;
-		clearInterval(timer);
-		next();
-	}, 5);
-};
-writeFileSync(join(stages, "started"), "");
-waitFor("read", () => {
-	event({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/target.ts" } });
-	waitFor("bash", () => {
-		event({ type: "tool_execution_start", toolCallId: "bash-2", toolName: "bash", args: {} });
-		waitFor("bash-end", () => {
-			event({ type: "tool_execution_end", toolCallId: "bash-2", toolName: "bash" });
-			waitFor("read-end", () => {
-				event({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read" });
-				waitFor("done", () => event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));
-			});
-		});
-	});
-});
-`);
-		process.argv[1] = runner;
-		const app = harness({ ui: true });
-		const stagesToRelease = ["read", "bash", "bash-end", "read-end", "done"];
-		const release = async (stage: string) => { await writeFile(join(stages, stage), ""); };
-		const renderRows = () => {
-			for (const width of [100, 24, 1]) {
-				const lines = app.widget!.render(width);
-				assert.equal(lines.length, 2);
-				assert.ok(lines.every((line) => visibleWidth(line) <= width));
-			}
-			return app.widget!.render(100).join("\n");
-		};
-		const running = app.tool.execute("activity", { role: "worker", name: "Test delegated task", task: "trace deterministic widget activity" }, undefined, undefined, app.ctx);
-		try {
-			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
-			let widget = renderRows();
-			assert.match(widget, /^Test delegated task\n  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\] thinking…/);
-			assert.doesNotMatch(widget, /trace deterministic widget activity/);
-			assert.match(widget, /thinking…/);
-			assert.doesNotMatch(widget, /\b(?:turn|tool)s?\b/);
-
-			await release("read");
-			await waitFor(() => app.widget?.render(100).join("\n").includes("read ·") ?? false);
-			widget = renderRows();
-			assert.match(widget, /read · \d+s · target\.ts · 1 tool/);
-
-			await release("bash");
-			await waitFor(() => app.widget?.render(100).join("\n").includes("bash ·") ?? false);
-			widget = renderRows();
-			assert.match(widget, /bash · \d+s · 2 tools/);
-			assert.doesNotMatch(widget, /target\.ts/);
-
-			await release("bash-end");
-			await waitFor(() => {
-				const text = app.widget?.render(100).join("\n") ?? "";
-				return text.includes("read ·") && !text.includes("bash ·");
-			});
-			widget = renderRows();
-			assert.match(widget, /read · \d+s · target\.ts · 2 tools/);
-
-			await release("read-end");
-			await waitFor(() => app.widget?.render(100).join("\n").includes("thinking… · 2 tools") ?? false);
-			widget = renderRows();
-			assert.match(widget, /thinking… · 2 tools/);
-
-			await release("done");
-			assert.equal(singleOutput(await running), "done");
-			widget = renderRows();
-			assert.match(widget, /Done · 1 turn · 2 tools/);
-		} finally {
-			await Promise.all(stagesToRelease.map(release));
-			await Promise.allSettled([running]);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
-	});
-});
-
-test("widget bounds retained activity without losing counts or overlap fallback", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const stages = join(agentDir, "widget-activity-cap-stages");
-		await mkdir(stages);
-		const toolIds = Array.from({ length: MAX_WIDGET_ACTIVE_TOOLS + 1 }, (_, index) => `tool-${index + 1}`);
-		const retainedIds = toolIds.slice(1);
-		const oversized = "x".repeat(64 * 1024);
-		const actions = [
-			{ stage: "oversized", event: { type: "tool_execution_start", toolCallId: "oversized", toolName: oversized, args: {} } },
-			...toolIds.map((toolCallId) => ({ stage: `start-${toolCallId}`, event: { type: "tool_execution_start", toolCallId, toolName: toolCallId, args: {} } })),
-			{ stage: "duplicate", event: { type: "tool_execution_start", toolCallId: toolIds.at(-1)!, toolName: toolIds.at(-1)!, args: {} } },
-			{ stage: "end-evicted", event: { type: "tool_execution_end", toolCallId: toolIds[0]!, toolName: toolIds[0]! } },
-			{ stage: "end-latest", event: { type: "tool_execution_end", toolCallId: toolIds.at(-1)!, toolName: toolIds.at(-1)! } },
-			...retainedIds.slice(0, -1).reverse().map((toolCallId) => ({ stage: `end-${toolCallId}`, event: { type: "tool_execution_end", toolCallId, toolName: toolCallId } })),
-			{ stage: "done", event: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } } },
-		];
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const stages = ${JSON.stringify(stages)};
-const actions = ${JSON.stringify(actions)};
-const event = (value) => console.log(JSON.stringify(value));
-writeFileSync(join(stages, "started"), "");
-const next = () => {
-	const action = actions.shift();
-	if (!action) return;
-	const timer = setInterval(() => {
-		if (!existsSync(join(stages, action.stage))) return;
-		clearInterval(timer);
-		event(action.event);
-		next();
-	}, 5);
-};
-next();
-`);
-		process.argv[1] = runner;
-		const app = harness({ ui: true });
-		const release = async (stage: string) => { await writeFile(join(stages, stage), ""); };
-		const rendered = () => app.widget!.render(100).join("\n");
-		const running = app.tool.execute("activity-cap", { role: "worker", name: "Test delegated task", task: "bound retained widget activity" }, undefined, undefined, app.ctx);
-		try {
-			await waitFor(() => existsSync(join(stages, "started")) && (app.widget?.render(100).join("\n").includes("thinking…") ?? false));
-			await release("oversized");
-			for (const toolCallId of toolIds) {
-				await release(`start-${toolCallId}`);
-				await waitFor(() => rendered().includes(`${toolCallId} ·`));
-			}
-			let widget = rendered();
-			assert.match(widget, new RegExp(`${toolIds.at(-1)!} · \\d+s · ${toolIds.length} tools`));
-			assert.doesNotMatch(widget, /x{100}/);
-
-			await release("duplicate");
-			await release("end-evicted");
-			await release("end-latest");
-			const fallback = retainedIds.at(-1)!;
-			await waitFor(() => rendered().includes(`${fallback} ·`) && rendered().includes(`${toolIds.length} tools`));
-			widget = rendered();
-			assert.match(widget, new RegExp(`${fallback} · \\d+s · ${toolIds.length} tools`));
-
-			const endingIds = retainedIds.slice(0, -1).reverse();
-			for (const [index, toolCallId] of endingIds.entries()) {
-				await release(`end-${toolCallId}`);
-				const next = endingIds[index + 1];
-				await waitFor(() => next === undefined ? rendered().includes("thinking…") : rendered().includes(`${next} ·`));
-			}
-			widget = rendered();
-			assert.match(widget, new RegExp(`thinking… · ${toolIds.length} tools`));
-
-			await release("done");
-			assert.equal(singleOutput(await running), "done");
-			widget = rendered();
-			assert.match(widget, new RegExp(`Done · 1 turn · ${toolIds.length} tools`));
-			assert.doesNotMatch(widget, /tool-\d+ ·/);
-		} finally {
-			await Promise.all(actions.map(({ stage }) => release(stage)));
-			await Promise.allSettled([running]);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
-	});
-});
-
-test("widget evicts the oldest terminal row so new active work remains visible at capacity", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = await blockedPiRunner(agentDir, ["active ninth"]);
-		const app = harness({ ui: true });
-		for (let index = 1; index <= 8; index++) {
-			const task = `completed ${index}`;
-			const completed = app.tool.execute(`call-${index}`, { role: "worker", name: task, task }, undefined, undefined, app.ctx);
-			await waitFor(() => runner.started().includes(task));
-			runner.release(task);
-			await completed;
-		}
-
-		const active = app.tool.execute("call-9", { role: "worker", name: "Active ninth", task: "active ninth" }, undefined, undefined, app.ctx);
-		await waitFor(() => runner.started().includes("active ninth"));
-		try {
-			const widget = app.widget!.render(160);
-			assert.equal(widget.length, 5);
-			assert.equal(widget[0], "Active ninth");
-			assert.match(widget[1]!, /^  [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \[W\] thinking…/);
-			assert.equal(widget[2], "completed 2");
-			assert.match(widget[3]!, /^  ✓ \[W\] Done/);
-			assert.doesNotMatch(widget.join("\n"), /completed 1/);
-			assertWidgetHierarchy(widget);
-			assert.equal(widget[4], "… 6 more · 6 complete");
-		} finally {
-			runner.release("active ninth");
-			await active;
-		}
-	});
-});
-
-test("widget summarizes overflow while evicting terminal rows for new active work", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxSubagents: 9 }));
-		const tasks = Array.from({ length: 9 }, (_, index) => `blocked-${String(index + 1).padStart(2, "0")}`);
-		const tenth = "blocked-10";
-		const calls: Promise<unknown>[] = [];
-		let releaseAll: () => Promise<unknown> = () => Promise.resolve();
-		try {
-			await writeWorkerRole(agentDir);
-			const fake = await blockedPiRunner(agentDir, tasks);
-			releaseAll = () => Promise.all([...tasks, tenth].map((task) => fake.release(task)));
-			const app = harness({ ui: true });
-			calls.push(...tasks.map((task, index) => app.tool.execute(`call-${index + 1}`, { role: "worker", name: task, task }, undefined, undefined, app.ctx)));
-			await waitFor(() => fake.started().length === 9);
-			for (const width of [160, 24, 1]) {
-				const rows = app.widget!.render(width);
-				assert.equal(rows.length, 5);
-				assert.ok(rows.every((line) => visibleWidth(line) <= width));
-			}
-			let widget = app.widget!.render(160);
-			assert.equal(widget.length, 5);
-			assert.equal(workingWidgetRows(widget).length, 2);
-			assertWidgetHierarchy(widget);
-			assert.equal(widget[4], "… 7 more · 7 working");
-			assertWidgetHierarchy(app.widget!.render(24));
-
-			for (const task of tasks.slice(0, 2)) fake.release(task);
-			await Promise.all(calls.slice(0, 2));
-			widget = app.widget!.render(160);
-			assert.equal(widget.length, 5);
-			assert.equal(widget[4], "… 7 more · 5 working · 2 complete");
-			const tenthCall = app.tool.execute("call-10", { role: "worker", name: tenth, task: tenth }, undefined, undefined, app.ctx);
-			calls.push(tenthCall);
-			await waitFor(() => fake.started().includes(tenth));
-
-			widget = app.widget!.render(160);
-			assert.doesNotMatch(widget.join("\n"), /blocked-01|blocked-02/);
-			assert.match(widget.join("\n"), /blocked-03/);
-			assert.match(widget.join("\n"), /blocked-04/);
-			assert.equal(workingWidgetRows(widget).length, 2);
-			assertWidgetHierarchy(widget);
-			assert.equal(widget[4], "… 6 more · 6 working");
-		} finally {
-			await releaseAll();
-			await Promise.allSettled(calls);
-		}
-	});
-});
-
-test("maps bounded child output into bounded workflow results and updates", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "scout.md"), `---
-name: scout
-description: Finds relevant code
-tools: [read]
-extensions: []
-skills: []
----
-Return conclusions first, then file and line references.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const text = "a".repeat(60 * 1024);
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "end" } }));
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const updates: any[] = [];
-		const task = "🙂".repeat(10_000);
-		const result = await app.tool.execute("call-1", { role: "scout", name: "Test delegated task", task }, undefined, (update: any) => updates.push(update), app.ctx);
-		const original = "a".repeat(60 * 1024);
-		assertTruncated(singleOutput(result), capOutput(original));
-		assert.equal(result.details.entries[0].summary.length, 160);
-		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
-		assert.ok(updates.length >= 2);
-		assert.ok(updates.every((update) => Buffer.byteLength(update.content[0].text, "utf8") <= 50 * 1024));
-		assert.match(updates.at(-1).content[0].text, /^Delegation · 1 running\n◌ \[1\/1\] Test delegated task · scout — a{160}$/);
-		assert.doesNotMatch(updates.at(-1).content[0].text, /Results:/);
-	});
-});
-
-test("invalid role config blocks delegation without blocking extension load", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "broken.md"), `---
-name: broken
-description: Has malformed tool list
-tools: [read, 1]
-extensions: []
-skills: []
----
-Do work.
-`);
-		const app = harness();
-		assert.equal(app.tool.parameters, DelegateTaskSchema);
-		assert.match(app.tool.description, /compact direct work or a durable checked isolated graph/);
-		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes("delegate_task")));
-		assert.ok(app.tool.promptGuidelines?.some((guideline) => guideline.includes(MODEL_CLASS_GUIDANCE)
-			&& guideline.includes("direct model replaces only the selected route's model")
-			&& guideline.includes("thinking level stays unchanged")));
-		assert.match(app.tool.description, /configuration error/);
-		await assert.rejects(
-			app.tool.execute("invalid", { role: "broken", name: "Test delegated task", task: "work", tasks: [] }, undefined, undefined, app.ctx),
-			/exactly one/,
-		);
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "broken", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
-			/tools/,
-		);
-	});
-});
-
-test("tool argument preparation normalizes valid modes and bounds parse failures before schema validation", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const marker = join(agentDir, "preflight-child-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "started");`);
-		process.argv[1] = runner;
-		const app = harness();
-		const valid = [
-			{ role: " worker ", name: "Test delegated task", task: " work " },
-			{ tasks: [{ role: " worker ", name: "Test delegated task", task: " parallel " }], background: true },
-			{ chain: [{ role: " worker ", name: "Test delegated task", task: " chain " }] },
-		];
-		for (const params of valid) {
-			const normalized = app.tool.prepareArguments!(params);
-			assert.deepEqual(parseWorkflow(normalized), parseWorkflow({ mode: "direct", ...params }));
-			assert.equal((normalized as { background: boolean }).background, Boolean(params.background));
-		}
-
-		const huge = "x".repeat(60 * 1024);
-		for (const run of [
-			() => app.tool.prepareArguments!({ role: "worker", name: "Test delegated task", task: "work", [huge]: true }),
-			() => app.tool.execute("role", { role: huge, name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
-		]) {
-			const error = await Promise.resolve().then(run).then(
-				() => assert.fail("expected preflight rejection"),
-				(reason) => reason,
-			);
-			assert.ok(error instanceof Error);
-			assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
-		}
-		assert.equal(existsSync(marker), false);
-	});
-});
-
-test("pre-aborted foreground and background calls use fixed typed errors before acceptance or launch", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const marker = join(agentDir, "pre-aborted-child-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "started");`);
-		process.argv[1] = runner;
-		const app = harness();
-		for (const background of [false, true]) {
-			const controller = new AbortController();
-			const reason = new Error("x".repeat(60 * 1024));
-			controller.abort(reason);
-			await assert.rejects(
-				app.tool.execute(`pre-${background}`, { role: "worker", name: "Test delegated task", task: "work", background }, controller.signal, undefined, app.ctx),
-				(error) => {
-					assert.ok(error instanceof EphemeralSubagentError);
-					assert.equal(error.code, "aborted");
-					assert.equal(error.message, "Subagent was aborted.");
-					assert.equal(error.cause, reason);
-					return true;
-				},
-			);
-		}
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(existsSync(marker), false);
-		assert.deepEqual(app.sentMessages, []);
-	});
-});
-
-test("write-capable extension Roles serialize while preserving input order and routes", async () => {
-	await environment(async (agentDir) => {
-		const roleDir = join(agentDir, "config", "pi-subagent");
-		await mkdir(roleDir, { recursive: true });
-		await Promise.all([
-			writeFile(join(roleDir, "scout.md"), `---
-name: scout
-description: Finds code
-tools: [read]
-extensions: [/user/scout.ts]
-skills: [skill-a]
----
-Find code.
-`),
-			writeFile(join(roleDir, "reviewer.md"), `---
-name: reviewer
-description: Reviews code
-tools: [grep]
-extensions: [/user/reviewer.ts]
-skills: [skill-b]
----
-Review code.
-`),
-			writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-				profiles: {
-					fast: { primary: { model: "provider/fast", thinkingLevel: "off" } },
-					frontier: { primary: { model: "provider/deep", thinkingLevel: "high" } },
-				},
-			})),
-		]);
-		const started = join(agentDir, "parallel-started");
-		const release = join(agentDir, "parallel-release");
-		await Promise.all([mkdir(started), mkdir(release)]);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-writeFileSync(join(${JSON.stringify(started)}, task), JSON.stringify(process.argv.slice(2)));
-const factor = task === "alpha" ? 1 : 2;
-const timer = setInterval(() => {
-	if (!existsSync(join(${JSON.stringify(release)}, task))) return;
-	clearInterval(timer);
-	const usage = { input: factor, output: factor, cacheRead: factor, cacheWrite: factor, totalTokens: factor * 4, cost: { input: factor, output: factor, cacheRead: factor, cacheWrite: factor, total: factor * 4 } };
-	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: task + "-done" }], usage, stopReason: "end" } }));
-}, 5);
-`);
-		process.argv[1] = runner;
-		const fast = { provider: "provider", id: "fast", input: ["text"], reasoning: false };
-		const deep = { provider: "provider", id: "deep", input: ["text"], reasoning: true, thinkingLevelMap: { high: "high" } };
-		const app = harness({
-			availableModels: [fast, deep],
-			skills: [
-				{ name: "skill-a", path: "/skills/a/SKILL.md" },
-				{ name: "skill-b", path: "/skills/b/SKILL.md" },
-			],
-		});
-		const updates: any[] = [];
-		const running = app.tool.execute("workflow-1", { tasks: [
-			{ role: "scout", name: "Test delegated task", task: "alpha", model: "provider/fast" },
-			{ role: "reviewer", name: "Test delegated task", task: "beta", modelClass: "frontier" },
-		] }, undefined, (update: any) => updates.push(update), app.ctx);
-		await waitFor(() => readdirSync(started).includes("alpha"));
-		assert.deepEqual(readdirSync(started), ["alpha"]);
-		await writeFile(join(release, "alpha"), "");
-		await waitFor(() => readdirSync(started).includes("beta"));
-		await writeFile(join(release, "beta"), "");
-		const result = await running;
-
-		assert.deepEqual(result.details.entries.map(({ id, index, role, status, model, thinkingLevel }: any) => ({ id, index, role, status, model, thinkingLevel })), [
-			{ id: "workflow-1:parallel:0", index: 0, role: "scout", status: "succeeded", model: "provider/fast", thinkingLevel: "off" },
-			{ id: "workflow-1:parallel:1", index: 1, role: "reviewer", status: "succeeded", model: "provider/deep", thinkingLevel: "high" },
-		]);
-		assert.ok(result.content[0].text.indexOf("alpha-done") < result.content[0].text.indexOf("beta-done"));
-		assert.deepEqual(result.usage, {
-			input: 3, output: 3, cacheRead: 3, cacheWrite: 3, totalTokens: 12,
-			cost: { input: 3, output: 3, cacheRead: 3, cacheWrite: 3, total: 12 },
-		});
-		const alphaArgs = JSON.parse(await readFile(join(started, "alpha"), "utf8")) as string[];
-		const betaArgs = JSON.parse(await readFile(join(started, "beta"), "utf8")) as string[];
-		assert.equal(alphaArgs[alphaArgs.indexOf("--model") + 1], "provider/fast");
-		assert.equal(alphaArgs[alphaArgs.indexOf("--extension") + 1], "/user/scout.ts");
-		assert.equal(alphaArgs[alphaArgs.indexOf("--skill") + 1], "/skills/a/SKILL.md");
-		assert.equal(alphaArgs[alphaArgs.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["read"]));
-		assert.equal(betaArgs[betaArgs.indexOf("--model") + 1], "provider/deep");
-		assert.equal(betaArgs[betaArgs.indexOf("--extension") + 1], "/user/reviewer.ts");
-		assert.equal(betaArgs[betaArgs.indexOf("--skill") + 1], "/skills/b/SKILL.md");
-		assert.equal(betaArgs[betaArgs.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["grep"]));
-	});
-});
-
-test("background parallel acknowledges before launch and sends one ordered partial-failure aggregate", async () => {
-	await environment(async (agentDir) => {
-		const roleDir = join(agentDir, "config", "pi-subagent");
-		await mkdir(roleDir, { recursive: true });
-		await Promise.all([
-			writeFile(join(roleDir, "scout.md"), `---
-name: scout
-description: Finds code
-tools: [read]
-extensions: []
-skills: []
----
-Find code.
-`),
-			writeFile(join(roleDir, "reviewer.md"), `---
-name: reviewer
-description: Reviews code
-tools: [grep]
-extensions: []
-skills: []
----
-Review code.
-`),
-		]);
-		const started = join(agentDir, "background-parallel-started");
-		const release = join(agentDir, "background-parallel-release");
-		await Promise.all([mkdir(started), mkdir(release)]);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-writeFileSync(join(${JSON.stringify(started)}, task), "");
-const factor = task === "alpha" ? 1 : 2;
-const timer = setInterval(() => {
-	if (!existsSync(join(${JSON.stringify(release)}, task))) return;
-	clearInterval(timer);
-	const usage = { input: factor, output: factor, cacheRead: factor, cacheWrite: factor, totalTokens: factor * 4, cost: { input: factor, output: factor, cacheRead: factor, cacheWrite: factor, total: factor * 4 } };
-	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: task === "alpha" ? "successful sibling evidence" : "failed child output" }], usage, stopReason: task === "alpha" ? "end" : "error", ...(task === "beta" ? { errorMessage: "beta failed" } : {}) } }));
-}, 5);
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const updates: any[] = [];
-		const acknowledgement = await app.tool.execute("background-parallel", { tasks: [
-			{ role: "scout", name: "Test delegated task", task: "alpha" },
-			{ role: "reviewer", name: "Test delegated task", task: "beta" },
-		], background: true }, undefined, (update: any) => updates.push(update), app.ctx);
-
-		assert.equal(readdirSync(started).length, 0);
-		assert.ok(Buffer.byteLength(acknowledgement.content[0].text, "utf8") <= 50 * 1024);
-		assert.match(acknowledgement.details.taskId, /^bg-\d+-[a-z0-9]+$/);
-		assert.equal(acknowledgement.details.mode, "parallel");
-		assert.deepEqual(acknowledgement.details.entries, [
-			{ id: "background-parallel:parallel:0", index: 0, name: "Test delegated task", role: "scout" },
-			{ id: "background-parallel:parallel:1", index: 1, name: "Test delegated task", role: "reviewer" },
-		]);
-		await waitFor(() => readdirSync(started).length === 2);
-		await writeFile(join(release, "beta"), "");
-		await new Promise((resolve) => setTimeout(resolve, 30));
-		assert.equal(app.sentMessages.length, 0);
-		await writeFile(join(release, "alpha"), "");
-		await waitFor(() => app.sentMessages.length === 1);
-
-		assert.deepEqual(updates, []);
-		const { message, options } = app.sentMessages[0]!;
-		assert.equal(message.customType, "subagent-background-result");
-		assert.equal(message.details.taskId, acknowledgement.details.taskId);
-		assert.equal(message.details.outcome, "failed");
-		assert.deepEqual(message.details.entries.map(({ role, status }: any) => ({ role, status })), [
-			{ role: "scout", status: "succeeded" },
-			{ role: "reviewer", status: "failed" },
-		]);
-		assert.deepEqual(message.details.usage, {
-			input: 3, output: 3, cacheRead: 3, cacheWrite: 3, totalTokens: 12,
-			cost: { input: 3, output: 3, cacheRead: 3, cacheWrite: 3, total: 12 },
-		});
-		assert.match(message.content, /^Background parallel delegation failed · 1 failed · 1 completed/);
-		assert.match(message.content, /successful sibling evidence/);
-		assert.match(message.content, /beta failed/);
-		assert.ok(message.content.indexOf("successful sibling evidence") < message.content.indexOf("beta failed"));
-		assert.ok(Buffer.byteLength(message.content, "utf8") <= 50 * 1024);
-		assert.deepEqual(options, { triggerTurn: false });
-		await new Promise((resolve) => setTimeout(resolve, 30));
-		assert.equal(app.sentMessages.length, 1);
-	});
-});
-
-test("chain passes only immediate assistant output and stops on failure", async (t) => {
-	const repo = await initializedRepository(t);
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const log = join(agentDir, "chain-tasks.jsonl");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { appendFileSync } from "node:fs";
-const rawTask = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-const task = rawTask.split("\\n\\nDirect ", 1)[0];
-appendFileSync(${JSON.stringify(log)}, JSON.stringify(task) + "\\n");
-const event = (value) => console.log(JSON.stringify(value));
-if (task === "first") {
-	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "FIRST {previous}" }], stopReason: "end" } });
-} else if (task === "second sees [FIRST {previous}]") {
-	event({ type: "message_end", message: { role: "assistant", content: [], stopReason: "end" } });
-} else if (task === "third sees []") {
-	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "must not continue" }], stopReason: "error", errorMessage: "chain broke" } });
-} else {
-	throw new Error("unexpected chain task: " + task);
-}
-`);
-		process.argv[1] = runner;
-		const app = harness({ cwd: repo });
-		const error = await app.tool.execute("chain-call", { chain: [
-			{ role: "worker", name: "Test delegated task", task: "first" },
-			{ role: "worker", name: "Test delegated task", task: "second sees [{previous}]" },
-			{ role: "worker", name: "Test delegated task", task: "third sees [{previous}]" },
-			{ role: "worker", name: "Test delegated task", task: "never" },
-		] }, undefined, undefined, app.ctx).then(
-			() => assert.fail("expected workflow failure"),
-			(reason) => reason,
-		);
-		assert.ok(error instanceof WorkflowFailureError);
-		assert.deepEqual((await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)), [
-			"first",
-			"second sees [FIRST {previous}]",
-			"third sees []",
-		]);
-		assert.deepEqual(error.details.entries.map(({ status, worktree }: any) => ({ status, worktree })), [
-			{ status: "succeeded", worktree: undefined },
-			{ status: "succeeded", worktree: undefined },
-			{ status: "failed", worktree: undefined },
-			{ status: "skipped", worktree: undefined },
-		]);
-		assert.match(error.message, /FIRST \{previous\}/);
-		assert.match(error.message, /chain broke/);
-	});
-});
-
-test("background chain substitutes immediate output and fails fast", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const log = join(agentDir, "background-chain.jsonl");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { appendFileSync } from "node:fs";
-const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-appendFileSync(${JSON.stringify(log)}, JSON.stringify(task) + "\\n");
-if (task === "first") {
-	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "FIRST {previous}" }], stopReason: "end" } }));
-} else if (task === "second sees [FIRST {previous}]") {
-	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "unused failure output" }], stopReason: "error", errorMessage: "chain stopped" } }));
-} else {
-	throw new Error("unexpected chained task: " + task);
-}
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const acknowledgement = await app.tool.execute("background-chain", { chain: [
-			{ role: "worker", name: "Test delegated task", task: "first" },
-			{ role: "worker", name: "Test delegated task", task: "second sees [{previous}]" },
-			{ role: "worker", name: "Test delegated task", task: "must not start" },
-		], background: true }, undefined, undefined, app.ctx);
-		assert.equal(acknowledgement.details.mode, "chain");
-		assert.deepEqual(acknowledgement.details.entries.map(({ id }: any) => id), [
-			"background-chain:chain:0",
-			"background-chain:chain:1",
-			"background-chain:chain:2",
-		]);
-		await waitFor(() => app.sentMessages.length === 1);
-
-		assert.deepEqual((await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line)), [
-			"first",
-			"second sees [FIRST {previous}]",
-		]);
-		const message = app.sentMessages[0]!.message;
-		assert.equal(message.details.outcome, "failed");
-		assert.deepEqual(message.details.entries.map(({ status }: any) => status), ["succeeded", "failed", "skipped"]);
-		assert.match(message.content, /FIRST \{previous\}/);
-		assert.match(message.content, /chain stopped/);
-		assert.doesNotMatch(message.content, /must not start/);
-	});
-});
-
-test("parallel partial failure reports successful sibling evidence", async (t) => {
-	const repo = await initializedRepository(t);
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: task === "good" ? "successful sibling evidence" : "failed child output" }], stopReason: task === "good" ? "end" : "error", ...(task === "bad" ? { errorMessage: "bad child failed" } : {}) } }));
-`);
-		process.argv[1] = runner;
-		const app = harness({ cwd: repo });
-		const error = await app.tool.execute("partial", { tasks: [
-			{ role: "worker", name: "Test delegated task", task: "good" },
-			{ role: "worker", name: "Test delegated task", task: "bad" },
-		] }, undefined, undefined, app.ctx).then(
-			() => assert.fail("expected workflow failure"),
-			(reason) => reason,
-		);
-		assert.ok(error instanceof WorkflowFailureError);
-		assert.deepEqual(error.details.entries.map(({ status, worktree }: any) => ({ status, worktree })), [
-			{ status: "succeeded", worktree: undefined },
-			{ status: "failed", worktree: undefined },
-		]);
-		assert.match(error.message, /successful sibling evidence/);
-		assert.match(error.message, /bad child failed/);
-	});
-});
-
-test("tool_result restores bounded foreground failure details and aggregate Usage exactly once", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const usage = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 } };
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "failed output" }], usage, stopReason: "error", errorMessage: "child failed" } }));
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const error = await app.tool.execute("patched", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
-			() => assert.fail("expected workflow failure"),
-			(reason) => reason,
-		);
-		assert.ok(error instanceof WorkflowFailureError);
-		const event = {
-			type: "tool_result",
-			toolName: "delegate_task",
-			toolCallId: "patched",
-			input: { role: "worker", name: "Test delegated task", task: "work" },
-			content: [{ type: "text", text: error.message }],
-			details: undefined,
-			isError: true,
-		};
-		const handler = app.handlers.get("tool_result")!;
-		assert.deepEqual(await handler(event, app.ctx), {
-			content: [{ type: "text", text: error.message }],
-			details: error.details,
-			isError: true,
-			usage: error.usage,
-		});
-		assert.equal(await handler(event, app.ctx), undefined);
-
-		await assert.rejects(app.tool.execute("leftover", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx));
-		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		assert.equal(await handler({ ...event, toolCallId: "leftover" }, app.ctx), undefined);
-	});
-});
-
-test("oversized parallel foreground and background aggregates stay within 50 KiB", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: task + ":" + "x".repeat(60 * 1024) }], stopReason: "end" } }));
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const tasks = Array.from({ length: 8 }, (_, index) => ({ role: "worker", name: "Test delegated task", task: `task-${index}` }));
-		const updates: any[] = [];
-		const result = await app.tool.execute("large", { tasks }, undefined, (update: any) => updates.push(update), app.ctx);
-		assert.equal(result.details.entries.length, 8);
-		assert.ok(updates.length >= 8);
-		for (const transport of [...updates, result]) {
-			assert.ok(Buffer.byteLength(transport.content[0].text, "utf8") <= 50 * 1024);
-		}
-		assert.match(result.content[0].text, /\[Output truncated: \d+ bytes omitted\]$/);
-
-		const backgroundUpdates: any[] = [];
-		const acknowledgement = await app.tool.execute(
-			"large-background", { tasks, background: true }, undefined,
-			(update: any) => backgroundUpdates.push(update), app.ctx,
-		);
-		assert.ok(Buffer.byteLength(acknowledgement.content[0].text, "utf8") <= 50 * 1024);
-		await waitFor(() => app.sentMessages.length === 1);
-		const message = app.sentMessages[0]!.message;
-		assert.deepEqual(backgroundUpdates, []);
-		assert.equal(message.details.entries.length, 8);
-		assert.ok(message.details.entries.every(({ status }: any) => status === "succeeded"));
-		assert.ok(Buffer.byteLength(message.content, "utf8") <= 50 * 1024);
-		assert.match(message.content, /\[Output truncated: \d+ bytes omitted\]$/);
-	});
-});
-
-test("runs four child delegations and starts queued children FIFO", async () => {
-	await environment(async (agentDir) => {
-		await setMaxSubagents(agentDir, 4);
-		{
-			await runsQueuedChildrenFifo(agentDir);
-		}
-	});
-});
-
-async function runsQueuedChildrenFifo(agentDir: string): Promise<void> {
-	await writeWorkerRole(agentDir);
-		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
-		const runner = await blockedPiRunner(agentDir);
-		const app = harness({ ui: true });
-		const calls = tasks.map((task, index) => app.tool.execute(
-			`call-${index + 1}`,
-			{ role: "worker", name: "Test delegated task", task },
-			undefined,
-			undefined,
-			app.ctx,
-		));
-		try {
-			await waitFor(() => runner.started().length === 4);
-			const widget = app.widget!.render(80);
-			assert.equal(workingWidgetRows(widget).length, 2);
-			assertWidgetHierarchy(widget);
-			assert.deepEqual(runner.started(), tasks.slice(0, 4));
-			await runner.release(tasks[0]!);
-			await waitFor(() => runner.started().includes(tasks[4]!));
-			assert.deepEqual(runner.started(), [...tasks.slice(0, 4), tasks[4]!]);
-			for (const task of tasks.slice(1)) await runner.release(task);
-			assert.equal((await Promise.all(calls)).length, tasks.length);
-		} finally {
-			await Promise.all(tasks.map((task) => runner.release(task)));
-			await Promise.allSettled(calls);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
+	}
 }
 
-test("queued delegation reloads its Role after the permit", async () => {
-	await environment(async (agentDir) => {
-		await setMaxSubagents(agentDir, 1);
-		{
-			await writeWorkerRole(agentDir);
-			const started = join(agentDir, "late-route-started");
-			const release = join(agentDir, "late-route-release");
-			await Promise.all([mkdir(started), mkdir(release)]);
-			const runner = join(agentDir, "fake-pi.mjs");
-			await writeFile(runner, `import { existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-writeFileSync(join(${JSON.stringify(started)}, task), "");
-const timer = setInterval(() => {
-	if (!existsSync(join(${JSON.stringify(release)}, task))) return;
-	clearInterval(timer);
-	console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(process.argv.slice(2)) }], stopReason: "stop" } }));
-}, 5);
-`);
-			process.argv[1] = runner;
-			const lateModel = { ...model, provider: "provider", id: "late-model" };
-			const app = harness({ availableModels: [model, lateModel] });
-			const first = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "task-1" }, undefined, undefined, app.ctx);
-			await waitFor(() => existsSync(join(started, "task-1")));
-			const second = app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "task-2" }, undefined, undefined, app.ctx);
-			await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [grep]
-extensions: []
-skills: []
----
-Use the updated policy.
-`);
-			await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
-				profiles: { balanced: { primary: { model: "provider/late-model", thinkingLevel: "low" } } },
-				tasks: { "pi-subagent/delegateTask": "balanced" },
-			}));
-			await writeFile(join(release, "task-1"), "");
-			await first;
-			await waitFor(() => existsSync(join(started, "task-2")));
-			await writeFile(join(release, "task-2"), "");
-			const args = JSON.parse(singleOutput(await second)) as string[];
-			assert.equal(args[args.indexOf("--model") + 1], "provider/late-model");
-			assert.equal(args[args.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], JSON.stringify(["grep"]));
-			assert.equal(args[args.indexOf("--append-system-prompt") + 1], "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nUse the updated policy.");
-		}
-	});
-});
-
-test("global maxSubagents config overrides the default child cap", async () => {
-	await environment(async (agentDir) => {
-		await setMaxSubagents(agentDir, 1);
-		{
-			await writeWorkerRole(agentDir);
-			const tasks = ["task-1", "task-2"];
-			const runner = await blockedPiRunner(agentDir);
-			const app = harness({ ui: true });
-			const calls = tasks.map((task, index) => app.tool.execute(
-				`call-${index + 1}`, { role: "worker", name: "Test delegated task", task }, undefined, undefined, app.ctx,
-			));
-			try {
-				await waitFor(() => runner.started().length === 1);
-				assert.deepEqual(runner.started(), ["task-1"]);
-				assert.equal(workingWidgetRows(app.widget!.render(80)).length, 1);
-				await runner.release("task-1");
-				await waitFor(() => runner.started().includes("task-2"));
-				for (const task of tasks) await runner.release(task);
-				assert.equal((await Promise.all(calls)).length, tasks.length);
-			} finally {
-				await Promise.all(tasks.map((task) => runner.release(task)));
-				await Promise.allSettled(calls);
-				await app.handlers.get("session_shutdown")?.({}, app.ctx);
-			}
-		}
-	});
-});
-
-test("session shutdown aborts queued background subagents without unhandled rejections", async () => {
-	await environment(async (agentDir) => {
-		await setMaxSubagents(agentDir, 1);
-		{
-			const unhandled: unknown[] = [];
-			const onUnhandled = (error: unknown) => unhandled.push(error);
-			process.on("unhandledRejection", onUnhandled);
-			try {
-				await writeWorkerRole(agentDir);
-				const runner = join(agentDir, "fake-pi.mjs");
-				await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
-				process.argv[1] = runner;
-
-				const app = harness();
-				const first = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "task-1", background: true }, undefined, undefined, app.ctx);
-				assert.match(first.content[0]!.text, /Background delegation started/);
-				const second = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "task-2", background: true }, undefined, undefined, app.ctx);
-				assert.match(second.content[0]!.text, /Background delegation started/);
-				// Second task is queued; shutdown must abort it without an unhandled
-				// rejection from the discarded IIFE promise.
-				await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
-				await new Promise((resolve) => setTimeout(resolve, 50));
-				assert.deepEqual(unhandled, []);
-			} finally {
-				process.off("unhandledRejection", onUnhandled);
-			}
-		}
-	});
-});
-
-test("background outcomes are not delivered after session shutdown", async () => {
+test("direct returns verified nonfocused tab and sends exact result once as follow-up", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "late" }], stopReason: "end" } }));`);
-		process.argv[1] = runner;
-
-		const app = harness();
-		await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx);
-		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.equal(app.sentMessages.length, 0);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, () => "exact answer");
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			const result = await app.tool.execute("call", { role: "worker", name: "Check", task: "inspect" }, undefined, undefined, app.ctx);
+			assert.match(result.content[0].text, /Herdr tab: w-test:t2/);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.match(app.sentMessages[0]!.message.content, /exact answer/);
+			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt").length, 1);
+			assert.ok(fake.calls.some((args) => args.includes("--no-focus") && args.includes(cwd)));
+		});
 	});
 });
 
-test("legacy maxSubagents environment override is ignored", async () => {
-	await environment(async () => {
-		const previous = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
-		process.env.PI_SUBAGENT_MAX_SUBAGENTS = "invalid";
-		try {
-			assert.doesNotThrow(() => harness());
-		} finally {
-			if (previous === undefined) delete process.env.PI_SUBAGENT_MAX_SUBAGENTS;
-			else process.env.PI_SUBAGENT_MAX_SUBAGENTS = previous;
-		}
-	});
-});
-
-test("config file maxSubagents applies and malformed config warns without failing load", async () => {
+test("direct chain waits for exact prior result and rejects writer Roles before Herdr launch", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		const configDir = join(agentDir, "config", "pi-subagent");
-		await mkdir(configDir, { recursive: true });
-		await writeFile(join(configDir, "config.json"), JSON.stringify({ maxSubagents: 1 }));
-
-		const configured = harness({ ui: true });
-		configured.handlers.get("session_start")?.({}, configured.ctx);
-		assert.deepEqual(configured.notifications, []);
-
-		const tasks = ["task-1", "task-2"];
-		const runner = await blockedPiRunner(agentDir);
-		const app = harness({ ui: true });
-		const calls = tasks.map((task, index) => app.tool.execute(
-			`call-${index + 1}`, { role: "worker", name: "Test delegated task", task }, undefined, undefined, app.ctx,
-		));
-		try {
-			await waitFor(() => runner.started().length === 1);
-			await runner.release("task-1");
-			await waitFor(() => runner.started().includes("task-2"));
-		} finally {
-			await Promise.all(tasks.map((task) => runner.release(task)));
-			await Promise.allSettled(calls);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
-
-		// Malformed file: session still loads; warning surfaces at session_start.
-		await writeFile(join(configDir, "config.json"), "{ broken");
-		const warned = harness({ ui: true });
-		warned.handlers.get("session_start")?.({}, warned.ctx);
-		assert.equal(warned.notifications.length, 1);
-		assert.match(warned.notifications[0]!.message, /not valid JSON/);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, (prompt) => prompt.includes("first") ? "prior exact" : "final exact");
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("chain", { chain: [
+				{ role: "worker", name: "First", task: "first" },
+				{ role: "worker", name: "Second", task: "next: {previous}" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			const prompts = fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt");
+			assert.match(prompts[1]![3]!, /next: prior exact/);
+			assert.match(app.sentMessages[0]!.message.content, /final exact/);
+			await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrites.\n`);
+			await assert.rejects(app.tool.execute("writer", { role: "writer", name: "Write", task: "implement" }, undefined, undefined, app.ctx), /mode isolated/);
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "tab" && command === "create").length, 2);
+		});
 	});
 });
 
-test("missing local config uses defaults quietly while missing shared config warns once", async () => {
-	await environment(async (agentDir) => {
-		const localConfig = join(agentDir, "config", "pi-subagent", "config.json");
-		const sharedConfig = join(agentDir, "config", "pi-task-models", "config.json");
-		await rm(sharedConfig);
-
-		const app = harness({ ui: true });
-		app.handlers.get("session_start")?.({}, app.ctx);
-		assert.deepEqual(app.notifications, [
-			{ message: "Task model config is missing; run /task-models to configure it.", type: "warning" },
-		]);
-		assert.equal(existsSync(localConfig), false);
-		assert.equal(existsSync(sharedConfig), false);
-	});
-});
-
-test("drops an aborted queued delegation and transfers its permit", async () => {
-	await environment(async (agentDir) => {
-		await setMaxSubagents(agentDir, 4);
-		{
-			await writeWorkerRole(agentDir);
-		const tasks = Array.from({ length: 6 }, (_, index) => `task-${index + 1}`);
-		const runner = await blockedPiRunner(agentDir);
-		const app = harness({ ui: true });
-		const active = tasks.slice(0, 4).map((task, index) => app.tool.execute(
-			`call-${index + 1}`,
-			{ role: "worker", name: "Test delegated task", task },
-			undefined,
-			undefined,
-			app.ctx,
-		));
-		const calls = [...active];
-		try {
-			await waitFor(() => runner.started().length === 4);
-			assert.deepEqual(runner.started(), tasks.slice(0, 4));
-			const abort = new AbortController();
-			const fifth = app.tool.execute("call-5", { role: "worker", name: "Test delegated task", task: tasks[4]! }, abort.signal, undefined, app.ctx);
-			const fifthAborted = assert.rejects(fifth, (error: unknown) => error instanceof Error && error.name === "AbortError");
-			const sixth = app.tool.execute("call-6", { role: "worker", name: "Test delegated task", task: tasks[5]! }, undefined, undefined, app.ctx);
-			calls.push(fifth, sixth);
-			abort.abort();
-			await fifthAborted;
-			const widget = app.widget!.render(80);
-			assert.equal(workingWidgetRows(widget).length, 2);
-			assertWidgetHierarchy(widget);
-			await runner.release(tasks[0]!);
-			await waitFor(() => runner.started().includes(tasks[5]!));
-			assert.deepEqual(runner.started(), [...tasks.slice(0, 4), tasks[5]!]);
-			for (const task of tasks.slice(1)) await runner.release(task);
-			await Promise.all([...active, sixth]);
-		} finally {
-			await Promise.all(tasks.map((task) => runner.release(task)));
-			await Promise.allSettled(calls);
-			await app.handlers.get("session_shutdown")?.({}, app.ctx);
-		}
-		}
-	});
-});
-
-
-test("global maxTokens config reaches each child through the shared executor", async () => {
+test("parallel direct delegation returns after first verified tab and delivers one ordered partial failure", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxTokens: 2_000 }));
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const task = process.argv.at(-1).replace(/^Task: /, "").split("\\n\\nDirect ", 1)[0];
-const budget = JSON.parse(process.env.PI_SUBAGENT_EXECUTION_BUDGET);
-console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: task + ":" + budget.maxTokens }], stopReason: "stop" } }));
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const result = await app.tool.execute("token-budget", { tasks: [
-			{ role: "worker", name: "First budget", task: "first" },
-			{ role: "worker", name: "Second budget", task: "second" },
-		] }, undefined, undefined, app.ctx);
-		assert.match(result.content[0].text, /first:2000/);
-		assert.match(result.content[0].text, /second:2000/);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("second") ? "" : "exact answer");
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			const result = await app.tool.execute("parallel", { tasks: [
+				{ role: "worker", name: "First", task: "first" },
+				{ role: "worker", name: "Second", task: "second" },
+			] }, undefined, undefined, app.ctx);
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "start").length, 1);
+			assert.equal(result.details.entries.length, 2);
+			await waitFor(() => app.sentMessages.length === 1);
+			const message = app.sentMessages[0]!.message;
+			assert.deepEqual(message.details.entries.map(({ status }: any) => status), ["succeeded", "rejected"]);
+			assert.match(message.content, /empty final answer/);
+			assert.match(message.content, /recover from Herdr tab/);
+			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+		});
 	});
 });
 
-test("config file timeout applies when no explicit policy is passed", async () => {
+test("session shutdown cancels the exact direct agent and suppresses a late result", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		const configDir = join(agentDir, "config", "pi-subagent");
-		await writeFile(join(configDir, "config.json"), JSON.stringify({
-			timeout: { idleMinutes: 0.002, maxMinutes: 0.004 },
-		}));
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_start", message: { role: "user", content: [] } }));
-setInterval(() => {}, 1_000);
-`);
-		process.argv[1] = runner;
-
-		const app = harness();
-		assert.equal(app.notifications.length, 0);
-		await assert.rejects(
-			app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx),
-			/Subagent timed out.*without a recognized Pi event/,
-		);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, () => "late answer", gate);
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("late", { role: "worker", name: "Late", task: "inspect" }, undefined, undefined, app.ctx);
+			await waitFor(() => fake.calls.some(([kind, command]) => kind === "agent" && command === "wait"));
+			const shutdown = app.handlers.get("session_shutdown")?.({}, app.ctx);
+			await waitFor(() => fake.calls.some(([kind, command]) => kind === "agent" && command === "send-keys"));
+			release();
+			await shutdown;
+			assert.equal(app.sentMessages.length, 0);
+		});
 	});
 });
 
-test("workflow transport retains executor rejection Usage when no child result exists", async () => {
+test("queued chain step rechecks Role capability before opening a tab", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
-		const observedUsage = {
-			input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10,
-			cost: { input: 0.1, output: 0.2, cacheRead: 0.3, cacheWrite: 0.4, total: 1 },
-		};
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_update", usage: ${JSON.stringify(observedUsage)} })); setInterval(() => {}, 1_000);`);
-		process.argv[1] = runner;
-		const app = harness({ timeoutPolicy: { idleMs: 500, maxMs: 800 } });
-		const error = await app.tool.execute("usage-rejection", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
-			() => assert.fail("expected workflow failure"),
-			(reason) => reason,
-		);
-		assert.ok(error instanceof WorkflowFailureError);
-		assert.deepEqual(error.usage, observedUsage);
-		assert.equal(error.details.entries[0].status, "rejected");
-	});
-});
-
-test("ordinary delegation turn-limit failure includes retained assistant output", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ maxTurns: 10 }));
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
-for (let turn = 1; turn <= 10; turn++) {
-	event({ type: "turn_start", turnIndex: turn - 1 });
-	event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: turn === 10 ? "retained failure evidence" : String(turn) }], stopReason: "toolUse" } });
-}
-event({ type: "turn_start", turnIndex: 10 });
-setInterval(() => {}, 1_000);
-`);
-		process.argv[1] = runner;
-		const app = harness();
-		const error = await app.tool.execute("turn-limit", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
-			() => assert.fail("expected workflow failure"),
-			(reason) => reason,
-		);
-		assert.ok(error instanceof WorkflowFailureError);
-		assert.match(error.message, /Subagent reached its maximum turn limit of 10\.[\s\S]*retained failure evidence/);
-	});
-});
-
-test("parent abort remains an abort while timeout cleanup is underway", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Do bounded work.
-`);
-		const cleanupStarted = join(agentDir, "timeout-cleanup-started");
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `import { writeFileSync } from "node:fs";
-process.on("SIGTERM", () => {
-	writeFileSync(${JSON.stringify(cleanupStarted)}, "");
-	setTimeout(() => process.exit(0), 80);
-});
-setInterval(() => {}, 1_000);
-`);
-		process.argv[1] = runner;
-		const app = harness({ ui: true, timeoutPolicy: { idleMs: 1_000, maxMs: 2_000 } });
-		const abort = new AbortController();
-		const running = app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, abort.signal, undefined, app.ctx);
-		await waitFor(() => existsSync(cleanupStarted));
-		abort.abort();
-		await assert.rejects(running, (error: unknown) => error instanceof Error && error.name === "AbortError");
-		assert.ok(app.widget!.render(80).some((line) => line.startsWith("  ✗")));
-		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-	});
-});
-
-test("oversized stderr returns bounded tool error", async () => {
-	await environment(async (agentDir) => {
-		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---
-name: worker
-description: Does bounded work
-tools: [read]
-extensions: []
-skills: []
----
-Do bounded work.
-`);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `process.stderr.write("e".repeat(60 * 1024)); process.exit(2);\n`);
-		process.argv[1] = runner;
-		const app = harness({ ui: true });
-		const error = await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "work" }, undefined, undefined, app.ctx).then(
-			() => assert.fail("expected workflow failure"),
-			(reason) => reason,
-		);
-		assert.ok(error instanceof WorkflowFailureError);
-		assertTruncated(singleEvidence(error.message, error.details, "failure"), capOutput("e".repeat(60 * 1024)));
-		assert.ok(Buffer.byteLength(error.message, "utf8") <= 50 * 1024);
-		assert.ok(app.widget!.render(80).some((line) => line.startsWith("  ✗")));
-		await app.handlers.get("session_shutdown")?.({}, app.ctx);
-	});
-});
-
-test("background renderer shares workflow entry status presentation", async () => {
-	await environment(async () => {
-		const app = harness();
-		const details: BackgroundWorkflowTransportDetails = {
-			taskId: "bg-test",
-			outcome: "failed",
-			mode: "parallel",
-			entries: [
-				{ id: "one", index: 0, name: "Skipped task", role: "worker", status: "skipped" },
-				{ id: "two", index: 1, name: "Rejected task", role: "worker", status: "rejected" },
-			],
-		};
-		const message = { content: "full\u0001evidence", details };
-		const collapsed = app.renderMessage(message);
-		assert.match(collapsed, /✗ 2 background subagents failed/);
-		assert.match(collapsed, /– Skipped task · worker — skipped/);
-		assert.match(collapsed, /✗ Rejected task · worker — failed/);
-		assert.doesNotMatch(collapsed, /full evidence/);
-		assert.match(app.renderMessage(message, true), /full evidence/);
-	});
-});
-
-test("background renderer uses typed fallback for whitespace-only child output", async () => {
-	await environment(async () => {
-		const app = harness();
-		const transport = formatBackgroundWorkflowResult("single", [{
-			id: "empty-output",
-			index: 0,
-			name: "Empty task",
-			role: "worker",
-			status: "succeeded",
-			assistantOutput: " \n\t",
-		}]);
-		const details: BackgroundWorkflowTransportDetails = {
-			...transport.details,
-			taskId: "bg-empty-output",
-			outcome: "completed",
-		};
-		assert.match(app.renderMessage({ content: transport.text, details }), /✓ Empty task · worker — completed/);
-	});
-});
-
-test("background delegation returns one bounded workflow acknowledgement and result message", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
-		process.argv[1] = runner;
-
-		const app = harness();
-		const result = await app.tool.execute(
-			"call-1", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx,
-		);
-		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
-		assert.match(result.content[0].text, /Background delegation started/);
-		assert.doesNotMatch(result.content[0].text, /bg-\d+|id=/);
-		assert.deepEqual(result.details.entries, [{ id: "call-1:single:0", index: 0, name: "Test delegated task", role: "worker" }]);
-		await waitFor(() => app.sentMessages.length === 1);
-		const { message, options } = app.sentMessages[0]!;
-		assert.equal(message.customType, "subagent-background-result");
-		assert.equal(message.details.taskId, result.details.taskId);
-		assert.equal(message.details.outcome, "completed");
-		assert.match(message.content, /Background delegation completed/);
-		assert.match(message.content, /done/);
-		const collapsed = app.renderMessage(message);
-		assert.match(collapsed, /✓ Background subagent completed/);
-		assert.match(collapsed, /Test delegated task · worker — done/);
-		assert.doesNotMatch(collapsed, /subagent-background-result|id=|Evidence:/);
-		assert.match(app.renderMessage(message, true), /Background delegation completed/);
-		assert.equal(options.triggerTurn, false);
-	});
-});
-
-test("active background delivery failure issues one bounded UI error", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
-		process.argv[1] = runner;
-		const app = harness({ ui: true, sendMessageError: new Error("delivery ".repeat(10_000)) });
-		app.handlers.get("session_start")?.({}, app.ctx);
-		const acknowledgement = await app.tool.execute(
-			"delivery-failure", { role: "worker", name: "Test delegated task", task: "work", background: true }, undefined, undefined, app.ctx,
-		);
-		await waitFor(() => app.notifications.some(({ type }) => type === "error"));
-		const errors = app.notifications.filter(({ type }) => type === "error");
-		assert.equal(errors.length, 1);
-		assert.match(errors[0]!.message, new RegExp(acknowledgement.details.taskId));
-		assert.ok(Buffer.byteLength(errors[0]!.message, "utf8") <= 50 * 1024);
-		assert.match(errors[0]!.message, /\[Output truncated: \d+ bytes omitted\]$/);
-		assert.deepEqual(app.sentMessages, []);
-	});
-});
-
-
-test("session shutdown aborts a running background subagent and suppresses delivery", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `const event = (value) => console.log(JSON.stringify(value));
-event({ type: "message_start", message: { role: "assistant", content: [] } });
-setInterval(() => event({ type: "message_update", usage: { totalTokens: 1 } }), 25);
-`);
-		process.argv[1] = runner;
-
-		const app = harness({ timeoutPolicy: { idleMs: 60_000, maxMs: 120_000 } });
-		const result = await app.tool.execute(
-			"call-1", { role: "worker", name: "Test delegated task", task: "long work", background: true }, undefined, undefined, app.ctx,
-		);
-		assert.match(result.content[0]!.text, /Background delegation started/);
-		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
-		// The aborted child settles after shutdown; its outcome must not leak into
-		// a subsequent session.
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		assert.equal(app.sentMessages.length, 0);
-	});
-});
-
-test("background tasks deliver again after a new session starts", async () => {
-	await environment(async (agentDir) => {
-		await writeWorkerRole(agentDir);
-		const runner = join(agentDir, "fake-pi.mjs");
-		await writeFile(runner, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "end" } }));`);
-		process.argv[1] = runner;
-
-		const app = harness();
-		// First session: launch, shut down (task aborts, epoch advances).
-		await app.tool.execute("call-1", { role: "worker", name: "Test delegated task", task: "old", background: true }, undefined, undefined, app.ctx);
-		await app.handlers.get("session_shutdown")?.({}, { hasUI: false });
-		app.handlers.get("session_start")?.({}, app.ctx);
-		// Second session: a fresh task must deliver normally.
-		const result = await app.tool.execute("call-2", { role: "worker", name: "Test delegated task", task: "new", background: true }, undefined, undefined, app.ctx);
-		assert.match(result.content[0]!.text, /Background delegation started/);
-		await waitFor(() => app.sentMessages.length === 1);
-		assert.match(app.sentMessages[0]!.message.content, /completed/);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, () => "exact prior", gate);
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("chain-reload", { chain: [
+				{ role: "worker", name: "First", task: "inspect" },
+				{ role: "worker", name: "Second", task: "next: {previous}" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => fake.calls.some(([kind, command]) => kind === "agent" && command === "wait"));
+			await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---\nname: worker\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrites.\n`);
+			release();
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.deepEqual(app.sentMessages[0]!.message.details.entries.map(({ status }: any) => status), ["succeeded", "rejected"]);
+			assert.match(app.sentMessages[0]!.message.content, /became write-capable; use mode isolated/);
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "tab" && command === "create").length, 1);
+		});
 	});
 });

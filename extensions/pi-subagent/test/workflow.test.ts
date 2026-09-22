@@ -40,7 +40,7 @@ test("schemas expose strict delegation fields and top-level workflow modes", () 
 	assert.equal(delegationSchema.properties.role.pattern, DISPLAY_TEXT_CONTRACT.pattern);
 	assert.equal(delegationSchema.properties.model.pattern, DISPLAY_TEXT_CONTRACT.pattern);
 	assert.equal(workflowSchema.additionalProperties, false);
-	assert.ok("background" in workflowSchema.properties);
+	assert.equal("background" in workflowSchema.properties, false);
 	assert.equal("background" in delegationSchema.properties, false);
 	assert.equal("thinking" in delegationSchema.properties, false);
 	assert.equal("thinking" in workflowSchema.properties, false);
@@ -57,10 +57,8 @@ test("parses and normalizes each explicit workflow mode", () => {
 		task: " inspect ",
 		model: " provider/model ",
 		modelClass: "fast",
-		background: true,
 	}), {
 		mode: "single",
-		background: true,
 		delegations: [{
 			role: "worker",
 			kind: "text",
@@ -72,12 +70,10 @@ test("parses and normalizes each explicit workflow mode", () => {
 	});
 	assert.deepEqual(parseWorkflow({ tasks: [delegation("one"), delegation("two")] }), {
 		mode: "parallel",
-		background: false,
 		delegations: [delegation("one"), delegation("two")],
 	});
 	assert.deepEqual(parseWorkflow({ chain: [delegation("one"), delegation("two")] }), {
 		mode: "chain",
-		background: false,
 		delegations: [delegation("one"), delegation("two")],
 	});
 
@@ -173,7 +169,7 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 	assert.equal(parseWorkflow({ ...delegation("first line\nsecond line") }).delegations[0]!.task, "first line\nsecond line");
 });
 
-test("runs single exactly once and refuses background workflows", async () => {
+test("runs single exactly once", async () => {
 	let calls = 0;
 	const outcomes = await runForegroundWorkflow("call", parseWorkflow(delegation()), (entry) => {
 		calls++;
@@ -187,14 +183,6 @@ test("runs single exactly once and refuses background workflows", async () => {
 		result: "single-result",
 	}]);
 
-	await assert.rejects(
-		runForegroundWorkflow("call", parseWorkflow({ ...delegation(), background: true }), () => {
-			calls++;
-			return succeeded("unexpected", "unexpected");
-		}),
-		/Background workflows cannot use foreground orchestration/,
-	);
-	assert.equal(calls, 1);
 });
 
 test("runs parallel entries concurrently, all-settled, and in stable input order", async () => {
@@ -350,4 +338,14 @@ test("chain parent abort rethrows its reason without launching a later step", as
 	first.reject(new Error("child cleanup rejected"));
 	await assert.rejects(running, (error) => error === reason);
 	assert.deepEqual(calls, [0]);
+});
+
+
+test("direct kind changeset is rejected with isolated-mode guidance in every shape", () => {
+	for (const value of [
+		{ ...delegation(), kind: "changeset" },
+		{ tasks: [{ ...delegation(), kind: "changeset" }] },
+		{ chain: [{ ...delegation(), kind: "changeset" }] },
+	]) assert.throws(() => parseWorkflow(value), /requires mode isolated/);
+	assert.throws(() => parseWorkflow({ ...delegation(), background: false }), /declared tool schema/);
 });

@@ -37,7 +37,6 @@ export const DirectWorkflowSchema = Type.Object({
 	modelClass: Type.Optional(ModelClassSchema),
 	tasks: Type.Optional(Type.Array(DelegationSchema, { minItems: 1, maxItems: MAX_WORKFLOW_ENTRIES })),
 	chain: Type.Optional(Type.Array(DelegationSchema, { minItems: 1, maxItems: MAX_WORKFLOW_ENTRIES })),
-	background: Type.Optional(Type.Boolean({ description: "Run a provably read-only workflow without blocking" })),
 }, { additionalProperties: false, description: "Direct mode: exactly one compact single, tasks, or chain workflow" });
 
 export const DelegateTaskSchema = Type.Union([DirectWorkflowSchema, ExecuteRequestSchema]);
@@ -46,9 +45,9 @@ export const WorkflowSchema = DirectWorkflowSchema;
 export type Delegation = Static<typeof DelegationSchema> & { kind: "text" | "changeset" };
 export type WorkflowMode = "single" | "parallel" | "chain";
 export type ParsedWorkflow =
-	| { mode: "single"; background: boolean; delegations: [Delegation] }
-	| { mode: "parallel"; background: boolean; delegations: Delegation[] }
-	| { mode: "chain"; background: boolean; delegations: Delegation[] };
+	| { mode: "single"; delegations: [Delegation] }
+	| { mode: "parallel"; delegations: Delegation[] }
+	| { mode: "chain"; delegations: Delegation[] };
 export type ParsedDelegateTask = { mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest };
 
 type DirectInput = Static<typeof DirectWorkflowSchema>;
@@ -62,7 +61,7 @@ function text(value: string, path: string): string {
 
 function normalizeDelegation(value: Static<typeof DelegationSchema>, path: string): Delegation {
 	const kind = value.kind ?? "text";
-	if (kind === "changeset" && !value.checks?.length) throw new Error(`${path}.checks is required for a direct changeset.`);
+	if (kind === "changeset") throw new Error(`${path}.kind=changeset requires mode isolated; direct delegation is read-only.`);
 	if (kind === "text" && value.checks !== undefined) throw new Error(`${path}.checks is only valid for a direct changeset.`);
 	if (kind === "text" && value.judgment !== undefined) throw new Error(`${path}.judgment is only valid for a direct changeset.`);
 	return {
@@ -98,13 +97,12 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 	}
 	if (!mode) throw new Error("direct workflow must select exactly one of single, tasks, or chain.");
 	const input = value as DirectInput;
-	const background = input.background ?? false;
 	if (mode === "single") {
 		if (!hasDelegation(input)) throw new Error("direct workflow requires role, name, and task.");
-		return { mode, background, delegations: [normalizeDelegation(input, "workflow")] };
+		return { mode, delegations: [normalizeDelegation(input, "workflow")] };
 	}
-	if (mode === "parallel") return { mode, background, delegations: input.tasks!.map((item, index) => normalizeDelegation(item, `tasks[${index}]`)) };
-	return { mode, background, delegations: input.chain!.map((item, index) => normalizeDelegation(item, `chain[${index}]`)) };
+	if (mode === "parallel") return { mode, delegations: input.tasks!.map((item, index) => normalizeDelegation(item, `tasks[${index}]`)) };
+	return { mode, delegations: input.chain!.map((item, index) => normalizeDelegation(item, `chain[${index}]`)) };
 }
 
 export function parseDelegateTask(value: unknown): ParsedDelegateTask {
@@ -141,9 +139,7 @@ export async function runForegroundWorkflow<T>(
 	workflow: ParsedWorkflow,
 	run: DelegationRunner<T>,
 	signal?: AbortSignal,
-	serializeParallel = false,
 ): Promise<WorkflowEntryOutcome<T>[]> {
-	if (workflow.background) throw new Error("Background workflows cannot use foreground orchestration.");
 	signal?.throwIfAborted();
 	const entries = identifyWorkflowEntries(toolCallId, workflow);
 	if (workflow.mode === "single") {
@@ -151,7 +147,7 @@ export async function runForegroundWorkflow<T>(
 		signal?.throwIfAborted();
 		return [outcome];
 	}
-	if (workflow.mode === "parallel" && !serializeParallel) {
+	if (workflow.mode === "parallel") {
 		const outcomes = await Promise.all(entries.map((entry) => runEntry(entry, run)));
 		signal?.throwIfAborted();
 		return outcomes;
