@@ -40,7 +40,7 @@ Each public workspace under `extensions/*` or `packages/*` releases independentl
 - Use major only for an incompatible change to the documented public contract, such as exported APIs, commands or tool schemas, configuration or persisted data requiring user action, or the supported host/runtime range. An internal dependency's major release does not by itself make consumers breaking.
 - For `0.x` packages, use patch for compatible fixes and minor for features or breaking changes. Reserve `1.0.0` for an intentional stable-contract declaration.
 - Do not raise a peer dependency's minimum merely to match the development version. Preserve the supported lower bound when adding compatibility with a newer version; raising it is breaking only when the package actually requires the newer contract.
-- Bump each affected package once, after the final base sync, with `pnpm --filter ./<root>/<package> version <patch|minor|major> --no-git-tag-version`.
+- Before bumping, compare each affected package's version with the PR base. If this PR already bumped it, keep that version for follow-up changes. Bump each package at most once per PR, after the final base sync, with `pnpm --filter ./<root>/<package> version <patch|minor|major> --no-git-tag-version`.
 - Regenerate `pnpm-lock.yaml` after manifest edits and commit it when it changes. Do not create release tags.
 - Before the final release commit or any push, run `pnpm run check:package-versions`.
 - Successful CI for a push to `main` triggers `.github/workflows/publish.yml`, which publishes public workspaces whose versions are newer than npm.
