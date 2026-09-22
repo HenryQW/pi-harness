@@ -658,6 +658,17 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (input.workerId !== allocation.agentName) throw new Error("Worker termination identity does not match the exact saved agent.");
 			this.assertLeasePath(allocation.leasePath, allocation.token);
 			await this.assertPrivateLease(allocation.leasePath, false);
+			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
+				name: typeof agent.name === "string" ? agent.name : undefined,
+				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
+				tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
+			}));
+			const related = agents.filter((agent) => agent.name === allocation.agentName
+				|| agent.paneId === allocation.paneId || agent.tabId === allocation.tabId);
+			if (related.length !== 1 || related[0]!.name !== allocation.agentName
+				|| related[0]!.paneId !== allocation.paneId || related[0]!.tabId !== allocation.tabId) {
+				throw new Error("Worker termination requires one exact current agent, tab, and pane match.");
+			}
 
 			const processInfo = await this.herdr.json(
 				["pane", "process-info", "--pane", allocation.paneId],
@@ -690,6 +701,59 @@ export class HerdrHostRuntime implements HostRuntime {
 			await this.delay(50, context.signal);
 			if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
 				throw new Error("Exact process lease did not remain empty for two consecutive scans.");
+			}
+			return { outcome: "terminated" };
+		} catch (error) {
+			return { outcome: "unknown", failure: safeText(error) };
+		}
+	}
+
+	async reconcileWorkerTermination(
+		input: { task: TaskRequest; attempt: TaskAttempt; workerId: string; candidate: WorkspaceIdentity },
+		context: OperationContext,
+	): Promise<{ outcome: "terminated" | "active" } | { outcome: "unknown"; failure: string }> {
+		try {
+			const allocation = ownedIntent(input.attempt, "agent");
+			requireIntentIdentity(allocation, input.attempt);
+			assertAgentIntent(allocation, input.attempt);
+			if (input.workerId !== allocation.agentName) throw new Error("Saved termination worker does not match the exact owned agent.");
+			this.assertLeasePath(allocation.leasePath, allocation.token);
+			await this.assertPrivateLease(allocation.leasePath, false);
+			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
+				name: typeof agent.name === "string" ? agent.name : undefined,
+				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
+				tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
+			}));
+			const related = agents.filter((agent) => agent.name === allocation.agentName
+				|| agent.paneId === allocation.paneId || agent.tabId === allocation.tabId);
+			if (related.length) {
+				if (related.length !== 1 || related[0]!.name !== allocation.agentName
+					|| related[0]!.paneId !== allocation.paneId || related[0]!.tabId !== allocation.tabId) {
+					throw new Error("Observed worker identity does not exactly match the saved owned agent and pane.");
+				}
+				if (await this.paneAbsent(allocation.paneId, allocation.worktreeCwd, context)) {
+					throw new Error("Exact saved agent exists but its saved pane is absent.");
+				}
+				const processInfo = await this.herdr.json(
+					["pane", "process-info", "--pane", allocation.paneId],
+					this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+				);
+				const result = resultRecord(processInfo, "Herdr pane process-info response");
+				if (result.type !== "pane_process_info"
+					|| record(result.process_info, "Herdr pane process-info").pane_id !== allocation.paneId) {
+					throw new Error("Exact saved pane process ownership could not be proved.");
+				}
+				return { outcome: "active" };
+			}
+			if (!await this.paneAbsent(allocation.paneId, allocation.worktreeCwd, context)) {
+				throw new Error("Saved agent is absent but the exact saved pane still exists.");
+			}
+			if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
+				throw new Error("Saved worker is absent but its private process lease still has holders.");
+			}
+			await this.delay(50, context.signal);
+			if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
+				throw new Error("Private process lease did not remain empty for two consecutive scans.");
 			}
 			return { outcome: "terminated" };
 		} catch (error) {

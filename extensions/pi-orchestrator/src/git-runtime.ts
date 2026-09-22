@@ -52,6 +52,7 @@ export interface DirectProcessOptions {
 	cwd: string;
 	signal: AbortSignal;
 	timeoutMs: number;
+	stdin?: string;
 }
 
 export type DirectProcessRunner = (
@@ -375,8 +376,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			if (!input.attempt || input.phase !== "authoritative") {
 				throw new Error("Task review requires exact authoritative attempt evidence.");
 			}
-			if (input.attempt.termination?.status !== "terminated") {
-				throw new Error("Authoritative review requires exact recorded worker termination.");
+			if (!input.attempt.acceptance || input.attempt.termination) {
+				throw new Error("Authoritative review requires exact durable acceptance and a live worker.");
 			}
 			const expectedBase = input.attempt.integrationBase;
 			const expectedTip = input.attempt.integrationCandidate;
@@ -481,34 +482,62 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		candidate: WorkspaceIdentity;
+		sourceBase: WorkspaceIdentity;
 		onto: WorkspaceIdentity;
 	}, context: OperationContext): Promise<RebaseResult> {
-		if (input.attempt.termination?.status !== "terminated") {
-			return { outcome: "blocked", failure: "Task rebase requires exact recorded worker termination." };
-		}
 		const main = await this.inspectMain({ root: input.root }, context);
-		if (!sameIdentity(main, input.onto)) return { outcome: "drift", failure: "Main drifted before task rebase." };
-		const current = await this.inspectTask(input.root, input.task, input.attempt, input.candidate, input.attempt.waveBase.head, context);
-		if (input.attempt.waveBase.head === input.onto.head) {
+		if (!sameIdentity(main, input.onto)) return { outcome: "blocked", failure: "Main drifted before task rebase." };
+		const current = await this.inspectTask(input.root, input.task, input.attempt, input.candidate, input.sourceBase.head, context);
+		if (input.sourceBase.head === input.onto.head) {
 			return { outcome: "ready", base: input.onto, candidate: current };
 		}
 		const worktree = worktreeIntent(input.attempt);
 		const args = ["rebase", "--no-update-refs", "--no-autostash", input.onto.head];
 		const rebased = await this.git(args, worktree.cwd, context);
 		if (rebased.code !== 0 || rebased.killed) {
-			let abortFailure = "The shared deadline expired before git rebase --abort could run.";
-			if (!context.signal.aborted) {
-				const aborted = await this.git(["rebase", "--abort"], worktree.cwd, context);
-				abortFailure = aborted.code === 0 && !aborted.killed
-					? "git rebase --abort restored the retained worktree."
-					: `git rebase --abort failed; the retained worktree may still contain conflict state. ${commandFailure(["rebase", "--abort"], aborted)}`;
-			}
-			return { outcome: "blocked", failure: `${commandFailure(args, rebased)} ${abortFailure}` };
+			return {
+				outcome: "blocked",
+				failure: `${commandFailure(args, rebased)} The exact rebase worktree and conflict state were retained without abort, reset, stash, or discard.`,
+			};
 		}
 		const candidate = await this.inspectTask(input.root, input.task, input.attempt, undefined, input.onto.head, context);
 		const after = await this.inspectMain({ root: input.root }, context);
-		if (!sameIdentity(after, input.onto)) return { outcome: "drift", failure: "Main drifted during task rebase." };
-		return { outcome: "ready", base: input.onto, candidate };
+		return sameIdentity(after, input.onto)
+			? { outcome: "ready", base: input.onto, candidate }
+			: { outcome: "drift", base: input.onto, candidate, failure: "Main drifted during task rebase." };
+	}
+
+	async reconcileRebase(
+		input: Parameters<GitRuntime["reconcileRebase"]>[0],
+		context: OperationContext,
+	): Promise<import("./runner.ts").RebaseReconciliation> {
+		const transition = input.transition;
+		if (transition.status !== "rebasing") {
+			return { outcome: "unknown", failure: "Only a persisted rebasing intent can be reconciled." };
+		}
+		try {
+			await this.inspectTask(input.root, input.task, input.attempt, transition.from, transition.sourceBase.head, context);
+			return { outcome: "not_started" };
+		} catch {
+			// A changed exact worktree may be the completed rebase; prove it below.
+		}
+		try {
+			const current = await this.inspectTask(input.root, input.task, input.attempt, undefined, transition.onto.head, context);
+			if (!isCleanCommitted(current)) {
+				return { outcome: "unknown", failure: "Interrupted rebase candidate is not clean and committed." };
+			}
+			const worktree = worktreeIntent(input.attempt);
+			const [before, after] = await Promise.all([
+				this.stablePatchIds(transition.sourceBase.head, transition.from.head, worktree.cwd, context),
+				this.stablePatchIds(transition.onto.head, current.head, worktree.cwd, context),
+			]);
+			if (before.length !== after.length || before.some((patch, index) => patch !== after[index])) {
+				return { outcome: "unknown", failure: "Interrupted rebase patch identity or commit order could not be proved." };
+			}
+			return { outcome: "rebased", candidate: current };
+		} catch (error) {
+			return { outcome: "unknown", failure: `Interrupted rebase could not be reconciled exactly: ${text(error)}` };
+		}
 	}
 
 	async integrate(input: {
@@ -523,8 +552,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (input.task.kind !== "changeset") {
 			return { outcome: "failed", failure: "Integration requires a changeset task." };
 		}
-		if (input.attempt.termination?.status !== "terminated") {
-			return { outcome: "failed", failure: "Integration requires exact recorded worker termination." };
+		if (!input.attempt.acceptance || input.attempt.termination) {
+			return { outcome: "failed", failure: "Integration requires exact durable acceptance and a live worker." };
 		}
 		if (!input.attempt.integrationBase || !sameIdentity(input.attempt.integrationBase, input.expectedMain)
 			|| !input.attempt.integrationCandidate || !sameIdentity(input.attempt.integrationCandidate, input.candidate)) {
@@ -793,6 +822,30 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (result.code === 0 && !result.killed) return oid(result.stdout, "branch tip");
 		if (result.code === 1 && !result.killed) return;
 		throw new Error(commandFailure(args, result));
+	}
+
+	private async stablePatchIds(base: string, tip: string, cwd: string, context: OperationContext): Promise<string[]> {
+		const listed = await this.requireGit(["rev-list", "--reverse", `${base}..${tip}`], cwd, context);
+		const commits = listed.trim() ? listed.trim().split(/\r?\n/).map((value) => oid(value, "rebase commit")) : [];
+		const patches: string[] = [];
+		for (const commit of commits) {
+			const patch = await this.requireGit([
+				"show", "--pretty=email", "--binary", "--no-ext-diff", "--no-textconv", commit,
+			], cwd, context);
+			const result = await this.execute("git", ["patch-id", "--stable"], {
+				cwd,
+				signal: context.signal,
+				timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs),
+				stdin: patch,
+			});
+			if (result.code !== 0 || result.killed || result.stderr.trim()) {
+				throw new Error(commandFailure(["patch-id", "--stable"], result));
+			}
+			const match = /^([0-9a-f]{40}|[0-9a-f]{64})\s+(?:[0-9a-f]{40}|[0-9a-f]{64})(?:\r?\n)?$/.exec(result.stdout);
+			if (!match) throw new Error("git patch-id --stable returned malformed exact evidence.");
+			patches.push(match[1]!);
+		}
+		return patches;
 	}
 
 	private async isAncestor(base: string, tip: string, cwd: string, context: OperationContext): Promise<boolean> {

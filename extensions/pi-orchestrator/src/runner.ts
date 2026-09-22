@@ -10,6 +10,7 @@ import {
 	MAX_POSSIBLE_RESOURCES,
 	parseExecuteRequest,
 	parseResumeRequest,
+	reviewEvidencePasses,
 	sameIdentity,
 	RUN_STATE_VERSION,
 	type AllocationIntent,
@@ -25,6 +26,7 @@ import {
 	type HostAllocationPlan,
 	type ModelClass,
 	type PromptRecord,
+	type RebaseTransition,
 	type ReviewEvidence,
 	type ResumeRequest,
 	type RunState,
@@ -102,8 +104,13 @@ export interface ReviewResult {
 }
 
 export type RebaseResult =
-	| { outcome: "ready"; base: WorkspaceIdentity; candidate: WorkspaceIdentity }
-	| { outcome: "blocked" | "drift"; failure: string };
+	| { outcome: "ready" | "drift"; base: WorkspaceIdentity; candidate: WorkspaceIdentity; failure?: string }
+	| { outcome: "blocked"; failure: string };
+
+export type RebaseReconciliation =
+	| { outcome: "not_started" }
+	| { outcome: "rebased"; candidate: WorkspaceIdentity }
+	| { outcome: "unknown"; failure: string };
 
 export type IntegrationResult =
 	| { outcome: "integrated"; main: WorkspaceIdentity }
@@ -205,6 +212,14 @@ export interface HostRuntime {
 		workerId: string;
 		candidate: WorkspaceIdentity;
 	}, context: OperationContext): Promise<{ outcome: "terminated" } | { outcome: "unknown"; failure: string }>;
+	reconcileWorkerTermination(input: {
+		task: TaskRequest;
+		attempt: TaskAttempt;
+		workerId: string;
+		candidate: WorkspaceIdentity;
+	}, context: OperationContext): Promise<
+		{ outcome: "terminated" | "active" } | { outcome: "unknown"; failure: string }
+	>;
 	cleanupHost(input: {
 		requestId: ExecuteRequest["id"];
 		kind: HostCleanupKind;
@@ -270,8 +285,15 @@ export interface GitRuntime {
 		task: TaskRequest;
 		attempt: TaskAttempt;
 		candidate: WorkspaceIdentity;
+		sourceBase: WorkspaceIdentity;
 		onto: WorkspaceIdentity;
 	}, context: OperationContext): Promise<RebaseResult>;
+	reconcileRebase(input: {
+		root: string;
+		task: TaskRequest;
+		attempt: TaskAttempt;
+		transition: RebaseTransition;
+	}, context: OperationContext): Promise<RebaseReconciliation>;
 	integrate(input: {
 		root: string;
 		task: TaskRequest;
@@ -581,6 +603,24 @@ function latestAttempt(task: ChangesetTaskState): TaskAttempt {
 	return attempt;
 }
 
+function nextAttemptEventAt(attempt: TaskAttempt, now: number): number {
+	const latest = Math.max(
+		0,
+		...attempt.prompts.map(({ at }) => at),
+		...attempt.transitions.map(({ at }) => at),
+		attempt.acceptance?.at ?? 0,
+	);
+	return Math.max(now, latest + 1);
+}
+
+function latestTransitionAfter(attempt: TaskAttempt, after: number): RebaseTransition | undefined {
+	for (let index = attempt.transitions.length - 1; index >= 0; index -= 1) {
+		const transition = attempt.transitions[index]!;
+		if (transition.at > after) return transition;
+	}
+	return undefined;
+}
+
 type AllocationOfKind<Kind extends AllocationKind> = Extract<AllocationIntent, { kind: Kind }>;
 
 function allocationByKind<Kind extends AllocationKind>(attempt: TaskAttempt, kind: Kind): AllocationOfKind<Kind> | undefined {
@@ -622,13 +662,24 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 }
 
 function correctionEligible(request: ChangesetTaskRequest, attempt: TaskAttempt): boolean {
-	const prompt = attempt.prompts.length === 1 ? attempt.prompts[0] : undefined;
-	if (prompt?.kind !== "initial" || prompt.status !== "settled" || attempt.termination) return false;
+	const initial = attempt.prompts[0];
+	if (initial?.kind !== "initial" || attempt.prompts.some((prompt) => prompt.kind === "correction" || prompt.status === "ambiguous")
+		|| attempt.termination) return false;
+	const latestPrompt = attempt.prompts.at(-1)!;
+	if (latestPrompt.status !== "settled") return false;
+	const latestTransition = attempt.transitions.at(-1);
+	if (!attempt.acceptance && latestTransition?.status === "rebased" && latestTransition.to
+		&& attempt.candidate && attempt.candidateBase
+		&& sameIdentity(attempt.candidate, latestTransition.to)
+		&& sameIdentity(attempt.candidateBase, latestTransition.onto)
+		&& !attempt.preliminaryChecks && !attempt.authoritativeChecks && !attempt.authoritativeReview && !attempt.integration) {
+		return true;
+	}
 	if (!attempt.candidate) {
-		return !attempt.preliminaryChecks && Boolean(prompt.failure?.trim());
+		return attempt.prompts.length === 1 && !attempt.preliminaryChecks && Boolean(initial.failure?.trim());
 	}
 	const checks = attempt.preliminaryChecks;
-	return Boolean(checks
+	return attempt.prompts.length === 1 && Boolean(checks
 		&& checks.phase === "preliminary"
 		&& !checks.passed
 		&& exactCommandResults(checks.results, request.checks)
@@ -888,10 +939,18 @@ export class OrchestratorRunner {
 			const handle = await this.store.load(root, request.id);
 			const state = handle.state;
 			if (this.recoverInterrupted(state)) await handle.save();
-			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			if (terminal(state)) throw new Error(`Pi Orchestrator request ${request.id} is terminal (${state.status}); create a new request.`);
+			const recoveryDeadline = this.coordinatorRuntime.now() + state.request.budgetMs;
+			state.recovery = {
+				kind: "resume",
+				action: request.action,
+				...("taskId" in request ? { taskId: request.taskId } : {}),
+				deadline: recoveryDeadline,
+			};
+			state.updatedAt = this.coordinatorRuntime.now();
+			await handle.save();
 
-			const scope = new DeadlineScope(state.deadline, () => this.coordinatorRuntime.now(), outerSignal);
+			const scope = new DeadlineScope(recoveryDeadline, () => this.coordinatorRuntime.now(), outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);
@@ -912,27 +971,18 @@ export class OrchestratorRunner {
 				if (request.action === "verify") {
 					const attempt = latestAttempt(task);
 					if (attempt.integration?.status === "integrated") {
-						return await this.verifyCleanupOnly(handle, task, attempt, outerSignal);
+						return await this.verifyCleanupOnly(handle, task, attempt, scope);
 					}
 				}
 				if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
 				if (request.action === "retry") return await this.retry(handle, task, scope, lifecycle);
 				return await this.verifyRetainedTask(handle, task, scope, lifecycle);
-			} catch (error) {
-				if (request.action === "retry") {
-					const task = taskState(state, request.taskId);
-					if (task.kind === "changeset") {
-						const attempt = task.attempts.at(-1);
-						if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
-							this.attention(task, `Productive resume failed before correction completed: ${errorText(error)}`);
-							await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
-						}
-					}
-				}
-				throw error;
 			} finally {
 				scope.close();
 				this.closeRequestControls(root, request.id);
+				state.recovery = undefined;
+				state.updatedAt = this.coordinatorRuntime.now();
+				await handle.save();
 			}
 		});
 	}
@@ -970,12 +1020,8 @@ export class OrchestratorRunner {
 
 	async status(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		root = realpathSync.native(root);
-		return await this.store.withLock(root, async (lifecycle) => {
+		return await this.store.withLock(root, async () => {
 			const handle = await this.store.load(root, id);
-			if (!this.hasActiveControl(root, id)
-				&& !lifecycle.productiveRunLeaseActive
-				&& this.recoverInterrupted(handle.state)) await handle.save();
-			await this.terminateAmbiguousPromptWorkers(handle, outerSignal);
 			const deadline = this.coordinatorRuntime.now() + STATUS_INSPECTION_BUDGET_MS;
 			const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
 			try {
@@ -1058,6 +1104,7 @@ export class OrchestratorRunner {
 						allocationGeneration: 1,
 						allocations: [],
 						prompts: [],
+						transitions: [],
 						cleanup: CLEANUP_KINDS.map((kind) => ({ kind, status: "pending" })),
 					});
 				}
@@ -1092,9 +1139,8 @@ export class OrchestratorRunner {
 					const task = changesetTaskState(state, request.id);
 					if (!await this.integrateTask(handle, task, scope)) {
 						for (const retained of ready) {
-							if (retained.kind === "changeset" && retained.status === "ready_to_integrate"
-								&& latestAttempt(retained).termination?.status === "terminated") {
-								this.attention(retained, "Earlier same-wave integration stopped; verify the retained candidate to continue.");
+							if (retained.kind === "changeset" && retained.status === "ready_to_integrate") {
+								this.attention(retained, "Earlier same-wave integration stopped; verify the retained accepted candidate to continue.");
 							}
 						}
 						wave.status = "needs_attention";
@@ -1111,14 +1157,7 @@ export class OrchestratorRunner {
 			const activeTasks = state.tasks.filter((task) => !["pending", "completed", "needs_attention"].includes(task.status));
 			if (activeTasks.length) {
 				const failure = isDeadline(error, scope) ? "The productive request deadline expired." : `Execution was interrupted: ${errorText(error)}`;
-				for (const active of activeTasks) {
-					this.attention(active, failure);
-					if (active.kind !== "changeset") continue;
-					const attempt = active.attempts.at(-1);
-					if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
-						await this.terminateWithSafety(handle, active, attempt, this.terminationCandidate(attempt));
-					}
-				}
+				for (const active of activeTasks) this.attention(active, failure);
 			} else if (state.final.status === "running") {
 				state.final.status = "interrupted";
 				state.final.failure = bounded(isDeadline(error, scope) ? "The productive request deadline expired." : `Final gate was interrupted: ${errorText(error)}`);
@@ -1248,12 +1287,7 @@ export class OrchestratorRunner {
 			await this.driveWorkerSafely(handle, task, scope, "initial");
 		} catch (error) {
 			this.attention(task, isDeadline(error, scope) ? "The productive request deadline expired during allocation." : `Task allocation was interrupted: ${errorText(error)}`);
-			const attempt = task.attempts.at(-1);
-			if (attempt && !attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
-				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
-			} else {
-				await handle.save();
-			}
+			await handle.save();
 		}
 	}
 
@@ -1316,12 +1350,7 @@ export class OrchestratorRunner {
 			this.attention(task, isDeadline(error, scope)
 				? "The productive request deadline expired during worker execution."
 				: `Worker execution was interrupted: ${errorText(error)}`);
-			const attempt = latestAttempt(task);
-			if (!attempt.termination && allocationByKind(attempt, "agent")?.agentName) {
-				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
-			} else {
-				await handle.save();
-			}
+			await handle.save();
 		} finally {
 			if (task.status !== "awaiting_acceptance") {
 				this.closeInteractiveControl(handle.state.root, handle.state.request.id, task.taskId, control);
@@ -1351,8 +1380,17 @@ export class OrchestratorRunner {
 			}
 			if (kind === "correction" && !correctionEligible(request, attempt)) {
 				this.attention(task, "The same-agent correction is unavailable or already used.");
-				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+				await handle.save();
 				return;
+			}
+			if (kind !== "initial") {
+				attempt.acceptance = undefined;
+				attempt.preliminaryChecks = undefined;
+				attempt.integrationBase = undefined;
+				attempt.integrationCandidate = undefined;
+				attempt.authoritativeChecks = undefined;
+				attempt.authoritativeReview = undefined;
+				attempt.integration = undefined;
 			}
 			let preCandidate: WorkspaceIdentity;
 			try {
@@ -1363,7 +1401,7 @@ export class OrchestratorRunner {
 				}, context)), "Pre-prompt candidate identity");
 			} catch (error) {
 				this.attention(task, `Pre-prompt candidate identity is unavailable: ${errorText(error)}`);
-				await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
+				await handle.save();
 				return;
 			}
 			const worktree = allocationByKind(attempt, "worktree");
@@ -1372,7 +1410,7 @@ export class OrchestratorRunner {
 				|| !isCleanCommitted(preCandidate)
 				|| (kind === "initial" && preCandidate.head !== attempt.waveBase.head)) {
 				this.attention(task, "Pre-prompt task candidate inspection returned an invalid owned worktree identity.");
-				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				await handle.save();
 				return;
 			}
 			const retainedCandidate = kind === "initial"
@@ -1380,12 +1418,12 @@ export class OrchestratorRunner {
 				: attempt.candidate ?? attempt.prompts.at(-1)?.candidate ?? attempt.prompts.at(-1)?.preCandidate;
 			if (retainedCandidate && !sameIdentity(preCandidate, retainedCandidate)) {
 				this.attention(task, "The same-agent correction worktree identity drifted before prompting.");
-				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				await handle.save();
 				return;
 			}
 			if (attempt.prompts.length >= MAX_WORKER_PROMPTS) {
 				this.attention(task, `A task may submit at most ${MAX_WORKER_PROMPTS} worker prompts.`);
-				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				await handle.save();
 				return;
 			}
 			const prompt: PromptRecord = {
@@ -1393,7 +1431,7 @@ export class OrchestratorRunner {
 				status: "submitting",
 				preCandidate,
 				...(kind === "followup" ? { instruction } : {}),
-				at: this.coordinatorRuntime.now(),
+				at: nextAttemptEventAt(attempt, this.coordinatorRuntime.now()),
 			};
 			attempt.prompts.push(prompt);
 			task.failure = undefined;
@@ -1415,21 +1453,21 @@ export class OrchestratorRunner {
 				prompt.status = "ambiguous";
 				prompt.failure = bounded(`Prompt result is ambiguous and will not be replayed: ${errorText(error)}`);
 				this.attention(task, prompt.failure);
-				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				await handle.save();
 				return;
 			}
 			if (worker.outcome === "unknown" || worker.outcome === "interrupted") {
 				prompt.status = "ambiguous";
 				prompt.failure = boundedRuntimeDiagnostic(worker.diagnostic, `${worker.outcome} worker diagnostic`);
 				this.attention(task, `${worker.outcome} worker result will not be replayed: ${prompt.failure}`);
-				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				await handle.save();
 				return;
 			}
 			if (worker.outcome === "not_prompted") {
 				prompt.status = "not_sent";
 				prompt.failure = boundedRuntimeDiagnostic(worker.diagnostic, "not-prompted worker diagnostic");
 				this.attention(task, `Worker prompt was not submitted: ${prompt.failure}`);
-				await this.terminateWithSafety(handle, task, attempt, preCandidate);
+				await handle.save();
 				return;
 			}
 			prompt.status = "settled";
@@ -1442,11 +1480,12 @@ export class OrchestratorRunner {
 				worker.candidate = runtimeIdentity(worker.candidate, "Settled worker candidate identity");
 				if (!isCleanCommitted(worker.candidate) || worker.candidate.head === preCandidate.head) {
 					this.attention(task, "Settled worker did not produce a new clean committed candidate.");
-					await this.terminateSettledWorker(handle, task, workerId, worker.candidate, scope);
+					await handle.save();
 					return;
 				}
 				prompt.candidate = worker.candidate;
 				attempt.candidate = worker.candidate;
+				attempt.candidateBase ??= attempt.waveBase;
 				const checks = await this.runCheckBatch(handle, request.checks, worker.candidate, "preliminary", scope, task.taskId);
 				attempt.preliminaryChecks = checks;
 				await handle.save();
@@ -1478,7 +1517,7 @@ export class OrchestratorRunner {
 				continue;
 			}
 			this.attention(task, failure ?? "Task candidate needs attention after its correction window closed.");
-			await this.terminateSettledWorker(handle, task, workerId, attempt.candidate ?? preCandidate, scope);
+			await handle.save();
 			return;
 		}
 	}
@@ -1561,11 +1600,17 @@ export class OrchestratorRunner {
 			selected.control.seal();
 			const attempt = latestAttempt(selected.task);
 			const workerId = allocationByKind(attempt, "agent")?.agentName;
-			if (!workerId || !attempt.candidate) throw new Error("Acceptance requires an exact retained worker and candidate.");
-			if (await this.terminateSettledWorker(handle, selected.task, workerId, attempt.candidate, scope)) {
-				selected.task.status = "ready_to_integrate";
-				selected.task.failure = undefined;
+			if (!workerId || attempt.termination || !attempt.candidate || !attempt.candidateBase
+				|| !checkBatchPasses(attempt.preliminaryChecks, changesetTaskRequest(handle.state, selected.task.taskId).checks, attempt.candidate)) {
+				throw new Error("Acceptance requires an exact live owned worker and passing candidate lineage.");
 			}
+			attempt.acceptance = {
+				candidate: attempt.candidate,
+				base: attempt.candidateBase,
+				at: nextAttemptEventAt(attempt, this.coordinatorRuntime.now()),
+			};
+			selected.task.status = "ready_to_integrate";
+			selected.task.failure = undefined;
 			await handle.save();
 			this.closeInteractiveControl(handle.state.root, handle.state.request.id, selected.task.taskId, selected.control);
 		}
@@ -1584,22 +1629,10 @@ export class OrchestratorRunner {
 		}
 	}
 
-	private async terminateSettledWorker(
-		handle: RunStateHandle,
-		task: ChangesetTaskState,
-		workerId: string,
-		candidate: WorkspaceIdentity,
-		_scope: DeadlineScope,
-	): Promise<boolean> {
-		const attempt = latestAttempt(task);
-		if (allocationByKind(attempt, "agent")?.agentName !== workerId) {
-			throw new Error("Worker termination requires the exact durably owned agent ID.");
-		}
-		return await this.terminateWithSafety(handle, task, attempt, candidate);
-	}
 
 	private terminationCandidate(attempt: TaskAttempt): WorkspaceIdentity {
-		return attempt.candidate
+		return attempt.integrationCandidate
+			?? attempt.candidate
 			?? attempt.prompts.at(-1)?.candidate
 			?? attempt.prompts.at(-1)?.preCandidate
 			?? attempt.waveBase;
@@ -1640,20 +1673,6 @@ export class OrchestratorRunner {
 		}
 	}
 
-	private async terminateAmbiguousPromptWorkers(handle: RunStateHandle, outerSignal?: AbortSignal): Promise<void> {
-		const safetyDeadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS;
-		for (const task of handle.state.tasks) {
-			if (task.kind !== "changeset") continue;
-			for (const attempt of task.attempts) {
-				if (!attempt.prompts.some((prompt) => prompt.status === "ambiguous")
-					|| !allocationByKind(attempt, "agent")?.agentName
-					|| attempt.termination?.status === "terminated") continue;
-				await this.terminateWithSafety(
-					handle, task, attempt, this.terminationCandidate(attempt), outerSignal, safetyDeadline,
-				);
-			}
-		}
-	}
 
 	private async runCheckBatch(
 		handle: RunStateHandle,
@@ -1752,51 +1771,119 @@ export class OrchestratorRunner {
 		const state = handle.state;
 		const request = changesetTaskRequest(state, task.taskId);
 		const attempt = latestAttempt(task);
-		if (attempt.termination?.status !== "terminated" || !attempt.candidate) {
-			this.attention(task, "Task cannot integrate before exact worker termination and candidate recording.");
+		if (attempt.integration?.status === "integrated") {
+			return await this.finalizeIntegratedTask(handle, task, attempt, scope);
+		}
+		if (!attempt.acceptance || !attempt.candidate || !attempt.candidateBase
+			|| !sameIdentity(attempt.acceptance.candidate, attempt.candidate)
+			|| !sameIdentity(attempt.acceptance.base, attempt.candidateBase)
+			|| !checkBatchPasses(attempt.preliminaryChecks, request.checks, attempt.candidate)
+			|| !allocationByKind(attempt, "agent")?.agentName || attempt.termination) {
+			this.attention(task, "Task integration requires exact durable acceptance of a checked live worker candidate.");
 			return false;
 		}
 		task.status = "integrating";
 		await handle.save();
 		try {
-			const actualMain = await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
-			if (!sameIdentity(actualMain, state.main)) {
-				this.attention(task, "Main drifted before integration.");
-				return false;
+			if (!await this.reconcilePendingRebase(handle, task, attempt, scope)) return false;
+			for (;;) {
+				const latest = latestTransitionAfter(attempt, attempt.acceptance!.at);
+				if (latest?.status === "unknown") {
+					this.attention(task, "The latest rebase transition is unknown and cannot be continued automatically.");
+					return false;
+				}
+				let actualMain = runtimeIdentity(
+					await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context)),
+					"Pre-rebase Main identity",
+				);
+				if (!latest && !sameIdentity(actualMain, state.main)) {
+					this.attention(task, "Main drifted before integration.");
+					return false;
+				}
+				if (latest && !sameIdentity(actualMain, latest.onto)) state.main = actualMain;
+				const current = latest?.status === "rebased" && latest.to
+					? { sourceBase: latest.onto, candidate: latest.to }
+					: { sourceBase: attempt.acceptance.base, candidate: attempt.acceptance.candidate };
+				if (!latest || latest.status === "rebasing" || !sameIdentity(latest.onto, actualMain)) {
+					const transition: RebaseTransition = latest?.status === "rebasing"
+						? latest
+						: {
+							kind: "rebase",
+							status: "rebasing",
+							sourceBase: current.sourceBase,
+							from: current.candidate,
+							onto: actualMain,
+							at: nextAttemptEventAt(attempt, this.coordinatorRuntime.now()),
+						};
+					if (transition !== latest) attempt.transitions.push(transition);
+					await handle.save();
+					const rebased = await scope.call(async (context) => await this.gitRuntime.rebase({
+						root: state.root,
+						task: request,
+						attempt,
+						candidate: transition.from,
+						sourceBase: transition.sourceBase,
+						onto: transition.onto,
+					}, context));
+					if (rebased.outcome === "blocked") {
+						transition.status = "unknown";
+						transition.failure = boundedRuntimeText(rebased.failure, "Rebase failure");
+						this.attention(task, transition.failure);
+						return false;
+					}
+					const rebasedBase = runtimeIdentity(rebased.base, "Rebase base identity");
+					const rebasedCandidate = runtimeIdentity(rebased.candidate, "Rebase candidate identity");
+					if (!sameIdentity(rebasedBase, transition.onto) || !isCleanCommitted(rebasedCandidate)) {
+						transition.status = "unknown";
+						transition.failure = "Rebase did not return its exact recorded base and a clean committed candidate.";
+						this.attention(task, transition.failure);
+						return false;
+					}
+					transition.status = "rebased";
+					transition.to = rebasedCandidate;
+					transition.failure = undefined;
+					attempt.integrationBase = rebasedBase;
+					attempt.integrationCandidate = rebasedCandidate;
+					await handle.save();
+					if (rebased.outcome === "drift") continue;
+					actualMain = runtimeIdentity(
+						await scope.call(async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context)),
+						"Post-rebase Main identity",
+					);
+					if (!sameIdentity(actualMain, transition.onto)) {
+						state.main = actualMain;
+						continue;
+					}
+				}
+				const stable = latestTransitionAfter(attempt, attempt.acceptance!.at);
+				if (!stable?.to || stable.status !== "rebased") throw new Error("Stable integration candidate is missing.");
+				attempt.integrationBase = stable.onto;
+				attempt.integrationCandidate = stable.to;
+				break;
 			}
-			const rebased = await scope.call(async (context) => await this.gitRuntime.rebase({
-				root: state.root,
-				task: request,
-				attempt,
-				candidate: attempt.candidate!,
-				onto: state.main,
-			}, context));
-			if (rebased.outcome !== "ready") {
-				this.attention(task, boundedRuntimeText(rebased.failure, "Rebase failure"));
-				return false;
+
+			const integrationBase = attempt.integrationBase!;
+			const integrationCandidate = attempt.integrationCandidate!;
+			let checks = attempt.authoritativeChecks;
+			if (!checkBatchPasses(checks, request.checks, integrationCandidate)) {
+				checks = await this.runCheckBatch(handle, request.checks, integrationCandidate, "authoritative", scope, task.taskId);
+				attempt.authoritativeChecks = checks;
+				await handle.save();
 			}
-			const rebasedBase = runtimeIdentity(rebased.base, "Rebase base identity");
-			const rebasedCandidate = runtimeIdentity(rebased.candidate, "Rebase candidate identity");
-			if (!sameIdentity(rebasedBase, state.main) || !isCleanCommitted(rebasedCandidate)) {
-				this.attention(task, "Rebase did not return the exact recorded integration base and a clean committed candidate.");
-				return false;
-			}
-			attempt.integrationBase = rebasedBase;
-			attempt.integrationCandidate = rebasedCandidate;
-			const checks = await this.runCheckBatch(handle, request.checks, rebasedCandidate, "authoritative", scope, task.taskId);
-			attempt.authoritativeChecks = checks;
-			await handle.save();
-			if (!checkBatchPasses(checks, request.checks, rebasedCandidate)) {
+			if (!checkBatchPasses(checks, request.checks, integrationCandidate)) {
+				this.prepareCorrectionAfterAuthoritativeFailure(attempt);
 				this.attention(task, "Authoritative checks did not pass on the exact integration candidate.");
 				return false;
 			}
-			let review: ReviewEvidence | undefined;
-			if (request.judgment) {
+			let review = attempt.authoritativeReview;
+			if (request.judgment && !reviewEvidencePasses(
+				review, "authoritative", request.judgment.criterion, integrationBase, integrationCandidate,
+			)) {
 				review = await this.runReview(
 					handle,
 					request.judgment.criterion,
-					rebasedBase,
-					rebasedCandidate,
+					integrationBase,
+					integrationCandidate,
 					request.judgment.role,
 					request.judgment.modelClass,
 					"authoritative",
@@ -1805,12 +1892,15 @@ export class OrchestratorRunner {
 				);
 				attempt.authoritativeReview = review;
 				await handle.save();
-				if (!review.passed) {
-					this.attention(task, "Authoritative Judgment did not return exact PASS on the integration candidate.");
-					return false;
-				}
 			}
-			attempt.integration = { status: "integrating", expectedMain: state.main, candidate: rebasedCandidate };
+			if (request.judgment && !reviewEvidencePasses(
+				review, "authoritative", request.judgment.criterion, integrationBase, integrationCandidate,
+			)) {
+				this.prepareCorrectionAfterAuthoritativeFailure(attempt);
+				this.attention(task, "Authoritative Judgment did not return exact PASS on the integration candidate.");
+				return false;
+			}
+			attempt.integration = { status: "integrating", expectedMain: integrationBase, candidate: integrationCandidate };
 			await handle.save();
 			let integrated: IntegrationResult;
 			try {
@@ -1818,14 +1908,14 @@ export class OrchestratorRunner {
 					root: state.root,
 					task: request,
 					attempt,
-					expectedMain: state.main,
-					candidate: rebasedCandidate,
-					checks,
+					expectedMain: integrationBase,
+					candidate: integrationCandidate,
+					checks: checks!,
 					...(review ? { review } : {}),
 				}, context));
 			} catch (error) {
 				attempt.integration = {
-					status: "unknown", expectedMain: state.main, candidate: rebasedCandidate,
+					status: "unknown", expectedMain: integrationBase, candidate: integrationCandidate,
 					failure: bounded(`Integration result is unknown: ${errorText(error)}`),
 				};
 				this.attention(task, attempt.integration.failure!);
@@ -1835,44 +1925,169 @@ export class OrchestratorRunner {
 				const failure = boundedRuntimeText(integrated.failure, "Integration failure");
 				attempt.integration = {
 					status: integrated.outcome === "unknown" ? "unknown" : "failed",
-					expectedMain: state.main,
-					candidate: rebasedCandidate,
+					expectedMain: integrationBase,
+					candidate: integrationCandidate,
 					failure,
 				};
 				this.attention(task, failure);
 				return false;
 			}
 			integrated.main = runtimeIdentity(integrated.main, "Integrated Main identity");
-			if (integrated.main.branch !== state.main.branch
-				|| integrated.main.head !== rebasedCandidate.head
+			if (integrated.main.branch !== integrationBase.branch
+				|| integrated.main.head !== integrationCandidate.head
 				|| !isCleanCommitted(integrated.main)) {
 				attempt.integration = {
-					status: "unknown", expectedMain: state.main, candidate: rebasedCandidate, mainAfter: integrated.main,
+					status: "unknown", expectedMain: integrationBase, candidate: integrationCandidate, mainAfter: integrated.main,
 					failure: "Integration returned an unexpected Main identity.",
 				};
 				this.attention(task, attempt.integration.failure!);
 				return false;
 			}
 			attempt.integration = {
-				status: "integrated", expectedMain: state.main, candidate: rebasedCandidate, mainAfter: integrated.main,
+				status: "integrated", expectedMain: integrationBase, candidate: integrationCandidate, mainAfter: integrated.main,
 			};
 			state.main = integrated.main;
-			task.status = "cleanup";
 			await handle.save();
-			if (!await this.runCleanup(handle, task, attempt, scope)) return false;
-			task.status = "completed";
-			task.failure = undefined;
-			await handle.save();
-			return true;
+			return await this.finalizeIntegratedTask(handle, task, attempt, scope);
 		} catch (error) {
-			this.attention(task, isDeadline(error, scope) ? "The productive request deadline expired before integration completed." : `Integration was interrupted: ${errorText(error)}`);
+			this.attention(task, isDeadline(error, scope)
+				? "The productive request deadline expired before integration completed."
+				: `Integration was interrupted: ${errorText(error)}`);
 			return false;
 		} finally {
 			await handle.save();
 		}
 	}
 
+	private prepareCorrectionAfterAuthoritativeFailure(attempt: TaskAttempt): void {
+		if (attempt.integrationBase && attempt.integrationCandidate) {
+			attempt.candidateBase = attempt.integrationBase;
+			attempt.candidate = attempt.integrationCandidate;
+		}
+		attempt.acceptance = undefined;
+		attempt.preliminaryChecks = undefined;
+		attempt.integrationBase = undefined;
+		attempt.integrationCandidate = undefined;
+		attempt.authoritativeChecks = undefined;
+		attempt.authoritativeReview = undefined;
+		attempt.integration = undefined;
+	}
+
+	private async reconcilePendingRebase(
+		handle: RunStateHandle,
+		task: ChangesetTaskState,
+		attempt: TaskAttempt,
+		scope: DeadlineScope,
+	): Promise<boolean> {
+		const transition = attempt.acceptance
+			? latestTransitionAfter(attempt, attempt.acceptance!.at)
+			: undefined;
+		if (!transition || transition.status === "rebased") return true;
+		if (transition.status === "unknown") {
+			this.attention(task, "The saved rebase transition is unknown and cannot be adopted automatically.");
+			return false;
+		}
+		const result = await scope.call(async (context) => await this.gitRuntime.reconcileRebase({
+			root: handle.state.root,
+			task: changesetTaskRequest(handle.state, task.taskId),
+			attempt,
+			transition,
+		}, context));
+		if (result.outcome === "not_started") return true;
+		if (result.outcome === "unknown") {
+			transition.status = "unknown";
+			transition.failure = boundedRuntimeText(result.failure, "Rebase reconciliation failure");
+			this.attention(task, transition.failure);
+			await handle.save();
+			return false;
+		}
+		const candidate = runtimeIdentity(result.candidate, "Reconciled rebase candidate");
+		if (!isCleanCommitted(candidate)) {
+			transition.status = "unknown";
+			transition.failure = "Reconciled rebase candidate is not clean and committed.";
+			this.attention(task, transition.failure);
+			await handle.save();
+			return false;
+		}
+		transition.status = "rebased";
+		transition.to = candidate;
+		transition.failure = undefined;
+		attempt.integrationBase = transition.onto;
+		attempt.integrationCandidate = candidate;
+		await handle.save();
+		return true;
+	}
+
+	private async finalizeIntegratedTask(
+		handle: RunStateHandle,
+		task: ChangesetTaskState,
+		attempt: TaskAttempt,
+		scope: DeadlineScope,
+	): Promise<boolean> {
+		const candidate = attempt.integrationCandidate;
+		const integration = attempt.integration;
+		const acceptedTransition = attempt.acceptance
+			? latestTransitionAfter(attempt, attempt.acceptance.at)
+			: undefined;
+		if (integration?.status !== "integrated" || !attempt.acceptance || !candidate || !attempt.integrationBase || !integration.mainAfter
+			|| acceptedTransition?.status !== "rebased" || !acceptedTransition.to
+			|| !sameIdentity(acceptedTransition.onto, attempt.integrationBase)
+			|| !sameIdentity(acceptedTransition.to, candidate)
+			|| !sameIdentity(integration.expectedMain, attempt.integrationBase)
+			|| !sameIdentity(integration.candidate, candidate)
+			|| integration.mainAfter.branch !== integration.expectedMain.branch
+			|| integration.mainAfter.head !== candidate.head
+			|| !isCleanCommitted(integration.mainAfter)) {
+			this.attention(task, "Resource finalization requires exact durable integration evidence.");
+			return false;
+		}
+		const ownedWorkerId = allocationByKind(attempt, "agent")?.agentName;
+		if (attempt.termination?.status === "terminated"
+			&& (!ownedWorkerId || attempt.termination.workerId !== ownedWorkerId
+				|| !sameIdentity(attempt.termination.candidate, candidate))) {
+			this.attention(task, "Recorded worker termination does not match the exact integrated worker and candidate.");
+			return false;
+		}
+		if (attempt.termination?.status !== "terminated") {
+			if (attempt.termination) {
+				const reconciled = await scope.call(async (context) => await this.hostRuntime.reconcileWorkerTermination({
+					task: changesetTaskRequest(handle.state, task.taskId),
+					attempt,
+					workerId: attempt.termination!.workerId,
+					candidate,
+				}, context));
+				if (reconciled.outcome === "unknown") {
+					attempt.termination.status = "unknown";
+					attempt.termination.failure = boundedRuntimeText(reconciled.failure, "Worker termination reconciliation failure");
+					this.attention(task, `Worker termination is unproved: ${attempt.termination.failure}`);
+					await handle.save();
+					return false;
+				}
+				if (reconciled.outcome === "terminated") {
+					attempt.termination = {
+						status: "terminated", workerId: attempt.termination.workerId, candidate,
+						at: this.coordinatorRuntime.now(),
+					};
+					await handle.save();
+				}
+			}
+			if (attempt.termination?.status !== "terminated"
+				&& !await this.terminateWithSafety(handle, task, attempt, candidate, scope.signal, scope.deadline)) return false;
+		}
+		task.status = "cleanup";
+		await handle.save();
+		if (!await this.runCleanup(handle, task, attempt, scope)) return false;
+		task.status = "completed";
+		task.failure = undefined;
+		await handle.save();
+		return true;
+	}
+
 	private async runCleanup(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt, scope: DeadlineScope): Promise<boolean> {
+		if (attempt.termination?.status !== "terminated") {
+			this.attention(task, "Cleanup is blocked until exact worker termination is durably recorded.");
+			return false;
+		}
 		for (const step of attempt.cleanup) {
 			if (step.status === "completed") continue;
 			step.status = "running";
@@ -1917,34 +2132,21 @@ export class OrchestratorRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		attempt: TaskAttempt,
-		outerSignal?: AbortSignal,
+		scope: DeadlineScope,
 	): Promise<RunResponse> {
-		const state = handle.state;
-		const deadline = this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS;
-		state.recovery = { kind: "cleanup_only", taskId: task.taskId, deadline };
-		state.status = "running";
-		task.status = "cleanup";
-		state.updatedAt = this.coordinatorRuntime.now();
-		await handle.save();
-		const scope = new DeadlineScope(deadline, () => this.coordinatorRuntime.now(), outerSignal);
-		try {
-			if (await this.runCleanup(handle, task, attempt, scope)) {
-				task.status = "completed";
-				task.failure = undefined;
-				for (const next of readyPendingTasks(state)) {
-					this.attention(next, `Cleanup-only verification completed; resume retry for ${next.taskId} to continue dependency scheduling.`);
-				}
-				state.status = state.tasks.some((candidate) => candidate.status === "needs_attention") ? "needs_attention" : "pending";
-			} else {
-				state.status = "needs_attention";
+		handle.state.status = "running";
+		if (await this.finalizeIntegratedTask(handle, task, attempt, scope)) {
+			for (const next of readyPendingTasks(handle.state)) {
+				this.attention(next, `Integrated-resource verification completed; resume retry for ${next.taskId} to continue dependency scheduling.`);
 			}
-			return this.response(state);
-		} finally {
-			scope.close();
-			state.recovery = undefined;
-			state.updatedAt = this.coordinatorRuntime.now();
-			await handle.save();
+			handle.state.status = handle.state.tasks.some((candidate) => candidate.status === "needs_attention")
+				? "needs_attention"
+				: "pending";
+		} else {
+			handle.state.status = "needs_attention";
 		}
+		await handle.save();
+		return this.response(handle.state);
 	}
 
 	private async verifyRetainedTask(
@@ -1955,21 +2157,45 @@ export class OrchestratorRunner {
 	): Promise<RunResponse> {
 		const attempt = latestAttempt(task);
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
-		if (attempt.termination?.status !== "terminated") throw new Error("Manual verification requires exact recorded worker termination.");
+		if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
+			throw new Error("An ambiguous delivered prompt is retained for inspection or explicit abort and is never replayed.");
+		}
 		const candidate = runtimeIdentity(await scope.call(async (context) => await this.gitRuntime.inspectRetainedTask({
 			root: handle.state.root, task: changesetTaskRequest(handle.state, task.taskId), attempt,
 		}, context)), "Retained task candidate identity");
 		if (!isCleanCommitted(candidate)) throw new Error("Retained task candidate is not clean and committed.");
-		if (candidate.head === attempt.waveBase.head) throw new Error("Retained task candidate must differ from its wave base.");
-		attempt.candidate = candidate;
-		task.status = "ready_to_integrate";
+		if (attempt.acceptance) {
+			const expected = latestTransitionAfter(attempt, attempt.acceptance!.at)?.to
+				?? attempt.acceptance.candidate;
+			if (!sameIdentity(candidate, expected)) throw new Error("Accepted retained task candidate drifted from its exact lineage.");
+			task.status = "ready_to_integrate";
+			task.failure = undefined;
+			await handle.save();
+			if (!await this.integrateTask(handle, task, scope)) {
+				handle.state.status = "needs_attention";
+				return this.response(handle.state);
+			}
+			return await this.run(handle, scope, undefined, lifecycle);
+		}
+		const request = changesetTaskRequest(handle.state, task.taskId);
+		if (!attempt.candidate || !attempt.candidateBase || !sameIdentity(candidate, attempt.candidate)
+			|| !checkBatchPasses(attempt.preliminaryChecks, request.checks, candidate)) {
+			throw new Error("Retained task work lacks exact passing preliminary candidate evidence.");
+		}
+		task.status = "awaiting_acceptance";
 		task.failure = undefined;
+		this.ensureInteractiveControl(handle, task);
 		await handle.save();
-		if (!await this.integrateTask(handle, task, scope)) {
+		const stale = await this.settleInteractiveTasks(handle, [task], scope, lifecycle);
+		if (stale) return this.response(stale);
+		const current = changesetTaskState(handle.state, task.taskId);
+		if (current.status === "ready_to_integrate" && !await this.integrateTask(handle, current, scope)) {
 			handle.state.status = "needs_attention";
 			return this.response(handle.state);
 		}
-		return await this.run(handle, scope, undefined, lifecycle);
+		return current.status === "completed"
+			? await this.run(handle, scope, undefined, lifecycle)
+			: this.response(handle.state);
 	}
 
 	private async retry(
@@ -1992,15 +2218,9 @@ export class OrchestratorRunner {
 		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be retried or adopted automatically.");
 		if (attempt.prompts.length) {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
-				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.agentName) {
-					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
-				}
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
 			if (!correctionEligible(changesetTaskRequest(handle.state, task.taskId), attempt)) {
-				if (attempt.termination?.status !== "terminated" && allocationByKind(attempt, "agent")?.agentName) {
-					await this.terminateWithSafety(handle, task, attempt, this.terminationCandidate(attempt));
-				}
 				throw new Error("The same-agent correction is unavailable or already used.");
 			}
 			task.status = "working";
@@ -2217,22 +2437,10 @@ export class OrchestratorRunner {
 					attempt.integration.status = "unknown";
 					attempt.integration.failure = "Integration was interrupted after intent persistence and was not adopted.";
 				}
-				if (!attempt.termination && attempt.candidate
-					&& !correctionEligible(changesetTaskRequest(state, task.taskId), attempt)) {
-					const workerId = allocationByKind(attempt, "agent")?.agentName;
-					if (workerId) {
-						attempt.termination = {
-							status: "unknown",
-							workerId,
-							candidate: attempt.candidate,
-							failure: "Worker termination was not durably proved before interruption.",
-						};
-					}
-				}
 				for (const step of attempt.cleanup) if (step.status === "running") step.status = "pending";
 			}
 			this.attention(task, state.recovery?.taskId === task.taskId
-				? "Cleanup-only verification was interrupted; only exact saved-resource cleanup may resume."
+				? "Deliberate recovery was interrupted; exact saved evidence and resources were retained."
 				: "Execution was interrupted at an ambiguous boundary and will not replay automatically.");
 		}
 		if (!state.tasks.some((task) => task.status === "needs_attention")) {
@@ -2342,13 +2550,8 @@ export class OrchestratorRunner {
 	private response(state: RunState, main?: MainStatus): RunResponse {
 		const completed = state.tasks.filter((task) => task.status === "completed").length;
 		const resumable = !terminal(state);
-		const cleanupAttention = state.tasks.find((task): task is ChangesetTaskState => task.kind === "changeset"
-			&& task.status === "needs_attention"
-			&& task.attempts.at(-1)?.integration?.status === "integrated");
 		let continuation: ResumeRequest | undefined;
-		if (resumable && cleanupAttention) {
-			continuation = { id: state.request.id, action: "verify", taskId: cleanupAttention.taskId };
-		} else if (resumable && this.coordinatorRuntime.now() < state.deadline && (!main || main.status === "current")) {
+		if (resumable) {
 			const attention = state.tasks.find((task) => task.status === "needs_attention");
 			if (completed === state.tasks.length
 				&& (state.final.status === "pending" || state.final.status === "interrupted")) {
@@ -2357,10 +2560,16 @@ export class OrchestratorRunner {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 			} else if (attention?.kind === "changeset" && attention.attempts.length === 0) {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
-			} else if (attention?.kind === "changeset"
-				&& attention.attempts.at(-1)?.termination?.status === "terminated"
-				&& attention.attempts.at(-1)?.integration?.status !== "unknown") {
-				continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
+			} else if (attention?.kind === "changeset") {
+				const attempt = attention.attempts.at(-1);
+				if (attempt && correctionEligible(changesetTaskRequest(state, attention.taskId), attempt)) {
+					continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
+				} else if (attempt?.integration?.status === "integrated"
+					|| attempt?.acceptance
+					|| (attempt?.candidate && attempt.candidateBase
+						&& checkBatchPasses(attempt.preliminaryChecks, changesetTaskRequest(state, attention.taskId).checks, attempt.candidate))) {
+					continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
+				}
 			}
 		}
 		const attention = continuation && "taskId" in continuation

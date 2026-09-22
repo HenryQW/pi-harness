@@ -177,7 +177,18 @@ function completedChangesetState(): RunState {
 		],
 		prompts: [{ kind: "initial", status: "settled", preCandidate: worktreeBase, candidate, at: 2 }],
 		candidate,
-		termination: { status: "terminated", workerId: "worker-change", candidate, at: 3 },
+		candidateBase: base,
+		preliminaryChecks: {
+			phase: "preliminary",
+			candidate,
+			identityAfter: candidate,
+			results: [{ ...task.checks[0]!, code: 0, killed: false, stdout: "", stderr: "" }],
+			passed: true,
+			at: 2,
+		},
+		acceptance: { candidate, base, at: 3 },
+		transitions: [{ kind: "rebase", status: "rebased", sourceBase: base, from: candidate, onto: base, to: candidate, at: 10 }],
+		termination: { status: "terminated", workerId: "worker-change", candidate, at: 6 },
 		integrationBase: base,
 		integrationCandidate: candidate,
 		authoritativeChecks: {
@@ -330,7 +341,7 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
 });
 
-test("v2 follow-up prompt evidence requires exact bounded instructions", () => {
+test("v3 follow-up prompt evidence requires exact bounded instructions", () => {
 	const valid = completedChangesetState();
 	const attempt = completedChangesetAttempt(valid);
 	const candidate = attempt.candidate!;
@@ -364,7 +375,7 @@ test("v2 follow-up prompt evidence requires exact bounded instructions", () => {
 	assert.throws(() => parseRunState(repeatedCorrection), /repeated correction history/);
 });
 
-test("v2 completed changesets require exact terminal evidence", () => {
+test("v3 completed changesets require exact terminal evidence", () => {
 	const valid = completedChangesetState();
 	assert.equal(completedChangesetTask(parseRunState(structuredClone(valid))).status, "completed");
 
@@ -374,13 +385,40 @@ test("v2 completed changesets require exact terminal evidence", () => {
 		error: RegExp;
 	}> = [
 		{
+			name: "worker termination names another agent",
+			mutate: (value) => { completedChangesetAttempt(value).termination!.workerId = "other-agent"; },
+			error: /does not match the exact owned agent/,
+		},
+		{
 			name: "worker termination is not complete",
 			mutate: (value) => {
 				const termination = completedChangesetAttempt(value).termination;
 				if (!termination) throw new Error("Expected worker termination evidence.");
 				termination.status = "terminating";
+				delete termination.at;
 			},
-			error: /no recorded worker termination/,
+			error: /no exact recorded worker termination/,
+		},
+		{
+			name: "integrated task has no durable acceptance",
+			mutate: (value) => { delete completedChangesetAttempt(value).acceptance; },
+			error: /does not match its exact candidate lineage/,
+		},
+		{
+			name: "integrated task ends with an unresolved rebase",
+			mutate: (value) => {
+				const transition = completedChangesetAttempt(value).transitions[0]!;
+				transition.status = "rebasing";
+				delete transition.to;
+			},
+			error: /does not match its exact candidate lineage/,
+		},
+		{
+			name: "accepted rebase lineage is disconnected",
+			mutate: (value) => {
+				completedChangesetAttempt(value).transitions[0]!.from = { ...identity(), head: "c".repeat(40), index: "c".repeat(40), tree: "c".repeat(40) };
+			},
+			error: /breaks exact lineage/,
 		},
 		{
 			name: "authoritative checks do not pass",
@@ -445,6 +483,7 @@ test("v2 completed changesets require exact terminal evidence", () => {
 				const integration = completedChangesetAttempt(value).integration;
 				if (!integration) throw new Error("Expected integration evidence.");
 				integration.status = "integrating";
+				delete integration.mainAfter;
 			},
 			error: /lacks exact integration evidence/,
 		},
@@ -464,9 +503,18 @@ test("v2 completed changesets require exact terminal evidence", () => {
 		mutate(candidate);
 		assert.throws(() => parseRunState(candidate), error, name);
 	}
+
+	const interruptedFinalization = structuredClone(valid);
+	interruptedFinalization.status = "needs_attention";
+	interruptedFinalization.accepted = false;
+	const interruptedTask = completedChangesetTask(interruptedFinalization);
+	interruptedTask.status = "needs_attention";
+	interruptedTask.failure = "Finalization was interrupted.";
+	delete completedChangesetAttempt(interruptedFinalization).integration!.mainAfter;
+	assert.throws(() => parseRunState(interruptedFinalization), /lacks exact integration evidence/);
 });
 
-test("v2 state maps text task attempts exactly and rejects v1 and launch state", () => {
+test("v3 state maps text task attempts exactly and rejects older and launch state", () => {
 	const definition = parseExecuteRequest(request([
 		textTask("research"),
 		changesetTask("change", { contextFrom: ["research"] }),
@@ -544,16 +592,18 @@ test("v2 state maps text task attempts exactly and rejects v1 and launch state",
 
 	const oldTaskField = structuredClone(valid) as RunState & { tasks: Array<Record<string, unknown>> };
 	oldTaskField.tasks[1]!.implementerLaunchKey = "implementer/balanced";
-	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-orchestrator v2 state/);
+	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-orchestrator v3 state/);
 
 	const oldLaunchState = { ...structuredClone(valid), launchRecords: {} };
-	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-orchestrator v2 state/);
+	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-orchestrator v3 state/);
 
+	const v2 = { ...structuredClone(valid), version: 2 };
+	assert.throws(() => parseRunState(v2), /Unsupported pi-orchestrator state version 2; expected 3/);
 	const v1 = { ...structuredClone(valid), version: 1, launchRecords: {} };
-	assert.throws(() => parseRunState(v1), /Unsupported pi-orchestrator state version 1; expected 2/);
+	assert.throws(() => parseRunState(v1), /Unsupported pi-orchestrator state version 1; expected 3/);
 });
 
-test("v2 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
+test("v3 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
 	const definition = parseExecuteRequest(request([textTask("research")]));
 	const valid = state(definition);
 	const character = "界";

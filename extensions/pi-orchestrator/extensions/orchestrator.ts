@@ -12,6 +12,7 @@ import {
 	type DirectProcessRunner,
 } from "../src/git-runtime.ts";
 import { HerdrHostRuntime } from "../src/herdr-runtime.ts";
+import { runProcess as directRunProcess } from "../src/process.ts";
 import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../src/launch-runtime.ts";
 import { OrchestratorRunner, type OperationContext, type RunResponse } from "../src/runner.ts";
 import {
@@ -50,11 +51,13 @@ export type CreateOrchestratorComponents = (options: {
 
 /** Construct the Main runtime graph once, sharing one executor across text tasks and Judgments. */
 export const createOrchestratorComponents: CreateOrchestratorComponents = ({ pi, context, onInteractiveWait, onStateSaved }) => {
-	const runProcess: DirectProcessRunner = async (command, args, options) => await pi.exec(command, args, {
-		cwd: options.cwd,
-		signal: options.signal,
-		timeout: options.timeoutMs,
-	});
+	const runProcess: DirectProcessRunner = async (command, args, options) => options.stdin === undefined
+		? await pi.exec(command, args, {
+			cwd: options.cwd,
+			signal: options.signal,
+			timeout: options.timeoutMs,
+		})
+		: await directRunProcess(command, args, options);
 	const resolveRoot = createCanonicalGitRootResolver({ runProcess });
 	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: 8,

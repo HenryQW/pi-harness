@@ -154,12 +154,12 @@
       <text class="sub" x="776" y="412">BOUNDED TEXT · ISOLATED HERDR</text>
       <text class="sub" x="776" y="428">MAIN DRIFT FAILS CLOSED</text>
 
-      <!-- Post-stop changeset gate -->
+      <!-- Live-worker changeset gate -->
       <rect class="node" x="656" y="472" width="240" height="72" rx="6"/>
       <rect class="tag" x="668" y="484" width="40" height="16" rx="2"/>
       <text class="tag-text" x="688" y="496">CHECK</text>
       <text class="name" x="776" y="508">Changeset checks + judgment</text>
-      <text class="sub" x="776" y="528">REBASE · DIRECT ARGV · EXACT PATCH</text>
+      <text class="sub" x="776" y="528">LIVE WORKER · REBASE · EXACT PATCH</text>
 
       <!-- Protected Main repository -->
       <rect class="node-focal" x="992" y="472" width="216" height="88" rx="6"/>

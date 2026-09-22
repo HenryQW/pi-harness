@@ -55,9 +55,9 @@ Call `orchestrate_execute` with a bounded request. It runs the graph through che
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `orchestrate_execute` | tool | Start one durable checked task graph. |
-| `orchestrate_status` | tool | Read one request and report workspace drift. |
-| `orchestrate_resume` | tool | Retry, verify, or finalize an unfinished request. |
-| `orchestrate_abort` | tool | Stop workers and abort an unfinished request. |
+| `orchestrate_status` | tool | Read durable recovery state and report Main drift without mutation. |
+| `orchestrate_resume` | tool | Deliberately retry, verify, or finalize an unfinished request. |
+| `orchestrate_abort` | tool | Explicitly terminate owned workers and abort an unfinished request. |
 | `/orchestrate-followup <request-id> <task-id> <message>` | command | Queue a revision in the active task's existing agent. |
 | `/orchestrate-accept <request-id> <task-id>` | command | Accept the active task's checked candidate and continue integration. |
 | `pi-orchestrator` | skill | Guide Main to choose generic delegation or checked orchestration. |
@@ -113,7 +113,7 @@ Send bounded revisions before acceptance. A task accepts at most 32 worker promp
 /orchestrate-accept repair-auth auth-runtime
 ```
 
-A follow-up queued while the agent is working runs after the current turn settles. Acceptance queued while it is working applies to the next checked candidate. The request budget continues while it waits for input. Expiry or interruption terminates the owned worker and fails closed.
+A follow-up queued while the agent is working runs after the current turn settles. Acceptance queued while it is working applies to the next checked candidate. The request budget continues while it waits for input. Expiry, interruption, ambiguity, failed review, and Main drift retain the owned worker and fail closed.
 
 ## Flow
 
@@ -133,9 +133,11 @@ Ready text tasks use bounded ephemeral execution. Ready changeset tasks use sepa
 
 Preliminary validation uses checks only while the worker remains available. A settled implementation block or unchanged failed check can trigger one same-agent correction.
 
-After preliminary checks pass, the worker stays available for same-task follow-ups. Each follow-up reuses the live conversation, must produce a new clean commit, and reruns preliminary checks. Explicit acceptance seals the candidate; late follow-ups are rejected. The worker then stops, and the orchestrator rebases the accepted candidate and reruns every task check directly, without a shell.
+After preliminary checks pass, the worker stays available for same-task follow-ups. Each follow-up reuses the live conversation, must produce a new clean commit, and reruns preliminary checks. Explicit acceptance seals the candidate; late follow-ups are rejected.
 
-Add `judgment` only for a criterion that checks cannot decide. Its selected Role runs after the rebase with exact private patch evidence. Configure that Role with read-only tools. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
+The worker remains live while the orchestrator records each exact rebase, reruns every task check directly without a shell, runs any judgment, and integrates the candidate into Main. If Main moves during that sequence, the orchestrator records and checks another exact rebase. After exact integration is durably recorded, it terminates that worker and then cleans up its resources.
+
+Add `judgment` only for a criterion that checks cannot decide. Its selected Role runs after the rebase with exact private patch evidence while the task worker remains live. Configure the judgment Role with read-only tools. Its final response is mandatory. Zero findings must return exactly `PASS`; blank or other output fails.
 
 ## API
 
@@ -161,15 +163,17 @@ Runtime diagnostics and possible-resource evidence are bounded before each save.
 
 ### Recovery actions
 
-Use `orchestrate_status` after interruption or when a request needs attention. It reports an exact continuation when recovery is unambiguous, including an eligible failed text-task retry. Applying that continuation still requires a deliberate `orchestrate_resume` call. Otherwise choose one reported action:
+Use `orchestrate_status` after interruption or when a request needs attention. Status is read-only: it does not reconcile, terminate, replay, or clean up workers. It reports an exact continuation only when saved evidence proves that action safe, including an eligible failed text-task retry. Applying that continuation still requires a deliberate `orchestrate_resume` call. Otherwise inspect the retained worker or abort explicitly.
+
+A resume gets a fresh bounded recovery deadline. It preserves resources when reconciliation, checks, review, integration, or termination remain uncertain. Choose one reported action:
 
 - `retry` continues pre-dispatch recovery or sends one eligible correction to the same agent. It never replaces a prompted agent. A text-task retry runs only its selected ready task when others need attention.
-- `verify` checks retained task work before integration or finishes pending cleanup.
+- `verify` checks exact retained task work, continues an accepted rebase or integration, reconciles post-integration termination, or finishes pending cleanup.
 - `finalize` reruns the final gate when Main still matches the recorded identity.
 
 `orchestrate_abort` terminates owned workers and records an aborted request. It does not claim uncertain cleanup succeeded.
 
-The current state schema rejects older state versions. It does not migrate them or delete prompt files that another process may still use.
+State schema v3 rejects v2 and all older state. It does not migrate them or delete prompt files that another process may still use.
 
 ### Scope
 

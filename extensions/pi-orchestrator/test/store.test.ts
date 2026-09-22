@@ -67,7 +67,7 @@ function state(root: string): RunState {
 	};
 }
 
-test("the store persists v2 text state, rejects duplicate creates, and preserves unsupported v1 files", async () => {
+test("the store persists v3 text state, rejects duplicate creates, and preserves unsupported older files", async () => {
 	const sandbox = await mkdtemp(join(tmpdir(), "pi-orchestrator-store-"));
 	const plannedRoot = join(sandbox, "repo");
 	const agentDir = join(sandbox, "agent");
@@ -91,11 +91,13 @@ test("the store persists v2 text state, rejects duplicate creates, and preserves
 		const loaded = await store.load(root, created.request.id);
 		assert.deepEqual(loaded.state, { ...created, updatedAt: 2 });
 
-		const legacyPath = store.statePath(root, "legacy-v1");
-		const legacy = JSON.stringify({ ...created, version: 1, launchRecords: {} });
-		await writeFile(legacyPath, legacy);
-		await assert.rejects(store.load(root, "legacy-v1"), /Unsupported pi-orchestrator state version 1; expected 2/);
-		assert.equal(await readFile(legacyPath, "utf8"), legacy);
+		for (const version of [1, 2]) {
+			const legacyPath = store.statePath(root, `legacy-v${version}`);
+			const legacy = JSON.stringify({ ...created, version, launchRecords: {} });
+			await writeFile(legacyPath, legacy);
+			await assert.rejects(store.load(root, `legacy-v${version}`), new RegExp(`Unsupported pi-orchestrator state version ${version}; expected 3`));
+			assert.equal(await readFile(legacyPath, "utf8"), legacy);
+		}
 	} finally {
 		await rm(sandbox, { recursive: true, force: true });
 	}
@@ -151,7 +153,7 @@ test("invalid and oversized state files are rejected without replacement", async
 		const malformedPath = store.statePath(root, "malformed");
 		const malformed = "{}\n";
 		await writeFile(malformedPath, malformed);
-		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v2 state/);
+		await assert.rejects(store.load(root, "malformed"), /Unsupported or malformed pi-orchestrator v3 state/);
 		assert.equal(await readFile(malformedPath, "utf8"), malformed);
 
 		const oversizedPath = store.statePath(root, "oversized");
