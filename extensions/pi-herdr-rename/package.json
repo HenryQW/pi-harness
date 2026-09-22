@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-rename",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "description": "Generate short Pi display titles and rename the current Herdr location.",
   "keywords": [
     "pi-package",
@@ -25,7 +25,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.86.0"
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.88.0"
   },
   "repository": {
     "type": "git",
@@ -48,6 +48,6 @@
     "@henryqw/pi-task-models": "^7.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.86.0"
+    "@earendil-works/pi-coding-agent": "0.87.0"
   }
 }

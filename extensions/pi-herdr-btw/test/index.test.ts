@@ -1448,7 +1448,7 @@ test("child uses the native prefix when model, tools, and thinking match the par
 		assert.deepEqual(startResult, { systemPrompt: "parent system prompt" });
 
 		const [contextResult] = await harness.emit(
-			"context",
+			"context_with_system",
 			{ messages: [{ role: "user", content: [{ type: "text", text: "side question" }], timestamp: 9 }] },
 			ctx,
 		);
@@ -1481,7 +1481,7 @@ test("child falls back to the portable document when the prefix cannot match", a
 		assert.match(startResult?.systemPrompt ?? "", /side pane/);
 
 		const [contextResult] = await harness.emit(
-			"context",
+			"context_with_system",
 			{ messages: [{ role: "user", content: [{ type: "text", text: "side question" }], timestamp: 9 }] },
 			ctx,
 		);

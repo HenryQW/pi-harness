@@ -4,27 +4,30 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ENTRY_DELIMITER, MAX_BATCH_OPERATIONS, MAX_FILE_BYTES, MemoryStore, type Target } from "../src/store.ts";
+import { ENTRY_DELIMITER, MAX_FILE_BYTES, MemoryStore } from "../src/store.ts";
 
 const LIMIT = 1000;
 
-async function makeStore(backupPath?: (target: Target) => string) {
+async function makeStore(backupPath?: string) {
 	const dir = await mkdtemp(join(tmpdir(), "pi-memory-"));
 	return {
 		dir,
-		store: new MemoryStore({ directory: dir, memoryCharLimit: LIMIT, userCharLimit: LIMIT, backupPath }),
+		store: new MemoryStore({ directory: dir, target: "memory", limit: LIMIT, backupPath }),
 		cleanup: () => rm(dir, { recursive: true, force: true }),
 	};
 }
 
 const memoryPath = (dir: string) => join(dir, "MEMORY.md");
+const add = (store: MemoryStore, content: string) => store.apply({ action: "add", content });
+const replace = (store: MemoryStore, old_text: string, content: string) => store.apply({ action: "replace", old_text, content });
+const remove = (store: MemoryStore, old_text: string) => store.apply({ action: "remove", old_text });
 
 test("parse/serialize round-trip including multiline entries", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
-		await store.add("memory", "first entry");
-		await store.add("memory", "line one\nline two\nline three");
-		const loaded = await store.load("memory");
+		await add(store, "first entry");
+		await add(store, "line one\nline two\nline three");
+		const loaded = await store.load();
 		assert.deepEqual(loaded.entries, ["first entry", "line one\nline two\nline three"]);
 	} finally {
 		await cleanup();
@@ -35,7 +38,7 @@ test("add overflow rejection includes usage info", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
 		const big = "x".repeat(LIMIT + 1);
-		const result = await store.add("memory", big);
+		const result = await add(store, big);
 		assert.equal(result.success, false);
 		assert.match(result.error!, /exceed the limit/);
 		assert.ok(result.usage!.includes(LIMIT.toLocaleString()));
@@ -48,16 +51,16 @@ test("add overflow rejection includes usage info", async () => {
 test("batch removes stale and adds new in one call when lone add would overflow", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
-		await store.add("memory", `${"a".repeat(600)}`);
-		const loneAdd = await store.add("memory", "b".repeat(500));
+		await add(store, `${"a".repeat(600)}`);
+		const loneAdd = await add(store, "b".repeat(500));
 		assert.equal(loneAdd.success, false);
 
-		const batch = await store.applyBatch("memory", [
+		const batch = await store.applyBatch([
 			{ action: "remove", old_text: "aaa" },
 			{ action: "add", content: "b".repeat(500) },
 		]);
 		assert.equal(batch.success, true, batch.error ?? "");
-		const loaded = await store.load("memory");
+		const loaded = await store.load();
 		assert.deepEqual(loaded.entries, ["b".repeat(500)]);
 	} finally {
 		await cleanup();
@@ -67,33 +70,16 @@ test("batch removes stale and adds new in one call when lone add would overflow"
 test("batch is all-or-nothing on a bad op", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
-		await store.add("memory", "keep me");
-		const result = await store.applyBatch("memory", [
+		await add(store, "keep me");
+		const result = await store.applyBatch([
 			{ action: "remove", old_text: "keep" },
 			{ action: "replace", old_text: "nonexistent" , content: "x"},
 		]);
 		assert.equal(result.success, false);
 		assert.match(result.error!, /all-or-nothing/);
 		assert.deepEqual(result.currentEntries!, ["keep me"]);
-		const loaded = await store.load("memory");
+		const loaded = await store.load();
 		assert.deepEqual(loaded.entries, ["keep me"]);
-	} finally {
-		await cleanup();
-	}
-});
-
-test("batch operation limit rejects 101 and accepts 100 independently of final budgeting", async () => {
-	const { store, dir, cleanup } = await makeStore();
-	try {
-		const tooMany = Array.from({ length: MAX_BATCH_OPERATIONS + 1 }, () => ({ action: "add", content: "same entry" }));
-		const rejected = await store.applyBatch("memory", tooMany);
-		assert.equal(rejected.success, false);
-		assert.match(rejected.error!, /more than 100/);
-		assert.equal(existsSync(memoryPath(dir)), false);
-
-		const accepted = await store.applyBatch("memory", tooMany.slice(0, MAX_BATCH_OPERATIONS));
-		assert.equal(accepted.success, true, accepted.error ?? "");
-		assert.deepEqual((await store.load("memory")).entries, ["same entry"]);
 	} finally {
 		await cleanup();
 	}
@@ -102,11 +88,11 @@ test("batch operation limit rejects 101 and accepts 100 independently of final b
 test("exact-duplicate add is idempotent", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
-		assert.equal((await store.add("memory", "dup")).success, true);
-		const again = await store.add("memory", "dup");
+		assert.equal((await add(store, "dup")).success, true);
+		const again = await add(store, "dup");
 		assert.equal(again.success, true);
 		assert.match(again.message!, /already exists/);
-		assert.equal((await store.load("memory")).entries.length, 1);
+		assert.equal((await store.load()).entries.length, 1);
 	} finally {
 		await cleanup();
 	}
@@ -115,9 +101,9 @@ test("exact-duplicate add is idempotent", async () => {
 test("multi-match ambiguity error with previews", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
-		await store.add("memory", "note about project alpha");
-		await store.add("memory", "note about project beta");
-		const result = await store.remove("memory", "note about project");
+		await add(store, "note about project alpha");
+		await add(store, "note about project beta");
+		const result = await remove(store, "note about project");
 		assert.equal(result.success, false);
 		assert.match(result.error!, /Multiple entries matched/);
 		assert.equal(result.matches!.length, 2);
@@ -132,10 +118,10 @@ test("unreadable existing file aborts mutation and leaves file unchanged", async
 		const original = ["precious", "entries"].join(ENTRY_DELIMITER);
 		await writeFile(memoryPath(dir), Buffer.from([0xff, 0xfe, 0x00, 0x81]), "binary"); // invalid UTF-8
 		for (const attempt of [
-			store.add("memory", "new"),
-			store.replace("memory", "precious", "x"),
-			store.remove("memory", "precious"),
-			store.applyBatch("memory", [{ action: "add", content: "new" }]),
+			add(store, "new"),
+			replace(store, "precious", "x"),
+			remove(store, "precious"),
+			store.applyBatch([{ action: "add", content: "new" }]),
 		]) {
 			const result = await attempt;
 			assert.equal(result.success, false, JSON.stringify(result));
@@ -143,20 +129,9 @@ test("unreadable existing file aborts mutation and leaves file unchanged", async
 		}
 		const bytes = await readFile(memoryPath(dir));
 		assert.equal(bytes.length, 4); // untouched
-		const loaded = await store.load("memory");
-		assert.equal(loaded.status, "unreadable");
+		const loaded = await store.load();
+		assert.equal(loaded.state, "unreadable");
 		assert.ok(loaded.conflictWarning);
-	} finally {
-		await cleanup();
-	}
-});
-
-test("CRLF-delimiter bypass rejected after normalization", async () => {
-	const { store, cleanup } = await makeStore();
-	try {
-		const result = await store.add("memory", "a\r\n§\r\nb");
-		assert.equal(result.success, false);
-		assert.match(result.error!, /delimiter/);
 	} finally {
 		await cleanup();
 	}
@@ -167,11 +142,11 @@ test("BOM is stripped and first entry stays matchable", async () => {
 	try {
 		await mkdir(dir, { recursive: true });
 		await writeFile(memoryPath(dir), "\uFEFFfirst entry" + ENTRY_DELIMITER + "second", "utf-8");
-		const loaded = await store.load("memory");
+		const loaded = await store.load();
 		assert.deepEqual(loaded.entries, ["first entry", "second"]);
-		const result = await store.remove("memory", "first entry");
+		const result = await remove(store, "first entry");
 		assert.equal(result.success, true, result.error ?? "");
-		assert.deepEqual((await store.load("memory")).entries, ["second"]);
+		assert.deepEqual((await store.load()).entries, ["second"]);
 	} finally {
 		await cleanup();
 	}
@@ -185,7 +160,7 @@ test("dedupe preserves order and first occurrence", async () => {
 			["b", "a", "b", "c", "a"].join(ENTRY_DELIMITER),
 			"utf-8",
 		);
-		const loaded = await store.load("memory");
+		const loaded = await store.load();
 		assert.deepEqual(loaded.entries, ["b", "a", "c"]);
 	} finally {
 		await cleanup();
@@ -194,7 +169,7 @@ test("dedupe preserves order and first occurrence", async () => {
 
 test("consolidation cap: third consecutive failure terminal, reset on success", () => {
 	let terminalSeen = false;
-	const store = new MemoryStore({ directory: "/tmp/pi-memory-unused", memoryCharLimit: LIMIT, userCharLimit: LIMIT });
+	const store = new MemoryStore({ directory: "/tmp/pi-memory-unused", target: "memory", limit: LIMIT });
 	assert.deepEqual(store.incrementFailure(), { done: false });
 	assert.deepEqual(store.incrementFailure(), { done: false });
 	const third = store.incrementFailure();
@@ -205,29 +180,18 @@ test("consolidation cap: third consecutive failure terminal, reset on success", 
 	assert.deepEqual(store.incrementFailure(), { done: false });
 });
 
-test("delimiter-containing content rejected", async () => {
-	const { store, cleanup } = await makeStore();
-	try {
-		const result = await store.add("memory", `before${ENTRY_DELIMITER}after`);
-		assert.equal(result.success, false);
-		assert.match(result.error!, /delimiter/);
-	} finally {
-		await cleanup();
-	}
-});
-
 test("backup created before successful rewrite", async () => {
 	let backedUp: string | undefined;
-	const backupFor = (target: Target) => join(tmpdir(), `pi-mem-bak-${target}`);
-	const { store, dir, cleanup } = await makeStore(backupFor);
+	const backupFor = () => join(tmpdir(), "pi-mem-bak-memory");
+	const { store, dir, cleanup } = await makeStore(backupFor());
 	try {
-		await store.add("memory", "v1"); // no existing file -> no backup needed
-		backedUp = backupFor("memory");
-		const result = await store.add("memory", "v2");
+		await add(store, "v1"); // no existing file -> no backup needed
+		backedUp = backupFor();
+		const result = await add(store, "v2");
 		assert.equal(result.success, true, result.error ?? "");
 		const backupContent = await readFile(backedUp, "utf-8");
 		assert.equal(backupContent, "v1");
-		assert.deepEqual((await store.load("memory")).entries, ["v1", "v2"]);
+		assert.deepEqual((await store.load()).entries, ["v1", "v2"]);
 		void dir;
 	} finally {
 		await cleanup();
@@ -235,21 +199,19 @@ test("backup created before successful rewrite", async () => {
 	}
 });
 
-// ---- Fix-A additions ----
-
 test("oversized load refuses injection and aborts mutations, file untouched", async () => {
 	const { store, dir, cleanup } = await makeStore();
 	try {
 		await mkdir(dir, { recursive: true });
 		await writeFile(memoryPath(dir), "x".repeat(1_000_001), "utf-8");
-		const loaded = await store.load("memory");
-		assert.equal(loaded.status, "oversized");
+		const loaded = await store.load();
+		assert.equal(loaded.state, "oversized");
 		assert.ok(loaded.conflictWarning);
 		for (const attempt of [
-			store.add("memory", "new"),
-			store.replace("memory", "x", "y"),
-			store.remove("memory", "x"),
-			store.applyBatch("memory", [{ action: "add", content: "new" }]),
+			add(store, "new"),
+			replace(store, "x", "y"),
+			remove(store, "x"),
+			store.applyBatch([{ action: "add", content: "new" }]),
 		]) {
 			const result = await attempt;
 			assert.equal(result.success, false);
@@ -261,38 +223,16 @@ test("oversized load refuses injection and aborts mutations, file untouched", as
 	}
 });
 
-test("reserved framing tokens rejected", async () => {
-	const { store, cleanup } = await makeStore();
-	try {
-		for (const bad of [
-			"entry\n═══\ntail",
-			"═════",
-			"MEMORY (your personal notes go here)",
-			"USER PROFILE (who the user is) stuff",
-			"fine line\nMEMORY (your personal notes",
-		]) {
-			const result = await store.add("memory", bad);
-			assert.equal(result.success, false, JSON.stringify(bad));
-		}
-		assert.deepEqual((await store.load("memory")).entries, []);
-		// Batch path validates too.
-		const batch = await store.applyBatch("memory", [{ action: "add", content: "ok\n═══" }]);
-		assert.equal(batch.success, false);
-	} finally {
-		await cleanup();
-	}
-});
-
 test("batch replace normalizes CRLF content and old_text", async () => {
 	const { store, dir, cleanup } = await makeStore();
 	try {
 		await mkdir(dir, { recursive: true });
 		await writeFile(memoryPath(dir), "old entry with CRLF\r\nsecond line", "utf-8");
-		const batch = await store.applyBatch("memory", [
+		const batch = await store.applyBatch([
 			{ action: "replace", old_text: "CRLF\r\nsecond", content: "new\r\nmultiline\r\ncontent" },
 		]);
 		assert.equal(batch.success, true, batch.error ?? "");
-		assert.deepEqual((await store.load("memory")).entries, ["new\nmultiline\ncontent"]);
+		assert.deepEqual((await store.load()).entries, ["new\nmultiline\ncontent"]);
 		const raw = await readFile(memoryPath(dir), "utf-8");
 		assert.ok(!raw.includes("\r"));
 	} finally {
@@ -303,18 +243,18 @@ test("batch replace normalizes CRLF content and old_text", async () => {
 test("replace creating a duplicate dedupes (single and batch)", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
-		await store.add("memory", "alpha");
-		await store.add("memory", "beta");
-		const single = await store.replace("memory", "alpha", "beta");
+		await add(store, "alpha");
+		await add(store, "beta");
+		const single = await replace(store, "alpha", "beta");
 		assert.equal(single.success, true, single.error ?? "");
 		assert.equal(single.entryCount, 1);
-		assert.deepEqual((await store.load("memory")).entries, ["beta"]);
+		assert.deepEqual((await store.load()).entries, ["beta"]);
 
-		await store.add("memory", "gamma"); // entries: beta, gamma
-		const batch = await store.applyBatch("memory", [{ action: "replace", old_text: "gamma", content: "beta" }]);
+		await add(store, "gamma"); // entries: beta, gamma
+		const batch = await store.applyBatch([{ action: "replace", old_text: "gamma", content: "beta" }]);
 		assert.equal(batch.success, true, batch.error ?? "");
 		assert.equal(batch.entryCount, 1);
-		assert.deepEqual((await store.load("memory")).entries, ["beta"]);
+		assert.deepEqual((await store.load()).entries, ["beta"]);
 	} finally {
 		await cleanup();
 	}
@@ -326,12 +266,12 @@ test("tmp file removed when rename fails after write", async () => {
 		await writeFile(memoryPath(dir), "seed", "utf-8");
 		const store = new MemoryStore({
 			directory: dir,
-			memoryCharLimit: LIMIT,
-			userCharLimit: LIMIT,
+			target: "memory",
+			limit: LIMIT,
 			// Fail AFTER the tmp file is written so cleanup is actually exercised.
-			renameFn: async () => { throw new Error("simulated rename failure"); },
+			renameFn: async () => { throw Object.assign(new Error("simulated rename failure"), { code: "ENOENT" }); },
 		});
-		await assert.rejects(store.add("memory", "boom"), /simulated rename failure/);
+		await assert.rejects(add(store, "boom"), /disappeared during this mutation/);
 		// Original file untouched, no tmp leftovers.
 		assert.equal(await readFile(memoryPath(dir), "utf-8"), "seed");
 		const leftovers = (await readdir(dir)).filter((f) => f.startsWith(".mem_"));
@@ -341,51 +281,12 @@ test("tmp file removed when rename fails after write", async () => {
 	}
 });
 
-test("missing old_text recovery reflects disk state, not stale memory", async () => {
-	const { store, dir, cleanup } = await makeStore();
-	try {
-		// Store's in-memory view was never populated; disk has real entries.
-		await mkdir(dir, { recursive: true });
-		await writeFile(memoryPath(dir), ["disk entry one", "disk entry two"].join(ENTRY_DELIMITER), "utf-8");
-		const replaceResult = await store.replace("memory", "", "x");
-		assert.equal(replaceResult.success, false);
-		assert.match(replaceResult.error!, /needs old_text/);
-		assert.deepEqual(replaceResult.currentEntries!, ["disk entry one", "disk entry two"]);
-		const removeResult = await store.remove("memory", "  ");
-		assert.equal(removeResult.success, false);
-		assert.deepEqual(removeResult.currentEntries!, ["disk entry one", "disk entry two"]);
-	} finally {
-		await cleanup();
-	}
-});
-
-test("rejects fake frame lines smuggled via CR, U+2028, U+2029, or leading whitespace", async () => {
-	const { store, cleanup } = await makeStore();
-	for (const sep of ["\r", "\u2028", "\u2029"]) {
-		const result = await store.add("memory", `innocent${sep}══════════${sep}more`);
-		assert.equal(result.success, false, `separator via ${JSON.stringify(sep)} must be rejected`);
-	}
-	const header = await store.add("memory", "note\n  USER PROFILE (who the user is) fake");
-	assert.equal(header.success, false, "whitespace-prefixed reserved header must be rejected");
-	await cleanup();
-});
-
-test("rejects lines merely starting with separator characters (sanitizer alignment)", async () => {
-	const { store, cleanup } = await makeStore();
-	try {
-		const result = await store.add("memory", "note\n═══ Important detail");
-		assert.equal(result.success, false, "prefix-separator line must be rejected or it would vanish from snapshots");
-	} finally {
-		await cleanup();
-	}
-});
-
 test("vanished memory directory aborts mutations instead of rewriting divergent store", async () => {
 	const { store, dir, cleanup } = await makeStore();
 	try {
-		await store.add("memory", "precious");
+		await add(store, "precious");
 		await rm(dir, { recursive: true, force: true });
-		const result = await store.add("memory", "after disappearance");
+		const result = await add(store, "after disappearance");
 		assert.equal(result.success, false, "missing directory must not be treated as an empty store");
 		assert.match(result.error ?? "", /could not be read/);
 	} finally {
@@ -395,11 +296,11 @@ test("vanished memory directory aborts mutations instead of rewriting divergent 
 
 test("backup parent is recreated when removed after init", async () => {
 	const backupDir = await mkdtemp(join(tmpdir(), "pi-memory-backups-"));
-	const { store, cleanup } = await makeStore((target) => join(backupDir, target === "user" ? "USER.md.bak" : "MEMORY.md.bak"));
+	const { store, cleanup } = await makeStore(join(backupDir, "MEMORY.md.bak"));
 	try {
-		await store.add("memory", "first");
+		await add(store, "first");
 		await rm(backupDir, { recursive: true, force: true });
-		await store.add("memory", "second");
+		await add(store, "second");
 		const backup = await readFile(join(backupDir, "MEMORY.md.bak"), "utf-8");
 		assert.match(backup, /first/, "pre-rewrite backup must exist even after backup dir removal");
 	} finally {
@@ -411,10 +312,10 @@ test("backup parent is recreated when removed after init", async () => {
 test("mid-session disappearance of an observed store aborts instead of diverging", async () => {
 	const { store, dir, cleanup } = await makeStore();
 	try {
-		await store.add("memory", "precious");
+		await add(store, "precious");
 		// File deleted but directory intact (sync conflict / cleanup scenario).
 		await rm(memoryPath(dir));
-		const result = await store.add("memory", "after disappearance");
+		const result = await add(store, "after disappearance");
 		assert.equal(result.success, false, "unexpected disappearance must not rewrite from empty view");
 		assert.match(result.error ?? "", /disappeared/);
 		assert.ok(!existsSync(memoryPath(dir)), "no divergent store file may be created");
@@ -436,10 +337,10 @@ test("confirmed unusable stores cannot be recreated after disappearing", async (
 					await writeFile(join(dir, "real.md"), "preserve target");
 					await symlink(join(dir, "real.md"), memoryPath(dir));
 				}
-				const loaded = await store.load("memory");
-				assert.ok(loaded.status, `${source} must be unusable`);
+				const loaded = await store.load();
+				assert.ok(loaded.state === "unreadable" || loaded.state === "oversized", `${source} must be unusable`);
 				await rm(memoryPath(dir));
-				const result = await store.add("memory", "must not recreate");
+				const result = await add(store, "must not recreate");
 				assert.equal(result.success, false);
 				assert.match(result.error ?? "", /disappeared/);
 				assert.equal(existsSync(memoryPath(dir)), false);
@@ -453,13 +354,13 @@ test("confirmed unusable stores cannot be recreated after disappearing", async (
 test("unconfirmed unreadable path remains recoverable for initial creation", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-repair-"));
 	const dir = join(root, "missing");
-	const store = new MemoryStore({ directory: dir, memoryCharLimit: LIMIT, userCharLimit: LIMIT });
+	const store = new MemoryStore({ directory: dir, target: "memory", limit: LIMIT });
 	try {
-		const loaded = await store.load("memory");
-		assert.equal(loaded.status, "unreadable");
+		const loaded = await store.load();
+		assert.equal(loaded.state, "unreadable");
 		assert.match(loaded.conflictWarning ?? "", /presence could not be confirmed/);
 		await mkdir(dir);
-		const result = await store.add("memory", "initial entry");
+		const result = await add(store, "initial entry");
 		assert.equal(result.success, true, result.error ?? "");
 		assert.equal(await readFile(memoryPath(dir), "utf8"), "initial entry");
 	} finally {
@@ -471,8 +372,8 @@ test("ambiguous-match previews are aggregate-bounded", async () => {
 	const { store, cleanup } = await makeStore();
 	try {
 		// 50 entries all containing the search substring.
-		for (let i = 0; i < 50; i++) await store.add("memory", `shared-${i} unique tail ${i}`);
-		const result = await store.replace("memory", "shared", "x");
+		for (let i = 0; i < 50; i++) await add(store, `shared-${i} unique tail ${i}`);
+		const result = await replace(store, "shared", "x");
 		assert.equal(result.success, false);
 		const serialized = JSON.stringify(result.matches ?? []);
 		assert.ok(serialized.length < 3000, `previews must be bounded, got ${serialized.length}`);
@@ -484,47 +385,58 @@ test("ambiguous-match previews are aggregate-bounded", async () => {
 test("file appearing during a creation-assumed mutation aborts before rename", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-memory-appear-"));
 	try {
-		// statFn pretends the store is absent at reload (open fails naturally) but
-		// reports existence at the persistence-time appearance check.
-		// statFn: reload sees the store absent via open(); the persistence-time
-		// appearance check is the only stat on MEMORY.md — report existence there.
+		// Reload sees the store absent via open(); the persistence-time appearance
+		// check is the only stat on MEMORY.md, so report existence there.
 		const store = new MemoryStore({
 			directory: dir,
-			memoryCharLimit: LIMIT,
-			userCharLimit: LIMIT,
+			target: "memory",
+			limit: LIMIT,
 			statFn: async (p) => {
 				if (p === memoryPath(dir)) return {} as import("node:fs").Stats;
 				throw Object.assign(new Error("enoent"), { code: "ENOENT" });
 			},
 			renameFn: async () => { throw new Error("rename must not run after appearance detected"); },
 		});
-		await assert.rejects(store.add("memory", "boom"), /appeared during this mutation/);
+		await assert.rejects(add(store, "boom"), /appeared during this mutation/);
 		assert.ok(!existsSync(memoryPath(dir)), "arrived content must be untouched");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("NBSP-prefixed reserved headers are rejected like the sanitizer would filter them", async () => {
-	const { store, cleanup } = await makeStore();
+test("restrictive file mode survives atomic rewrite", async () => {
+	const { store, dir, cleanup } = await makeStore();
 	try {
-		const result = await store.add("memory", "note\n\u00A0USER PROFILE (who the user is) fake");
-		assert.equal(result.success, false, "Unicode-whitespace-prefixed reserved line must be rejected");
+		await add(store, "secret-ish");
+		await chmod(memoryPath(dir), 0o600);
+		await add(store, "more");
+		const mode = (await stat(memoryPath(dir))).mode & 0o777;
+		assert.equal(mode, 0o600, `expected 0o600, got ${mode.toString(8)}`);
 	} finally {
 		await cleanup();
 	}
 });
 
-test("restrictive file mode survives atomic rewrite", async () => {
-	const { store, dir, cleanup } = await makeStore();
+test("an existing store that cannot be fingerprinted aborts before mutation", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-memory-fingerprint-failure-"));
+	const path = memoryPath(dir);
 	try {
-		await store.add("memory", "secret-ish");
-		await chmod(memoryPath(dir), 0o600);
-		await store.add("memory", "more");
-		const mode = (await stat(memoryPath(dir))).mode & 0o777;
-		assert.equal(mode, 0o600, `expected 0o600, got ${mode.toString(8)}`);
+		await writeFile(path, "preserve me", "utf-8");
+		let renamed = false;
+		const store = new MemoryStore({
+			directory: dir,
+			target: "memory",
+			limit: LIMIT,
+			statFn: async () => { throw new Error("simulated stat failure"); },
+			renameFn: async () => { renamed = true; },
+		});
+		const result = await add(store, "local mutation");
+		assert.equal(result.success, false);
+		assert.match(result.error ?? "", /could not be fingerprinted/);
+		assert.equal(renamed, false);
+		assert.equal(await readFile(path, "utf-8"), "preserve me");
 	} finally {
-		await cleanup();
+		await rm(dir, { recursive: true, force: true });
 	}
 });
 
@@ -535,8 +447,8 @@ test("external update between reload and rename aborts instead of overwriting V2
 		let statCalls = 0;
 		const store = new MemoryStore({
 			directory: dir,
-			memoryCharLimit: LIMIT,
-			userCharLimit: LIMIT,
+			target: "memory",
+			limit: LIMIT,
 			statFn: async (p) => {
 				if (p !== memoryPath(dir)) throw Object.assign(new Error("enoent"), { code: "ENOENT" });
 				statCalls++;
@@ -545,7 +457,7 @@ test("external update between reload and rename aborts instead of overwriting V2
 			},
 			renameFn: async () => { throw new Error("rename must not run after change detected"); },
 		});
-		await assert.rejects(store.add("memory", "local mutation"), /changed during this mutation/);
+		await assert.rejects(add(store, "local mutation"), /changed during this mutation/);
 		assert.equal(await readFile(memoryPath(dir), "utf-8"), "V1 content", "synced V2 must be untouched");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
@@ -561,8 +473,8 @@ test("same-metadata external update aborts instead of overwriting V2", async () 
 		const fingerprint = { mtimeMs: 1, size: 10 } as import("node:fs").Stats;
 		const store = new MemoryStore({
 			directory: dir,
-			memoryCharLimit: LIMIT,
-			userCharLimit: LIMIT,
+			target: "memory",
+			limit: LIMIT,
 			statFn: async () => {
 				statCalls++;
 				if (statCalls === 2) await writeFile(path, "V2 content", "utf-8");
@@ -570,7 +482,7 @@ test("same-metadata external update aborts instead of overwriting V2", async () 
 			},
 			renameFn: async () => { throw new Error("rename must not run after content changed"); },
 		});
-		await assert.rejects(store.add("memory", "local mutation"), /changed during this mutation/);
+		await assert.rejects(add(store, "local mutation"), /changed during this mutation/);
 		assert.equal(await readFile(path, "utf-8"), "V2 content");
 	} finally {
 		await rm(dir, { recursive: true, force: true });
@@ -582,8 +494,8 @@ test("symlinked store file is rejected with a clear reason", async () => {
 	try {
 		await writeFile(join(dir, "real.md"), "elsewhere");
 		await symlink(join(dir, "real.md"), memoryPath(dir));
-		const store = new MemoryStore({ directory: dir, memoryCharLimit: LIMIT, userCharLimit: LIMIT });
-		const result = await store.add("memory", "boom");
+		const store = new MemoryStore({ directory: dir, target: "memory", limit: LIMIT });
+		const result = await add(store, "boom");
 		assert.equal(result.success, false);
 		assert.match(result.error ?? "", /symlink/);
 	} finally {

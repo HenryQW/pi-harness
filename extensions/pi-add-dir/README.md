@@ -16,8 +16,10 @@ Run `/dir-add`, enter a directory, then run `/dir-ls`. Pi lists the directory an
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/dir-add` | command | Add directory; no path opens input. Supports `~`. |
-| `/dir-ls` | command | List directories; select one to remove. |
+| `/dir-add [path]` | command | Add to the current session; no path opens input. Supports `~`. |
+| `/dir-add --project [path]` | command | Persist for the current Git repository and all its linked worktrees. |
+| `/dir-add --global [path]` | command | Persist for every Pi workspace for this user. |
+| `/dir-ls` | command | List directories with their scope; select one to remove from that scope. |
 | `/dir-reload` | command | Reload external directory resources. |
 | `add_directory` | tool | Add a directory. |
 | `search_external_files` | tool | Glob-search added directories. |
@@ -28,8 +30,26 @@ Added directories give Pi these resources:
 - Skills that Pi loads from `.pi/skills`, `.agents/skills`, and `.claude/skills`.
 - Files in the editor's `@` autocomplete, with absolute paths.
 
-`/dir-add` reloads when it finds skills. `add_directory` reports when a reload is needed.
+`/dir-add` reloads when it finds skills. `add_directory` reports when a reload is needed and always remains session-local.
+
+## Config
+
+Package-owned: `~/.pi/agent/config/pi-add-dir/config.json`
+
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `directories` | Directories loaded for every workspace. `/dir-add --global` updates this list. | Array of unique absolute paths without control characters. | `[]` |
+
+A missing file uses the default. Invalid config stops loading and is not overwritten. Reload Pi after editing the file manually.
+
+## State and storage
+
+Session directories live in the current session branch. Project directories use the repository's repeatable local Git config key `pi-add-dir.directory`. Local Git config is shared by linked worktrees, cannot be injected by cloning a repository, and remains machine-local. `/dir-add --project` therefore requires a Git repository.
+
+Persistent scopes are explicit because added directories can inject `AGENTS.md`, `CLAUDE.md`, and skills.
 
 ## Limits and recovery
 
 Search supports basename and relative-path globs. It skips `.git` and `node_modules`. It uses Node filesystem traversal and returns at most 1,000 results per call.
+
+Missing directories and directories that overlap the current workspace remain configured but are skipped with a warning. Fix or remove them through `/dir-ls`.
