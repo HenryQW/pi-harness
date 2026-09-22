@@ -5,6 +5,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 const LOCK_WAIT_MS = 5 * 60_000;
 const INIT_TIMEOUT_MS = 10 * 60_000;
+const WIDGET_KEY = "pi-codegraph";
+const SUCCESS_TTL_MS = 5000;
 
 async function hasIndex(root: string): Promise<boolean> {
 	try {
@@ -86,7 +88,12 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 				throw new Error(`CodeGraph init failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${(result.stderr || result.stdout).trim().slice(-2000)}`);
 			}
 			succeeded = true;
-			ctx.ui.notify("CodeGraph worktree index ready.", "info");
+			if (ctx.hasUI) {
+				ctx.ui.setWidget(WIDGET_KEY, ["pi-codegraph: index ready"]);
+				setTimeout(() => ctx.ui.setWidget(WIDGET_KEY, undefined), SUCCESS_TTL_MS);
+			} else {
+				ctx.ui.notify("CodeGraph worktree index ready.", "info");
+			}
 		} catch (error) {
 			if (attempted) throw new Error(`${error instanceof Error ? error.message : String(error)}\n${recovery}`, { cause: error });
 			throw error;
