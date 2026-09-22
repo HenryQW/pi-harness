@@ -12,4 +12,4 @@ Use `@henryqw/pi-config-store`. By default, an extension has one active config w
 
 ## README
 
-Use [README-template.md](README-template.md) for every package README: retain only applicable sections in its canonical order, with no placeholders or filler. Add an explanatory diagram for an extension with meaningful flows or relationships; do not add one merely to satisfy a rule.
+Use [README-template.md](README-template.md) for every package README: retain only applicable sections in its canonical order, with no placeholders or filler. Add an explanatory diagram for an extension with meaningful flows or relationships; do not add one merely to satisfy a rule. In extension READMEs, start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.

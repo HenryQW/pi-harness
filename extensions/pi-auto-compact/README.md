@@ -37,7 +37,7 @@ Run `/auto-compact` and enter a threshold. Pi confirms it as `Auto-compact thres
 
 ## Flow
 
-![Auto-compact flowchart: completed boundaries trim duplicate reads before summarizing; oversized requests use a separate emergency guard](docs/auto-compact-flow.svg)
+![Auto-compact flowchart: completed boundaries trim duplicate reads before summarizing; oversized requests use a separate emergency guard](./docs/auto-compact-flow.svg)
 
 - The extension refuses to activate unless effective `compaction.enabled` is `false`.
 - At completed `turn_end` and `agent_before_settle` boundaries, it first replaces older successful text-only `read` results that exactly match a later full read in the protected recent context. Tool name, arguments, and text must match. Failed, changed, image-bearing, or already edited results stay intact. No summary request runs if trimming brings context below the threshold.
