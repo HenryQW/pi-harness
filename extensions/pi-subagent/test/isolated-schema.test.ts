@@ -60,7 +60,6 @@ function request(tasks: TaskRequest[], finalJudgment?: ExecuteRequest["finalJudg
 		id: "request-one",
 		goal: "Deliver checked work.",
 		mode: "isolated",
-		approval: "scoped",
 		tasks,
 		finalChecks: [{ command: "check-final", args: [] }],
 		...(finalJudgment ? { finalJudgment } : {}),
@@ -193,7 +192,7 @@ function completedChangesetState(): RunState {
 			passed: true,
 			at: 2,
 		},
-		acceptance: { candidate, base, at: 3 },
+		readiness: { candidate, base, at: 3 },
 		transitions: [{ kind: "rebase", status: "rebased", sourceBase: base, from: candidate, onto: base, to: candidate, at: 10 }],
 		termination: { status: "terminated", workerId: "worker-change", candidate, at: 6 },
 		integrationBase: base,
@@ -311,6 +310,10 @@ test("task variants require explicit Role names and preserve text context order"
 			} as unknown as ExecuteRequest["finalJudgment"]),
 			path: / at \/finalJudgment\/role:/,
 		},
+		{
+			value: { ...request([textTask("text")]), approval: "supervised" },
+			path: / at \/approval:/,
+		},
 	];
 	for (const { value, path } of strictFailures) {
 		assert.throws(() => parseExecuteRequest(value), (error: unknown) => {
@@ -415,8 +418,8 @@ test("v4 completed changesets require exact terminal evidence", () => {
 			error: /no exact recorded worker termination/,
 		},
 		{
-			name: "integrated task has no durable acceptance",
-			mutate: (value) => { delete completedChangesetAttempt(value).acceptance; },
+			name: "integrated task has no durable readiness",
+			mutate: (value) => { delete completedChangesetAttempt(value).readiness; },
 			error: /does not match its exact candidate lineage/,
 		},
 		{
@@ -429,7 +432,7 @@ test("v4 completed changesets require exact terminal evidence", () => {
 			error: /does not match its exact candidate lineage/,
 		},
 		{
-			name: "accepted rebase lineage is disconnected",
+			name: "ready rebase lineage is disconnected",
 			mutate: (value) => {
 				completedChangesetAttempt(value).transitions[0]!.from = { ...identity(), head: "c".repeat(40), index: "c".repeat(40), tree: "c".repeat(40) };
 			},

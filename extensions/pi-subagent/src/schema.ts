@@ -70,7 +70,6 @@ export const ExecuteRequestSchema = Type.Object({
 	tasks: Type.Array(TaskRequestSchema, { minItems: 1, maxItems: MAX_TASKS }),
 	finalChecks: Type.Optional(Type.Array(CheckCommandSchema, { maxItems: 32 })),
 	finalJudgment: Type.Optional(JudgmentSchema),
-	approval: Type.Optional(Type.Union([Type.Literal("scoped"), Type.Literal("supervised")])),
 }, { additionalProperties: false });
 
 export const IdOnlySchema = Type.Object({ id: IdSchema }, { additionalProperties: false });
@@ -88,9 +87,8 @@ export type TextTaskRequest = Static<typeof TextTaskRequestSchema>;
 export type ChangesetTaskRequest = Static<typeof ChangesetTaskRequestSchema>;
 export type TaskRequest = Static<typeof TaskRequestSchema>;
 type ExecuteRequestInput = Static<typeof ExecuteRequestSchema>;
-export type ExecuteRequest = Omit<ExecuteRequestInput, "finalChecks" | "approval"> & {
+export type ExecuteRequest = Omit<ExecuteRequestInput, "finalChecks"> & {
 	finalChecks: CheckCommand[];
-	approval: "scoped" | "supervised";
 };
 
 export interface ExecutionPolicySnapshot {
@@ -259,7 +257,7 @@ const WorkerTerminationSchema = Type.Object({
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
-const AcceptanceSchema = Type.Object({
+const ReadinessSchema = Type.Object({
 	candidate: WorkspaceSchema,
 	base: WorkspaceSchema,
 	at: TimestampSchema,
@@ -303,7 +301,7 @@ const TaskAttemptSchema = Type.Object({
 	candidate: Type.Optional(WorkspaceSchema),
 	candidateBase: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
-	acceptance: Type.Optional(AcceptanceSchema),
+	readiness: Type.Optional(ReadinessSchema),
 	transitions: Type.Array(RebaseTransitionSchema, { maxItems: 32 }),
 	termination: Type.Optional(WorkerTerminationSchema),
 	integrationBase: Type.Optional(WorkspaceSchema),
@@ -318,7 +316,7 @@ const ChangesetTaskStateSchema = Type.Object({
 	taskId: IdSchema,
 	kind: Type.Literal("changeset"),
 	status: Type.Union([
-		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("awaiting_acceptance"), Type.Literal("ready_to_integrate"),
+		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("ready_to_integrate"),
 		Type.Literal("integrating"), Type.Literal("cleanup"), Type.Literal("completed"), Type.Literal("needs_attention"),
 	]),
 	attempts: Type.Array(TaskAttemptSchema, { maxItems: 2 }),
@@ -545,7 +543,6 @@ export function parseExecuteRequest(value: unknown): ExecuteRequest {
 		goal: normalizeText(input.goal, "goal"),
 		tasks,
 		finalChecks,
-		approval: input.approval ?? "scoped",
 		...(input.finalJudgment ? { finalJudgment: normalizeJudgment(input.finalJudgment, "finalJudgment")! } : {}),
 	};
 	if (Buffer.byteLength(JSON.stringify(request), "utf8") > MAX_EXECUTE_REQUEST_BYTES) {
@@ -659,9 +656,9 @@ function requireCompletedTaskEvidence(taskState: ChangesetTaskState, request: Ch
 	if (!worktree || !hasWorktreePlan(worktree)) {
 		throw new Error(`Completed task ${request.id} lacks an exact owned worktree record.`);
 	}
-	if (!attempt?.candidate || !attempt.candidateBase || !attempt.acceptance
+	if (!attempt?.candidate || !attempt.candidateBase || !attempt.readiness
 		|| !attempt.integrationCandidate || !attempt.integrationBase) {
-		throw new Error(`Completed task ${request.id} has no accepted integration candidate.`);
+		throw new Error(`Completed task ${request.id} has no ready integration candidate.`);
 	}
 	if (attempt.termination?.status !== "terminated"
 		|| !sameIdentity(attempt.termination.candidate, attempt.integrationCandidate)) {
@@ -788,12 +785,12 @@ export function parseRunState(value: unknown): RunState {
 			if (attempt.candidate && (!isCleanCommitted(attempt.candidate) || !isCleanCommitted(attempt.candidateBase!))) {
 				throw new Error(`Candidate lineage for ${definition.id} must be clean and committed.`);
 			}
-			if (attempt.acceptance) {
+			if (attempt.readiness) {
 				if (!attempt.candidate || !attempt.candidateBase
-					|| !sameIdentity(attempt.acceptance.candidate, attempt.candidate)
-					|| !sameIdentity(attempt.acceptance.base, attempt.candidateBase)
+					|| !sameIdentity(attempt.readiness.candidate, attempt.candidate)
+					|| !sameIdentity(attempt.readiness.base, attempt.candidateBase)
 					|| !checkBatchPasses(attempt.preliminaryChecks, definition.checks, attempt.candidate)) {
-					throw new Error(`Acceptance for ${definition.id} does not match exact passing preliminary evidence.`);
+					throw new Error(`Readiness for ${definition.id} does not match exact passing preliminary evidence.`);
 				}
 			}
 			for (let transitionIndex = 0; transitionIndex < attempt.transitions.length; transitionIndex += 1) {
@@ -814,18 +811,18 @@ export function parseRunState(value: unknown): RunState {
 			if ((attempt.integrationBase === undefined) !== (attempt.integrationCandidate === undefined)) {
 				throw new Error(`Integration lineage for ${definition.id} must be recorded together.`);
 			}
-			if (attempt.acceptance) {
-				let base = attempt.acceptance.base;
-				let candidate = attempt.acceptance.candidate;
-				const acceptedTransitions = attempt.transitions.filter(({ at }) => at > attempt.acceptance!.at);
-				for (let transitionIndex = 0; transitionIndex < acceptedTransitions.length; transitionIndex += 1) {
-					const transition = acceptedTransitions[transitionIndex]!;
+			if (attempt.readiness) {
+				let base = attempt.readiness.base;
+				let candidate = attempt.readiness.candidate;
+				const readyTransitions = attempt.transitions.filter(({ at }) => at > attempt.readiness!.at);
+				for (let transitionIndex = 0; transitionIndex < readyTransitions.length; transitionIndex += 1) {
+					const transition = readyTransitions[transitionIndex]!;
 					if (!sameIdentity(transition.sourceBase, base) || !sameIdentity(transition.from, candidate)) {
-						throw new Error(`Accepted rebase transition ${transitionIndex + 1} for ${definition.id} breaks exact lineage.`);
+						throw new Error(`Ready rebase transition ${transitionIndex + 1} for ${definition.id} breaks exact lineage.`);
 					}
 					if (transition.status !== "rebased" || !transition.to) {
-						if (transitionIndex !== acceptedTransitions.length - 1) {
-							throw new Error(`Unresolved rebase transition for ${definition.id} is not the latest accepted transition.`);
+						if (transitionIndex !== readyTransitions.length - 1) {
+							throw new Error(`Unresolved rebase transition for ${definition.id} is not the latest ready transition.`);
 						}
 						break;
 					}
@@ -833,18 +830,18 @@ export function parseRunState(value: unknown): RunState {
 					candidate = transition.to;
 				}
 				if (attempt.integrationBase && attempt.integrationCandidate
-					&& (!acceptedTransitions.length
+					&& (!readyTransitions.length
 						|| !sameIdentity(attempt.integrationBase, base) || !sameIdentity(attempt.integrationCandidate, candidate))) {
-					throw new Error(`Integration candidate for ${definition.id} does not match its exact accepted rebase lineage.`);
+					throw new Error(`Integration candidate for ${definition.id} does not match its exact ready rebase lineage.`);
 				}
 			}
 			if (attempt.integration) {
 				const integration = attempt.integration;
-				const acceptedTransitions = attempt.acceptance
-					? attempt.transitions.filter(({ at }) => at > attempt.acceptance!.at)
+				const readyTransitions = attempt.readiness
+					? attempt.transitions.filter(({ at }) => at > attempt.readiness!.at)
 					: [];
-				const finalTransition = acceptedTransitions.at(-1);
-				if (!attempt.acceptance || !attempt.integrationBase || !attempt.integrationCandidate
+				const finalTransition = readyTransitions.at(-1);
+				if (!attempt.readiness || !attempt.integrationBase || !attempt.integrationCandidate
 					|| finalTransition?.status !== "rebased" || !finalTransition.to
 					|| !sameIdentity(finalTransition.onto, attempt.integrationBase)
 					|| !sameIdentity(finalTransition.to, attempt.integrationCandidate)

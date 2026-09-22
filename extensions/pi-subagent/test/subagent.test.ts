@@ -401,15 +401,16 @@ test("delegate_task description exposes built-in roles with an empty user config
 	});
 });
 
-test("delegate_task guidance owns explicit routing and scoped authorization", async () => {
+test("delegate_task guidance owns explicit routing and automatic readiness", async () => {
 	await environment(async () => {
 		const guidance = harness().tool.promptGuidelines?.join("\n") ?? "";
 		assert.match(guidance, /trivial mechanically verifiable work in Main/i);
 		assert.match(guidance, /mode direct.*bounded research, analysis, review, or tightly coupled implementation/is);
 		assert.match(guidance, /mode isolated.*independently implementable checked changes.*exploratory candidate.*Main must remain undisturbed/is);
 		assert.match(guidance, /Authorize outcome, scope, exclusions.*once/is);
-		assert.match(guidance, /Scoped isolation records exact checked-candidate acceptance automatically/is);
-		assert.match(guidance, /supervised isolation waits for \/subagent-accept/i);
+		assert.match(guidance, /automatically seal and record exact readiness/is);
+		assert.match(guidance, /\/subagent-followup.*only while the task is actively working/is);
+		assert.doesNotMatch(guidance, /subagent-accept|supervised isolation/i);
 		assert.match(guidance, /compact role\/name\/task packet.*tasks.*chain/is);
 		assert.doesNotMatch(guidance, /3–5|minimum number|quota/i);
 	});

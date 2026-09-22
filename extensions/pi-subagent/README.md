@@ -88,7 +88,6 @@ An isolated request has one durable ID, one goal, and 1–8 typed tasks:
   "mode": "isolated",
   "id": "refresh-repair",
   "goal": "Repair token refresh with exact checked evidence.",
-  "approval": "scoped",
   "tasks": [
     {
       "id": "inspect",
@@ -127,14 +126,15 @@ An isolated request has one durable ID, one goal, and 1–8 typed tasks:
 
 `dependsOn` controls scheduling. `contextFrom` may name completed text tasks and preserves the declared order. Changesets require task checks. A graph with a changeset requires final checks. Checks and judgments bind to exact Git identities; candidate drift, Main drift, mutation during validation, ambiguity, or conflicts stop integration and retain evidence.
 
-`approval: "scoped"` is the default. It records acceptance of the exact preliminary checked candidate and continues automatically. Use `"supervised"` only when the user requested an explicit checkpoint:
+Every changeset advances automatically after its worker produces a clean candidate and preliminary checks pass. The runner records durable readiness, rebases and rechecks the exact candidate, runs any declared judgment, integrates it into Main, then terminates the worker and cleans up.
+
+You may queue a bounded same-worker revision while the task is actively working:
 
 ```text
 /subagent-followup <request-id> <task-id> <instruction>
-/subagent-accept <request-id> <task-id>
 ```
 
-The same worker is retained for follow-up or the one configured correction. Acceptance is invalidated whenever the candidate changes.
+A queued follow-up runs after the current turn settles and must produce a new clean commit that passes preliminary checks again. When no queued revision remains, the checked candidate seals immediately; there is no guaranteed post-completion editing window. Late follow-ups fail visibly.
 
 ### Recovery tools
 

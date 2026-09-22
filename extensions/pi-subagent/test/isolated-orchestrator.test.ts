@@ -51,7 +51,6 @@ const EXECUTE_REQUEST: ExecuteRequest = {
 	id: "request-one",
 	goal: "Deliver checked work.",
 	mode: "isolated",
-		approval: "scoped",
 	tasks: [{
 		id: "unit-one",
 		kind: "changeset",
@@ -160,7 +159,6 @@ interface Harness {
 	rootCalls: Array<{ cwd: string; context: OperationContext }>;
 	getComponentCreations(): number;
 	getRoleContext(): ExtensionContext;
-	getInteractiveWait(): (requestId: string, taskId: string) => void;
 	getStateSaved(): (state: RunState) => void;
 }
 
@@ -222,10 +220,6 @@ function createHarness(options: {
 			runnerCalls.push({ method: "queueFollowup", args });
 			return "follow-up queued";
 		},
-		acceptCandidate(...args: unknown[]) {
-			runnerCalls.push({ method: "acceptCandidate", args });
-			return "acceptance queued";
-		},
 	} as unknown as IsolatedExtensionComponents["runner"];
 
 	const createComponents: CreateIsolatedComponents = (createdOptions) => {
@@ -262,7 +256,6 @@ function createHarness(options: {
 		rootCalls,
 		getComponentCreations: () => componentCreations,
 		getRoleContext: () => componentOptions!.context(),
-		getInteractiveWait: () => componentOptions!.onInteractiveWait,
 		getStateSaved: () => componentOptions!.onStateSaved,
 	};
 }
@@ -436,7 +429,7 @@ test("registers exactly four strict tools without constructing runtime component
 		"subagent_resume",
 		"subagent_abort",
 	]);
-	assert.deepEqual([...harness.commands.keys()], ["subagent-followup", "subagent-accept"]);
+	assert.deepEqual([...harness.commands.keys()], ["subagent-followup"]);
 	assert.equal(harness.getComponentCreations(), 0);
 
 	const [execute, status, resume, abort] = harness.tools;
@@ -455,7 +448,7 @@ test("registers exactly four strict tools without constructing runtime component
 	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /must match one strict action/i);
 });
 
-test("interactive commands route follow-ups and acceptance to the active runner during streaming", async () => {
+test("the follow-up command routes optional revisions to the active runner", async () => {
 	const harness = createHarness();
 	const notifications: Array<{ message: string; type: string }> = [];
 	const ctx = {
@@ -467,21 +460,11 @@ test("interactive commands route follow-ups and acceptance to the active runner 
 		"request-one unit-one revise the current candidate",
 		ctx,
 	);
-	await harness.commands.get("subagent-accept")!.handler("request-one unit-one", ctx);
-	harness.getInteractiveWait()("request-one", "unit-one");
 
-	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup" || method === "acceptCandidate"), [
+	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup"), [
 		{ method: "queueFollowup", args: [CANONICAL_ROOT, "request-one", "unit-one", "revise the current candidate"] },
-		{ method: "acceptCandidate", args: [CANONICAL_ROOT, "request-one", "unit-one"] },
 	]);
-	assert.deepEqual(notifications, [
-		{ message: "follow-up queued", type: "info" },
-		{ message: "acceptance queued", type: "info" },
-		{
-			message: "Task request-one/unit-one is ready. Use /subagent-followup request-one unit-one <message> or /subagent-accept request-one unit-one.",
-			type: "info",
-		},
-	]);
+	assert.deepEqual(notifications, [{ message: "follow-up queued", type: "info" }]);
 	await assert.rejects(
 		async () => await harness.commands.get("subagent-followup")!.handler("request-one unit-one", ctx),
 		/Usage: \/subagent-followup/,
@@ -579,7 +562,6 @@ test("production components complete host preflight before inspecting Main", asy
 		executor: {} as never,
 		policy: POLICY,
 		currentPolicy: () => POLICY,
-		onInteractiveWait() {},
 		onStateSaved() {},
 	});
 

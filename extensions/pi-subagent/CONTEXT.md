@@ -14,10 +14,9 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - **Role**: package or user Markdown defining responsibility, tools, trusted extension sources, Skills, optional MCP names, instructions, and an optional model-class default. Roles do not select isolation.
 - **Model Class**: `fast`, `balanced`, `frontier`, or `fav`, resolved through `pi-task-models`.
 - **Direct task**: one text or changeset assignment in Main's checkout.
-- **Isolated request**: one durable ID, goal, authorization mode, and checked task graph.
+- **Isolated request**: one durable ID, goal, and checked task graph.
 - **Candidate**: exact clean committed task-worktree identity produced by an isolated changeset worker.
-- **Scoped acceptance**: automatic acceptance of the exact preliminary checked candidate under the request's declared local authorization.
-- **Supervised acceptance**: explicit `/subagent-accept` of that exact candidate; follow-up invalidates it.
+- **Readiness**: durable proof that one exact live-worker candidate passed its preliminary checks and is sealed for automatic integration; it is not a separate user approval.
 - **Productive lease**: repository-scoped process lease that excludes concurrent execute/resume while permitting status and abort.
 - **Safety budget**: finite timeout for child work, process I/O, status, termination, or cleanup. It is not a whole-run deadline.
 
@@ -34,7 +33,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 
 - `config/pi-subagent/config.json` is the only user execution-policy source. It owns `maxSubagents`, `maxTurns`, optional `maxTokens`, `maxCorrections`, and child idle/hard timeout.
 - Request fields cannot override or replenish policy. Durable requests store the policy snapshot and cumulative correction count; current config may tighten the correction allowance.
-- Productive execution has no whole-run wall-clock deadline. Supervised waits and later resume remain valid.
+- Productive execution has no whole-run wall-clock deadline. Long productive work and later resume remain valid.
 - Child idle/hard runtime, turn/token handling, outer abort, process I/O, status inspection, termination, and cleanup remain independently bounded.
 - Ephemeral children share one FIFO executor pool. Queued time consumes no child timeout. Isolated Herdr Role launches receive the same non-refilling turn/token/runtime budget metadata.
 
@@ -49,10 +48,11 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 ### Isolated lifecycle
 
 - Changeset tasks durably record allocation intent before each external side effect. Unknown outcomes are retained and never guessed.
-- One worker remains live across prompts, preliminary checks, follow-up/correction, acceptance, rebase, authoritative validation, guarded integration, durable integration recording, exact termination, and cleanup.
-- Preliminary checks gate acceptance. Any changed candidate invalidates previous acceptance and validation.
+- One worker remains live across prompts, preliminary checks, follow-up/correction, readiness, rebase, authoritative validation, guarded integration, durable integration recording, exact termination, and cleanup.
+- Optional same-worker follow-ups are admitted only while a changeset is actively working. After the final checked-evidence save, one synchronous queue-or-seal transition prevents admitted revisions from being lost; the runner never waits for routine input.
+- Preliminary checks gate readiness. Any changed candidate invalidates previous readiness and validation.
 - Authoritative task checks and optional exact-`PASS` judgment run after any required rebase. Final checks and optional final judgment bind to resulting Main.
-- Integration requires exact expected Main and exact accepted candidate identities. Same-wave integration follows request order.
+- Integration requires exact expected Main and exact ready candidate identities. Same-wave integration follows request order.
 - Integration is durably recorded before worker termination and cleanup. Recovery never rolls back recorded integration.
 - Failures, ambiguity, interruption, review findings, conflicts, drift, unproved termination, or cleanup failure enter `needs_attention` and preserve evidence.
 - `subagent_status` is read-only. `subagent_resume` accepts only strict `retry`, `verify`, or `finalize` continuations. `subagent_abort` terminates only exact owned workers.

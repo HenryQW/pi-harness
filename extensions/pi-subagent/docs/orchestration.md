@@ -81,8 +81,7 @@ An isolated call is a checked directed graph:
   goal,
   tasks: [1..8],
   finalChecks?,
-  finalJudgment?,
-  approval?: "scoped" | "supervised"
+  finalJudgment?
 }
 ```
 
@@ -99,8 +98,8 @@ The runner executes ready tasks concurrently, then integrates same-wave changese
 1. inspect clean committed Main;
 2. allocate and durably record exact resources;
 3. prompt the worker and inspect the clean committed candidate;
-4. run preliminary checks;
-5. obtain scoped or supervised acceptance of that candidate;
+4. run preliminary checks and atomically seal the candidate when no follow-up is queued;
+5. record durable readiness for that exact candidate;
 6. retain the worker while rebasing if Main moved;
 7. rerun authoritative checks and optional exact judgment;
 8. integrate only the recorded candidate onto the recorded Main identity;
@@ -108,13 +107,13 @@ The runner executes ready tasks concurrently, then integrates same-wave changese
 10. terminate that exact worker; and
 11. clean only proved owned resources.
 
-A changed candidate invalidates prior checks, judgment, and acceptance. A rebase produces a new exact identity and requires authoritative validation. Review accepts only exact `PASS`; all other output is a finding.
+A changed candidate invalidates prior checks, judgment, and readiness. A rebase produces a new exact identity and requires authoritative validation. Review accepts only exact `PASS`; all other output is a finding.
 
-### Authorization
+### Automatic readiness
 
-`approval: "scoped"` is the default. The user's request authorizes the declared local graph, checks, review, and integration once. The runner automatically records acceptance of the exact passing preliminary candidate.
+The user's request authorizes the declared local graph, checks, review, and integration once. After each successful preliminary check batch, the runner drains any follow-up already queued for the same live worker. Each revision must produce a new clean commit and rerun preliminary checks. When the queue is empty, the runner atomically seals the candidate and persists exact readiness evidence without waiting for input.
 
-`approval: "supervised"` waits after preliminary checks. `/subagent-followup` queues a same-worker revision. `/subagent-accept` records acceptance of the exact current candidate. Material scope growth, missing authorization, user-owned conflicts, or consequential external actions still require a new decision. pi-subagent never pushes, publishes, deploys, or opens a pull request.
+`/subagent-followup <request-id> <task-id> <message>` queues an optional same-worker revision only while the task is actively working. There is no guaranteed post-completion editing window; late follow-ups fail visibly. Material scope growth, missing authorization, user-owned conflicts, or consequential external actions still require a new decision. pi-subagent never pushes, publishes, deploys, or opens a pull request.
 
 ### Recovery and state
 
@@ -126,7 +125,7 @@ State version 4 is stored privately under:
 
 Strict parsing rejects unknown properties, malformed evidence, invalid lineage, and older versions. Writes are atomic and repository productive work uses a durable process lease. `subagent_status` is read-only. `subagent_resume` accepts only the continuation reported by state. `subagent_abort` performs exact worker termination and teardown.
 
-Productive execution has no whole-run wall-clock deadline. Long supervised waits and later resumes remain valid. The request retains its original policy snapshot and correction count; a resume cannot refill them. Current configuration may tighten the correction allowance. Child idle/hard runtime, subprocess I/O, status inspection, termination, cleanup, and outer abort remain bounded independently.
+Productive execution has no whole-run wall-clock deadline. Long productive work and later resumes remain valid. The request retains its original policy snapshot and correction count; a resume cannot refill them. Current configuration may tighten the correction allowance. Child idle/hard runtime, subprocess I/O, status inspection, termination, cleanup, and outer abort remain bounded independently.
 
 Ambiguous prompt submission is never replayed automatically. Unknown allocation, failed checks, review findings, Main drift, conflicts, interrupted integration, unproved termination, or cleanup failure enters `needs_attention` and preserves exact evidence. Integration is never rolled back after it is durably recorded; recovery finishes termination and cleanup.
 

@@ -146,7 +146,6 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 		id: "text-failure",
 		goal: "Retain failed text-task state.",
 		mode: "isolated",
-		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -182,7 +181,6 @@ test("text retry saves its second attempt atomically before executor launch", as
 		id: "text-retry",
 		goal: "Retry a failed text task without an invalid intermediate state.",
 		mode: "isolated",
-		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -276,7 +274,6 @@ test("text retry runs only the selected ready task while another needs attention
 		id: "text-retry-with-attention",
 		goal: "Retry one failed text task without scheduling another.",
 		mode: "isolated",
-		approval: "scoped",
 		tasks: [
 			{
 				id: otherId,
@@ -393,18 +390,20 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			t.after(async () => await rm(directory, { recursive: true, force: true }));
 			const root = join(directory, "workspace");
 			await initializeRepository(root);
+			let stateHandle: { state: RunState; save(): Promise<void> };
 			const store = {
 				async withProductiveRunLease<T>(_root: string, action: (lease: unknown) => Promise<T>): Promise<T> {
 					return await action({});
 				},
 				async withLock<T>(_root: string, action: (lifecycle: unknown) => Promise<T>): Promise<T> {
-					return await action({
-						productiveRunLeaseActive: true,
-						waitUnlocked: async (operation: () => Promise<unknown>) => await operation(),
-					});
+					return await action({ productiveRunLeaseActive: true });
 				},
 				async create(state: RunState) {
-					return { state, save: async (): Promise<void> => {} };
+					stateHandle = { state, save: async (): Promise<void> => {} };
+					return stateHandle;
+				},
+				async load() {
+					return stateHandle;
 				},
 			} as unknown as FileRunStore;
 			const runner = new IsolatedRunner(
@@ -453,7 +452,6 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 				id: `mixed-${kinds.join("-")}`,
 				goal: "Keep wave failure attribution exact.",
 				mode: "isolated",
-		approval: "scoped",
 				tasks: kinds.map((kind) => kind === "text" ? text : changeset),
 				finalChecks: [{ command: "true", args: [] }],
 			} satisfies ExecuteRequest, root);

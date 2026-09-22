@@ -28,7 +28,6 @@ function request(): ExecuteRequest {
 		id: "request-one",
 		goal: "Persist the text task.",
 		mode: "isolated",
-		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",

@@ -46,13 +46,12 @@ export type CreateIsolatedComponents = (options: {
 	executor: EphemeralSubagentExecutor;
 	policy: EffectiveExecutionPolicy;
 	currentPolicy(): EffectiveExecutionPolicy;
-	onInteractiveWait(requestId: string, taskId: string): void;
 	onStateSaved(state: RunState): void;
 }) => IsolatedExtensionComponents;
 
 /** Construct the checked runtime while reusing the unified productive-assignment executor. */
 export const createIsolatedComponents: CreateIsolatedComponents = ({
-	pi, context, executor, policy, currentPolicy, onInteractiveWait, onStateSaved,
+	pi, context, executor, policy, currentPolicy, onStateSaved,
 }) => {
 	const runProcess: DirectProcessRunner = async (command, args, options) => options.stdin === undefined
 		? await pi.exec(command, args, { cwd: options.cwd, signal: options.signal, timeout: options.timeoutMs })
@@ -80,7 +79,6 @@ export const createIsolatedComponents: CreateIsolatedComponents = ({
 			git,
 			new FileRunStore(undefined, onStateSaved),
 			executor,
-			onInteractiveWait,
 			policy,
 			currentPolicy,
 		),
@@ -101,7 +99,6 @@ function workspaceBadge(role: string, modelClass: ModelClass): string {
 
 function workspaceStatus(status: RunState["tasks"][number]["status"]): string {
 	switch (status) {
-		case "awaiting_acceptance": return "accept";
 		case "ready_to_integrate": return "ready";
 		case "needs_attention": return "attention";
 		default: return status;
@@ -313,12 +310,6 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		executor: options.executor,
 		policy: options.policy,
 		currentPolicy: options.currentPolicy,
-		onInteractiveWait: (requestId, taskId) => {
-			latestContext().ui.notify(
-				`Task ${requestId}/${taskId} is ready. Use /subagent-followup ${requestId} ${taskId} <message> or /subagent-accept ${requestId} ${taskId}.`,
-				"info",
-			);
-		},
 		onStateSaved: (state) => updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest),
 	});
 	const lookupRoot = async (cwd: string, signal?: AbortSignal): Promise<string> => {
@@ -340,7 +331,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.on("agent_settled", (_event, ctx) => { latestCtx = ctx; });
 
 	pi.registerCommand("subagent-followup", {
-		description: "Queue a revision for an active supervised isolated changeset task",
+		description: "Queue a revision for an active isolated changeset task",
 		handler: async (args, ctx) => {
 			latestCtx = ctx;
 			const match = /^(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(args.trim());
@@ -350,17 +341,6 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			ctx.ui.notify(getComponents().runner.queueFollowup(root, requestId!, taskId!, instruction!), "info");
 		},
 	});
-	pi.registerCommand("subagent-accept", {
-		description: "Accept the exact checked candidate for a supervised isolated changeset task",
-		handler: async (args, ctx) => {
-			latestCtx = ctx;
-			const parts = args.trim().split(/\s+/);
-			if (parts.length !== 2 || parts.some((part) => !part)) throw new Error("Usage: /subagent-accept <request-id> <task-id>");
-			const root = await lookupRoot(ctx.cwd);
-			ctx.ui.notify(getComponents().runner.acceptCandidate(root, parts[0]!, parts[1]!), "info");
-		},
-	});
-
 	pi.registerTool({
 		name: "subagent_status",
 		label: "Subagent status",

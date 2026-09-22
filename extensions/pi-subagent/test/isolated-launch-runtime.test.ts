@@ -72,7 +72,6 @@ function request(tasks: TaskRequest[], finalJudgment?: Judgment): ExecuteRequest
 		id: "request-one",
 		goal: "Deliver checked work.",
 		mode: "isolated",
-		approval: "scoped",
 		tasks,
 		finalChecks: [{ command: "node", args: ["--version"] }],
 		...(finalJudgment === undefined ? {} : { finalJudgment }),

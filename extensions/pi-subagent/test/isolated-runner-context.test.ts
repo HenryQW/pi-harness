@@ -86,7 +86,6 @@ function runnerState(definitions: TaskRequest[], tasks: TaskState[]): RunState {
 			id: "context-readiness",
 			goal: "Test dependency readiness.",
 			mode: "isolated",
-		approval: "scoped",
 			tasks: definitions,
 			finalChecks: [{ command: "check", args: [] }],
 		},
