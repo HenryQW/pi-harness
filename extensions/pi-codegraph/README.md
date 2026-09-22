@@ -14,7 +14,13 @@ Requires `codegraph` CLI on `PATH`, and [pi-mcp-adapter](https://github.com/nico
 
 ## Use
 
-Launch `pi` in a linked worktree after initializing CodeGraph in the primary checkout with `codegraph init --yes`. The adapter server is `henryqw_pi-codegraph__codegraph`. It discovers tools lazily; other CodeGraph tools remain available through `mcp`.
+From the primary checkout, initialize CodeGraph once:
+
+```bash
+codegraph init --yes
+```
+
+Then launch `pi` in a linked worktree. The adapter server is `henryqw_pi-codegraph__codegraph`. It discovers tools lazily; other CodeGraph tools remain available through `mcp`.
 
 ## Flow
 

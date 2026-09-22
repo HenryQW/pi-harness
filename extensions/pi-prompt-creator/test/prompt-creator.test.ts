@@ -3,11 +3,12 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionContext,
-	SlashCommandInfo,
+import {
+	SessionManager,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	type SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir, extensionConfigPath } from "@henryqw/pi-config-store";
 import type {
@@ -76,6 +77,7 @@ function harness(options: {
 	agentDir: string;
 	executor: EphemeralSubagentExecutor;
 	branch?: any[];
+	sessionManager?: Pick<SessionManager, "getEntries" | "getLeafId">;
 	commands?: SlashCommandInfo[];
 }) {
 	const handlers = new Map<string, Handler>();
@@ -88,6 +90,14 @@ function harness(options: {
 	const branchEntries = () => {
 		for (const entry of branch) entry.id ??= `entry-${nextEntryId++}`;
 		return branch;
+	};
+	const sessionEntries = () => {
+		const entries = branchEntries();
+		for (let index = 0; index < entries.length; index++) {
+			entries[index].parentId = entries[index - 1]?.id ?? null;
+			if (entries[index].type === "compaction") entries[index].firstKeptEntryId = entries[index].id;
+		}
+		return entries;
 	};
 	let mode: ExtensionContext["mode"] = "tui";
 	let idle = true;
@@ -117,8 +127,9 @@ function harness(options: {
 		modelRegistry: { getAvailable: () => [model] },
 		sessionManager: {
 			buildContextEntries: branchEntries,
+			getEntries: () => options.sessionManager ? options.sessionManager.getEntries() : sessionEntries(),
 			getBranch: branchEntries,
-			getLeafId: () => branchEntries().at(-1)?.id ?? null,
+			getLeafId: () => options.sessionManager ? options.sessionManager.getLeafId() : branchEntries().at(-1)?.id ?? null,
 		},
 		isIdle: () => idle,
 		isProjectTrusted: () => false,
@@ -356,6 +367,47 @@ test("analysis excludes incomplete assistant replies from the child payload", as
 			{ role: "user", text: "Request after interruption" },
 			{ role: "assistant", text: "Completed reply" },
 		]);
+	});
+});
+
+test("analysis sends canonical context after session edits, not raw history", async () => {
+	await withAgentDir(async (agentDir) => {
+		const session = SessionManager.inMemory(process.cwd());
+		const omittedId = session.appendMessage({ role: "user", content: "Omitted request", timestamp: Date.now() });
+		const replacedId = session.appendMessage({ role: "user", content: "Original request", timestamp: Date.now() });
+		const assistantId = session.appendMessage({
+			role: "assistant", content: [{ type: "text", text: "Original answer" }],
+			api: "openai-completions", provider: "test", model: "prompt-draft", stopReason: "stop",
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			timestamp: Date.now(),
+		});
+		session.appendContextEdit(omittedId, null);
+		session.appendContextEdit(replacedId, { content: "Updated request" });
+		session.appendContextEdit(assistantId, { content: [{ type: "text", text: "Updated answer" }] });
+		const child = controlledExecutor();
+		const app = harness({ agentDir, executor: child.executor, sessionManager: session });
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		await app.registeredCommands.get("promptor")!("", app.ctx);
+		await eventually(() => child.runs.length === 1);
+		assert.deepEqual(JSON.parse(child.runs[0]!.prepared.task).currentConversation, [
+			{ role: "user", text: "Updated request" },
+			{ role: "assistant", text: "Updated answer" },
+		]);
+	});
+});
+
+test("analysis does not fall back to raw history when canonical context is empty", async () => {
+	await withAgentDir(async (agentDir) => {
+		const session = SessionManager.inMemory(process.cwd());
+		const id = session.appendMessage({ role: "user", content: "Omitted request", timestamp: Date.now() });
+		session.appendContextEdit(id, null);
+		const child = controlledExecutor();
+		const app = harness({ agentDir, executor: child.executor, sessionManager: session });
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		await app.registeredCommands.get("promptor")!("", app.ctx);
+		assert.equal(child.runs.length, 0);
+		assert.deepEqual(app.widgets.at(-1)?.content, ["Prompt analysis failed — /promptor"]);
 	});
 });
 

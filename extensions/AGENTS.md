@@ -2,30 +2,14 @@
 
 ## Extension config
 
-Extensions must use `@henryqw/pi-config-store` for configuration storage.
+Use `@henryqw/pi-config-store`. By default, an extension has one active config writer: reload after an external edit before writing again. `store.save(value)` serializes whole-file replacement but does not merge stale fields. When multiple writers are supported or concurrent field changes must survive, use `store.update(mutator)` to read and modify the latest valid config under the lock.
 
-Repository default: most extension owners may assume one active config writer unless their package explicitly documents multi-process or concurrent writers.
+## Message-style widgets
 
-Under that consumer assumption, reload the extension after a manual or external edit before its next write. A stale in-memory full replacement is outside the supported workflow.
-
-`store.save(value)` locks and replaces the whole config. The lock serializes writes, but does not merge fields from stale values.
-
-Use `store.update(mutator)` for read-modify-write when an extension supports multiple processes, sessions, or writers. Use it also to preserve concurrent field changes. It reads the latest valid config under the store lock.
-
-## Widget messages
-
-These rules apply to message-style widgets.
-
-- Give each widget one purpose and concise copy.
-- Persistent actions should prefer one concise action line. Prefix it with one semantic status icon and a space. Avoid decorative iconography. Add identity or state only when it adds information not already shown elsewhere.
-- Color the status icon with a semantic `ctx.ui.theme` color. Text must still state the meaning without color.
-- Never hard-code ANSI sequences.
-- Keep dynamic content width-safe. Truncate it or use a width-aware renderer when it can grow.
-- In non-TUI or RPC modes, use a plain-text fallback.
-- Define when each widget clears. Clear it at that lifecycle point.
+- Give each widget one purpose and concise, width-safe copy. For persistent actions, prefer one line prefixed with a semantic status icon and a space; avoid decorative icons or redundant state.
+- Color the icon with `ctx.ui.theme`, but make the text meaningful without color. Never hard-code ANSI sequences.
+- Provide a plain-text fallback for non-TUI or RPC modes, and clear the widget at a defined lifecycle point.
 
 ## README
 
-Every package `README.md` must use [README-template.md](README-template.md). Copy it and replace placeholders. All H2 sections are optional. Include a section only when it contains package-specific user information. Delete an inapplicable or empty heading instead of writing `None`, `N/A`, `Not applicable`, placeholder filler, or generic information. Keep retained sections in canonical order.
-
-Each extension `README.md` must contain one diagram when the extension has enough features or interactions to explain visually. Skip the diagram for lightweight extensions with no meaningful flow or relationship to show. Do not add a decorative diagram only to satisfy this rule.
+Use [README-template.md](README-template.md) for every package README: retain only applicable sections in its canonical order, with no placeholders or filler. Add an explanatory diagram for an extension with meaningful flows or relationships; do not add one merely to satisfy a rule. In extension READMEs, start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.

@@ -8,6 +8,7 @@ README contract:
 - Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
 - Limits and recovery, when present, must be last.
 - Keep simple packages short. Use simple English. Preserve exact commands, paths, errors, safety advice, and recovery steps.
+- Start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.
 -->
 
 # `@henryqw/<package>`
@@ -16,7 +17,7 @@ README contract:
 
 <!-- Optional: when the package was learned from or adapted from another project, add an "Inspired by" sentence here. -->
 
-<!-- Optional: add a product screenshot here. Keep a meaningful explanatory diagram near the relevant prose. Do not add decorative diagrams. Image paths must begin with `./` or `../`. -->
+<!-- Optional: add a product screenshot here. Keep a meaningful explanatory diagram near the relevant prose. Do not add decorative diagrams. -->
 
 <!-- Optional: include only when installation has package-specific user information. -->
 ## Install
