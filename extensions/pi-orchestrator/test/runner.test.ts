@@ -1231,7 +1231,7 @@ test("changeset dispatch failure retains the exact allocated worker", async (t) 
 	assertParsed(stopped.state);
 });
 
-test("abort terminates only the exact active worker without replay", async (t) => {
+test("abort terminates all exact retained workers without replay", async (t) => {
 	const { root, runtime, store, runner } = await harness(t);
 	const definition = request("abort-active", [changesetTask("active"), changesetTask("settled")]);
 	runtime.workerFailures.push(new Error("active worker transport failed"));
@@ -1246,6 +1246,10 @@ test("abort terminates only the exact active worker without replay", async (t) =
 	const activeAgent = activeAttempt.allocations.find((allocation) => allocation.kind === "agent");
 	const activeCandidate = activeAttempt.prompts[0]?.preCandidate;
 	if (!activeAgent?.agentName || !activeCandidate) throw new Error("Expected an exact active worker fixture.");
+	const settledAttempt = changesetState(handle.state, settledTaskId).attempts[0]!;
+	const settledAgent = settledAttempt.allocations.find((allocation) => allocation.kind === "agent");
+	const settledCandidate = settledAttempt.candidate;
+	if (!settledAgent?.agentName || !settledCandidate) throw new Error("Expected an exact settled worker fixture.");
 	delete activeAttempt.termination;
 	await handle.save();
 	assertParsed(handle.state);
@@ -1257,8 +1261,13 @@ test("abort terminates only the exact active worker without replay", async (t) =
 	const abortedSettled = changesetState(aborted.state, settledTaskId).attempts[0]!;
 
 	assert.equal(aborted.state.status, "aborted");
-	assert.equal(runtime.terminationCalls.length, 2);
-	assert.deepEqual(runtime.terminationCalls[0], { workerId: activeAgent.agentName, candidate: activeCandidate });
+	assert.deepEqual(
+		[...runtime.terminationCalls].sort((left, right) => left.workerId.localeCompare(right.workerId)),
+		[
+			{ workerId: activeAgent.agentName, candidate: activeCandidate },
+			{ workerId: settledAgent.agentName, candidate: settledCandidate },
+		].sort((left, right) => left.workerId.localeCompare(right.workerId)),
+	);
 	assert.deepEqual(runtime.workerCalls, workerCallsBeforeAbort);
 	assert.equal(abortedActive.termination?.status, "terminated");
 	assert.equal(abortedSettled.termination?.status, "terminated");
