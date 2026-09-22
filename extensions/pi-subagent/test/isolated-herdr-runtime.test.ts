@@ -115,7 +115,7 @@ class ScriptedProcess {
 type Paths = { directory: string; root: string; repoRoot: string; commonDirectory: string; worktree: string; leases: string };
 
 async function paths(t: test.TestContext): Promise<Paths> {
-	const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-orchestrator-herdr-")));
+	const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-herdr-")));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "main");
 	const repoRoot = join(directory, "repo");
@@ -809,7 +809,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		command: "herdr",
 		args: [
 			"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
-			"--label", WORKER_LABEL, "--env", `PI_ORCHESTRATOR_PROCESS_LEASE=${tabDetails.leasePath}`, "--no-focus",
+			"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${tabDetails.leasePath}`, "--no-focus",
 		],
 		result: success({
 			type: "tab_created",
@@ -1059,7 +1059,7 @@ test("worker tab waits for a stable host pane layout before create", async (t) =
 			command: "herdr",
 			args: [
 				"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
-				"--label", WORKER_LABEL, "--env", `PI_ORCHESTRATOR_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
+				"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
 			],
 			result: success({
 				type: "tab_created",
@@ -1747,8 +1747,8 @@ test("normal prompt blocks a definitively settled no-op without polling", async 
 test("normal prompt accepts a changed clean candidate from real in-flight Git inspection", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
-	git(fixture.root, "config", "user.name", "Orchestrator Test");
-	git(fixture.root, "config", "user.email", "orchestrator@example.com");
+	git(fixture.root, "config", "user.name", "Subagent Test");
+	git(fixture.root, "config", "user.email", "subagent@example.com");
 	await writeFile(join(fixture.root, "base.txt"), "base\n");
 	git(fixture.root, "add", "base.txt");
 	git(fixture.root, "commit", "-qm", "base");
@@ -1785,8 +1785,8 @@ test("normal prompt accepts a changed clean candidate from real in-flight Git in
 test("delivered prompt remains observable past 30 minutes until real Git evidence becomes changed-clean", async (t) => {
 	const fixture = await paths(t);
 	git(fixture.root, "init", "-q", "-b", "main");
-	git(fixture.root, "config", "user.name", "Orchestrator Test");
-	git(fixture.root, "config", "user.email", "orchestrator@example.com");
+	git(fixture.root, "config", "user.name", "Subagent Test");
+	git(fixture.root, "config", "user.email", "subagent@example.com");
 	await writeFile(join(fixture.root, "base.txt"), "base\n");
 	git(fixture.root, "add", "base.txt");
 	git(fixture.root, "commit", "-qm", "base");
@@ -2330,7 +2330,7 @@ test("lease cleanup preserves artifacts on schema-valid persisted identity drift
 				const token = "fedcba9876543210fedcba98";
 				const leasePath = join(paths.leases, token, `${"e".repeat(32)}.lease`);
 				intent.token = token;
-				intent.label = `pi-orchestrator-${token}-worker`;
+				intent.label = `pi-subagent-${token}-worker`;
 				intent.leasePath = leasePath;
 				return leasePath;
 			},

@@ -59,7 +59,8 @@ function request(tasks: TaskRequest[], finalJudgment?: ExecuteRequest["finalJudg
 	return {
 		id: "request-one",
 		goal: "Deliver checked work.",
-
+		mode: "isolated",
+		approval: "scoped",
 		tasks,
 		finalChecks: [{ command: "check-final", args: [] }],
 		...(finalJudgment ? { finalJudgment } : {}),
@@ -80,10 +81,17 @@ function state(requestValue: ExecuteRequest): RunState {
 	return {
 		version: RUN_STATE_VERSION,
 		request: requestValue,
+		policy: {
+			maxSubagents: 5,
+			maxTurns: 50,
+			childIdleMs: 600_000,
+			childMaxMs: 1_800_000,
+			maxCorrections: 1,
+		},
+		correctionCount: 0,
 		root: "/repo",
 		requestStartMain: main,
 		main,
-
 		status: "pending",
 		tasks: requestValue.tasks.map((task): RunState["tasks"][number] => task.kind === "text"
 			? {
@@ -108,7 +116,7 @@ function completedChangesetState(): RunState {
 	const task = definition.tasks[0];
 	if (task?.kind !== "changeset" || !task.judgment) throw new Error("Expected a judged changeset task.");
 	const base = identity();
-	const worktreeBase = { ...base, branch: "refs/heads/orchestrator/change" };
+	const worktreeBase = { ...base, branch: "refs/heads/subagent/change" };
 	const revision = "b".repeat(40);
 	const candidate: WorkspaceIdentity = { ...worktreeBase, head: revision, index: revision, tree: revision };
 	const mainAfter: WorkspaceIdentity = { ...candidate, branch: base.branch };
@@ -185,7 +193,7 @@ function completedChangesetState(): RunState {
 			passed: true,
 			at: 2,
 		},
-		readiness: { candidate, base, at: 3 },
+		acceptance: { candidate, base, at: 3 },
 		transitions: [{ kind: "rebase", status: "rebased", sourceBase: base, from: candidate, onto: base, to: candidate, at: 10 }],
 		termination: { status: "terminated", workerId: "worker-change", candidate, at: 6 },
 		integrationBase: base,
@@ -219,10 +227,17 @@ function completedChangesetState(): RunState {
 	return {
 		version: RUN_STATE_VERSION,
 		request: definition,
+		policy: {
+			maxSubagents: 5,
+			maxTurns: 50,
+			childIdleMs: 600_000,
+			childMaxMs: 1_800_000,
+			maxCorrections: 1,
+		},
+		correctionCount: 0,
 		root: "/repo",
 		requestStartMain: base,
 		main: mainAfter,
-
 		status: "running",
 		tasks: [{ taskId: task.id, kind: "changeset", status: "completed", attempts: [attempt] }],
 		waves: [{ number: 1, base, taskIds: [task.id], status: "completed" }],
@@ -273,7 +288,6 @@ test("task variants require explicit Role names and preserve text context order"
 	const { checks: _checks, ...changesetWithoutChecks } = changeset;
 	const { role: _role, ...textWithoutRole } = textTask("text");
 	const strictFailures: Array<{ value: unknown; path: RegExp }> = [
-		{ value: { ...request([textTask("text")]), budgetMs: 1_800_000 }, path: / at \/budgetMs:/ },
 		{
 			value: request([{ ...textTask("text"), checks: [{ command: "forbidden", args: [] }] } as unknown as TaskRequest]),
 			path: / at \/tasks\/0\/checks:/,
@@ -340,7 +354,7 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
 });
 
-test("v5 follow-up prompt evidence requires exact bounded instructions", () => {
+test("v4 follow-up prompt evidence requires exact bounded instructions", () => {
 	const valid = completedChangesetState();
 	const attempt = completedChangesetAttempt(valid);
 	const candidate = attempt.candidate!;
@@ -371,10 +385,12 @@ test("v5 follow-up prompt evidence requires exact bounded instructions", () => {
 			at: 3 + index,
 		});
 	}
+	repeatedCorrection.policy.maxCorrections = 2;
+	repeatedCorrection.correctionCount = 2;
 	assert.throws(() => parseRunState(repeatedCorrection), /repeated correction history/);
 });
 
-test("v5 completed changesets require exact terminal evidence", () => {
+test("v4 completed changesets require exact terminal evidence", () => {
 	const valid = completedChangesetState();
 	assert.equal(completedChangesetTask(parseRunState(structuredClone(valid))).status, "completed");
 
@@ -399,8 +415,8 @@ test("v5 completed changesets require exact terminal evidence", () => {
 			error: /no exact recorded worker termination/,
 		},
 		{
-			name: "integrated task has no durable readiness",
-			mutate: (value) => { delete completedChangesetAttempt(value).readiness; },
+			name: "integrated task has no durable acceptance",
+			mutate: (value) => { delete completedChangesetAttempt(value).acceptance; },
 			error: /does not match its exact candidate lineage/,
 		},
 		{
@@ -413,7 +429,7 @@ test("v5 completed changesets require exact terminal evidence", () => {
 			error: /does not match its exact candidate lineage/,
 		},
 		{
-			name: "ready rebase lineage is disconnected",
+			name: "accepted rebase lineage is disconnected",
 			mutate: (value) => {
 				completedChangesetAttempt(value).transitions[0]!.from = { ...identity(), head: "c".repeat(40), index: "c".repeat(40), tree: "c".repeat(40) };
 			},
@@ -513,7 +529,7 @@ test("v5 completed changesets require exact terminal evidence", () => {
 	assert.throws(() => parseRunState(interruptedFinalization), /lacks exact integration evidence/);
 });
 
-test("v5 state maps text task attempts exactly and rejects older and launch state", () => {
+test("v4 state maps text task attempts exactly and rejects older and launch state", () => {
 	const definition = parseExecuteRequest(request([
 		textTask("research"),
 		changesetTask("change", { contextFrom: ["research"] }),
@@ -591,20 +607,18 @@ test("v5 state maps text task attempts exactly and rejects older and launch stat
 
 	const oldTaskField = structuredClone(valid) as RunState & { tasks: Array<Record<string, unknown>> };
 	oldTaskField.tasks[1]!.implementerLaunchKey = "implementer/balanced";
-	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-orchestrator v5 state/);
+	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-subagent v4 state/);
 
 	const oldLaunchState = { ...structuredClone(valid), launchRecords: {} };
-	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-orchestrator v5 state/);
+	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-subagent v4 state/);
 
-	const v3 = { ...structuredClone(valid), version: 3 };
-	assert.throws(() => parseRunState(v3), /Unsupported pi-orchestrator state version 3; expected 5/);
 	const v2 = { ...structuredClone(valid), version: 2 };
-	assert.throws(() => parseRunState(v2), /Unsupported pi-orchestrator state version 2; expected 5/);
+	assert.throws(() => parseRunState(v2), /Unsupported pi-subagent state version 2; expected 4/);
 	const v1 = { ...structuredClone(valid), version: 1, launchRecords: {} };
-	assert.throws(() => parseRunState(v1), /Unsupported pi-orchestrator state version 1; expected 5/);
+	assert.throws(() => parseRunState(v1), /Unsupported pi-subagent state version 1; expected 4/);
 });
 
-test("v5 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
+test("v4 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
 	const definition = parseExecuteRequest(request([textTask("research")]));
 	const valid = state(definition);
 	const character = "界";

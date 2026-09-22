@@ -516,7 +516,6 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		name: "reviewer",
 		description: "Reviews changes",
 		modelClass: "balanced",
-		isolation: "worktree",
 		tools: ["read", "grep", "read"],
 		extensions: ["/roles/reviewer.ts"],
 		skills: ["security"],
@@ -558,7 +557,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.deepEqual(launch.missingSkills, []);
 	assert.deepEqual(launch.args.slice(0, 5), [
 		"--no-session", "--no-extensions", "--no-skills",
-		"--exclude-tools", "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort",
+		"--exclude-tools", "delegate_task,ask_question,subagent_status,subagent_resume,subagent_abort",
 	]);
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
 	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
@@ -576,7 +575,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		"You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only the requested change.",
 	);
 
-	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,ask_question,orchestrate_execute,orchestrate_status,orchestrate_resume,orchestrate_abort");
+	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,ask_question,subagent_status,subagent_resume,subagent_abort");
 
 	const missingRole = { ...role, skills: [...role.skills, "missing"] };
 	assert.throws(
@@ -595,7 +594,6 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	});
 	const promptArgIndex = launch.args.indexOf("--append-system-prompt");
 	assert.equal(prepared.role, "reviewer");
-	assert.equal(prepared.isolation, "worktree");
 	assert.deepEqual(prepared.tools, ["read", "grep", "submit"]);
 	assert.equal(Object.isFrozen(prepared.tools), true);
 	assert.equal(prepared.promptArgIndex, promptArgIndex);
@@ -624,10 +622,6 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.throws(
 		() => prepareRoleLaunch(pi, ctx, { role: { ...role, name: "bad\0" }, task, agentDir }),
 		/Role: name/,
-	);
-	assert.throws(
-		() => prepareRoleLaunch(pi, ctx, { role: { ...role, isolation: "shared" }, task, agentDir }),
-		/Role reviewer: isolation must be "worktree"/,
 	);
 
 	const roleDefault = resolveRoleLaunch(pi, ctx, { role, task, agentDir });
@@ -765,12 +759,6 @@ Do bounded work.
 		resolveRolePackageResources({ ...role, extensions: ["npm:@example/empty"] }, ctx),
 		/Role extension sources resolved no resources: npm:@example\/empty\./,
 	);
-	for (const source of ["npm:pi-orchestrator", "npm:pi-mcp-adapter"]) {
-		await assert.rejects(
-			resolveRolePackageResources({ ...role, extensions: [source] }, ctx),
-			/forbidden pi-orchestrator\/pi-mcp-adapter source/,
-		);
-	}
 });
 
 function valueAfter(args: string[], flag: string): string {

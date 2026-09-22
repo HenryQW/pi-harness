@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ORCHESTRATOR_MODEL_TASK, RoleLaunchRuntime } from "../src/launch-runtime.ts";
+import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "../src/ephemeral.ts";
+import { ISOLATED_MODEL_TASK, RoleLaunchRuntime } from "../src/launch-runtime.ts";
 import type { OperationContext } from "../src/runner.ts";
 import {
 	type ChangesetTaskRequest,
@@ -70,7 +71,8 @@ function request(tasks: TaskRequest[], finalJudgment?: Judgment): ExecuteRequest
 	return {
 		id: "request-one",
 		goal: "Deliver checked work.",
-
+		mode: "isolated",
+		approval: "scoped",
 		tasks,
 		finalChecks: [{ command: "node", args: ["--version"] }],
 		...(finalJudgment === undefined ? {} : { finalJudgment }),
@@ -144,8 +146,11 @@ async function writeProfiles(agentDir: string): Promise<void> {
 	}));
 }
 
-async function harness(t: test.TestContext) {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-launch-"));
+async function harness(
+	t: test.TestContext,
+	executionBudget?: () => Omit<EphemeralSubagentExecutionBudget, "startedAt">,
+) {
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-launch-"));
 	const root = join(directory, "root");
 	const agentDir = join(directory, "agent");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -197,6 +202,7 @@ async function harness(t: test.TestContext) {
 			inspectedRoots.push(inspected);
 			return { ...MAIN };
 		},
+		executionBudget,
 	});
 	async function setRole(file: string, role: RoleFixture): Promise<void> {
 		const rolesDir = join(agentDir, "config", "pi-subagent");
@@ -240,7 +246,7 @@ test("preflight registers its Model Task and resolves each distinct explicit Rol
 	const discovered: unknown[] = [];
 	fixture.events.on("@henryqw/pi-task-models:model-task-response", (value) => discovered.push(value));
 	fixture.events.emit("@henryqw/pi-task-models:model-task-request", { requestId: "request-12345678" });
-	assert.deepEqual((discovered[0] as { task: unknown }).task, ORCHESTRATOR_MODEL_TASK);
+	assert.deepEqual((discovered[0] as { task: unknown }).task, ISOLATED_MODEL_TASK);
 
 	await fixture.setRole("author.md", { name: "change author" });
 	await fixture.setRole("reviewer.md", { name: "audit reviewer" });
@@ -322,6 +328,20 @@ test("Pi Subagent rejects missing or ambiguous Role, Skill, and MCP configuratio
 			/mcps contains duplicate MCP server names\./,
 		);
 	});
+});
+
+test("acquireLaunch carries one configured non-refilling budget into a retained worker", async (t) => {
+	const fixture = await harness(t, () => ({ maxTurns: 7, maxTokens: 8_000, maxMs: 90_000 }));
+	await fixture.setRole("worker.md", { name: "worker" });
+	const before = Date.now();
+	const handle = await fixture.runtime.acquireLaunch("worker", "fast", operationContext());
+	try {
+		const budget = JSON.parse(handle.launch.env[EXECUTION_BUDGET_ENV]!) as EphemeralSubagentExecutionBudget;
+		assert.deepEqual({ ...budget, startedAt: 0 }, { maxTurns: 7, maxTokens: 8_000, maxMs: 90_000, startedAt: 0 });
+		assert.ok(budget.startedAt >= before && budget.startedAt <= Date.now());
+	} finally {
+		await handle.cleanup();
+	}
 });
 
 test("acquireLaunch materializes exactly one private prompt file with integrity and cleanup", async (t) => {

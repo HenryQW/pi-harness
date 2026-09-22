@@ -13,26 +13,36 @@ import {
 } from "@henryqw/pi-task-models";
 import {
 	capEphemeralSubagentOutput as capOutput,
-	createChildWorktree,
+	captureWorkingCheckoutBaseline,
+	captureWorkingCheckoutState,
 	createEphemeralSubagentExecutor,
 	DELEGATE_TASK,
-	DEFAULT_MAX_TURNS,
 	EphemeralSubagentError,
-	finalizeChildWorktree,
 	finalizeRoleLaunch,
 	formatDuration,
 	loadRoles,
 	prepareRoleLaunch,
-	WorktreeSetupError,
-	worktreeContextNote,
+	prepareWorkingChangeEvidence,
+	ROLE_TOOL_POLICY_FLAG,
+	sameWorkingCheckoutState,
+	sameWorkingSnapshot,
 	type EphemeralSubagentActivityEvent,
 	type EphemeralSubagentResult,
 	type EphemeralSubagentTimeout,
 	type Role,
-	type WorktreeInfo,
-	type WorktreePayload,
+	type WorkingCheckoutBaseline,
+	type WorkingCheckoutState,
 } from "@henryqw/pi-subagent";
-import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import {
+	DEFAULT_EXECUTION_POLICY,
+	DEFAULT_TIMEOUT_CONFIG,
+	readSubagentConfig,
+	resolveExecutionPolicy,
+	type EffectiveExecutionPolicy,
+	type SubagentTimeoutConfig,
+} from "./config.ts";
+import { createCheckoutAdmission, roleCanWrite } from "./admission.ts";
+import { registerIsolatedExtension } from "./isolated.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import {
 	formatBackgroundWorkflowResult,
@@ -45,10 +55,10 @@ import {
 	type WorkflowTransportEntry,
 } from "./result-transport.ts";
 import {
+	DelegateTaskSchema,
 	identifyWorkflowEntries,
-	parseWorkflow,
+	parseDelegateTask,
 	runForegroundWorkflow,
-	WorkflowSchema,
 	type Delegation,
 	type ParsedWorkflow,
 	type WorkflowEntry,
@@ -245,6 +255,7 @@ export default function subagentExtension(
 	pi: ExtensionAPI,
 	overrideTimeoutPolicy?: TimeoutPolicy,
 ): void {
+	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) return;
 	registerModelTask(pi, DELEGATE_TASK);
 	pi.registerMessageRenderer(BACKGROUND_RESULT_TYPE, (message, { expanded, outputPad }, theme) => {
 		const details = message.details as BackgroundWorkflowTransportDetails | undefined;
@@ -271,35 +282,54 @@ export default function subagentExtension(
 		].join("\n"), outputPad, 0);
 	});
 	const widgetItems = new Map<string, WidgetItem>();
-	// Each child is a full Pi process issuing its own model calls; cap parallel
-	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
-	// maxSubagents > default 5. Invalid present config falls back to the default
-	// and is reported at session start; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
-	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
-	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
-	if (maxSubagentsRaw !== undefined) {
-		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes —
-		// and digit strings that overflow to Infinity, which would disable the cap.
-		if (!/^\d+$/.test(maxSubagentsRaw) || !/^[1-9]\d*$/.test(maxSubagentsRaw)) {
-			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`));
-		}
-		const parsed = Number.parseInt(maxSubagentsRaw, 10);
-		if (!Number.isSafeInteger(parsed)) {
-			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS exceeds the supported range, got ${JSON.stringify(maxSubagentsRaw)}.`));
-		}
-		maxActiveSubagents = parsed;
+	let initialPolicy: EffectiveExecutionPolicy;
+	try {
+		initialPolicy = resolveExecutionPolicy(loadedConfig);
+	} catch {
+		initialPolicy = {
+			maxSubagents: DEFAULT_EXECUTION_POLICY.maxSubagents,
+			maxTurns: DEFAULT_EXECUTION_POLICY.maxTurns,
+			childIdleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
+			childMaxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
+			maxCorrections: DEFAULT_EXECUTION_POLICY.maxCorrections,
+		};
 	}
-	let backgroundSequence = 0;
-	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
-	// config file over defaults.
-	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
+	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? {
+		idleMs: initialPolicy.childIdleMs,
+		maxMs: initialPolicy.childMaxMs,
+	};
+	const effectiveInitialPolicy: EffectiveExecutionPolicy = {
+		...initialPolicy,
+		childIdleMs: timeoutPolicy.idleMs,
+		childMaxMs: timeoutPolicy.maxMs ?? initialPolicy.childMaxMs,
+	};
 	const executor = createEphemeralSubagentExecutor({
-		maxConcurrency: maxActiveSubagents,
-		maxTurns: loadedConfig.config.maxTurns ?? DEFAULT_MAX_TURNS,
-		maxTokens: loadedConfig.config.maxTokens,
+		maxConcurrency: effectiveInitialPolicy.maxSubagents,
+		maxTurns: effectiveInitialPolicy.maxTurns,
+		maxTokens: effectiveInitialPolicy.maxTokens,
 		timeout: timeoutPolicy,
 	});
+	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(readSubagentConfig());
+	const canWrite = (input: unknown): boolean => {
+		try {
+			const parsed = parseDelegateTask(input);
+			if (parsed.mode === "isolated") return true;
+			const roles = new Map(loadRoles().map((role) => [role.name, role]));
+			return parsed.workflow.delegations.some((delegation) => delegation.kind === "changeset"
+				|| roleCanWrite(roles.get(delegation.role) ?? { name: delegation.role } as Role));
+		} catch {
+			return true;
+		}
+	};
+	const admission = createCheckoutAdmission();
+	admission.register(pi, canWrite);
+	const isolatedSurface = registerIsolatedExtension(pi, {
+		executor,
+		policy: effectiveInitialPolicy,
+		currentPolicy,
+	});
+	let backgroundSequence = 0;
 	// Background children outlive the launching tool call, so they get their own
 	// abort signal: tied to the session, not to the turn that started them.
 	const backgroundTasks = new Map<string, { controller: AbortController; settled: Promise<void> }>();
@@ -563,38 +593,48 @@ export default function subagentExtension(
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one selected single, parallel, or chain workflow of bounded tasks to isolated Pi Subagents. Roles: ${roleSummary()}.`,
-		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
+		description: `Delegate compact direct work or a durable checked isolated graph to Pi Roles. Roles: ${roleSummary()}.`,
+		promptSnippet: "Delegate direct work or a checked isolated task graph",
 		promptGuidelines: [
-			"Use delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent tasks, or chain for 1–8 dependent tasks using {previous}. Prefer parallel whenever at least two outcomes are independently deliverable and verifiable; never split one invariant.",
-			"Each delegate_task entry needs one bounded outcome, scope and exclusions, context and constraints, deliverable, and focused validation. Discover unclear scope first; never pass the parent request unchanged. Parallel mutations need non-overlapping ownership; read-only tasks may overlap only for distinct questions. Keep integration and cross-cutting decisions in Main.",
+			"Keep trivial mechanically verifiable work in Main. Use mode direct for bounded research, analysis, review, or tightly coupled implementation. Use mode isolated for independently implementable checked changes, an exploratory candidate, or when Main must remain undisturbed; explicit mode never falls back.",
+			"Authorize outcome, scope, exclusions, local delegation/check/review/integration, and external actions once. Scoped isolation records exact checked-candidate acceptance automatically; supervised isolation waits for /subagent-accept. Ask again only for material scope change, missing authorization, user-owned conflict, or a consequential external action.",
+			"Direct requests use one compact role/name/task packet, tasks for independent packets, or chain with {previous}. Mark mutation as kind changeset and provide direct command/argv checks. Background is only for provably read-only direct work.",
+			"Isolation uses typed tasks and dependencies. Keep tightly coupled changes with one owner; do not split by file count. Failures, ambiguity, limits, and conflicts retain work and never waive checks or identity guards.",
 			`For delegate_task, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
-			"Use delegate_task background only when the user explicitly requests non-blocking work.",
 		],
-		parameters: WorkflowSchema,
+		parameters: DelegateTaskSchema,
 		prepareArguments(args) {
 			try {
-				const workflow = parseWorkflow(args);
-				if (workflow.mode === "single") return { ...workflow.delegations[0], background: workflow.background };
-				if (workflow.mode === "parallel") return { tasks: workflow.delegations, background: workflow.background };
-				return { chain: workflow.delegations, background: workflow.background };
+				const parsed = parseDelegateTask(args);
+				if (parsed.mode === "isolated") return parsed.request;
+				const workflow = parsed.workflow;
+				if (workflow.mode === "single") return { mode: "direct" as const, ...workflow.delegations[0], background: workflow.background };
+				if (workflow.mode === "parallel") return { mode: "direct" as const, tasks: workflow.delegations, background: workflow.background };
+				return { mode: "direct" as const, chain: workflow.delegations, background: workflow.background };
 			} catch (error) {
 				throw boundedError(error);
 			}
 		},
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const throwIfAborted = () => {
-				if (signal?.aborted) throw new EphemeralSubagentError("aborted", "Subagent was aborted.", signal.reason);
+			const throwIfAborted = (activeSignal = signal) => {
+				if (activeSignal?.aborted) throw new EphemeralSubagentError("aborted", "Subagent was aborted.", activeSignal.reason);
 			};
 			throwIfAborted();
 			let workflow: ParsedWorkflow;
+			let roles: Role[];
+			let policy: EffectiveExecutionPolicy;
 			try {
-				workflow = parseWorkflow(params);
-				const roles = loadRoles();
+				policy = currentPolicy();
+				const parsed = parseDelegateTask(params);
+				if (parsed.mode === "isolated") return await isolatedSurface.execute(parsed.request, signal, ctx);
+				workflow = parsed.workflow;
+				roles = loadRoles();
 				const knownRoles = new Set(roles.map(({ name }) => name));
-				for (const { role } of workflow.delegations) {
-					if (!knownRoles.has(role)) {
-						throw new Error(`Unknown Subagent role: ${role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
+				for (const delegation of workflow.delegations) {
+					for (const role of [delegation.role, delegation.judgment?.role].filter((value): value is string => value !== undefined)) {
+						if (!knownRoles.has(role)) {
+							throw new Error(`Unknown Subagent role: ${role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
+						}
 					}
 				}
 			} catch (error) {
@@ -633,6 +673,103 @@ export default function subagentExtension(
 					route: replaceRouteModel(context, delegation.model, launch),
 				});
 			};
+			const roleByName = new Map(roles.map((role) => [role.name, role]));
+			const canMutate = (delegation: Delegation): boolean => delegation.kind === "changeset"
+				|| roleCanWrite(roleByName.get(delegation.role)!);
+			const serializeWriters = workflow.delegations.some(canMutate);
+			if (workflow.background && serializeWriters) {
+				throw new Error("Background direct delegation is limited to text tasks whose Roles expose only known read-only tools and no extensions or MCP servers.");
+			}
+			const baseline: WorkingCheckoutBaseline | undefined = workflow.delegations.some(({ kind }) => kind === "changeset")
+				? await captureWorkingCheckoutBaseline(ctx.cwd, signal)
+				: undefined;
+			const directSignal = signal;
+			throwIfAborted(directSignal);
+			const maybeWorkingState = async (activeSignal: AbortSignal | undefined): Promise<WorkingCheckoutState | undefined> => {
+				try {
+					return await captureWorkingCheckoutState(ctx.cwd, activeSignal);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					if (/not a git repository|rev-parse --verify HEAD failed/i.test(message)) return undefined;
+					throw error;
+				}
+			};
+			const runDirectChecks = async (
+				checks: readonly { command: string; args: string[] }[],
+				expected: Awaited<ReturnType<typeof prepareWorkingChangeEvidence>>["identity"],
+				activeSignal: AbortSignal | undefined,
+			): Promise<void> => {
+				for (const check of checks) {
+					throwIfAborted(activeSignal);
+					const result = await pi.exec(check.command, check.args, {
+						cwd: ctx.cwd,
+						signal: activeSignal,
+						timeout: policy.childMaxMs,
+					});
+					if (result.code !== 0 || result.killed) {
+						const command = [check.command, ...check.args.map((arg) => JSON.stringify(arg))].join(" ");
+						const diagnostic = capOutput([result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n"));
+						throw new Error(`Direct check failed (${command})${result.killed ? " (killed)" : ` with exit ${result.code}`}${diagnostic ? `:\n${diagnostic}` : "."}`);
+					}
+				}
+				const after = await prepareWorkingChangeEvidence(baseline!, activeSignal);
+				try {
+					if (!sameWorkingSnapshot(expected, after.identity)) {
+						throw new Error("A direct check changed the checked working snapshot; validation is invalid and the working files were retained.");
+					}
+				} finally {
+					await after.cleanup();
+				}
+			};
+			const validateDirectChangeset = async (
+				entry: WorkflowEntry,
+				before: Awaited<ReturnType<typeof prepareWorkingChangeEvidence>>["identity"],
+				activeSignal: AbortSignal | undefined,
+			): Promise<void> => {
+				const evidence = await prepareWorkingChangeEvidence(baseline!, activeSignal);
+				try {
+					if (sameWorkingSnapshot(before, evidence.identity)) {
+						throw new Error(`Direct changeset ${entry.delegation.name} produced no working change; commits and worktrees are not accepted as direct evidence.`);
+					}
+					await runDirectChecks(entry.delegation.checks!, evidence.identity, activeSignal);
+					const judgment = entry.delegation.judgment;
+					if (!judgment) return;
+					const reviewer = reloadRole(judgment.role);
+					const prepared = prepareRoleLaunch(pi, launchCtx(), {
+						role: reviewer,
+						task: DELEGATE_TASK,
+						modelClass: judgment.modelClass,
+					});
+					const result = await executor.run({
+						signal: activeSignal,
+						prepare: async () => ({
+							launch: finalizeRoleLaunch(prepared),
+							cwd: baseline!.worktree,
+							task: [
+								"Review this exact direct working snapshot. Do not modify any file.",
+								`Patch: ${evidence.patchPath}`,
+								`Raw manifest: ${evidence.rawEvidencePath}`,
+								`Identity: ${JSON.stringify(evidence.identity)}`,
+								`Criterion: ${judgment.criterion}`,
+								"Return exactly PASS only if the supplied snapshot satisfies the criterion; otherwise return actionable findings.",
+							].join("\n"),
+						}),
+					});
+					if (result.outcome !== "success" || result.output.trim() !== "PASS") {
+						throw new Error(`Direct judgment failed: ${capOutput(result.output || result.errorMessage || result.stderr || "no verdict")}`);
+					}
+					const after = await prepareWorkingChangeEvidence(baseline!, activeSignal);
+					try {
+						if (!sameWorkingSnapshot(evidence.identity, after.identity)) {
+							throw new Error("The direct judgment changed the checked working snapshot; its verdict is invalid and the working files were retained.");
+						}
+					} finally {
+						await after.cleanup();
+					}
+				} finally {
+					await evidence.cleanup();
+				}
+			};
 			const foregroundWorkflow: ParsedWorkflow = { ...workflow, background: false };
 			const entries = identifyWorkflowEntries(toolCallId, foregroundWorkflow);
 			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
@@ -657,9 +794,9 @@ export default function subagentExtension(
 					return await runForegroundWorkflow<EphemeralSubagentResult>(toolCallId, foregroundWorkflow, async (entry: WorkflowEntry) => {
 					let model: string | undefined;
 					let thinkingLevel: string | undefined;
-					let worktree: WorktreeInfo | undefined;
-					let worktreePayload: WorktreePayload | undefined;
 					let child: EphemeralSubagentResult | undefined;
+					let beforeChangeset: Awaited<ReturnType<typeof prepareWorkingChangeEvidence>>["identity"] | undefined;
+					let beforeText: WorkingCheckoutState | undefined;
 					let rejected: unknown;
 					let rejectedUsage: Usage | undefined;
 					let aborted = false;
@@ -677,7 +814,6 @@ export default function subagentExtension(
 							role: entry.delegation.role,
 							...(model === undefined ? {} : { model }),
 							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
-							...(worktreePayload === undefined ? {} : { worktreePayload }),
 							...(usage === undefined ? {} : { usage }),
 						};
 						states.set(entry.id, nextStatus === "failed" || nextStatus === "rejected"
@@ -685,6 +821,12 @@ export default function subagentExtension(
 							: { ...base, status: nextStatus, assistantOutput: nextText });
 					};
 					try {
+						if (entry.delegation.kind === "changeset") {
+							const before = await prepareWorkingChangeEvidence(baseline!, workflowSignal);
+							try { beforeChangeset = before.identity; } finally { await before.cleanup(); }
+						} else if (canMutate(entry.delegation)) {
+							beforeText = await maybeWorkingState(workflowSignal);
+						}
 						child = await executor.run({
 							signal: workflowSignal,
 							onUpdate: (output) => {
@@ -697,18 +839,19 @@ export default function subagentExtension(
 								// Route and effective Role resources resolve only after this entry's
 								// shared executor permit, before isolated state is created.
 								const role = reloadRole(entry.delegation.role);
+								if (workflow.background && roleCanWrite(role)) {
+									throw new Error(`Role ${role.name} became writer-capable after admission; retry the direct request in the foreground.`);
+								}
 								const preparedLaunch = prepareLaunch(role, entry.delegation);
 								model = modelReference(preparedLaunch.model);
 								thinkingLevel = preparedLaunch.thinkingLevel;
-								if (preparedLaunch.isolation === "worktree") {
-									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
-								}
 								startWidgetItem(entry.id, entry.id, preparedLaunch.role, preparedLaunch.model.id, preparedLaunch.thinkingLevel, entry.delegation.name, ctx);
 								setState("running", "");
 								emitUpdate(emitToolUpdates);
-								const task = worktree ? `${entry.delegation.task}${worktreeContextNote(worktree)}` : entry.delegation.task;
-								const cwd = worktree?.cwd ?? ctx.cwd;
-								return { launch: finalizeRoleLaunch(preparedLaunch), task, cwd };
+								const boundary = entry.delegation.kind === "changeset"
+									? "\n\nDirect changeset boundary: work only in this exact checkout. Leave all changes uncommitted. Do not commit, create a branch or worktree, stash, reset, clean, push, publish, or deploy."
+									: "\n\nDirect text boundary: inspect only. Do not modify files, the Git index, HEAD, branches, or worktrees.";
+								return { launch: finalizeRoleLaunch(preparedLaunch), task: `${entry.delegation.task}${boundary}`, cwd: ctx.cwd };
 							},
 						});
 						if (child.outcome === "failure") {
@@ -717,6 +860,14 @@ export default function subagentExtension(
 						} else {
 							status = "succeeded";
 							text = child.output;
+							if (entry.delegation.kind === "changeset") {
+								await validateDirectChangeset(entry, beforeChangeset!, workflowSignal);
+							} else if (beforeText) {
+								const afterText = await maybeWorkingState(workflowSignal);
+								if (!afterText || !sameWorkingCheckoutState(beforeText, afterText)) {
+									throw new Error("A direct text task unexpectedly changed the checkout; the changes were retained and the task did not pass.");
+								}
+							}
 						}
 					} catch (error) {
 						rejected = error;
@@ -724,32 +875,7 @@ export default function subagentExtension(
 						rejectedUsage = error instanceof EphemeralSubagentError
 							? (error as EphemeralSubagentError & { usage?: Usage }).usage
 							: undefined;
-						const cause = error instanceof EphemeralSubagentError ? error.cause : error;
-						if (cause instanceof WorktreeSetupError) {
-							setupRecoveries.set(entry.id, cause.message);
-						}
 						text = capOutput(error instanceof Error ? error.message : String(error));
-					}
-					try {
-						worktreePayload = worktree ? await finalizeChildWorktree(worktree) : undefined;
-					} catch (error) {
-						rejected = error;
-						aborted = false;
-						status = "rejected";
-						text = capOutput(error instanceof Error ? error.message : String(error));
-						worktreePayload = worktree ? {
-							outcome: "recovery",
-							path: worktree.path,
-							branch: worktree.branch,
-							note: capOutput(`Worktree finalization failed (${text}); commits/dirty UNKNOWN. Inspect ${worktree.path} (branch ${worktree.branch}) before assuming no work.`),
-						} : undefined;
-					}
-					if (worktreePayload?.outcome === "recovery") {
-						const note = capOutput(worktreePayload.note);
-						worktreePayload = { ...worktreePayload, note };
-						rejected = new Error(note, rejected === undefined ? undefined : { cause: rejected });
-						status = "rejected";
-						text = capOutput(`${note}\n${text}`);
 					}
 					if (rejected !== undefined) status = "rejected";
 					setState(status, text);
@@ -765,7 +891,7 @@ export default function subagentExtension(
 						return child!.outcome === "success"
 							? { ok: true, assistantOutput: text, result: child! }
 							: { ok: false, result: child! };
-					}, workflowSignal);
+					}, workflowSignal, serializeWriters);
 				} finally {
 					if (workflow.mode === "chain" && (workflowSignal?.aborted
 						|| [...states.values()].some(({ status }) => status === "failed" || status === "rejected"))) {
@@ -794,7 +920,7 @@ export default function subagentExtension(
 				});
 			};
 
-			throwIfAborted();
+			throwIfAborted(directSignal);
 			if (workflow.background) {
 				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
 				const controller = new AbortController();
@@ -806,8 +932,11 @@ export default function subagentExtension(
 						// Let the acknowledgement resolve before any route, Skill, worktree,
 						// permit, or child work starts.
 						await new Promise<void>((resolve) => setImmediate(resolve));
+						const backgroundSignal = directSignal
+							? AbortSignal.any([controller.signal, directSignal])
+							: controller.signal;
 						try {
-							await runWorkflow(controller.signal, false);
+							await runWorkflow(backgroundSignal, false);
 						} catch (error) {
 							if (!controller.signal.aborted) recordInfrastructureFailure(error);
 						}
@@ -839,10 +968,10 @@ export default function subagentExtension(
 
 			let outcomes: Awaited<ReturnType<typeof runWorkflow>>;
 			try {
-				outcomes = await runWorkflow(signal, true);
+				outcomes = await runWorkflow(directSignal, true);
 			} catch (error) {
-				if (!signal?.aborted) throw error;
-				const aborted = new WorkflowAbortedError(workflow.mode, [...states.values()], signal.reason);
+				if (!directSignal?.aborted) throw error;
+				const aborted = new WorkflowAbortedError(workflow.mode, [...states.values()], directSignal.reason);
 				failedToolPatches.set(toolCallId, failedToolPatch(aborted));
 				throw aborted;
 			}
@@ -850,6 +979,15 @@ export default function subagentExtension(
 				const failure = new WorkflowFailureError(workflow.mode, [...states.values()]);
 				failedToolPatches.set(toolCallId, failedToolPatch(failure));
 				throw failure;
+			}
+			if (baseline) {
+				const finalEvidence = await prepareWorkingChangeEvidence(baseline, directSignal);
+				try {
+					const finalChecks = workflow.delegations.flatMap(({ kind, checks }) => kind === "changeset" ? checks! : []);
+					await runDirectChecks(finalChecks, finalEvidence.identity, directSignal);
+				} finally {
+					await finalEvidence.cleanup();
+				}
 			}
 			const result = formatWorkflowResult(workflow.mode, [...states.values()]);
 			return {

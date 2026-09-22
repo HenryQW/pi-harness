@@ -1,9 +1,9 @@
 import { isAbsolute } from "node:path";
-import { parseRoleName, type RoleName } from "@henryqw/pi-subagent";
+import { parseRoleName, type RoleName } from "./index.ts";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-export const RUN_STATE_VERSION = 5;
+export const RUN_STATE_VERSION = 4;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
@@ -64,11 +64,13 @@ const ChangesetTaskRequestSchema = Type.Object({
 export const TaskRequestSchema = Type.Union([TextTaskRequestSchema, ChangesetTaskRequestSchema]);
 
 export const ExecuteRequestSchema = Type.Object({
+	mode: Type.Literal("isolated"),
 	id: IdSchema,
 	goal: TextSchema,
 	tasks: Type.Array(TaskRequestSchema, { minItems: 1, maxItems: MAX_TASKS }),
-	finalChecks: Type.Array(CheckCommandSchema, { minItems: 1, maxItems: 32 }),
+	finalChecks: Type.Optional(Type.Array(CheckCommandSchema, { maxItems: 32 })),
 	finalJudgment: Type.Optional(JudgmentSchema),
+	approval: Type.Optional(Type.Union([Type.Literal("scoped"), Type.Literal("supervised")])),
 }, { additionalProperties: false });
 
 export const IdOnlySchema = Type.Object({ id: IdSchema }, { additionalProperties: false });
@@ -85,7 +87,20 @@ export type Judgment = Static<typeof JudgmentSchema>;
 export type TextTaskRequest = Static<typeof TextTaskRequestSchema>;
 export type ChangesetTaskRequest = Static<typeof ChangesetTaskRequestSchema>;
 export type TaskRequest = Static<typeof TaskRequestSchema>;
-export type ExecuteRequest = Static<typeof ExecuteRequestSchema>;
+type ExecuteRequestInput = Static<typeof ExecuteRequestSchema>;
+export type ExecuteRequest = Omit<ExecuteRequestInput, "finalChecks" | "approval"> & {
+	finalChecks: CheckCommand[];
+	approval: "scoped" | "supervised";
+};
+
+export interface ExecutionPolicySnapshot {
+	maxSubagents: number;
+	maxTurns: number;
+	maxTokens?: number;
+	childIdleMs: number;
+	childMaxMs: number;
+	maxCorrections: number;
+}
 export type ResumeRequest = Static<typeof ResumeRequestSchema>;
 
 export type WorkspaceIdentity = Static<typeof WorkspaceSchema>;
@@ -244,7 +259,7 @@ const WorkerTerminationSchema = Type.Object({
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
-const ReadinessSchema = Type.Object({
+const AcceptanceSchema = Type.Object({
 	candidate: WorkspaceSchema,
 	base: WorkspaceSchema,
 	at: TimestampSchema,
@@ -288,7 +303,7 @@ const TaskAttemptSchema = Type.Object({
 	candidate: Type.Optional(WorkspaceSchema),
 	candidateBase: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
-	readiness: Type.Optional(ReadinessSchema),
+	acceptance: Type.Optional(AcceptanceSchema),
 	transitions: Type.Array(RebaseTransitionSchema, { maxItems: 32 }),
 	termination: Type.Optional(WorkerTerminationSchema),
 	integrationBase: Type.Optional(WorkspaceSchema),
@@ -303,7 +318,7 @@ const ChangesetTaskStateSchema = Type.Object({
 	taskId: IdSchema,
 	kind: Type.Literal("changeset"),
 	status: Type.Union([
-		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("ready_to_integrate"),
+		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("awaiting_acceptance"), Type.Literal("ready_to_integrate"),
 		Type.Literal("integrating"), Type.Literal("cleanup"), Type.Literal("completed"), Type.Literal("needs_attention"),
 	]),
 	attempts: Type.Array(TaskAttemptSchema, { maxItems: 2 }),
@@ -351,9 +366,20 @@ const FinalGateSchema = Type.Object({
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
+const ExecutionPolicySnapshotSchema = Type.Object({
+	maxSubagents: Type.Integer({ minimum: 1 }),
+	maxTurns: Type.Integer({ minimum: 1 }),
+	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),
+	childIdleMs: Type.Number({ exclusiveMinimum: 0, maximum: 2_147_483_647 }),
+	childMaxMs: Type.Number({ exclusiveMinimum: 0, maximum: 2_147_483_647 }),
+	maxCorrections: Type.Integer({ minimum: 0 }),
+}, { additionalProperties: false });
+
 const RunStateSchema = Type.Object({
 	version: Type.Literal(RUN_STATE_VERSION),
 	request: ExecuteRequestSchema,
+	policy: ExecutionPolicySnapshotSchema,
+	correctionCount: Type.Integer({ minimum: 0 }),
 	root: TextSchema,
 	requestStartMain: WorkspaceSchema,
 	main: WorkspaceSchema,
@@ -503,20 +529,27 @@ function schemaValidationError(label: string, issues: readonly SchemaIssue[]): E
 export function parseExecuteRequest(value: unknown): ExecuteRequest {
 	if (!Check(ExecuteRequestSchema, value)) {
 		throw schemaValidationError(
-			"orchestrate_execute request must match the strict task schema",
+			"isolated delegate_task request must match the strict task schema",
 			Errors(ExecuteRequestSchema, value),
 		);
 	}
-	const input = value as ExecuteRequest;
+	const input = value as ExecuteRequestInput;
+	const tasks = input.tasks.map(normalizeTask);
+	const finalChecks = (input.finalChecks ?? []).map((check, index) => normalizeCheck(check, `finalChecks[${index}]`));
+	if (tasks.some((task) => task.kind === "changeset") && finalChecks.length === 0) {
+		throw new Error("isolated changeset graphs require at least one final check.");
+	}
 	const request: ExecuteRequest = {
 		...input,
+		mode: "isolated",
 		goal: normalizeText(input.goal, "goal"),
-		tasks: input.tasks.map(normalizeTask),
-		finalChecks: input.finalChecks.map((check, index) => normalizeCheck(check, `finalChecks[${index}]`)),
+		tasks,
+		finalChecks,
+		approval: input.approval ?? "scoped",
 		...(input.finalJudgment ? { finalJudgment: normalizeJudgment(input.finalJudgment, "finalJudgment")! } : {}),
 	};
 	if (Buffer.byteLength(JSON.stringify(request), "utf8") > MAX_EXECUTE_REQUEST_BYTES) {
-		throw new Error(`orchestrate_execute normalized request exceeds ${MAX_EXECUTE_REQUEST_BYTES} bytes.`);
+		throw new Error(`isolated delegate_task normalized request exceeds ${MAX_EXECUTE_REQUEST_BYTES} bytes.`);
 	}
 	validateGraph(request.tasks);
 	return request;
@@ -525,7 +558,7 @@ export function parseExecuteRequest(value: unknown): ExecuteRequest {
 export function parseIdOnly(value: unknown): IdOnly {
 	if (!Check(IdOnlySchema, value)) {
 		throw schemaValidationError(
-			"orchestrate request ID must match the strict v1 schema",
+			"subagent request ID must match the strict schema",
 			Errors(IdOnlySchema, value),
 		);
 	}
@@ -535,7 +568,7 @@ export function parseIdOnly(value: unknown): IdOnly {
 export function parseResumeRequest(value: unknown): ResumeRequest {
 	if (!Check(ResumeRequestSchema, value)) {
 		throw schemaValidationError(
-			"orchestrate_resume request must match one strict v1 action",
+			"subagent_resume request must match one strict action",
 			Errors(ResumeRequestSchema, value),
 		);
 	}
@@ -626,9 +659,9 @@ function requireCompletedTaskEvidence(taskState: ChangesetTaskState, request: Ch
 	if (!worktree || !hasWorktreePlan(worktree)) {
 		throw new Error(`Completed task ${request.id} lacks an exact owned worktree record.`);
 	}
-	if (!attempt?.candidate || !attempt.candidateBase || !attempt.readiness
+	if (!attempt?.candidate || !attempt.candidateBase || !attempt.acceptance
 		|| !attempt.integrationCandidate || !attempt.integrationBase) {
-		throw new Error(`Completed task ${request.id} has no ready integration candidate.`);
+		throw new Error(`Completed task ${request.id} has no accepted integration candidate.`);
 	}
 	if (attempt.termination?.status !== "terminated"
 		|| !sameIdentity(attempt.termination.candidate, attempt.integrationCandidate)) {
@@ -712,23 +745,27 @@ function validateTextTaskState(taskState: TextTaskState): void {
 export function parseRunState(value: unknown): RunState {
 	if (value && typeof value === "object" && !Array.isArray(value)
 		&& "version" in value && (value as { version?: unknown }).version !== RUN_STATE_VERSION) {
-		throw new Error(`Unsupported pi-orchestrator state version ${String((value as { version?: unknown }).version)}; expected ${RUN_STATE_VERSION}.`);
+		throw new Error(`Unsupported pi-subagent state version ${String((value as { version?: unknown }).version)}; expected ${RUN_STATE_VERSION}.`);
 	}
 	if (!Check(RunStateSchema, value)) {
 		const first = Errors(RunStateSchema, value)[0];
 		const detail = first ? ` at ${first.instancePath || "/"}: ${first.message}` : "";
-		throw new Error(`Unsupported or malformed pi-orchestrator v${RUN_STATE_VERSION} state${detail}.`);
+		throw new Error(`Unsupported or malformed pi-subagent v${RUN_STATE_VERSION} state${detail}.`);
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
-	if (state.createdAt > state.updatedAt) {
-		throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} timestamps.`);
+	if (state.createdAt > state.updatedAt || state.correctionCount > state.policy.maxCorrections) {
+		throw new Error(`Malformed pi-subagent v${RUN_STATE_VERSION} timestamps or correction policy.`);
 	}
-	if (state.tasks.length !== request.tasks.length) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task count.`);
+	const recordedCorrections = state.tasks.reduce((count, task) => count + (task.kind === "changeset"
+		? task.attempts.reduce((sum, attempt) => sum + attempt.prompts.filter((prompt) => prompt.kind === "correction").length, 0)
+		: 0), 0);
+	if (recordedCorrections !== state.correctionCount) throw new Error("Malformed pi-subagent correction count.");
+	if (state.tasks.length !== request.tasks.length) throw new Error(`Malformed pi-subagent v${RUN_STATE_VERSION} task count.`);
 	for (let index = 0; index < request.tasks.length; index += 1) {
 		const definition = request.tasks[index]!;
 		const taskState = state.tasks[index]!;
-		if (taskState.taskId !== definition.id) throw new Error(`Malformed pi-orchestrator v${RUN_STATE_VERSION} task order.`);
+		if (taskState.taskId !== definition.id) throw new Error(`Malformed pi-subagent v${RUN_STATE_VERSION} task order.`);
 		if (definition.kind === "text") {
 			if (taskState.kind !== "text") throw new Error(`Malformed task kind for ${definition.id}.`);
 			validateTextTaskState(taskState);
@@ -751,12 +788,12 @@ export function parseRunState(value: unknown): RunState {
 			if (attempt.candidate && (!isCleanCommitted(attempt.candidate) || !isCleanCommitted(attempt.candidateBase!))) {
 				throw new Error(`Candidate lineage for ${definition.id} must be clean and committed.`);
 			}
-			if (attempt.readiness) {
+			if (attempt.acceptance) {
 				if (!attempt.candidate || !attempt.candidateBase
-					|| !sameIdentity(attempt.readiness.candidate, attempt.candidate)
-					|| !sameIdentity(attempt.readiness.base, attempt.candidateBase)
+					|| !sameIdentity(attempt.acceptance.candidate, attempt.candidate)
+					|| !sameIdentity(attempt.acceptance.base, attempt.candidateBase)
 					|| !checkBatchPasses(attempt.preliminaryChecks, definition.checks, attempt.candidate)) {
-					throw new Error(`Readiness for ${definition.id} does not match exact passing preliminary evidence.`);
+					throw new Error(`Acceptance for ${definition.id} does not match exact passing preliminary evidence.`);
 				}
 			}
 			for (let transitionIndex = 0; transitionIndex < attempt.transitions.length; transitionIndex += 1) {
@@ -777,18 +814,18 @@ export function parseRunState(value: unknown): RunState {
 			if ((attempt.integrationBase === undefined) !== (attempt.integrationCandidate === undefined)) {
 				throw new Error(`Integration lineage for ${definition.id} must be recorded together.`);
 			}
-			if (attempt.readiness) {
-				let base = attempt.readiness.base;
-				let candidate = attempt.readiness.candidate;
-				const readyTransitions = attempt.transitions.filter(({ at }) => at > attempt.readiness!.at);
-				for (let transitionIndex = 0; transitionIndex < readyTransitions.length; transitionIndex += 1) {
-					const transition = readyTransitions[transitionIndex]!;
+			if (attempt.acceptance) {
+				let base = attempt.acceptance.base;
+				let candidate = attempt.acceptance.candidate;
+				const acceptedTransitions = attempt.transitions.filter(({ at }) => at > attempt.acceptance!.at);
+				for (let transitionIndex = 0; transitionIndex < acceptedTransitions.length; transitionIndex += 1) {
+					const transition = acceptedTransitions[transitionIndex]!;
 					if (!sameIdentity(transition.sourceBase, base) || !sameIdentity(transition.from, candidate)) {
-						throw new Error(`Ready rebase transition ${transitionIndex + 1} for ${definition.id} breaks exact lineage.`);
+						throw new Error(`Accepted rebase transition ${transitionIndex + 1} for ${definition.id} breaks exact lineage.`);
 					}
 					if (transition.status !== "rebased" || !transition.to) {
-						if (transitionIndex !== readyTransitions.length - 1) {
-							throw new Error(`Unresolved rebase transition for ${definition.id} is not the latest ready transition.`);
+						if (transitionIndex !== acceptedTransitions.length - 1) {
+							throw new Error(`Unresolved rebase transition for ${definition.id} is not the latest accepted transition.`);
 						}
 						break;
 					}
@@ -796,18 +833,18 @@ export function parseRunState(value: unknown): RunState {
 					candidate = transition.to;
 				}
 				if (attempt.integrationBase && attempt.integrationCandidate
-					&& (!readyTransitions.length
+					&& (!acceptedTransitions.length
 						|| !sameIdentity(attempt.integrationBase, base) || !sameIdentity(attempt.integrationCandidate, candidate))) {
-					throw new Error(`Integration candidate for ${definition.id} does not match its exact ready rebase lineage.`);
+					throw new Error(`Integration candidate for ${definition.id} does not match its exact accepted rebase lineage.`);
 				}
 			}
 			if (attempt.integration) {
 				const integration = attempt.integration;
-				const readyTransitions = attempt.readiness
-					? attempt.transitions.filter(({ at }) => at > attempt.readiness!.at)
+				const acceptedTransitions = attempt.acceptance
+					? attempt.transitions.filter(({ at }) => at > attempt.acceptance!.at)
 					: [];
-				const finalTransition = readyTransitions.at(-1);
-				if (!attempt.readiness || !attempt.integrationBase || !attempt.integrationCandidate
+				const finalTransition = acceptedTransitions.at(-1);
+				if (!attempt.acceptance || !attempt.integrationBase || !attempt.integrationCandidate
 					|| finalTransition?.status !== "rebased" || !finalTransition.to
 					|| !sameIdentity(finalTransition.onto, attempt.integrationBase)
 					|| !sameIdentity(finalTransition.to, attempt.integrationCandidate)
@@ -1027,7 +1064,7 @@ export function parseRunState(value: unknown): RunState {
 	}
 	if (state.accepted) {
 		if (state.status !== "completed" || state.final.status !== "passed" || state.tasks.some((task) => task.status !== "completed")) {
-			throw new Error(`Malformed accepted pi-orchestrator v${RUN_STATE_VERSION} state.`);
+			throw new Error(`Malformed accepted pi-subagent v${RUN_STATE_VERSION} state.`);
 		}
 		if (!state.final.identity || !isCleanCommitted(state.final.identity)) {
 			throw new Error("Accepted request lacks a clean final identity.");

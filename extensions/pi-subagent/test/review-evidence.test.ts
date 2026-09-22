@@ -270,6 +270,6 @@ test("loadBuiltinRole bypasses same-name user overrides", async (t) => {
 	await writeFile(join(rolesDir, "implementer.md"), "---\nname: implementer\ndescription: override\ntools: []\nextensions: []\nskills: []\n---\nOverride.\n");
 
 	assert.equal(loadRoles(agentDir).find((role) => role.name === "implementer")!.description, "override");
-	assert.equal(loadBuiltinRole("implementer").description, "Implements and validates one bounded change, requesting worktree isolation");
+	assert.equal(loadBuiltinRole("implementer").description, "Implements and validates one bounded change in the checkout selected by Main");
 	assert.equal(loadBuiltinRole("reviewer").name, "reviewer");
 });

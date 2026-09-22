@@ -4,7 +4,7 @@ import test from "node:test";
 import {
 	DelegationSchema,
 	MAX_WORKFLOW_ENTRIES,
-	parseWorkflow,
+	parseWorkflow as parseDirectWorkflow,
 	runForegroundWorkflow,
 	WorkflowSchema,
 	type DelegationExecution,
@@ -12,7 +12,10 @@ import {
 import { TASK_NAME_CONTRACT } from "../extensions/task-name.ts";
 import { DISPLAY_TEXT_CONTRACT } from "../src/index.ts";
 
-const delegation = (task = "work") => ({ role: "worker", name: "Test work", task });
+const delegation = (task = "work") => ({ role: "worker", name: "Test work", task, kind: "text" as const });
+const parseWorkflow = (value: unknown) => parseDirectWorkflow(
+	value && typeof value === "object" && !Array.isArray(value) ? { mode: "direct", ...value } : value,
+);
 const succeeded = <T>(assistantOutput: string, result: T): DelegationExecution<T> => ({ ok: true, assistantOutput, result });
 const failed = <T>(result: T): DelegationExecution<T> => ({ ok: false, result });
 
@@ -27,6 +30,7 @@ function deferred<T>() {
 }
 
 test("schemas expose strict delegation fields and top-level workflow modes", () => {
+	assert.throws(() => parseDirectWorkflow(delegation()), /required properties mode/);
 	const delegationSchema = DelegationSchema as any;
 	const workflowSchema = WorkflowSchema as any;
 	assert.equal(delegationSchema.additionalProperties, false);
@@ -59,6 +63,7 @@ test("parses and normalizes each explicit workflow mode", () => {
 		background: true,
 		delegations: [{
 			role: "worker",
+			kind: "text",
 			name: "Inspect auth flow",
 			task: "inspect",
 			model: "provider/model",
@@ -127,7 +132,7 @@ test("rejects every workflow shape boundary at runtime", () => {
 		{ tasks: [delegation()], chain: [delegation()] },
 		{ ...delegation(), tasks: [delegation()], chain: [delegation()] },
 	]) {
-		assert.throws(() => parseWorkflow(value), /exactly one mode/);
+		assert.throws(() => parseWorkflow(value), /exactly one/);
 	}
 	for (const value of [{ role: "worker" }, { name: "Test work" }, { task: "work" }, { model: "provider/model" }, { role: "worker", task: "work" }]) {
 		assert.throws(() => parseWorkflow(value), /requires role, name, and task/);

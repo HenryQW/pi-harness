@@ -1,8 +1,6 @@
 # `@henryqw/pi-subagent`
 
-Delegate bounded work from Main to isolated Pi Roles. `delegate_task` remains lightweight generic delegation. It does not own durable checked implementation graphs.
-
-The public API also supplies Role launch, executor, worktree, and exact-evidence support for packages such as `@henryqw/pi-orchestrator`.
+Delegate work to configured Pi Roles with one tool. Use direct mode for compact work in the current checkout. Use isolated mode for durable checked task graphs in Herdr worktrees.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
 
@@ -13,205 +11,186 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
-Run `/task-models` and configure the `fast` profile before delegating. Open `/task-models` again and verify that `fast` no longer says `not configured`.
+Isolated changeset tasks require Herdr `0.9.0` or newer. Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use.
 
-Install `pi-mcp-adapter` when any Role declares an MCP server allowlist:
+Install `pi-mcp-adapter` only when a Role declares an MCP server allowlist:
 
 ```bash
 pi install npm:pi-mcp-adapter
 ```
 
-## Works with
+## Choose a mode
 
-| Package | Relationship | Purpose |
+Every `delegate_task` call declares its mode. The extension never falls back between modes.
+
+| Mode | Use it for | Checkout behavior |
 | --- | --- | --- |
-| [`@henryqw/pi-orchestrator`](https://pi.henry.wang/extensions/pi-orchestrator) | Consumer | Owns durable checked local implementation graphs. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Supplies `fast`, `balanced`, `frontier`, and `fav` model routes. |
-| [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs bounded captured Git commands. |
-| [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) | Optional | Exposes only the MCP servers selected by a Role. |
+| `direct` | Bounded research, analysis, review, or tightly coupled implementation | Runs in Main's current checkout. Changes remain uncommitted. |
+| `isolated` | Independently implementable checked changes, exploratory candidates, or work that must not disturb Main | Runs each changeset in an owned Herdr worktree and integrates only exact accepted evidence. |
 
-Routes come from `~/.pi/agent/config/pi-task-models/config.json`. It stores explicit task overrides. Missing shared model config warns once because delegation needs a route.
+Keep trivial mechanically verifiable work in Main. Keep tightly coupled changes under one owner rather than splitting by file count.
 
-## Use
+## Direct delegation
 
-Start with one read-only delegation:
+A read-only task:
 
 ```json
 {
+  "mode": "direct",
   "role": "scout",
   "name": "Map sign-in flow",
-  "task": "Trace the sign-in request from entry point to session creation. Report the relevant files and unresolved risks. Do not edit files."
+  "task": "Trace sign-in through session creation. Report files and risks. Do not edit files."
 }
 ```
 
-A separate child returns a bounded report to Main. It creates no saved Pi session and makes model requests through the selected route.
+A checked implementation:
 
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `delegate_task` | tool | Run one bounded task, independent tasks in parallel, or dependent tasks in a chain. |
-
-Pi's built-in tool block shows each call and result.
-
-Select exactly one `delegate_task` shape:
-
-```text
-// Single
-{ role, name, task, model?, modelClass?, background? }
-
-// Parallel: 1–8 independent tasks
-{ tasks: [{ role, name, task, model?, modelClass? }], background? }
-
-// Chain: 1–8 dependent tasks
-{ chain: [{ role, name, task, model?, modelClass? }], background? }
+```json
+{
+  "mode": "direct",
+  "role": "implementer",
+  "name": "Fix token refresh",
+  "task": "Fix the localized refresh regression. Leave the change uncommitted.",
+  "kind": "changeset",
+  "checks": [
+    { "command": "pnpm", "args": ["test", "--", "refresh"] }
+  ],
+  "judgment": {
+    "role": "reviewer",
+    "modelClass": "balanced",
+    "criterion": "The exact working snapshot fixes refresh without widening scope."
+  }
+}
 ```
 
-Main supplies each `name`. It must be a short description, about five words and fewer than 30 characters. Names cannot contain C0/C1 control characters such as newlines or terminal escapes. `role` and an explicit `model` also reject those controls.
+Direct mode selects exactly one shape:
 
-`modelClass` selects `fast`, `balanced`, `frontier`, or `fav`. An explicit call class wins over a Role class. Without either, the configured task assignment or declared default applies. The route sets the model and exact thinking level.
+```text
+Single:   { mode: "direct", role, name, task, ... }
+Parallel: { mode: "direct", tasks: [{ role, name, task, ... }], background? }
+Chain:    { mode: "direct", chain: [{ role, name, task, ... }], background? }
+```
 
-An explicit `model` (`provider/modelId`) replaces only the route model and must support that thinking level. `background` applies to the whole selected mode, never one entry.
+Each entry defaults to `kind: "text"`. A `changeset` requires at least one exact command/argv check. Optional judgment receives private evidence for the exact working snapshot and must return `PASS`.
 
-Parallel tasks start together, settle together, and report in input order. Chains are sequential and fail at the first failure. `{previous}` passes only the immediately preceding successful assistant output.
+Parallel entries report in input order. Writer-capable entries are serialized because they share Main's checkout. Chains replace each literal `{previous}` with only the preceding successful assistant output and stop on failure.
 
-Foreground failures throw after keeping bounded sibling and recovery evidence. One call has one aggregate 50 KiB cap for Main-visible text. Final results show summaries first and full evidence below.
+Background mode is available only for Roles proven read-only from their declared resources. It belongs to the launching session; shutdown aborts unfinished work. Direct text tasks fail if they mutate the checkout. Checked direct work rejects pre-existing or drifting evidence instead of changing the real index, committing, stashing, resetting, or cleaning files.
 
-The status widget shows each task group name above at most three indented child rows. Each row shows a one-letter Role badge, status, activity, usage, and duration.
+## Isolated checked graphs
 
-Background work belongs to its launching session. Shutdown or reload aborts it and may leave only recoverable-work evidence or no follow-up message.
+An isolated request has one durable ID, one goal, and 1–8 typed tasks:
 
-Each entry resolves its own Role, resources, route, and optional isolation. A Role with `isolation: worktree` gets a separate deterministic worktree when available. Non-Git and unborn-`HEAD` contexts can use Main's directory. Other setup failures, including unsafe submodule layouts, reject instead of falling back. Siblings and chain steps never share a created worktree.
+```json
+{
+  "mode": "isolated",
+  "id": "refresh-repair",
+  "goal": "Repair token refresh with exact checked evidence.",
+  "approval": "scoped",
+  "tasks": [
+    {
+      "id": "inspect",
+      "kind": "text",
+      "role": "scout",
+      "modelClass": "fast",
+      "requirements": "Identify the refresh failure and relevant tests.",
+      "deliverable": "A concise evidence report.",
+      "dependsOn": [],
+      "contextFrom": []
+    },
+    {
+      "id": "repair",
+      "kind": "changeset",
+      "role": "implementer",
+      "modelClass": "balanced",
+      "requirements": "Implement the smallest correct repair.",
+      "deliverable": "A committed candidate in the owned worktree.",
+      "dependsOn": ["inspect"],
+      "contextFrom": ["inspect"],
+      "checks": [
+        { "command": "pnpm", "args": ["test", "--", "refresh"] }
+      ],
+      "judgment": {
+        "role": "reviewer",
+        "modelClass": "balanced",
+        "criterion": "The exact candidate fixes refresh and preserves unrelated behavior."
+      }
+    }
+  ],
+  "finalChecks": [
+    { "command": "pnpm", "args": ["test", "--", "refresh"] }
+  ]
+}
+```
 
-See the [orchestration guide](./docs/orchestration.md) for full delegation, transport, isolation, and UI behavior.
+`dependsOn` controls scheduling. `contextFrom` may name completed text tasks and preserves the declared order. Changesets require task checks. A graph with a changeset requires final checks. Checks and judgments bind to exact Git identities; candidate drift, Main drift, mutation during validation, ambiguity, or conflicts stop integration and retain evidence.
 
-### Delegation guidance
+`approval: "scoped"` is the default. It records acceptance of the exact preliminary checked candidate and continues automatically. Use `"supervised"` only when the user requested an explicit checkpoint:
 
-`delegate_task` is generic delegation, not checked implementation orchestration. Main or a consuming package owns validation, review, integration, recovery, and durable state.
+```text
+/subagent-followup <request-id> <task-id> <instruction>
+/subagent-accept <request-id> <task-id>
+```
 
-Implementers remove only task-created temporary, generated, or ignored artifacts. Required deliverables and unrelated files stay intact. They never use `git clean` or blanket deletion, and unclear paths block.
+The same worker is retained for follow-up or the one configured correction. Acceptance is invalidated whenever the candidate changes.
 
-For known regressions with a runner that supports test-name filtering, use a test-name filter. Keep broad package or workspace checks to one caller-owned final validation after relevant changes integrate. Generic delegation does not run that check.
+### Recovery tools
 
-Before delegating:
+| Surface | Purpose |
+| --- | --- |
+| `subagent_status` | Read durable state and the exact allowed continuation without replaying work. |
+| `subagent_resume` | Perform that explicit `retry`, `verify`, or `finalize` continuation. |
+| `subagent_abort` | Terminate exactly owned workers and abort an unfinished request. |
 
-- Keep trivial, single-owner, mechanically verifiable edits in Main.
-- For literal UI or copy defects, search the exact text first. Read only its producer and nearby assertions unless ownership remains unclear.
-- Find concrete outcomes that can ship on their own.
-- Split only those outcomes. Give each one owner and a focused check.
-- Run independent work in parallel.
-- Prefer parallel delegation when at least two outcomes are independent.
-- Use only as many units as independent outcomes require. Never create units to reach a count.
+Productive requests have no whole-run wall-clock deadline. Resume does not reset the recorded policy or correction count. Child limits, abort signals, process I/O, status inspection, exact termination, and cleanup retain finite safety bounds.
 
-Its ordinary review loop is optional. Use it only when the caller or repository policy explicitly requires judgment review.
-
-- Call `delegate_task` with `role: "reviewer"` to select the effective `reviewer` Role.
-- Its task packet must state the read-only scope and exact `PASS` or findings contract. Include exact acceptance criteria and validation evidence.
-- The Reviewer must receive exact candidate evidence. An ordinary review from Main's unchanged checkout cannot inspect an isolated candidate.
-- Fix initial findings together. Validate repaired inputs once before focused re-review. Include the original findings and acceptance criteria, exact repaired-candidate evidence, and validation evidence.
-- Only `PASS` completes the loop. Surface and block on re-review findings or empty output. Retry empty output only when explicit caller policy requires one. A second empty result blocks. Do not add another round.
-
-A Role selects base tools, extensions, named Skills, MCP servers, instructions, and optional worktree isolation. Named Skills resolve from Main's effective Pi registry. Unavailable names warn and skip.
-
-Use `mcps` to allow configured MCP servers by exact name. An omitted or empty `mcps` list denies MCP access. Every tool exposed by an allowed server is available through `pi-mcp-adapter`.
-
-The adapter receives an isolated in-memory config containing only those servers. Unknown names fail before the first model turn. Loading `pi-mcp-adapter` directly through `extensions` is rejected because it would bypass the allowlist.
-
-Children disable ambient extension and Skill discovery. `tools: []` adds no base tools, but selected extension tools and caller tools still activate. `extensions: []` adds no Role extension bundle. `skills: []` adds no separately named Role Skills, but selected extension Skills still load.
-
-Main-only delegation and orchestration tools, plus `ask_question`, are always excluded. Requested Role or caller tool names are checked after provider loading. Unavailable tools fail before the first model turn.
+The extension never pushes, opens a pull request, publishes, deploys, force-cleans recoverable work, or silently falls back to Main.
 
 ## Config
 
-pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. It is optional. A missing file uses these defaults without a warning.
+pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. A missing file silently uses defaults.
 
-| Name | Description | Values | Default |
-| --- | --- | --- | --- |
-| `maxSubagents` | Sets the maximum number of active child processes. | Safe integer of at least 1. | `5` |
-| `maxTurns` | Sets the hard provider-turn limit for each child. | Safe integer of at least 1. | `50` |
-| `maxTokens` | Sets the token limit for each child. | Safe integer of at least 1. | Unlimited |
-| `timeout.idleMinutes` | Sets the idle timeout for a child. | Positive minutes; minutes × 60,000 ≤ 2,147,483,647 ms | `10` |
-| `timeout.maxMinutes` | Sets the maximum runtime for a child. | Positive minutes greater than `idleMinutes`; minutes × 60,000 ≤ 2,147,483,647 ms | `30` |
+| Name | Contract | Default |
+| --- | --- | --- |
+| `maxSubagents` | Active child-process limit; safe integer ≥ 1 | `5` |
+| `maxTurns` | Provider-turn limit per child; safe integer ≥ 1 | `50` |
+| `maxTokens` | Optional token limit per child; safe integer ≥ 1 | Unlimited |
+| `maxCorrections` | Same-worker automatic corrections per isolated request; safe integer ≥ 0 | `1` |
+| `timeout.idleMinutes` | Child idle timeout; positive and within Node's timer range | `10` |
+| `timeout.maxMinutes` | Child hard runtime; greater than idle and within Node's timer range | `30` |
 
-`maxTokens` applies separately to every child. It is not a shared pool or per-call option. Set it only in this file.
+Limits come only from this global file. Request fields cannot override or replenish them. Existing durable requests keep their recorded policy, while a lower current correction limit can tighten recovery. There is intentionally no whole-run timeout setting.
 
-Pi adds each completed assistant response's `Usage.totalTokens` once. This matches the executor's aggregate `Usage`. At 80%, a Role receives one convergence warning.
+Malformed or unreadable JSON, unknown keys, and invalid values block delegation with one actionable warning. The file is preserved and never rewritten automatically.
 
-A terminal response that crosses `maxTokens` succeeds. A continuing crossing turn completes its tools. Pi then disables tools and allows one response-only handoff. That handoff can overshoot the limit, so `maxTokens` is not an exact cap. Further continuation rejects with `token_limit`, aggregate `Usage`, and bounded last output.
+## Roles
 
-Excess children wait FIFO without using a child timeout. A terminal response on turn 50 succeeds; an attempted continuation rejects with `turn_limit`.
-
-### Final response handoff
-
-Role launches reserve a response-only handoff at a continuing `maxTokens` crossing or the penultimate `maxTurns` turn. This includes `delegate_task` and Role launches made through the public API.
-
-With `maxTurns` set to 1, Pi disables tools at startup. The sole provider turn is the response-only handoff.
-
-Pi waits for the current turn's tools. It then disables all tools and requests a final report. A terminal boundary response gets no handoff.
-
-The fixed decision packet asks for Status (completed, blocked, or incomplete), one-sentence Outcome, up to three concrete Evidence facts, Blocker, one material Risk, and one Suggested next action. It is the default. Exact output required by the assigned task or Role takes precedence. The child returns only that caller-required exact output, such as structured JSON or `PASS`. The handoff stays within `maxTurns`, but it is the one allowed turn after a token crossing. Structured executor and retained-worktree facts remain authoritative; the model handoff supplies semantic context and a suggested next action.
-
-A raw `createEphemeralSubagentExecutor` launch can enforce the extra-turn window. It cannot guarantee disabled tools or the final handoff. A timeout, provider failure, or child-process failure can also end a Role launch before handoff.
-
-Malformed or unreadable JSON, a non-object root, unknown keys, and invalid values produce one warning. Invalid settings use defaults while valid settings still apply. If the effective maximum is not greater than the idle timeout, both timeout settings use defaults. The file is never rewritten.
-
-`PI_SUBAGENT_MAX_SUBAGENTS` overrides `maxSubagents` for the session. It must be a positive integer. An invalid value prevents the extension from loading, so `delegate_task` is unavailable.
-
-### Roles
-
-Role Markdown files live beside the config file. They require frontmatter and a Markdown system prompt body.
+Role Markdown lives in `~/.pi/agent/config/pi-subagent/` and requires frontmatter plus a Markdown system prompt.
 
 | Field | Requirement |
 | --- | --- |
-| `name` | Required unique, non-empty text without C0/C1 controls. |
-| `description` | Required non-empty text without C0/C1 controls. |
-| `modelClass` | Optional; `fast`, `balanced`, `frontier`, or `fav`. |
-| `tools` | Required YAML array of non-empty tool names. `[]` selects no base built-ins. |
-| `isolation` | Optional; only `worktree`. |
-| `extensions` | Required YAML array. Entries are absolute paths, `~/…`, `file://`, or `npm:`, `git:`, `github:`, `https?:`, or `ssh:` sources. |
-| `skills` | Required YAML array of non-empty Skill names. |
-| `mcps` | Optional YAML array of exact MCP server names. Omitted or `[]` denies MCP access. |
-| body | Required Markdown system prompt after the frontmatter. |
+| `name`, `description` | Required non-empty text without terminal control characters |
+| `modelClass` | Optional `fast`, `balanced`, `frontier`, or `fav` default |
+| `tools` | Required array of base tool names; `[]` selects none |
+| `extensions` | Required array of trusted absolute paths or supported package sources |
+| `skills` | Required array of effective Pi Skill names |
+| `mcps` | Optional exact MCP server names; omitted or `[]` denies MCP access |
+| body | Required system instructions |
 
-A Role's `modelClass` is a default. A call-level class wins.
+Roles describe responsibility and capabilities. They do not choose isolation; each request does. A same-named user Role overrides a built-in Role. The package ships `implementer`, `reviewer`, and `scout`.
 
-An unreadable or invalid Role fails loading fast. Duplicate Role names are rejected. A same-named user file overrides a built-in Role.
+Children disable ambient extension and Skill discovery. Only declared resources and required internal policy adapters load. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. Main-only delegation and recovery tools plus `ask_question` are excluded from children.
 
-A missing named Skill rejects `prepareRoleLaunch` and `resolveConfiguredRoleLaunch`. `delegate_task` returns a Role-specific workflow error and does not start a child.
+## Public API
 
-The package always provides these built-in Roles. Their files leave `modelClass` unset, so they use the configured `pi-subagent/delegateTask` assignment or declared default unless a call overrides it:
+The package root exports the Role loader and launch APIs, the FIFO ephemeral executor, child-worktree helpers, exact review and working-change evidence helpers, checked isolated schemas, runtimes, and runner types.
 
-| Role | Purpose | Isolation/use |
-| --- | --- | --- |
-| `implementer` | Make and validate one focused change. | Requests a worktree; commits scoped work locally. Never pushes or opens a PR without permission. |
-| `reviewer` | Review supplied plans, files, or caller-prepared exact evidence. | Read-only; never edits or commits. |
-| `scout` | Map code and evidence for one bounded task. | Read-only; never changes files. |
+`createEphemeralSubagentExecutor` accepts global concurrency, turn/token, idle, and hard-runtime policy. Queued time consumes no child timeout. A run resolves resources only after receiving its permit and accepts abort, output, token, and activity callbacks. Output and diagnostics are bounded.
 
-## API
+See [Orchestration and package-author API](./docs/orchestration.md) for the detailed contracts and recovery model.
 
-The package root includes these main exports:
+## Safety
 
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `loadRoles` | function | Loads built-in and user Role definitions. |
-| `RoleName` / `parseRoleName` | type/function | Normalizes arbitrary Role names and rejects empty or C0/C1 control-character values. |
-| `resolveRoleSkills` | function | Resolves a Role's named Skills from Pi's effective registry. |
-| `resolveRoleLaunch` | function | Resolves a Role, route, and launch resources. |
-| `resolveConfiguredRoleLaunch` | function | Resolves a configured Role and its package resources with an explicit model class. Rejects missing Role Skills. |
-| `createRoleLaunch` | function | Builds launch arguments from a resolved route. |
-| `prepareRoleLaunch` / `finalizeRoleLaunch` | functions | Separates the stable Role prompt, exposes its immutable tool policy, and rejects missing Role Skills. |
-| `createEphemeralSubagentExecutor` | function | Creates the bounded child-process executor. |
-| Worktree helpers | functions | Create, inspect, finalize, and report child worktrees. |
-| `prepareExactReviewEvidence` | function | Create a bounded private base-to-tip patch with exact Git identity for caller-owned review. |
+Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. The checkout coordinator reduces races among Pi-owned calls but cannot control unrelated external processes.
 
-The executor works only inside the active Pi process. It does not discover or start a standalone Node.js Pi installation. Library callers may pass `timeout.maxMs: null` to disable maximum elapsed runtime while retaining idle timeout, turn/token limits and cancellation. This does not change `delegate_task`'s configured timeout defaults.
-
-`finalizeChildWorktree` returns the breaking `WorktreePayload` lifecycle union. `pruned` proves zero commits, a clean tree, and removed worktree and branch. `retained` contains measured `commits` and `dirty` values. `recovery` has an actionable `note` and only completed measurements. An omitted recovery measurement is unknown.
-
-See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for contracts and a `prepare` example. Pass `modelClass` to `resolveRoleLaunch` to override a Role default. `resolveConfiguredRoleLaunch` requires a model class and does not use Role or task defaults.
-
-## Limits and recovery
-
-An explicitly selected extension is trusted, not sandboxed. Its tools, Skills, and executable behavior load together. Select fewer trusted extensions to reduce scope. pi-subagent does not guess or remove undocumented dependencies.
-
-Worktree cleanup never force-deletes recoverable work. Retained and recovery payloads report the worktree path and branch.
-
-See the [public Role and executor API](./docs/orchestration.md#public-role-and-executor-api) for worktree and exact-review-evidence contracts.
+Durable state is private under `config/pi-subagent/state/`. Malformed or older state is rejected rather than migrated silently. Retained-work reports identify exact resources for deliberate recovery.

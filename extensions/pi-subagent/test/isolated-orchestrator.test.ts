@@ -7,12 +7,12 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import {
-	createOrchestratorComponents,
-	registerOrchestratorExtension,
+	createIsolatedComponents,
+	registerIsolatedExtension,
 	workspaceWidgetLines,
-	type CreateOrchestratorComponents,
-	type OrchestratorExtensionComponents,
-} from "../extensions/orchestrator.ts";
+	type CreateIsolatedComponents,
+	type IsolatedExtensionComponents,
+} from "../extensions/isolated.ts";
 import type { OperationContext, RunResponse } from "../src/runner.ts";
 import {
 	ExecuteRequestSchema,
@@ -39,11 +39,19 @@ const CURRENT_MAIN = {
 	index: "b".repeat(40),
 	tree: "b".repeat(40),
 };
+const POLICY = {
+	maxSubagents: 5,
+	maxTurns: 50,
+	childIdleMs: 600_000,
+	childMaxMs: 1_800_000,
+	maxCorrections: 1,
+};
 
 const EXECUTE_REQUEST: ExecuteRequest = {
 	id: "request-one",
 	goal: "Deliver checked work.",
-
+	mode: "isolated",
+		approval: "scoped",
 	tasks: [{
 		id: "unit-one",
 		kind: "changeset",
@@ -77,7 +85,7 @@ const PRIVATE_STATE = {
 				worktree: {
 					path: "/tmp/pi-task",
 					cwd: "/tmp/pi-task",
-					branch: "orchestrator/unit-one",
+					branch: "subagent/unit-one",
 					repoRoot: CANONICAL_ROOT,
 					baseCommit: "a".repeat(40),
 				},
@@ -152,6 +160,7 @@ interface Harness {
 	rootCalls: Array<{ cwd: string; context: OperationContext }>;
 	getComponentCreations(): number;
 	getRoleContext(): ExtensionContext;
+	getInteractiveWait(): (requestId: string, taskId: string) => void;
 	getStateSaved(): (state: RunState) => void;
 }
 
@@ -164,10 +173,10 @@ function response(method: string, continuation = false, state: RunState = PRIVAT
 }
 
 function createHarness(options: {
-	runner?: OrchestratorExtensionComponents["runner"];
-	resolveRoot?: OrchestratorExtensionComponents["resolveRoot"];
+	runner?: IsolatedExtensionComponents["runner"];
+	resolveRoot?: IsolatedExtensionComponents["resolveRoot"];
 	responseState?: RunState;
-	onCreate?: (options: Parameters<CreateOrchestratorComponents>[0]) => void;
+	onCreate?: (options: Parameters<CreateIsolatedComponents>[0]) => void;
 } = {}): Harness {
 	const tools: RegisteredTool[] = [];
 	const commands = new Map<string, RegisteredCommand>();
@@ -175,7 +184,7 @@ function createHarness(options: {
 	const runnerCalls: RunnerCall[] = [];
 	const rootCalls: Array<{ cwd: string; context: OperationContext }> = [];
 	let componentCreations = 0;
-	let componentOptions: Parameters<CreateOrchestratorComponents>[0] | undefined;
+	let componentOptions: Parameters<CreateIsolatedComponents>[0] | undefined;
 
 	const pi = {
 		on(name: string, handler: EventHandler) {
@@ -213,9 +222,13 @@ function createHarness(options: {
 			runnerCalls.push({ method: "queueFollowup", args });
 			return "follow-up queued";
 		},
-	} as unknown as OrchestratorExtensionComponents["runner"];
+		acceptCandidate(...args: unknown[]) {
+			runnerCalls.push({ method: "acceptCandidate", args });
+			return "acceptance queued";
+		},
+	} as unknown as IsolatedExtensionComponents["runner"];
 
-	const createComponents: CreateOrchestratorComponents = (createdOptions) => {
+	const createComponents: CreateIsolatedComponents = (createdOptions) => {
 		componentCreations += 1;
 		componentOptions = createdOptions;
 		options.onCreate?.(createdOptions);
@@ -227,7 +240,18 @@ function createHarness(options: {
 			}),
 		};
 	};
-	registerOrchestratorExtension(pi, createComponents);
+	const isolated = registerIsolatedExtension(pi, {
+		executor: {} as never,
+		policy: POLICY,
+		currentPolicy: () => POLICY,
+		componentsFactory: createComponents,
+	});
+	tools.unshift({
+		name: "delegate_task",
+		parameters: ExecuteRequestSchema,
+		prepareArguments: parseExecuteRequest,
+		execute: async (_toolCallId, params, signal, _onUpdate, ctx) => await isolated.execute(params, signal, ctx),
+	});
 
 	return {
 		pi,
@@ -238,6 +262,7 @@ function createHarness(options: {
 		rootCalls,
 		getComponentCreations: () => componentCreations,
 		getRoleContext: () => componentOptions!.context(),
+		getInteractiveWait: () => componentOptions!.onInteractiveWait,
 		getStateSaved: () => componentOptions!.onStateSaved,
 	};
 }
@@ -270,7 +295,7 @@ function expectedPublicState() {
 			retainedWorktree: {
 				path: "/tmp/pi-task",
 				cwd: "/tmp/pi-task",
-				branch: "orchestrator/unit-one",
+				branch: "subagent/unit-one",
 			},
 			failedCheck: {
 				phase: "preliminary",
@@ -366,11 +391,11 @@ test("status restores active workspace rows and provides the non-TUI fallback", 
 	harness.handlers.get("session_start")!({}, tuiContext);
 	assert.equal(widgets.at(-1), undefined);
 
-	await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, undefined, tuiContext);
+	await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, undefined, tuiContext);
 	assert.deepEqual(widgets.at(-1), workspaceWidgetLines(state));
 
 	const rpcResult = await executeTool(
-		namedTool(harness, "orchestrate_status"),
+		namedTool(harness, "subagent_status"),
 		{ id: "request-one" },
 		undefined,
 		{ cwd: "/repo", hasUI: false } as ExtensionContext,
@@ -386,7 +411,7 @@ test("saved state updates and clears the workspace widget", async () => {
 		ui: { setWidget: (_key: string, lines: string[] | undefined) => widgets.push(lines) },
 	} as unknown as ExtensionContext;
 	const harness = createHarness();
-	await executeTool(namedTool(harness, "orchestrate_execute"), EXECUTE_REQUEST, undefined, ctx);
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
 	const state = structuredClone(PRIVATE_STATE);
 	addWorkspace(state);
 
@@ -406,12 +431,12 @@ test("saved state updates and clears the workspace widget", async () => {
 test("registers exactly four strict tools without constructing runtime components", () => {
 	const harness = createHarness();
 	assert.deepEqual(harness.tools.map(({ name }) => name), [
-		"orchestrate_execute",
-		"orchestrate_status",
-		"orchestrate_resume",
-		"orchestrate_abort",
+		"delegate_task",
+		"subagent_status",
+		"subagent_resume",
+		"subagent_abort",
 	]);
-	assert.deepEqual([...harness.commands.keys()], ["orchestrate-followup"]);
+	assert.deepEqual([...harness.commands.keys()], ["subagent-followup", "subagent-accept"]);
 	assert.equal(harness.getComponentCreations(), 0);
 
 	const [execute, status, resume, abort] = harness.tools;
@@ -424,13 +449,13 @@ test("registers exactly four strict tools without constructing runtime component
 	assert.equal(abort!.parameters, IdOnlySchema);
 	assert.equal(abort!.prepareArguments, parseIdOnly);
 	assert.deepEqual(parseIdOnly({ id: "request-one" }), { id: "request-one" });
-	assert.throws(() => parseIdOnly({ id: "request-one", extra: true }), /strict v1 schema/i);
-	assert.throws(() => parseIdOnly({ id: "Request_One" }), /strict v1 schema/i);
+	assert.throws(() => parseIdOnly({ id: "request-one", extra: true }), /strict schema/i);
+	assert.throws(() => parseIdOnly({ id: "Request_One" }), /strict schema/i);
 	assert.throws(() => execute!.prepareArguments({ ...EXECUTE_REQUEST, extra: true }), /strict task schema/i);
-	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /strict v1 action/i);
+	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /must match one strict action/i);
 });
 
-test("the follow-up command routes optional revisions to the active runner", async () => {
+test("interactive commands route follow-ups and acceptance to the active runner during streaming", async () => {
 	const harness = createHarness();
 	const notifications: Array<{ message: string; type: string }> = [];
 	const ctx = {
@@ -438,18 +463,28 @@ test("the follow-up command routes optional revisions to the active runner", asy
 		ui: { notify: (message: string, type: string) => notifications.push({ message, type }) },
 	} as unknown as ExtensionContext;
 
-	await harness.commands.get("orchestrate-followup")!.handler(
+	await harness.commands.get("subagent-followup")!.handler(
 		"request-one unit-one revise the current candidate",
 		ctx,
 	);
+	await harness.commands.get("subagent-accept")!.handler("request-one unit-one", ctx);
+	harness.getInteractiveWait()("request-one", "unit-one");
 
-	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup"), [
+	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup" || method === "acceptCandidate"), [
 		{ method: "queueFollowup", args: [CANONICAL_ROOT, "request-one", "unit-one", "revise the current candidate"] },
+		{ method: "acceptCandidate", args: [CANONICAL_ROOT, "request-one", "unit-one"] },
 	]);
-	assert.deepEqual(notifications, [{ message: "follow-up queued", type: "info" }]);
+	assert.deepEqual(notifications, [
+		{ message: "follow-up queued", type: "info" },
+		{ message: "acceptance queued", type: "info" },
+		{
+			message: "Task request-one/unit-one is ready. Use /subagent-followup request-one unit-one <message> or /subagent-accept request-one unit-one.",
+			type: "info",
+		},
+	]);
 	await assert.rejects(
-		async () => await harness.commands.get("orchestrate-followup")!.handler("request-one unit-one", ctx),
-		/Usage: \/orchestrate-followup/,
+		async () => await harness.commands.get("subagent-followup")!.handler("request-one unit-one", ctx),
+		/Usage: \/subagent-followup/,
 	);
 });
 
@@ -463,13 +498,13 @@ test("Role child argv causes zero registration and dependency side effects", () 
 			throw new Error("child mode touched Pi");
 		},
 	}) as ExtensionAPI;
-	const createComponents: CreateOrchestratorComponents = () => {
+	const createComponents: CreateIsolatedComponents = () => {
 		dependencyAccesses += 1;
 		throw new Error("child mode touched dependencies");
 	};
 	try {
 		process.argv = [...originalArgv, `--${ROLE_TOOL_POLICY_FLAG}`, "[]"];
-		registerOrchestratorExtension(pi, createComponents);
+		registerIsolatedExtension(pi, {} as never);
 	} finally {
 		process.argv = originalArgv;
 	}
@@ -481,7 +516,7 @@ test("lazily creates one component graph and supplies fresh session context", as
 	const harness = createHarness();
 	const initial = context("/nested/initial", { id: "initial-model" });
 	const executeSignal = new AbortController().signal;
-	const result = await executeTool(namedTool(harness, "orchestrate_execute"), EXECUTE_REQUEST, executeSignal, initial);
+	const result = await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, executeSignal, initial);
 
 	assert.equal(harness.getComponentCreations(), 1);
 	assert.equal(harness.getRoleContext(), initial);
@@ -499,7 +534,7 @@ test("lazily creates one component graph and supplies fresh session context", as
 	harness.handlers.get("agent_settled")!({ type: "agent_settled" }, settled);
 	assert.equal(harness.getRoleContext(), settled);
 
-	await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, undefined, settled);
+	await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, undefined, settled);
 	assert.equal(harness.getComponentCreations(), 1);
 	assert.deepEqual(result, {
 		content: [{ type: "text", text: "bounded execute result" }],
@@ -512,7 +547,7 @@ test("lazily creates one component graph and supplies fresh session context", as
 });
 
 test("production components complete host preflight before inspecting Main", async (t) => {
-	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-orchestrator-components-")));
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-components-")));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
 	const previousHerdrEnv = process.env.HERDR_ENV;
 	const previousPiEnv = process.env.PI_CODING_AGENT;
@@ -538,9 +573,13 @@ test("production components complete host preflight before inspecting Main", asy
 			throw new Error(`Unexpected process: ${command} ${args.join(" ")}`);
 		},
 	} as unknown as ExtensionAPI;
-	const { runner } = createOrchestratorComponents({
+	const { runner } = createIsolatedComponents({
 		pi,
 		context: () => context(root),
+		executor: {} as never,
+		policy: POLICY,
+		currentPolicy: () => POLICY,
+		onInteractiveWait() {},
 		onStateSaved() {},
 	});
 
@@ -561,7 +600,7 @@ test("public recovery evidence stays bounded and omits private durable state", a
 		} as never,
 	});
 	const result = await executeTool(
-		namedTool(harness, "orchestrate_execute"),
+		namedTool(harness, "delegate_task"),
 		EXECUTE_REQUEST,
 		new AbortController().signal,
 		context(CANONICAL_ROOT),
@@ -621,7 +660,7 @@ test("text recovery exposes only bounded text attempt evidence", async () => {
 		} as never,
 	});
 	const result = await executeTool(
-		namedTool(harness, "orchestrate_execute"),
+		namedTool(harness, "delegate_task"),
 		EXECUTE_REQUEST,
 		new AbortController().signal,
 		context(CANONICAL_ROOT),
@@ -656,23 +695,23 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 	const nestedCwd = "/canonical/repository/nested/deeper";
 	const ctx = context(nestedCwd);
 	const signals = Array.from({ length: 4 }, () => new AbortController().signal);
-	const execute = await executeTool(namedTool(harness, "orchestrate_execute"), EXECUTE_REQUEST, signals[0], ctx);
+	const execute = await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, signals[0], ctx);
 	assert.equal(harness.rootCalls.length, 0);
-	assert.deepEqual(harness.runnerCalls[0], { method: "execute", args: [EXECUTE_REQUEST, nestedCwd, signals[0]] });
+	assert.deepEqual(harness.runnerCalls[0], { method: "execute", args: [parseExecuteRequest(EXECUTE_REQUEST), nestedCwd, signals[0]] });
 
 	const lookupStartedAt = Date.now();
-	const status = await executeTool(namedTool(harness, "orchestrate_status"), { id: "request-one" }, signals[1], ctx);
+	const status = await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, signals[1], ctx);
 	const resumeRequest = { id: "request-one", action: "finalize" as const };
-	const resume = await executeTool(namedTool(harness, "orchestrate_resume"), resumeRequest, signals[2], ctx);
-	const abort = await executeTool(namedTool(harness, "orchestrate_abort"), { id: "request-one" }, signals[3], ctx);
+	const resume = await executeTool(namedTool(harness, "subagent_resume"), resumeRequest, signals[2], ctx);
+	const abort = await executeTool(namedTool(harness, "subagent_abort"), { id: "request-one" }, signals[3], ctx);
 	const lookupFinishedAt = Date.now();
 
 	assert.deepEqual(harness.rootCalls.map(({ cwd }) => cwd), [nestedCwd, nestedCwd, nestedCwd]);
 	for (const [index, { context: operation }] of harness.rootCalls.entries()) {
 		assert.equal(operation.signal, signals[index + 1]);
 		assert.equal(operation.timeoutMs, 5_000);
-		assert.ok(operation.deadline! >= lookupStartedAt + 5_000);
-		assert.ok(operation.deadline! <= lookupFinishedAt + 5_000);
+		assert.ok(operation.deadline !== undefined && operation.deadline >= lookupStartedAt + 5_000);
+		assert.ok(operation.deadline !== undefined && operation.deadline <= lookupFinishedAt + 5_000);
 	}
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method !== "execute"), [
 		{ method: "status", args: ["request-one", CANONICAL_ROOT, signals[1]] },
@@ -703,14 +742,14 @@ test("missing Role context and root preflight failures stay explicit", async () 
 		},
 	});
 	await assert.rejects(
-		namedTool(missing, "orchestrate_execute").execute(
+		namedTool(missing, "delegate_task").execute(
 			"tool-call",
 			EXECUTE_REQUEST as never,
 			undefined,
 			undefined,
 			undefined as unknown as ExtensionContext,
 		),
-		/Pi Orchestrator cannot resolve a Role before session context exists/i,
+		/Pi Subagent cannot resolve a Role before session context exists/i,
 	);
 	assert.equal(typeof contextGetter, "function");
 
@@ -727,52 +766,39 @@ test("missing Role context and root preflight failures stay explicit", async () 
 		} as never,
 	});
 	await assert.rejects(
-		executeTool(namedTool(failed, "orchestrate_status"), { id: "request-one" }, new AbortController().signal, context("/nested")),
+		executeTool(namedTool(failed, "subagent_status"), { id: "request-one" }, new AbortController().signal, context("/nested")),
 		/canonical root preflight failed closed/i,
 	);
 	assert.equal(statusCalls, 0);
 });
 
-test("manifest entrypoint and Main-side Skill ship with the four tools", async () => {
+test("manifest entrypoint and Main-side Skill ship with the unified tools", async () => {
 	const manifest = JSON.parse(await readFile(resolve(PACKAGE_ROOT, "package.json"), "utf8")) as {
 		dependencies?: Record<string, string>;
 		files?: string[];
 		pi?: { extensions?: string[]; skills?: string[] };
 	};
-	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], "^18.1.0");
+	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], undefined);
 	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.4.7");
-	assert.deepEqual(manifest.pi?.extensions, ["./extensions/orchestrator.ts"]);
+	assert.deepEqual(manifest.pi?.extensions, ["./extensions/subagent.ts"]);
 	assert.deepEqual(manifest.pi?.skills, ["./skills"]);
 	for (const path of ["README.md", "CONTEXT.md", "skills"]) assert.ok(manifest.files?.includes(path));
-	const skill = await readFile(resolve(PACKAGE_ROOT, "skills/pi-orchestrator/SKILL.md"), "utf8");
+	const skill = await readFile(resolve(PACKAGE_ROOT, "skills/pi-subagent/SKILL.md"), "utf8");
 	for (const contract of [
-		/^name: pi-orchestrator$/m,
-		/Use `delegate_task` for bounded research, review, or other lightweight work/i,
-		/Use `orchestrate_execute` for non-trivial implementation/i,
-		/authoritative task and final checks/i,
-		/`orchestrate_status`.*`orchestrate_resume`.*`orchestrate_abort`/is,
+		/^name: pi-subagent$/m,
+		/`mode: direct`.*bounded research, analysis, review/is,
+		/`mode: isolated`.*checked changes/is,
+		/authoritative task checks.*authoritative final checks/is,
+		/`subagent_status`.*`subagent_resume`.*`subagent_abort`/is,
 	]) assert.match(skill, contract);
-	assert.doesNotMatch(skill, /delegate_flow|auto_dag/i);
-	const entrypoint = resolve(PACKAGE_ROOT, manifest.pi.extensions[0]!);
-	const loaded = await import(pathToFileURL(entrypoint).href) as { default(pi: ExtensionAPI): void };
-	const mainTools: string[] = [];
-	const mainEvents: string[] = [];
-	loaded.default({
-		registerTool(tool: { name: string }) {
-			mainTools.push(tool.name);
-		},
-		registerCommand() {},
-		on(name: string) {
-			mainEvents.push(name);
-		},
-	} as unknown as ExtensionAPI);
-	assert.deepEqual(mainTools, ["orchestrate_execute", "orchestrate_status", "orchestrate_resume", "orchestrate_abort"]);
-	assert.deepEqual(mainEvents, ["session_start", "model_select", "agent_settled"]);
+	assert.doesNotMatch(skill, /delegate_flow|auto_dag|orchestrate_/i);
 
 	const originalArgv = process.argv;
 	let childSideEffects = 0;
 	try {
 		process.argv = [...originalArgv, `--${ROLE_TOOL_POLICY_FLAG}`, "[]"];
+		const entrypoint = resolve(PACKAGE_ROOT, manifest.pi.extensions[0]!);
+		const loaded = await import(pathToFileURL(entrypoint).href) as { default(pi: ExtensionAPI): void };
 		loaded.default(new Proxy({}, {
 			get() {
 				childSideEffects += 1;
@@ -785,17 +811,17 @@ test("manifest entrypoint and Main-side Skill ship with the four tools", async (
 	assert.equal(childSideEffects, 0);
 });
 
-test("root active delegation sources smoke-load only generic delegation and orchestrator tools", async () => {
+test("root active delegation sources smoke-load only the unified delegation tools", async () => {
 	const repositoryRoot = resolve(PACKAGE_ROOT, "../..");
 	const rootManifest = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8")) as {
 		pi?: { extensions?: string[] };
 	};
 	const active = rootManifest.pi?.extensions ?? [];
+	assert.equal(active.filter((source) => source.includes("pi-subagent")).length, 1);
 	assert.ok(active.includes("./extensions/pi-subagent/extensions/subagent.ts"));
-	assert.ok(active.includes("./extensions/pi-orchestrator/extensions/orchestrator.ts"));
 	assert.ok(active.every((source) => !source.includes("pi-auto-dag")));
 
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-orchestrator-smoke-"));
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-smoke-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const previousActivePi = process.env.PI_CODING_AGENT;
 	const previousTitle = process.title;
@@ -814,7 +840,7 @@ test("root active delegation sources smoke-load only generic delegation and orch
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		process.env.PI_CODING_AGENT = "true";
 		process.title = "pi";
-		for (const source of active.filter((entry) => /pi-(?:subagent|orchestrator)\//.test(entry))) {
+		for (const source of active.filter((entry) => /pi-subagent\//.test(entry))) {
 			const loaded = await import(pathToFileURL(resolve(repositoryRoot, source)).href) as { default(pi: ExtensionAPI): void };
 			loaded.default(pi);
 		}
@@ -829,10 +855,9 @@ test("root active delegation sources smoke-load only generic delegation and orch
 
 	assert.deepEqual([...toolNames].sort(), [
 		"delegate_task",
-		"orchestrate_abort",
-		"orchestrate_execute",
-		"orchestrate_resume",
-		"orchestrate_status",
+		"subagent_abort",
+		"subagent_resume",
+		"subagent_status",
 	]);
 	assert.ok(toolNames.every((name) => !name.startsWith("delegate_flow") && !name.startsWith("auto_dag_")));
 });

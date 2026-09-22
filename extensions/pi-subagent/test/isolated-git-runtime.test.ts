@@ -55,11 +55,11 @@ function task(id: string, judgment = false): ChangesetTaskRequest {
 }
 
 async function repository(t: test.TestContext): Promise<string> {
-	const root = await mkdtemp(join(tmpdir(), "pi-orchestrator-git-"));
+	const root = await mkdtemp(join(tmpdir(), "pi-subagent-git-"));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
 	git(root, "init", "-q", "-b", "main");
-	git(root, "config", "user.name", "Orchestrator Test");
-	git(root, "config", "user.email", "orchestrator@example.com");
+	git(root, "config", "user.name", "Subagent Test");
+	git(root, "config", "user.email", "subagent@example.com");
 	await writeFile(join(root, "base.txt"), "base\n");
 	git(root, "add", "base.txt");
 	git(root, "commit", "-qm", "base");
@@ -179,7 +179,7 @@ async function prepareIntegration(
 		passed: true,
 		at: Date.now(),
 	};
-	attempt.readiness = { candidate, base: attempt.waveBase, at: Date.now() };
+	attempt.acceptance = { candidate, base: attempt.waveBase, at: Date.now() };
 	const rebased = await runtime.rebase({ root, task: definition, attempt, candidate, sourceBase: attempt.waveBase, onto }, operationContext);
 	if (rebased.outcome !== "ready") assert.fail(rebased.failure);
 	attempt.candidate = rebased.candidate;
@@ -369,8 +369,8 @@ test("worktree allocation persists helper-derived intent before add and retains 
 	assert.ok(first.intent.worktree && await readFile(join(first.intent.worktree.path, "base.txt"), "utf8") === "base\n");
 	assert.ok(calls.every((call) => Array.isArray(call.args)
 		&& call.options.signal === operationContext.signal
-		&& call.options.timeoutMs! > 0
-		&& call.options.timeoutMs! <= operationContext.timeoutMs!));
+		&& (call.options.timeoutMs ?? 0) > 0
+		&& (call.options.timeoutMs ?? 0) <= (operationContext.timeoutMs ?? 0)));
 
 	const mismatchedBase = { ...waveBase, head: "f".repeat(40) };
 	const mismatch = await allocate(runtime, root, task("mismatch"), mismatchedBase, "token-mismatch-01", operationContext);
@@ -692,7 +692,7 @@ test("same-wave units use one authoritative packet from each integration base", 
 	assert.match(packets[1]!.patch, /second\.txt/);
 	assert.doesNotMatch(packets[1]!.patch, /first\.txt/);
 	assert.equal(finalMain.head, secondPrepared.candidate.head);
-	assert.ok(seenContexts.every((item) => item.signal instanceof AbortSignal && item.timeoutMs! > 0));
+	assert.ok(seenContexts.every((item) => item.signal instanceof AbortSignal && (item.timeoutMs ?? 0) > 0));
 });
 
 test("final review resolves a canonical Main worktree root without changing the launch subdirectory", async (t) => {
@@ -735,8 +735,8 @@ test("final review resolves a canonical Main worktree root without changing the 
 		&& JSON.stringify(args) === JSON.stringify(["rev-parse", "--show-toplevel"])
 		&& options.cwd === subdirectory
 		&& options.signal === operationContext.signal
-		&& options.timeoutMs! > 0
-		&& options.timeoutMs! <= operationContext.timeoutMs!));
+		&& (options.timeoutMs ?? 0) > 0
+		&& (options.timeoutMs ?? 0) <= (operationContext.timeoutMs ?? 0)));
 });
 
 test("Reviewer launch cleanup runs after success, failure, and abort, and cleanup errors surface", async (t) => {
@@ -850,7 +850,7 @@ test("failed checks, Reviewer findings or mutation, and Main drift cannot integr
 	assert.equal(failed.results[0]!.code, 7);
 	assert.ok(sameIdentity(failed.identityAfter, candidate));
 	allocated.attempt.candidateBase = base;
-	allocated.attempt.readiness = { candidate, base, at: Date.now() };
+	allocated.attempt.acceptance = { candidate, base, at: Date.now() };
 	allocated.attempt.integrationBase = base;
 	allocated.attempt.integrationCandidate = candidate;
 	const findings = await runtime.review({
@@ -1007,7 +1007,7 @@ test("fast-forward failure preserves Main and exact retained work", async (t) =>
 	assert.equal(git(allocated.intent.worktree!.cwd, "rev-parse", "HEAD"), candidate.head);
 	const mergeCommand = commands.find((command) => command.includes("merge"));
 	assert.equal(mergeCommand?.[1], "-c");
-	assert.match(mergeCommand?.[2] ?? "", /^core\.hooksPath=.*pi-orchestrator-ref-guard-/);
+	assert.match(mergeCommand?.[2] ?? "", /^core\.hooksPath=.*pi-subagent-ref-guard-/);
 	assert.deepEqual(mergeCommand?.slice(mergeCommand.indexOf("merge")), [
 		"merge", "--no-overwrite-ignore", "--no-autostash", "--ff-only", candidate.head,
 	]);

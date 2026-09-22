@@ -2,7 +2,7 @@
 
 ## Decision
 
-The public task executor is an execution mechanism: it receives a prepared Pi Launch, runs one bounded Delegated Task, and returns the result. Main plans and orchestrates; `delegate_task` selects its flat `single`, `parallel`, or `chain` tool policy, while those modes are not executor primitives.
+The public task executor is an execution mechanism: it receives a prepared Pi Launch, runs one bounded Delegated Task, and returns the result. The `delegate_task` extension composes it for direct workflows and isolated checked graphs; those modes are not executor primitives.
 
 Generic callers compose workflows with JavaScript. Fan-out and fan-in use promises and collections; sequencing uses ordinary control flow; review loops use explicit caller-owned bounds. The package does not define a recursive workflow AST.
 
@@ -21,8 +21,8 @@ An explicit call `modelClass` selects a task-model route. Without one, an option
 
 ## Scope boundary
 
-`delegate_task` and library callers remain generic. The package does not own checked implementation orchestration.
+The executor remains generic and policy-free beyond child execution limits. Direct and isolated workflow policy belongs to the extension and checked runner, not the executor. External library callers may still compose the mechanism with their own protocols.
 
 ## Consequences
 
-The executor remains a stable mechanism while callers own semantic protocols, shared workspace and state, validation, review, retry decisions, integration, cleanup, and bounds.
+The executor remains stable while pi-subagent owns its direct and checked-isolated semantics. Mechanism callers continue to own any protocol they build outside those surfaces.

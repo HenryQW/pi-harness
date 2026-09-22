@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
-	OrchestratorRunner,
+	IsolatedRunner,
 	type CoordinatorRuntime,
 	type GitRuntime,
 	type HostRuntime,
@@ -17,6 +18,14 @@ import { FileRunStore } from "../src/store.ts";
 function mainIdentity(): WorkspaceIdentity {
 	const oid = "a".repeat(40);
 	return { branch: "refs/heads/main", head: oid, index: oid, tree: oid };
+}
+
+async function initializeRepository(root: string): Promise<void> {
+	await mkdir(root);
+	await writeFile(join(root, "README.md"), "fixture\n");
+	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+	execFileSync("git", ["add", "README.md"], { cwd: root });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], { cwd: root });
 }
 
 type AttentionRunner = {
@@ -60,7 +69,7 @@ const acquireTextLaunch = async () => ({
 });
 
 function markAttention(task: TextTaskState, failure: string): void {
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{} as CoordinatorRuntime,
 		{} as HostRuntime,
 		{} as GitRuntime & TaskCandidateInspector,
@@ -114,12 +123,12 @@ test("text attention appends a failure despite running task state without a runn
 });
 
 test("text dispatch failure persists its failed running attempt", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "workspace");
-	await mkdir(root);
+	await initializeRepository(root);
 	const store = new FileRunStore(join(directory, "agent"));
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{
 			now: () => 1,
 			randomToken: () => "token-0000000000000001",
@@ -136,7 +145,8 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 	const request: ExecuteRequest = {
 		id: "text-failure",
 		goal: "Retain failed text-task state.",
-
+		mode: "isolated",
+		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -163,15 +173,16 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 });
 
 test("text retry saves its second attempt atomically before executor launch", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "workspace");
-	await mkdir(root);
+	await initializeRepository(root);
 	const store = new RecordingRunStore(join(directory, "agent"));
 	const request: ExecuteRequest = {
 		id: "text-retry",
 		goal: "Retry a failed text task without an invalid intermediate state.",
-
+		mode: "isolated",
+		approval: "scoped",
 		tasks: [{
 			id: "research",
 			kind: "text",
@@ -200,7 +211,7 @@ test("text retry saves its second attempt atomically before executor launch", as
 			};
 		},
 	};
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{
 			now: () => 1,
 			randomToken: () => "token-0000000000000001",
@@ -254,17 +265,18 @@ test("text retry saves its second attempt atomically before executor launch", as
 });
 
 test("text retry runs only the selected ready task while another needs attention", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 	t.after(async () => await rm(directory, { recursive: true, force: true }));
 	const root = join(directory, "workspace");
-	await mkdir(root);
+	await initializeRepository(root);
 	const store = new FileRunStore(join(directory, "agent"));
 	const otherId = "other";
 	const selectedId = "selected";
 	const request: ExecuteRequest = {
 		id: "text-retry-with-attention",
 		goal: "Retry one failed text task without scheduling another.",
-
+		mode: "isolated",
+		approval: "scoped",
 		tasks: [
 			{
 				id: otherId,
@@ -310,7 +322,7 @@ test("text retry runs only the selected ready task while another needs attention
 			};
 		},
 	};
-	const runner = new OrchestratorRunner(
+	const runner = new IsolatedRunner(
 		{
 			now: () => 1,
 			randomToken: () => "token-0000000000000001",
@@ -377,28 +389,25 @@ test("text retry runs only the selected ready task while another needs attention
 test("mixed waves settle and attribute dispatch failures in either task order", async (t) => {
 	for (const kinds of [["changeset", "text"], ["text", "changeset"]] as const) {
 		await t.test(kinds.join(" then "), async (t) => {
-			const directory = await mkdtemp(join(tmpdir(), "pi-orchestrator-text-state-"));
+			const directory = await mkdtemp(join(tmpdir(), "pi-subagent-text-state-"));
 			t.after(async () => await rm(directory, { recursive: true, force: true }));
 			const root = join(directory, "workspace");
-			await mkdir(root);
-			let persisted: RunState | undefined;
+			await initializeRepository(root);
 			const store = {
 				async withProductiveRunLease<T>(_root: string, action: (lease: unknown) => Promise<T>): Promise<T> {
 					return await action({});
 				},
 				async withLock<T>(_root: string, action: (lifecycle: unknown) => Promise<T>): Promise<T> {
-					return await action({ productiveRunLeaseActive: true });
+					return await action({
+						productiveRunLeaseActive: true,
+						waitUnlocked: async (operation: () => Promise<unknown>) => await operation(),
+					});
 				},
 				async create(state: RunState) {
-					persisted = state;
-					return { state, save: async (): Promise<void> => { persisted = state; } };
-				},
-				async load() {
-					if (!persisted) throw new Error("Expected in-memory state.");
-					return { state: persisted, save: async (): Promise<void> => {} };
+					return { state, save: async (): Promise<void> => {} };
 				},
 			} as unknown as FileRunStore;
-			const runner = new OrchestratorRunner(
+			const runner = new IsolatedRunner(
 				{
 					now: () => 1,
 					randomToken: () => "token-0000000000000001",
@@ -443,7 +452,8 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			const result = await runner.execute({
 				id: `mixed-${kinds.join("-")}`,
 				goal: "Keep wave failure attribution exact.",
-
+				mode: "isolated",
+		approval: "scoped",
 				tasks: kinds.map((kind) => kind === "text" ? text : changeset),
 				finalChecks: [{ command: "true", args: [] }],
 			} satisfies ExecuteRequest, root);

@@ -16,10 +16,7 @@ const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
  */
 const STATE_MAX_BYTES = 128 * 1024 * 1024;
 const LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
-const LIFECYCLE_LOCK_OPTIONS = {
-	...LOCK_OPTIONS,
-	retries: { forever: true, factor: 1, minTimeout: 25, maxTimeout: 25 },
-} as const;
+const LOCK_REACQUIRE_DELAY_MS = 25;
 
 type ReleaseLock = Awaited<ReturnType<typeof lock>>;
 const productiveRunLeaseBrand: unique symbol = Symbol("productiveRunLease");
@@ -34,6 +31,7 @@ export type LifecycleLockOptions =
 
 export interface LifecycleLock {
 	readonly productiveRunLeaseActive: boolean;
+	waitUnlocked<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 function isMissing(error: unknown): boolean {
@@ -46,6 +44,17 @@ function isAlreadyPresent(error: unknown): boolean {
 
 function isLocked(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ELOCKED");
+}
+
+async function reacquire(path: string): Promise<ReleaseLock> {
+	for (;;) {
+		try {
+			return await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		} catch (error) {
+			if (!isLocked(error)) throw error;
+			await new Promise<void>((resolve) => setTimeout(resolve, LOCK_REACQUIRE_DELAY_MS));
+		}
+	}
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -73,7 +82,7 @@ function serialize(state: RunState, maxBytes = STATE_MAX_BYTES): string {
 	const validated = parseRunState(structuredClone(state));
 	const contents = `${JSON.stringify(validated, null, 2)}\n`;
 	if (Buffer.byteLength(contents, "utf8") > maxBytes) {
-		throw new Error(`pi-orchestrator state exceeds ${maxBytes} bytes.`);
+		throw new Error(`pi-subagent state exceeds ${maxBytes} bytes.`);
 	}
 	return contents;
 }
@@ -117,12 +126,12 @@ export class FileRunStore {
 	stateDirectory(root: string): string {
 		const canonicalRoot = realpathSync.native(root);
 		const directory = join(
-			extensionConfigDir("pi-orchestrator", this.agentDir),
+			extensionConfigDir("pi-subagent", this.agentDir),
 			"state",
 			createHash("sha256").update(canonicalRoot).digest("hex"),
 		);
 		if (isWithin(canonicalRoot, resolve(directory))) {
-			throw new Error("Pi Orchestrator state directory must be outside the Git workspace.");
+			throw new Error("Pi Subagent state directory must be outside the Git workspace.");
 		}
 		return directory;
 	}
@@ -141,7 +150,7 @@ export class FileRunStore {
 
 	private async assertSafeDestination(root: string, destination: string): Promise<void> {
 		if (isWithin(realpathSync.native(root), await canonicalPlannedPath(destination))) {
-			throw new Error("Pi Orchestrator state directory must be outside the Git workspace.");
+			throw new Error("Pi Subagent state directory must be outside the Git workspace.");
 		}
 	}
 
@@ -158,7 +167,7 @@ export class FileRunStore {
 			release = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
 		} catch (error) {
 			if (isLocked(error)) {
-				throw new Error("Another Pi Orchestrator productive request is active in this repository.");
+				throw new Error("Another Pi Subagent productive request is active in this repository.");
 			}
 			throw error;
 		}
@@ -188,7 +197,7 @@ export class FileRunStore {
 		await this.assertSafeDestination(root, directory);
 		await mkdir(directory, { recursive: true, mode: 0o700 });
 		const path = this.lockPath(root);
-		const release: ReleaseLock = await lock(path, { ...LIFECYCLE_LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		let release: ReleaseLock | undefined = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
 		try {
 			const productiveRunLeaseActive = await this.hasProductiveRunLease(root);
 			const ownedProductiveRunPath = options.productiveRunLease
@@ -197,12 +206,27 @@ export class FileRunStore {
 			if (productiveRunLeaseActive
 				&& (options.purpose ?? "productive") === "productive"
 				&& ownedProductiveRunPath !== this.productiveRunPath(root)) {
-				throw new Error("Another Pi Orchestrator productive request is active in this repository.");
+				throw new Error("Another Pi Subagent productive request is active in this repository.");
 			}
-			const lifecycle: LifecycleLock = { productiveRunLeaseActive };
+			let waitingUnlocked = false;
+			const lifecycle: LifecycleLock = {
+				productiveRunLeaseActive,
+				waitUnlocked: async <Value>(operation: () => Promise<Value>): Promise<Value> => {
+					if (waitingUnlocked || !release) throw new Error("Lifecycle lock already has an unlocked waiter.");
+					waitingUnlocked = true;
+					await release();
+					release = undefined;
+					try {
+						return await operation();
+					} finally {
+						release = await reacquire(path);
+						waitingUnlocked = false;
+					}
+				},
+			};
 			return await operation(lifecycle);
 		} finally {
-			await release();
+			await release?.();
 		}
 	}
 
@@ -220,7 +244,7 @@ export class FileRunStore {
 			file = undefined;
 		} catch (error) {
 			await file?.close();
-			if (isAlreadyPresent(error)) throw new Error(`Pi Orchestrator request ${state.request.id} already exists.`);
+			if (isAlreadyPresent(error)) throw new Error(`Pi Subagent request ${state.request.id} already exists.`);
 			throw error;
 		}
 		const saved = parseRunState(structuredClone(state));
@@ -235,13 +259,13 @@ export class FileRunStore {
 			raw = await readTextFileBounded(path, STATE_MAX_BYTES);
 		} catch (error) {
 			if (error instanceof Error && error.message === `Text file exceeds ${STATE_MAX_BYTES} bytes: ${path}`) {
-				throw new Error(`pi-orchestrator state exceeds ${STATE_MAX_BYTES} bytes.`);
+				throw new Error(`pi-subagent state exceeds ${STATE_MAX_BYTES} bytes.`);
 			}
 			throw error;
 		}
 		const state = parseRunState(JSON.parse(raw));
 		if (state.root !== realpathSync.native(root) || state.request.id !== id) {
-			throw new Error("pi-orchestrator state identity does not match its repository and filename.");
+			throw new Error("pi-subagent state identity does not match its repository and filename.");
 		}
 		return this.handle(state, path);
 	}

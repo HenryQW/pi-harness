@@ -85,14 +85,22 @@ function runnerState(definitions: TaskRequest[], tasks: TaskState[]): RunState {
 		request: {
 			id: "context-readiness",
 			goal: "Test dependency readiness.",
-
+			mode: "isolated",
+		approval: "scoped",
 			tasks: definitions,
 			finalChecks: [{ command: "check", args: [] }],
 		},
+		policy: {
+			maxSubagents: 5,
+			maxTurns: 50,
+			childIdleMs: 600_000,
+			childMaxMs: 1_800_000,
+			maxCorrections: 1,
+		},
+		correctionCount: 0,
 		root: "/repo",
 		requestStartMain: main,
 		main,
-
 		status: "pending",
 		tasks,
 		waves: [],

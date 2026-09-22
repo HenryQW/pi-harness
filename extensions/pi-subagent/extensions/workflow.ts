@@ -2,7 +2,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { DISPLAY_TEXT_CONTRACT } from "@henryqw/pi-subagent";
 import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
-import { Check } from "typebox/value";
+import { Check, Errors } from "typebox/value";
+import { CheckCommandSchema, ExecuteRequestSchema, JudgmentSchema, parseExecuteRequest, type ExecuteRequest } from "../src/schema.ts";
 import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
 export const MAX_WORKFLOW_ENTRIES = 8;
@@ -11,47 +12,47 @@ const RoleSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pa
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
 const ModelSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Designated model as provider/modelId; replaces the selected route model" });
 const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
+const DirectKindSchema = StringEnum(["text", "changeset"] as const);
 
 export const DelegationSchema = Type.Object({
 	role: RoleSchema,
 	name: TaskNameSchema,
 	task: TaskSchema,
+	kind: Type.Optional(DirectKindSchema),
+	checks: Type.Optional(Type.Array(CheckCommandSchema, { minItems: 1, maxItems: 32 })),
+	judgment: Type.Optional(JudgmentSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
 }, { additionalProperties: false });
 
-export const WorkflowSchema = Type.Object({
+export const DirectWorkflowSchema = Type.Object({
+	mode: Type.Literal("direct"),
 	role: Type.Optional(RoleSchema),
 	name: Type.Optional(TaskNameSchema),
 	task: Type.Optional(TaskSchema),
+	kind: Type.Optional(DirectKindSchema),
+	checks: Type.Optional(Type.Array(CheckCommandSchema, { minItems: 1, maxItems: 32 })),
+	judgment: Type.Optional(JudgmentSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
-	tasks: Type.Optional(Type.Array(DelegationSchema, {
-		minItems: 1,
-		maxItems: MAX_WORKFLOW_ENTRIES,
-		description: "Independent delegations to run concurrently",
-	})),
-	chain: Type.Optional(Type.Array(DelegationSchema, {
-		minItems: 1,
-		maxItems: MAX_WORKFLOW_ENTRIES,
-		description: "Dependent delegations to run sequentially",
-	})),
-	background: Type.Optional(Type.Boolean({ description: "Run the selected workflow without blocking" })),
-}, {
-	additionalProperties: false,
-	description: "Exactly one mode: role, name, and task; tasks; or chain",
-});
+	tasks: Type.Optional(Type.Array(DelegationSchema, { minItems: 1, maxItems: MAX_WORKFLOW_ENTRIES })),
+	chain: Type.Optional(Type.Array(DelegationSchema, { minItems: 1, maxItems: MAX_WORKFLOW_ENTRIES })),
+	background: Type.Optional(Type.Boolean({ description: "Run a provably read-only workflow without blocking" })),
+}, { additionalProperties: false, description: "Direct mode: exactly one compact single, tasks, or chain workflow" });
 
-export type Delegation = Static<typeof DelegationSchema>;
+export const DelegateTaskSchema = Type.Union([DirectWorkflowSchema, ExecuteRequestSchema]);
+export const WorkflowSchema = DirectWorkflowSchema;
+
+export type Delegation = Static<typeof DelegationSchema> & { kind: "text" | "changeset" };
 export type WorkflowMode = "single" | "parallel" | "chain";
 export type ParsedWorkflow =
 	| { mode: "single"; background: boolean; delegations: [Delegation] }
 	| { mode: "parallel"; background: boolean; delegations: Delegation[] }
 	| { mode: "chain"; background: boolean; delegations: Delegation[] };
+export type ParsedDelegateTask = { mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest };
 
-type WorkflowInput = Static<typeof WorkflowSchema>;
-
-const DELEGATION_KEYS = ["role", "name", "task", "model", "modelClass"] as const;
+type DirectInput = Static<typeof DirectWorkflowSchema>;
+const DELEGATION_KEYS = ["role", "name", "task", "kind", "checks", "judgment", "model", "modelClass"] as const;
 
 function text(value: string, path: string): string {
 	const normalized = value.trim();
@@ -59,17 +60,24 @@ function text(value: string, path: string): string {
 	return normalized;
 }
 
-function normalizeDelegation(value: Delegation, path: string): Delegation {
+function normalizeDelegation(value: Static<typeof DelegationSchema>, path: string): Delegation {
+	const kind = value.kind ?? "text";
+	if (kind === "changeset" && !value.checks?.length) throw new Error(`${path}.checks is required for a direct changeset.`);
+	if (kind === "text" && value.checks !== undefined) throw new Error(`${path}.checks is only valid for a direct changeset.`);
+	if (kind === "text" && value.judgment !== undefined) throw new Error(`${path}.judgment is only valid for a direct changeset.`);
 	return {
 		role: text(value.role, `${path}.role`),
 		name: normalizeTaskName(value.name, `${path}.name`),
 		task: text(value.task, `${path}.task`),
+		kind,
+		...(value.checks === undefined ? {} : { checks: value.checks.map((check) => ({ command: text(check.command, `${path}.checks.command`), args: [...check.args] })) }),
+		...(value.judgment === undefined ? {} : { judgment: { ...value.judgment, role: text(value.judgment.role, `${path}.judgment.role`), criterion: text(value.judgment.criterion, `${path}.judgment.criterion`) } }),
 		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
 	};
 }
 
-function hasDelegation(value: WorkflowInput): value is WorkflowInput & Delegation {
+function hasDelegation(value: DirectInput): value is DirectInput & Static<typeof DelegationSchema> {
 	return Object.hasOwn(value, "role") && Object.hasOwn(value, "name") && Object.hasOwn(value, "task");
 }
 
@@ -78,56 +86,41 @@ function workflowMode(value: unknown): WorkflowMode | undefined {
 	const single = DELEGATION_KEYS.some((key) => Object.hasOwn(value, key));
 	const parallel = Object.hasOwn(value, "tasks");
 	const chain = Object.hasOwn(value, "chain");
-	if (Number(single) + Number(parallel) + Number(chain) !== 1) {
-		throw new Error("workflow must select exactly one mode: role, name, and task; tasks; or chain.");
-	}
+	if (Number(single) + Number(parallel) + Number(chain) !== 1) throw new Error("direct workflow must select exactly one of single, tasks, or chain.");
 	return single ? "single" : parallel ? "parallel" : "chain";
 }
 
 export function parseWorkflow(value: unknown): ParsedWorkflow {
 	const mode = workflowMode(value);
-	if (!Check(WorkflowSchema, value)) throw new Error("workflow must match the declared tool schema.");
-	if (!mode) throw new Error("workflow must select exactly one mode: role, name, and task; tasks; or chain.");
-	const input = value;
+	if (!Check(DirectWorkflowSchema, value)) {
+		const issue = Errors(DirectWorkflowSchema, value)[0];
+		throw new Error(`direct workflow must match the declared tool schema${issue ? ` at ${issue.instancePath || "/"}: ${issue.message}` : ""}.`);
+	}
+	if (!mode) throw new Error("direct workflow must select exactly one of single, tasks, or chain.");
+	const input = value as DirectInput;
 	const background = input.background ?? false;
 	if (mode === "single") {
-		if (!hasDelegation(input)) throw new Error("workflow requires role, name, and task.");
+		if (!hasDelegation(input)) throw new Error("direct workflow requires role, name, and task.");
 		return { mode, background, delegations: [normalizeDelegation(input, "workflow")] };
 	}
-	if (mode === "parallel") return {
-		mode,
-		background,
-		delegations: input.tasks!.map((delegation, index) => normalizeDelegation(delegation, `tasks[${index}]`)),
-	};
-	return {
-		mode,
-		background,
-		delegations: input.chain!.map((delegation, index) => normalizeDelegation(delegation, `chain[${index}]`)),
-	};
+	if (mode === "parallel") return { mode, background, delegations: input.tasks!.map((item, index) => normalizeDelegation(item, `tasks[${index}]`)) };
+	return { mode, background, delegations: input.chain!.map((item, index) => normalizeDelegation(item, `chain[${index}]`)) };
 }
 
-export type WorkflowEntry = {
-	id: string;
-	index: number;
-	delegation: Delegation;
-};
+export function parseDelegateTask(value: unknown): ParsedDelegateTask {
+	if (value && typeof value === "object" && !Array.isArray(value) && (value as { mode?: unknown }).mode === "isolated") {
+		return { mode: "isolated", request: parseExecuteRequest(value) };
+	}
+	return { mode: "direct", workflow: parseWorkflow(value) };
+}
 
+export type WorkflowEntry = { id: string; index: number; delegation: Delegation };
 export function identifyWorkflowEntries(toolCallId: string, workflow: ParsedWorkflow): WorkflowEntry[] {
-	return workflow.delegations.map((delegation, index) => ({
-		id: `${toolCallId}:${workflow.mode}:${index}`,
-		index,
-		delegation,
-	}));
+	return workflow.delegations.map((delegation, index) => ({ id: `${toolCallId}:${workflow.mode}:${index}`, index, delegation }));
 }
 
-export type DelegationExecution<T> =
-	| { ok: true; assistantOutput: string; result: T }
-	| { ok: false; result: T };
-
-export type DelegationRunner<T> = (
-	entry: WorkflowEntry,
-) => DelegationExecution<T> | Promise<DelegationExecution<T>>;
-
+export type DelegationExecution<T> = { ok: true; assistantOutput: string; result: T } | { ok: false; result: T };
+export type DelegationRunner<T> = (entry: WorkflowEntry) => DelegationExecution<T> | Promise<DelegationExecution<T>>;
 export type WorkflowEntryOutcome<T> =
 	| { status: "succeeded"; entry: WorkflowEntry; assistantOutput: string; result: T }
 	| { status: "failed"; entry: WorkflowEntry; result: T }
@@ -136,20 +129,19 @@ export type WorkflowEntryOutcome<T> =
 async function runEntry<T>(entry: WorkflowEntry, run: DelegationRunner<T>): Promise<WorkflowEntryOutcome<T>> {
 	try {
 		const execution = await run(entry);
-		return execution.ok
-			? { status: "succeeded", entry, assistantOutput: execution.assistantOutput, result: execution.result }
+		return execution.ok ? { status: "succeeded", entry, assistantOutput: execution.assistantOutput, result: execution.result }
 			: { status: "failed", entry, result: execution.result };
 	} catch (reason) {
 		return { status: "rejected", entry, reason };
 	}
 }
 
-/** Run only foreground policy. Callback failures are `rejected`; parent aborts are rethrown after started work settles. */
 export async function runForegroundWorkflow<T>(
 	toolCallId: string,
 	workflow: ParsedWorkflow,
 	run: DelegationRunner<T>,
 	signal?: AbortSignal,
+	serializeParallel = false,
 ): Promise<WorkflowEntryOutcome<T>[]> {
 	if (workflow.background) throw new Error("Background workflows cannot use foreground orchestration.");
 	signal?.throwIfAborted();
@@ -159,27 +151,23 @@ export async function runForegroundWorkflow<T>(
 		signal?.throwIfAborted();
 		return [outcome];
 	}
-	if (workflow.mode === "parallel") {
+	if (workflow.mode === "parallel" && !serializeParallel) {
 		const outcomes = await Promise.all(entries.map((entry) => runEntry(entry, run)));
 		signal?.throwIfAborted();
 		return outcomes;
 	}
-
 	const outcomes: WorkflowEntryOutcome<T>[] = [];
 	let previous = "";
 	for (const entry of entries) {
-		const chained = {
+		const selected = workflow.mode === "chain" ? {
 			...entry,
-			delegation: {
-				...entry.delegation,
-				task: entry.delegation.task.replaceAll("{previous}", () => previous),
-			},
-		};
-		const outcome = await runEntry(chained, run);
+			delegation: { ...entry.delegation, task: entry.delegation.task.replaceAll("{previous}", () => previous) },
+		} : entry;
+		const outcome = await runEntry(selected, run);
 		signal?.throwIfAborted();
 		outcomes.push(outcome);
-		if (outcome.status !== "succeeded") break;
-		previous = outcome.assistantOutput;
+		if (outcome.status !== "succeeded" && workflow.mode === "chain") break;
+		if (outcome.status === "succeeded") previous = outcome.assistantOutput;
 	}
 	return outcomes;
 }

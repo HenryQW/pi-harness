@@ -7,7 +7,8 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { resolveConfiguredRoleLaunch } from "@henryqw/pi-subagent";
+import { resolveConfiguredRoleLaunch } from "./index.ts";
+import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
 import { registerModelTask } from "@henryqw/pi-task-models";
 import type {
 	CoordinatorRuntime,
@@ -25,10 +26,10 @@ const PROMPT_FLAG = "--append-system-prompt";
 const DIRECTORY_MODE = 0o700;
 const PROMPT_MODE = 0o600;
 
-export const ORCHESTRATOR_MODEL_TASK = {
-	id: "pi-orchestrator/roleLaunch",
-	label: "Orchestrator Role launch",
-	purpose: "Resolve one task-scoped orchestrator Role launch.",
+export const ISOLATED_MODEL_TASK = {
+	id: "pi-subagent/isolatedRoleLaunch",
+	label: "Isolated Role launch",
+	purpose: "Resolve one task-scoped isolated Role launch.",
 	defaultProfile: "balanced",
 } as const;
 
@@ -44,7 +45,9 @@ export interface LaunchRuntimeOptions {
 	pi: LaunchPi;
 	context(): ExtensionContext;
 	resolveRoot(cwd: string, context: OperationContext): Promise<string>;
+	preflightHost?(input: { request: ExecuteRequest; cwd: string; root: string }, context: OperationContext): Promise<void>;
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
+	executionBudget?: () => Omit<EphemeralSubagentExecutionBudget, "startedAt">;
 	now?: () => number;
 	randomToken?: () => string;
 }
@@ -90,7 +93,7 @@ async function materializeTransientLaunch(
 ): Promise<TransientLaunchHandle<VerifiedLaunch>> {
 	abortIfNeeded(signal);
 	const promptBytes = Buffer.from(prepared.prompt, "utf8");
-	const created = await mkdtemp(join(tmpdir(), "pi-orchestrator-role-"));
+	const created = await mkdtemp(join(tmpdir(), "pi-subagent-role-"));
 	let directory = normalize(created);
 	let promptPath = join(directory, "system-prompt");
 	let promptCreated = false;
@@ -160,7 +163,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 
 	constructor(options: LaunchRuntimeOptions) {
 		this.options = options;
-		registerModelTask(options.pi, ORCHESTRATOR_MODEL_TASK);
+		registerModelTask(options.pi, ISOLATED_MODEL_TASK);
 	}
 
 	now(): number {
@@ -177,11 +180,12 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		context: OperationContext,
 	): Promise<PreparedLaunch> {
 		abortIfNeeded(context.signal);
-		const input = { role, modelClass, task: ORCHESTRATOR_MODEL_TASK };
+		const input = { role, modelClass, task: ISOLATED_MODEL_TASK };
 		const prepared = await resolveConfiguredRoleLaunch(this.options.pi, this.options.context(), input);
 		if (prepared.missingSkills.length) {
 			throw new Error(`Role ${role} requires missing Skills: ${prepared.missingSkills.join(", ")}.`);
 		}
+		const executionBudget = this.options.executionBudget?.();
 		return Object.freeze({
 			launch: Object.freeze({
 				role: prepared.role,
@@ -189,7 +193,12 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 				model: `${prepared.model.provider}/${prepared.model.id}`,
 				thinkingLevel: prepared.thinkingLevel,
 				args: Object.freeze([...prepared.args]),
-				env: Object.freeze({ ...prepared.env }),
+				env: Object.freeze({
+					...prepared.env,
+					...(executionBudget === undefined ? {} : {
+						[EXECUTION_BUDGET_ENV]: JSON.stringify({ ...executionBudget, startedAt: this.now() } satisfies EphemeralSubagentExecutionBudget),
+					}),
+				}),
 				tools: Object.freeze([...prepared.tools]),
 			}),
 			prompt: prepared.systemPrompt,
@@ -204,13 +213,16 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		abortIfNeeded(context.signal);
 		const resolvedRoot = await this.options.resolveRoot(input.cwd, context);
 		if (typeof resolvedRoot !== "string" || !isAbsolute(resolvedRoot) || resolvedRoot.includes("\0")) {
-			throw new Error("Pi Orchestrator root resolver must return an absolute canonical path.");
+			throw new Error("Pi Subagent root resolver must return an absolute canonical path.");
 		}
 		const root = normalize(await realpath(resolvedRoot));
-		if (root !== resolvedRoot) throw new Error("Pi Orchestrator root resolver returned a non-canonical path.");
+		if (root !== resolvedRoot) throw new Error("Pi Subagent root resolver returned a non-canonical path.");
 		const rootInfo = await lstat(root);
-		if (!rootInfo.isDirectory()) throw new Error("Pi Orchestrator root must be an existing local directory.");
+		if (!rootInfo.isDirectory()) throw new Error("Pi Subagent root must be an existing local directory.");
 		abortIfNeeded(context.signal);
+		if (input.request.tasks.some((task) => task.kind === "changeset")) {
+			await this.options.preflightHost?.({ request: input.request, cwd: input.cwd, root }, context);
+		}
 		const main = await this.options.inspectMain({ root }, context);
 		const required = new Map<string, Set<ModelClass>>();
 		const addRequired = (role: string, modelClass: ModelClass): void => {

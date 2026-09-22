@@ -34,13 +34,14 @@ test("missing config yields defaults without a legacy fallback", async () => {
 	});
 });
 
-test("valid maxSubagents, maxTurns, maxTokens, and timeout are accepted", async () => {
+test("valid execution limits and timeout are accepted", async () => {
 	await withAgentDir(async (agentDir) => {
 		await configDir(agentDir);
 		await writeFile(configPath(agentDir), JSON.stringify({
 			maxSubagents: 3,
 			maxTurns: 1,
 			maxTokens: 2_000,
+			maxCorrections: 0,
 			timeout: { idleMinutes: 15, maxMinutes: 60 },
 		}));
 		assert.deepEqual(readSubagentConfig(agentDir), {
@@ -49,6 +50,7 @@ test("valid maxSubagents, maxTurns, maxTokens, and timeout are accepted", async 
 				maxSubagents: 3,
 				maxTurns: 1,
 				maxTokens: 2_000,
+				maxCorrections: 0,
 				timeout: { idleMinutes: 15, maxMinutes: 60 },
 			},
 		});
@@ -65,7 +67,7 @@ test("malformed JSON reports an error and preserves defaults", async () => {
 		assert.equal(loaded.source, "file");
 		assert.deepEqual(loaded.config, {});
 		assert.match(loaded.error!, /not valid JSON/);
-		assert.match(loaded.error!, /using defaults\.$/);
+		assert.match(loaded.error!, /delegation is blocked until this file is corrected\.$/);
 		assert.equal(await readFile(path, "utf8"), broken);
 		assert.match(readSubagentConfig(agentDir).error!, /not valid JSON/);
 	});
@@ -97,13 +99,13 @@ test("invalid concurrency, turn, and token limits report errors and preserve def
 	});
 });
 
-test("valid settings survive unrelated diagnostics", async () => {
+test("malformed explicit safety settings block delegation without discarding valid parsed values", async () => {
 	await withAgentDir(async (agentDir) => {
 		await configDir(agentDir);
 		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagents: 3, maxTurns: 1.5, maxTokens: 2_000 }));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, { maxSubagents: 3, maxTokens: 2_000 });
-		assert.match(loaded.error!, /invalid settings use defaults while valid settings still apply\.$/);
+		assert.match(loaded.error!, /delegation is blocked until this file is corrected\.$/);
 		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1, got 1.5/);
 	});
 });
@@ -130,7 +132,7 @@ test("timeout values that overflow Node timers report an error", async () => {
 		}));
 		const loaded = readSubagentConfig(agentDir);
 		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /exceeds the maximum supported delay/);
+		assert.match(loaded.error!, /exceeds 2147483647 ms/);
 	});
 });
 
