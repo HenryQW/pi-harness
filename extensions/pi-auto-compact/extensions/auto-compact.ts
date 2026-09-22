@@ -1,13 +1,21 @@
+import { isDeepStrictEqual } from "node:util";
 import {
 	compact,
 	estimateTokens,
+	findCutPoint,
 	getAgentDir,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { createConfigStore } from "@henryqw/pi-config-store";
 import type {
+	AgentBeforeSettleEvent,
+	CompactionEntry,
+	ContextEditEntryDraft,
 	ExtensionAPI,
 	ExtensionContext,
+	ProjectedSessionEntry,
+	SessionEntry,
+	TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import {
 	executeTaskRoutes,
@@ -20,16 +28,7 @@ import {
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
 
-/**
- * Proactive compaction runs at four points:
- * - turn_start: catch sessions already over threshold before next request.
- * - turn_end: catch growth caused by tool results before next LLM turn.
- * - agent_end: catch growth from the final provider turn.
- * - context: last-resort guard with a temporary keep-recent context.
- *
- * Pi's ctx.compact() aborts active low-level run internally. Mid-task
- * compaction sends a custom continuation message after summary.
- */
+/** Native boundaries maintain completed turns; the pre-request guard handles fresh oversized input. */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 70;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
 export const AUTO_COMPACT_TASK = {
@@ -79,7 +78,7 @@ function withoutDeletedHeaders(headers: Record<string, string | null> | undefine
 
 // Emergency context guard keeps recent messages while default compaction runs.
 const KEEP_RECENT_PERCENT = 15;
-const COMPACTION_INSTRUCTIONS = "Preserve current task to be resumed after compaction.";
+const COMPACTION_INSTRUCTIONS = "Preserve the current task and any unfinished work.";
 const RESUME_MESSAGE_TYPE = "pi-auto-compact/resume";
 const RESUME_MESSAGE = "Auto-compact ran. Continue the current task.";
 const COMPACTION_ABORT_ERROR = "This operation was aborted";
@@ -118,7 +117,7 @@ function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[
 		if (removed.length === 0) continue;
 		const notice: AgentMessage = {
 			role: "user",
-			content: `[Context compacted: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) were summarized. Continue with the current task.]`,
+			content: `[Temporary context reduction: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) are omitted from this request while compaction runs. Continue with the current task.]`,
 			timestamp: Date.now(),
 		};
 		if (systemTokens + suffixTokens[boundary] + estimateMessageTokens(notice) <= keepTokens) {
@@ -131,7 +130,7 @@ function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[
 	if (removed.length === 0) return null;
 	const notice: AgentMessage = {
 		role: "user",
-		content: `[Context compacted: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) were summarized. Continue with the current task.]`,
+		content: `[Temporary context reduction: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) are omitted from this request while compaction runs. Continue with the current task.]`,
 		timestamp: Date.now(),
 	};
 	const retained: AgentMessage[] = [];
@@ -139,16 +138,70 @@ function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[
 		if (i === cutIndex) retained.push(notice);
 		if (messages[i].role === "system" || i >= cutIndex) retained.push(messages[i]);
 	}
-	return retained;
+	return estimateTotalTokens(retained) <= keepTokens ? retained : null;
 }
 
-/** Final assistant turns need no automatic follow-up; tool turns do. */
-function hasToolCall(message: AgentMessage): boolean {
-	return (
-		message.role === "assistant" &&
-		Array.isArray(message.content) &&
-		message.content.some((part) => part.type === "toolCall")
-	);
+type BoundaryEvent = TurnEndEvent | AgentBeforeSettleEvent;
+
+/** findCutPoint operates on entries; materialize the effective content without changing the live session. */
+function effectiveEntries(projected: ProjectedSessionEntry[]): SessionEntry[] {
+	return projected.map(({ sourceEntry, messages }) => {
+		if (sourceEntry.type === "message" && messages.length === 1) {
+			return { ...sourceEntry, message: messages[0]! };
+		}
+		if (sourceEntry.type === "custom_message" && messages.length === 1 && messages[0]!.role === "user") {
+			return { ...sourceEntry, content: messages[0]!.content };
+		}
+		// An omitted message must not count towards the cut-point budget.
+		if ((sourceEntry.type === "message" || sourceEntry.type === "custom_message") && !messages.length) {
+			return { ...sourceEntry, type: "custom", customType: "omitted-context" };
+		}
+		return sourceEntry;
+	});
+}
+
+function fileOperations(messages: AgentMessage[], previous?: CompactionEntry) {
+	const read = new Set<string>();
+	const written = new Set<string>();
+	const edited = new Set<string>();
+	const details = previous?.details as { readFiles?: unknown; modifiedFiles?: unknown } | undefined;
+	if (Array.isArray(details?.readFiles)) {
+		for (const path of details.readFiles) if (typeof path === "string") read.add(path);
+	}
+	if (Array.isArray(details?.modifiedFiles)) {
+		for (const path of details.modifiedFiles) if (typeof path === "string") edited.add(path);
+	}
+	for (const message of messages) {
+		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+		for (const part of message.content) {
+			if (part.type !== "toolCall") continue;
+			const path = part.arguments?.path;
+			if (typeof path !== "string" || !path) continue;
+			if (part.name === "read") read.add(path);
+			else if (part.name === "write") written.add(path);
+			else if (part.name === "edit") edited.add(path);
+		}
+	}
+	return { read, written, edited };
+}
+
+/** An unchanged, successful read result with a matching persisted assistant call. */
+function readResult(entry: ProjectedSessionEntry, projected: ProjectedSessionEntry[], editedIds: Set<string>) {
+	const raw = entry.sourceEntry;
+	const message = entry.messages[0];
+	if (raw.type !== "message" || raw.message.role !== "toolResult" || message?.role !== "toolResult" ||
+		message.toolName !== "read" || message.isError || raw.message.isError || editedIds.has(raw.id) ||
+		!isDeepStrictEqual(message.content, raw.message.content) || !message.content.length ||
+		message.content.some((block) => block.type !== "text")) return null;
+	for (const candidate of projected.slice(0, projected.indexOf(entry))) {
+		const assistant = candidate.messages[0];
+		if (candidate.sourceEntry.type !== "message" || candidate.sourceEntry.message.role !== "assistant" ||
+			editedIds.has(candidate.sourceEntry.id) || assistant?.role !== "assistant" ||
+			!Array.isArray(assistant.content) || !isDeepStrictEqual(assistant.content, candidate.sourceEntry.message.content)) continue;
+		const call = assistant.content.find((block) => block.type === "toolCall" && block.id === message.toolCallId);
+		if (call?.type === "toolCall" && call.name === "read") return { message, args: call.arguments };
+	}
+	return null;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -160,9 +213,126 @@ export default function (pi: ExtensionAPI) {
 	});
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	// Prevent lifecycle hooks from starting duplicate summaries.
+	// Emergency compaction interrupts a run; boundary maintenance never does.
 	let compactionPending = false;
 	let compactionAbortExpected = false;
+	let failedBoundary: { session: string; leaf: string | null } | undefined;
+
+	const maintainBoundary = async (event: BoundaryEvent, ctx: ExtensionContext) => {
+		if (!active || compactionPending || event.outcome !== "completed" || ctx.signal?.aborted || !ctx.model) return;
+		if (event.type === "turn_end" && (event.message.role !== "assistant" ||
+			!Array.isArray(event.message.content) || !event.message.content.some((part) => part.type === "toolCall") ||
+			!event.toolResultEntryIds.length)) return;
+		const session = ctx.sessionManager.getSessionId();
+		const leaf = ctx.sessionManager.getLeafId();
+		if (failedBoundary?.session === session && failedBoundary.leaf === leaf) return;
+		if (event.entries.some((entry) => entry.type === "compaction")) return;
+		const window = ctx.model.contextWindow;
+		if (!window) return;
+		const projected = event.context.contextEntries.map((entry) => ({ ...entry, messages: [...entry.messages] }));
+		const pendingTokens = estimateTotalTokens(event.context.pendingMessages);
+		let tokens = estimateTotalTokens(event.context.contextMessages) + pendingTokens;
+		const threshold = window * autoCompactThreshold / 100;
+		if (tokens <= threshold) return;
+
+		const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
+			projectTrusted: ctx.isProjectTrusted(),
+		}).getCompactionSettings(ctx.model);
+		const prior = projected.findIndex((entry) => entry.sourceEntry.type === "compaction" && entry.messages.length > 0);
+		const start = prior < 0 ? 0 : prior + 1;
+		const existingEdits = new Set(ctx.sessionManager.getBranch().filter((entry) => entry.type === "context_edit").map((entry) => entry.targetId));
+		for (const entry of event.entries) if (entry.type === "context_edit") existingEdits.add(entry.targetId);
+		const initialCut = findCutPoint(effectiveEntries(projected), start, projected.length, settings.keepRecentTokens);
+		const current = event.type === "turn_end"
+			? projected.findIndex((entry) => entry.sourceEntry.id === event.messageEntryId)
+			: -1;
+		const protectedStart = current < 0 ? initialCut.firstKeptEntryIndex : Math.min(current, initialCut.firstKeptEntryIndex);
+		const edits: ContextEditEntryDraft[] = [];
+		for (let index = start; index < protectedStart && tokens > threshold; index++) {
+			const older = projected[index]!;
+			const original = readResult(older, projected, existingEdits);
+			if (!original) continue;
+			const keeper = projected.slice(protectedStart).find((entry) => {
+				const later = readResult(entry, projected, existingEdits);
+				return later && later.message.toolName === original.message.toolName &&
+				isDeepStrictEqual(later.args, original.args) && isDeepStrictEqual(later.message.content, original.message.content);
+			});
+			if (!keeper || !ctx.sessionManager.getEntry(older.sourceEntry.id) || !ctx.sessionManager.getEntry(keeper.sourceEntry.id)) continue;
+			const notice = [{ type: "text" as const, text: `[Duplicate read; full result retained at entry ${keeper.sourceEntry.id}.]` }];
+			const replacement = { ...original.message, content: notice };
+			const saved = estimateTokens(original.message) - estimateTokens(replacement);
+			if (saved <= 0) continue;
+			edits.push({ type: "context_edit", targetId: older.sourceEntry.id, replacement: { content: notice } });
+			older.messages = [replacement];
+			existingEdits.add(older.sourceEntry.id);
+			tokens -= saved;
+		}
+		if (tokens <= threshold) return { entries: [...event.entries, ...edits] };
+		// A prior context-producing proposal may not yet have a committed entry ID.
+		if (event.entries.some((entry) => entry.type !== "context_edit")) return edits.length ? { entries: [...event.entries, ...edits] } : undefined;
+		const entries = effectiveEntries(projected);
+		const cut = findCutPoint(entries, start, entries.length, settings.keepRecentTokens);
+		const kept = projected[cut.firstKeptEntryIndex]?.sourceEntry;
+		if (!kept || cut.firstKeptEntryIndex <= start || !ctx.sessionManager.getEntry(kept.id) ||
+			(current >= 0 && cut.firstKeptEntryIndex > current)) {
+			return edits.length ? { entries: [...event.entries, ...edits] } : undefined;
+		}
+		const historyEnd = cut.isSplitTurn ? cut.turnStartIndex : cut.firstKeptEntryIndex;
+		const messages = (from: number, to: number) => projected.slice(from, to)
+			.flatMap((entry) => entry.sourceEntry.type === "compaction" ? [] : entry.messages)
+			.filter((message) => message.role !== "system");
+		const history = messages(start, historyEnd);
+		const prefix = cut.isSplitTurn ? messages(cut.turnStartIndex, cut.firstKeptEntryIndex) : [];
+		if (!history.length && !prefix.length) return edits.length ? { entries: [...event.entries, ...edits] } : undefined;
+		const previous = prior >= 0 && projected[prior]!.sourceEntry.type === "compaction"
+			? projected[prior]!.sourceEntry as CompactionEntry : undefined;
+		const preparation = {
+			firstKeptEntryId: kept.id,
+			messagesToSummarize: history,
+			turnPrefixMessages: prefix,
+			isSplitTurn: cut.isSplitTurn,
+			tokensBefore: tokens,
+			previousSummary: previous?.summary,
+			fileOps: fileOperations([...history, ...prefix], previous),
+			settings,
+		};
+		const signal = ctx.signal;
+		try {
+			const routes = configuredTaskRoutes(ctx);
+			const summarize = async (model: NonNullable<ExtensionContext["model"]>, thinking: ExtensionContext["thinkingLevel"]) => {
+				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+				if (!auth.ok) throw new Error("Compaction model authentication failed.");
+				return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
+					auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
+					signal, thinking, undefined, auth.env);
+			};
+			let result: Awaited<ReturnType<typeof compact>> | undefined;
+			if (routes.length) {
+				try {
+					const routed = await executeTaskRoutes(routes, async (route) => ({
+						compaction: await summarize(route.model, route.thinkingLevel),
+					}), { signal, shouldFallback: () => true });
+					result = routed.compaction;
+				} catch {
+					if (!signal?.aborted) ctx.ui.notify("Configured task model routes failed; using current session model.", "error");
+				}
+			}
+			if (!result && !signal?.aborted) result = await summarize(ctx.model, ctx.thinkingLevel);
+			if (signal?.aborted || ctx.sessionManager.getSessionId() !== session || ctx.sessionManager.getLeafId() !== leaf) return;
+			if (!result?.summary.trim()) throw new Error("Compaction returned an empty summary.");
+			return { entries: [...event.entries, ...edits, {
+				type: "compaction" as const, summary: result.summary,
+				firstKeptEntryId: result.firstKeptEntryId, details: result.details, usage: result.usage,
+			}] };
+		} catch {
+			if (ctx.sessionManager.getSessionId() !== session || ctx.sessionManager.getLeafId() !== leaf) return;
+			if (!signal?.aborted) {
+				failedBoundary = { session, leaf };
+				ctx.ui.notify("Auto-compaction failed. Check model routes and authentication; run /compact to retry manually.", "error");
+			}
+			return edits.length && !signal?.aborted ? { entries: [...event.entries, ...edits] } : undefined;
+		}
+	};
 
 	const runCompaction = (ctx: ExtensionContext, resumeTask = true) => {
 		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
@@ -219,23 +389,16 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
-	// Do not use agent_settled here: long tool loops may cross threshold before
-	// the full run settles. These hooks inspect every provider-turn boundary.
-	// Pre-turn catches resumed/queued work before provider request starts.
-	pi.on("turn_start", (_event, ctx) => compactIfNeeded(ctx));
-
-	// Only tool-call turns need mid-run compaction.
-	pi.on("turn_end", (event, ctx) => {
-		if (hasToolCall(event.message)) compactIfNeeded(ctx);
-	});
-
-	// Catch threshold crossings caused by the final provider turn.
-	pi.on("agent_end", (_event, ctx) => compactIfNeeded(ctx, false));
+	// Boundary drafts are committed by Pi before the next natural request or final settlement.
+	pi.on("turn_end", maintainBoundary);
+	pi.on("agent_before_settle", maintainBoundary);
 
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
 	pi.on("context_with_system", (event, ctx) => {
-		if (!active || compactionPending) return;
+		if (!active || compactionPending || (failedBoundary && ctx.sessionManager &&
+			failedBoundary.session === ctx.sessionManager.getSessionId() &&
+			failedBoundary.leaf === ctx.sessionManager.getLeafId())) return;
 
 		const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow ?? 0;
 		const estimatedTokens = estimateTotalTokens(event.messages);
@@ -245,7 +408,10 @@ export default function (pi: ExtensionAPI) {
 			event.messages,
 			Math.floor(contextWindow * KEEP_RECENT_PERCENT / 100),
 		);
-		if (!truncated) return;
+		if (!truncated) {
+			ctx.ui.notify("Auto-compaction cannot safely reduce this first request; shorten the new input or run /compact.", "error");
+			return;
+		}
 
 		// Mark pending before deferring. Another context event can fire before
 		// setImmediate runs, and must not schedule a second compaction.

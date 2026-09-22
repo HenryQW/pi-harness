@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="auto-compact-flow-title auto-compact-flow-desc">
+      <title id="auto-compact-flow-title">How auto-compact handles a full context</title>
+      <desc id="auto-compact-flow-desc">After a completed turn or final answer, context above the threshold is reduced by replacing older exact duplicate read results. If that is insufficient, older context is summarized using the fast task routes and then the session model. Successful summaries become checkpoints; failures are reported without a checkpoint. A separate emergency path compacts already-full resumed sessions directly. Oversized fresh input is temporarily reduced before compaction when safe; otherwise the limit is reported without discarding input.</desc>
+      <defs>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
+          .title { fill: #101828; font: 400 28px 'Instrument Serif', Georgia, serif; }
+          .intro { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }
+          .label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .14em; }
+          .name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+          .detail { fill: #4c5665; font: 400 9px 'Geist Mono', monospace; text-anchor: middle; }
+          .note { fill: #4c5665; font: 400 10px 'Geist', sans-serif; }
+          .branch { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .06em; }
+          .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+          .input { fill: #e6e4de; stroke: #6a7282; stroke-width: 1; }
+          .focus { fill: #e3e9f8; stroke: #1d4ed8; stroke-width: 1.2; }
+          .state { fill: #e6e4de; stroke: #4c5665; stroke-width: 1; }
+          .path { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#auto-arrow); }
+          .primary { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#auto-arrow-accent); }
+          .emergency { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#auto-arrow); }
+        </style>
+        <marker id="auto-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+        <marker id="auto-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+        <marker id="auto-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+      <text class="label" x="48" y="60">PI-AUTO-COMPACT  /  CONTEXT MAINTENANCE</text>
+      <text class="title" x="48" y="96">Trim first. Summarize only if needed.</text>
+      <text class="intro" x="48" y="120">Normal boundaries never interrupt the run; the pre-request guard is an exceptional path.</text>
+      <line x1="48" y1="140" x2="1232" y2="140" stroke="#101828" stroke-opacity=".14"/>
+      <text class="label" x="64" y="176">COMPLETED TURN / FINAL ANSWER</text>
+      <rect x="920" y="156" width="312" height="432" rx="8" fill="#e6e4de"/>
+      <text class="label" x="944" y="184">EXCEPTION  /  BEFORE A REQUEST</text>
+
+      <!-- Orthogonal connectors; labels stay clear of both strokes and nodes. -->
+      <path class="path" d="M224 248 H280"/>
+      <path class="primary" d="M440 248 H496"/>
+      <path class="primary" d="M656 248 H704"/>
+      <path class="path" d="M360 304 V376"/>
+      <path class="path" d="M704 248 H688 Q680 248 680 256 V332 Q680 340 672 340 H444 Q436 340 436 348 V376"/>
+      <path class="primary" d="M784 304 V376"/>
+      <path class="path" d="M784 452 V488"/>
+      <path class="emergency" d="M1072 284 V360"/>
+      <rect x="364" y="320" width="24" height="12" rx="2" fill="#f0eee9"/><text class="branch" x="368" y="329">NO</text>
+      <rect x="692" y="212" width="28" height="12" rx="2" fill="#f0eee9"/><text class="branch" x="696" y="221">YES</text>
+      <rect x="804" y="320" width="24" height="12" rx="2" fill="#f0eee9"/><text class="branch" x="808" y="329">NO</text>
+      <rect x="564" y="320" width="28" height="12" rx="2" fill="#f0eee9"/><text class="branch" x="568" y="329">YES</text>
+
+      <!-- Completed-boundary path. -->
+      <rect class="input" x="64" y="216" width="160" height="64" rx="8"/>
+      <text class="name" x="144" y="244">Turn or final answer</text>
+      <text class="detail" x="144" y="264">COMPLETED</text>
+      <polygon class="node" points="360,192 440,248 360,304 280,248"/>
+      <text class="name" x="360" y="244">Context above</text>
+      <text class="name" x="360" y="260">threshold?</text>
+      <rect class="focus" x="496" y="216" width="160" height="64" rx="8"/>
+      <text class="name" x="576" y="244">Trim duplicate reads</text>
+      <text class="detail" x="576" y="264">OLDER EXACT MATCHES</text>
+      <polygon class="node" points="784,192 864,248 784,304 704,248"/>
+      <text class="name" x="784" y="244">Below threshold</text>
+      <text class="name" x="784" y="260">after trimming?</text>
+      <rect class="state" x="288" y="376" width="200" height="76" rx="8"/>
+      <text class="name" x="388" y="408">Continue naturally</text>
+      <text class="detail" x="388" y="430">COMMIT EDITS, IF ANY</text>
+      <rect class="focus" x="692" y="376" width="180" height="76" rx="8"/>
+      <text class="name" x="782" y="408">Summarize older context</text>
+      <text class="detail" x="782" y="430">FAST → FALLBACK → SESSION</text>
+      <rect class="node" x="692" y="488" width="180" height="76" rx="8"/>
+      <text class="name" x="782" y="514">Summary outcome</text>
+      <text class="detail" x="782" y="538">VALID → CHECKPOINT</text>
+      <text class="detail" x="782" y="554">FAILED → REPORT, NO CHECKPOINT</text>
+
+      <!-- Independent emergency path; never discard an unsafe fresh input. -->
+      <rect class="input" x="952" y="220" width="240" height="64" rx="8"/>
+      <text class="name" x="1072" y="244">No completed boundary</text>
+      <text class="detail" x="1072" y="264">RESUMED / FORKED / FRESH INPUT</text>
+      <rect class="node" x="952" y="360" width="240" height="180" rx="8"/>
+      <text class="name" x="1072" y="388">Emergency path</text>
+      <text class="detail" x="1072" y="416">SESSION ABOVE THRESHOLD</text>
+      <text class="name" x="1072" y="438">ctx.compact() → resume</text>
+      <line x1="968" y1="452" x2="1176" y2="452" stroke="#101828" stroke-opacity=".14"/>
+      <text class="detail" x="1072" y="474">OVERSIZED FRESH INPUT</text>
+      <text class="name" x="1072" y="496">Retain recent context if safe</text>
+      <text class="name" x="1072" y="516">then compact + resume</text>
+      <text class="detail" x="1072" y="532">UNSAFE → REPORT; KEEP INPUT</text>
+
+      <text class="note" x="64" y="592">Context edits affect future estimates, not raw history, past usage, or secret retention.</text>
+      <line x1="48" y1="636" x2="1232" y2="636" stroke="#101828" stroke-opacity=".14"/>
+      <text class="label" x="48" y="668">LEGEND</text>
+      <rect class="focus" x="148" y="652" width="24" height="16" rx="4"/>
+      <text class="note" x="184" y="665">Context reduction</text>
+      <polygon class="node" points="388,652 400,660 388,668 376,660"/>
+      <text class="note" x="412" y="665">Threshold decision</text>
+      <line x1="624" y1="660" x2="656" y2="660" stroke="#4c5665" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#auto-arrow)"/>
+      <text class="note" x="672" y="665">Exceptional path</text>
+    </svg>
