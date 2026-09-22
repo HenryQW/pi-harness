@@ -47,7 +47,7 @@
 
     <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="orchestration-architecture-title orchestration-architecture-desc">
       <title id="orchestration-architecture-title">Pi Orchestrator checked execution architecture</title>
-      <desc id="orchestration-architecture-desc">Architecture diagram showing Pi Main resolving each task-selected Role just in time, returning bounded text to durable state, and sending changesets through isolated Herdr work, direct checks, optional judgment, and guarded Main integration.</desc>
+      <desc id="orchestration-architecture-desc">Architecture diagram showing Pi Main resolving each task-selected Role just in time, returning bounded text to durable state, and automatically advancing exact ready changesets through isolated Herdr work, direct checks, optional judgment, and guarded Main integration.</desc>
       <defs>
         <style>
           .zone { fill: #e6e4de; stroke: #101828; stroke-opacity: .141; stroke-width: 1; }
@@ -204,8 +204,8 @@
       <rect class="node" x="656" y="472" width="240" height="72" rx="6"/>
       <rect class="tag" x="668" y="484" width="40" height="16" rx="2"/>
       <text class="tag-text" x="688" y="496">CHECK</text>
-      <text class="name" x="776" y="508">Changeset checks + judgment</text>
-      <text class="sub" x="776" y="528">LIVE WORKER · REBASE · EXACT PATCH</text>
+      <text class="name" x="776" y="508">Automatic checked progression</text>
+      <text class="sub" x="776" y="528">READINESS · REBASE · CHECK · JUDGMENT</text>
 
       <!-- Protected Main repository -->
       <rect class="node-focal" x="992" y="472" width="216" height="88" rx="6"/>

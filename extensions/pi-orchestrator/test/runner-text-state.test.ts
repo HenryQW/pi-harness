@@ -381,18 +381,21 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			t.after(async () => await rm(directory, { recursive: true, force: true }));
 			const root = join(directory, "workspace");
 			await mkdir(root);
+			let persisted: RunState | undefined;
 			const store = {
 				async withProductiveRunLease<T>(_root: string, action: (lease: unknown) => Promise<T>): Promise<T> {
 					return await action({});
 				},
 				async withLock<T>(_root: string, action: (lifecycle: unknown) => Promise<T>): Promise<T> {
-					return await action({
-						productiveRunLeaseActive: true,
-						waitUnlocked: async (operation: () => Promise<unknown>) => await operation(),
-					});
+					return await action({ productiveRunLeaseActive: true });
 				},
 				async create(state: RunState) {
-					return { state, save: async (): Promise<void> => {} };
+					persisted = state;
+					return { state, save: async (): Promise<void> => { persisted = state; } };
+				},
+				async load() {
+					if (!persisted) throw new Error("Expected in-memory state.");
+					return { state: persisted, save: async (): Promise<void> => {} };
 				},
 			} as unknown as FileRunStore;
 			const runner = new OrchestratorRunner(

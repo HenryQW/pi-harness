@@ -15,6 +15,7 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - **Transient Launch**: one freshly resolved Role prompt in a private temporary file used only while Pi starts.
 - **Assignment**: request goal and task requirements, deliverable, checks, or correction sent as a task message rather than Role instructions.
 - **Judgment**: an explicit criterion checked by its selected Role against exact private patch evidence.
+- **Readiness**: durable proof that one exact live-worker candidate passed its declared preliminary checks and is sealed for automatic integration; it is not user approval.
 - **Attention**: durable state that requires one deliberate retry, verify, finalize, or abort decision.
 
 ## Invariants
@@ -31,24 +32,25 @@ Act as the sole owner of durable checked local implementation graphs for Pi Main
 - Each changeset attempt owns one worktree, one Herdr workspace, one worker tab, and one agent. The worker tab is created after the workspace pane list is stable, and it is never the worktree root pane. Each allocation stores kind-specific plan and result fields before non-idempotent creation.
 - Task identity ignores Git-ignored dependency, build, and index artifacts created by Role tooling. It still rejects tracked changes, non-ignored untracked files, hidden index entries, gitlinks, and branch or commit drift.
 - A task worker receives one initial assignment. One correction is allowed only after a settled prompt or an unchanged failed check candidate.
-- Ready tasks run in parallel. Text tasks complete in place. Changeset preliminary validation uses direct checks only. Explicit acceptance records the exact checked candidate while its Herdr worker remains live.
-- Each accepted changeset records an exact rebase chain, then runs task checks and any declared ephemeral judgment again. The worker remains live through guarded Main integration. Only durable exact integration permits termination, and only exact termination permits cleanup.
+- Optional same-agent follow-ups are bounded and admitted only while a changeset is actively working. Each must produce a new clean commit and rerun preliminary checks. After the final checked-evidence save, one synchronous queue-or-seal transition prevents admitted revisions from being lost; the runner never waits for routine input.
+- Ready tasks run in parallel waves. Text tasks complete in place. Changeset preliminary validation uses direct checks only. Durable readiness records the exact checked candidate while its Herdr worker remains live.
+- Each ready changeset records an exact rebase chain, then runs task checks and any declared ephemeral judgment again. Changesets integrate in declared request order after their wave settles. The worker remains live through guarded Main integration. Only durable exact integration permits termination, and only exact termination permits cleanup.
 - Task and final checks are authoritative. Checks run directly from exact command and argument arrays without a shell.
 - Durable check evidence keeps every exact command, argument array, exit status, killed status, and before/after identity. Only one failed-batch diagnostic result may retain bounded output.
 - Judgment uses pi-subagent's exact `{base, tip, patchPath}` evidence and accepts only exact `PASS`.
-- Main identity is checked at each rebase, integration, and final boundary. Movement during accepted work records another exact rebase; unproved drift fails closed and preserves recovery evidence.
-- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Runtime evidence is bounded before persistence. Reads validate strict state schema v3, reject v2 and older versions, and never migrate another format.
+- Main identity is checked at each rebase, integration, and final boundary. Movement during ready work records another exact rebase; unproved drift fails closed and preserves recovery evidence.
+- Request state lives in `config/pi-orchestrator/state/`, outside the repository. Runtime evidence is bounded before persistence. Reads validate strict state schema v4, reject v3 and older versions without mutation or cleanup, and never migrate another format.
 - `orchestrate_status` is non-destructive. It reports saved state, Main identity, and only continuations proven safe; it does not reconcile, replay, terminate, or clean up.
 - `orchestrate_resume` permits only `retry`, `verify`, or `finalize` under a fresh bounded recovery deadline. Uncertain recovery retains the worker and resources. `orchestrate_abort` is the only pre-integration path that terminates owned workers.
 - Cleanup records uncertainty. The runtime never reports unknown resources as absent or force-deletes recoverable work.
 - Role child launches register no `orchestrate_*` tools. Main registers exactly execute, status, resume, and abort.
-- The package stops at checked local integration. It does not push, manage pull requests, run swarms, migrate old state, or support old protocols.
+- The package stops at checked local integration. Automatic progression does not authorize publishing, deployment, pushing, pull requests, destructive work outside the request, swarms, old-state migration, or old protocols.
 - Old Auto DAG state is inert and must be settled before upgrade. The repository installer removes only the exact old npm source after every selected package installs successfully.
 - Do not add outboxes, delivery hosts, receipts, or broad transport machinery.
 
 ## Package boundaries
 
-- pi-orchestrator alone owns request schemas, durable checked graphs, dependency waves, checks, review policy, Git integration, Herdr lifecycle, recovery, and final acceptance.
+- pi-orchestrator alone owns request schemas, durable checked graphs, dependency waves, checks, review policy, Git integration, Herdr lifecycle, recovery, and final completion.
 - pi-subagent owns effective Roles, lightweight generic `delegate_task`, Pi launch policy, the ephemeral executor, low-level worktree APIs, and exact review evidence.
 - pi-herdr owns typed Herdr CLI execution and Pi agent startup. pi-orchestrator requires Herdr 0.9.0 and protocol 22 at runtime.
 - Main chooses `delegate_task` for lightweight generic delegation and `orchestrate_*` for this checked protocol. The package Skill documents that choice.
