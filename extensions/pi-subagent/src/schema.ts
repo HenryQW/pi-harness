@@ -329,6 +329,7 @@ const TaskAttemptSchema = Type.Object({
 	candidateBase: Type.Optional(WorkspaceSchema),
 	preliminaryChecks: Type.Optional(CheckBatchEvidenceSchema),
 	readiness: Type.Optional(ReadinessSchema),
+	superseded: Type.Optional(Type.Literal(true)),
 	transitions: Type.Array(RebaseTransitionSchema, { maxItems: 32 }),
 	termination: Type.Optional(WorkerTerminationSchema),
 	preliminaryReview: Type.Optional(ReviewEvidenceSchema),
@@ -357,7 +358,7 @@ const TextTaskOutputSchema = Type.Object({
 
 const TextTaskAttemptSchema = Type.Object({
 	number: Type.Integer({ minimum: 1, maximum: 2 }),
-	status: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed")]),
+	status: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed"), Type.Literal("superseded")]),
 	failure: OptionalRuntimeTextSchema,
 	output: Type.Optional(TextTaskOutputSchema),
 }, { additionalProperties: false });
@@ -794,8 +795,8 @@ function validateTextTaskState(taskState: TextTaskState): void {
 	for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
 		if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed text attempt order for ${taskState.taskId}.`);
 		if (attemptIndex !== taskState.attempts.length - 1) {
-			if (attempt.status !== "failed" || attempt.output) {
-				throw new Error(`Non-latest text attempt ${attempt.number} for ${taskState.taskId} must be failed with no output.`);
+			if (!['failed', 'superseded'].includes(attempt.status) || attempt.output) {
+				throw new Error(`Non-latest text attempt ${attempt.number} for ${taskState.taskId} must be failed or superseded with no output.`);
 			}
 		} else if (attempt.status === "completed") {
 			if (!attempt.output) throw new Error(`Completed text attempt ${attempt.number} for ${taskState.taskId} lacks output.`);
@@ -813,7 +814,7 @@ function validateTextTaskState(taskState: TextTaskState): void {
 		}
 	}
 	const expectedLatestStatus = taskState.status === "pending"
-		? undefined
+		? taskState.attempts.length ? "superseded" : undefined
 		: taskState.status === "running"
 			? "running"
 			: taskState.status === "completed"
@@ -1024,7 +1025,7 @@ export function parseRunState(value: unknown): RunState {
 			if (!definition) throw new Error(`Wave has an unknown task ${id}.`);
 			const changesetParents = new Set<string>();
 			const visit = (task: TaskRequest): void => {
-				for (const source of task.dependsOn) {
+				for (const source of [...task.dependsOn, ...task.contextFrom]) {
 					const predecessor = request.tasks.find((item) => item.id === source)!;
 					if (predecessor.kind === "changeset") changesetParents.add(source);
 					else visit(predecessor);
@@ -1057,6 +1058,9 @@ export function parseRunState(value: unknown): RunState {
 			continue;
 		}
 		if (taskState.kind !== "changeset") throw new Error(`Malformed task kind for ${definition.id}.`);
+		if (taskState.status === "pending" && taskState.attempts.length && !taskState.attempts.at(-1)?.superseded) {
+			throw new Error(`Pending task ${definition.id} lacks superseded attempt evidence.`);
+		}
 		for (const [attemptIndex, attempt] of taskState.attempts.entries()) {
 			if (attempt.number !== attemptIndex + 1) throw new Error(`Malformed attempt order for ${definition.id}.`);
 			if (attempt.preliminaryChecks) {

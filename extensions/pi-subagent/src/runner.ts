@@ -579,8 +579,25 @@ function taskDependenciesCompleted(state: RunState, taskId: string): boolean {
 
 /** Context edges carry only prompt text, never the source checkout. */
 function hasChangesetDependency(state: RunState, taskId: string): boolean {
-	return taskRequest(state, taskId).dependsOn.some((source) =>
+	const request = taskRequest(state, taskId);
+	return [...request.dependsOn, ...request.contextFrom].some((source) =>
 		taskState(state, source).kind === "changeset" || hasChangesetDependency(state, source));
+}
+
+/** Include prompt-context consumers when an invalidated text output fed later work. */
+function affectedDependents(state: RunState, taskId: string): TaskState[] {
+	const affected = new Set([taskId]);
+	let changed = true;
+	while (changed) {
+		changed = false;
+		for (const definition of state.request.tasks) {
+			if (!affected.has(definition.id) && [...definition.dependsOn, ...definition.contextFrom].some((source) => affected.has(source))) {
+				affected.add(definition.id);
+				changed = true;
+			}
+		}
+	}
+	return state.tasks.filter((task) => task.taskId !== taskId && affected.has(task.taskId) && task.attempts.length > 0);
 }
 
 /** Every changeset predecessor must be present in this exact committed snapshot. */
@@ -1100,9 +1117,31 @@ export class IsolatedRunner {
 					? generation.combinedTip ?? generation.stages.at(-1)?.tip ?? generation.stages.at(-1)?.onto ?? generation.integrationBase
 					: state.main;
 				if (!sameIdentity(action.expectedTip, tip)) throw new Error("Arbitration has a stale combined tip.");
-				if (state.request.tasks.some((item) => item.dependsOn.includes(action.taskId)
-					&& taskState(state, item.id).attempts.length)) {
-					throw new Error("A dependent already ran on this candidate; new dependent work is required before arbitration.");
+				const affected = affectedDependents(state, action.taskId);
+				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.taskId === action.taskId)
+					&& generation.number >= 32) {
+					throw new Error("Integration generation limit is exhausted; no bounded rebuild is available.");
+				}
+				if (affected.some((dependent) => dependent.attempts.length >= 2)) {
+					throw new Error("A dependent has exhausted its bounded fresh attempts; arbitration cannot invalidate it safely.");
+				}
+				if (affected.some((dependent) => dependent.kind === "changeset" && (
+					dependent.attempts.at(-1)!.prompts.some((prompt) => prompt.status === "submitting" || prompt.status === "ambiguous")
+					|| dependent.attempts.at(-1)!.allocations.some((allocation) => allocation.status === "allocating" || allocation.status === "unknown")
+					|| dependent.attempts.at(-1)!.termination))) {
+					throw new Error("A dependent has uncertain or released worker resources; reconcile before arbitration.");
+				}
+				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.status !== "staged")) {
+					throw new Error("Uncertain or conflicted stage must be reconciled before superseding its generation.");
+				}
+				if (generation?.status === "superseded" && affected.length) {
+					throw new Error("Dependent attempts belong to a superseded generation; choose a fresh staged candidate.");
+				}
+				if (generation && generation.status !== "superseded" && affected.some((dependent) =>
+					dependent.kind === "changeset" && !dependent.attempts.every((item) =>
+						item.waveBase.head === state.main.head || generation!.stages.some((stage) => stage.status === "staged"
+							&& stage.tip && sameIdentity(stage.tip, item.waveBase))))) {
+					throw new Error("A dependent lacks a proven staged source snapshot.");
 				}
 				if (action.action === "revise") {
 					if (!this.correctionAllowed(state, changesetTaskRequest(state, task.taskId), attempt!, true)) {
@@ -1126,6 +1165,21 @@ export class IsolatedRunner {
 					delete generation.correction;
 				}
 				candidate.decision = "rejected";
+				for (const dependent of affected) {
+					if (dependent.kind === "text") {
+						const last = dependent.attempts.at(-1)!;
+						last.status = "superseded";
+						delete last.output;
+						delete last.failure;
+					} else {
+						dependent.attempts.at(-1)!.superseded = true;
+						for (const old of state.integration.candidates.filter((item) => item.taskId === dependent.taskId && !item.decision)) {
+							old.decision = "rejected";
+						}
+					}
+					dependent.status = "pending";
+					delete dependent.failure;
+				}
 				task.status = "needs_attention";
 				task.failure = action.action === "revise" ? action.instruction : "Main rejected this candidate; no automatic replacement.";
 				await this.saveProductive(handle); // Freeze before prompting the retained worker.

@@ -1686,7 +1686,8 @@ async function stagedForPromotion(t: test.TestContext, id: string) {
 		action: { id, generation: 1, expectedTip } };
 }
 
-test("text dependent reads the committed stage in a separate checkout", async (t) => {
+test("revision supersedes transitive text and changeset work; explicit advance rebuilds from the new stage", async (t) => {
+	let stageNumber = 0;
 	const git = new class extends StagingGit {
 		override async allocate(root: string, childId: string, base: WorkspaceIdentity,
 			onPrepared: (info: WorktreeInfo) => Promise<void>, signal?: AbortSignal) {
@@ -1694,7 +1695,7 @@ test("text dependent reads the committed stage in a separate checkout", async (t
 		}
 		override async stage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity,
 			_stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt>> {
-			await writeFile(join(integration.path, "README.md"), "staged content\n");
+			await writeFile(join(integration.path, "README.md"), `staged content ${++stageNumber}\n`);
 			execFileSync("git", ["add", "README.md"], { cwd: integration.path });
 			execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "stage"], { cwd: integration.path });
 			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: integration.path, encoding: "utf8" }).trim();
@@ -1712,7 +1713,8 @@ test("text dependent reads the committed stage in a separate checkout", async (t
 	const checked = new (await import("../src/git-runtime.ts")).CheckedGitRuntime();
 	runtime.main = await checked.inspectMain({ root }, { signal: new AbortController().signal });
 	const id = "staged-text-dependent";
-	const ready = await runner.execute(request(id, [changesetTask("first"), { ...textTask("report"), dependsOn: ["first"] }]), root);
+	const ready = await runner.execute(request(id, [{ ...changesetTask("second"), contextFrom: ["report"] },
+		{ ...textTask("report"), dependsOn: ["first"] }, changesetTask("first")]), root);
 	const first = ready.state.integration.candidates[0]!;
 	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "first", attempt: first.attempt,
 		candidate: first.tip, expectedTip: ready.state.main }, root);
@@ -1720,14 +1722,38 @@ test("text dependent reads the committed stage in a separate checkout", async (t
 	runtime.integrationIdentity = tip;
 	runtime.integrationPath = staged.state.integration.generations[0]!.worktree!.path;
 	const result = await runner.integrate({ id, generation: 1, action: "advance", expectedTip: tip }, root);
-	assert.equal(textState(result.state, "report").attempts[0]?.output?.text, "staged content", JSON.stringify(textState(result.state, "report")));
-	assert.equal(await (await import("node:fs/promises")).readFile(join(root, "README.md"), "utf8"), "fixture\n");
-	await assert.rejects(runner.stage({ id, action: "reject", generation: 1, taskId: "first", attempt: first.attempt,
-		candidate: first.tip, expectedTip: tip }, root), /new dependent work is required/);
-	await assert.rejects(runner.stage({ id, action: "revise", generation: 1, taskId: "first", attempt: first.attempt,
-		candidate: first.tip, expectedTip: tip, instruction: "Change predecessor." }, root), /new dependent work is required/);
+	assert.equal(textState(result.state, "report").attempts[0]?.output?.text, "staged content 1", JSON.stringify(textState(result.state, "report")));
+	const oldDependent = result.state.integration.candidates.find((candidate) => candidate.taskId === "second")!;
+	const revised = await runner.stage({ id, action: "revise", generation: 1, taskId: "first", attempt: first.attempt,
+		candidate: first.tip, expectedTip: tip, instruction: "Change predecessor." }, root);
+	assert.equal(textState(revised.state, "report").status, "pending");
+	assert.equal(textState(revised.state, "report").attempts[0]?.status, "superseded");
+	assert.equal(textState(revised.state, "report").attempts[0]?.output, undefined);
+	assert.equal(changesetState(revised.state, "second").attempts[0]?.superseded, true);
+	assert.equal(revised.state.integration.candidates.find((candidate) => candidate.taskId === "second")?.decision, "rejected");
+	assert.equal(revised.state.integration.generations[0]?.status, "superseded");
+	assert.deepEqual(runtime.terminationCalls, []);
+	await assert.rejects(runner.integrate({ id, generation: 1, action: "advance", expectedTip: tip }, root), /stale generation/);
+	await assert.rejects(runner.stage({ id, action: "stage", generation: 2, taskId: "second", attempt: 1,
+		candidate: oldDependent.tip, expectedTip: ready.state.main }, root), /stale or unowned candidate/);
+	const successor = revised.state.integration.candidates.at(-1)!;
+	const restaged = await runner.stage({ id, action: "stage", generation: 2, taskId: "first", attempt: successor.attempt,
+		candidate: successor.tip, expectedTip: ready.state.main }, root);
+	const freshTip = restaged.state.integration.generations[1]!.combinedTip!;
+	runtime.integrationIdentity = freshTip;
+	runtime.integrationPath = restaged.state.integration.generations[1]!.worktree!.path;
+	const rebuilt = await runner.integrate({ id, generation: 2, action: "advance", expectedTip: freshTip }, root);
+	assert.equal(textState(rebuilt.state, "report").attempts[1]?.output?.text, "staged content 2");
+	assert.equal(changesetState(rebuilt.state, "second").attempts[1]?.waveBase.head, freshTip.head);
+	assert.equal(runtime.allocationBases.at(-1)?.checkout, runtime.integrationPath);
+	const beforeLimit = await runner.status(id, root);
+	await assert.rejects(runner.stage({ id, action: "reject", generation: 2, taskId: "first", attempt: successor.attempt,
+		candidate: successor.tip, expectedTip: freshTip }, root), /exhausted its bounded fresh attempts/);
+	const afterLimit = await runner.status(id, root);
+	assert.deepEqual(afterLimit.state.integration, beforeLimit.state.integration);
 	assert.equal(runtime.main.head, ready.state.main.head);
-	assertParsed(result.state);
+	assert.equal(await (await import("node:fs/promises")).readFile(join(root, "README.md"), "utf8"), "fixture\n");
+	assertParsed(rebuilt.state);
 });
 
 test("Main advances a changeset dependent from its exact staged snapshot and retains its candidate", async (t) => {
@@ -1755,9 +1781,24 @@ test("Main advances a changeset dependent from its exact staged snapshot and ret
 	assert.throws(() => parseRunState(forged), /exact staged dependency snapshot/);
 	await assert.rejects(runner.stage({ id, action: "stage", generation: 1, taskId: "second", attempt: 1,
 		candidate: advanced.state.integration.candidates[1]!.tip, expectedTip: ready.state.main }, root), /stale combined tip/);
-	await assert.rejects(runner.stage({ id, action: "reject", generation: 1, taskId: "first", attempt: 1,
-		candidate: first.tip, expectedTip: tip }, root), /new dependent work is required/);
-	assertParsed(advanced.state);
+	const oldDependent = advanced.state.integration.candidates[1]!;
+	const conflict = await runner.stage({ id, action: "stage", generation: 1, taskId: "second", attempt: 1,
+		candidate: oldDependent.tip, expectedTip: tip }, root);
+	assert.equal(conflict.state.integration.generations[0]?.status, "conflict");
+	git.resolved = true;
+	const stagedDependent = await runner.stage({ id, action: "resolve", generation: 1, taskId: "second", attempt: 1,
+		candidate: oldDependent.tip, expectedTip: tip }, root);
+	const combined = stagedDependent.state.integration.generations[0]!.combinedTip!;
+	const rejected = await runner.stage({ id, action: "reject", generation: 1, taskId: "first", attempt: 1,
+		candidate: first.tip, expectedTip: combined }, root);
+	assert.equal(rejected.state.integration.generations[0]?.combinedTip, undefined);
+	await assert.rejects(runner.stage({ id, action: "stage", generation: 2, taskId: "second", attempt: 1,
+		candidate: oldDependent.tip, expectedTip: ready.state.main }, root), /stale or unowned candidate/);
+	assert.equal(changesetState(rejected.state, "second").status, "pending");
+	assert.equal(changesetState(rejected.state, "second").attempts[0]?.superseded, true);
+	assert.equal(rejected.state.integration.candidates[1]?.decision, "rejected");
+	assert.deepEqual(runtime.terminationCalls, []);
+	assertParsed(rejected.state);
 });
 
 test("failed combined root full-suite check leaves Main unchanged and forbids promotion", async (t) => {
