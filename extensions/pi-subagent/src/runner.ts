@@ -1451,14 +1451,16 @@ export class IsolatedRunner {
 			for (const definition of request.tasks.filter((task) => hasChangesetDependency(state, task.id))) {
 				const dependent = taskState(state, definition.id);
 				const launch = [...state.waves].reverse().find((wave) => wave.taskIds.includes(definition.id));
-				if (generation.correction || !launch || !dependent.attempts.length || (definition.kind === "text" && dependent.status !== "completed")
-					|| (definition.kind === "changeset" && !generation.stages.some((stage) =>
-						stage.taskId === definition.id && stage.status === "staged" && stage.attempt === dependent.attempts.length
-						&& generation.stages.some((predecessor) => predecessor.status === "staged"
-							&& sameIdentity(predecessor.tip!, launch.base))))) {
+				const stageIndex = generation.stages.findIndex((stage) => stage.taskId === definition.id);
+				const attempt = dependent.kind === "changeset" ? dependent.attempts.at(-1) : undefined;
+				if (!launch || !dependent.attempts.length || (definition.kind === "text" && dependent.status !== "completed")
+					|| (definition.kind === "changeset" && (stageIndex < 0 || !attempt
+						|| generation.stages[stageIndex]!.status !== "staged" || generation.stages[stageIndex]!.attempt !== dependent.attempts.length
+						|| attempt.waveNumber !== launch.number || !sameIdentity(attempt.waveBase, launch.base)))) {
 					throw new Error(`Dependent ${definition.id} lacks a fresh stage from the selected integration snapshot.`);
 				}
-				if (!generation.stages.some((stage) => stage.status === "staged" && sameIdentity(stage.tip!, launch.base))) {
+				if (!(stageIndex < 0 ? generation.stages : generation.stages.slice(0, stageIndex)).some((stage) =>
+					stage.status === "staged" && sameIdentity(stage.tip!, launch.base))) {
 					throw new Error(`Dependent ${definition.id} ran on a superseded snapshot.`);
 				}
 			}

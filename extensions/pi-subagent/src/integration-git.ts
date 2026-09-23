@@ -345,9 +345,15 @@ export class IntegrationGit {
 					await this.inspectCorrection(root, integration, base, stages, correction.from, correction.to, signal);
 				}
 			}
+			const stageIndex = stages.findIndex((stage) => stage.worker.branch === `refs/heads/${info.branch}`);
 			const expected = info.path === integration.path ? correction?.to ?? stages.at(-1)!.tip
-				: stages.find((stage) => stage.worker.branch === `refs/heads/${info.branch}`)?.worker;
-			if (!expected || !await ancestor(info.baseCommit, base.head, root, signal)) return { outcome: "blocked", failure: "No proven staged tip for this owned checkout." };
+				: stages[stageIndex]?.worker;
+			const stagedBase = info.path === integration.path ? info.baseCommit === base.head
+				: await ancestor(info.baseCommit, base.head, root, signal)
+					|| stages.slice(0, stageIndex).some((stage) => stage.tip.head === info.baseCommit);
+			if (!expected || !stagedBase || !await ancestor(info.baseCommit, expected.head, root, signal)) {
+				return { outcome: "blocked", failure: "No proven staged base and candidate for this owned checkout." };
+			}
 			const registered = await requireGit(["worktree", "list", "--porcelain", "-z"], root, signal);
 			const present = registered.split("\0").includes(`worktree ${info.path}`);
 			const pathPresent = await exists(info.path);

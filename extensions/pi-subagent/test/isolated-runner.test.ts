@@ -2045,6 +2045,43 @@ test("one exact Main correction after failed combination invalidates failed evid
 	assertParsed(rechecked.state);
 });
 
+test("corrected combined tip promotes only with a dependent from its exact staged snapshot", async (t) => {
+	const git = new StagingGit();
+	const { runner, root, runtime } = await harness(t, { integrationGit: git });
+	const id = "corrected-dependent";
+	const ready = await runner.execute(request(id, [changesetTask("first"),
+		{ ...changesetTask("second"), dependsOn: ["first"] }]), root);
+	const first = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "first",
+		attempt: first.attempt, candidate: first.tip, expectedTip: ready.state.main }, root);
+	const snapshot = staged.state.integration.generations[0]!.combinedTip!;
+	const advanced = await runner.integrate({ id, action: "advance", generation: 1, expectedTip: snapshot }, root);
+	const second = advanced.state.integration.candidates[1]!;
+	assert.deepEqual(changesetState(advanced.state, "second").attempts[0]?.waveBase, snapshot);
+	await runner.stage({ id, action: "stage", generation: 1, taskId: "second", attempt: second.attempt,
+		candidate: second.tip, expectedTip: snapshot }, root);
+	git.resolved = true;
+	const stagedDependent = await runner.stage({ id, action: "resolve", generation: 1, taskId: "second",
+		attempt: second.attempt, candidate: second.tip, expectedTip: snapshot }, root);
+	const combined = stagedDependent.state.integration.generations[0]!.combinedTip!;
+	const action = { id, generation: 1, expectedTip: combined };
+	runtime.failCombinedExit = true;
+	const failed = await runner.integrate({ ...action, action: "validate" }, root);
+	assert.equal(failed.state.integration.generations[0]?.status, "validation_failed");
+	runtime.integrationIdentity = identity("f", combined.branch);
+	const corrected = await runner.integrate({ ...action, action: "correct" }, root);
+	const correctedTip = corrected.state.integration.generations[0]!.combinedTip!;
+	runtime.failCombinedExit = false;
+	const rechecked = await runner.integrate({ ...action, action: "validate", expectedTip: correctedTip }, root);
+	assert.equal(rechecked.state.integration.generations[0]?.status, "ready");
+	git.promoteMain = (main) => { runtime.main = main; };
+	const promoted = await runner.integrate({ ...action, action: "promote", expectedTip: correctedTip }, root);
+	assert.equal(promoted.state.status, "completed");
+	assert.equal(promoted.state.accepted, true);
+	assert.equal(git.promotions, 1);
+	assertParsed(promoted.state);
+});
+
 test("uncertain integration allocation retains intent and refuses mutation replay", async (t) => {
 	const git = new StagingGit();
 	git.allocationUnknown = true;

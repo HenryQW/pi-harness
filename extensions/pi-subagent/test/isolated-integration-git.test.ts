@@ -132,6 +132,26 @@ test("text and changeset dependents read and edit an exact staged predecessor wi
 	stages.push(second.outcome === "ready" ? second.value : assert.fail("dependent stage failed"));
 	assert.equal(await readFile(join(integration.path, "shared.txt"), "utf8"), "dependent edit\n");
 	assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "base\n");
+	const combined = await runtime.inspectCombined(root, integration, base, stages, signal);
+	await commit(integration.path, "correct dependent combination");
+	const corrected = await inspected(integration.path);
+	const correction = { from: combined, to: corrected };
+	await runtime.inspectCorrection(root, integration, base, stages, combined, corrected, signal);
+	const promoted = await runtime.promote({ root, integration, base, stages, correction, checks: checks(corrected), commands: [] }, signal);
+	assert.equal(promoted.outcome, "ready", JSON.stringify(promoted));
+	const approved = promoted.outcome === "ready" ? promoted.value : assert.fail("promotion failed");
+	const wrongBase = { ...worker, baseCommit: stages[1]!.tip.head };
+	assert.equal((await runtime.cleanup(root, integration, wrongBase, base, stages, approved, "worktree", signal, correction)).outcome, "blocked");
+	const unowned = { ...worker, branch: "pi-subagent/subagent-not-owned" };
+	assert.equal((await runtime.cleanup(root, integration, unowned, base, stages, approved, "worktree", signal, correction)).outcome, "unknown");
+	await writeFile(join(worker.path, "untracked.txt"), "retain\n");
+	assert.equal((await runtime.cleanup(root, integration, worker, base, stages, approved, "worktree", signal, correction)).outcome, "unknown");
+	assert.equal(git(worker.path, "rev-parse", "HEAD"), stages[1]!.worker.head);
+	await rm(join(worker.path, "untracked.txt"));
+	for (const checkout of [worker, predecessor, integration]) {
+		assert.deepEqual(await runtime.cleanup(root, integration, checkout, base, stages, approved, "worktree", signal, correction), { outcome: "ready", value: "removed" });
+		assert.deepEqual(await runtime.cleanup(root, integration, checkout, base, stages, approved, "branch", signal, correction), { outcome: "ready", value: "removed" });
+	}
 });
 
 test("Main's exact single-parent correction needs fresh final evidence before guarded promotion", async (t) => {
