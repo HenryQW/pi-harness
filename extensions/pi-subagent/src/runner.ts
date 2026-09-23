@@ -1051,21 +1051,73 @@ export class IsolatedRunner {
 			const handle = await this.store.withLock(root, async () => await this.store.load(root, action.id), { productiveRunLease: lifecycle.lease });
 			const state = handle.state;
 			if (terminal(state) || state.status !== "needs_attention") throw new Error("Request is not waiting for Main staging.");
-			const candidate = state.integration.candidates.find((item) => item.taskId === action.taskId && item.attempt === action.attempt);
+			const candidate = state.integration.candidates.find((item) => item.taskId === action.taskId && item.attempt === action.attempt
+				&& sameIdentity(item.tip, action.candidate));
 			const task = changesetTaskState(state, action.taskId);
 			const attempt = task.attempts[action.attempt - 1];
 			const worker = attempt?.allocations.find((item): item is WorktreeAllocationIntent => item.kind === "worktree" && item.status === "owned")?.worktree;
-			if (!candidate || candidate.worker !== "retained" || task.status !== "ready_to_integrate" || !worker
-				|| !sameIdentity(candidate.tip, action.candidate) || !sameIdentity(attempt!.readiness!.candidate, action.candidate)) {
+			if (!candidate || candidate.worker !== "retained" || candidate.decision || task.status !== "ready_to_integrate" || !worker
+				|| !sameIdentity(attempt!.readiness!.candidate, action.candidate)) {
 				throw new Error("Stage action refers to a stale or unowned candidate.");
 			}
 			const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
 				() => this.coordinatorRuntime.now(), outerSignal);
 			const generations = state.integration.generations;
 			let generation = generations.at(-1);
-			if (action.generation !== (generation?.number ?? 1) || (generation && generation.status !== "staging" && generation.status !== "conflict")) {
+			const nextNumber = generation?.status === "superseded" ? generation.number + 1 : generation?.number ?? 1;
+			if (action.generation !== nextNumber || (generation && !["staging", "conflict", "validation_failed", "ready", "superseded"].includes(generation.status))) {
 				throw new Error("Stage action has a stale generation.");
 			}
+			if (action.action === "revise" || action.action === "reject") {
+				if (action.action === "revise" && (!action.instruction?.trim() || action.instruction !== action.instruction.trim() || action.instruction.includes("\0"))) {
+					throw new Error("Revision requires an exact nonempty instruction.");
+				}
+				if (action.action === "reject" && action.instruction !== undefined) throw new Error("Rejection cannot prompt a worker.");
+				const tip = generation && generation.status !== "superseded"
+					? generation.combinedTip ?? generation.stages.at(-1)?.tip ?? generation.stages.at(-1)?.onto ?? generation.integrationBase
+					: state.main;
+				if (!sameIdentity(action.expectedTip, tip)) throw new Error("Arbitration has a stale combined tip.");
+				if (state.request.tasks.some((item) => item.dependsOn.includes(action.taskId)
+					&& taskState(state, item.id).attempts.length)) {
+					throw new Error("A dependent already ran on this candidate; new dependent work is required before arbitration.");
+				}
+				if (action.action === "revise") {
+					if (!this.correctionAllowed(state, changesetTaskRequest(state, task.taskId), attempt!, true)) {
+						throw new Error("Same-worker revision is unavailable; a fresh attempt in this request is not supported.");
+					}
+					await scope.call((context) => this.integrationGit.inspectWorker(root, worker as WorktreeInfo, candidate.tip, context.signal));
+				}
+				const main = await scope.call((context) => this.gitRuntime.inspectMain({ root }, context));
+				if (!sameIdentity(main, state.main)) throw new Error("Main drifted before arbitration.");
+				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.taskId === action.taskId)) {
+					if (generation.stages.some((stage) => stage.status === "staging" || stage.status === "pending")) {
+						throw new Error("Uncertain stage must be reconciled before superseding its generation.");
+					}
+					if (!["staging", "conflict", "validation_failed", "ready"].includes(generation.status)) throw new Error("Cannot supersede an unresolved promotion or validation.");
+					generation.supersededFrom = generation.status as "staging" | "conflict" | "validation_failed" | "ready";
+					generation.status = "superseded";
+					generation.failure = `Main ${action.action === "reject" ? "rejected" : "revised"} ${action.taskId}; retained generation is read-only.`;
+					delete generation.combinedTip;
+					delete generation.checks;
+					delete generation.review;
+					delete generation.correction;
+				}
+				candidate.decision = "rejected";
+				task.status = "needs_attention";
+				task.failure = action.action === "revise" ? action.instruction : "Main rejected this candidate; no automatic replacement.";
+				await this.saveProductive(handle); // Freeze before prompting the retained worker.
+				if (action.action === "revise") {
+					task.status = "working";
+					await this.driveWorkerSafely(handle, task, scope, "correction", undefined, true);
+					if (changesetTaskState(state, task.taskId).status === "ready_to_integrate") this.retainCandidate(state, task);
+					state.status = "needs_attention";
+					await this.saveProductive(handle);
+				}
+				return this.response(state);
+			}
+			if (action.instruction !== undefined) throw new Error("Stage/resolve cannot prompt a worker.");
+			if (generation?.status === "superseded") generation = undefined;
+			if (generation && generation.status !== "staging" && generation.status !== "conflict") throw new Error("Stage action has a stale generation.");
 			const previousStage = generation?.stages.at(-1);
 			const expected = previousStage?.status === "staged"
 				? previousStage.tip! : previousStage?.onto ?? generation?.integrationBase;
@@ -1188,7 +1240,7 @@ export class IsolatedRunner {
 					throw new Error("No interrupted promotion intent to reconcile.");
 				}
 				const result = await scope.call((context) => this.integrationGit.reconcilePromotion(root, generation.worktree!,
-					generation.expectedMain, receipts, context.signal));
+					generation.expectedMain, receipts, context.signal, generation.correction));
 				if (result.outcome === "ready") {
 					generation.promotion.status = "promoted";
 					generation.promotion.mainAfter = result.value;
@@ -1202,6 +1254,24 @@ export class IsolatedRunner {
 				}
 				await this.saveProductive(handle);
 				if (result.outcome === "ready") await this.cleanupPromoted(handle, generation, receipts, scope);
+				return this.response(state);
+			}
+			if (action.action === "correct") {
+				if (generation.status !== "validation_failed" || generation.correction || !generation.checks
+					|| (generation.checks.passed && generation.review?.passed !== false)) {
+					throw new Error("Correction requires a definitive failed combined check or review and no prior correction.");
+				}
+				const from = generation.combinedTip;
+				const to = await scope.call((context) => this.gitRuntime.inspectMain({ root: generation.worktree!.path }, context));
+				await scope.call((context) => this.integrationGit.inspectCorrection(root, generation.worktree!,
+					generation.expectedMain, receipts, from, to, context.signal));
+				generation.correction = { from, to };
+				generation.combinedTip = to;
+				delete generation.checks;
+				delete generation.review;
+				delete generation.failure;
+				generation.status = "staging";
+				await this.saveProductive(handle);
 				return this.response(state);
 			}
 			if (action.action === "validate") {
@@ -1257,7 +1327,7 @@ export class IsolatedRunner {
 				outcome = await scope.call((context) => this.integrationGit.promote({
 					root, integration: generation.worktree!, base: generation.expectedMain, stages: receipts,
 					checks: generation.checks!, commands: request.finalChecks,
-					review: generation.review, criterion: request.finalJudgment?.criterion,
+					review: generation.review, criterion: request.finalJudgment?.criterion, correction: generation.correction,
 				}, context.signal));
 			} catch (error) { outcome = { outcome: "unknown", failure: `Interrupted promotion: ${errorText(error)}` }; }
 			if (outcome.outcome === "ready") {
@@ -1287,7 +1357,8 @@ export class IsolatedRunner {
 			for (const stage of generation.stages) {
 				const task = changesetTaskState(state, stage.taskId);
 				const attempt = task.attempts[stage.attempt - 1]!;
-				const candidate = state.integration.candidates.find((item) => item.taskId === stage.taskId && item.attempt === stage.attempt)!;
+				const candidate = state.integration.candidates.find((item) => item.taskId === stage.taskId && item.attempt === stage.attempt
+					&& sameIdentity(item.tip, stage.source))!;
 				const worker = allocationByKind(attempt, "worktree")?.worktree;
 				if (!worker) throw new Error("Promoted worker lacks a proven checkout.");
 				candidate.worker = "release_pending";
@@ -1319,7 +1390,7 @@ export class IsolatedRunner {
 					} else {
 						const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
 							generation.worktree!, worker as WorktreeInfo, generation.expectedMain, receipts,
-							promoted, kind, context.signal));
+							promoted, kind, context.signal, generation.correction));
 						if (result.outcome !== "ready") throw new Error(result.failure);
 					}
 					step.status = "completed";
@@ -1327,6 +1398,8 @@ export class IsolatedRunner {
 					await this.saveProductive(handle);
 				}
 				candidate.worker = "released";
+				for (const old of state.integration.candidates.filter((item) => item.decision === "rejected"
+					&& item.taskId === stage.taskId && item.attempt === stage.attempt)) old.worker = "released";
 				task.status = "completed";
 				await this.saveProductive(handle);
 			}
@@ -1339,13 +1412,16 @@ export class IsolatedRunner {
 				await this.saveProductive(handle);
 				const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
 					generation.worktree!, generation.worktree!, generation.expectedMain, receipts,
-					promoted, kind, context.signal));
+					promoted, kind, context.signal, generation.correction));
 				if (result.outcome !== "ready") throw new Error(result.failure);
 				step.status = "completed";
 				delete step.failure;
 				await this.saveProductive(handle);
 			}
-			if (state.tasks.some((task) => task.status !== "completed")) return; // Other tasks/dependencies need Main attention.
+			if (state.tasks.some((task) => task.status !== "completed")
+				|| state.integration.generations.some((item) => item.status === "superseded" && item.worktree)) {
+				return; // Old generations remain owned and must not be silently accounted as cleaned.
+			}
 			state.final = { status: "passed", identity: promoted, checks: generation.checks,
 				...(generation.review ? { review: generation.review } : {}) };
 			state.status = "completed";
@@ -1366,8 +1442,14 @@ export class IsolatedRunner {
 		receipts: StageReceipt[], scope: RuntimeScope): Promise<void> {
 		const root = handle.state.root;
 		const worktree = generation.worktree!;
-		const tip = await this.callProductive(handle, scope, (context) => this.integrationGit.inspectCombined(root,
-			worktree, generation.expectedMain, receipts, context.signal));
+		const tip = generation.correction
+			? await this.callProductive(handle, scope, async (context) => {
+				await this.integrationGit.inspectCorrection(root, worktree, generation.expectedMain, receipts,
+					generation.correction!.from, generation.correction!.to, context.signal);
+				return generation.correction!.to;
+			})
+			: await this.callProductive(handle, scope, (context) => this.integrationGit.inspectCombined(root,
+				worktree, generation.expectedMain, receipts, context.signal));
 		if (!sameIdentity(tip, generation.combinedTip!) || !isCleanCommitted(tip)) throw new Error("Combined tip changed or became dirty.");
 		for (const stage of generation.stages) {
 			const task = changesetTaskState(handle.state, stage.taskId);
@@ -1763,9 +1845,14 @@ export class IsolatedRunner {
 		await this.saveProductive(handle);
 	}
 
-	private correctionAllowed(state: RunState, request: ChangesetTaskRequest, attempt: TaskAttempt): boolean {
+	private correctionAllowed(state: RunState, request: ChangesetTaskRequest, attempt: TaskAttempt, postSeal = false): boolean {
 		const effectiveMaximum = Math.min(state.policy.maxCorrections, this.currentPolicy().maxCorrections);
-		return state.correctionCount < effectiveMaximum && correctionEligible(request, attempt);
+		return state.correctionCount < effectiveMaximum && (correctionEligible(request, attempt) || Boolean(postSeal
+			&& attempt.readiness && attempt.prompts.at(-1)?.status === "settled" && !attempt.termination
+			&& attempt.prompts.length < MAX_WORKER_PROMPTS
+			&& !attempt.prompts.some((prompt) => prompt.kind === "correction" || prompt.status === "ambiguous")
+			&& attempt.candidate && sameIdentity(attempt.readiness.candidate, attempt.candidate)
+			&& checkBatchPasses(attempt.preliminaryChecks, request.checks, attempt.candidate)));
 	}
 
 	private async driveWorkerSafely(
@@ -1774,10 +1861,11 @@ export class IsolatedRunner {
 		scope: RuntimeScope,
 		initialKind: "initial" | "correction" | "followup",
 		initialInstruction?: string,
+		postSeal = false,
 	): Promise<void> {
 		const control = this.ensureFollowupControl(handle, task);
 		try {
-			await this.driveWorker(handle, task, scope, initialKind, control, initialInstruction);
+			await this.driveWorker(handle, task, scope, initialKind, control, initialInstruction, postSeal);
 		} catch (error) {
 			this.rethrowStopped(error);
 			this.attention(task, isDeadline(error, scope)
@@ -1796,6 +1884,7 @@ export class IsolatedRunner {
 		initialKind: "initial" | "correction" | "followup",
 		control: FollowupControl,
 		initialInstruction?: string,
+		postSeal = false,
 	): Promise<void> {
 		const state = handle.state;
 		const request = changesetTaskRequest(state, task.taskId);
@@ -1809,7 +1898,7 @@ export class IsolatedRunner {
 			if (kind === "followup" && instruction === undefined) {
 				throw new Error("Follow-up worker execution requires an exact queued instruction.");
 			}
-			if (kind === "correction" && !this.correctionAllowed(state, request, attempt)) {
+			if (kind === "correction" && !this.correctionAllowed(state, request, attempt, postSeal)) {
 				this.attention(task, "The same-agent correction is unavailable or already used.");
 				await this.saveProductive(handle);
 				return;
@@ -2144,7 +2233,7 @@ export class IsolatedRunner {
 			|| !allocationByKind(attempt, "agent")?.agentName || attempt.termination) {
 			throw new Error(`Task ${task.taskId} has no exact ready live candidate.`);
 		}
-		if (state.integration.candidates.some((candidate) => candidate.taskId === task.taskId)) {
+		if (state.integration.candidates.some((candidate) => candidate.taskId === task.taskId && !candidate.decision)) {
 			throw new Error(`Candidate ${task.taskId} is already retained; revision needs a new integration generation.`);
 		}
 		state.integration.candidates.push({
@@ -2588,8 +2677,8 @@ export class IsolatedRunner {
 				] : []),
 				...(main?.status === "unavailable" ? [`Main: ${main.failure}`] : []),
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
-				...(state.integration.candidates.length ? [
-					`Retained candidates (not promoted): ${state.integration.candidates.map((item) => `${item.taskId}#${item.attempt}@${item.tip.head}`).join(", ")}. Use subagent_stage with exact status identities; Main remains unchanged.`,
+				...(state.integration.candidates.length && state.integration.generations.at(-1)?.status !== "promoted" ? [
+					`Candidates: ${state.integration.candidates.map((item) => `${item.taskId}#${item.attempt}@${item.tip.head}${item.decision ? " (rejected)" : ""}`).join(", ")}. Use subagent_stage with exact status identities; Main remains unchanged.`,
 				] : []),
 				...(state.integration.generations.at(-1) ? [
 					`Integration generation ${state.integration.generations.at(-1)!.number}: ${state.integration.generations.at(-1)!.status}; worktree: ${state.integration.generations.at(-1)!.worktree?.path ?? "allocation not proven"}; stage: ${state.integration.generations.at(-1)!.stages.at(-1)?.status ?? "none"}.`,
@@ -2597,6 +2686,9 @@ export class IsolatedRunner {
 				...(state.integration.generations.at(-1)!.promotion?.failure ? [`Promotion: ${state.integration.generations.at(-1)!.promotion!.failure}`] : []),
 				...(state.integration.generations.at(-1)!.checks?.passed === false ? ["Combined checks failed; Main was not changed."] : []),
 				...(state.integration.generations.at(-1)!.status === "promoted" ? ["Promotion proven; worker cleanup is pending or completed. Use subagent_integrate cleanup with the exact tip if interrupted."] : []),
+				] : []),
+				...(state.integration.generations.some((item) => item.status === "superseded" && item.worktree) ? [
+					`Superseded integration worktrees remain owned; cleanup is not supported by this action surface. Do not treat promotion as request completion.`,
 				] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),

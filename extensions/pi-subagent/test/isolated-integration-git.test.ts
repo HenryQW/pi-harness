@@ -98,6 +98,37 @@ test("same-file isolated candidates merge in Main-ordered integration checkout; 
 	}
 });
 
+test("Main's exact single-parent correction needs fresh final evidence before guarded promotion", async (t) => {
+	const root = await repo(t);
+	const runtime = new IntegrationGit();
+	const inspected = (path: string) => new CheckedGitRuntime().inspectMain({ root: path },
+		{ signal, deadline: Date.now() + 30000, timeoutMs: 30000 });
+	const base = await inspected(root);
+	const integration = await allocate(runtime, root, base, "correction-integration");
+	const worker = await allocate(runtime, root, base, "correction-worker");
+	await commit(worker.path, "worker");
+	const candidate = await inspected(worker.path);
+	const result = await runtime.stage(root, integration, base, [], worker, candidate, signal);
+	assert.equal(result.outcome, "ready");
+	const stages = [result.outcome === "ready" ? result.value : assert.fail("stage failed")];
+	const from = stages[0]!.tip;
+	await commit(integration.path, "Main corrected interaction");
+	const to = await inspected(integration.path);
+	await runtime.inspectCorrection(root, integration, base, stages, from, to, signal);
+	assert.equal((await runtime.promote({ root, integration, base, stages, correction: { from, to },
+		checks: checks(from), commands: [] }, signal)).outcome, "blocked");
+	assert.equal(git(root, "rev-parse", "HEAD"), base.head);
+	const promoted = await runtime.promote({ root, integration, base, stages, correction: { from, to },
+		checks: checks(to), commands: [] }, signal);
+	assert.equal(promoted.outcome, "ready", JSON.stringify(promoted));
+	const approved = promoted.outcome === "ready" ? promoted.value : assert.fail("promotion failed");
+	assert.equal(approved.head, to.head);
+	for (const checkout of [worker, integration]) {
+		assert.equal((await runtime.cleanup(root, integration, checkout, base, stages, approved, "worktree", signal, { from, to })).outcome, "ready");
+		assert.equal((await runtime.cleanup(root, integration, checkout, base, stages, approved, "branch", signal, { from, to })).outcome, "ready");
+	}
+});
+
 test("an immutable candidate can be replayed after Main advances, without changing its worker checkout", async (t) => {
 	const root = await repo(t);
 	const runtime = new IntegrationGit();

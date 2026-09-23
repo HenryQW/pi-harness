@@ -183,6 +183,16 @@ export class IntegrationGit {
 		return tip;
 	}
 
+	/** Main's correction is one exact committed child of the checked staged tip. */
+	async inspectCorrection(root: string, integration: WorktreeInfo, base: WorkspaceIdentity,
+		stages: readonly StageReceipt[], from: WorkspaceIdentity, to: WorkspaceIdentity, signal: AbortSignal): Promise<void> {
+		const staged = await proveHistory(root, base, stages, `refs/heads/${integration.branch}`, signal);
+		if (!sameIdentity(staged, from) || !sameIdentity(await current(root, integration, signal), to)
+			|| to.head === from.head || (await parents(to.head, root, signal)).join() !== from.head) {
+			throw new Error("Main correction must be one clean committed child of the exact staged tip.");
+		}
+	}
+
 	/** Main orders calls. On conflict leave MERGE_HEAD and the index untouched for manual resolution. */
 	async stage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], worker: WorktreeInfo, candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt>> {
 		const previous = await this.inspectCombined(root, integration, base, stages, signal);
@@ -258,9 +268,10 @@ export class IntegrationGit {
 
 	/** Read-only reconciliation of a lost promotion response; never repeat the merge. */
 	async reconcilePromotion(root: string, integration: WorktreeInfo, base: WorkspaceIdentity,
-		stages: readonly StageReceipt[], signal: AbortSignal): Promise<GitOutcome<WorkspaceIdentity>> {
+		stages: readonly StageReceipt[], signal: AbortSignal, correction?: { from: WorkspaceIdentity; to: WorkspaceIdentity }): Promise<GitOutcome<WorkspaceIdentity>> {
 		try {
-			const tip = await this.inspectCombined(root, integration, base, stages, signal);
+			const tip = correction ? (await this.inspectCorrection(root, integration, base, stages, correction.from, correction.to, signal), correction.to)
+				: await this.inspectCombined(root, integration, base, stages, signal);
 			const main = await inspect(root, signal);
 			if (main.branch === base.branch && main.head === tip.head && sameIdentity(main, { ...tip, branch: base.branch })) {
 				return { outcome: "ready", value: main };
@@ -277,10 +288,12 @@ export class IntegrationGit {
 		root: string; integration: WorktreeInfo; base: WorkspaceIdentity; stages: readonly StageReceipt[];
 		checks: CheckBatchEvidence; commands: readonly CheckCommand[];
 		review?: ReviewEvidence; criterion?: string;
+		correction?: { from: WorkspaceIdentity; to: WorkspaceIdentity };
 	}, signal: AbortSignal): Promise<GitOutcome<WorkspaceIdentity>> {
 		const { root, integration, base, stages } = input;
 		if (!stages.length) return { outcome: "blocked", failure: "No worker stages to promote." };
-		const tip = await this.inspectCombined(root, integration, base, stages, signal);
+		const tip = input.correction ? (await this.inspectCorrection(root, integration, base, stages, input.correction.from, input.correction.to, signal), input.correction.to)
+			: await this.inspectCombined(root, integration, base, stages, signal);
 		if (input.checks.phase !== "final" || !checkBatchPasses(input.checks, input.commands, tip)
 			|| (input.criterion !== undefined && !reviewEvidencePasses(input.review, "final", input.criterion, base, tip))
 			|| (input.criterion === undefined && input.review !== undefined)) {
@@ -313,17 +326,26 @@ export class IntegrationGit {
 	}
 
 	/** Cleanup is deliberately separate per resource; callers persist each proven substep. */
-	async cleanup(root: string, integration: WorktreeInfo, info: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], promoted: WorkspaceIdentity, kind: "worktree" | "branch", signal: AbortSignal): Promise<GitOutcome<"removed" | "absent">> {
+	async cleanup(root: string, integration: WorktreeInfo, info: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], promoted: WorkspaceIdentity, kind: "worktree" | "branch", signal: AbortSignal, correction?: { from: WorkspaceIdentity; to: WorkspaceIdentity }): Promise<GitOutcome<"removed" | "absent">> {
 		const possibleResources = [info.path, info.branch];
 		try {
 			await ownershipMetadata(root, info, signal);
 			await ownershipMetadata(root, integration, signal);
 			if (!stages.length || !sameIdentity(await inspect(root, signal), promoted)
-				|| promoted.branch !== base.branch || promoted.head !== stages.at(-1)!.tip.head) {
+				|| promoted.branch !== base.branch || promoted.head !== (correction?.to ?? stages.at(-1)!.tip).head) {
 				return { outcome: "blocked", failure: "Cleanup requires the unchanged exact promoted Main tip." };
 			}
 			await proveHistory(root, base, stages, `refs/heads/${integration.branch}`, signal);
-			const expected = info.path === integration.path ? stages.at(-1)!.tip
+			if (correction) {
+				if (!sameIdentity(correction.from, stages.at(-1)!.tip)
+					|| (await parents(correction.to.head, root, signal)).join() !== correction.from.head) {
+					return { outcome: "blocked", failure: "Correction provenance changed before cleanup." };
+				}
+				if (kind === "worktree" && info.path === integration.path) {
+					await this.inspectCorrection(root, integration, base, stages, correction.from, correction.to, signal);
+				}
+			}
+			const expected = info.path === integration.path ? correction?.to ?? stages.at(-1)!.tip
 				: stages.find((stage) => stage.worker.branch === `refs/heads/${info.branch}`)?.worker;
 			if (!expected || !await ancestor(info.baseCommit, base.head, root, signal)) return { outcome: "blocked", failure: "No proven staged tip for this owned checkout." };
 			const registered = await requireGit(["worktree", "list", "--porcelain", "-z"], root, signal);

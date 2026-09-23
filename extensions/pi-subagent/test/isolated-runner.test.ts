@@ -69,6 +69,7 @@ type WorkerContextCall = {
 class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCandidateInspector {
 	clock = 1_000;
 	main = identity("a");
+	integrationIdentity?: WorkspaceIdentity;
 	workerBarrierSize = 0;
 	maxConcurrentWorkers = 0;
 	failFinalChecks = 0;
@@ -149,6 +150,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 
 	async inspectMain(_input: Parameters<GitRuntime["inspectMain"]>[0], context: OperationContext): Promise<WorkspaceIdentity> {
 		this.inspectMainCalls.push(context);
+		if (_input.root.includes("subagent-integration") && this.integrationIdentity) return this.integrationIdentity;
 		if (this.expireMainInspections > 0) {
 			this.expireMainInspections -= 1;
 			if (context.deadline === undefined) throw new Error("Expected a finite inspection deadline.");
@@ -1566,10 +1568,15 @@ class StagingGit extends IntegrationGit {
 		return this.combinedTip ?? stages.at(-1)!.tip;
 	}
 	override async inspectWorker(): Promise<void> {}
+	override async inspectCorrection(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
+		stages: readonly StageReceipt[], from: WorkspaceIdentity, to: WorkspaceIdentity): Promise<void> {
+		assert.deepEqual(from, stages.at(-1)!.tip);
+		assert.notEqual(to.head, from.head);
+	}
 	override async promote(input: Parameters<IntegrationGit["promote"]>[0]): Promise<GitOutcome<WorkspaceIdentity>> {
 		this.promotions += 1;
 		if (this.promoteResult) return this.promoteResult;
-		const promoted = { ...input.stages.at(-1)!.tip, branch: input.base.branch };
+		const promoted = { ...(input.correction?.to ?? input.stages.at(-1)!.tip), branch: input.base.branch };
 		this.promoteMain?.(promoted);
 		return { outcome: "ready", value: promoted };
 	}
@@ -1584,10 +1591,11 @@ class StagingGit extends IntegrationGit {
 	beforeMerge?: () => void;
 	override async allocate(root: string, _childId: string, base: WorkspaceIdentity,
 		onPrepared: (info: WorktreeInfo) => Promise<void>): Promise<GitOutcome<WorktreeInfo>> {
+		const suffix = _childId.endsWith("-integration-1") ? "" : "-2";
 		const info: WorktreeInfo = {
-			path: join(root, ".worktrees", "subagent-integration"),
-			cwd: join(root, ".worktrees", "subagent-integration"),
-			branch: "pi-subagent/subagent-integration", repoRoot: root, baseCommit: base.head,
+			path: join(root, ".worktrees", `subagent-integration${suffix}`),
+			cwd: join(root, ".worktrees", `subagent-integration${suffix}`),
+			branch: `pi-subagent/subagent-integration${suffix}`, repoRoot: root, baseCommit: base.head,
 		};
 		await onPrepared(info);
 		await mkdir(info.path, { recursive: true });
@@ -1600,7 +1608,7 @@ class StagingGit extends IntegrationGit {
 		this.beforeMerge?.();
 		this.merged.push(candidate.head);
 		if (stages.length) return { outcome: "conflict", failure: "Resolve overlapping edits in the integration worktree." };
-		const previous = identity("a", "refs/heads/pi-subagent/subagent-integration");
+		const previous = identity("a", `refs/heads/${_integration.branch}`);
 		return { outcome: "ready", value: { previous, worker: candidate, tip: identity("d", previous.branch) } };
 	}
 	override async reconcileStage(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
@@ -1741,6 +1749,86 @@ test("exact checked tip promotes once, retains worker until proven promotion, th
 	assert.equal(git.promotions, 1);
 	assertParsed(done.state);
 	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /stale generation|requires exact successful/);
+});
+
+test("rejected staged candidate freezes validation and requires explicit replay from the recorded base", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "arbitrate-stage";
+	const ready = await runner.execute(request(id, [changesetTask("first"), changesetTask("second")]), root);
+	const [first, second] = ready.state.integration.candidates;
+	const stage = (generation: number, candidate: typeof first, expectedTip: WorkspaceIdentity) => ({
+		id, generation, action: "stage" as const, taskId: candidate!.taskId, attempt: candidate!.attempt,
+		candidate: candidate!.tip, expectedTip,
+	});
+	const staged = await runner.stage(stage(1, first, ready.state.main), root);
+	const firstTip = staged.state.integration.generations[0]!.combinedTip!;
+	const rejected = await runner.stage({ ...stage(1, first, firstTip), action: "reject" }, root);
+	assert.equal(rejected.state.integration.generations[0]?.status, "superseded");
+	assert.equal(rejected.state.integration.generations[0]?.combinedTip, undefined);
+	assert.equal(rejected.state.integration.candidates[0]?.decision, "rejected");
+	assert.equal(runtime.main.head, ready.state.main.head);
+	await assert.rejects(runner.stage(stage(1, second, firstTip), root), /stale generation/);
+	await assert.rejects(runner.stage(stage(2, first, ready.state.main), root), /stale or unowned candidate/);
+	const replay = await runner.stage(stage(2, second, ready.state.main), root);
+	assert.equal(replay.state.integration.generations[1]?.status, "staging");
+	assert.equal(replay.state.integration.generations[1]?.worktree?.baseCommit, ready.state.main.head);
+	assert.equal(replay.state.integration.generations[1]?.stages[0]?.status, "staged");
+	assert.deepEqual(git.merged, [first!.tip.head, second!.tip.head]);
+	assertParsed(replay.state);
+});
+
+test("post-seal same-worker revision invalidates old stage and retains a newly checked candidate", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "revise-stage";
+	const ready = await runner.execute(request(id, [changesetTask("change")]), root);
+	const old = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, generation: 1, action: "stage", taskId: old.taskId,
+		attempt: old.attempt, candidate: old.tip, expectedTip: ready.state.main }, root);
+	const revised = await runner.stage({ id, generation: 1, action: "revise", taskId: old.taskId,
+		attempt: old.attempt, candidate: old.tip, expectedTip: staged.state.integration.generations[0]!.combinedTip!,
+		instruction: "Fix the isolated regression." }, root);
+	assert.equal(revised.state.integration.generations[0]?.status, "superseded");
+	assert.equal(revised.state.integration.candidates[0]?.decision, "rejected");
+	assert.equal(revised.state.integration.candidates.length, 2);
+	assert.notEqual(revised.state.integration.candidates[1]?.tip.head, old.tip.head);
+	assert.deepEqual(runtime.workerCalls.map((call) => call.kind), ["initial", "correction"]);
+	assert.equal(runtime.main.head, ready.state.main.head);
+	const latest = revised.state.integration.candidates[1]!;
+	const replay = await runner.stage({ id, generation: 2, action: "stage", taskId: latest.taskId,
+		attempt: latest.attempt, candidate: latest.tip, expectedTip: ready.state.main }, root);
+	assert.equal(replay.state.integration.generations[1]?.stages[0]?.status, "staged");
+	git.promoteMain = (main) => { runtime.main = main; };
+	const tip = replay.state.integration.generations[1]!.combinedTip!;
+	const checked = await runner.integrate({ id, generation: 2, action: "validate", expectedTip: tip }, root);
+	assert.equal(checked.state.integration.generations[1]?.status, "ready");
+	const promoted = await runner.integrate({ id, generation: 2, action: "promote", expectedTip: tip }, root);
+	assert.equal(promoted.state.integration.generations[1]?.status, "promoted");
+	assert.equal(promoted.state.integration.candidates[0]?.worker, "released");
+	assert.equal(promoted.state.status, "needs_attention", "superseded owned worktree cannot be silently counted as cleaned");
+	assert.equal(promoted.state.accepted, false);
+	assertParsed(promoted.state);
+});
+
+test("one exact Main correction after failed combination invalidates failed evidence and rechecks the new tip", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "correct-combination");
+	runtime.failCombinedExit = true;
+	const failed = await runner.integrate({ ...action, action: "validate" }, root);
+	assert.equal(failed.state.integration.generations[0]?.checks?.passed, false);
+	runtime.integrationIdentity = identity("f", action.expectedTip.branch);
+	const corrected = await runner.integrate({ ...action, action: "correct" }, root);
+	const newTip = runtime.integrationIdentity;
+	assert.deepEqual(corrected.state.integration.generations[0]?.correction, { from: action.expectedTip, to: newTip });
+	assert.equal(corrected.state.integration.generations[0]?.checks, undefined);
+	assert.equal(runtime.main.head, identity("a").head);
+	await assert.rejects(runner.integrate({ ...action, action: "validate" }, root), /stale generation or combined tip/);
+	runtime.failCombinedExit = false;
+	const rechecked = await runner.integrate({ ...action, action: "validate", expectedTip: newTip }, root);
+	assert.equal(rechecked.state.integration.generations[0]?.status, "ready");
+	assert.equal(runtime.checkCalls.filter((call) => call.scope === "final").length, 2);
+	assert.equal(git.promotions, 0);
+	assertParsed(rechecked.state);
 });
 
 test("uncertain integration allocation retains intent and refuses mutation replay", async (t) => {

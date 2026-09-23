@@ -212,18 +212,19 @@ const WorkspaceSchema = Type.Object({
 
 export const StageRequestSchema = Type.Object({
 	id: IdSchema,
-	action: Type.Union([Type.Literal("stage"), Type.Literal("resolve")]),
+	action: Type.Union([Type.Literal("stage"), Type.Literal("resolve"), Type.Literal("reject"), Type.Literal("revise")]),
 	generation: Type.Integer({ minimum: 1, maximum: 32 }),
 	taskId: IdSchema,
 	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
 	candidate: WorkspaceSchema,
 	expectedTip: WorkspaceSchema,
+	instruction: Type.Optional(TextSchema),
 }, { additionalProperties: false });
 export type StageRequest = Static<typeof StageRequestSchema>;
 export const IntegrationActionSchema = Type.Object({
 	id: IdSchema,
 	generation: Type.Integer({ minimum: 1, maximum: 32 }),
-	action: Type.Union([Type.Literal("validate"), Type.Literal("promote"), Type.Literal("reconcile"), Type.Literal("cleanup")]),
+	action: Type.Union([Type.Literal("validate"), Type.Literal("correct"), Type.Literal("promote"), Type.Literal("reconcile"), Type.Literal("cleanup")]),
 	expectedTip: WorkspaceSchema,
 }, { additionalProperties: false });
 export type IntegrationAction = Static<typeof IntegrationActionSchema>;
@@ -409,6 +410,7 @@ const IntegrationCandidateSchema = Type.Object({
 	checks: CheckBatchEvidenceSchema,
 	review: Type.Optional(ReviewEvidenceSchema),
 	worker: Type.Union([Type.Literal("retained"), Type.Literal("release_pending"), Type.Literal("released")]),
+	decision: Type.Optional(Type.Literal("rejected")),
 }, { additionalProperties: false });
 
 const IntegrationStageSchema = Type.Object({
@@ -442,6 +444,7 @@ const IntegrationGenerationSchema = Type.Object({
 	stages: Type.Array(IntegrationStageSchema, { maxItems: MAX_TASKS }),
 	worktree: Type.Optional(WorktreeRecordSchema),
 	combinedTip: Type.Optional(WorkspaceSchema),
+	correction: Type.Optional(Type.Object({ from: WorkspaceSchema, to: WorkspaceSchema }, { additionalProperties: false })),
 	checks: Type.Optional(CheckBatchEvidenceSchema),
 	review: Type.Optional(ReviewEvidenceSchema),
 	promotion: Type.Optional(PromotionSchema),
@@ -843,7 +846,9 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 	for (const candidate of state.candidates) {
 		const task = tasks.get(candidate.taskId);
 		const previous = latestCandidates.get(candidate.taskId);
-		if (!task || (previous && candidate.attempt <= previous.attempt) || !isCleanCommitted(candidate.base)
+		const key = `${candidate.taskId}\0${candidate.attempt}\0${candidate.tip.head}`;
+		if (!task || candidates.has(key) || (previous && (candidate.attempt < previous.attempt
+			|| candidate.attempt === previous.attempt && previous.decision !== "rejected")) || !isCleanCommitted(candidate.base)
 			|| !isCleanCommitted(candidate.tip) || candidate.base.head === candidate.tip.head
 			|| candidate.checks.phase !== "preliminary") {
 			throw new Error(`Invalid ready candidate for ${candidate.taskId}.`);
@@ -854,7 +859,7 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			|| (!task.judgment && candidate.review !== undefined)) {
 			throw new Error(`Ready candidate ${candidate.taskId} lacks exact passing evidence.`);
 		}
-		candidates.set(`${candidate.taskId}\0${candidate.attempt}`, candidate);
+		candidates.set(key, candidate);
 		latestCandidates.set(candidate.taskId, candidate);
 	}
 	for (const [index, generation] of state.generations.entries()) {
@@ -885,12 +890,12 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 		let previous = generation.integrationBase;
 		let unfinished = false;
 		for (const [stageIndex, stage] of generation.stages.entries()) {
-			const candidate = candidates.get(`${stage.taskId}\0${stage.attempt}`);
+			const candidate = candidates.get(`${stage.taskId}\0${stage.attempt}\0${stage.source.head}`);
 			if (!candidate || !sameIdentity(stage.source, candidate.tip)
 				|| generation.order[stageIndex] !== stage.taskId || !sameIdentity(stage.onto, previous) || unfinished) {
 				throw new Error(`Stage ${stageIndex + 1} breaks generation ${generation.number} lineage.`);
 			}
-			if (generation.status !== "superseded" && candidate !== latestCandidates.get(stage.taskId)) {
+			if (generation.status !== "superseded" && (candidate !== latestCandidates.get(stage.taskId) || candidate.decision)) {
 				throw new Error(`Stage ${stageIndex + 1} does not use the latest ready attempt.`);
 			}
 			if (stage.status === "staged") {
@@ -909,7 +914,12 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			}
 		}
 		const complete = !unfinished && generation.stages.length === generation.order.length;
-		if (generation.combinedTip && (!complete || !sameIdentity(generation.combinedTip, previous))) {
+		if (generation.correction && (!complete || !isCleanCommitted(generation.correction.from)
+			|| !isCleanCommitted(generation.correction.to) || !sameIdentity(generation.correction.from, previous)
+			|| generation.correction.to.head === previous.head || generation.correction.to.branch !== previous.branch)) {
+			throw new Error(`Generation ${generation.number} has an invalid correction intent.`);
+		}
+		if (generation.combinedTip && (!complete || !sameIdentity(generation.combinedTip, generation.correction?.to ?? previous))) {
 			throw new Error(`Generation ${generation.number} combined tip breaks staged lineage.`);
 		}
 		if (generation.checks) {
@@ -950,7 +960,7 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			: promotion?.status === "failed" ? "promotion_failed" : promotion?.status;
 		if (generation.status === "superseded") {
 			if (!generation.supersededFrom || !generation.failure?.trim() || generation.promotion
-				|| generation.checks || generation.review || generation.combinedTip) {
+				|| generation.checks || generation.review || generation.combinedTip || generation.correction) {
 				throw new Error(`Superseded generation ${generation.number} retains usable evidence or lacks its reason.`);
 			}
 		} else if (generation.supersededFrom !== undefined || (promotion ? generation.status !== expectedStatus
@@ -1301,9 +1311,10 @@ export function parseRunState(value: unknown): RunState {
 		}
 		if (taskState.status === "completed") {
 			const promoted = state.integration.generations.at(-1);
-			const candidate = state.integration.candidates.find((item) => item.taskId === definition.id && item.attempt === taskState.attempts.at(-1)?.number);
-			if (candidate && promoted?.status === "promoted" && promoted.stages.some((stage) => stage.taskId === definition.id
-				&& stage.attempt === candidate.attempt && sameIdentity(stage.source, candidate.tip))) {
+			const candidate = state.integration.candidates.find((item) => item.taskId === definition.id
+				&& promoted?.stages.some((stage) => stage.taskId === definition.id && stage.attempt === item.attempt
+					&& sameIdentity(stage.source, item.tip)));
+			if (candidate && promoted?.status === "promoted") {
 				const attempt = taskState.attempts.at(-1)!;
 				if (candidate.worker !== "released" || attempt.termination?.status !== "terminated"
 					|| attempt.cleanup.some((step) => step.status !== "completed")) throw new Error(`Promoted task ${definition.id} has incomplete worker cleanup.`);
@@ -1327,6 +1338,16 @@ export function parseRunState(value: unknown): RunState {
 	for (const candidate of state.integration.candidates) {
 		const task = state.tasks.find((item) => item.taskId === candidate.taskId);
 		const attempt = task?.kind === "changeset" ? task.attempts[candidate.attempt - 1] : undefined;
+		if (candidate.decision === "rejected") {
+			const selected = state.integration.generations.at(-1);
+			const releasedWithRevisedAttempt = selected?.status === "promoted" && selected.stages.some((stage) =>
+				stage.taskId === candidate.taskId && stage.attempt === candidate.attempt && !sameIdentity(stage.source, candidate.tip))
+				&& attempt?.cleanup.every((step) => step.status === "completed");
+			if (!attempt || (candidate.worker !== "retained" && !(candidate.worker === "released" && releasedWithRevisedAttempt))) {
+				throw new Error(`Rejected candidate ${candidate.taskId} lost its exact worker accounting.`);
+			}
+			continue;
+		}
 		if (!attempt?.readiness || !sameIdentity(attempt.readiness.base, candidate.base)
 			|| !sameIdentity(attempt.readiness.candidate, candidate.tip)
 			|| (candidate.review !== undefined && JSON.stringify(candidate.review) !== JSON.stringify(attempt.preliminaryReview))

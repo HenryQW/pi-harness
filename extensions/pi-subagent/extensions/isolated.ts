@@ -259,10 +259,11 @@ function publicState(state: RunState, preferredTaskId?: string) {
 		tasks: state.tasks.map(({ taskId, status }) => ({ taskId, status })),
 		final: { status: state.final.status },
 		integration: {
-			candidates: state.integration.candidates.map(({ taskId, attempt, tip, base, checks }) => ({ taskId, attempt, tip, base, checked: checks.passed })),
-			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, combinedTip, checks, review, promotion, failure, stages }) => ({
+			candidates: state.integration.candidates.map(({ taskId, attempt, tip, base, checks, decision }) => ({ taskId, attempt, tip, base, checked: checks.passed, ...(decision ? { decision } : {}) })),
+			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, combinedTip, correction, checks, review, promotion, failure, stages }) => ({
 				number, status, integrationBase,
 				...(combinedTip ? { combinedTip } : {}),
+				...(correction ? { correction } : {}),
 				...(checks ? { checked: checks.passed, failedCheck: publicFailedCheck(checks) } : {}),
 				...(review ? { reviewed: review.passed, failedReview: publicFailedReview(review) } : {}),
 				...(promotion ? { promotion: promotion.status, ...(promotion.mainAfter ? { mainAfter: promotion.mainAfter } : {}),
@@ -500,7 +501,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_stage",
 		label: "Subagent stage",
-		description: "Main stages one exact retained candidate or confirms its manually resolved merge in the owned integration worktree. Never writes Main.",
+		description: "Main stages/resolves an exact candidate, or rejects/revises one. Rejection of a staged candidate freezes the old generation; explicitly restage chosen candidates in a new generation. Never writes Main.",
 		parameters: StageRequestSchema,
 		prepareArguments: parseStageRequest,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -512,7 +513,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_integrate",
 		label: "Subagent integrate",
-		description: "Validate a staged combined tip with the root full suite, promote its exact checked tip, or reconcile an interrupted promotion. Never replays an uncertain promotion.",
+		description: "Validate the exact combined tip, record Main's single committed correction after a failed check, promote after revalidation, or reconcile an interrupted promotion. Never replays an uncertain promotion.",
 		parameters: IntegrationActionSchema,
 		prepareArguments: parseIntegrationAction,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
