@@ -239,7 +239,7 @@ const CheckBatchEvidenceSchema = Type.Object({
 }, { additionalProperties: false });
 
 const ReviewEvidenceSchema = Type.Object({
-	phase: Type.Union([Type.Literal("authoritative"), Type.Literal("final")]),
+	phase: Type.Union([Type.Literal("preliminary"), Type.Literal("authoritative"), Type.Literal("final")]),
 	criterion: TextSchema,
 	base: WorkspaceSchema,
 	tip: WorkspaceSchema,
@@ -737,6 +737,206 @@ function validateTextTaskState(taskState: TextTaskState): void {
 	if (taskState.status === "needs_attention" && latest?.failure !== taskState.failure) {
 		throw new Error(`Text task ${taskState.taskId} needs-attention failure must exactly match its latest attempt failure.`);
 	}
+}
+
+// Prepared contract for a Main-owned, isolated integration worktree. The v4 runner
+// continues to parse RunState until its v5 cutover; it must bind each ready
+// candidate to the corresponding owned attempt and prove Git ancestry itself.
+const IntegrationCandidateSchema = Type.Object({
+	taskId: IdSchema,
+	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
+	base: WorkspaceSchema,
+	tip: WorkspaceSchema,
+	checks: CheckBatchEvidenceSchema,
+	review: Type.Optional(ReviewEvidenceSchema),
+	worker: Type.Union([Type.Literal("retained"), Type.Literal("release_pending"), Type.Literal("released")]),
+}, { additionalProperties: false });
+
+const IntegrationStageSchema = Type.Object({
+	taskId: IdSchema,
+	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
+	source: WorkspaceSchema,
+	onto: WorkspaceSchema,
+	status: Type.Union([Type.Literal("pending"), Type.Literal("staging"), Type.Literal("staged"), Type.Literal("conflict")]),
+	tip: Type.Optional(WorkspaceSchema),
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
+const PromotionSchema = Type.Object({
+	status: Type.Union([Type.Literal("promoting"), Type.Literal("promoted"), Type.Literal("unknown"), Type.Literal("failed")]),
+	expectedMain: WorkspaceSchema,
+	tip: WorkspaceSchema,
+	mainAfter: Type.Optional(WorkspaceSchema),
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
+const IntegrationGenerationSchema = Type.Object({
+	number: Type.Integer({ minimum: 1, maximum: 32 }),
+	status: Type.Union([
+		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
+		Type.Literal("ready"), Type.Literal("promoting"), Type.Literal("promoted"),
+		Type.Literal("promotion_unknown"), Type.Literal("promotion_failed"), Type.Literal("superseded"),
+	]),
+	expectedMain: WorkspaceSchema,
+	integrationBase: WorkspaceSchema,
+	order: Type.Array(IdSchema, { minItems: 1, maxItems: MAX_TASKS }),
+	stages: Type.Array(IntegrationStageSchema, { maxItems: MAX_TASKS }),
+	combinedTip: Type.Optional(WorkspaceSchema),
+	checks: Type.Optional(CheckBatchEvidenceSchema),
+	review: Type.Optional(ReviewEvidenceSchema),
+	promotion: Type.Optional(PromotionSchema),
+	supersededFrom: Type.Optional(Type.Union([
+		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
+		Type.Literal("ready"),
+	])),
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
+export const IntegrationStateSchema = Type.Object({
+	candidates: Type.Array(IntegrationCandidateSchema, { maxItems: MAX_TASKS }),
+	generations: Type.Array(IntegrationGenerationSchema, { maxItems: 32 }),
+}, { additionalProperties: false });
+
+export type IntegrationCandidate = Static<typeof IntegrationCandidateSchema>;
+export type IntegrationStage = Static<typeof IntegrationStageSchema>;
+export type IntegrationGeneration = Static<typeof IntegrationGenerationSchema>;
+export type IntegrationState = Static<typeof IntegrationStateSchema>;
+
+/** Check the persisted integration projection against the request before recovery or promotion. */
+export function parseIntegrationState(value: unknown, request: ExecuteRequest): IntegrationState {
+	if (!Check(IntegrationStateSchema, value)) {
+		throw schemaValidationError("Malformed integration state", Errors(IntegrationStateSchema, value));
+	}
+	const state = value as IntegrationState;
+	const tasks = new Map(request.tasks.filter((task): task is ChangesetTaskRequest => task.kind === "changeset")
+		.map((task) => [task.id, task]));
+	const candidates = new Map<string, IntegrationCandidate>();
+	for (const candidate of state.candidates) {
+		const task = tasks.get(candidate.taskId);
+		if (!task || candidates.has(candidate.taskId) || !isCleanCommitted(candidate.base)
+			|| !isCleanCommitted(candidate.tip) || candidate.base.head === candidate.tip.head
+			|| candidate.checks.phase !== "preliminary") {
+			throw new Error(`Invalid ready candidate for ${candidate.taskId}.`);
+		}
+		validateCheckBatchEvidence(candidate.checks, task.checks, `Ready checks for ${candidate.taskId}`);
+		if (!checkBatchPasses(candidate.checks, task.checks, candidate.tip)
+			|| (task.judgment && !reviewEvidencePasses(candidate.review, "preliminary", task.judgment.criterion, candidate.base, candidate.tip))
+			|| (!task.judgment && candidate.review !== undefined)) {
+			throw new Error(`Ready candidate ${candidate.taskId} lacks exact passing evidence.`);
+		}
+		candidates.set(candidate.taskId, candidate);
+	}
+	for (const [index, generation] of state.generations.entries()) {
+		if (generation.number !== index + 1 || (index > 0 && (state.generations[index - 1]!.status !== "superseded"
+			|| !sameIdentity(state.generations[index - 1]!.expectedMain, generation.expectedMain)))) {
+			throw new Error("Integration generations must be ordered, superseded, and share exact Main identity.");
+		}
+		if (!isCleanCommitted(generation.expectedMain) || !isCleanCommitted(generation.integrationBase)
+			|| generation.integrationBase.head !== generation.expectedMain.head) {
+			throw new Error(`Integration generation ${generation.number} has an invalid Main base.`);
+		}
+		const chosen = new Set(generation.order);
+		if (chosen.size !== generation.order.length || generation.order.some((id) => !candidates.has(id))
+			|| generation.stages.length > generation.order.length) {
+			throw new Error(`Generation ${generation.number} must choose distinct ready candidates in explicit order.`);
+		}
+		let previous = generation.integrationBase;
+		let unfinished = false;
+		for (const [stageIndex, stage] of generation.stages.entries()) {
+			const candidate = candidates.get(stage.taskId);
+			if (!candidate || candidate.attempt !== stage.attempt || !sameIdentity(stage.source, candidate.tip)
+				|| generation.order[stageIndex] !== stage.taskId || !sameIdentity(stage.onto, previous) || unfinished) {
+				throw new Error(`Stage ${stageIndex + 1} breaks generation ${generation.number} lineage.`);
+			}
+			if (stage.status === "staged") {
+				if (!stage.tip || stage.failure !== undefined || !isCleanCommitted(stage.tip)
+					|| stage.tip.branch !== generation.integrationBase.branch) {
+					throw new Error(`Stage ${stageIndex + 1} lacks a clean staged tip.`);
+				}
+				previous = stage.tip;
+			} else {
+				if (stage.tip || (stage.status === "conflict") !== Boolean(stage.failure?.trim())) {
+					throw new Error(`Stage ${stageIndex + 1} has inconsistent conflict evidence.`);
+				}
+				unfinished = true;
+				if (stageIndex !== generation.stages.length - 1) throw new Error("Unfinished stage must be last.");
+			}
+		}
+		const complete = !unfinished && generation.stages.length === generation.order.length;
+		if (generation.combinedTip && (!complete || !sameIdentity(generation.combinedTip, previous))) {
+			throw new Error(`Generation ${generation.number} combined tip breaks staged lineage.`);
+		}
+		if (generation.checks) {
+			if (generation.checks.phase !== "final") throw new Error("Combined checks must be final-phase evidence.");
+			validateCheckBatchEvidence(generation.checks, request.finalChecks, "Combined checks");
+		}
+		if (generation.review && (generation.review.phase !== "final" || !request.finalJudgment
+			|| generation.review.criterion !== request.finalJudgment.criterion
+			|| !generation.combinedTip || !sameIdentity(generation.review.base, generation.expectedMain)
+			|| !sameIdentity(generation.review.tip, generation.combinedTip)
+			|| generation.review.passed !== (generation.review.verdict === "PASS"
+				&& sameIdentity(generation.review.identityAfter, generation.combinedTip)))) {
+			throw new Error(`Generation ${generation.number} has invalid combined review evidence.`);
+		}
+		if ((generation.checks || generation.review || generation.promotion) && !generation.combinedTip) {
+			throw new Error(`Generation ${generation.number} has evidence without a complete tip.`);
+		}
+		if (generation.checks && !sameIdentity(generation.checks.candidate, generation.combinedTip!)) {
+			throw new Error(`Generation ${generation.number} checks target another tip.`);
+		}
+		const passes = integrationGenerationPasses(generation, request);
+		const promotion = generation.promotion;
+		if (promotion && (!passes || generation.failure !== undefined
+			|| !sameIdentity(promotion.expectedMain, generation.expectedMain)
+			|| !sameIdentity(promotion.tip, generation.combinedTip!))) {
+			throw new Error(`Generation ${generation.number} promotion has stale evidence or lineage.`);
+		}
+		if (promotion && (promotion.status === "promoting"
+			? promotion.mainAfter !== undefined || promotion.failure !== undefined
+			: promotion.status === "promoted"
+				? !promotion.mainAfter || promotion.failure !== undefined
+					|| promotion.mainAfter.branch !== promotion.expectedMain.branch
+					|| promotion.mainAfter.head !== promotion.tip.head || !isCleanCommitted(promotion.mainAfter)
+				: promotion.mainAfter !== undefined || !promotion.failure?.trim())) {
+			throw new Error(`Generation ${generation.number} has inconsistent promotion outcome.`);
+		}
+		const expectedStatus = promotion?.status === "unknown" ? "promotion_unknown"
+			: promotion?.status === "failed" ? "promotion_failed" : promotion?.status;
+		if (generation.status === "superseded") {
+			if (!generation.supersededFrom || !generation.failure?.trim() || generation.promotion
+				|| generation.checks || generation.review || generation.combinedTip) {
+				throw new Error(`Superseded generation ${generation.number} retains usable evidence or lacks its reason.`);
+			}
+		} else if (generation.supersededFrom !== undefined || (promotion ? generation.status !== expectedStatus
+			: generation.status === "ready" ? !passes || generation.failure !== undefined
+				: generation.status === "validation_failed" ? !complete || !generation.combinedTip
+					|| passes || !generation.failure?.trim()
+					: generation.status === "conflict" ? generation.stages.at(-1)?.status !== "conflict" || !generation.failure?.trim()
+					: generation.status !== "staging" || generation.checks !== undefined
+						|| generation.review !== undefined || generation.failure !== undefined)) {
+			throw new Error(`Generation ${generation.number} has inconsistent status or invalidated evidence.`);
+		}
+		if (generation.status !== "promoted" && state.candidates.some((candidate) => chosen.has(candidate.taskId) && candidate.worker !== "retained")) {
+			throw new Error(`Generation ${generation.number} released an unpromoted worker.`);
+		}
+	}
+	const promoted = state.generations.at(-1)?.status === "promoted";
+	if (state.candidates.some((candidate) => candidate.worker !== "retained" && (!promoted
+		|| !state.generations.at(-1)!.stages.some((stage) => stage.taskId === candidate.taskId)))) {
+		throw new Error("Worker release requires exact promoted inclusion.");
+	}
+	return state;
+}
+
+/** Passing final evidence is bound to the exact assembled identity, not any worker tip. */
+export function integrationGenerationPasses(generation: IntegrationGeneration, request: ExecuteRequest): boolean {
+	return Boolean(generation.combinedTip && isCleanCommitted(generation.combinedTip)
+		&& generation.stages.length === generation.order.length
+		&& generation.stages.every((stage, index) => stage.status === "staged" && stage.taskId === generation.order[index])
+		&& generation.checks?.phase === "final"
+		&& checkBatchPasses(generation.checks, request.finalChecks, generation.combinedTip)
+		&& (!request.finalJudgment || reviewEvidencePasses(generation.review, "final",
+			request.finalJudgment.criterion, generation.expectedMain, generation.combinedTip)));
 }
 
 export function parseRunState(value: unknown): RunState {

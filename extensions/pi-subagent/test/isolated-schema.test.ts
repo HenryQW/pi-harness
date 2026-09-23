@@ -3,6 +3,8 @@ import test from "node:test";
 import {
 	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	MAX_TASKS,
+	parseIntegrationState,
+	integrationGenerationPasses,
 	parseExecuteRequest,
 	parseIdOnly,
 	parseResumeRequest,
@@ -13,6 +15,7 @@ import {
 	type ChangesetTaskRequest,
 	type ChangesetTaskState,
 	type ExecuteRequest,
+	type IntegrationState,
 	type RunState,
 	type TaskRequest,
 	type TextTaskAttempt,
@@ -669,4 +672,158 @@ test("v4 state bounds multibyte text task runtime fields by UTF-8 bytes", () => 
 		mutate(task);
 		assert.throws(() => parseRunState(candidate), new RegExp(`exceeds ${MAX_PERSISTED_RUNTIME_TEXT_BYTES} UTF-8 bytes`), name);
 	}
+});
+
+function integrationFixture(): { request: ExecuteRequest; state: IntegrationState } {
+	const definition = parseExecuteRequest(request([changesetTask("first"), changesetTask("second")]));
+	const main = identity();
+	const workerBase = { ...main, branch: "refs/heads/worker-first" };
+	const workerTip = { ...workerBase, head: "b".repeat(40), index: "b".repeat(40), tree: "b".repeat(40) };
+	const secondBase = { ...main, branch: "refs/heads/worker-second" };
+	const secondTip = { ...secondBase, head: "c".repeat(40), index: "c".repeat(40), tree: "c".repeat(40) };
+	const integrationBase = { ...main, branch: "refs/heads/integration" };
+	const firstTip = { ...integrationBase, head: "d".repeat(40), index: "d".repeat(40), tree: "d".repeat(40) };
+	const combinedTip = { ...integrationBase, head: "e".repeat(40), index: "e".repeat(40), tree: "e".repeat(40) };
+	const checks = (tip: WorkspaceIdentity, command: string, phase: "preliminary" | "final") => ({
+		phase, candidate: tip, identityAfter: tip,
+		results: [{ command, args: [], code: 0, killed: false, stdout: "", stderr: "" }],
+		passed: true, at: 5,
+	});
+	return {
+		request: definition,
+		state: {
+			candidates: [
+				{ taskId: "first", attempt: 1, base: main, tip: workerTip, checks: checks(workerTip, "check-first", "preliminary"), worker: "retained" },
+				{ taskId: "second", attempt: 1, base: main, tip: secondTip, checks: checks(secondTip, "check-second", "preliminary"), worker: "retained" },
+			],
+			generations: [{
+				number: 1, status: "ready", expectedMain: main, integrationBase,
+				order: ["first", "second"], stages: [
+					{ taskId: "first", attempt: 1, source: workerTip, onto: integrationBase, status: "staged", tip: firstTip },
+					{ taskId: "second", attempt: 1, source: secondTip, onto: firstTip, status: "staged", tip: combinedTip },
+				],
+				combinedTip, checks: checks(combinedTip, "check-final", "final"),
+			}],
+		},
+	};
+}
+
+test("Main-owned integration accepts independently based candidates and ordered combined evidence", () => {
+	const { request: definition, state: valid } = integrationFixture();
+	assert.equal(parseIntegrationState(structuredClone(valid), definition).generations[0]?.status, "ready");
+	assert.equal(integrationGenerationPasses(valid.generations[0]!, definition), true);
+	const generation = valid.generations[0]!;
+	generation.status = "promoting";
+	generation.promotion = { status: "promoting", expectedMain: generation.expectedMain, tip: generation.combinedTip! };
+	assert.doesNotThrow(() => parseIntegrationState(valid, definition));
+	generation.status = "promoted";
+	generation.promotion = {
+		status: "promoted", expectedMain: generation.expectedMain, tip: generation.combinedTip!,
+		mainAfter: { ...generation.combinedTip!, branch: generation.expectedMain.branch },
+	};
+	valid.candidates[0]!.worker = "release_pending";
+	assert.doesNotThrow(() => parseIntegrationState(valid, definition));
+});
+
+test("integration recovery rejects disconnected, duplicated, stale or released evidence", () => {
+	const { request: definition, state: valid } = integrationFixture();
+	const altered = (mutate: (state: IntegrationState) => void, error: RegExp): void => {
+		const state = structuredClone(valid);
+		mutate(state);
+		assert.throws(() => parseIntegrationState(state, definition), error);
+	};
+	const other = { ...identity(), head: "f".repeat(40), index: "f".repeat(40), tree: "f".repeat(40) };
+	altered((state) => { state.generations[0]!.order = ["first", "first"]; }, /choose distinct ready candidates/);
+	altered((state) => { state.generations[0]!.order.reverse(); }, /breaks generation.*lineage/);
+	altered((state) => { state.generations[0]!.stages[1]!.onto = other; }, /breaks generation.*lineage/);
+	altered((state) => { state.generations[0]!.stages[1]!.source = state.candidates[0]!.tip; }, /breaks generation.*lineage/);
+	altered((state) => { state.generations[0]!.stages[1]!.taskId = "first"; }, /breaks generation.*lineage/);
+	altered((state) => { state.generations[0]!.combinedTip = other; }, /combined tip breaks staged lineage/);
+	altered((state) => { state.generations[0]!.checks!.identityAfter = other; }, /inconsistent pass result/);
+	altered((state) => { state.generations[0]!.checks!.candidate = other; state.generations[0]!.checks!.identityAfter = other; }, /checks target another tip/);
+	altered((state) => { state.generations[0]!.checks!.results[0]!.args = ["--different"]; }, /exact declared command and argv/);
+	altered((state) => { state.candidates[0]!.checks.candidate = other; }, /inconsistent pass result/);
+	altered((state) => { state.candidates[0]!.worker = "released"; }, /released an unpromoted worker/);
+	altered((state) => {
+		state.generations[0]!.status = "promoting";
+		state.generations[0]!.promotion = { status: "promoting", expectedMain: other, tip: state.generations[0]!.combinedTip! };
+	}, /promotion has stale evidence or lineage/);
+	altered((state) => {
+		state.generations[0]!.status = "promoted";
+		state.generations[0]!.promotion = {
+			status: "promoted", expectedMain: state.generations[0]!.expectedMain,
+			tip: state.generations[0]!.combinedTip!, mainAfter: other,
+		};
+	}, /inconsistent promotion outcome/);
+	altered((state) => { state.generations[0]!.status = "superseded"; }, /retains usable evidence or lacks its reason/);
+	altered((state) => {
+		state.generations[0]!.status = "superseded";
+		state.generations[0]!.supersededFrom = "ready";
+		state.generations[0]!.failure = "New staging requested.";
+		delete state.generations[0]!.combinedTip;
+		delete state.generations[0]!.checks;
+		state.generations.push({ ...structuredClone(state.generations[0]!), number: 2, expectedMain: other });
+	}, /share exact Main identity/);
+	altered((state) => { (state.generations[0] as object as Record<string, unknown>).path = "/arbitrary"; }, /Malformed integration state/);
+});
+
+test("superseded generations invalidate old gates before a new Main choice", () => {
+	const { request: definition, state } = integrationFixture();
+	const old = state.generations[0]!;
+	old.status = "superseded";
+	old.supersededFrom = "ready";
+	old.failure = "Main chose a new integration order.";
+	delete old.checks;
+	delete old.combinedTip;
+	const next = structuredClone(old);
+	next.number = 2;
+	next.status = "staging";
+	delete next.supersededFrom;
+	delete next.failure;
+	next.stages.reverse();
+	next.order.reverse();
+	next.stages[0]!.onto = next.integrationBase;
+	next.stages[0]!.status = "pending";
+	delete next.stages[0]!.tip;
+	next.stages.pop();
+	state.generations.push(next);
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	next.stages = [];
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	state.generations[0]!.checks = structuredClone(integrationFixture().state.generations[0]!.checks);
+	assert.throws(() => parseIntegrationState(state, definition), /evidence without a complete tip|retains usable evidence/);
+});
+
+test("candidate and combined judgments must cover their exact bases and tips", () => {
+	const { state } = integrationFixture();
+	const definition = parseExecuteRequest(request([
+		changesetTask("first", { judgment: { role: "reviewer", modelClass: "frontier", criterion: "Check first change." } }),
+		changesetTask("second"),
+	], { role: "reviewer", modelClass: "frontier", criterion: "Check combined change." }));
+	const first = state.candidates[0]!;
+	first.review = {
+		phase: "preliminary", criterion: "Check first change.", base: first.base, tip: first.tip,
+		identityAfter: first.tip, verdict: "PASS", passed: true, at: 6,
+	};
+	const generation = state.generations[0]!;
+	generation.review = {
+		phase: "final", criterion: "Check combined change.", base: generation.expectedMain, tip: generation.combinedTip!,
+		identityAfter: generation.combinedTip!, verdict: "PASS", passed: true, at: 7,
+	};
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	first.review.tip = state.candidates[1]!.tip;
+	assert.throws(() => parseIntegrationState(state, definition), /lacks exact passing evidence/);
+	first.review.tip = first.tip;
+	generation.review.identityAfter = generation.integrationBase;
+	assert.throws(() => parseIntegrationState(state, definition), /invalid combined review evidence/);
+	generation.review.identityAfter = generation.combinedTip!;
+	generation.status = "conflict";
+	generation.stages[1]!.status = "conflict";
+	delete generation.stages[1]!.tip;
+	generation.stages[1]!.failure = "Same-file conflict requires Main resolution.";
+	generation.failure = "Resolve in owned integration worktree.";
+	delete generation.combinedTip;
+	delete generation.checks;
+	delete generation.review;
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
 });
