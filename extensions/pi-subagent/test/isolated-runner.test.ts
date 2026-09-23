@@ -1563,6 +1563,7 @@ test("an interrupted text task remains failed until its explicit retry", async (
 class StagingGit extends IntegrationGit {
 	readonly merged: string[] = [];
 	promotions = 0;
+	cleanupBlocked = false;
 	promoteResult?: GitOutcome<WorkspaceIdentity>;
 	promoteMain?: (tip: WorkspaceIdentity) => void;
 	combinedTip?: WorkspaceIdentity;
@@ -1588,7 +1589,10 @@ class StagingGit extends IntegrationGit {
 		return this.promoteResult?.outcome === "unknown" ? { outcome: "unknown", failure: "Main still at base; no replay." }
 			: { outcome: "ready", value: { ...stages.at(-1)!.tip, branch: base.branch } };
 	}
-	override async cleanup(): Promise<GitOutcome<"removed">> { return { outcome: "ready", value: "removed" }; }
+	override async cleanup(): Promise<GitOutcome<"removed">> {
+		return this.cleanupBlocked ? { outcome: "blocked", failure: "Exact checkout is dirty; inspect the retained worktree." }
+			: { outcome: "ready", value: "removed" };
+	}
 	resolved = false;
 	allocationUnknown = false;
 	beforeMerge?: () => void;
@@ -1797,7 +1801,8 @@ test("Main advances a changeset dependent from its exact staged snapshot and ret
 	assert.equal(changesetState(rejected.state, "second").status, "pending");
 	assert.equal(changesetState(rejected.state, "second").attempts[0]?.superseded, true);
 	assert.equal(rejected.state.integration.candidates[1]?.decision, "rejected");
-	assert.deepEqual(runtime.terminationCalls, []);
+	assert.equal(runtime.terminationCalls.length, 1);
+	assert.equal(changesetState(rejected.state, "first").status, "rejected");
 	assertParsed(rejected.state);
 });
 
@@ -1869,6 +1874,81 @@ test("exact checked tip promotes once, retains worker until proven promotion, th
 	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /stale generation|requires exact successful/);
 });
 
+test("an uncertain rejected worker is reconciled by exact identity without repeating termination", async (t) => {
+	const { root, runner, runtime, store } = await harness(t);
+	const id = "reject-uncertain";
+	const ready = await runner.execute(request(id, [changesetTask("change")]), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const action = { id, generation: 1, action: "reject" as const, taskId: "change", attempt: candidate.attempt,
+		candidate: candidate.tip, expectedTip: ready.state.main };
+	runtime.terminationResults.push({ outcome: "unknown", failure: "Lost Herdr response" });
+	const uncertain = await runner.stage(action, root);
+	assert.equal(changesetState(uncertain.state, "change").status, "needs_attention");
+	assert.equal(changesetState(uncertain.state, "change").attempts[0]?.termination?.status, "unknown");
+	assert.equal(uncertain.state.integration.candidates[0]?.worker, "retained");
+	assert.equal(uncertain.continuation, undefined, "resume cannot verify a rejected candidate");
+	const handle = await store.load(root, id);
+	changesetState(handle.state, "change").attempts[0]!.termination!.status = "terminating";
+	delete changesetState(handle.state, "change").attempts[0]!.termination!.failure;
+	await handle.save(); // Also covers a process lost after persisting termination intent.
+	runtime.terminationReconciliations.push({ outcome: "terminated" });
+	const reconciled = await runner.stage(action, root);
+	assert.equal(changesetState(reconciled.state, "change").status, "rejected");
+	assert.equal(runtime.terminationCalls.length, 1);
+	assert.deepEqual(runtime.terminationReconciliationCalls[0]?.candidate, candidate.tip);
+	assertParsed(reconciled.state);
+});
+
+test("a resolved conflict in a superseded generation stays recorded after selecting only the other candidate", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "resolved-then-rejected";
+	const ready = await runner.execute(request(id, [changesetTask("first"), changesetTask("second")]), root);
+	const [first, second] = ready.state.integration.candidates;
+	const choose = (generation: number, action: "stage" | "resolve" | "reject", candidate: typeof first, expectedTip: WorkspaceIdentity) => ({
+		id, generation, action, taskId: candidate!.taskId, attempt: candidate!.attempt, candidate: candidate!.tip, expectedTip,
+	});
+	const firstStage = await runner.stage(choose(1, "stage", first, ready.state.main), root);
+	const firstTip = firstStage.state.integration.generations[0]!.combinedTip!;
+	await runner.stage(choose(1, "stage", second, firstTip), root);
+	git.resolved = true;
+	const resolved = await runner.stage(choose(1, "resolve", second, firstTip), root);
+	const oldTip = resolved.state.integration.generations[0]!.combinedTip!;
+	const rejected = await runner.stage(choose(1, "reject", second, oldTip), root);
+	assert.equal(rejected.state.integration.generations[0]?.supersededFrom, "staging");
+	assert.deepEqual(rejected.state.integration.generations[0]?.stages.map((stage) => stage.status), ["staged", "staged"]);
+	assert.equal(rejected.state.integration.generations[0]?.stages[1]?.tip?.head, oldTip.head);
+	const replay = await runner.stage(choose(2, "stage", first, ready.state.main), root);
+	const tip = replay.state.integration.generations[1]!.combinedTip!;
+	git.promoteMain = (main) => { runtime.main = main; };
+	await runner.integrate({ id, generation: 2, action: "validate", expectedTip: tip }, root);
+	const done = await runner.integrate({ id, generation: 2, action: "promote", expectedTip: tip }, root);
+	assert.equal(done.state.status, "completed");
+	assert.equal(done.state.integration.generations[0]?.worktree?.path, resolved.state.integration.generations[0]?.worktree?.path);
+	assert.equal(done.state.integration.generations[0]?.stages[1]?.tip?.head, oldTip.head);
+	assert.equal(done.state.integration.candidates[1]?.worker, "retained");
+	assertParsed(done.state);
+});
+
+test("promotion remains accepted with dirty retained owned resources and cleanup can be retried exactly", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "dirty-cleanup");
+	git.promoteMain = (main) => { runtime.main = main; };
+	git.cleanupBlocked = true;
+	await runner.integrate({ ...action, action: "validate" }, root);
+	const promoted = await runner.integrate({ ...action, action: "promote" }, root);
+	assert.equal(promoted.state.status, "completed");
+	assert.equal(promoted.state.integration.candidates[0]?.worker, "release_pending");
+	assert.equal(promoted.state.tasks[0]?.status, "completed");
+	assert.equal(changesetState(promoted.state, "change").attempts[0]?.cleanup[2]?.status, "running");
+	assert.match(changesetState(promoted.state, "change").attempts[0]?.cleanup[2]?.failure ?? "", /dirty/);
+	assertParsed(promoted.state);
+	git.cleanupBlocked = false;
+	const cleaned = await runner.integrate({ ...action, action: "cleanup" }, root);
+	assert.equal(cleaned.state.integration.candidates[0]?.worker, "released");
+	assert.equal(cleaned.state.accepted, true);
+	assertParsed(cleaned.state);
+});
+
 test("rejected staged candidate freezes validation and requires explicit replay from the recorded base", async (t) => {
 	const git = new StagingGit();
 	const { root, runner, runtime } = await harness(t, { integrationGit: git });
@@ -1894,6 +1974,18 @@ test("rejected staged candidate freezes validation and requires explicit replay 
 	assert.equal(replay.state.integration.generations[1]?.stages[0]?.status, "staged");
 	assert.deepEqual(git.merged, [first!.tip.head, second!.tip.head]);
 	assertParsed(replay.state);
+	git.promoteMain = (main) => { runtime.main = main; };
+	const tip = replay.state.integration.generations[1]!.combinedTip!;
+	await runner.integrate({ id, generation: 2, action: "validate", expectedTip: tip }, root);
+	const promoted = await runner.integrate({ id, generation: 2, action: "promote", expectedTip: tip }, root);
+	assert.equal(promoted.state.status, "completed");
+	assert.equal(promoted.state.accepted, true);
+	assert.equal(changesetState(promoted.state, "first").status, "rejected");
+	assert.equal(changesetState(promoted.state, "first").attempts[0]?.termination?.status, "terminated");
+	assert.equal(promoted.state.integration.candidates[0]?.worker, "retained");
+	assert.equal(promoted.state.integration.generations[0]?.status, "superseded");
+	assert.equal(promoted.state.integration.generations[0]?.worktree?.path, staged.state.integration.generations[0]?.worktree?.path);
+	assertParsed(promoted.state);
 });
 
 test("post-seal same-worker revision invalidates old stage and retains a newly checked candidate", async (t) => {
@@ -1917,15 +2009,19 @@ test("post-seal same-worker revision invalidates old stage and retains a newly c
 	const replay = await runner.stage({ id, generation: 2, action: "stage", taskId: latest.taskId,
 		attempt: latest.attempt, candidate: latest.tip, expectedTip: ready.state.main }, root);
 	assert.equal(replay.state.integration.generations[1]?.stages[0]?.status, "staged");
+	await assert.rejects(runner.stage({ id, generation: 2, action: "reject", taskId: latest.taskId,
+		attempt: latest.attempt, candidate: latest.tip, expectedTip: replay.state.integration.generations[1]!.combinedTip! }, root),
+		/Retained integration worktree limit/);
 	git.promoteMain = (main) => { runtime.main = main; };
 	const tip = replay.state.integration.generations[1]!.combinedTip!;
 	const checked = await runner.integrate({ id, generation: 2, action: "validate", expectedTip: tip }, root);
 	assert.equal(checked.state.integration.generations[1]?.status, "ready");
 	const promoted = await runner.integrate({ id, generation: 2, action: "promote", expectedTip: tip }, root);
 	assert.equal(promoted.state.integration.generations[1]?.status, "promoted");
-	assert.equal(promoted.state.integration.candidates[0]?.worker, "released");
-	assert.equal(promoted.state.status, "needs_attention", "superseded owned worktree cannot be silently counted as cleaned");
-	assert.equal(promoted.state.accepted, false);
+	assert.equal(promoted.state.integration.candidates[0]?.worker, "released", "same-attempt old tip shared the proved-cleaned worker checkout");
+	assert.equal(promoted.state.status, "completed", "old generation remains retained without blocking the accepted selection");
+	assert.equal(promoted.state.accepted, true);
+	assert.equal(promoted.state.integration.generations[0]?.worktree?.path, staged.state.integration.generations[0]?.worktree?.path);
 	assertParsed(promoted.state);
 });
 

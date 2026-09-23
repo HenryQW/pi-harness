@@ -346,7 +346,7 @@ const ChangesetTaskStateSchema = Type.Object({
 	kind: Type.Literal("changeset"),
 	status: Type.Union([
 		Type.Literal("pending"), Type.Literal("allocating"), Type.Literal("working"), Type.Literal("ready_to_integrate"),
-		Type.Literal("integrating"), Type.Literal("cleanup"), Type.Literal("completed"), Type.Literal("needs_attention"),
+		Type.Literal("integrating"), Type.Literal("cleanup"), Type.Literal("completed"), Type.Literal("rejected"), Type.Literal("needs_attention"),
 	]),
 	attempts: Type.Array(TaskAttemptSchema, { maxItems: 2 }),
 	failure: OptionalRuntimeTextSchema,
@@ -1340,6 +1340,12 @@ export function parseRunState(value: unknown): RunState {
 				}
 			}
 		}
+		if (taskState.status === "rejected" && (!taskState.attempts.length
+			|| !state.integration.candidates.some((candidate) => candidate.taskId === definition.id
+				&& candidate.decision === "rejected" && candidate.attempt === taskState.attempts.length)
+			|| taskState.attempts.at(-1)?.termination?.status !== "terminated")) {
+			throw new Error(`Rejected task ${definition.id} lacks explicit decision and proven worker termination.`);
+		}
 		if (taskState.status === "completed") {
 			const promoted = state.integration.generations.at(-1);
 			const candidate = state.integration.candidates.find((item) => item.taskId === definition.id
@@ -1347,8 +1353,10 @@ export function parseRunState(value: unknown): RunState {
 					&& sameIdentity(stage.source, item.tip)));
 			if (candidate && promoted?.status === "promoted") {
 				const attempt = taskState.attempts.at(-1)!;
-				if (candidate.worker !== "released" || attempt.termination?.status !== "terminated"
-					|| attempt.cleanup.some((step) => step.status !== "completed")) throw new Error(`Promoted task ${definition.id} has incomplete worker cleanup.`);
+				if (candidate.worker === "released" && (attempt.termination?.status !== "terminated"
+					|| attempt.cleanup.some((step) => step.status !== "completed"))) {
+					throw new Error(`Promoted task ${definition.id} claims unproved worker cleanup.`);
+				}
 			} else requireCompletedTaskEvidence(taskState, definition);
 		}
 	}
@@ -1384,8 +1392,7 @@ export function parseRunState(value: unknown): RunState {
 			|| (candidate.review !== undefined && JSON.stringify(candidate.review) !== JSON.stringify(attempt.preliminaryReview))
 			|| (state.integration.generations.at(-1)?.status !== "promoted"
 				? attempt.termination || task?.status !== "ready_to_integrate" || candidate.worker !== "retained"
-				: candidate.worker === "retained" ? attempt.termination || task?.status !== "ready_to_integrate"
-					: task?.status !== "ready_to_integrate" && task?.status !== "completed")) {
+				: task?.status !== "ready_to_integrate" && task?.status !== "completed")) {
 			throw new Error(`Ready candidate ${candidate.taskId} is not the retained exact worker attempt.`);
 		}
 	}
@@ -1396,7 +1403,7 @@ export function parseRunState(value: unknown): RunState {
 		throw new Error("A passed final gate must belong to an accepted request.");
 	}
 	if (state.accepted) {
-		if (state.status !== "completed" || state.final.status !== "passed" || state.tasks.some((task) => task.status !== "completed")) {
+		if (state.status !== "completed" || state.final.status !== "passed" || state.tasks.some((task) => task.status !== "completed" && task.status !== "rejected")) {
 			throw new Error(`Malformed accepted pi-subagent v${RUN_STATE_VERSION} state.`);
 		}
 		if (!state.final.identity || !isCleanCommitted(state.final.identity)) {
@@ -1415,10 +1422,14 @@ export function parseRunState(value: unknown): RunState {
 			? JSON.stringify(generation.review) === JSON.stringify(state.final.review)
 			: reviewEvidencePasses(state.final.review, "final", request.finalJudgment.criterion,
 				state.requestStartMain, state.final.identity))) throw new Error("Accepted request lacks an exact passing final review.");
-		if (state.integration.generations.length && (state.integration.generations.at(-1)?.status !== "promoted"
-			|| state.integration.generations.at(-1)?.cleanup?.length !== 2
-			|| state.integration.generations.at(-1)?.cleanup?.some((step) => step.status !== "completed"))) {
-			throw new Error("Accepted integration has incomplete checkout cleanup.");
+		if (state.integration.generations.length && state.integration.generations.at(-1)?.status !== "promoted") {
+			throw new Error("Accepted integration requires proven promotion.");
+		}
+		if (generation && (generation.stages.some((stage) => state.tasks.find((task) => task.taskId === stage.taskId)?.status !== "completed")
+			|| state.integration.candidates.some((candidate) => !candidate.decision
+				&& !generation.stages.some((stage) => stage.taskId === candidate.taskId && stage.attempt === candidate.attempt
+					&& sameIdentity(stage.source, candidate.tip))))) {
+			throw new Error("Accepted integration has an unselected candidate or uncompleted selected task.");
 		}
 		if (!sameIdentity(state.main, state.final.identity) || state.acceptedAt === undefined) {
 			throw new Error("Accepted request does not match its final-gate identity.");

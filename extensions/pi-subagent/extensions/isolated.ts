@@ -256,12 +256,22 @@ function publicState(state: RunState, preferredTaskId?: string) {
 		id: state.request.id,
 		status: state.status,
 		accepted: state.accepted,
-		tasks: state.tasks.map(({ taskId, status }) => ({ taskId, status })),
+		tasks: state.tasks.map((task) => ({
+			taskId: task.taskId, status: task.status,
+			...(task.kind === "changeset" && state.integration.candidates.length ? { attempts: task.attempts.map((attempt) => ({
+				number: attempt.number, superseded: attempt.superseded === true,
+				workerId: attempt.allocations.flatMap((item) => item.kind === "agent" && item.status === "owned" ? [item.agentName] : [])[0],
+				termination: attempt.termination?.status,
+				worktree: attempt.allocations.flatMap((item) => item.kind === "worktree" && item.status === "owned" && item.worktree ? [item.worktree.path] : [])[0],
+				cleanup: attempt.cleanup.filter((step) => step.status !== "completed"),
+			})) } : {}),
+		})),
 		final: { status: state.final.status },
 		integration: {
-			candidates: state.integration.candidates.map(({ taskId, attempt, tip, base, checks, decision }) => ({ taskId, attempt, tip, base, checked: checks.passed, ...(decision ? { decision } : {}) })),
-			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, combinedTip, correction, checks, review, promotion, failure, stages }) => ({
-				number, status, integrationBase,
+			candidates: state.integration.candidates.map(({ taskId, attempt, tip, base, checks, decision, worker }) => ({ taskId, attempt, tip, base, checked: checks.passed, worker, ...(decision ? { decision } : {}) })),
+			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, combinedTip, correction, checks, review, promotion, failure, stages, cleanup, supersededFrom }) => ({
+				number, status, integrationBase, ...(supersededFrom ? { supersededFrom } : {}),
+				...(cleanup ? { cleanup } : {}),
 				...(combinedTip ? { combinedTip } : {}),
 				...(correction ? { correction } : {}),
 				...(checks ? { checked: checks.passed, failedCheck: publicFailedCheck(checks) } : {}),

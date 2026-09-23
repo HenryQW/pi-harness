@@ -56,6 +56,7 @@ export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
 const ALLOCATION_KINDS: readonly AllocationKind[] = ["worktree", "workspace", "worker_tab", "agent"];
 const FULL_SUITE: CheckCommand = { command: "pnpm", args: ["test"] };
+const MAX_RETAINED_INTEGRATION_GENERATIONS = 2;
 
 function requireRootSuite(root: string): string {
 	let manifest: unknown;
@@ -1096,6 +1097,32 @@ export class IsolatedRunner {
 			const task = changesetTaskState(state, action.taskId);
 			const attempt = task.attempts[action.attempt - 1];
 			const worker = attempt?.allocations.find((item): item is WorktreeAllocationIntent => item.kind === "worktree" && item.status === "owned")?.worktree;
+			if (action.action === "reject" && candidate?.decision === "rejected" && task.status === "needs_attention"
+				&& (attempt?.termination?.status === "unknown" || attempt?.termination?.status === "terminating")
+				&& candidate.worker === "retained") {
+				const generation = state.integration.generations.at(-1);
+				if (action.generation !== (generation?.status === "superseded" ? generation.number + 1 : generation?.number ?? 1)) {
+					throw new Error("Rejection recovery has a stale generation.");
+				}
+				const expected = generation && generation.status !== "superseded"
+					? generation.combinedTip ?? generation.stages.at(-1)?.tip ?? generation.integrationBase : state.main;
+				if (!sameIdentity(action.expectedTip, expected)) throw new Error("Rejection recovery has a stale integration tip.");
+				const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
+					() => this.coordinatorRuntime.now(), outerSignal);
+				const termination = attempt.termination;
+				const result = await scope.call((context) => this.hostRuntime.reconcileWorkerTermination({
+					task: changesetTaskRequest(state, task.taskId), attempt, workerId: termination.workerId,
+					candidate: termination.candidate,
+				}, context));
+				if (result.outcome === "terminated") {
+					attempt.termination = { status: "terminated", workerId: termination.workerId,
+						candidate: termination.candidate, at: this.coordinatorRuntime.now() };
+					task.status = "rejected";
+					delete task.failure;
+				} else task.failure = bounded(`Exact worker ${termination.workerId} termination remains unproved; inspect the retained agent and retry rejection recovery.`);
+				await this.saveProductive(handle);
+				return this.response(state);
+			}
 			if (!candidate || candidate.worker !== "retained" || candidate.decision || task.status !== "ready_to_integrate" || !worker
 				|| !sameIdentity(attempt!.readiness!.candidate, action.candidate)) {
 				throw new Error("Stage action refers to a stale or unowned candidate.");
@@ -1118,12 +1145,12 @@ export class IsolatedRunner {
 					: state.main;
 				if (!sameIdentity(action.expectedTip, tip)) throw new Error("Arbitration has a stale combined tip.");
 				const affected = affectedDependents(state, action.taskId);
-				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.taskId === action.taskId)
-					&& generation.number >= 32) {
-					throw new Error("Integration generation limit is exhausted; no bounded rebuild is available.");
-				}
 				if (affected.some((dependent) => dependent.attempts.length >= 2)) {
 					throw new Error("A dependent has exhausted its bounded fresh attempts; arbitration cannot invalidate it safely.");
+				}
+				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.taskId === action.taskId)
+					&& generations.filter((item) => item.worktree).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
+					throw new Error("Retained integration worktree limit is exhausted; reconcile the owned checkouts before another rebuild.");
 				}
 				if (affected.some((dependent) => dependent.kind === "changeset" && (
 					dependent.attempts.at(-1)!.prompts.some((prompt) => prompt.status === "submitting" || prompt.status === "ambiguous")
@@ -1131,8 +1158,8 @@ export class IsolatedRunner {
 					|| dependent.attempts.at(-1)!.termination))) {
 					throw new Error("A dependent has uncertain or released worker resources; reconcile before arbitration.");
 				}
-				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.status !== "staged")) {
-					throw new Error("Uncertain or conflicted stage must be reconciled before superseding its generation.");
+				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.status === "pending" || stage.status === "staging")) {
+					throw new Error("Uncertain stage must be reconciled before superseding its generation.");
 				}
 				if (generation?.status === "superseded" && affected.length) {
 					throw new Error("Dependent attempts belong to a superseded generation; choose a fresh staged candidate.");
@@ -1181,8 +1208,12 @@ export class IsolatedRunner {
 					delete dependent.failure;
 				}
 				task.status = "needs_attention";
-				task.failure = action.action === "revise" ? action.instruction : "Main rejected this candidate; no automatic replacement.";
-				await this.saveProductive(handle); // Freeze before prompting the retained worker.
+				task.failure = action.action === "revise" ? action.instruction : "Main rejected this candidate; owned resources remain recorded.";
+				await this.saveProductive(handle); // Freeze before touching the exact worker.
+				if (action.action === "reject" && allocationByKind(attempt!, "agent")) {
+					if (await this.terminateWithSafety(handle, task, attempt!, action.candidate, scope.signal)) task.status = "rejected";
+					await this.saveProductive(handle);
+				}
 				if (action.action === "revise") {
 					task.status = "working";
 					await this.driveWorkerSafely(handle, task, scope, "correction", undefined, true);
@@ -1225,6 +1256,9 @@ export class IsolatedRunner {
 			if (!sameIdentity(actualMain, state.main)) throw new Error("Main changed or became dirty; staging is blocked.");
 			if (!generation) {
 				if (action.action !== "stage") throw new Error("No integration generation exists to resolve.");
+				if (generations.filter((item) => item.worktree).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
+					throw new Error("Retained integration worktree limit is exhausted; no new generation may be allocated.");
+				}
 				const result = await scope.call((context) => this.integrationGit.allocate(root,
 					`${action.id}-integration-${action.generation}`, state.main, async (worktree) => {
 						const integrationBase = { ...state.main, branch: `refs/heads/${worktree.branch}` };
@@ -1302,7 +1336,8 @@ export class IsolatedRunner {
 			const generation = state.integration.generations.at(-1);
 			if (!generation || generation.number !== action.generation || !generation.worktree
 				|| !generation.combinedTip || !sameIdentity(generation.combinedTip, action.expectedTip)
-				|| terminal(state) || state.status !== "needs_attention") throw new Error("Integration action has a stale generation or combined tip.");
+				|| (terminal(state) && !(state.status === "completed" && action.action === "cleanup"))
+				|| (state.status !== "needs_attention" && !(state.status === "completed" && action.action === "cleanup"))) throw new Error("Integration action has a stale generation or combined tip.");
 			const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
 				() => this.coordinatorRuntime.now(), outerSignal);
 			const receipts = this.stageReceipts(generation);
@@ -1460,6 +1495,9 @@ export class IsolatedRunner {
 		const state = handle.state;
 		const promoted = generation.promotion?.mainAfter;
 		if (generation.status !== "promoted" || !promoted || !generation.worktree) throw new Error("Cleanup requires exact proven promotion.");
+		// Promotion proves selection independently of worker or checkout cleanup.
+		for (const stage of generation.stages) changesetTaskState(state, stage.taskId).status = "completed";
+		await this.saveProductive(handle);
 		try {
 			const main = await this.callProductive(handle, scope, (context) => this.gitRuntime.inspectMain({ root: state.root }, context));
 			if (!sameIdentity(main, promoted)) throw new Error("Main changed or became dirty after promotion; cleanup is blocked.");
@@ -1507,9 +1545,10 @@ export class IsolatedRunner {
 					await this.saveProductive(handle);
 				}
 				candidate.worker = "released";
+				// Same-attempt revisions share this exact worker checkout; release historical
+				// rejected tips only after the physical checkout has been proved removed.
 				for (const old of state.integration.candidates.filter((item) => item.decision === "rejected"
 					&& item.taskId === stage.taskId && item.attempt === stage.attempt)) old.worker = "released";
-				task.status = "completed";
 				await this.saveProductive(handle);
 			}
 			generation.cleanup ??= [{ kind: "worktree", status: "pending" }, { kind: "branch", status: "pending" }];
@@ -1527,22 +1566,22 @@ export class IsolatedRunner {
 				delete step.failure;
 				await this.saveProductive(handle);
 			}
-			if (state.tasks.some((task) => task.status !== "completed")
-				|| state.integration.generations.some((item) => item.status === "superseded" && item.worktree)) {
-				return; // Old generations remain owned and must not be silently accounted as cleaned.
-			}
-			state.final = { status: "passed", identity: promoted, checks: generation.checks,
-				...(generation.review ? { review: generation.review } : {}) };
-			state.status = "completed";
-			state.accepted = true;
-			state.acceptedAt = this.coordinatorRuntime.now();
-			await this.saveProductive(handle);
 		} catch (error) {
 			generation.failure = undefined; // Promotion remains proven; cleanup evidence stays inspectable.
 			const pending = generation.cleanup?.find((step) => step.status === "running")
 				?? generation.stages.flatMap((stage) => changesetTaskState(state, stage.taskId).attempts[stage.attempt - 1]!.cleanup)
 					.find((step) => step.status === "running");
 			if (pending) pending.failure = bounded(`Cleanup requires attention: ${errorText(error)}`);
+			await this.saveProductive(handle);
+		}
+		if (state.tasks.every((task) => task.status === "completed" || task.status === "rejected")
+			&& state.integration.candidates.every((candidate) => candidate.decision || generation.stages.some((stage) =>
+				stage.taskId === candidate.taskId && stage.attempt === candidate.attempt && sameIdentity(stage.source, candidate.tip)))) {
+			state.final = { status: "passed", identity: promoted, checks: generation.checks,
+				...(generation.review ? { review: generation.review } : {}) };
+			state.status = "completed";
+			state.accepted = true;
+			state.acceptedAt = this.coordinatorRuntime.now();
 			await this.saveProductive(handle);
 		}
 	}
@@ -2775,6 +2814,7 @@ export class IsolatedRunner {
 
 	private response(state: RunState, main?: MainStatus): RunResponse {
 		const completed = state.tasks.filter((task) => task.status === "completed").length;
+		const rejected = state.tasks.filter((task) => task.status === "rejected").length;
 		const resumable = !terminal(state);
 		let continuation: ResumeRequest | undefined;
 		if (resumable) {
@@ -2786,7 +2826,7 @@ export class IsolatedRunner {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 			} else if (attention?.kind === "changeset" && attention.attempts.length === 0) {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
-			} else if (attention?.kind === "changeset") {
+			} else if (attention?.kind === "changeset" && !attention.attempts.at(-1)?.termination) {
 				const attempt = attention.attempts.at(-1);
 				if (attempt && this.correctionAllowed(state, changesetTaskRequest(state, attention.taskId), attempt)) {
 					continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
@@ -2804,7 +2844,7 @@ export class IsolatedRunner {
 		return {
 			text: bounded([
 				`Pi Subagent ${state.request.id}: ${state.status}.`,
-				`Tasks: ${completed}/${state.tasks.length} completed. Accepted: ${state.accepted}.`,
+				`Tasks: ${completed}/${state.tasks.length} completed, ${rejected} rejected. Accepted: ${state.accepted}.`,
 				...(main?.status === "current" ? ["Main: current at the recorded exact identity."] : []),
 				...(main?.status === "drifted" ? [
 					`Main: drifted from ${main.expected.branch}@${main.expected.head} to ${main.actual.branch}@${main.actual.head}.`,
@@ -2826,7 +2866,10 @@ export class IsolatedRunner {
 				...(state.integration.generations.at(-1)!.status === "promoted" ? ["Promotion proven; worker cleanup is pending or completed. Use subagent_integrate cleanup with the exact tip if interrupted."] : []),
 				] : []),
 				...(state.integration.generations.some((item) => item.status === "superseded" && item.worktree) ? [
-					`Superseded integration worktrees remain owned; cleanup is not supported by this action surface. Do not treat promotion as request completion.`,
+					`Superseded integration worktrees remain owned (see generation paths/status); inspect and reconcile these exact resources manually. They are not counted as selected or cleaned.`,
+				] : []),
+				...(state.integration.candidates.some((item) => item.decision === "rejected" && item.worker === "retained") ? [
+					"Rejected candidate resources remain retained; inspect task attempt identities and cleanup steps in subagent_status before manual recovery.",
 				] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
