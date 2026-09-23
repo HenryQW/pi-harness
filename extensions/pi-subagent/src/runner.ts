@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import type { EphemeralSubagentExecutor } from "./ephemeral.ts";
-import { createChildWorktree, finalizeChildWorktree } from "./worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, type WorktreeInfo } from "./worktree.ts";
+import { IntegrationGit, type StageReceipt } from "./integration-git.ts";
 import {
 	checkBatchPasses,
 	CLEANUP_KINDS,
@@ -9,6 +10,7 @@ import {
 	MAX_POSSIBLE_RESOURCES,
 	parseExecuteRequest,
 	parseResumeRequest,
+	parseStageRequest,
 	reviewEvidencePasses,
 	sameIdentity,
 	RUN_STATE_VERSION,
@@ -791,6 +793,7 @@ export class IsolatedRunner {
 	private readonly hostRuntime: HostRuntime;
 	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
 	private readonly store: FileRunStore;
+	private readonly integrationGit: IntegrationGit;
 	private readonly textExecutor: EphemeralSubagentExecutor;
 	private readonly currentPolicy: () => ExecutionPolicySnapshot;
 	private readonly productiveLifecycles = new Map<string, ProductiveLifecycle>();
@@ -807,11 +810,13 @@ export class IsolatedRunner {
 			maxCorrections: 1,
 		},
 		currentPolicy: () => ExecutionPolicySnapshot = () => policy,
+		integrationGit = new IntegrationGit(),
 	) {
 		this.coordinatorRuntime = coordinatorRuntime;
 		this.hostRuntime = hostRuntime;
 		this.gitRuntime = gitRuntime;
 		this.store = store;
+		this.integrationGit = integrationGit;
 		this.textExecutor = textExecutor;
 		this.currentPolicy = currentPolicy;
 	}
@@ -935,6 +940,7 @@ export class IsolatedRunner {
 						attempts: [],
 					}),
 				waves: [],
+				integration: { candidates: [], generations: [] },
 				final: { status: "pending" },
 				accepted: false,
 				createdAt,
@@ -962,6 +968,7 @@ export class IsolatedRunner {
 				const state = loaded.state;
 				if (this.recoverInterrupted(state)) await loaded.save();
 				if (terminal(state)) throw new Error(`Pi Subagent request ${request.id} is terminal (${state.status}); create a new request.`);
+				if (state.integration.candidates.length) throw new Error("Retained candidates require subagent_stage; resume cannot stage or finalize them.");
 				state.recovery = {
 					kind: "resume",
 					action: request.action,
@@ -973,14 +980,7 @@ export class IsolatedRunner {
 			}, { productiveRunLease: lifecycle.lease });
 			const state = handle.state;
 			const current = this.currentPolicy();
-			const cleanupTask = "taskId" in request ? taskState(state, request.taskId) : undefined;
-			const cleanupAttempt = cleanupTask?.kind === "changeset" ? cleanupTask.attempts.at(-1) : undefined;
-			const cleanupOnly = request.action === "verify" && cleanupTask?.kind === "changeset"
-				&& cleanupAttempt?.integration?.status === "integrated";
-
-			const scope: RuntimeScope = cleanupOnly
-				? new DeadlineScope(this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS, () => this.coordinatorRuntime.now(), outerSignal)
-				: new ProductiveScope(Math.min(state.policy.childMaxMs, current.childMaxMs), () => this.coordinatorRuntime.now(), outerSignal);
+			const scope: RuntimeScope = new ProductiveScope(Math.min(state.policy.childMaxMs, current.childMaxMs), () => this.coordinatorRuntime.now(), outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);
@@ -997,12 +997,6 @@ export class IsolatedRunner {
 					task.status = "pending";
 					task.failure = undefined;
 					return await this.run(handle, scope, task.taskId);
-				}
-				if (request.action === "verify") {
-					const attempt = latestAttempt(task);
-					if (attempt.integration?.status === "integrated") {
-						return await this.verifyCleanupOnly(handle, task, attempt, scope);
-					}
 				}
 				if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
 				if (request.action === "retry") return await this.retry(handle, task, scope);
@@ -1022,12 +1016,123 @@ export class IsolatedRunner {
 		});
 	}
 
+	/** Main selects an exact retained candidate; only the owned integration checkout is writable. */
+	async stage(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
+		const action = parseStageRequest(value);
+		root = realpathSync.native(root);
+		return await this.withProductiveRun(root, async (lifecycle) => {
+			const handle = await this.store.withLock(root, async () => await this.store.load(root, action.id), { productiveRunLease: lifecycle.lease });
+			const state = handle.state;
+			if (terminal(state) || state.status !== "needs_attention") throw new Error("Request is not waiting for Main staging.");
+			const candidate = state.integration.candidates.find((item) => item.taskId === action.taskId && item.attempt === action.attempt);
+			const task = changesetTaskState(state, action.taskId);
+			const attempt = task.attempts[action.attempt - 1];
+			const worker = attempt?.allocations.find((item): item is WorktreeAllocationIntent => item.kind === "worktree" && item.status === "owned")?.worktree;
+			if (!candidate || candidate.worker !== "retained" || task.status !== "ready_to_integrate" || !worker
+				|| !sameIdentity(candidate.tip, action.candidate) || !sameIdentity(attempt!.readiness!.candidate, action.candidate)) {
+				throw new Error("Stage action refers to a stale or unowned candidate.");
+			}
+			const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
+				() => this.coordinatorRuntime.now(), outerSignal);
+			const generations = state.integration.generations;
+			let generation = generations.at(-1);
+			if (action.generation !== (generation?.number ?? 1) || (generation && generation.status !== "staging" && generation.status !== "conflict")) {
+				throw new Error("Stage action has a stale generation.");
+			}
+			const previousStage = generation?.stages.at(-1);
+			const expected = previousStage?.status === "staged"
+				? previousStage.tip! : previousStage?.onto ?? generation?.integrationBase;
+			if (action.action === "stage" && generation?.stages.some((stage) => stage.status !== "staged")) {
+				throw new Error("A previous stage is unresolved; inspect and resolve it first.");
+			}
+			if (action.action === "resolve") {
+				const pending = generation?.stages.at(-1);
+				if (!pending || !["staging", "conflict"].includes(pending.status)
+					|| pending.taskId !== action.taskId || pending.attempt !== action.attempt
+					|| !sameIdentity(pending.source, action.candidate)
+					|| !sameIdentity(pending.onto, action.expectedTip)) throw new Error("Resolve action has no exact pending stage intent.");
+			} else if (!sameIdentity(action.expectedTip, expected ?? state.main)
+				|| generation?.stages.some((stage) => stage.taskId === action.taskId)) {
+				throw new Error("Stage action has a stale combined tip or repeated candidate.");
+			}
+			if (!isCleanCommitted(action.expectedTip) || action.expectedTip.head !== (expected?.head ?? state.main.head)) {
+				throw new Error("Stage action has an invalid integration tip.");
+			}
+			const actualMain = await scope.call((context) => this.gitRuntime.inspectMain({ root }, context));
+			if (!sameIdentity(actualMain, state.main)) throw new Error("Main changed or became dirty; staging is blocked.");
+			if (!generation) {
+				if (action.action !== "stage") throw new Error("No integration generation exists to resolve.");
+				const result = await scope.call((context) => this.integrationGit.allocate(root,
+					`${action.id}-integration-${action.generation}`, state.main, async (worktree) => {
+						const integrationBase = { ...state.main, branch: `refs/heads/${worktree.branch}` };
+						generation = {
+							number: action.generation, status: "staging", expectedMain: state.main,
+							integrationBase,
+							order: [action.taskId], stages: [{ taskId: action.taskId, attempt: action.attempt,
+								source: action.candidate, onto: integrationBase, status: "pending" }],
+							worktree,
+						};
+						generations.push(generation);
+						await this.saveProductive(handle); // Before worktree add.
+					}, context.signal));
+				if (result.outcome !== "ready") {
+					if (!generations.at(-1)) throw new Error("Integration allocation did not persist an owned worktree plan.");
+					return this.response(state);
+				}
+			}
+			generation = generations.at(-1);
+			if (!generation?.worktree) throw new Error("Integration worktree allocation has no durable ownership record.");
+			const worktree = generation.worktree;
+			const previousStages = generation.stages.filter((stage) => stage.status === "staged");
+			const receipts: StageReceipt[] = previousStages.map((stage) => ({ previous: stage.onto, worker: stage.source, tip: stage.tip! }));
+			let stage = generation.stages.at(-1);
+			if (action.action === "stage") {
+				if (stage?.status === "staged") {
+					stage = { taskId: action.taskId, attempt: action.attempt, source: action.candidate,
+						onto: action.expectedTip, status: "staging" };
+					delete generation.combinedTip;
+					generation.order.push(action.taskId);
+					generation.stages.push(stage);
+				} else {
+					stage!.status = "staging";
+				}
+				await this.saveProductive(handle); // Exact candidate and previous tip before merge.
+			}
+			const outcome = await scope.call((context) => action.action === "stage"
+				? this.integrationGit.stage(root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal)
+				: this.integrationGit.reconcileStage(root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal));
+			if (outcome.outcome === "ready" && outcome.value !== "not_started") {
+				stage!.status = "staged";
+				stage!.tip = outcome.value.tip;
+				delete stage!.failure;
+				generation.combinedTip = outcome.value.tip;
+				generation.status = "staging";
+				delete generation.failure;
+			} else if (outcome.outcome === "conflict") {
+				stage!.status = "conflict";
+				stage!.failure = bounded(outcome.failure);
+				generation.status = "conflict";
+				generation.failure = stage!.failure;
+			} else {
+				stage!.failure = bounded(outcome.outcome === "ready"
+					? "Merge has not started; intent retained. No automatic retry."
+					: outcome.failure);
+			}
+			// Unproved outcomes keep the intent; never replay a merge automatically.
+			await this.saveProductive(handle);
+			return this.response(state);
+		});
+	}
+
 	async abort(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		root = realpathSync.native(root);
 		return await this.store.withLock(root, async (lifecycle) => {
 			const handle = await this.store.load(root, id);
 			const state = handle.state;
 			if (terminal(state)) return this.response(state);
+			if (state.integration.candidates.length || state.integration.generations.length) {
+				throw new Error("Retained candidates and integration worktrees cannot be aborted before explicit rejection/cleanup is implemented.");
+			}
 			const activeControls = this.activeControls(root, id);
 			for (const { control } of activeControls) control.invalidate();
 			if (!activeControls.length
@@ -1168,24 +1273,17 @@ export class IsolatedRunner {
 					state.status = "needs_attention";
 					return this.response(state);
 				}
-				wave.status = "integrating";
-				await this.saveProductive(handle);
-				const readyTaskIds = new Set(ready.map((task) => task.taskId));
-				for (const request of state.request.tasks) {
-					if (request.kind !== "changeset" || !readyTaskIds.has(request.id)) continue;
-					const task = changesetTaskState(state, request.id);
-					if (!await this.integrateTask(handle, task, scope)) {
-						for (const retained of ready) {
-							if (retained.kind === "changeset" && retained.status === "ready_to_integrate") {
-								this.attention(retained, "Earlier same-wave integration stopped; verify the retained ready candidate to continue.");
-							}
-						}
-						wave.status = "needs_attention";
-						state.status = "needs_attention";
-						return this.response(state);
-					}
+				if (ready.every((task) => task.kind === "text")) {
+					wave.status = "completed";
+					await this.saveProductive(handle);
+					forceTextTaskId = undefined;
+					continue;
 				}
-				wave.status = "completed";
+				for (const task of ready) if (task.kind === "changeset") this.retainCandidate(state, task);
+				wave.status = "needs_attention";
+				state.status = "needs_attention";
+				await this.saveProductive(handle);
+				return this.response(state);
 				await this.saveProductive(handle);
 				forceTextTaskId = undefined;
 			}
@@ -1462,6 +1560,7 @@ export class IsolatedRunner {
 			if (kind !== "initial") {
 				attempt.readiness = undefined;
 				attempt.preliminaryChecks = undefined;
+				attempt.preliminaryReview = undefined;
 				attempt.integrationBase = undefined;
 				attempt.integrationCandidate = undefined;
 				attempt.authoritativeChecks = undefined;
@@ -1587,6 +1686,16 @@ export class IsolatedRunner {
 					if (!workerId || attempt.termination || !attempt.candidate || !attempt.candidateBase
 						|| !checkBatchPasses(attempt.preliminaryChecks, request.checks, attempt.candidate)) {
 						throw new Error("Readiness requires an exact live owned worker and passing candidate lineage.");
+					}
+					if (request.judgment) {
+						attempt.preliminaryReview = await this.runReview(handle, request.judgment.criterion,
+							attempt.candidateBase, attempt.candidate, request.judgment.role,
+							request.judgment.modelClass, "preliminary", scope, task.taskId);
+						await this.saveProductive(handle);
+						if (!attempt.preliminaryReview.passed) {
+							this.attention(task, "Preliminary Judgment did not return exact PASS on the worker candidate.");
+							return;
+						}
 					}
 					attempt.readiness = {
 						candidate: attempt.candidate,
@@ -1764,418 +1873,26 @@ export class IsolatedRunner {
 		return evidence;
 	}
 
-	private async integrateTask(handle: RunStateHandle, task: ChangesetTaskState, scope: RuntimeScope): Promise<boolean> {
-		const state = handle.state;
-		const request = changesetTaskRequest(state, task.taskId);
+	private retainCandidate(state: RunState, task: ChangesetTaskState): void {
 		const attempt = latestAttempt(task);
-		if (attempt.integration?.status === "integrated") {
-			return await this.finalizeIntegratedTask(handle, task, attempt, scope);
-		}
-		if (!attempt.readiness || !attempt.candidate || !attempt.candidateBase
+		const request = changesetTaskRequest(state, task.taskId);
+		if (!attempt.readiness || !attempt.candidate || !attempt.candidateBase || !attempt.preliminaryChecks
 			|| !sameIdentity(attempt.readiness.candidate, attempt.candidate)
 			|| !sameIdentity(attempt.readiness.base, attempt.candidateBase)
 			|| !checkBatchPasses(attempt.preliminaryChecks, request.checks, attempt.candidate)
+			|| (request.judgment && !reviewEvidencePasses(attempt.preliminaryReview, "preliminary",
+				request.judgment.criterion, attempt.candidateBase, attempt.candidate))
 			|| !allocationByKind(attempt, "agent")?.agentName || attempt.termination) {
-			this.attention(task, "Task integration requires exact durable readiness of a checked live worker candidate.");
-			return false;
+			throw new Error(`Task ${task.taskId} has no exact ready live candidate.`);
 		}
-		task.status = "integrating";
-		await this.saveProductive(handle);
-		try {
-			if (!await this.reconcilePendingRebase(handle, task, attempt, scope)) return false;
-			for (;;) {
-				const latest = latestTransitionAfter(attempt, attempt.readiness!.at);
-				if (latest?.status === "unknown") {
-					this.attention(task, "The latest rebase transition is unknown and cannot be continued automatically.");
-					return false;
-				}
-				let actualMain = runtimeIdentity(
-					await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context)),
-					"Pre-rebase Main identity",
-				);
-				if (!latest && !sameIdentity(actualMain, state.main)) {
-					this.attention(task, "Main drifted before integration.");
-					return false;
-				}
-				if (latest && !sameIdentity(actualMain, latest.onto)) state.main = actualMain;
-				const current = latest?.status === "rebased" && latest.to
-					? { sourceBase: latest.onto, candidate: latest.to }
-					: { sourceBase: attempt.readiness.base, candidate: attempt.readiness.candidate };
-				if (!latest || latest.status === "rebasing" || !sameIdentity(latest.onto, actualMain)) {
-					const transition: RebaseTransition = latest?.status === "rebasing"
-						? latest
-						: {
-							kind: "rebase",
-							status: "rebasing",
-							sourceBase: current.sourceBase,
-							from: current.candidate,
-							onto: actualMain,
-							at: nextAttemptEventAt(attempt, this.coordinatorRuntime.now()),
-						};
-					if (transition !== latest) attempt.transitions.push(transition);
-					await this.saveProductive(handle);
-					const rebasedOutcome = await this.withLifecycleLock(handle, async () => {
-						const rebased = await scope.call(async (context) => await this.gitRuntime.rebase({
-							root: state.root,
-							task: request,
-							attempt,
-							candidate: transition.from,
-							sourceBase: transition.sourceBase,
-							onto: transition.onto,
-						}, context));
-						if (rebased.outcome === "blocked") {
-							transition.status = "unknown";
-							transition.failure = boundedRuntimeText(rebased.failure, "Rebase failure");
-							this.attention(task, transition.failure);
-							await handle.save();
-							return "blocked" as const;
-						}
-						const rebasedBase = runtimeIdentity(rebased.base, "Rebase base identity");
-						const rebasedCandidate = runtimeIdentity(rebased.candidate, "Rebase candidate identity");
-						if (!sameIdentity(rebasedBase, transition.onto) || !isCleanCommitted(rebasedCandidate)) {
-							transition.status = "unknown";
-							transition.failure = "Rebase did not return its exact recorded base and a clean committed candidate.";
-							this.attention(task, transition.failure);
-							await handle.save();
-							return "blocked" as const;
-						}
-						transition.status = "rebased";
-						transition.to = rebasedCandidate;
-						transition.failure = undefined;
-						attempt.integrationBase = rebasedBase;
-						attempt.integrationCandidate = rebasedCandidate;
-						await handle.save();
-						return rebased.outcome;
-					});
-					if (rebasedOutcome === "blocked") return false;
-					if (rebasedOutcome === "drift") continue;
-					actualMain = runtimeIdentity(
-						await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context)),
-						"Post-rebase Main identity",
-					);
-					if (!sameIdentity(actualMain, transition.onto)) {
-						state.main = actualMain;
-						continue;
-					}
-				}
-				const stable = latestTransitionAfter(attempt, attempt.readiness!.at);
-				if (!stable?.to || stable.status !== "rebased") throw new Error("Stable integration candidate is missing.");
-				attempt.integrationBase = stable.onto;
-				attempt.integrationCandidate = stable.to;
-				break;
-			}
-
-			const integrationBase = attempt.integrationBase!;
-			const integrationCandidate = attempt.integrationCandidate!;
-			let checks = attempt.authoritativeChecks;
-			if (!checkBatchPasses(checks, request.checks, integrationCandidate)) {
-				checks = await this.runCheckBatch(handle, request.checks, integrationCandidate, "authoritative", scope, task.taskId);
-				attempt.authoritativeChecks = checks;
-				await this.saveProductive(handle);
-			}
-			if (!checkBatchPasses(checks, request.checks, integrationCandidate)) {
-				return await this.handleAuthoritativeFailure(
-					handle, task, attempt, scope,
-					"Authoritative checks did not pass on the exact integration candidate.",
-				);
-			}
-			let review = attempt.authoritativeReview;
-			if (request.judgment && !reviewEvidencePasses(
-				review, "authoritative", request.judgment.criterion, integrationBase, integrationCandidate,
-			)) {
-				review = await this.runReview(
-					handle,
-					request.judgment.criterion,
-					integrationBase,
-					integrationCandidate,
-					request.judgment.role,
-					request.judgment.modelClass,
-					"authoritative",
-					scope,
-					task.taskId,
-				);
-				attempt.authoritativeReview = review;
-				await this.saveProductive(handle);
-			}
-			if (request.judgment && !reviewEvidencePasses(
-				review, "authoritative", request.judgment.criterion, integrationBase, integrationCandidate,
-			)) {
-				return await this.handleAuthoritativeFailure(
-					handle, task, attempt, scope,
-					"Authoritative Judgment did not return exact PASS on the integration candidate.",
-				);
-			}
-			const integrated = await this.withLifecycleLock(handle, async (): Promise<boolean> => {
-				attempt.integration = { status: "integrating", expectedMain: integrationBase, candidate: integrationCandidate };
-				await handle.save();
-				let result: IntegrationResult;
-				try {
-					result = await scope.call(async (context) => await this.gitRuntime.integrate({
-						root: state.root,
-						task: request,
-						attempt,
-						expectedMain: integrationBase,
-						candidate: integrationCandidate,
-						checks: checks!,
-						...(review ? { review } : {}),
-					}, context));
-				} catch (error) {
-					attempt.integration = {
-						status: "unknown", expectedMain: integrationBase, candidate: integrationCandidate,
-						failure: bounded(`Integration result is unknown: ${errorText(error)}`),
-					};
-					this.attention(task, attempt.integration.failure!);
-					await handle.save();
-					return false;
-				}
-				if (result.outcome !== "integrated") {
-					const failure = boundedRuntimeText(result.failure, "Integration failure");
-					attempt.integration = {
-						status: result.outcome === "unknown" ? "unknown" : "failed",
-						expectedMain: integrationBase,
-						candidate: integrationCandidate,
-						failure,
-					};
-					this.attention(task, failure);
-					await handle.save();
-					return false;
-				}
-				result.main = runtimeIdentity(result.main, "Integrated Main identity");
-				if (result.main.branch !== integrationBase.branch
-					|| result.main.head !== integrationCandidate.head
-					|| !isCleanCommitted(result.main)) {
-					attempt.integration = {
-						status: "unknown", expectedMain: integrationBase, candidate: integrationCandidate, mainAfter: result.main,
-						failure: "Integration returned an unexpected Main identity.",
-					};
-					this.attention(task, attempt.integration.failure!);
-					await handle.save();
-					return false;
-				}
-				attempt.integration = {
-					status: "integrated", expectedMain: integrationBase, candidate: integrationCandidate, mainAfter: result.main,
-				};
-				state.main = result.main;
-				await handle.save();
-				return true;
-			});
-			if (!integrated) return false;
-			return await this.finalizeIntegratedTask(handle, task, attempt, scope);
-		} catch (error) {
-			this.rethrowStopped(error);
-			this.attention(task, isDeadline(error, scope)
-				? "The operation safety deadline expired before integration completed."
-				: `Integration was interrupted: ${errorText(error)}`);
-			return false;
-		} finally {
-			await this.saveProductive(handle);
+		if (state.integration.candidates.some((candidate) => candidate.taskId === task.taskId)) {
+			throw new Error(`Candidate ${task.taskId} is already retained; revision needs a new integration generation.`);
 		}
-	}
-
-	private async handleAuthoritativeFailure(
-		handle: RunStateHandle,
-		task: ChangesetTaskState,
-		attempt: TaskAttempt,
-		_scope: RuntimeScope,
-		failure: string,
-	): Promise<boolean> {
-		this.prepareCorrectionAfterAuthoritativeFailure(attempt);
-		this.attention(task, failure);
-		await this.saveProductive(handle);
-		return false;
-	}
-
-	private prepareCorrectionAfterAuthoritativeFailure(attempt: TaskAttempt): void {
-		if (attempt.integrationBase && attempt.integrationCandidate) {
-			attempt.candidateBase = attempt.integrationBase;
-			attempt.candidate = attempt.integrationCandidate;
-		}
-		attempt.readiness = undefined;
-		attempt.preliminaryChecks = undefined;
-		attempt.integrationBase = undefined;
-		attempt.integrationCandidate = undefined;
-		attempt.authoritativeChecks = undefined;
-		attempt.authoritativeReview = undefined;
-		attempt.integration = undefined;
-	}
-
-	private async reconcilePendingRebase(
-		handle: RunStateHandle,
-		task: ChangesetTaskState,
-		attempt: TaskAttempt,
-		scope: RuntimeScope,
-	): Promise<boolean> {
-		const transition = attempt.readiness
-			? latestTransitionAfter(attempt, attempt.readiness!.at)
-			: undefined;
-		if (!transition || transition.status === "rebased") return true;
-		if (transition.status === "unknown") {
-			this.attention(task, "The saved rebase transition is unknown and cannot be adopted automatically.");
-			return false;
-		}
-		return await this.withLifecycleLock(handle, async () => {
-			const result = await scope.call(async (context) => await this.gitRuntime.reconcileRebase({
-				root: handle.state.root,
-				task: changesetTaskRequest(handle.state, task.taskId),
-				attempt,
-				transition,
-			}, context));
-			if (result.outcome === "not_started") return true;
-			if (result.outcome === "unknown") {
-				transition.status = "unknown";
-				transition.failure = boundedRuntimeText(result.failure, "Rebase reconciliation failure");
-				this.attention(task, transition.failure);
-				await handle.save();
-				return false;
-			}
-			const candidate = runtimeIdentity(result.candidate, "Reconciled rebase candidate");
-			if (!isCleanCommitted(candidate)) {
-				transition.status = "unknown";
-				transition.failure = "Reconciled rebase candidate is not clean and committed.";
-				this.attention(task, transition.failure);
-				await handle.save();
-				return false;
-			}
-			transition.status = "rebased";
-			transition.to = candidate;
-			transition.failure = undefined;
-			attempt.integrationBase = transition.onto;
-			attempt.integrationCandidate = candidate;
-			await handle.save();
-			return true;
+		state.integration.candidates.push({
+			taskId: task.taskId, attempt: attempt.number, base: attempt.candidateBase,
+			tip: attempt.candidate, checks: attempt.preliminaryChecks,
+			...(request.judgment ? { review: attempt.preliminaryReview } : {}), worker: "retained",
 		});
-	}
-
-	private async finalizeIntegratedTask(
-		handle: RunStateHandle,
-		task: ChangesetTaskState,
-		attempt: TaskAttempt,
-		scope: RuntimeScope,
-	): Promise<boolean> {
-		const candidate = attempt.integrationCandidate;
-		const integration = attempt.integration;
-		const readyTransition = attempt.readiness
-			? latestTransitionAfter(attempt, attempt.readiness.at)
-			: undefined;
-		if (integration?.status !== "integrated" || !attempt.readiness || !candidate || !attempt.integrationBase || !integration.mainAfter
-			|| readyTransition?.status !== "rebased" || !readyTransition.to
-			|| !sameIdentity(readyTransition.onto, attempt.integrationBase)
-			|| !sameIdentity(readyTransition.to, candidate)
-			|| !sameIdentity(integration.expectedMain, attempt.integrationBase)
-			|| !sameIdentity(integration.candidate, candidate)
-			|| integration.mainAfter.branch !== integration.expectedMain.branch
-			|| integration.mainAfter.head !== candidate.head
-			|| !isCleanCommitted(integration.mainAfter)) {
-			this.attention(task, "Resource finalization requires exact durable integration evidence.");
-			return false;
-		}
-		const ownedWorkerId = allocationByKind(attempt, "agent")?.agentName;
-		if (attempt.termination?.status === "terminated"
-			&& (!ownedWorkerId || attempt.termination.workerId !== ownedWorkerId
-				|| !sameIdentity(attempt.termination.candidate, candidate))) {
-			this.attention(task, "Recorded worker termination does not match the exact integrated worker and candidate.");
-			return false;
-		}
-		if (attempt.termination?.status !== "terminated") {
-			if (attempt.termination) {
-				const reconciled = await this.callProductive(handle, scope, async (context) => await this.hostRuntime.reconcileWorkerTermination({
-					task: changesetTaskRequest(handle.state, task.taskId),
-					attempt,
-					workerId: attempt.termination!.workerId,
-					candidate,
-				}, context));
-				if (reconciled.outcome === "unknown") {
-					attempt.termination.status = "unknown";
-					attempt.termination.failure = boundedRuntimeText(reconciled.failure, "Worker termination reconciliation failure");
-					this.attention(task, `Worker termination is unproved: ${attempt.termination.failure}`);
-					await this.saveProductive(handle);
-					return false;
-				}
-				if (reconciled.outcome === "terminated") {
-					attempt.termination = {
-						status: "terminated", workerId: attempt.termination.workerId, candidate,
-						at: this.coordinatorRuntime.now(),
-					};
-					await this.saveProductive(handle);
-				}
-			}
-			if (attempt.termination?.status !== "terminated"
-				&& !await this.terminateWithSafety(handle, task, attempt, candidate, scope.signal)) return false;
-		}
-		task.status = "cleanup";
-		await this.saveProductive(handle);
-		if (!await this.runCleanup(handle, task, attempt, scope)) return false;
-		task.status = "completed";
-		task.failure = undefined;
-		await this.saveProductive(handle);
-		return true;
-	}
-
-	private async runCleanup(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt, scope: RuntimeScope): Promise<boolean> {
-		if (attempt.termination?.status !== "terminated") {
-			this.attention(task, "Cleanup is blocked until exact worker termination is durably recorded.");
-			return false;
-		}
-		for (const step of attempt.cleanup) {
-			if (step.status === "completed") continue;
-			step.status = "running";
-			step.failure = undefined;
-			await this.saveProductive(handle);
-			try {
-				const request = changesetTaskRequest(handle.state, task.taskId);
-				let result: unknown;
-				if (step.kind === "worktree" || step.kind === "branch") {
-					const kind: GitCleanupKind = step.kind;
-					result = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.cleanupGit({
-						root: handle.state.root, kind, task: request, attempt,
-					}, context));
-				} else {
-					const kind: HostCleanupKind = step.kind;
-					result = await this.callProductive(handle, scope, async (context) => await this.hostRuntime.cleanupHost({
-					requestId: handle.state.request.id, kind, task: request, attempt,
-				}, context));
-				}
-				const reported = result as { outcome?: unknown; failure?: unknown } | null;
-				if (reported?.outcome !== "completed" && reported?.outcome !== "absent") {
-					step.status = "pending";
-					step.failure = typeof reported?.failure === "string" && reported.failure.trim()
-						? bounded(reported.failure)
-						: "Cleanup did not return an explicit completed or absent outcome.";
-					this.attention(task, `Cleanup ${step.kind} failed closed: ${step.failure}`);
-					return false;
-				}
-				step.status = "completed";
-				await this.saveProductive(handle);
-			} catch (error) {
-				this.rethrowStopped(error);
-				step.status = "pending";
-				step.failure = errorText(error);
-				this.attention(task, `Cleanup ${step.kind} was interrupted: ${step.failure}`);
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private async verifyCleanupOnly(
-		handle: RunStateHandle,
-		task: ChangesetTaskState,
-		attempt: TaskAttempt,
-		scope: RuntimeScope,
-	): Promise<RunResponse> {
-		handle.state.status = "running";
-		if (await this.finalizeIntegratedTask(handle, task, attempt, scope)) {
-			for (const next of readyPendingTasks(handle.state)) {
-				this.attention(next, `Integrated-resource verification completed; resume retry for ${next.taskId} to continue dependency scheduling.`);
-			}
-			handle.state.status = handle.state.tasks.some((candidate) => candidate.status === "needs_attention")
-				? "needs_attention"
-				: "pending";
-		} else {
-			handle.state.status = "needs_attention";
-		}
-		await this.saveProductive(handle);
-		return this.response(handle.state);
 	}
 
 	private async verifyRetainedTask(
@@ -2199,11 +1916,10 @@ export class IsolatedRunner {
 			task.status = "ready_to_integrate";
 			task.failure = undefined;
 			await this.saveProductive(handle);
-			if (!await this.integrateTask(handle, task, scope)) {
-				handle.state.status = "needs_attention";
-				return this.response(handle.state);
-			}
-			return await this.run(handle, scope, undefined);
+			this.retainCandidate(handle.state, task);
+			handle.state.status = "needs_attention";
+			await this.saveProductive(handle);
+			return this.response(handle.state);
 		}
 		const request = changesetTaskRequest(handle.state, task.taskId);
 		if (!attempt.candidate || !attempt.candidateBase || !sameIdentity(candidate, attempt.candidate)
@@ -2218,11 +1934,10 @@ export class IsolatedRunner {
 		task.status = "ready_to_integrate";
 		task.failure = undefined;
 		await this.saveProductive(handle);
-		if (!await this.integrateTask(handle, task, scope)) {
-			handle.state.status = "needs_attention";
-			return this.response(handle.state);
-		}
-		return await this.run(handle, scope, undefined);
+		this.retainCandidate(handle.state, task);
+		handle.state.status = "needs_attention";
+		await this.saveProductive(handle);
+		return this.response(handle.state);
 	}
 
 	private async retry(
@@ -2293,8 +2008,10 @@ export class IsolatedRunner {
 			await this.dispatchTask(handle, task, scope);
 		}
 		const current = changesetTaskState(handle.state, task.taskId);
-		if (current.status === "ready_to_integrate" && !await this.integrateTask(handle, current, scope)) {
+		if (current.status === "ready_to_integrate") {
+			this.retainCandidate(handle.state, current);
 			handle.state.status = "needs_attention";
+			await this.saveProductive(handle);
 			return this.response(handle.state);
 		}
 		if (current.status !== "completed") {
@@ -2592,7 +2309,7 @@ export class IsolatedRunner {
 				if (attempt && this.correctionAllowed(state, changesetTaskRequest(state, attention.taskId), attempt)) {
 					continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 				} else if (attempt?.integration?.status === "integrated"
-					|| attempt?.readiness
+					|| (attempt?.readiness && !state.integration.candidates.length)
 					|| (attempt?.candidate && attempt.candidateBase
 						&& checkBatchPasses(attempt.preliminaryChecks, changesetTaskRequest(state, attention.taskId).checks, attempt.candidate))) {
 					continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
@@ -2612,6 +2329,13 @@ export class IsolatedRunner {
 				] : []),
 				...(main?.status === "unavailable" ? [`Main: ${main.failure}`] : []),
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
+				...(state.integration.candidates.length ? [
+					`Retained candidates (not promoted): ${state.integration.candidates.map((item) => `${item.taskId}#${item.attempt}@${item.tip.head}`).join(", ")}. Use subagent_stage with exact status identities; Main remains unchanged.`,
+				] : []),
+				...(state.integration.generations.at(-1) ? [
+					`Integration generation ${state.integration.generations.at(-1)!.number}: ${state.integration.generations.at(-1)!.status}; worktree: ${state.integration.generations.at(-1)!.worktree?.path ?? "allocation not proven"}; stage: ${state.integration.generations.at(-1)!.stages.at(-1)?.status ?? "none"}.`,
+					...(state.integration.generations.at(-1)!.failure ? [`Conflict: ${state.integration.generations.at(-1)!.failure}`] : []),
+				] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
 			].join("\n")),

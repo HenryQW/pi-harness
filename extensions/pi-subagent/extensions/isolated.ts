@@ -17,6 +17,8 @@ import { IsolatedRunner, type OperationContext, type RunResponse } from "../src/
 import {
 	IdOnlySchema,
 	ResumeRequestSchema,
+	StageRequestSchema,
+	parseStageRequest,
 	parseExecuteRequest,
 	parseIdOnly,
 	parseResumeRequest,
@@ -254,6 +256,16 @@ function publicState(state: RunState, preferredTaskId?: string) {
 		accepted: state.accepted,
 		tasks: state.tasks.map(({ taskId, status }) => ({ taskId, status })),
 		final: { status: state.final.status },
+		integration: {
+			candidates: state.integration.candidates.map(({ taskId, attempt, tip, base, checks }) => ({ taskId, attempt, tip, base, checked: checks.passed })),
+			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, stages }) => ({
+				number, status, integrationBase,
+				...(worktree ? { retainedWorktree: { path: worktree.path, branch: worktree.branch } } : {}),
+				stages: stages.map(({ taskId, attempt, source, onto, status, tip, failure }) => ({
+					taskId, attempt, source, onto, status, ...(tip ? { tip } : {}), ...(failure ? { failure: boundedPublicText(failure) } : {}),
+				})),
+			})),
+		},
 		...(needsAttention ? { needsAttention } : {}),
 		createdAt: state.createdAt,
 		updatedAt: state.updatedAt,
@@ -475,6 +487,18 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				(state) => state.recovery?.kind === "resume" && state.recovery.action === params.action
 					&& (!("taskId" in params) || state.recovery.taskId === params.taskId),
 				(runSignal) => getComponents().runner.resume(params, root, runSignal));
+		},
+	});
+	pi.registerTool({
+		name: "subagent_stage",
+		label: "Subagent stage",
+		description: "Main stages one exact retained candidate or confirms its manually resolved merge in the owned integration worktree. Never writes Main.",
+		parameters: StageRequestSchema,
+		prepareArguments: parseStageRequest,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			latestCtx = ctx;
+			const root = await lookupRoot(ctx.cwd, signal);
+			return toolResult(await getComponents().runner.stage(params, root, signal), ctx, workspaceRowsByRequest);
 		},
 	});
 	pi.registerTool({

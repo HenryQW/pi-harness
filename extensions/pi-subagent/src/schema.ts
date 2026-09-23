@@ -3,7 +3,7 @@ import { parseRoleName, type RoleName } from "./index.ts";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-export const RUN_STATE_VERSION = 4;
+export const RUN_STATE_VERSION = 5;
 export const MAX_TASKS = 8;
 export const MAX_EXECUTE_REQUEST_BYTES = 256 * 1024;
 export const MAX_PERSISTED_RUNTIME_TEXT_BYTES = 8 * 1024;
@@ -210,6 +210,21 @@ const WorkspaceSchema = Type.Object({
 	tree: Type.String({ pattern: OID_PATTERN }),
 }, { additionalProperties: false });
 
+export const StageRequestSchema = Type.Object({
+	id: IdSchema,
+	action: Type.Union([Type.Literal("stage"), Type.Literal("resolve")]),
+	generation: Type.Integer({ minimum: 1, maximum: 32 }),
+	taskId: IdSchema,
+	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
+	candidate: WorkspaceSchema,
+	expectedTip: WorkspaceSchema,
+}, { additionalProperties: false });
+export type StageRequest = Static<typeof StageRequestSchema>;
+export function parseStageRequest(value: unknown): StageRequest {
+	if (!Check(StageRequestSchema, value)) throw schemaValidationError("subagent_stage request must match exact candidate and generation", Errors(StageRequestSchema, value));
+	return value as StageRequest;
+}
+
 const PromptRecordSchema = Type.Object({
 	kind: Type.Union([Type.Literal("initial"), Type.Literal("correction"), Type.Literal("followup")]),
 	status: Type.Union([Type.Literal("submitting"), Type.Literal("not_sent"), Type.Literal("settled"), Type.Literal("ambiguous")]),
@@ -304,6 +319,7 @@ const TaskAttemptSchema = Type.Object({
 	readiness: Type.Optional(ReadinessSchema),
 	transitions: Type.Array(RebaseTransitionSchema, { maxItems: 32 }),
 	termination: Type.Optional(WorkerTerminationSchema),
+	preliminaryReview: Type.Optional(ReviewEvidenceSchema),
 	integrationBase: Type.Optional(WorkspaceSchema),
 	integrationCandidate: Type.Optional(WorkspaceSchema),
 	authoritativeChecks: Type.Optional(CheckBatchEvidenceSchema),
@@ -373,6 +389,68 @@ const ExecutionPolicySnapshotSchema = Type.Object({
 	maxCorrections: Type.Integer({ minimum: 0 }),
 }, { additionalProperties: false });
 
+// Main-owned integration state binds each ready candidate to its retained attempt.
+const IntegrationCandidateSchema = Type.Object({
+	taskId: IdSchema,
+	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
+	base: WorkspaceSchema,
+	tip: WorkspaceSchema,
+	checks: CheckBatchEvidenceSchema,
+	review: Type.Optional(ReviewEvidenceSchema),
+	worker: Type.Union([Type.Literal("retained"), Type.Literal("release_pending"), Type.Literal("released")]),
+}, { additionalProperties: false });
+
+const IntegrationStageSchema = Type.Object({
+	taskId: IdSchema,
+	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
+	source: WorkspaceSchema,
+	onto: WorkspaceSchema,
+	status: Type.Union([Type.Literal("pending"), Type.Literal("staging"), Type.Literal("staged"), Type.Literal("conflict")]),
+	tip: Type.Optional(WorkspaceSchema),
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
+const PromotionSchema = Type.Object({
+	status: Type.Union([Type.Literal("promoting"), Type.Literal("promoted"), Type.Literal("unknown"), Type.Literal("failed")]),
+	expectedMain: WorkspaceSchema,
+	tip: WorkspaceSchema,
+	mainAfter: Type.Optional(WorkspaceSchema),
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
+const IntegrationGenerationSchema = Type.Object({
+	number: Type.Integer({ minimum: 1, maximum: 32 }),
+	status: Type.Union([
+		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
+		Type.Literal("ready"), Type.Literal("promoting"), Type.Literal("promoted"),
+		Type.Literal("promotion_unknown"), Type.Literal("promotion_failed"), Type.Literal("superseded"),
+	]),
+	expectedMain: WorkspaceSchema,
+	integrationBase: WorkspaceSchema,
+	order: Type.Array(IdSchema, { minItems: 1, maxItems: MAX_TASKS }),
+	stages: Type.Array(IntegrationStageSchema, { maxItems: MAX_TASKS }),
+	worktree: Type.Optional(WorktreeRecordSchema),
+	combinedTip: Type.Optional(WorkspaceSchema),
+	checks: Type.Optional(CheckBatchEvidenceSchema),
+	review: Type.Optional(ReviewEvidenceSchema),
+	promotion: Type.Optional(PromotionSchema),
+	supersededFrom: Type.Optional(Type.Union([
+		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
+		Type.Literal("ready"),
+	])),
+	failure: OptionalRuntimeTextSchema,
+}, { additionalProperties: false });
+
+export const IntegrationStateSchema = Type.Object({
+	candidates: Type.Array(IntegrationCandidateSchema, { maxItems: MAX_TASKS * 2 }),
+	generations: Type.Array(IntegrationGenerationSchema, { maxItems: 32 }),
+}, { additionalProperties: false });
+
+export type IntegrationCandidate = Static<typeof IntegrationCandidateSchema>;
+export type IntegrationStage = Static<typeof IntegrationStageSchema>;
+export type IntegrationGeneration = Static<typeof IntegrationGenerationSchema>;
+export type IntegrationState = Static<typeof IntegrationStateSchema>;
+
 const RunStateSchema = Type.Object({
 	version: Type.Literal(RUN_STATE_VERSION),
 	request: ExecuteRequestSchema,
@@ -387,6 +465,7 @@ const RunStateSchema = Type.Object({
 	]),
 	tasks: Type.Array(TaskStateSchema, { minItems: 1, maxItems: MAX_TASKS }),
 	waves: Type.Array(WaveStateSchema, { maxItems: MAX_TASKS }),
+	integration: IntegrationStateSchema,
 	final: FinalGateSchema,
 	recovery: Type.Optional(Type.Object({
 		kind: Type.Literal("resume"),
@@ -739,69 +818,6 @@ function validateTextTaskState(taskState: TextTaskState): void {
 	}
 }
 
-// Prepared contract for a Main-owned, isolated integration worktree. The v4 runner
-// continues to parse RunState until its v5 cutover; it must bind each ready
-// candidate to the corresponding owned attempt and prove Git ancestry itself.
-const IntegrationCandidateSchema = Type.Object({
-	taskId: IdSchema,
-	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
-	base: WorkspaceSchema,
-	tip: WorkspaceSchema,
-	checks: CheckBatchEvidenceSchema,
-	review: Type.Optional(ReviewEvidenceSchema),
-	worker: Type.Union([Type.Literal("retained"), Type.Literal("release_pending"), Type.Literal("released")]),
-}, { additionalProperties: false });
-
-const IntegrationStageSchema = Type.Object({
-	taskId: IdSchema,
-	attempt: Type.Integer({ minimum: 1, maximum: 2 }),
-	source: WorkspaceSchema,
-	onto: WorkspaceSchema,
-	status: Type.Union([Type.Literal("pending"), Type.Literal("staging"), Type.Literal("staged"), Type.Literal("conflict")]),
-	tip: Type.Optional(WorkspaceSchema),
-	failure: OptionalRuntimeTextSchema,
-}, { additionalProperties: false });
-
-const PromotionSchema = Type.Object({
-	status: Type.Union([Type.Literal("promoting"), Type.Literal("promoted"), Type.Literal("unknown"), Type.Literal("failed")]),
-	expectedMain: WorkspaceSchema,
-	tip: WorkspaceSchema,
-	mainAfter: Type.Optional(WorkspaceSchema),
-	failure: OptionalRuntimeTextSchema,
-}, { additionalProperties: false });
-
-const IntegrationGenerationSchema = Type.Object({
-	number: Type.Integer({ minimum: 1, maximum: 32 }),
-	status: Type.Union([
-		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
-		Type.Literal("ready"), Type.Literal("promoting"), Type.Literal("promoted"),
-		Type.Literal("promotion_unknown"), Type.Literal("promotion_failed"), Type.Literal("superseded"),
-	]),
-	expectedMain: WorkspaceSchema,
-	integrationBase: WorkspaceSchema,
-	order: Type.Array(IdSchema, { minItems: 1, maxItems: MAX_TASKS }),
-	stages: Type.Array(IntegrationStageSchema, { maxItems: MAX_TASKS }),
-	combinedTip: Type.Optional(WorkspaceSchema),
-	checks: Type.Optional(CheckBatchEvidenceSchema),
-	review: Type.Optional(ReviewEvidenceSchema),
-	promotion: Type.Optional(PromotionSchema),
-	supersededFrom: Type.Optional(Type.Union([
-		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
-		Type.Literal("ready"),
-	])),
-	failure: OptionalRuntimeTextSchema,
-}, { additionalProperties: false });
-
-export const IntegrationStateSchema = Type.Object({
-	candidates: Type.Array(IntegrationCandidateSchema, { maxItems: MAX_TASKS * 2 }),
-	generations: Type.Array(IntegrationGenerationSchema, { maxItems: 32 }),
-}, { additionalProperties: false });
-
-export type IntegrationCandidate = Static<typeof IntegrationCandidateSchema>;
-export type IntegrationStage = Static<typeof IntegrationStageSchema>;
-export type IntegrationGeneration = Static<typeof IntegrationGenerationSchema>;
-export type IntegrationState = Static<typeof IntegrationStateSchema>;
-
 /** Check the persisted integration projection against the request before recovery or promotion. */
 export function parseIntegrationState(value: unknown, request: ExecuteRequest): IntegrationState {
 	if (!Check(IntegrationStateSchema, value)) {
@@ -839,6 +855,16 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			|| generation.integrationBase.tree !== generation.expectedMain.tree) {
 			throw new Error(`Integration generation ${generation.number} has an invalid Main base.`);
 		}
+		if (generation.worktree) {
+			for (const path of [generation.worktree.path, generation.worktree.cwd, generation.worktree.repoRoot]) {
+				requireAbsoluteAllocationPath(path, `Generation ${generation.number} worktree path`);
+			}
+			if (generation.worktree.baseCommit !== generation.expectedMain.head
+				|| generation.worktree.path !== generation.worktree.cwd
+				|| generation.integrationBase.branch !== `refs/heads/${generation.worktree.branch}`) {
+				throw new Error(`Generation ${generation.number} has a mismatched integration worktree.`);
+			}
+		}
 		const chosen = new Set(generation.order);
 		if (chosen.size !== generation.order.length || generation.order.some((id) => !latestCandidates.has(id))
 			|| generation.stages.length > generation.order.length) {
@@ -862,8 +888,9 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 				}
 				previous = stage.tip;
 			} else {
-				if (stage.tip || (stage.status === "conflict") !== Boolean(stage.failure?.trim())) {
-					throw new Error(`Stage ${stageIndex + 1} has inconsistent conflict evidence.`);
+				if (stage.tip || (stage.status === "conflict" && !stage.failure?.trim())
+					|| (stage.status === "pending" && stage.failure !== undefined)) {
+					throw new Error(`Stage ${stageIndex + 1} has inconsistent pending outcome evidence.`);
 				}
 				unfinished = true;
 				if (stageIndex !== generation.stages.length - 1) throw new Error("Unfinished stage must be last.");
@@ -959,6 +986,7 @@ export function parseRunState(value: unknown): RunState {
 	}
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
+	parseIntegrationState(state.integration, request);
 	if (state.createdAt > state.updatedAt || state.correctionCount > state.policy.maxCorrections) {
 		throw new Error(`Malformed pi-subagent v${RUN_STATE_VERSION} timestamps or correction policy.`);
 	}
@@ -992,6 +1020,13 @@ export function parseRunState(value: unknown): RunState {
 			}
 			if (attempt.candidate && (!isCleanCommitted(attempt.candidate) || !isCleanCommitted(attempt.candidateBase!))) {
 				throw new Error(`Candidate lineage for ${definition.id} must be clean and committed.`);
+			}
+			if (attempt.preliminaryReview && (!definition.judgment || !attempt.candidate || !attempt.candidateBase
+				|| attempt.preliminaryReview.phase !== "preliminary"
+				|| attempt.preliminaryReview.criterion !== definition.judgment.criterion
+				|| !sameIdentity(attempt.preliminaryReview.base, attempt.candidateBase)
+				|| !sameIdentity(attempt.preliminaryReview.tip, attempt.candidate))) {
+				throw new Error(`Preliminary review for ${definition.id} targets another candidate.`);
 			}
 			if (attempt.readiness) {
 				if (!attempt.candidate || !attempt.candidateBase
@@ -1259,6 +1294,20 @@ export function parseRunState(value: unknown): RunState {
 		if (state.recovery.action === "finalize" ? state.recovery.taskId !== undefined : !state.recovery.taskId
 			|| !state.tasks.some((task) => task.taskId === state.recovery!.taskId)) {
 			throw new Error("Malformed resume recovery target.");
+		}
+	}
+	if (state.integration.candidates.length && (state.accepted || state.status === "completed")) {
+		throw new Error("Unpromoted integration cannot complete a request.");
+	}
+	for (const candidate of state.integration.candidates) {
+		const task = state.tasks.find((item) => item.taskId === candidate.taskId);
+		const attempt = task?.kind === "changeset" ? task.attempts[candidate.attempt - 1] : undefined;
+		if (!attempt?.readiness || !sameIdentity(attempt.readiness.base, candidate.base)
+			|| !sameIdentity(attempt.readiness.candidate, candidate.tip)
+			|| (candidate.review !== undefined && JSON.stringify(candidate.review) !== JSON.stringify(attempt.preliminaryReview))
+			|| attempt.termination
+			|| task?.status !== "ready_to_integrate" || candidate.worker !== "retained") {
+			throw new Error(`Ready candidate ${candidate.taskId} is not the retained exact worker attempt.`);
 		}
 	}
 	if (state.status === "completed" && !state.accepted) {

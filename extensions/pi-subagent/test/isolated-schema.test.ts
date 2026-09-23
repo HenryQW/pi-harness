@@ -104,6 +104,7 @@ function state(requestValue: ExecuteRequest): RunState {
 			}
 			: { taskId: task.id, kind: "changeset", status: "pending", attempts: [] }),
 		waves: [],
+		integration: { candidates: [], generations: [] },
 		final: { status: "pending" },
 		accepted: false,
 		createdAt: 1,
@@ -243,6 +244,7 @@ function completedChangesetState(): RunState {
 		status: "running",
 		tasks: [{ taskId: task.id, kind: "changeset", status: "completed", attempts: [attempt] }],
 		waves: [{ number: 1, base, taskIds: [task.id], status: "completed" }],
+		integration: { candidates: [], generations: [] },
 		final: { status: "pending" },
 		accepted: false,
 		createdAt: 1,
@@ -360,7 +362,7 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
 });
 
-test("v4 follow-up prompt evidence requires exact bounded instructions", () => {
+test("follow-up prompt evidence requires exact bounded instructions", () => {
 	const valid = completedChangesetState();
 	const attempt = completedChangesetAttempt(valid);
 	const candidate = attempt.candidate!;
@@ -396,7 +398,7 @@ test("v4 follow-up prompt evidence requires exact bounded instructions", () => {
 	assert.throws(() => parseRunState(repeatedCorrection), /repeated correction history/);
 });
 
-test("v4 completed changesets require exact terminal evidence", () => {
+test("completed changesets require exact terminal evidence", () => {
 	const valid = completedChangesetState();
 	assert.equal(completedChangesetTask(parseRunState(structuredClone(valid))).status, "completed");
 
@@ -535,7 +537,7 @@ test("v4 completed changesets require exact terminal evidence", () => {
 	assert.throws(() => parseRunState(interruptedFinalization), /lacks exact integration evidence/);
 });
 
-test("v4 state maps text task attempts exactly and rejects older and launch state", () => {
+test("v5 state maps text task attempts exactly and rejects v4 and launch state", () => {
 	const definition = parseExecuteRequest(request([
 		textTask("research"),
 		changesetTask("change", { contextFrom: ["research"] }),
@@ -613,18 +615,20 @@ test("v4 state maps text task attempts exactly and rejects older and launch stat
 
 	const oldTaskField = structuredClone(valid) as RunState & { tasks: Array<Record<string, unknown>> };
 	oldTaskField.tasks[1]!.implementerLaunchKey = "implementer/balanced";
-	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-subagent v4 state/);
+	assert.throws(() => parseRunState(oldTaskField), /Unsupported or malformed pi-subagent v5 state/);
 
 	const oldLaunchState = { ...structuredClone(valid), launchRecords: {} };
-	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-subagent v4 state/);
+	assert.throws(() => parseRunState(oldLaunchState), /Unsupported or malformed pi-subagent v5 state/);
 
+	const v4 = { ...structuredClone(valid), version: 4 };
+	assert.throws(() => parseRunState(v4), /Unsupported pi-subagent state version 4; expected 5/);
 	const v2 = { ...structuredClone(valid), version: 2 };
-	assert.throws(() => parseRunState(v2), /Unsupported pi-subagent state version 2; expected 4/);
+	assert.throws(() => parseRunState(v2), /Unsupported pi-subagent state version 2; expected 5/);
 	const v1 = { ...structuredClone(valid), version: 1, launchRecords: {} };
-	assert.throws(() => parseRunState(v1), /Unsupported pi-subagent state version 1; expected 4/);
+	assert.throws(() => parseRunState(v1), /Unsupported pi-subagent state version 1; expected 5/);
 });
 
-test("v4 state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
+test("state bounds multibyte text task runtime fields by UTF-8 bytes", () => {
 	const definition = parseExecuteRequest(request([textTask("research")]));
 	const valid = state(definition);
 	const character = "界";

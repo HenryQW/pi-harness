@@ -103,6 +103,7 @@ function runnerState(definitions: TaskRequest[], tasks: TaskState[]): RunState {
 		status: "pending",
 		tasks,
 		waves: [],
+		integration: { candidates: [], generations: [] },
 		final: { status: "pending" },
 		accepted: false,
 		createdAt: 1,

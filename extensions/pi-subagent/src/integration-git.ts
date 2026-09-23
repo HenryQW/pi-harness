@@ -82,9 +82,9 @@ async function exists(path: string): Promise<boolean> {
 	}
 }
 
-const inspector = new CheckedGitRuntime(); // Reuse its per-root Main index-inspection queue.
+let inspector: CheckedGitRuntime | undefined; // Lazy: schema -> index -> runner -> integration-git -> git-runtime.
 async function inspect(path: string, signal: AbortSignal): Promise<WorkspaceIdentity> {
-	return await inspector.inspectMain({ root: path }, { signal, deadline: Date.now() + 30_000, timeoutMs: 30_000 });
+	return await (inspector ??= new CheckedGitRuntime()).inspectMain({ root: path }, { signal, deadline: Date.now() + 30_000, timeoutMs: 30_000 });
 }
 async function current(root: string, info: WorktreeInfo, signal: AbortSignal): Promise<WorkspaceIdentity> {
 	await owned(root, info, signal);

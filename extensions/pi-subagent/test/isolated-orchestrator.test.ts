@@ -18,6 +18,8 @@ import {
 	ExecuteRequestSchema,
 	IdOnlySchema,
 	ResumeRequestSchema,
+	StageRequestSchema,
+	parseStageRequest,
 	parseExecuteRequest,
 	parseIdOnly,
 	parseResumeRequest,
@@ -66,7 +68,7 @@ const EXECUTE_REQUEST: ExecuteRequest = {
 };
 
 const PRIVATE_STATE = {
-	version: 1,
+	version: 5,
 	request: EXECUTE_REQUEST,
 	root: CANONICAL_ROOT,
 	status: "needs_attention",
@@ -119,6 +121,7 @@ const PRIVATE_STATE = {
 		}],
 	}],
 	final: { status: "pending" },
+	integration: { candidates: [], generations: [] },
 	launchRecords: {
 		"implementer/fast": {
 			env: { SECRET_TOKEN: "PRIVATE PROCESS ENVIRONMENT" },
@@ -232,6 +235,10 @@ function createHarness(options: {
 			componentOptions!.onStateSaved(state);
 			return response("resume", true, options.responseState);
 		},
+		async stage(...args: unknown[]) {
+			runnerCalls.push({ method: "stage", args });
+			return response("stage", false, options.responseState);
+		},
 		async abort(...args: unknown[]) {
 			runnerCalls.push({ method: "abort", args });
 			return response("abort", false, options.responseState);
@@ -296,12 +303,13 @@ async function executeTool(
 
 function expectedPublicState() {
 	return {
-		version: 1,
+		version: 5,
 		id: "request-one",
 		status: "needs_attention",
 		accepted: false,
 		tasks: [{ taskId: "unit-one", status: "needs_attention" }],
 		final: { status: "pending" },
+		integration: { candidates: [], generations: [] },
 		needsAttention: {
 			scope: "task",
 			taskId: "unit-one",
@@ -442,24 +450,28 @@ test("saved state updates and clears the workspace widget", async () => {
 	assert.equal(widgets.at(-1), undefined);
 });
 
-test("registers exactly four strict tools without constructing runtime components", () => {
+test("registers five strict tools without constructing runtime components", () => {
 	const harness = createHarness();
 	assert.deepEqual(harness.tools.map(({ name }) => name), [
 		"delegate_task",
 		"subagent_status",
 		"subagent_resume",
+		"subagent_stage",
 		"subagent_abort",
 	]);
 	assert.deepEqual([...harness.commands.keys()], ["subagent-followup"]);
 	assert.equal(harness.getComponentCreations(), 0);
 
-	const [execute, status, resume, abort] = harness.tools;
+	const [execute, status, resume, stage, abort] = harness.tools;
 	assert.equal(execute!.parameters, ExecuteRequestSchema);
 	assert.equal(execute!.prepareArguments, parseExecuteRequest);
 	assert.equal(status!.parameters, IdOnlySchema);
 	assert.equal(status!.prepareArguments, parseIdOnly);
 	assert.equal(resume!.parameters, ResumeRequestSchema);
 	assert.equal(resume!.prepareArguments, parseResumeRequest);
+	assert.equal(stage!.parameters, StageRequestSchema);
+	assert.equal(stage!.prepareArguments, parseStageRequest);
+	assert.throws(() => stage!.prepareArguments({ id: "request-one", action: "stage", taskId: "unit-one" }), /exact candidate and generation/);
 	assert.equal(abort!.parameters, IdOnlySchema);
 	assert.equal(abort!.prepareArguments, parseIdOnly);
 	assert.deepEqual(parseIdOnly({ id: "request-one" }), { id: "request-one" });
@@ -992,7 +1004,23 @@ test("root active delegation sources smoke-load only the unified delegation tool
 		"delegate_task",
 		"subagent_abort",
 		"subagent_resume",
+		"subagent_stage",
 		"subagent_status",
 	]);
 	assert.ok(toolNames.every((name) => !name.startsWith("delegate_flow") && !name.startsWith("auto_dag_")));
+});
+
+test("subagent_stage routes one strict exact-identity Main action to the canonical repository", async () => {
+	const harness = createHarness();
+	const signal = new AbortController().signal;
+	const action = {
+		id: "request-one", action: "stage" as const, generation: 1,
+		taskId: "unit-one", attempt: 1, candidate: CURRENT_MAIN, expectedTip: RECORDED_MAIN,
+	};
+	const stage = namedTool(harness, "subagent_stage");
+	assert.deepEqual(stage.prepareArguments(action), action);
+	assert.throws(() => stage.prepareArguments({ ...action, extra: true }), /exact candidate and generation/);
+	const result = await executeTool(stage, action, signal, context("/canonical/repository/nested"));
+	assert.deepEqual(harness.runnerCalls, [{ method: "stage", args: [action, CANONICAL_ROOT, signal] }]);
+	assert.match(result.content[0]!.text, /bounded stage result/);
 });

@@ -87,6 +87,7 @@ export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"ask_question",
 	"subagent_status",
 	"subagent_resume",
+	"subagent_stage",
 	"subagent_abort",
 ] as const;
 export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");

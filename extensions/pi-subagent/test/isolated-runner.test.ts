@@ -40,6 +40,8 @@ import {
 	type WorkspaceIdentity,
 } from "../src/schema.ts";
 import { FileRunStore, type RunStateHandle } from "../src/store.ts";
+import { IntegrationGit, type StageReceipt, type GitOutcome } from "../src/integration-git.ts";
+import type { WorktreeInfo } from "../src/worktree.ts";
 
 const oid = (character: string): string => character.repeat(40);
 
@@ -516,6 +518,7 @@ async function harness(
 	options: {
 		executor?: EphemeralSubagentExecutor;
 		createStore?: (agentDir: string) => FileRunStore;
+		integrationGit?: IntegrationGit;
 	} = {},
 ) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-runner-"));
@@ -531,6 +534,9 @@ async function harness(
 		runtime,
 		store,
 		options.executor ?? unusedTextExecutor,
+		undefined,
+		undefined,
+		options.integrationGit,
 	);
 	return { root, runtime, store, agentDir, runner };
 }
@@ -1710,4 +1716,105 @@ test("an interrupted text task remains failed until its explicit retry", async (
 		{ role: "researcher", modelClass: "fast" },
 	]);
 	assertParsed(retried.state);
+});
+
+class StagingGit extends IntegrationGit {
+	readonly merged: string[] = [];
+	resolved = false;
+	allocationUnknown = false;
+	beforeMerge?: () => void;
+	override async allocate(root: string, _childId: string, base: WorkspaceIdentity,
+		onPrepared: (info: WorktreeInfo) => Promise<void>): Promise<GitOutcome<WorktreeInfo>> {
+		const info: WorktreeInfo = {
+			path: join(root, ".worktrees", "subagent-integration"),
+			cwd: join(root, ".worktrees", "subagent-integration"),
+			branch: "pi-subagent/subagent-integration", repoRoot: root, baseCommit: base.head,
+		};
+		await onPrepared(info);
+		return this.allocationUnknown ? { outcome: "unknown", failure: "Worktree add outcome unproved." }
+			: { outcome: "ready", value: info };
+	}
+	override async stage(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
+		stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt>> {
+		this.beforeMerge?.();
+		this.merged.push(candidate.head);
+		if (stages.length) return { outcome: "conflict", failure: "Resolve overlapping edits in the integration worktree." };
+		const previous = identity("a", "refs/heads/pi-subagent/subagent-integration");
+		return { outcome: "ready", value: { previous, worker: candidate, tip: identity("d", previous.branch) } };
+	}
+	override async reconcileStage(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
+		stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt | "not_started">> {
+		if (!this.resolved) return { outcome: "conflict", failure: "Merge remains unresolved in the owned worktree." };
+		return { outcome: "ready", value: {
+			previous: stages.at(-1)!.tip, worker: candidate,
+			tip: identity("e", "refs/heads/pi-subagent/subagent-integration"),
+		} };
+	}
+}
+
+test("Main selects two retained candidates in order; conflict and resolution never mutate Main or replay a stage", async (t) => {
+	const git = new StagingGit();
+	const store = { current: undefined as RecordingStore | undefined };
+	const { root, runner, runtime } = await harness(t, {
+		integrationGit: git,
+		createStore: (agentDir) => store.current = new RecordingStore(agentDir),
+	});
+	const definition = request("manual-stage", [changesetTask("first"), changesetTask("second")]);
+	const ready = await runner.execute(definition, root);
+	assert.equal(ready.state.status, "needs_attention");
+	assert.equal(ready.state.integration.candidates.length, 2);
+	assert.deepEqual(runtime.integrations, []);
+	assert.deepEqual(runtime.terminationCalls, []);
+	assert.equal(runtime.main.head, identity("a").head);
+	assertParsed(ready.state);
+	const [first, second] = ready.state.integration.candidates;
+	const stageAction = (taskId: string, attempt: number, candidate: WorkspaceIdentity, expectedTip: WorkspaceIdentity) => ({
+		id: definition.id, action: "stage" as const, generation: 1, taskId, attempt, candidate, expectedTip,
+	});
+	const firstAction = stageAction("first", first!.attempt, first!.tip, ready.state.main);
+	git.beforeMerge = () => assert.equal(store.current!.snapshots.at(-1)?.integration.generations[0]?.stages[git.merged.length]?.status, "staging");
+	const staged = await runner.stage(firstAction, root);
+	assert.equal(staged.state.integration.generations[0]?.stages[0]?.status, "staged");
+	const firstTip = staged.state.integration.generations[0]!.combinedTip!;
+	const snapshotsBeforeStaleAction = store.current!.snapshots.length;
+	await assert.rejects(runner.stage(firstAction, root), /stale combined tip|repeated candidate/);
+	assert.equal(store.current!.snapshots.length, snapshotsBeforeStaleAction);
+	const secondAction = stageAction("second", second!.attempt, second!.tip, firstTip);
+	const conflicted = await runner.stage(secondAction, root);
+	assert.equal(conflicted.state.integration.generations[0]?.status, "conflict");
+	assert.equal(conflicted.state.integration.generations[0]?.worktree?.baseCommit, ready.state.main.head);
+	assert.equal(conflicted.state.status, "needs_attention");
+	assert.equal(runtime.main.head, ready.state.main.head);
+	assert.deepEqual(git.merged, [first!.tip.head, second!.tip.head]);
+	await assert.rejects(runner.stage(secondAction, root), /unresolved/);
+	await assert.rejects(runner.resume({ id: definition.id, action: "finalize" }, root), /require subagent_stage/);
+	await assert.rejects(runner.abort(definition.id, root), /cannot be aborted/);
+	const resolveAction = { ...secondAction, action: "resolve" as const };
+	const pending = await runner.stage(resolveAction, root);
+	assert.equal(pending.state.integration.generations[0]?.status, "conflict");
+	git.resolved = true;
+	const resolved = await runner.stage(resolveAction, root);
+	assert.equal(resolved.state.integration.generations[0]?.stages[1]?.status, "staged");
+	assert.equal(runtime.main.head, ready.state.main.head);
+	assert.deepEqual(git.merged, [first!.tip.head, second!.tip.head]);
+	assertParsed(resolved.state);
+	await assert.rejects(runner.stage(resolveAction, root), /no exact pending stage intent/);
+	for (const snapshot of store.current!.snapshots) assertParsed(snapshot);
+});
+
+test("uncertain integration allocation retains intent and refuses mutation replay", async (t) => {
+	const git = new StagingGit();
+	git.allocationUnknown = true;
+	const { root, runner } = await harness(t, { integrationGit: git });
+	const ready = await runner.execute(request("uncertain-stage", [changesetTask("change")]), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const action = { id: ready.state.request.id, action: "stage" as const, generation: 1,
+		taskId: candidate.taskId, attempt: candidate.attempt, candidate: candidate.tip, expectedTip: ready.state.main };
+	const uncertain = await runner.stage(action, root);
+	assert.equal(uncertain.state.integration.generations[0]?.stages[0]?.status, "pending");
+	assert.equal(uncertain.state.integration.generations[0]?.worktree?.baseCommit, ready.state.main.head);
+	assert.deepEqual(git.merged, []);
+	await assert.rejects(runner.stage(action, root), /unresolved/);
+	assert.deepEqual(git.merged, []);
+	assertParsed((await runner.status(action.id, root)).state);
 });
