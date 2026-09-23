@@ -941,7 +941,7 @@ test("manifest entrypoint and Main-side Skill ship with the unified tools", asyn
 		/^name: pi-subagent$/m,
 		/`mode: direct`.*read-only.*research/is,
 		/`mode: isolated`.*checked changes/is,
-		/authoritative task checks.*authoritative final checks/is,
+		/focused task checks.*`pnpm test`.*combined tip.*Main promotion/is,
 		/`subagent_status`.*`subagent_resume`.*`subagent_abort`/is,
 	]) assert.match(skill, contract);
 	assert.doesNotMatch(skill, /delegate_flow|auto_dag|orchestrate_/i);
