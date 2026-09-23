@@ -255,7 +255,7 @@ importers:
         specifier: ^2.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
-        specifier: ^20.0.0
+        specifier: ^21.0.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^7.0.0

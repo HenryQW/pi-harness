@@ -28,7 +28,7 @@ Every `delegate_task` call declares its mode. The extension never falls back bet
 | Mode | Use it for | Checkout behavior |
 | --- | --- | --- |
 | `direct` | Read-only research, analysis, or review | Opens non-focused Herdr tabs in Main's current workspace. No worktree is created. |
-| `isolated` | Any implementation or checked task graph | Runs changesets in owned Herdr worktrees and integrates only exact validated evidence. |
+| `isolated` | Any implementation or checked task graph | Runs changesets in owned Herdr worktrees; Main selects, validates, and promotes exact candidates. |
 
 Keep trivial mechanically verifiable work in Main. Keep tightly coupled changes under one owner rather than splitting by file count.
 
@@ -102,11 +102,11 @@ An isolated request has one durable ID, one goal, and 1–8 typed tasks:
 }
 ```
 
-`dependsOn` controls scheduling. `contextFrom` may name completed text tasks and preserves the declared order. Changesets require task checks. A graph with a changeset requires final checks. Checks and judgments bind to exact Git identities; candidate drift, Main drift, mutation during validation, ambiguity, or conflicts stop integration and retain evidence.
+`dependsOn` controls scheduling. `contextFrom` may name completed text tasks and preserves the declared order. Changesets require focused task checks; a graph with changesets requires final checks. A canonical root `package.json` test script is required: the runner adds `pnpm test` to final checks if missing, and Main runs it on the combined integration checkout before promotion. Checks and judgments bind to exact Git identities; candidate drift, Main drift, mutation during validation, ambiguity, or conflicts stop promotion and retain evidence.
 
 `delegate_task` and `subagent_resume` return a durable request ID after its state is saved; productive work continues while Main is free. Pi delivers completion or attention as a follow-up message in the launching session. Use `subagent_status` if delivery is missed or you need current state.
 
-Every changeset advances automatically after its worker produces a clean candidate and preliminary checks pass. The runner records durable readiness, rebases and rechecks the exact candidate, runs any declared judgment, integrates it into Main, then terminates the worker and cleans up.
+The worker produces a clean committed candidate, then runs focused preliminary checks and optional judgment. The runner records a ready candidate but **does not integrate it automatically**. Main inspects `subagent_status`, selects each exact candidate with `subagent_stage` in an owned integration worktree, and resolves conflicts there. `subagent_integrate` can advance dependent tasks from a staged snapshot, validate the combined tip with full root checks and optional final judgment, and promote it to Main only after exact validation. A definitive failed combined check/review allows one committed correction in the integration checkout followed by another validation. Main must explicitly promote; promotion and cleanup never silently discard retained work.
 
 You may queue a bounded same-worker revision while the task is actively working:
 
@@ -121,10 +121,12 @@ A queued follow-up runs after the current turn settles and must produce a new cl
 | Surface | Purpose |
 | --- | --- |
 | `subagent_status` | Read durable state and the exact allowed continuation without replaying work. |
-| `subagent_resume` | Perform that explicit `retry`, `verify`, or `finalize` continuation. |
-| `subagent_abort` | Terminate exactly owned workers and abort an unfinished request. |
+| `subagent_resume` | Perform the reported `retry`, `verify`, or `finalize` continuation (not a substitute for staging/integration). |
+| `subagent_stage` | Main stages or resolves an exact candidate, or rejects/revises it; a staged rejection freezes that generation. |
+| `subagent_integrate` | Main advances staged dependents, validates, records one correction, promotes, reconciles an interrupted promotion, or cleans up after proven promotion. |
+| `subagent_abort` | Abort before retained candidates or integration worktrees exist; it cannot discard those resources. |
 
-Productive requests have no whole-run wall-clock deadline. Resume does not reset the recorded policy or correction count. Child limits, abort signals, process I/O, status inspection, exact termination, and cleanup retain finite safety bounds.
+Pass the exact `generation`, candidate (`taskId`, `attempt`, `candidate`) and `expectedTip` identities reported by status to stage; pass the generation and combined `expectedTip` to integrate. Stale identities fail. At most two retained integration worktrees/generations may be allocated per request; a superseded generation is read-only. Rejected candidates and superseded checkouts remain owned and need deliberate **manual cleanup** after inspecting status. Rejection can invalidate dependent work; if fresh dependent execution is impossible, start a new request instead of forcing promotion. Productive requests have no whole-run wall-clock deadline. Resume does not reset the recorded policy or correction count. Child limits, abort signals, process I/O, status inspection, exact termination, and cleanup retain finite safety bounds.
 
 The extension never pushes, opens a pull request, publishes, deploys, force-cleans recoverable work, or silently falls back to Main.
 
@@ -175,4 +177,4 @@ See [Orchestration and package-author API](./docs/orchestration.md) for the deta
 
 Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. Read-only direct Roles cannot write through their declared tools. This is a capability check, not an OS sandbox; external processes and changes to Main's checkout can still make a concurrent read stale.
 
-Durable state is private under `config/pi-subagent/state/`. Malformed or older state is rejected rather than migrated silently. Retained-work reports identify exact resources for deliberate recovery.
+Durable state is private under `config/pi-subagent/state/`. State v5 rejects v4 and older files rather than migrating them; retain the old state and recover its work manually. Retained-work reports identify exact resources for deliberate recovery.

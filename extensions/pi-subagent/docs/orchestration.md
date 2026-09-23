@@ -86,46 +86,41 @@ An isolated call is a checked directed graph:
 Every task declares `id`, `kind`, `role`, `modelClass`, `requirements`, `deliverable`, `dependsOn`, and `contextFrom`.
 
 - A `text` task runs in a disposable child worktree and must leave it unchanged.
-- A `changeset` task requires checks and owns one worktree, Herdr workspace, worker tab, and retained worker.
-- `dependsOn` controls ready waves.
+- A `changeset` task requires focused checks and owns one worktree, Herdr workspace, worker tab, and retained worker.
+- `dependsOn` controls ready waves; dependent tasks can run from a selected staged snapshot only after Main explicitly advances it.
 - `contextFrom` may reference completed text tasks only and preserves declaration order.
-- A graph containing changesets requires final checks.
+- A graph containing changesets requires final checks. The repository root must have a `package.json` test script; admission prepends canonical `pnpm test` if absent from final checks. Combined validation rejects a changed root test script.
 
-The runner executes ready tasks concurrently, then integrates same-wave changesets in request order. It records exact identities around every consequential boundary:
+The runner executes ready worker tasks concurrently, inspects clean committed candidates, runs preliminary task checks and optional preliminary judgment, then records ready candidates for Main. **It does not automatically integrate them.** Main selects exact candidates via `subagent_stage` into an owned integration checkout in explicit order. Each stage is a committed merge of the candidate, not a mutation of Main. Conflicts retain the checkout for Main to resolve; `resolve` verifies the exact two-parent merge instead of replaying an uncertain merge. Main can explicitly run dependent tasks from an exact staged tip with `subagent_integrate advance` and stage their results afterward. Independent candidates may be staged without re-running workers.
 
-1. inspect clean committed Main;
-2. allocate and durably record exact resources;
-3. prompt the worker and inspect the clean committed candidate;
-4. run preliminary checks and atomically seal the candidate when no follow-up is queued;
-5. record durable readiness for that exact candidate;
-6. retain the worker while rebasing if Main moved;
-7. rerun authoritative checks and optional exact judgment;
-8. integrate only the recorded candidate onto the recorded Main identity;
-9. durably record integration;
-10. terminate that exact worker; and
-11. clean only proved owned resources.
+Once all selected work is staged, Main calls `subagent_integrate validate` on the exact clean combined tip. This runs every final check, including `pnpm test`, and optional final judgment in the integration checkout before any Main mutation. A failed check/review can be followed by one Main-authored committed correction in that checkout, recorded with `correct`, then another `validate`. `promote` requires exact passing combined evidence and unchanged Main and uses a guarded update to Main. Only proven promotion leads to selected-worker termination and verified cleanup. A changed candidate, integration tip, or Main identity invalidates prior evidence or blocks promotion; review accepts only exact `PASS`.
 
-A changed candidate invalidates prior checks, judgment, and readiness. A rebase produces a new exact identity and requires authoritative validation. Review accepts only exact `PASS`; all other output is a finding.
+### Readiness and Main actions
 
-### Automatic readiness
+The user's request can authorize the declared local graph, checks, review, and Main's later explicit integration actions. After each successful preliminary check batch, the runner drains any follow-up already queued for the same live worker. Each revision must produce a new clean commit and rerun preliminary checks. When the queue is empty, the runner atomically seals the candidate and persists exact readiness evidence without waiting for input.
 
-The user's request authorizes the declared local graph, checks, review, and integration once. After each successful preliminary check batch, the runner drains any follow-up already queued for the same live worker. Each revision must produce a new clean commit and rerun preliminary checks. When the queue is empty, the runner atomically seals the candidate and persists exact readiness evidence without waiting for input.
+`/subagent-followup <request-id> <task-id> <message>` queues an optional same-worker revision only while the task is actively working. There is no guaranteed post-completion editing window; late follow-ups fail visibly. After readiness, use `subagent_stage revise` with an exact candidate, generation, current `expectedTip`, and instruction when a same-worker correction remains allowed. Material scope growth, missing authorization, user-owned conflicts, or consequential external actions still require a new decision. pi-subagent never pushes, publishes, deploys, or opens a pull request.
 
-`/subagent-followup <request-id> <task-id> <message>` queues an optional same-worker revision only while the task is actively working. There is no guaranteed post-completion editing window; late follow-ups fail visibly. Material scope growth, missing authorization, user-owned conflicts, or consequential external actions still require a new decision. pi-subagent never pushes, publishes, deploys, or opens a pull request.
+`subagent_status` reports ready candidates with `taskId`, `attempt`, and `tip`, plus each generation's number, stage lineage, combined tip, checks, promotion, and retained worktree. Use those exact identities (including branch, HEAD, index, and tree) rather than guessed commits:
+
+- `subagent_stage`: `{ id, action: "stage" | "resolve" | "reject" | "revise", generation, taskId, attempt, candidate, expectedTip, instruction? }`. `candidate` is the ready candidate's `tip`; `expectedTip` is Main's recorded identity for the first stage or the previous stage's exact tip. `resolve` reconciles a pending/conflicted merge; `reject` and `revise` arbitrate a candidate without changing Main.
+- `subagent_integrate`: `{ id, action: "advance" | "validate" | "correct" | "promote" | "reconcile" | "cleanup", generation, expectedTip }`. Use the generation's exact `combinedTip`. `advance` dispatches ready dependents on that snapshot, `correct` records the single clean committed correction after a definitive failed check/review, `reconcile` inspects an interrupted validation or promotion without replaying an uncertain promotion, and `cleanup` completes proved post-promotion cleanup.
+
+A rejection or revision of a staged candidate supersedes that generation, leaves its checkout read-only, and requires explicit restaging of chosen candidates into a new generation. At most two owned integration checkouts/generations can be allocated per request. Superseded integration checkouts and rejected candidate resources are **retained, not automatically cleaned**; inspect exact status and clean them manually. Rejection invalidates dependent attempts; if the required fresh dependent work cannot run within the bounded attempt/lineage constraints, start a new request. `subagent_abort` cannot abort a request with retained candidates or integration generations.
 
 ### Recovery and state
 
-State version 4 is stored privately under:
+State version 5 is stored privately under:
 
 ```text
 <agent-dir>/config/pi-subagent/state/<repository-hash>/<request-id>.json
 ```
 
-Strict parsing rejects unknown properties, malformed evidence, invalid lineage, and older versions. Writes are atomic and repository productive work uses a durable process lease. `delegate_task` and `subagent_resume` acknowledge only after durable state is saved, then continue productive work asynchronously. Completion or attention is sent as a Pi follow-up to the launching session. `subagent_status` is read-only and remains the recovery authority if a follow-up is missed. `subagent_resume` accepts only the continuation reported by state. `subagent_abort` performs exact worker termination and teardown.
+Strict parsing rejects unknown properties, malformed evidence, invalid lineage, and old v4 state without migration; preserve old files and recover their work manually. Writes are atomic and repository productive work uses a durable process lease. `delegate_task` and `subagent_resume` acknowledge only after durable state is saved, then continue productive work asynchronously. Completion or attention is sent as a Pi follow-up to the launching session. `subagent_status` is read-only and remains the recovery authority if a follow-up is missed. `subagent_resume` accepts only the continuation reported by state. `subagent_abort` performs exact worker termination and teardown.
 
 Productive execution has no whole-run wall-clock deadline. Long productive work and later resumes remain valid. The request retains its original policy snapshot and correction count; a resume cannot refill them. Current configuration may tighten the correction allowance. Child idle/hard runtime, subprocess I/O, status inspection, termination, cleanup, and outer abort remain bounded independently.
 
-Ambiguous prompt submission is never replayed automatically. Unknown allocation, failed checks, review findings, Main drift, conflicts, interrupted integration, unproved termination, or cleanup failure enters `needs_attention` and preserves exact evidence. Integration is never rolled back after it is durably recorded; recovery finishes termination and cleanup.
+Ambiguous prompt submission or merge/promotion is never replayed automatically. Unknown allocation, failed checks, review findings, Main drift, conflicts, interrupted promotion, unproved termination, or cleanup failure requires Main attention and preserves exact evidence. A definitive failed combined check retains its generation for one correction. Proven promotion is never rolled back; recovery finishes termination and cleanup. Only selected workers and the promoted integration checkout are automatically cleaned after proven promotion.
 
 ## Role and resource policy
 
