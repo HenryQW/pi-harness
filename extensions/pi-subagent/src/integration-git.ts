@@ -252,6 +252,26 @@ export class IntegrationGit {
 		} catch (error) { return unknown(`Interrupted stage outcome uncertain: ${String(error)}`, integration); }
 	}
 
+	async inspectWorker(root: string, worker: WorktreeInfo, candidate: WorkspaceIdentity, signal: AbortSignal): Promise<void> {
+		if (!sameIdentity(await current(root, worker, signal), candidate)) throw new Error("Staged worker candidate changed after selection.");
+	}
+
+	/** Read-only reconciliation of a lost promotion response; never repeat the merge. */
+	async reconcilePromotion(root: string, integration: WorktreeInfo, base: WorkspaceIdentity,
+		stages: readonly StageReceipt[], signal: AbortSignal): Promise<GitOutcome<WorkspaceIdentity>> {
+		try {
+			const tip = await this.inspectCombined(root, integration, base, stages, signal);
+			const main = await inspect(root, signal);
+			if (main.branch === base.branch && main.head === tip.head && sameIdentity(main, { ...tip, branch: base.branch })) {
+				return { outcome: "ready", value: main };
+			}
+			return { outcome: "unknown", failure: sameIdentity(main, base)
+				? "Promotion did not change Main; intent is retained and cannot be replayed."
+				: "Main differs from both the expected base and the promoted tip; manual recovery required.",
+				possibleResources: [integration.path, integration.branch] };
+		} catch (error) { return unknown(`Promotion reconciliation uncertain: ${String(error)}`, integration); }
+	}
+
 	/** Checks/review must be persisted for this exact combined tip; never move Main via update-ref. */
 	async promote(input: {
 		root: string; integration: WorktreeInfo; base: WorkspaceIdentity; stages: readonly StageReceipt[];

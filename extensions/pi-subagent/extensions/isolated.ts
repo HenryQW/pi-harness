@@ -18,6 +18,8 @@ import {
 	IdOnlySchema,
 	ResumeRequestSchema,
 	StageRequestSchema,
+	IntegrationActionSchema,
+	parseIntegrationAction,
 	parseStageRequest,
 	parseExecuteRequest,
 	parseIdOnly,
@@ -258,8 +260,14 @@ function publicState(state: RunState, preferredTaskId?: string) {
 		final: { status: state.final.status },
 		integration: {
 			candidates: state.integration.candidates.map(({ taskId, attempt, tip, base, checks }) => ({ taskId, attempt, tip, base, checked: checks.passed })),
-			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, stages }) => ({
+			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, combinedTip, checks, review, promotion, failure, stages }) => ({
 				number, status, integrationBase,
+				...(combinedTip ? { combinedTip } : {}),
+				...(checks ? { checked: checks.passed, failedCheck: publicFailedCheck(checks) } : {}),
+				...(review ? { reviewed: review.passed, failedReview: publicFailedReview(review) } : {}),
+				...(promotion ? { promotion: promotion.status, ...(promotion.mainAfter ? { mainAfter: promotion.mainAfter } : {}),
+					...(promotion.failure ? { promotionFailure: boundedPublicText(promotion.failure) } : {}) } : {}),
+				...(failure ? { failure: boundedPublicText(failure) } : {}),
 				...(worktree ? { retainedWorktree: { path: worktree.path, branch: worktree.branch } } : {}),
 				stages: stages.map(({ taskId, attempt, source, onto, status, tip, failure }) => ({
 					taskId, attempt, source, onto, status, ...(tip ? { tip } : {}), ...(failure ? { failure: boundedPublicText(failure) } : {}),
@@ -499,6 +507,18 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
 			return toolResult(await getComponents().runner.stage(params, root, signal), ctx, workspaceRowsByRequest);
+		},
+	});
+	pi.registerTool({
+		name: "subagent_integrate",
+		label: "Subagent integrate",
+		description: "Validate a staged combined tip with the root full suite, promote its exact checked tip, or reconcile an interrupted promotion. Never replays an uncertain promotion.",
+		parameters: IntegrationActionSchema,
+		prepareArguments: parseIntegrationAction,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			latestCtx = ctx;
+			const root = await lookupRoot(ctx.cwd, signal);
+			return toolResult(await getComponents().runner.integrate(params, root, signal), ctx, workspaceRowsByRequest);
 		},
 	});
 	pi.registerTool({

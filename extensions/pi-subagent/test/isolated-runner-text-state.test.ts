@@ -23,8 +23,9 @@ function mainIdentity(): WorkspaceIdentity {
 async function initializeRepository(root: string): Promise<void> {
 	await mkdir(root);
 	await writeFile(join(root, "README.md"), "fixture\n");
+	await writeFile(join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
 	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
-	execFileSync("git", ["add", "README.md"], { cwd: root });
+	execFileSync("git", ["add", "README.md", "package.json"], { cwd: root });
 	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], { cwd: root });
 }
 

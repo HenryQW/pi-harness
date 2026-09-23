@@ -72,6 +72,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	workerBarrierSize = 0;
 	maxConcurrentWorkers = 0;
 	failFinalChecks = 0;
+	failCombinedExit = false;
 	failPreliminaryChecks = 0;
 	expireMainInspections = 0;
 	preflightCalls = 0;
@@ -340,7 +341,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 			this.changesetCallOrder.push(`check:${preliminary ? "preliminary" : "authoritative"}:${failed ? "fail" : "pass"}`);
 		}
 		return {
-			results: input.checks.map((check) => ({ ...check, code: failed ? 1 : 0, killed: false, stdout: "", stderr: "" })),
+			results: input.checks.map((check) => ({ ...check, code: failed || (input.scope === "final" && this.failCombinedExit) ? 1 : 0, killed: false, stdout: "", stderr: "" })),
 			identityAfter: { ...input.candidate },
 		};
 	}
@@ -508,8 +509,9 @@ const unusedTextExecutor: EphemeralSubagentExecutor = {
 async function initializeRepository(root: string): Promise<void> {
 	await mkdir(root);
 	await writeFile(join(root, "README.md"), "fixture\n");
+	await writeFile(join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
 	execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
-	execFileSync("git", ["add", "README.md"], { cwd: root });
+	execFileSync("git", ["add", "README.md", "package.json"], { cwd: root });
 	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"], { cwd: root });
 }
 
@@ -621,7 +623,7 @@ test("queued follow-ups reuse the same worker before automatic readiness seals t
 
 	const result = await execution;
 	const task = changesetState(result.state, "change");
-	assert.equal(result.state.status, "completed");
+	assert.equal(result.state.status, "needs_attention");
 	assert.deepEqual(runtime.workerCalls, [
 		{ taskId: "change", kind: "initial" },
 		{ taskId: "change", kind: "followup" },
@@ -637,7 +639,7 @@ test("queued follow-ups reuse the same worker before automatic readiness seals t
 		{ kind: "followup", instruction: "Polish the revision one more time." },
 	]);
 	assert.equal(task.attempts[0]?.readiness?.candidate.head, task.attempts[0]?.prompts[2]?.candidate?.head);
-	assert.equal(runtime.terminationCalls.length, 1);
+	assert.equal(runtime.terminationCalls.length, 0);
 	assert.throws(
 		() => runner.queueFollowup(root, definition.id, "change", "Too late."),
 		/not an active unsealed changeset/,
@@ -668,9 +670,9 @@ test("a follow-up admitted during final preliminary-evidence persistence is rech
 		{ taskId: "change", kind: "followup" },
 	]);
 	assert.deepEqual(runtime.followupInstructions, ["Revision admitted while checked evidence is saving."]);
-	assert.equal(runtime.checkCalls.filter(({ scope }) => scope === "task").length, 3);
+	assert.equal(runtime.checkCalls.filter(({ scope }) => scope === "task").length, 2);
 	assert.deepEqual(attempt.readiness?.candidate, attempt.prompts[1]?.candidate);
-	assert.equal(result.state.status, "completed");
+	assert.equal(result.state.status, "needs_attention");
 	assertParsed(result.state);
 });
 
@@ -703,9 +705,9 @@ test("failed readiness persistence returns attention without integrating or term
 	delete changesetState(retained.state, "change").attempts[0]!.readiness;
 	await retained.save();
 	const recovered = await runner.resume(result.continuation!, root);
-	assert.equal(recovered.state.status, "completed");
+	assert.equal(recovered.state.status, "needs_attention");
 	assert.deepEqual(runtime.workerCalls, [{ taskId: "change", kind: "initial" }]);
-	assert.deepEqual(runtime.integrations, ["change"]);
+	assert.deepEqual(runtime.integrations, []);
 	assertParsed(recovered.state);
 });
 
@@ -729,9 +731,9 @@ test("the active follow-up queue remains bounded", async (t) => {
 	releaseWorker();
 
 	const result = await execution;
-	assert.equal(result.state.status, "completed");
+	assert.equal(result.state.status, "needs_attention");
 	assert.equal(runtime.followupInstructions.length, 16);
-	assert.equal(runtime.checkCalls.filter(({ scope }) => scope === "task").length, 18);
+	assert.equal(runtime.checkCalls.filter(({ scope }) => scope === "task").length, 17);
 	assertParsed(result.state);
 });
 
@@ -941,86 +943,18 @@ test("ready changeset waves run concurrently, integrate in request order, and re
 	const result = await runner.execute(definition, root);
 	const first = changesetState(result.state, "first").attempts[0]!;
 
-	assert.equal(result.state.accepted, true);
-	assert.deepEqual(result.state.waves.map(({ taskIds }) => taskIds), [["first", "second"], ["after"]]);
+	assert.equal(result.state.status, "needs_attention");
+	assert.deepEqual(result.state.waves.map(({ taskIds }) => taskIds), [["first", "second"]]);
 	assert.equal(runtime.maxConcurrentWorkers, 2);
-	assert.deepEqual(runtime.integrations, ["first", "second", "after"]);
-	assert.deepEqual(first.authoritativeChecks?.results, [{
-		command: "check-first", args: [], code: 0, killed: false, stdout: "", stderr: "",
-	}]);
-	assert.equal(first.authoritativeReview?.verdict, "PASS");
-	assert.equal(first.authoritativeReview?.passed, true);
-	assert.equal(result.state.final.checks?.passed, true);
-	assert.equal(result.state.final.review?.verdict, "PASS");
-	assert.equal(result.state.final.review?.passed, true);
-	assert.deepEqual(sortedCalls(runtime.acquisitions), sortedCalls([
-		{ role: "author/one", modelClass: "fast" },
-		{ role: "author/two", modelClass: "frontier" },
-		{ role: "author/after", modelClass: "fast" },
-		{ role: "judge/first", modelClass: "balanced" },
-		{ role: "judge/second", modelClass: "fav" },
-		{ role: "judge/final", modelClass: "balanced" },
-	]));
+	assert.deepEqual(runtime.integrations, []);
+	assert.equal(first.preliminaryChecks?.passed, true);
+	assert.equal(first.preliminaryReview?.verdict, "PASS");
+	assert.equal(result.state.integration.candidates.length, 2);
+	assert.equal(changesetState(result.state, "after").status, "pending");
+	assert.deepEqual(runtime.terminationCalls, []);
+	assert.equal(result.state.final.checks, undefined);
 	assert.deepEqual(sortedCalls(runtime.launchCleanups), sortedCalls(runtime.acquisitions));
 	assertParsed(result.state);
-});
-
-test("Main movement during rebase records a second exact rebase before integration", async (t) => {
-	const { root, runtime, runner } = await harness(t);
-	const movedMain = identity("f");
-	runtime.mainAfterRebases.push(movedMain);
-	const definition = request("consecutive-rebases", [changesetTask("change")]);
-
-	const result = await runner.execute(definition, root);
-	const attempt = changesetState(result.state, "change").attempts[0]!;
-
-	assert.equal(result.state.accepted, true);
-	assert.equal(runtime.rebaseInputs.length, 2);
-	assert.deepEqual(runtime.rebaseInputs.map(({ sourceBase, onto }) => ({ sourceBase, onto })), [
-		{ sourceBase: identity("a"), onto: identity("a") },
-		{ sourceBase: identity("a"), onto: movedMain },
-	]);
-	assert.equal(attempt.transitions.length, 2);
-	assert.ok(attempt.transitions.every(({ status }) => status === "rebased"));
-	assert.deepEqual(attempt.integrationBase, movedMain);
-	assert.deepEqual(attempt.termination?.candidate, attempt.integrationCandidate);
-	assertParsed(result.state);
-});
-
-test("termination reconciliation gates cleanup after durable integration", async (t) => {
-	const { root, runtime, runner } = await harness(t);
-	runtime.terminationResults.push({ outcome: "unknown", failure: "termination response lost" });
-	const definition = request("termination-reconciliation", [changesetTask("change")]);
-
-	const stopped = await runner.execute(definition, root);
-	const stoppedAttempt = changesetState(stopped.state, "change").attempts[0]!;
-	assert.equal(stopped.state.status, "needs_attention");
-	assert.equal(stoppedAttempt.integration?.status, "integrated");
-	assert.equal(stoppedAttempt.termination?.status, "unknown");
-	assert.equal(runtime.cleanupCalls.length, 0);
-	assert.deepEqual(stopped.continuation, { id: definition.id, action: "verify", taskId: "change" });
-
-	runtime.terminationReconciliations.push({ outcome: "unknown", failure: "agent and pane observation disagreed" });
-	const blocked = await runner.resume(stopped.continuation!, root);
-	assert.equal(changesetState(blocked.state, "change").attempts[0]?.termination?.status, "unknown");
-	assert.equal(runtime.cleanupCalls.length, 0);
-	assert.deepEqual(blocked.continuation, { id: definition.id, action: "verify", taskId: "change" });
-
-	runtime.terminationReconciliations.push({ outcome: "terminated" });
-	const resumed = await runner.resume(blocked.continuation!, root);
-	const resumedAttempt = changesetState(resumed.state, "change").attempts[0]!;
-	assert.deepEqual(resumed.continuation, { id: definition.id, action: "finalize" });
-	assert.equal(resumedAttempt.termination?.status, "terminated");
-	assert.equal(runtime.terminationCalls.length, 1);
-	assert.deepEqual(runtime.terminationReconciliationCalls, [
-		{ workerId: stoppedAttempt.termination!.workerId, candidate: stoppedAttempt.integrationCandidate! },
-		{ workerId: stoppedAttempt.termination!.workerId, candidate: stoppedAttempt.integrationCandidate! },
-	]);
-	assert.deepEqual(runtime.cleanupCalls, ["worker_tab", "workspace", "worktree", "branch"]);
-	assertParsed(resumed.state);
-	const finalized = await runner.resume(resumed.continuation!, root);
-	assert.equal(finalized.state.accepted, true);
-	assertParsed(finalized.state);
 });
 
 test("text producers feed ordered synthesis context into an integrated changeset", async (t) => {
@@ -1156,12 +1090,12 @@ test("text producers feed ordered synthesis context into an integrated changeset
 		taskId: "apply",
 		criterion: "The synthesis was applied exactly.",
 	}]);
-	assert.deepEqual(runtime.integrations, ["apply"]);
-	assert.equal(apply.status, "completed");
-	assert.equal(apply.attempts[0]?.integration?.status, "integrated");
-	assert.equal(result.state.status, "completed");
-	assert.equal(result.state.accepted, true);
-	assert.equal(result.state.final.checks?.passed, true);
+	assert.deepEqual(runtime.integrations, []);
+	assert.equal(apply.status, "ready_to_integrate");
+	assert.equal(apply.attempts[0]?.integration, undefined);
+	assert.equal(result.state.status, "needs_attention");
+	assert.equal(result.state.accepted, false);
+	assert.equal(result.state.final.checks, undefined);
 	assertParsed(result.state);
 });
 
@@ -1177,8 +1111,8 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 	const agent = attempt.allocations.find((allocation) => allocation.kind === "agent");
 	if (!agent?.agentName) throw new Error("Expected one allocated worker.");
 
-	assert.equal(result.state.version, 4);
-	assert.equal(result.state.accepted, true);
+	assert.equal(result.state.version, 5);
+	assert.equal(result.state.accepted, false);
 	assert.deepEqual(runtime.workerCalls, [
 		{ taskId: "change", kind: "initial" },
 		{ taskId: "change", kind: "correction" },
@@ -1190,20 +1124,13 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 		"check:preliminary:fail",
 		`worker:correction:${agent.agentName}`,
 		"check:preliminary:pass",
-		"check:authoritative:pass",
-		"review:authoritative:change",
-		"integrate:change",
-		`terminate:${agent.agentName}`,
-		"cleanup-host:worker_tab",
-		"cleanup-host:workspace",
-		"cleanup-git:worktree",
-		"cleanup-git:branch",
+		"review:preliminary:change",
 	]);
 	assert.equal(attempt.preliminaryChecks?.passed, true);
 	assert.deepEqual(attempt.readiness?.candidate, attempt.prompts[1]?.candidate);
 	assert.ok((attempt.readiness?.at ?? 0) > (attempt.prompts[1]?.at ?? Number.MAX_SAFE_INTEGER));
-	assert.equal(attempt.authoritativeChecks?.passed, true);
-	assert.equal(attempt.authoritativeReview?.passed, true);
+	assert.equal(attempt.preliminaryReview?.passed, true);
+	assert.equal(attempt.authoritativeChecks, undefined);
 	assertParsed(result.state);
 });
 
@@ -1214,15 +1141,15 @@ test("a blocked diagnostic is normalized before same-worker correction", async (
 	const result = await runner.execute(request("normalized-correction", [changesetTask("change")]), root);
 	const attempt = changesetState(result.state, "change").attempts[0]!;
 
-	assert.equal(result.state.status, "completed");
+	assert.equal(result.state.status, "needs_attention");
 	assert.deepEqual(runtime.workerCalls, [
 		{ taskId: "change", kind: "initial" },
 		{ taskId: "change", kind: "correction" },
 	]);
 	assert.deepEqual(runtime.correctionFailures, ["diagnostic"]);
 	assert.equal(attempt.prompts[0]?.failure, "diagnostic");
-	assert.equal(attempt.integration?.status, "integrated");
-	assert.deepEqual(runtime.integrations, ["change"]);
+	assert.equal(attempt.integration, undefined);
+	assert.deepEqual(runtime.integrations, []);
 	assertParsed(result.state);
 });
 
@@ -1257,7 +1184,7 @@ test("a follow-up queued during a failing follow-up is honored", async (t) => {
 
 			const result = await execution;
 			const attempt = changesetState(result.state, "change").attempts[0]!;
-			assert.equal(result.state.status, "completed");
+			assert.equal(result.state.status, "needs_attention");
 			assert.deepEqual(runtime.workerCalls, [
 				{ taskId: "change", kind: "initial" },
 				{ taskId: "change", kind: "followup" },
@@ -1268,8 +1195,8 @@ test("a follow-up queued during a failing follow-up is honored", async (t) => {
 				"Second follow-up must still run.",
 			]);
 			assert.deepEqual(attempt.prompts.map(({ kind }) => kind), ["initial", "followup", "followup"]);
-			assert.equal(attempt.termination?.status, "terminated");
-			assert.equal(attempt.integration?.status, "integrated");
+			assert.equal(attempt.termination, undefined);
+			assert.equal(attempt.integration, undefined);
 			assertParsed(result.state);
 		});
 	}
@@ -1367,7 +1294,7 @@ test("status preserves interrupted and ambiguous changeset prompts without produ
 
 			const reported = await runner.status(definition.id, root);
 			const reportedAttempt = changesetState(reported.state, "change").attempts[0]!;
-			assert.equal(reported.state.version, 4);
+			assert.equal(reported.state.version, 5);
 			assert.equal(reported.state.status, boundary === "interrupted" ? "running" : "needs_attention");
 			assert.equal(reportedAttempt.prompts[0]?.status, boundary === "interrupted" ? "submitting" : "ambiguous");
 			assert.equal(reportedAttempt.termination, undefined);
@@ -1453,82 +1380,6 @@ test("status reports Main drift and inspection expiry or failure without mutatio
 	}
 });
 
-test("status permits only pending cleanup recovery after integration", async (t) => {
-	const { root, runtime, store, runner } = await harness(t);
-	const definition = request("status-cleanup-only", [
-		changesetTask("integrated"),
-		changesetTask("dependent", { dependsOn: ["integrated"] }),
-	]);
-	runtime.cleanupFailures.push(new Error("cleanup interrupted"));
-	const waiting = await runner.execute(definition, root);
-	const waitingAttempt = changesetState(waiting.state, "integrated").attempts[0]!;
-	assert.equal(waitingAttempt.integration?.status, "integrated");
-	assert.ok(waitingAttempt.cleanup.every(({ status }) => status === "pending"));
-	assert.deepEqual(runtime.cleanupCalls, ["worker_tab"]);
-
-	runtime.clock += 10_000;
-	runtime.main = identity("f");
-	const persistedBefore = structuredClone((await store.load(root, definition.id)).state);
-	assertParsed(persistedBefore);
-	const callsBeforeStatus = runtimeCallCounts(runtime);
-	const reported = await runner.status(definition.id, root);
-
-	assert.equal(reported.main?.status, "drifted");
-	assert.deepEqual(reported.continuation, { id: definition.id, action: "verify", taskId: "integrated" });
-	assert.deepEqual(reported.state, persistedBefore);
-	assert.deepEqual((await store.load(root, definition.id)).state, persistedBefore);
-	assert.deepEqual(runtimeCallDelta(runtime, callsBeforeStatus), {
-		preflights: 0,
-		acquisitions: 0,
-		allocationPlans: 0,
-		worktreeAllocations: 0,
-		workspaceAllocations: 0,
-		workerTabAllocations: 0,
-		workerAllocations: 0,
-		reconciliations: 0,
-		candidateInspections: 0,
-		retainedTaskInspections: 0,
-		workers: 0,
-		checks: 0,
-		terminations: 0,
-		reviews: 0,
-		rebases: 0,
-		integrations: 0,
-		cleanups: 0,
-		mainInspections: 1,
-	});
-
-	const callsBeforeCleanup = runtimeCallCounts(runtime);
-	const cleaned = await runner.resume(reported.continuation!, root);
-	assert.deepEqual(runtimeCallDelta(runtime, callsBeforeCleanup), {
-		preflights: 0,
-		acquisitions: 0,
-		allocationPlans: 0,
-		worktreeAllocations: 0,
-		workspaceAllocations: 0,
-		workerTabAllocations: 0,
-		workerAllocations: 0,
-		reconciliations: 0,
-		candidateInspections: 0,
-		retainedTaskInspections: 0,
-		workers: 0,
-		checks: 0,
-		terminations: 0,
-		reviews: 0,
-		rebases: 0,
-		integrations: 0,
-		cleanups: 4,
-		mainInspections: 0,
-	});
-	assert.deepEqual(runtime.cleanupCalls.slice(-4), ["worker_tab", "workspace", "worktree", "branch"]);
-	assert.equal(changesetState(cleaned.state, "integrated").status, "completed");
-	assert.equal(changesetState(cleaned.state, "dependent").status, "needs_attention");
-	assert.equal(cleaned.state.final.status, "pending");
-	assert.equal(cleaned.state.accepted, false);
-	assert.deepEqual(cleaned.continuation, { id: definition.id, action: "retry", taskId: "dependent" });
-	assertParsed(cleaned.state);
-});
-
 test("failures enter needs_attention and require explicit recovery actions", async (t) => {
 	await t.test("retry", async (t) => {
 		const { root, runtime, runner } = await harness(t);
@@ -1544,7 +1395,7 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		runtime.clock += 31 * 60_000;
 
 		const resumed = await runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root);
-		assert.equal(resumed.state.accepted, true);
+		assert.equal(resumed.state.accepted, false);
 		assert.deepEqual(runtime.workerCalls, [{ taskId: "change", kind: "initial" }]);
 		assertParsed(resumed.state);
 	});
@@ -1560,7 +1411,7 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		assert.equal(stopped.state.status, "needs_attention");
 		assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "change" });
 		const corrected = await runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root);
-		assert.equal(corrected.state.accepted, true);
+		assert.equal(corrected.state.accepted, false);
 		assert.deepEqual(runtime.workerCalls, [
 			{ taskId: "change", kind: "initial" },
 			{ taskId: "change", kind: "correction" },
@@ -1572,20 +1423,6 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		assertParsed(corrected.state);
 	});
 
-	await t.test("finalize", async (t) => {
-		const { root, runtime, runner } = await harness(t);
-		const definition = request("finalize-change", [changesetTask("change")]);
-		runtime.failFinalChecks = 1;
-
-		const stopped = await runner.execute(definition, root);
-		assert.equal(stopped.state.status, "needs_attention");
-		assert.equal(stopped.state.final.status, "interrupted");
-		assert.deepEqual(stopped.continuation, { id: definition.id, action: "finalize" });
-
-		const finalized = await runner.resume({ id: definition.id, action: "finalize" }, root);
-		assert.equal(finalized.state.accepted, true);
-		assertParsed(finalized.state);
-	});
 });
 
 test("text dispatch uses the injected executor and persists a valid running intent and atomic completion", async (t) => {
@@ -1720,6 +1557,28 @@ test("an interrupted text task remains failed until its explicit retry", async (
 
 class StagingGit extends IntegrationGit {
 	readonly merged: string[] = [];
+	promotions = 0;
+	promoteResult?: GitOutcome<WorkspaceIdentity>;
+	promoteMain?: (tip: WorkspaceIdentity) => void;
+	combinedTip?: WorkspaceIdentity;
+	override async inspectCombined(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
+		stages: readonly StageReceipt[]): Promise<WorkspaceIdentity> {
+		return this.combinedTip ?? stages.at(-1)!.tip;
+	}
+	override async inspectWorker(): Promise<void> {}
+	override async promote(input: Parameters<IntegrationGit["promote"]>[0]): Promise<GitOutcome<WorkspaceIdentity>> {
+		this.promotions += 1;
+		if (this.promoteResult) return this.promoteResult;
+		const promoted = { ...input.stages.at(-1)!.tip, branch: input.base.branch };
+		this.promoteMain?.(promoted);
+		return { outcome: "ready", value: promoted };
+	}
+	override async reconcilePromotion(_root: string, _integration: WorktreeInfo, base: WorkspaceIdentity,
+		stages: readonly StageReceipt[]): Promise<GitOutcome<WorkspaceIdentity>> {
+		return this.promoteResult?.outcome === "unknown" ? { outcome: "unknown", failure: "Main still at base; no replay." }
+			: { outcome: "ready", value: { ...stages.at(-1)!.tip, branch: base.branch } };
+	}
+	override async cleanup(): Promise<GitOutcome<"removed">> { return { outcome: "ready", value: "removed" }; }
 	resolved = false;
 	allocationUnknown = false;
 	beforeMerge?: () => void;
@@ -1731,6 +1590,8 @@ class StagingGit extends IntegrationGit {
 			branch: "pi-subagent/subagent-integration", repoRoot: root, baseCommit: base.head,
 		};
 		await onPrepared(info);
+		await mkdir(info.path, { recursive: true });
+		await writeFile(join(info.path, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
 		return this.allocationUnknown ? { outcome: "unknown", failure: "Worktree add outcome unproved." }
 			: { outcome: "ready", value: info };
 	}
@@ -1800,6 +1661,86 @@ test("Main selects two retained candidates in order; conflict and resolution nev
 	assertParsed(resolved.state);
 	await assert.rejects(runner.stage(resolveAction, root), /no exact pending stage intent/);
 	for (const snapshot of store.current!.snapshots) assertParsed(snapshot);
+});
+
+async function stagedForPromotion(t: test.TestContext, id: string) {
+	const git = new StagingGit();
+	const { runner, root, runtime } = await harness(t, { integrationGit: git });
+	const ready = await runner.execute(request(id, [changesetTask("change")]), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "change",
+		attempt: candidate.attempt, candidate: candidate.tip, expectedTip: ready.state.main }, root);
+	const expectedTip = staged.state.integration.generations[0]!.combinedTip!;
+	return { runner, root, runtime, git, expectedTip,
+		action: { id, generation: 1, expectedTip } };
+}
+
+test("failed combined root full-suite check leaves Main unchanged and forbids promotion", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "failed-combination");
+	runtime.failCombinedExit = true;
+	const checked = await runner.integrate({ ...action, action: "validate" }, root);
+	assert.equal(checked.state.integration.generations[0]?.status, "validation_failed");
+	assert.equal(checked.state.integration.generations[0]?.checks?.results[0]?.command, "pnpm");
+	assert.equal(runtime.main.head, identity("a").head);
+	assert.equal(git.promotions, 0);
+	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /requires exact successful/);
+	await assert.rejects(runner.integrate({ ...action, action: "validate" }, root), /prior validation attempt/);
+	assertParsed(checked.state);
+});
+
+test("changed combined tip and dirty Main invalidate validation before running any suite", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "drifted-combination");
+	git.combinedTip = identity("f", action.expectedTip.branch);
+	const changed = await runner.integrate({ ...action, action: "validate" }, root);
+	assert.equal(changed.state.integration.generations[0]?.status, "validation_failed");
+	assert.equal(runtime.checkCalls.some((call) => call.scope === "final"), false);
+	assert.equal(runtime.main.head, identity("a").head);
+	assertParsed(changed.state);
+});
+
+test("dirty Main after passing combined checks prevents promotion without consuming an intent", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "dirty-promotion");
+	const validated = await runner.integrate({ ...action, action: "validate" }, root);
+	assert.equal(validated.state.integration.generations[0]?.status, "ready", validated.state.integration.generations[0]?.failure ?? "unknown");
+	assert.deepEqual(validated.state.integration.generations[0]?.checks?.results.map(({ command }) => command), ["pnpm", "check-final"]);
+	runtime.main = { ...runtime.main, index: oid("b") };
+	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /Main changed or became dirty/);
+	assert.equal(git.promotions, 0);
+	assertParsed((await runner.status(action.id, root)).state);
+});
+
+test("interrupted promotion is reconciled read-only, never replayed", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "interrupted-promotion");
+	await runner.integrate({ ...action, action: "validate" }, root);
+	git.promoteResult = { outcome: "unknown", failure: "Lost response" };
+	const uncertain = await runner.integrate({ ...action, action: "promote" }, root);
+	assert.equal(uncertain.state.integration.generations[0]?.status, "promotion_unknown");
+	assert.equal(git.promotions, 1);
+	assert.deepEqual(runtime.terminationCalls, []);
+	await runner.integrate({ ...action, action: "reconcile" }, root);
+	assert.equal(git.promotions, 1);
+	assert.equal(runtime.main.head, identity("a").head);
+	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /requires exact successful/);
+});
+
+test("exact checked tip promotes once, retains worker until proven promotion, then cleans owned resources", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "checked-promotion");
+	git.promoteMain = (main) => {
+		assert.deepEqual(runtime.terminationCalls, []);
+		assert.deepEqual(runtime.cleanupCalls, []);
+		runtime.main = main;
+	};
+	const validated = await runner.integrate({ ...action, action: "validate" }, root);
+	assert.equal(validated.state.integration.generations[0]?.status, "ready", validated.state.integration.generations[0]?.failure ?? "unknown");
+	assert.deepEqual(runtime.terminationCalls, []);
+	const done = await runner.integrate({ ...action, action: "promote" }, root);
+	assert.equal(done.state.status, "completed");
+	assert.equal(done.state.accepted, true);
+	assert.equal(done.state.integration.candidates[0]?.worker, "released");
+	assert.equal(runtime.terminationCalls.length, 1);
+	assert.equal(git.promotions, 1);
+	assertParsed(done.state);
+	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /stale generation|requires exact successful/);
 });
 
 test("uncertain integration allocation retains intent and refuses mutation replay", async (t) => {

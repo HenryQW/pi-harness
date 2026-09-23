@@ -220,6 +220,17 @@ export const StageRequestSchema = Type.Object({
 	expectedTip: WorkspaceSchema,
 }, { additionalProperties: false });
 export type StageRequest = Static<typeof StageRequestSchema>;
+export const IntegrationActionSchema = Type.Object({
+	id: IdSchema,
+	generation: Type.Integer({ minimum: 1, maximum: 32 }),
+	action: Type.Union([Type.Literal("validate"), Type.Literal("promote"), Type.Literal("reconcile"), Type.Literal("cleanup")]),
+	expectedTip: WorkspaceSchema,
+}, { additionalProperties: false });
+export type IntegrationAction = Static<typeof IntegrationActionSchema>;
+export function parseIntegrationAction(value: unknown): IntegrationAction {
+	if (!Check(IntegrationActionSchema, value)) throw schemaValidationError("subagent_integrate requires an exact generation and tip", Errors(IntegrationActionSchema, value));
+	return value as IntegrationAction;
+}
 export function parseStageRequest(value: unknown): StageRequest {
 	if (!Check(StageRequestSchema, value)) throw schemaValidationError("subagent_stage request must match exact candidate and generation", Errors(StageRequestSchema, value));
 	return value as StageRequest;
@@ -421,7 +432,7 @@ const PromotionSchema = Type.Object({
 const IntegrationGenerationSchema = Type.Object({
 	number: Type.Integer({ minimum: 1, maximum: 32 }),
 	status: Type.Union([
-		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
+		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validating"), Type.Literal("validation_failed"),
 		Type.Literal("ready"), Type.Literal("promoting"), Type.Literal("promoted"),
 		Type.Literal("promotion_unknown"), Type.Literal("promotion_failed"), Type.Literal("superseded"),
 	]),
@@ -434,6 +445,7 @@ const IntegrationGenerationSchema = Type.Object({
 	checks: Type.Optional(CheckBatchEvidenceSchema),
 	review: Type.Optional(ReviewEvidenceSchema),
 	promotion: Type.Optional(PromotionSchema),
+	cleanup: Type.Optional(Type.Array(CleanupStepSchema, { minItems: 2, maxItems: 2 })),
 	supersededFrom: Type.Optional(Type.Union([
 		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
 		Type.Literal("ready"),
@@ -943,6 +955,7 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			}
 		} else if (generation.supersededFrom !== undefined || (promotion ? generation.status !== expectedStatus
 			: generation.status === "ready" ? !passes || generation.failure !== undefined
+				: generation.status === "validating" ? !complete || !generation.combinedTip || generation.failure !== undefined
 				: generation.status === "validation_failed" ? !complete || !generation.combinedTip
 					|| passes || !generation.failure?.trim()
 					: generation.status === "conflict" ? generation.stages.at(-1)?.status !== "conflict" || !generation.failure?.trim()
@@ -950,6 +963,8 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 						|| generation.review !== undefined || generation.failure !== undefined)) {
 			throw new Error(`Generation ${generation.number} has inconsistent status or invalidated evidence.`);
 		}
+		if (generation.cleanup && (generation.status !== "promoted" || generation.cleanup[0]?.kind !== "worktree"
+			|| generation.cleanup[1]?.kind !== "branch")) throw new Error("Integration checkout cleanup requires proven promotion.");
 		if (index === state.generations.length - 1 && generation.status !== "promoted"
 			&& state.candidates.some((candidate) => candidate.worker !== "retained")) {
 			throw new Error(`Generation ${generation.number} released an unpromoted worker.`);
@@ -1284,7 +1299,16 @@ export function parseRunState(value: unknown): RunState {
 				}
 			}
 		}
-		if (taskState.status === "completed") requireCompletedTaskEvidence(taskState, definition);
+		if (taskState.status === "completed") {
+			const promoted = state.integration.generations.at(-1);
+			const candidate = state.integration.candidates.find((item) => item.taskId === definition.id && item.attempt === taskState.attempts.at(-1)?.number);
+			if (candidate && promoted?.status === "promoted" && promoted.stages.some((stage) => stage.taskId === definition.id
+				&& stage.attempt === candidate.attempt && sameIdentity(stage.source, candidate.tip))) {
+				const attempt = taskState.attempts.at(-1)!;
+				if (candidate.worker !== "released" || attempt.termination?.status !== "terminated"
+					|| attempt.cleanup.some((step) => step.status !== "completed")) throw new Error(`Promoted task ${definition.id} has incomplete worker cleanup.`);
+			} else requireCompletedTaskEvidence(taskState, definition);
+		}
 	}
 	if (state.final.checks) {
 		if (state.final.checks.phase !== "final") throw new Error("Malformed final check phase.");
@@ -1296,7 +1320,8 @@ export function parseRunState(value: unknown): RunState {
 			throw new Error("Malformed resume recovery target.");
 		}
 	}
-	if (state.integration.candidates.length && (state.accepted || state.status === "completed")) {
+	if (state.integration.candidates.length && state.integration.generations.at(-1)?.status !== "promoted"
+		&& (state.accepted || state.status === "completed")) {
 		throw new Error("Unpromoted integration cannot complete a request.");
 	}
 	for (const candidate of state.integration.candidates) {
@@ -1305,8 +1330,10 @@ export function parseRunState(value: unknown): RunState {
 		if (!attempt?.readiness || !sameIdentity(attempt.readiness.base, candidate.base)
 			|| !sameIdentity(attempt.readiness.candidate, candidate.tip)
 			|| (candidate.review !== undefined && JSON.stringify(candidate.review) !== JSON.stringify(attempt.preliminaryReview))
-			|| attempt.termination
-			|| task?.status !== "ready_to_integrate" || candidate.worker !== "retained") {
+			|| (state.integration.generations.at(-1)?.status !== "promoted"
+				? attempt.termination || task?.status !== "ready_to_integrate" || candidate.worker !== "retained"
+				: candidate.worker === "retained" ? attempt.termination || task?.status !== "ready_to_integrate"
+					: task?.status !== "ready_to_integrate" && task?.status !== "completed")) {
 			throw new Error(`Ready candidate ${candidate.taskId} is not the retained exact worker attempt.`);
 		}
 	}
@@ -1323,17 +1350,24 @@ export function parseRunState(value: unknown): RunState {
 		if (!state.final.identity || !isCleanCommitted(state.final.identity)) {
 			throw new Error("Accepted request lacks a clean final identity.");
 		}
-		if (state.final.checks?.phase !== "final"
-			|| !checkBatchPasses(state.final.checks, request.finalChecks, state.final.identity)) {
-			throw new Error("Accepted request lacks passing final checks on its exact identity.");
+		const generation = state.integration.generations.at(-1);
+		const acceptedChecks = generation?.status === "promoted"
+			? Boolean(generation.combinedTip && generation.combinedTip.head === state.final.identity.head
+				&& generation.combinedTip.tree === state.final.identity.tree
+				&& generation.promotion?.mainAfter && sameIdentity(generation.promotion.mainAfter, state.final.identity)
+				&& JSON.stringify(generation.checks) === JSON.stringify(state.final.checks)
+				&& integrationGenerationPasses(generation, request))
+			: checkBatchPasses(state.final.checks, request.finalChecks, state.final.identity);
+		if (!acceptedChecks) throw new Error("Accepted request lacks passing final checks on its exact identity.");
+		if (request.finalJudgment && !(generation?.status === "promoted"
+			? JSON.stringify(generation.review) === JSON.stringify(state.final.review)
+			: reviewEvidencePasses(state.final.review, "final", request.finalJudgment.criterion,
+				state.requestStartMain, state.final.identity))) throw new Error("Accepted request lacks an exact passing final review.");
+		if (state.integration.generations.length && (state.integration.generations.at(-1)?.status !== "promoted"
+			|| state.integration.generations.at(-1)?.cleanup?.length !== 2
+			|| state.integration.generations.at(-1)?.cleanup?.some((step) => step.status !== "completed"))) {
+			throw new Error("Accepted integration has incomplete checkout cleanup.");
 		}
-		if (request.finalJudgment && !reviewEvidencePasses(
-			state.final.review,
-			"final",
-			request.finalJudgment.criterion,
-			state.requestStartMain,
-			state.final.identity,
-		)) throw new Error("Accepted request lacks an exact passing final review.");
 		if (!sameIdentity(state.main, state.final.identity) || state.acceptedAt === undefined) {
 			throw new Error("Accepted request does not match its final-gate identity.");
 		}

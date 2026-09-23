@@ -19,6 +19,8 @@ import {
 	IdOnlySchema,
 	ResumeRequestSchema,
 	StageRequestSchema,
+	IntegrationActionSchema,
+	parseIntegrationAction,
 	parseStageRequest,
 	parseExecuteRequest,
 	parseIdOnly,
@@ -450,19 +452,20 @@ test("saved state updates and clears the workspace widget", async () => {
 	assert.equal(widgets.at(-1), undefined);
 });
 
-test("registers five strict tools without constructing runtime components", () => {
+test("registers six strict tools without constructing runtime components", () => {
 	const harness = createHarness();
 	assert.deepEqual(harness.tools.map(({ name }) => name), [
 		"delegate_task",
 		"subagent_status",
 		"subagent_resume",
 		"subagent_stage",
+		"subagent_integrate",
 		"subagent_abort",
 	]);
 	assert.deepEqual([...harness.commands.keys()], ["subagent-followup"]);
 	assert.equal(harness.getComponentCreations(), 0);
 
-	const [execute, status, resume, stage, abort] = harness.tools;
+	const [execute, status, resume, stage, integrate, abort] = harness.tools;
 	assert.equal(execute!.parameters, ExecuteRequestSchema);
 	assert.equal(execute!.prepareArguments, parseExecuteRequest);
 	assert.equal(status!.parameters, IdOnlySchema);
@@ -472,6 +475,9 @@ test("registers five strict tools without constructing runtime components", () =
 	assert.equal(stage!.parameters, StageRequestSchema);
 	assert.equal(stage!.prepareArguments, parseStageRequest);
 	assert.throws(() => stage!.prepareArguments({ id: "request-one", action: "stage", taskId: "unit-one" }), /exact candidate and generation/);
+	assert.equal(integrate!.parameters, IntegrationActionSchema);
+	assert.equal(integrate!.prepareArguments, parseIntegrationAction);
+	assert.throws(() => integrate!.prepareArguments({ id: "request-one", action: "promote" }), /exact generation and tip/);
 	assert.equal(abort!.parameters, IdOnlySchema);
 	assert.equal(abort!.prepareArguments, parseIdOnly);
 	assert.deepEqual(parseIdOnly({ id: "request-one" }), { id: "request-one" });
@@ -1003,6 +1009,7 @@ test("root active delegation sources smoke-load only the unified delegation tool
 	assert.deepEqual([...toolNames].sort(), [
 		"delegate_task",
 		"subagent_abort",
+		"subagent_integrate",
 		"subagent_resume",
 		"subagent_stage",
 		"subagent_status",

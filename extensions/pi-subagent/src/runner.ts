@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import type { EphemeralSubagentExecutor } from "./ephemeral.ts";
 import { createChildWorktree, finalizeChildWorktree, type WorktreeInfo } from "./worktree.ts";
 import { IntegrationGit, type StageReceipt } from "./integration-git.ts";
@@ -9,6 +9,9 @@ import {
 	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	MAX_POSSIBLE_RESOURCES,
 	parseExecuteRequest,
+	parseIntegrationAction,
+	integrationGenerationPasses,
+	type IntegrationGeneration,
 	parseResumeRequest,
 	parseStageRequest,
 	reviewEvidencePasses,
@@ -52,6 +55,18 @@ export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
 const ALLOCATION_KINDS: readonly AllocationKind[] = ["worktree", "workspace", "worker_tab", "agent"];
+const FULL_SUITE: CheckCommand = { command: "pnpm", args: ["test"] };
+
+function requireRootSuite(root: string): string {
+	let manifest: unknown;
+	try { manifest = JSON.parse(readFileSync(`${root}/package.json`, "utf8")); }
+	catch { throw new Error("Canonical root package.json with a test script is required for isolated changesets."); }
+	if (!manifest || typeof manifest !== "object" || !('scripts' in manifest)
+		|| !manifest.scripts || typeof manifest.scripts !== "object"
+		|| !('test' in manifest.scripts) || typeof manifest.scripts.test !== "string"
+		|| !manifest.scripts.test.trim()) throw new Error("Canonical root test script is missing.");
+	return manifest.scripts.test;
+}
 
 export interface OperationContext {
 	readonly signal: AbortSignal;
@@ -654,11 +669,16 @@ function correctionEligible(request: ChangesetTaskRequest, attempt: TaskAttempt)
 	const checks = attempt.preliminaryChecks;
 	return attempt.prompts.length === 1 && Boolean(checks
 		&& checks.phase === "preliminary"
-		&& !checks.passed
 		&& exactCommandResults(checks.results, request.checks)
-		&& checks.results.some((result) => result.code !== 0 || result.killed)
 		&& sameIdentity(checks.candidate, attempt.candidate)
-		&& sameIdentity(checks.identityAfter, attempt.candidate));
+		&& sameIdentity(checks.identityAfter, attempt.candidate)
+		&& (!checks.passed && checks.results.some((result) => result.code !== 0 || result.killed)
+			|| checks.passed && request.judgment && attempt.preliminaryReview?.phase === "preliminary"
+				&& !attempt.preliminaryReview.passed && attempt.preliminaryReview.verdict !== "PASS"
+				&& attempt.preliminaryReview.criterion === request.judgment.criterion
+				&& sameIdentity(attempt.preliminaryReview.base, attempt.candidateBase!)
+				&& sameIdentity(attempt.preliminaryReview.tip, attempt.candidate)
+				&& sameIdentity(attempt.preliminaryReview.identityAfter, attempt.candidate)));
 }
 
 function terminal(state: RunState): boolean {
@@ -910,6 +930,13 @@ export class IsolatedRunner {
 		const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd }, context));
 		const root = realpathSync.native(prepared.root);
 		if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
+		if (request.tasks.some((task) => task.kind === "changeset")) {
+			requireRootSuite(root);
+			if (!request.finalChecks.some((check) => check.command === FULL_SUITE.command
+				&& check.args.length === 1 && check.args[0] === FULL_SUITE.args[0])) {
+				request.finalChecks = [FULL_SUITE, ...request.finalChecks];
+			}
+		}
 		const preparedMain = runtimeIdentity(prepared.main, "Preflight Main identity");
 		if (!isCleanCommitted(preparedMain)) throw new Error("Preflight Main identity must be clean and committed.");
 		if (this.hasAnyActiveControl(root)) {
@@ -1122,6 +1149,236 @@ export class IsolatedRunner {
 			await this.saveProductive(handle);
 			return this.response(state);
 		});
+	}
+
+	private stageReceipts(generation: IntegrationGeneration): StageReceipt[] {
+		return generation.stages.map((stage) => ({ previous: stage.onto, worker: stage.source, tip: stage.tip! }));
+	}
+
+	/** Only Main can validate/promote the exact selected, clean combined tip. */
+	async integrate(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
+		const action = parseIntegrationAction(value);
+		root = realpathSync.native(root);
+		return await this.withProductiveRun(root, async (lifecycle) => {
+			const handle = await this.store.withLock(root, async () => await this.store.load(root, action.id), { productiveRunLease: lifecycle.lease });
+			const state = handle.state;
+			const request = parseExecuteRequest(state.request);
+			const generation = state.integration.generations.at(-1);
+			if (!generation || generation.number !== action.generation || !generation.worktree
+				|| !generation.combinedTip || !sameIdentity(generation.combinedTip, action.expectedTip)
+				|| terminal(state) || state.status !== "needs_attention") throw new Error("Integration action has a stale generation or combined tip.");
+			const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
+				() => this.coordinatorRuntime.now(), outerSignal);
+			const receipts = this.stageReceipts(generation);
+			if (action.action === "cleanup") {
+				if (generation.status !== "promoted") throw new Error("Cleanup requires proven exact promotion.");
+				await this.cleanupPromoted(handle, generation, receipts, scope);
+				return this.response(state);
+			}
+			if (action.action === "reconcile") {
+				if (generation.status === "validating") {
+					delete generation.checks;
+					delete generation.review;
+					generation.status = "validation_failed";
+					generation.failure = "Interrupted validation has no definitive exact full-suite result; Main must rebuild and recheck.";
+					await this.saveProductive(handle);
+					return this.response(state);
+				}
+				if (!generation.promotion || !["promoting", "unknown"].includes(generation.promotion.status)) {
+					throw new Error("No interrupted promotion intent to reconcile.");
+				}
+				const result = await scope.call((context) => this.integrationGit.reconcilePromotion(root, generation.worktree!,
+					generation.expectedMain, receipts, context.signal));
+				if (result.outcome === "ready") {
+					generation.promotion.status = "promoted";
+					generation.promotion.mainAfter = result.value;
+					delete generation.promotion.failure;
+					generation.status = "promoted";
+					state.main = result.value;
+				} else {
+					generation.promotion.status = "unknown";
+					generation.promotion.failure = bounded(result.failure);
+					generation.status = "promotion_unknown";
+				}
+				await this.saveProductive(handle);
+				if (result.outcome === "ready") await this.cleanupPromoted(handle, generation, receipts, scope);
+				return this.response(state);
+			}
+			if (action.action === "validate") {
+				if (generation.status !== "staging" || !receipts.length
+					|| generation.stages.some((stage) => stage.status !== "staged")) throw new Error("Validation requires fully committed explicit stages and no prior validation attempt.");
+				generation.status = "validating";
+				await this.saveProductive(handle); // Record the exact validation intent before running checks.
+				try {
+					if (!request.finalChecks.some((check) => check.command === FULL_SUITE.command
+						&& check.args.length === 1 && check.args[0] === FULL_SUITE.args[0])) throw new Error("Canonical full-suite command was not recorded at admission.");
+					if (requireRootSuite(generation.worktree.path) !== requireRootSuite(root)) {
+						throw new Error("Combined tip changed the admitted canonical root test script.");
+					}
+					await this.requireExactIntegration(handle, generation, receipts, scope);
+					const checks = await this.runCheckBatch(handle, request.finalChecks, action.expectedTip,
+						"final", scope, undefined, generation.worktree.path);
+					generation.checks = checks;
+					await this.saveProductive(handle);
+					if (!checkBatchPasses(checks, request.finalChecks, action.expectedTip)) throw new Error("Combined full-suite check failed or changed the integration tip.");
+					await this.requireExactIntegration(handle, generation, receipts, scope);
+					if (request.finalJudgment) {
+						const judgment = request.finalJudgment;
+						generation.review = await this.runReview(handle, judgment.criterion, generation.expectedMain,
+							action.expectedTip, judgment.role, judgment.modelClass, "final", scope, undefined, generation.worktree.path);
+						await this.saveProductive(handle);
+						if (!reviewEvidencePasses(generation.review, "final", judgment.criterion, generation.expectedMain, action.expectedTip)) {
+							throw new Error("Combined judgment failed or changed the integration tip.");
+						}
+					}
+					await this.requireExactIntegration(handle, generation, receipts, scope);
+					if (!integrationGenerationPasses(generation, request)) throw new Error("Combined validation is incomplete.");
+					generation.status = "ready";
+				} catch (error) {
+					if (integrationGenerationPasses(generation, request)) {
+						delete generation.checks;
+						delete generation.review; // Drift invalidates otherwise passing evidence.
+					}
+					generation.status = "validation_failed";
+					generation.failure = bounded(`Combined validation requires Main attention: ${errorText(error)}`);
+				}
+				await this.saveProductive(handle);
+				return this.response(state);
+			}
+			if (generation.status !== "ready" || !integrationGenerationPasses(generation, request)) {
+				throw new Error("Promotion requires exact successful combined validation.");
+			}
+			await this.requireExactIntegration(handle, generation, receipts, scope);
+			generation.promotion = { status: "promoting", expectedMain: generation.expectedMain, tip: action.expectedTip };
+			generation.status = "promoting";
+			await this.saveProductive(handle); // Intent before any Main mutation.
+			let outcome: Awaited<ReturnType<IntegrationGit["promote"]>>;
+			try {
+				outcome = await scope.call((context) => this.integrationGit.promote({
+					root, integration: generation.worktree!, base: generation.expectedMain, stages: receipts,
+					checks: generation.checks!, commands: request.finalChecks,
+					review: generation.review, criterion: request.finalJudgment?.criterion,
+				}, context.signal));
+			} catch (error) { outcome = { outcome: "unknown", failure: `Interrupted promotion: ${errorText(error)}` }; }
+			if (outcome.outcome === "ready") {
+				generation.promotion.status = "promoted";
+				generation.promotion.mainAfter = outcome.value;
+				generation.status = "promoted";
+				state.main = outcome.value;
+			} else {
+				generation.promotion.status = outcome.outcome === "unknown" ? "unknown" : "failed";
+				generation.promotion.failure = bounded(outcome.failure);
+				generation.status = outcome.outcome === "unknown" ? "promotion_unknown" : "promotion_failed";
+			}
+			await this.saveProductive(handle);
+			if (outcome.outcome === "ready") await this.cleanupPromoted(handle, generation, receipts, scope);
+			return this.response(state);
+		});
+	}
+
+	private async cleanupPromoted(handle: RunStateHandle, generation: IntegrationGeneration,
+		receipts: StageReceipt[], scope: RuntimeScope): Promise<void> {
+		const state = handle.state;
+		const promoted = generation.promotion?.mainAfter;
+		if (generation.status !== "promoted" || !promoted || !generation.worktree) throw new Error("Cleanup requires exact proven promotion.");
+		try {
+			const main = await this.callProductive(handle, scope, (context) => this.gitRuntime.inspectMain({ root: state.root }, context));
+			if (!sameIdentity(main, promoted)) throw new Error("Main changed or became dirty after promotion; cleanup is blocked.");
+			for (const stage of generation.stages) {
+				const task = changesetTaskState(state, stage.taskId);
+				const attempt = task.attempts[stage.attempt - 1]!;
+				const candidate = state.integration.candidates.find((item) => item.taskId === stage.taskId && item.attempt === stage.attempt)!;
+				const worker = allocationByKind(attempt, "worktree")?.worktree;
+				if (!worker) throw new Error("Promoted worker lacks a proven checkout.");
+				candidate.worker = "release_pending";
+				await this.saveProductive(handle);
+				if (attempt.termination?.status !== "terminated") {
+					if (attempt.termination) {
+						const result = await this.callProductive(handle, scope, (context) => this.hostRuntime.reconcileWorkerTermination({
+							task: changesetTaskRequest(state, task.taskId), attempt,
+							workerId: attempt.termination!.workerId, candidate: stage.source,
+						}, context));
+						if (result.outcome !== "terminated") throw new Error("Worker termination cannot be proved; never replay termination.");
+						attempt.termination = { status: "terminated", workerId: attempt.termination.workerId,
+							candidate: stage.source, at: this.coordinatorRuntime.now() };
+						await this.saveProductive(handle);
+					} else if (!await this.terminateWithSafety(handle, task, attempt, stage.source, scope.signal)) {
+						throw new Error("Worker termination was not proved.");
+					}
+				}
+				for (const kind of CLEANUP_KINDS) {
+					const step = attempt.cleanup.find((item) => item.kind === kind)!;
+					if (step.status === "completed") continue;
+					step.status = "running";
+					await this.saveProductive(handle);
+					if (kind === "worker_tab" || kind === "workspace") {
+						const result = await this.callProductive(handle, scope, (context) => this.hostRuntime.cleanupHost({
+							requestId: state.request.id, kind, task: changesetTaskRequest(state, task.taskId), attempt,
+						}, context));
+						if (result.outcome === "blocked") throw new Error(result.failure);
+					} else {
+						const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
+							generation.worktree!, worker as WorktreeInfo, generation.expectedMain, receipts,
+							promoted, kind, context.signal));
+						if (result.outcome !== "ready") throw new Error(result.failure);
+					}
+					step.status = "completed";
+					delete step.failure;
+					await this.saveProductive(handle);
+				}
+				candidate.worker = "released";
+				task.status = "completed";
+				await this.saveProductive(handle);
+			}
+			generation.cleanup ??= [{ kind: "worktree", status: "pending" }, { kind: "branch", status: "pending" }];
+			await this.saveProductive(handle);
+			for (const kind of ["worktree", "branch"] as const) {
+				const step = generation.cleanup.find((item) => item.kind === kind)!;
+				if (step.status === "completed") continue;
+				step.status = "running";
+				await this.saveProductive(handle);
+				const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
+					generation.worktree!, generation.worktree!, generation.expectedMain, receipts,
+					promoted, kind, context.signal));
+				if (result.outcome !== "ready") throw new Error(result.failure);
+				step.status = "completed";
+				delete step.failure;
+				await this.saveProductive(handle);
+			}
+			if (state.tasks.some((task) => task.status !== "completed")) return; // Other tasks/dependencies need Main attention.
+			state.final = { status: "passed", identity: promoted, checks: generation.checks,
+				...(generation.review ? { review: generation.review } : {}) };
+			state.status = "completed";
+			state.accepted = true;
+			state.acceptedAt = this.coordinatorRuntime.now();
+			await this.saveProductive(handle);
+		} catch (error) {
+			generation.failure = undefined; // Promotion remains proven; cleanup evidence stays inspectable.
+			const pending = generation.cleanup?.find((step) => step.status === "running")
+				?? generation.stages.flatMap((stage) => changesetTaskState(state, stage.taskId).attempts[stage.attempt - 1]!.cleanup)
+					.find((step) => step.status === "running");
+			if (pending) pending.failure = bounded(`Cleanup requires attention: ${errorText(error)}`);
+			await this.saveProductive(handle);
+		}
+	}
+
+	private async requireExactIntegration(handle: RunStateHandle, generation: IntegrationGeneration,
+		receipts: StageReceipt[], scope: RuntimeScope): Promise<void> {
+		const root = handle.state.root;
+		const worktree = generation.worktree!;
+		const tip = await this.callProductive(handle, scope, (context) => this.integrationGit.inspectCombined(root,
+			worktree, generation.expectedMain, receipts, context.signal));
+		if (!sameIdentity(tip, generation.combinedTip!) || !isCleanCommitted(tip)) throw new Error("Combined tip changed or became dirty.");
+		for (const stage of generation.stages) {
+			const task = changesetTaskState(handle.state, stage.taskId);
+			const worker = task.attempts[stage.attempt - 1]?.allocations.find((item): item is WorktreeAllocationIntent =>
+				item.kind === "worktree" && item.status === "owned")?.worktree;
+			if (!worker) throw new Error("Selected worker has no owned worktree.");
+			await this.callProductive(handle, scope, (context) => this.integrationGit.inspectWorker(root, worker as WorktreeInfo,
+				stage.source, context.signal));
+		}
+		const main = await this.callProductive(handle, scope, (context) => this.gitRuntime.inspectMain({ root }, context));
+		if (!sameIdentity(main, generation.expectedMain)) throw new Error("Main changed or became dirty before promotion.");
 	}
 
 	async abort(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
@@ -1787,10 +2044,11 @@ export class IsolatedRunner {
 		phase: CheckBatchEvidence["phase"],
 		scope: RuntimeScope,
 		taskId?: string,
+		root = handle.state.root,
 	): Promise<CheckBatchEvidence> {
 		const attempt = taskId ? latestAttempt(changesetTaskState(handle.state, taskId)) : undefined;
 		const result = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.runChecks({
-			root: handle.state.root,
+			root,
 			scope: phase === "final" ? "final" : "task",
 			...(taskId ? { taskId, attempt } : {}),
 			checks,
@@ -1838,10 +2096,11 @@ export class IsolatedRunner {
 		phase: ReviewEvidence["phase"],
 		scope: RuntimeScope,
 		taskId?: string,
+		root = handle.state.root,
 	): Promise<ReviewEvidence> {
 		const attempt = taskId ? latestAttempt(changesetTaskState(handle.state, taskId)) : undefined;
 		const result = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.review({
-			root: handle.state.root,
+			root,
 			scope: phase === "final" ? "final" : "task",
 			phase,
 			...(taskId ? { taskId, attempt } : {}),
@@ -2334,7 +2593,10 @@ export class IsolatedRunner {
 				] : []),
 				...(state.integration.generations.at(-1) ? [
 					`Integration generation ${state.integration.generations.at(-1)!.number}: ${state.integration.generations.at(-1)!.status}; worktree: ${state.integration.generations.at(-1)!.worktree?.path ?? "allocation not proven"}; stage: ${state.integration.generations.at(-1)!.stages.at(-1)?.status ?? "none"}.`,
-					...(state.integration.generations.at(-1)!.failure ? [`Conflict: ${state.integration.generations.at(-1)!.failure}`] : []),
+					...(state.integration.generations.at(-1)!.failure ? [`Integration: ${state.integration.generations.at(-1)!.failure}`] : []),
+				...(state.integration.generations.at(-1)!.promotion?.failure ? [`Promotion: ${state.integration.generations.at(-1)!.promotion!.failure}`] : []),
+				...(state.integration.generations.at(-1)!.checks?.passed === false ? ["Combined checks failed; Main was not changed."] : []),
+				...(state.integration.generations.at(-1)!.status === "promoted" ? ["Promotion proven; worker cleanup is pending or completed. Use subagent_integrate cleanup with the exact tip if interrupted."] : []),
 				] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
