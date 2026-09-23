@@ -70,6 +70,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	clock = 1_000;
 	main = identity("a");
 	integrationIdentity?: WorkspaceIdentity;
+	integrationPath?: string;
 	workerBarrierSize = 0;
 	maxConcurrentWorkers = 0;
 	failFinalChecks = 0;
@@ -83,6 +84,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	readonly workerContextCalls: WorkerContextCall[] = [];
 	readonly allocationPlanCalls: HostAllocationKind[] = [];
 	readonly worktreeAllocationCalls: string[] = [];
+	readonly allocationBases: Array<{ taskId: string; base: WorkspaceIdentity; checkout?: string }> = [];
 	readonly workspaceAllocationCalls: string[] = [];
 	readonly workerTabAllocationCalls: string[] = [];
 	readonly workerAllocationCalls: string[] = [];
@@ -150,7 +152,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 
 	async inspectMain(_input: Parameters<GitRuntime["inspectMain"]>[0], context: OperationContext): Promise<WorkspaceIdentity> {
 		this.inspectMainCalls.push(context);
-		if (_input.root.includes("subagent-integration") && this.integrationIdentity) return this.integrationIdentity;
+		if ((this.integrationPath === _input.root || _input.root.includes("subagent-integration")) && this.integrationIdentity) return this.integrationIdentity;
 		if (this.expireMainInspections > 0) {
 			this.expireMainInspections -= 1;
 			if (context.deadline === undefined) throw new Error("Expected a finite inspection deadline.");
@@ -225,6 +227,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 		_context: OperationContext,
 	): Promise<WorktreeAllocationResult> {
 		this.worktreeAllocationCalls.push(input.task.id);
+		this.allocationBases.push({ taskId: input.task.id, base: input.attempt.waveBase, checkout: input.baseRoot });
 		await input.onPrepared({
 			path: `/worktrees/${input.task.id}`,
 			cwd: `/worktrees/${input.task.id}`,
@@ -1682,6 +1685,80 @@ async function stagedForPromotion(t: test.TestContext, id: string) {
 	return { runner, root, runtime, git, expectedTip,
 		action: { id, generation: 1, expectedTip } };
 }
+
+test("text dependent reads the committed stage in a separate checkout", async (t) => {
+	const git = new class extends StagingGit {
+		override async allocate(root: string, childId: string, base: WorkspaceIdentity,
+			onPrepared: (info: WorktreeInfo) => Promise<void>, signal?: AbortSignal) {
+			return await IntegrationGit.prototype.allocate.call(this, root, childId, base, onPrepared, signal ?? new AbortController().signal);
+		}
+		override async stage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity,
+			_stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt>> {
+			await writeFile(join(integration.path, "README.md"), "staged content\n");
+			execFileSync("git", ["add", "README.md"], { cwd: integration.path });
+			execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "stage"], { cwd: integration.path });
+			const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: integration.path, encoding: "utf8" }).trim();
+			const tree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: integration.path, encoding: "utf8" }).trim();
+			return { outcome: "ready", value: { previous: { ...base, branch: `refs/heads/${integration.branch}` },
+				worker: candidate, tip: { branch: `refs/heads/${integration.branch}`, head, tree, index: tree } } };
+		}
+	}();
+	const executor: EphemeralSubagentExecutor = { run: async ({ prepare }) => {
+		const prepared = await prepare();
+		return { outcome: "success", exitCode: 0, outputTruncated: false, stderr: "",
+			output: await (await import("node:fs/promises")).readFile(join(prepared.cwd, "README.md"), "utf8") };
+	} };
+	const { runner, root, runtime } = await harness(t, { integrationGit: git, executor });
+	const checked = new (await import("../src/git-runtime.ts")).CheckedGitRuntime();
+	runtime.main = await checked.inspectMain({ root }, { signal: new AbortController().signal });
+	const id = "staged-text-dependent";
+	const ready = await runner.execute(request(id, [changesetTask("first"), { ...textTask("report"), dependsOn: ["first"] }]), root);
+	const first = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "first", attempt: first.attempt,
+		candidate: first.tip, expectedTip: ready.state.main }, root);
+	const tip = staged.state.integration.generations[0]!.combinedTip!;
+	runtime.integrationIdentity = tip;
+	runtime.integrationPath = staged.state.integration.generations[0]!.worktree!.path;
+	const result = await runner.integrate({ id, generation: 1, action: "advance", expectedTip: tip }, root);
+	assert.equal(textState(result.state, "report").attempts[0]?.output?.text, "staged content", JSON.stringify(textState(result.state, "report")));
+	assert.equal(await (await import("node:fs/promises")).readFile(join(root, "README.md"), "utf8"), "fixture\n");
+	await assert.rejects(runner.stage({ id, action: "reject", generation: 1, taskId: "first", attempt: first.attempt,
+		candidate: first.tip, expectedTip: tip }, root), /new dependent work is required/);
+	await assert.rejects(runner.stage({ id, action: "revise", generation: 1, taskId: "first", attempt: first.attempt,
+		candidate: first.tip, expectedTip: tip, instruction: "Change predecessor." }, root), /new dependent work is required/);
+	assert.equal(runtime.main.head, ready.state.main.head);
+	assertParsed(result.state);
+});
+
+test("Main advances a changeset dependent from its exact staged snapshot and retains its candidate", async (t) => {
+	const git = new StagingGit();
+	const { runner, root, runtime } = await harness(t, { integrationGit: git });
+	const id = "staged-dependent";
+	const dependent = { ...changesetTask("second"), dependsOn: ["first"] };
+	const ready = await runner.execute(request(id, [changesetTask("first"), dependent]), root);
+	assert.deepEqual(runtime.worktreeAllocationCalls, ["first"]);
+	const first = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "first",
+		attempt: first.attempt, candidate: first.tip, expectedTip: ready.state.main }, root);
+	const tip = staged.state.integration.generations[0]!.combinedTip!;
+	await assert.rejects(runner.integrate({ id, action: "advance", generation: 1, expectedTip: ready.state.main }, root), /stale generation or combined tip/);
+	const advanced = await runner.integrate({ id, action: "advance", generation: 1, expectedTip: tip }, root);
+	assert.deepEqual(runtime.worktreeAllocationCalls, ["first", "second"]);
+	assert.deepEqual(runtime.allocationBases[1], {
+		taskId: "second", base: tip, checkout: advanced.state.integration.generations[0]!.worktree!.path,
+	});
+	assert.equal(advanced.state.integration.candidates[1]?.taskId, "second");
+	assert.equal(advanced.state.integration.candidates[1]?.base.head, tip.head);
+	assert.equal(runtime.main.head, ready.state.main.head);
+	const forged = structuredClone(advanced.state);
+	forged.waves.at(-1)!.base = ready.state.main;
+	assert.throws(() => parseRunState(forged), /exact staged dependency snapshot/);
+	await assert.rejects(runner.stage({ id, action: "stage", generation: 1, taskId: "second", attempt: 1,
+		candidate: advanced.state.integration.candidates[1]!.tip, expectedTip: ready.state.main }, root), /stale combined tip/);
+	await assert.rejects(runner.stage({ id, action: "reject", generation: 1, taskId: "first", attempt: 1,
+		candidate: first.tip, expectedTip: tip }, root), /new dependent work is required/);
+	assertParsed(advanced.state);
+});
 
 test("failed combined root full-suite check leaves Main unchanged and forbids promotion", async (t) => {
 	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "failed-combination");

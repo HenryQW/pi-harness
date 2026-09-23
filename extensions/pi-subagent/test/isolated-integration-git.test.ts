@@ -7,7 +7,7 @@ import test from "node:test";
 import { IntegrationGit, type StageReceipt } from "../src/integration-git.ts";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import type { CheckBatchEvidence, WorkspaceIdentity } from "../src/schema.ts";
-import type { WorktreeInfo } from "../src/worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, type WorktreeInfo } from "../src/worktree.ts";
 
 const signal = new AbortController().signal;
 function git(root: string, ...args: string[]): string { return execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim(); }
@@ -96,6 +96,42 @@ test("same-file isolated candidates merge in Main-ordered integration checkout; 
 		assert.deepEqual(await runtime.cleanup(root, integration, worktree, base, stages, approved, "worktree", signal), { outcome: "ready", value: "removed" });
 		assert.deepEqual(await runtime.cleanup(root, integration, worktree, base, stages, approved, "branch", signal), { outcome: "ready", value: "removed" });
 	}
+});
+
+test("text and changeset dependents read and edit an exact staged predecessor without moving Main", async (t) => {
+	const root = await repo(t);
+	const runtime = new IntegrationGit();
+	const checked = new CheckedGitRuntime();
+	const context = { signal, deadline: Date.now() + 30000, timeoutMs: 30000 };
+	const inspected = (path: string) => checked.inspectMain({ root: path }, context);
+	const base = await inspected(root);
+	const integration = await allocate(runtime, root, base, "dependency-integration");
+	const predecessor = await allocate(runtime, root, base, "dependency-predecessor");
+	await commit(predecessor.path, "predecessor");
+	const first = await runtime.stage(root, integration, base, [], predecessor, await inspected(predecessor.path), signal);
+	assert.equal(first.outcome, "ready", JSON.stringify(first));
+	const stages = [first.outcome === "ready" ? first.value : assert.fail("predecessor stage failed")];
+	const snapshot = stages[0]!.tip;
+	const textCheckout = await createChildWorktree(integration.path, "text-dependent");
+	assert.ok(textCheckout);
+	assert.equal(textCheckout.baseCommit, snapshot.head);
+	assert.equal(await readFile(join(textCheckout.path, "shared.txt"), "utf8"), "predecessor\n");
+	assert.equal((await finalizeChildWorktree(textCheckout)).outcome, "pruned");
+	let worker: WorktreeInfo | undefined;
+	const attempt = { waveBase: snapshot } as Parameters<typeof checked.allocateWorktree>[0]["attempt"];
+	const intent = { kind: "worktree", token: "token-1234567890123456" } as Parameters<typeof checked.allocateWorktree>[0]["intent"];
+	const task = { id: "dependent" } as Parameters<typeof checked.allocateWorktree>[0]["task"];
+	const allocated = await checked.allocateWorktree({ root, baseRoot: integration.path, intent, task, attempt,
+		onPrepared: async (prepared) => { worker = prepared; assert.equal(prepared.baseCommit, snapshot.head); } }, context);
+	assert.deepEqual(allocated, { kind: "worktree", outcome: "owned" });
+	assert.ok(worker);
+	assert.equal(await readFile(join(worker.path, "shared.txt"), "utf8"), "predecessor\n");
+	await commit(worker.path, "dependent edit");
+	const second = await runtime.stage(root, integration, base, stages, worker, await inspected(worker.path), signal);
+	assert.equal(second.outcome, "ready", JSON.stringify(second));
+	stages.push(second.outcome === "ready" ? second.value : assert.fail("dependent stage failed"));
+	assert.equal(await readFile(join(integration.path, "shared.txt"), "utf8"), "dependent edit\n");
+	assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "base\n");
 });
 
 test("Main's exact single-parent correction needs fresh final evidence before guarded promotion", async (t) => {

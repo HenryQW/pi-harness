@@ -224,7 +224,7 @@ export type StageRequest = Static<typeof StageRequestSchema>;
 export const IntegrationActionSchema = Type.Object({
 	id: IdSchema,
 	generation: Type.Integer({ minimum: 1, maximum: 32 }),
-	action: Type.Union([Type.Literal("validate"), Type.Literal("correct"), Type.Literal("promote"), Type.Literal("reconcile"), Type.Literal("cleanup")]),
+	action: Type.Union([Type.Literal("advance"), Type.Literal("validate"), Type.Literal("correct"), Type.Literal("promote"), Type.Literal("reconcile"), Type.Literal("cleanup")]),
 	expectedTip: WorkspaceSchema,
 }, { additionalProperties: false });
 export type IntegrationAction = Static<typeof IntegrationActionSchema>;
@@ -898,6 +898,12 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			if (generation.status !== "superseded" && (candidate !== latestCandidates.get(stage.taskId) || candidate.decision)) {
 				throw new Error(`Stage ${stageIndex + 1} does not use the latest ready attempt.`);
 			}
+			const definition = tasks.get(stage.taskId)!;
+			const predecessorIds = definition.dependsOn.filter((id) => tasks.has(id));
+			if (predecessorIds.some((id) => !generation.stages.slice(0, stageIndex).some((prior) =>
+				prior.taskId === id && prior.status === "staged"))) {
+				throw new Error(`Stage ${stageIndex + 1} is missing its staged changeset predecessor.`);
+			}
 			if (stage.status === "staged") {
 				if (!stage.tip || stage.failure !== undefined || !isCleanCommitted(stage.tip)
 					|| stage.tip.branch !== generation.integrationBase.branch) {
@@ -1012,6 +1018,27 @@ export function parseRunState(value: unknown): RunState {
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
 	parseIntegrationState(state.integration, request);
+	for (const wave of state.waves) {
+		for (const id of wave.taskIds) {
+			const definition = request.tasks.find((task) => task.id === id);
+			if (!definition) throw new Error(`Wave has an unknown task ${id}.`);
+			const changesetParents = new Set<string>();
+			const visit = (task: TaskRequest): void => {
+				for (const source of task.dependsOn) {
+					const predecessor = request.tasks.find((item) => item.id === source)!;
+					if (predecessor.kind === "changeset") changesetParents.add(source);
+					else visit(predecessor);
+				}
+			};
+			visit(definition);
+			if (changesetParents.size && !state.integration.generations.some((generation) =>
+				generation.stages.some((stage) => stage.status === "staged" && stage.tip
+					&& sameIdentity(stage.tip, wave.base) && [...changesetParents].every((source) =>
+						generation.stages.some((prior) => prior.taskId === source && prior.status === "staged"))))) {
+				throw new Error(`Wave for ${id} lacks an exact staged dependency snapshot.`);
+			}
+		}
+	}
 	if (state.createdAt > state.updatedAt || state.correctionCount > state.policy.maxCorrections) {
 		throw new Error(`Malformed pi-subagent v${RUN_STATE_VERSION} timestamps or correction policy.`);
 	}

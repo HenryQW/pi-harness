@@ -196,7 +196,7 @@ export class IntegrationGit {
 	/** Main orders calls. On conflict leave MERGE_HEAD and the index untouched for manual resolution. */
 	async stage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], worker: WorktreeInfo, candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt>> {
 		const previous = await this.inspectCombined(root, integration, base, stages, signal);
-		if (worker.path === integration.path || !await ancestor(worker.baseCommit, base.head, root, signal)
+		if (worker.path === integration.path || !await ancestor(worker.baseCommit, previous.head, root, signal)
 			|| !sameIdentity(await current(root, worker, signal), candidate)
 			|| candidate.head === worker.baseCommit || !await ancestor(worker.baseCommit, candidate.head, root, signal)
 			|| await ancestor(candidate.head, previous.head, root, signal)) {
@@ -224,7 +224,7 @@ export class IntegrationGit {
 	async confirmStage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], worker: WorktreeInfo, candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt>> {
 		try {
 			const previous = stages.at(-1)?.tip ?? { ...base, branch: `refs/heads/${integration.branch}` };
-			if (worker.path === integration.path || !await ancestor(worker.baseCommit, base.head, root, signal)
+			if (worker.path === integration.path || !await ancestor(worker.baseCommit, previous.head, root, signal)
 				|| candidate.head === worker.baseCommit || !await ancestor(worker.baseCommit, candidate.head, root, signal)
 				|| !sameIdentity(await current(root, worker, signal), candidate)) {
 				throw new Error("Worker candidate changed or does not descend from the recorded base.");

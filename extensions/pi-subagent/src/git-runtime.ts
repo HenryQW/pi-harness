@@ -203,6 +203,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 
 	async allocateWorktree(input: {
 		root: string;
+		baseRoot?: string;
 		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
@@ -219,13 +220,14 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 	): Promise<WorktreeAllocationResult> {
 		let prepared: WorktreeAllocationPlan | undefined;
 		let createdWorktree: WorktreeAllocationPlan | undefined;
-		const before = await this.inspectWorkspace(input.root, false, context);
+		const baseRoot = input.baseRoot ?? input.root;
+		const before = await this.inspectWorkspace(baseRoot, false, context);
 		if (!sameIdentity(before, input.attempt.waveBase)) {
-			return { kind: "worktree", outcome: "absent", failure: "Main drifted before worktree allocation." };
+			return { kind: "worktree", outcome: "absent", failure: "Recorded wave snapshot drifted before worktree allocation." };
 		}
 		try {
 			const created = await createChildWorktree(
-				input.root,
+				baseRoot,
 				`isolated-${input.task.id}-${input.intent.token}`,
 				this.gitRunner(context),
 				context.signal,
@@ -235,9 +237,9 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 						throw new Error("pi-subagent prepared a worktree from a base other than the recorded wave base.");
 					}
 					await input.onPrepared(prepared);
-					const current = await this.inspectWorkspace(input.root, false, context);
+					const current = await this.inspectWorkspace(baseRoot, false, context);
 					if (!sameIdentity(current, input.attempt.waveBase)) {
-						throw new Error("Main drifted after worktree preparation and before git worktree add.");
+						throw new Error("Recorded wave snapshot drifted after worktree preparation and before git worktree add.");
 					}
 				},
 			);
@@ -253,7 +255,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 					possibleResources: [worktree.path, worktree.branch],
 				};
 			}
-			const after = await this.inspectWorkspace(input.root, false, context);
+			const after = await this.inspectWorkspace(baseRoot, false, context);
 			if (!sameIdentity(after, input.attempt.waveBase)) {
 				return {
 					kind: "worktree",

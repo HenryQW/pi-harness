@@ -265,6 +265,7 @@ export interface GitRuntime {
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {
 		root: string;
+		baseRoot?: string;
 		intent: WorktreeAllocationIntent;
 		task: TaskRequest;
 		attempt: TaskAttempt;
@@ -567,8 +568,30 @@ function taskState(state: RunState, id: string): TaskState {
 
 function taskDependenciesCompleted(state: RunState, taskId: string): boolean {
 	const request = taskRequest(state, taskId);
-	return [...request.dependsOn, ...request.contextFrom]
-		.every((source) => taskState(state, source).status === "completed");
+	const generation = state.integration.generations.at(-1);
+	return request.dependsOn.every((source) => {
+		const predecessor = taskState(state, source);
+		return predecessor.kind === "text" ? predecessor.status === "completed"
+			: generation?.status !== "superseded" && generation?.stages.some((stage) =>
+				stage.taskId === source && stage.status === "staged" && predecessor.status === "ready_to_integrate") === true;
+	}) && request.contextFrom.every((source) => taskState(state, source).status === "completed");
+}
+
+/** Context edges carry only prompt text, never the source checkout. */
+function hasChangesetDependency(state: RunState, taskId: string): boolean {
+	return taskRequest(state, taskId).dependsOn.some((source) =>
+		taskState(state, source).kind === "changeset" || hasChangesetDependency(state, source));
+}
+
+/** Every changeset predecessor must be present in this exact committed snapshot. */
+function stagedDependencySnapshot(state: RunState, taskId: string, tip: WorkspaceIdentity): boolean {
+	const generation = state.integration.generations.at(-1);
+	const request = taskRequest(state, taskId);
+	return request.dependsOn.every((source) => {
+		if (taskState(state, source).kind === "text") return true;
+		return Boolean(generation && generation.status !== "superseded" && generation.combinedTip
+			&& sameIdentity(generation.combinedTip, tip) && generation.stages.some((stage) => stage.taskId === source && stage.status === "staged"));
+	});
 }
 
 function textRetryEligible(state: RunState, task: TextTaskState): boolean {
@@ -1137,6 +1160,13 @@ export class IsolatedRunner {
 			if (!isCleanCommitted(action.expectedTip) || action.expectedTip.head !== (expected?.head ?? state.main.head)) {
 				throw new Error("Stage action has an invalid integration tip.");
 			}
+			if (action.action === "stage" && !stagedDependencySnapshot(state, action.taskId, action.expectedTip)) {
+				throw new Error("Candidate dependencies are not staged on this exact snapshot.");
+			}
+			if (action.action === "stage" && attempt!.waveBase.head !== state.main.head
+				&& !generation?.stages.some((stage) => stage.status === "staged" && stage.tip && sameIdentity(stage.tip, attempt!.waveBase))) {
+				throw new Error("Dependent candidate was launched from a superseded or unstaged snapshot.");
+			}
 			const actualMain = await scope.call((context) => this.gitRuntime.inspectMain({ root }, context));
 			if (!sameIdentity(actualMain, state.main)) throw new Error("Main changed or became dirty; staging is blocked.");
 			if (!generation) {
@@ -1222,6 +1252,17 @@ export class IsolatedRunner {
 			const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
 				() => this.coordinatorRuntime.now(), outerSignal);
 			const receipts = this.stageReceipts(generation);
+			if (action.action === "advance") {
+				if (generation.status !== "staging" || generation.stages.some((stage) => stage.status !== "staged")
+					|| generation.correction || !isCleanCommitted(action.expectedTip)) {
+					throw new Error("Advance requires an exact clean staged snapshot before validation or correction.");
+				}
+				const ready = readyPendingTasks(state).filter((task) => hasChangesetDependency(state, task.taskId)
+					&& stagedDependencySnapshot(state, task.taskId, action.expectedTip));
+				if (!ready.length) throw new Error("No dependent task is ready on this staged snapshot.");
+				await this.requireExactIntegration(handle, generation, receipts, scope);
+				return await this.run(handle, scope, undefined, action.expectedTip);
+			}
 			if (action.action === "cleanup") {
 				if (generation.status !== "promoted") throw new Error("Cleanup requires proven exact promotion.");
 				await this.cleanupPromoted(handle, generation, receipts, scope);
@@ -1317,6 +1358,20 @@ export class IsolatedRunner {
 			}
 			if (generation.status !== "ready" || !integrationGenerationPasses(generation, request)) {
 				throw new Error("Promotion requires exact successful combined validation.");
+			}
+			for (const definition of request.tasks.filter((task) => hasChangesetDependency(state, task.id))) {
+				const dependent = taskState(state, definition.id);
+				const launch = [...state.waves].reverse().find((wave) => wave.taskIds.includes(definition.id));
+				if (generation.correction || !launch || !dependent.attempts.length || (definition.kind === "text" && dependent.status !== "completed")
+					|| (definition.kind === "changeset" && !generation.stages.some((stage) =>
+						stage.taskId === definition.id && stage.status === "staged" && stage.attempt === dependent.attempts.length
+						&& generation.stages.some((predecessor) => predecessor.status === "staged"
+							&& sameIdentity(predecessor.tip!, launch.base))))) {
+					throw new Error(`Dependent ${definition.id} lacks a fresh stage from the selected integration snapshot.`);
+				}
+				if (!generation.stages.some((stage) => stage.status === "staged" && sameIdentity(stage.tip!, launch.base))) {
+					throw new Error(`Dependent ${definition.id} ran on a superseded snapshot.`);
+				}
 			}
 			await this.requireExactIntegration(handle, generation, receipts, scope);
 			generation.promotion = { status: "promoting", expectedMain: generation.expectedMain, tip: action.expectedTip };
@@ -1531,6 +1586,7 @@ export class IsolatedRunner {
 		handle: RunStateHandle,
 		scope: RuntimeScope,
 		forceTextTaskId: string | undefined,
+		stagedSnapshot?: WorkspaceIdentity,
 	): Promise<RunResponse> {
 		const state = handle.state;
 		let saveOnExit = true;
@@ -1543,8 +1599,14 @@ export class IsolatedRunner {
 					state.status = "needs_attention";
 					return this.response(state);
 				}
-				const ready = readyPendingTasks(state).filter((task) => !forceTextTaskId || task.taskId === forceTextTaskId);
-				if (!ready.length) throw new Error("No dependency wave is ready.");
+				const ready = readyPendingTasks(state).filter((task) => (!forceTextTaskId || task.taskId === forceTextTaskId)
+					&& (!stagedSnapshot || (hasChangesetDependency(state, task.taskId)
+						&& stagedDependencySnapshot(state, task.taskId, stagedSnapshot))));
+				if (!ready.length) {
+					if (!stagedSnapshot && !state.integration.candidates.length) throw new Error("No dependency wave is ready.");
+					state.status = "needs_attention";
+					return this.response(state);
+				}
 				let actualMain: WorkspaceIdentity;
 				try {
 					actualMain = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
@@ -1562,9 +1624,13 @@ export class IsolatedRunner {
 					state.status = "needs_attention";
 					return this.response(state);
 				}
+				if (stagedSnapshot) {
+					const generation = state.integration.generations.at(-1)!;
+					await this.requireExactIntegration(handle, generation, this.stageReceipts(generation), scope);
+				}
 				const wave: WaveState = {
 					number: state.waves.length + 1,
-					base: state.main,
+					base: stagedSnapshot ?? state.main,
 					taskIds: ready.map((task) => task.taskId),
 					status: "dispatching",
 				};
@@ -1623,8 +1689,6 @@ export class IsolatedRunner {
 				state.status = "needs_attention";
 				await this.saveProductive(handle);
 				return this.response(state);
-				await this.saveProductive(handle);
-				forceTextTaskId = undefined;
 			}
 			return await this.runFinal(handle, scope);
 		} catch (error) {
@@ -1690,6 +1754,7 @@ export class IsolatedRunner {
 					if (intent.kind === "worktree") {
 						result = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.allocateWorktree({
 							root: state.root,
+							...(attempt.waveBase.head !== state.main.head ? { baseRoot: state.integration.generations.at(-1)?.worktree?.path } : {}),
 							intent,
 							task: request,
 							attempt,
@@ -1796,8 +1861,15 @@ export class IsolatedRunner {
 		if (!attempt || attempt.status !== "running") throw new Error(`Text task ${task.taskId} has no running attempt.`);
 		const prompt = buildTextTaskPrompt(state.request.goal, request, resolveTextTaskContexts(state, request));
 		const result = await this.callProductive(handle, scope, async (context) => {
+			const wave = state.waves.at(-1);
+			if (!wave?.taskIds.includes(task.taskId)) throw new Error("Text task lacks a recorded launch wave.");
+			const baseRoot = wave.base.head === state.main.head ? state.root : state.integration.generations.at(-1)?.worktree?.path;
+			if (!baseRoot) throw new Error("Staged dependency checkout is unavailable.");
+			if (!sameIdentity(await this.gitRuntime.inspectMain({ root: baseRoot }, context), wave.base)) {
+				throw new Error("Staged dependency snapshot drifted before text launch.");
+			}
 			const isolated = await createChildWorktree(
-				state.root,
+				baseRoot,
 				`${state.request.id}-${task.taskId}-text-${attempt.number}`,
 				undefined,
 				context.signal,
@@ -1837,6 +1909,14 @@ export class IsolatedRunner {
 		}
 		const actualMain = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectMain({ root: state.root }, context));
 		if (!sameIdentity(actualMain, state.main)) throw new Error("Main drifted during text task execution.");
+		const wave = state.waves.at(-1)!;
+		if (wave.base.head !== state.main.head) {
+			const generation = state.integration.generations.at(-1);
+			if (!generation?.worktree || generation.status === "superseded" || !sameIdentity(generation.combinedTip!, wave.base)) {
+				throw new Error("Staged dependency snapshot was superseded during text task execution.");
+			}
+			await this.requireExactIntegration(handle, generation, this.stageReceipts(generation), scope);
+		}
 		attempt.status = "completed";
 		attempt.failure = undefined;
 		attempt.output = { text: output };
@@ -2682,6 +2762,10 @@ export class IsolatedRunner {
 				] : []),
 				...(state.integration.generations.at(-1) ? [
 					`Integration generation ${state.integration.generations.at(-1)!.number}: ${state.integration.generations.at(-1)!.status}; worktree: ${state.integration.generations.at(-1)!.worktree?.path ?? "allocation not proven"}; stage: ${state.integration.generations.at(-1)!.stages.at(-1)?.status ?? "none"}.`,
+					...(state.integration.generations.at(-1)!.status === "staging" && readyPendingTasks(state).some((task) =>
+						state.integration.generations.at(-1)!.combinedTip && hasChangesetDependency(state, task.taskId)
+						&& stagedDependencySnapshot(state, task.taskId, state.integration.generations.at(-1)!.combinedTip!))
+						? ["Main may call subagent_integrate advance with this generation and its exact staged combinedTip to launch ready dependents."] : []),
 					...(state.integration.generations.at(-1)!.failure ? [`Integration: ${state.integration.generations.at(-1)!.failure}`] : []),
 				...(state.integration.generations.at(-1)!.promotion?.failure ? [`Promotion: ${state.integration.generations.at(-1)!.promotion!.failure}`] : []),
 				...(state.integration.generations.at(-1)!.checks?.passed === false ? ["Combined checks failed; Main was not changed."] : []),
