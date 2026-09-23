@@ -763,7 +763,7 @@ test("integration recovery rejects disconnected, duplicated, stale or released e
 		delete state.generations[0]!.combinedTip;
 		delete state.generations[0]!.checks;
 		state.generations.push({ ...structuredClone(state.generations[0]!), number: 2, expectedMain: other });
-	}, /share exact Main identity/);
+	}, /invalid Main base/);
 	altered((state) => { (state.generations[0] as object as Record<string, unknown>).path = "/arbitrary"; }, /Malformed integration state/);
 });
 
@@ -792,6 +792,51 @@ test("superseded generations invalidate old gates before a new Main choice", () 
 	assert.doesNotThrow(() => parseIntegrationState(state, definition));
 	state.generations[0]!.checks = structuredClone(integrationFixture().state.generations[0]!.checks);
 	assert.throws(() => parseIntegrationState(state, definition), /evidence without a complete tip|retains usable evidence/);
+});
+
+test("a revised staged candidate requires a fresh generation, preserving the old stage and invalidating old gates", () => {
+	const { request: definition, state } = integrationFixture();
+	const old = state.generations[0]!;
+	old.status = "superseded";
+	old.supersededFrom = "ready";
+	old.failure = "Main requested a revised first candidate.";
+	delete old.combinedTip;
+	delete old.checks;
+	const first = state.candidates[0]!;
+	const revisedTip = { ...first.tip, head: "f".repeat(40), index: "f".repeat(40), tree: "f".repeat(40) };
+	state.candidates.push({ ...structuredClone(first), attempt: 2, tip: revisedTip, checks: {
+		...structuredClone(first.checks), candidate: revisedTip, identityAfter: revisedTip,
+	} });
+	const next = {
+		number: 2, status: "staging" as const, expectedMain: old.expectedMain, integrationBase: old.integrationBase,
+		order: ["first", "second"], stages: [] as typeof old.stages,
+	};
+	state.generations.push(next);
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	next.stages.push({ taskId: "first", attempt: 2, source: revisedTip, onto: next.integrationBase, status: "pending" });
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	next.stages[0]!.source = first.tip;
+	assert.throws(() => parseIntegrationState(state, definition), /breaks generation.*lineage/);
+	next.stages[0]!.source = first.tip;
+	next.stages[0]!.attempt = 1;
+	assert.throws(() => parseIntegrationState(state, definition), /latest ready attempt/);
+});
+
+test("a refreshed integration generation may follow an advanced clean Main without reusing final gates", () => {
+	const { request: definition, state } = integrationFixture();
+	const old = state.generations[0]!;
+	old.status = "superseded";
+	old.supersededFrom = "ready";
+	old.failure = "Main advanced before promotion.";
+	delete old.combinedTip;
+	delete old.checks;
+	const advanced = { ...old.expectedMain, head: "f".repeat(40), index: "f".repeat(40), tree: "f".repeat(40) };
+	state.generations.push({ number: 2, status: "staging", expectedMain: advanced,
+		integrationBase: { ...advanced, branch: "refs/heads/refreshed-integration" },
+		order: ["first", "second"], stages: [] });
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	state.generations[1]!.expectedMain.index = "a".repeat(40);
+	assert.throws(() => parseIntegrationState(state, definition), /invalid Main base/);
 });
 
 test("candidate and combined judgments must cover their exact bases and tips", () => {

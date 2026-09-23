@@ -793,7 +793,7 @@ const IntegrationGenerationSchema = Type.Object({
 }, { additionalProperties: false });
 
 export const IntegrationStateSchema = Type.Object({
-	candidates: Type.Array(IntegrationCandidateSchema, { maxItems: MAX_TASKS }),
+	candidates: Type.Array(IntegrationCandidateSchema, { maxItems: MAX_TASKS * 2 }),
 	generations: Type.Array(IntegrationGenerationSchema, { maxItems: 32 }),
 }, { additionalProperties: false });
 
@@ -811,9 +811,11 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 	const tasks = new Map(request.tasks.filter((task): task is ChangesetTaskRequest => task.kind === "changeset")
 		.map((task) => [task.id, task]));
 	const candidates = new Map<string, IntegrationCandidate>();
+	const latestCandidates = new Map<string, IntegrationCandidate>();
 	for (const candidate of state.candidates) {
 		const task = tasks.get(candidate.taskId);
-		if (!task || candidates.has(candidate.taskId) || !isCleanCommitted(candidate.base)
+		const previous = latestCandidates.get(candidate.taskId);
+		if (!task || (previous && candidate.attempt <= previous.attempt) || !isCleanCommitted(candidate.base)
 			|| !isCleanCommitted(candidate.tip) || candidate.base.head === candidate.tip.head
 			|| candidate.checks.phase !== "preliminary") {
 			throw new Error(`Invalid ready candidate for ${candidate.taskId}.`);
@@ -824,29 +826,34 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			|| (!task.judgment && candidate.review !== undefined)) {
 			throw new Error(`Ready candidate ${candidate.taskId} lacks exact passing evidence.`);
 		}
-		candidates.set(candidate.taskId, candidate);
+		candidates.set(`${candidate.taskId}\0${candidate.attempt}`, candidate);
+		latestCandidates.set(candidate.taskId, candidate);
 	}
 	for (const [index, generation] of state.generations.entries()) {
-		if (generation.number !== index + 1 || (index > 0 && (state.generations[index - 1]!.status !== "superseded"
-			|| !sameIdentity(state.generations[index - 1]!.expectedMain, generation.expectedMain)))) {
-			throw new Error("Integration generations must be ordered, superseded, and share exact Main identity.");
+		if (generation.number !== index + 1 || (index > 0 && state.generations[index - 1]!.status !== "superseded")) {
+			throw new Error("Integration generations must be ordered and superseded before replacement.");
 		}
 		if (!isCleanCommitted(generation.expectedMain) || !isCleanCommitted(generation.integrationBase)
-			|| generation.integrationBase.head !== generation.expectedMain.head) {
+			|| generation.integrationBase.head !== generation.expectedMain.head
+			|| generation.integrationBase.index !== generation.expectedMain.index
+			|| generation.integrationBase.tree !== generation.expectedMain.tree) {
 			throw new Error(`Integration generation ${generation.number} has an invalid Main base.`);
 		}
 		const chosen = new Set(generation.order);
-		if (chosen.size !== generation.order.length || generation.order.some((id) => !candidates.has(id))
+		if (chosen.size !== generation.order.length || generation.order.some((id) => !latestCandidates.has(id))
 			|| generation.stages.length > generation.order.length) {
 			throw new Error(`Generation ${generation.number} must choose distinct ready candidates in explicit order.`);
 		}
 		let previous = generation.integrationBase;
 		let unfinished = false;
 		for (const [stageIndex, stage] of generation.stages.entries()) {
-			const candidate = candidates.get(stage.taskId);
-			if (!candidate || candidate.attempt !== stage.attempt || !sameIdentity(stage.source, candidate.tip)
+			const candidate = candidates.get(`${stage.taskId}\0${stage.attempt}`);
+			if (!candidate || !sameIdentity(stage.source, candidate.tip)
 				|| generation.order[stageIndex] !== stage.taskId || !sameIdentity(stage.onto, previous) || unfinished) {
 				throw new Error(`Stage ${stageIndex + 1} breaks generation ${generation.number} lineage.`);
+			}
+			if (generation.status !== "superseded" && candidate !== latestCandidates.get(stage.taskId)) {
+				throw new Error(`Stage ${stageIndex + 1} does not use the latest ready attempt.`);
 			}
 			if (stage.status === "staged") {
 				if (!stage.tip || stage.failure !== undefined || !isCleanCommitted(stage.tip)
@@ -916,13 +923,14 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 						|| generation.review !== undefined || generation.failure !== undefined)) {
 			throw new Error(`Generation ${generation.number} has inconsistent status or invalidated evidence.`);
 		}
-		if (generation.status !== "promoted" && state.candidates.some((candidate) => chosen.has(candidate.taskId) && candidate.worker !== "retained")) {
+		if (index === state.generations.length - 1 && generation.status !== "promoted"
+			&& state.candidates.some((candidate) => candidate.worker !== "retained")) {
 			throw new Error(`Generation ${generation.number} released an unpromoted worker.`);
 		}
 	}
 	const promoted = state.generations.at(-1)?.status === "promoted";
 	if (state.candidates.some((candidate) => candidate.worker !== "retained" && (!promoted
-		|| !state.generations.at(-1)!.stages.some((stage) => stage.taskId === candidate.taskId)))) {
+		|| !state.generations.at(-1)!.stages.some((stage) => stage.taskId === candidate.taskId && stage.attempt === candidate.attempt)))) {
 		throw new Error("Worker release requires exact promoted inclusion.");
 	}
 	return state;

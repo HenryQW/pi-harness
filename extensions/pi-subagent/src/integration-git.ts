@@ -43,6 +43,14 @@ async function ancestor(base: string, tip: string, cwd: string, signal: AbortSig
 	if (result.code === 1) return false;
 	throw new Error(failure(args, result));
 }
+async function sharedHistory(base: string, tip: string, cwd: string, signal: AbortSignal): Promise<boolean> {
+	const args = ["merge-base", base, tip];
+	const result = await git(args, cwd, signal);
+	if (result.code === 1) return false;
+	if (result.code !== 0) throw new Error(failure(args, result));
+	if (!oidPattern.test(result.stdout.trim())) throw new Error("Git returned a malformed shared ancestor.");
+	return true;
+}
 
 /** Check helper-derived names even after a safely removed checkout is no longer present. */
 async function ownershipMetadata(root: string, info: WorktreeInfo, signal: AbortSignal): Promise<void> {
@@ -132,7 +140,8 @@ async function proveHistory(root: string, base: WorkspaceIdentity, stages: reado
 		const ancestry = await parents(stage.tip.head, root, signal);
 		if (!sameIdentity(stage.previous, previous) || !oidPattern.test(stage.worker.head)
 			|| stage.worker.index !== stage.worker.tree
-			|| stage.worker.head === previous.head || !await ancestor(base.head, stage.worker.head, root, signal)
+			|| stage.worker.head === previous.head
+			|| !await sharedHistory(base.head, stage.worker.head, root, signal)
 			|| stage.tip.branch !== branch || stage.tip.index !== stage.tip.tree
 			|| ancestry.length !== 2 || ancestry[0] !== previous.head || ancestry[1] !== stage.worker.head) {
 			throw new Error("Integration stage provenance differs from its recorded first-parent/worker merge.");
@@ -177,9 +186,9 @@ export class IntegrationGit {
 	/** Main orders calls. On conflict leave MERGE_HEAD and the index untouched for manual resolution. */
 	async stage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], worker: WorktreeInfo, candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt>> {
 		const previous = await this.inspectCombined(root, integration, base, stages, signal);
-		if (worker.path === integration.path || worker.baseCommit !== base.head
+		if (worker.path === integration.path || !await ancestor(worker.baseCommit, base.head, root, signal)
 			|| !sameIdentity(await current(root, worker, signal), candidate)
-			|| candidate.head === base.head || !await ancestor(base.head, candidate.head, root, signal)
+			|| candidate.head === worker.baseCommit || !await ancestor(worker.baseCommit, candidate.head, root, signal)
 			|| await ancestor(candidate.head, previous.head, root, signal)) {
 			return { outcome: "blocked", failure: "Worker is not an unchanged independent committed candidate from the recorded base." };
 		}
@@ -198,14 +207,18 @@ export class IntegrationGit {
 			}
 			return unknown(failure(args, merged), integration);
 		}
-		return await this.confirmStage(root, integration, base, stages, candidate, signal);
+		return await this.confirmStage(root, integration, base, stages, worker, candidate, signal);
 	}
 
 	/** After manual conflict resolution: only the exact two-parent merge is a valid receipt. */
-	async confirmStage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt>> {
+	async confirmStage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], worker: WorktreeInfo, candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt>> {
 		try {
 			const previous = stages.at(-1)?.tip ?? { ...base, branch: `refs/heads/${integration.branch}` };
-			if (!oidPattern.test(candidate.head) || candidate.head === base.head || !await ancestor(base.head, candidate.head, root, signal)) throw new Error("Worker candidate does not descend from integration base.");
+			if (worker.path === integration.path || !await ancestor(worker.baseCommit, base.head, root, signal)
+				|| candidate.head === worker.baseCommit || !await ancestor(worker.baseCommit, candidate.head, root, signal)
+				|| !sameIdentity(await current(root, worker, signal), candidate)) {
+				throw new Error("Worker candidate changed or does not descend from the recorded base.");
+			}
 			await owned(root, integration, signal);
 			const tip = await current(root, integration, signal);
 			const ancestry = await parents(tip.head, root, signal);
@@ -217,8 +230,9 @@ export class IntegrationGit {
 	}
 
 	/** Reconcile an interrupted merge without retrying it or discarding conflict state. */
-	async reconcileStage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt | "not_started">> {
+	async reconcileStage(root: string, integration: WorktreeInfo, base: WorkspaceIdentity, stages: readonly StageReceipt[], worker: WorktreeInfo, candidate: WorkspaceIdentity, signal: AbortSignal): Promise<GitOutcome<StageReceipt | "not_started">> {
 		try {
+			if (!sameIdentity(await current(root, worker, signal), candidate)) throw new Error("Worker candidate drifted before stage reconciliation.");
 			await owned(root, integration, signal);
 			const previous = await proveHistory(root, base, stages, `refs/heads/${integration.branch}`, signal);
 			const head = await requireGit(["rev-parse", "HEAD"], integration.path, signal);
@@ -233,7 +247,7 @@ export class IntegrationGit {
 				await this.inspectCombined(root, integration, base, stages, signal);
 				return { outcome: "ready", value: "not_started" };
 			}
-			if (mergeHead.code !== 0) return await this.confirmStage(root, integration, base, stages, candidate, signal);
+			if (mergeHead.code !== 0) return await this.confirmStage(root, integration, base, stages, worker, candidate, signal);
 			throw new Error("Merge state differs from the recorded stage intent.");
 		} catch (error) { return unknown(`Interrupted stage outcome uncertain: ${String(error)}`, integration); }
 	}
@@ -291,7 +305,7 @@ export class IntegrationGit {
 			await proveHistory(root, base, stages, `refs/heads/${integration.branch}`, signal);
 			const expected = info.path === integration.path ? stages.at(-1)!.tip
 				: stages.find((stage) => stage.worker.branch === `refs/heads/${info.branch}`)?.worker;
-			if (!expected || info.baseCommit !== base.head) return { outcome: "blocked", failure: "No proven staged tip for this owned checkout." };
+			if (!expected || !await ancestor(info.baseCommit, base.head, root, signal)) return { outcome: "blocked", failure: "No proven staged tip for this owned checkout." };
 			const registered = await requireGit(["worktree", "list", "--porcelain", "-z"], root, signal);
 			const present = registered.split("\0").includes(`worktree ${info.path}`);
 			const pathPresent = await exists(info.path);
