@@ -1014,9 +1014,10 @@ export class IsolatedRunner {
 				createdAt,
 				updatedAt: createdAt,
 			};
-			const handle = await this.store.withLock(root, async () => await this.store.create(state), {
-				productiveRunLease: lifecycle.lease,
-			});
+			const handle = await this.store.withLock(root, async () => {
+				await this.store.assertLegacyAdmissionSafe(root);
+				return await this.store.create(state);
+			}, { productiveRunLease: lifecycle.lease });
 			return await this.run(handle, scope, undefined);
 		});
 	}

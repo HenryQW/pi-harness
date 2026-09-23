@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -598,6 +598,64 @@ function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtim
 		value - before[key as keyof typeof before],
 	])) as ReturnType<typeof runtimeCallCounts>;
 }
+
+test("v4 unfinished requests block v5 admission without changing legacy state or launching workers", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	const legacyPath = store.statePath(root, "old-request");
+	await mkdir(store.stateDirectory(root), { recursive: true });
+	for (const status of ["pending", "running", "needs_attention"]) {
+		const bytes = Buffer.from(`{\n  "version": 4, "status": "${status}", "v4Evidence": "keep me"\n}\n`);
+		await writeFile(legacyPath, bytes);
+		await assert.rejects(
+			runner.execute(request(`new-after-${status.replaceAll("_", "-")}`, [changesetTask("change")]), root),
+			new RegExp(`unfinished v4 request old-request \\(${status}\\).*compatible owner`),
+		);
+		assert.deepEqual(await readFile(legacyPath), bytes);
+		assert.equal(runtime.workerCalls.length, 0);
+		assert.equal(runtime.allocationPlanCalls.length, 0);
+		await assert.rejects(store.load(root, `new-after-${status.replaceAll("_", "-")}`), { code: "ENOENT" });
+	}
+	await assert.rejects(store.load(root, "old-request"), /Unsupported pi-subagent state version 4/);
+});
+
+test("completed and terminal v4 state remains untouched and does not prevent fresh requests", async (t) => {
+	const { root, runtime, runner, store, agentDir } = await harness(t);
+	const legacyPath = store.statePath(root, "old-request");
+	await mkdir(store.stateDirectory(root), { recursive: true });
+	// No cross-extension scanning: another extension may have a malformed file with the same name.
+	await mkdir(join(agentDir, "config", "pi-other", "state"), { recursive: true });
+	await writeFile(join(agentDir, "config", "pi-other", "state", "old-request.json"), "garbage");
+	for (const status of ["completed", "final_failed", "superseded", "aborted"]) {
+		const bytes = Buffer.from(`{ "version": 4, "status": "${status}", "v4Evidence": "keep me" }\n`);
+		await writeFile(legacyPath, bytes);
+		await runner.execute(request(`new-after-${status.replaceAll("_", "-")}`, [changesetTask("change")]), root);
+		assert.deepEqual(await readFile(legacyPath), bytes);
+	}
+	assert.equal(runtime.workerCalls.length, 4);
+});
+
+test("malformed or unreadable v4 state fails closed without changing bytes", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	const legacyPath = store.statePath(root, "old-request");
+	await mkdir(store.stateDirectory(root), { recursive: true });
+	for (const bytes of [Buffer.from('{"version":4,"status":"unknown"}\n'), Buffer.from('{"version":4,')]) {
+		await writeFile(legacyPath, bytes);
+		await assert.rejects(runner.execute(request("new-request", [changesetTask("change")]), root),
+			/(malformed|cannot read state) .*old-request.*compatible owner/);
+		assert.deepEqual(await readFile(legacyPath), bytes);
+		await assert.rejects(store.load(root, "new-request"), { code: "ENOENT" });
+	}
+	await rm(legacyPath);
+	const target = join(store.stateDirectory(root), "retained.txt");
+	const bytes = Buffer.from('{"version":4,"status":"running"}\n');
+	await writeFile(target, bytes);
+	await symlink(target, legacyPath);
+	await assert.rejects(runner.execute(request("new-request", [changesetTask("change")]), root),
+		/cannot read state old-request.*compatible owner/);
+	assert.deepEqual(await readFile(target), bytes);
+	await assert.rejects(store.load(root, "new-request"), { code: "ENOENT" });
+	assert.deepEqual(runtime.workerCalls, []);
+});
 
 test("queued follow-ups reuse the same worker before automatic readiness seals the candidate", async (t) => {
 	const { root, runtime, runner } = await harness(t);

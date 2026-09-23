@@ -393,6 +393,7 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			await initializeRepository(root);
 			let stateHandle: { state: RunState; save(): Promise<void> };
 			const store = {
+				async assertLegacyAdmissionSafe() {},
 				async withProductiveRunLease<T>(_root: string, action: (lease: unknown) => Promise<T>): Promise<T> {
 					return await action({});
 				},
