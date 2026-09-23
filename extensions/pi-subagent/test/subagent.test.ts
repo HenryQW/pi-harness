@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
@@ -328,6 +328,7 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exac
 					root_pane: { pane_id: `w-test:p${next}`, tab_id: tab, workspace_id: "w-test", cwd, focused: false } });
 			}
 			if (args[0] === "agent" && args[1] === "start") {
+				if (args.some((arg) => /[\r\n]/.test(arg))) return { code: 1, stdout: JSON.stringify({ error: { code: "invalid_agent_argument" } }), stderr: "Herdr cannot encode multiline arguments" };
 				const name = args[2]!;
 				const pane = args[args.indexOf("--pane") + 1]!;
 				const path = args[args.indexOf("--session") + 1]!;
@@ -383,6 +384,10 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			]);
 			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
 			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt").length, 1);
+			const startArgs = fake.calls.find(([kind, command]) => kind === "agent" && command === "start")!;
+			assert.ok(startArgs.includes("--append-system-prompt"));
+			assert.ok(startArgs.every((arg) => !/[\r\n]/.test(arg)), "Herdr launch arguments must be shell-safe");
+			await assert.rejects(stat(startArgs[startArgs.indexOf("--append-system-prompt") + 1]!), { code: "ENOENT" });
 			assert.ok(fake.calls.some((args) => args.includes("--no-focus") && args.includes(cwd)));
 		});
 	});
@@ -541,7 +546,11 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				} });
 				await app.handlers.get("session_start")?.({}, app.ctx);
 				const launching = app.tool.execute(`switch-${stage}`, { role: "worker", name: "Check", task: "inspect" }, undefined, undefined, app.ctx);
-				const rejected = assert.rejects(launching, /Direct launch|Launching session changed/);
+				let retainedPrompt: string | undefined;
+				const rejected = assert.rejects(launching, (error: Error) => {
+					retainedPrompt = /Direct Role prompt retained at (\S+) after uncertain start/.exec(error.message)?.[1];
+					return /Direct launch|Launching session changed/.test(error.message);
+				});
 				await reached;
 				const originalBranch = app.sessionEntries;
 				app.switchBranch();
@@ -552,6 +561,11 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				}
 				release();
 				await Promise.all([rejected, switched]);
+				if (retainedPrompt) {
+					const directory = join(await realpath(tmpdir()), "pi-subagent-role-");
+					assert.ok(retainedPrompt.startsWith(directory) && retainedPrompt.endsWith("/system-prompt"));
+					await rm(dirname(retainedPrompt), { recursive: true, force: true });
+				}
 				assert.equal(app.sentMessages.length, 0);
 				assert.equal(app.sessionEntries.length, 1);
 				assert.equal(app.sessionEntries[0]!.data.tabId, "w-test:t2");

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
-import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, finalizeRoleLaunch, ROLE_TOOL_POLICY_FLAG, type EphemeralSubagentTimeout, type Role } from "@henryqw/pi-subagent";
+import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type EphemeralSubagentTimeout, type Role } from "@henryqw/pi-subagent";
 import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
 import { createCheckoutAdmission, roleCanWrite } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
@@ -10,6 +10,7 @@ import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { formatWorkflowResult, presentWorkflowEntryStatus, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskSchema, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
 import { createDirectHerdr, type DirectHandle, type DirectTab } from "../src/direct-herdr.ts";
+import { materializeTransientLaunch } from "../src/launch-runtime.ts";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
@@ -474,13 +475,23 @@ export default function subagentExtension(
 				states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
 				model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
 				startWidgetItem(entry.id, taskId, role.name, prepared.model.id, prepared.thinkingLevel, entry.delegation.name, ctx);
-				const handle = await herdr.start(finalizeRoleLaunch(prepared), `d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, entry.delegation.name, entry.delegation.task, activeSignal, (tab) => {
-					const record = { taskId, entryId: entry.id, ...tab };
-					// Persist before agent start, including launches interrupted by a session switch.
-					pi.appendEntry(DIRECT_TAB_TYPE, record);
-					tabs.push(record);
-					tabByEntry.set(entry.id, record);
-				});
+				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
+					promptArgIndex: prepared.promptArgIndex }, activeSignal);
+				let handle: DirectHandle;
+				try {
+					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
+						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, entry.delegation.name, entry.delegation.task, activeSignal, (tab) => {
+							const record = { taskId, entryId: entry.id, ...tab };
+							// Persist before agent start, including launches interrupted by a session switch.
+							pi.appendEntry(DIRECT_TAB_TYPE, record);
+							tabs.push(record);
+							tabByEntry.set(entry.id, record);
+						});
+				} catch (error) {
+					// A failed start can still be in flight. Keep its private prompt for recovery.
+					throw new Error(`${error instanceof Error ? error.message : String(error)}. Direct Role prompt retained at ${transient.launch.args[prepared.promptArgIndex + 1]} after uncertain start.`, { cause: error });
+				}
+				await transient.cleanup();
 				handles.push(handle);
 				return handle;
 			};

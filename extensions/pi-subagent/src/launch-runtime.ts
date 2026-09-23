@@ -87,10 +87,10 @@ async function removeTransientLaunch(
 	if (failures.length > 1) throw new AggregateError(failures, "Transient Role launch cleanup was incomplete.");
 }
 
-async function materializeTransientLaunch(
-	prepared: PreparedLaunch,
+export async function materializeTransientLaunch<Launch extends { readonly args: readonly string[]; readonly role: string }>(
+	prepared: { launch: Launch; prompt: string; promptArgIndex: number },
 	signal?: AbortSignal,
-): Promise<TransientLaunchHandle<VerifiedLaunch>> {
+): Promise<{ readonly launch: Launch; cleanup(): Promise<void> }> {
 	abortIfNeeded(signal);
 	const promptBytes = Buffer.from(prepared.prompt, "utf8");
 	const created = await mkdtemp(join(tmpdir(), "pi-subagent-role-"));
@@ -128,10 +128,10 @@ async function materializeTransientLaunch(
 		}
 		const args = [...prepared.launch.args];
 		args.splice(prepared.promptArgIndex, 0, PROMPT_FLAG, promptPath);
-		const launch: VerifiedLaunch = Object.freeze({
+		const launch = Object.freeze({
 			...prepared.launch,
 			args: Object.freeze(args),
-		});
+		}) as Launch;
 		let cleanup: Promise<void> | undefined;
 		return Object.freeze({
 			launch,
