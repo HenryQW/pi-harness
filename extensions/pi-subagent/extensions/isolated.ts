@@ -256,6 +256,7 @@ function publicState(state: RunState, preferredTaskId?: string) {
 		id: state.request.id,
 		status: state.status,
 		accepted: state.accepted,
+		main: state.main,
 		tasks: state.tasks.map((task) => ({
 			taskId: task.taskId, status: task.status,
 			...(task.kind === "changeset" && state.integration.candidates.length ? { attempts: task.attempts.map((attempt) => ({
@@ -268,9 +269,12 @@ function publicState(state: RunState, preferredTaskId?: string) {
 		})),
 		final: { status: state.final.status },
 		integration: {
+			...(state.integration.refresh ? { refresh: state.integration.refresh } : {}),
 			candidates: state.integration.candidates.map(({ taskId, attempt, tip, base, checks, decision, worker }) => ({ taskId, attempt, tip, base, checked: checks.passed, worker, ...(decision ? { decision } : {}) })),
-			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, combinedTip, correction, checks, review, promotion, failure, stages, cleanup, supersededFrom }) => ({
+			generations: state.integration.generations.map(({ number, status, worktree, integrationBase, combinedTip, correction, checks, review, promotion, supersededPromotion, failure, stages, cleanup, supersededFrom }) => ({
 				number, status, integrationBase, ...(supersededFrom ? { supersededFrom } : {}),
+				...(supersededPromotion ? { supersededPromotion: { status: supersededPromotion.status,
+					failure: boundedPublicText(supersededPromotion.failure ?? "") } } : {}),
 				...(cleanup ? { cleanup } : {}),
 				...(combinedTip ? { combinedTip } : {}),
 				...(correction ? { correction } : {}),
@@ -523,7 +527,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_integrate",
 		label: "Subagent integrate",
-		description: "Validate the exact combined tip, record Main's single committed correction after a failed check, promote after revalidation, or reconcile an interrupted promotion. Never replays an uncertain promotion.",
+		description: "Explicitly refresh from an exact recorded Main to a clean same-branch descendant (old integration and checks are invalidated; restage immutable candidates), validate, correct, promote, or reconcile an interrupted promotion. Never replays an uncertain mutation.",
 		parameters: IntegrationActionSchema,
 		prepareArguments: parseIntegrationAction,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

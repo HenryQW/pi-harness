@@ -1092,7 +1092,9 @@ export class IsolatedRunner {
 		return await this.withProductiveRun(root, async (lifecycle) => {
 			const handle = await this.store.withLock(root, async () => await this.store.load(root, action.id), { productiveRunLease: lifecycle.lease });
 			const state = handle.state;
-			if (terminal(state) || state.status !== "needs_attention") throw new Error("Request is not waiting for Main staging.");
+			if (terminal(state) || state.status !== "needs_attention" || (state.integration.refresh && state.integration.refresh.status !== "ready")) {
+				throw new Error("Request is not waiting for Main staging or refresh allocation remains uncertain.");
+			}
 			const candidate = state.integration.candidates.find((item) => item.taskId === action.taskId && item.attempt === action.attempt
 				&& sameIdentity(item.tip, action.candidate));
 			const task = changesetTaskState(state, action.taskId);
@@ -1249,7 +1251,11 @@ export class IsolatedRunner {
 			if (action.action === "stage" && !stagedDependencySnapshot(state, action.taskId, action.expectedTip)) {
 				throw new Error("Candidate dependencies are not staged on this exact snapshot.");
 			}
-			if (action.action === "stage" && attempt!.waveBase.head !== state.main.head
+			if (action.action === "stage" && !sameIdentity(attempt!.waveBase, state.main)
+				&& !(state.integration.refresh?.status === "ready"
+					&& (sameIdentity(attempt!.waveBase, state.requestStartMain)
+						|| generations.some((item) => sameIdentity(item.expectedMain, attempt!.waveBase)))
+					&& !generations.some((item) => item.stages.some((stage) => stage.tip && sameIdentity(stage.tip, attempt!.waveBase))))
 				&& !generation?.stages.some((stage) => stage.status === "staged" && stage.tip && sameIdentity(stage.tip, attempt!.waveBase))) {
 				throw new Error("Dependent candidate was launched from a superseded or unstaged snapshot.");
 			}
@@ -1285,7 +1291,7 @@ export class IsolatedRunner {
 			const receipts: StageReceipt[] = previousStages.map((stage) => ({ previous: stage.onto, worker: stage.source, tip: stage.tip! }));
 			let stage = generation.stages.at(-1);
 			if (action.action === "stage") {
-				if (stage?.status === "staged") {
+				if (!stage || stage.status === "staged") {
 					stage = { taskId: action.taskId, attempt: action.attempt, source: action.candidate,
 						onto: action.expectedTip, status: "staging" };
 					delete generation.combinedTip;
@@ -1335,6 +1341,100 @@ export class IsolatedRunner {
 			const state = handle.state;
 			const request = parseExecuteRequest(state.request);
 			const generation = state.integration.generations.at(-1);
+			if (action.action === "refresh") {
+				if (terminal(state) || state.status !== "needs_attention" || state.integration.refresh?.status === "pending"
+					|| state.integration.refresh?.status === "unknown" || !sameIdentity(state.main, action.expectedMain)
+					|| action.generation !== state.integration.generations.length + 1
+					|| (generation && (generation.status === "superseded" ? !sameIdentity(action.expectedTip, state.main)
+						: !sameIdentity(action.expectedTip, generation.combinedTip
+							?? generation.stages.at(-1)?.onto ?? generation.integrationBase)
+							|| (!["staging", "conflict", "validation_failed", "ready"].includes(generation.status)
+								&& !(generation.status === "promotion_failed" && generation.promotion?.outcome === "drift"))
+							|| generation.stages.some((stage) => stage.status === "pending" || stage.status === "staging")))
+					|| (!generation && !sameIdentity(action.expectedTip, state.main))) {
+					throw new Error("Refresh has a stale Main, generation, or unresolved integration intent.");
+				}
+				if (!state.integration.candidates.some((candidate) => !candidate.decision && candidate.worker === "retained")) {
+					throw new Error("Refresh requires at least one retained immutable candidate.");
+				}
+				if (state.integration.generations.filter((item) => item.worktree).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
+					throw new Error("Retained integration worktree limit is exhausted.");
+				}
+				const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
+					() => this.coordinatorRuntime.now(), outerSignal);
+				const actualMain = await scope.call((context) => this.gitRuntime.inspectMain({ root }, context));
+				if (!isCleanCommitted(action.newMain) || !sameIdentity(actualMain, action.newMain)) {
+					throw new Error("Refresh requires the exact new clean Main identity.");
+				}
+				await scope.call((context) => this.integrationGit.inspectMainAdvance(root, action.expectedMain, action.newMain, context.signal));
+				// Old dependent snapshots cannot be replayed on a new Main tip. Retain their resources and
+				// invalidate their readiness before admitting any new stages or dependent launches.
+				const stale = new Set<TaskState>();
+				for (const stage of generation?.stages ?? []) {
+					for (const dependent of affectedDependents(state, stage.taskId)) {
+						if (dependent.attempts.length && dependent.status !== "pending") stale.add(dependent);
+					}
+				}
+				if ([...stale].some((task) => task.attempts.length >= 2 || task.status === "working"
+					|| task.kind === "changeset" && (task.attempts.at(-1)!.termination
+						|| task.attempts.at(-1)!.prompts.some((item) => item.status === "submitting" || item.status === "ambiguous")
+						|| task.attempts.at(-1)!.allocations.some((item) => item.status === "allocating" || item.status === "unknown")))) {
+					throw new Error("A dependent has unproved resources or exhausted fresh attempts; refresh is blocked.");
+				}
+				if (generation && generation.status !== "superseded") {
+					if (generation.status === "promotion_failed") {
+						generation.supersededPromotion = generation.promotion;
+						delete generation.promotion;
+					}
+					generation.supersededFrom = generation.status as "staging" | "conflict" | "validation_failed" | "ready" | "promotion_failed";
+					generation.status = "superseded";
+					generation.failure = "Main advanced; retained generation is read-only. Restage immutable candidates in a new generation.";
+					delete generation.combinedTip;
+					delete generation.checks;
+					delete generation.review;
+					if (!generation.supersededPromotion) delete generation.correction;
+				}
+				for (const task of stale) {
+					if (task.kind === "text") {
+						const last = task.attempts.at(-1)!;
+						last.status = "superseded";
+						delete last.output;
+						delete last.failure;
+					} else {
+						task.attempts.at(-1)!.superseded = true;
+						for (const candidate of state.integration.candidates.filter((item) => item.taskId === task.taskId && !item.decision)) candidate.decision = "rejected";
+					}
+					task.status = "pending";
+					delete task.failure;
+				}
+				state.main = action.newMain;
+				state.integration.refresh = { from: action.expectedMain, to: action.newMain, generation: action.generation, status: "pending" };
+				await this.saveProductive(handle); // Durable supersession and refresh intent before worktree creation.
+				let result: Awaited<ReturnType<IntegrationGit["allocate"]>>;
+				try {
+					result = await scope.call((context) => this.integrationGit.allocate(root,
+						`${action.id}-integration-${action.generation}`, action.newMain, async (worktree) => {
+							state.integration.generations.push({ number: action.generation, status: "staging", expectedMain: action.newMain,
+								integrationBase: { ...action.newMain, branch: `refs/heads/${worktree.branch}` },
+								order: [], stages: [], worktree });
+							state.integration.refresh = { from: action.expectedMain, to: action.newMain, generation: action.generation,
+								status: "unknown", failure: "Integration allocation has not been proved; retain the recorded checkout." };
+							await this.saveProductive(handle);
+						}, context.signal));
+				} catch (error) {
+					// A prepared checkout remains recorded; no repeated allocation from this intent.
+					state.integration.refresh!.failure = bounded(`Integration allocation uncertain: ${errorText(error)}`);
+					await this.saveProductive(handle);
+					return this.response(state);
+				}
+				if (result.outcome === "ready" && state.integration.generations.at(-1)?.number === action.generation) {
+					state.integration.refresh = { from: action.expectedMain, to: action.newMain, generation: action.generation, status: "ready" };
+				} else {
+					state.integration.refresh!.failure = bounded(result.outcome === "ready" ? "Allocation lacks a recorded checkout." : result.failure);
+				}
+				await this.saveProductive(handle);
+				return this.response(state);
+			}
 			if (!generation || generation.number !== action.generation || !generation.worktree
 				|| !generation.combinedTip || !sameIdentity(generation.combinedTip, action.expectedTip)
 				|| (terminal(state) && !(state.status === "completed" && action.action === "cleanup"))
@@ -1485,6 +1585,7 @@ export class IsolatedRunner {
 			} else {
 				generation.promotion.status = outcome.outcome === "unknown" ? "unknown" : "failed";
 				generation.promotion.failure = bounded(outcome.failure);
+				if (outcome.outcome === "drift") generation.promotion.outcome = "drift";
 				generation.status = outcome.outcome === "unknown" ? "promotion_unknown" : "promotion_failed";
 			}
 			await this.saveProductive(handle);

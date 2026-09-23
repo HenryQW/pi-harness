@@ -266,3 +266,44 @@ test("dirty and drifted Main block promotion without touching owned candidate or
 	assert.equal(git(worker.path, "rev-parse", "HEAD"), candidate.head);
 	assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "external\n");
 });
+
+test("clean Main refresh from an old candidate base keeps same-file conflict for Main to resolve", async (t) => {
+	const root = await repo(t);
+	const runtime = new IntegrationGit();
+	const inspected = (path: string) => new CheckedGitRuntime().inspectMain({ root: path },
+		{ signal, deadline: Date.now() + 30000, timeoutMs: 30000 });
+	const original = await inspected(root);
+	const worker = await allocate(runtime, root, original, "refresh-worker");
+	await commit(worker.path, "worker");
+	const candidate = await inspected(worker.path);
+	const oldIntegration = await allocate(runtime, root, original, "refresh-old-integration");
+	const prior = await runtime.stage(root, oldIntegration, original, [], worker, candidate, signal);
+	assert.equal(prior.outcome, "ready");
+	const priorTip = prior.outcome === "ready" ? prior.value.tip : assert.fail("old stage failed");
+	await commit(root, "Main also edited this file");
+	const next = await inspected(root);
+	await runtime.inspectMainAdvance(root, original, next, signal);
+	await assert.rejects(runtime.inspectMainAdvance(root, next, next, signal), /clean same-branch descendant/);
+	await assert.rejects(runtime.inspectMainAdvance(root, { ...original, head: candidate.head }, next, signal), /clean same-branch descendant/);
+	await assert.rejects(runtime.inspectMainAdvance(root, original, { ...next, branch: "refs/heads/other" }, signal), /clean same-branch descendant/);
+	await writeFile(join(root, "untracked.txt"), "dirty\n");
+	await assert.rejects(runtime.inspectMainAdvance(root, original, next, signal), /not clean/);
+	await rm(join(root, "untracked.txt"));
+	const integration = await allocate(runtime, root, next, "refresh-new-integration");
+	const conflict = await runtime.stage(root, integration, next, [], worker, candidate, signal);
+	assert.equal(conflict.outcome, "conflict", JSON.stringify(conflict));
+	assert.equal(git(oldIntegration.path, "rev-parse", "HEAD"), priorTip.head);
+	assert.equal(git(worker.path, "rev-parse", "HEAD"), candidate.head);
+	assert.equal(git(root, "rev-parse", "HEAD"), next.head);
+	await writeFile(join(integration.path, "shared.txt"), "Main plus worker\n");
+	git(integration.path, "add", "shared.txt");
+	git(integration.path, "commit", "-qm", "Main resolves refreshed conflict");
+	const result = await runtime.reconcileStage(root, integration, next, [], worker, candidate, signal);
+	assert.equal(result.outcome, "ready", JSON.stringify(result));
+	const stages = [result.outcome === "ready" && result.value !== "not_started" ? result.value : assert.fail("resolution not proved")];
+	const tip = await runtime.inspectCombined(root, integration, next, stages, signal);
+	assert.equal(git(root, "rev-parse", "HEAD"), next.head);
+	assert.equal((await runtime.promote({ root, integration, base: next, stages, checks: checks(priorTip), commands: [] }, signal)).outcome, "blocked");
+	assert.equal((await runtime.promote({ root, integration, base: next, stages, checks: checks(tip), commands: [] }, signal)).outcome, "ready");
+	assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "Main plus worker\n");
+});

@@ -1619,6 +1619,9 @@ test("an interrupted text task remains failed until its explicit retry", async (
 });
 
 class StagingGit extends IntegrationGit {
+	override async inspectMainAdvance(_root: string, from: WorkspaceIdentity, to: WorkspaceIdentity): Promise<void> {
+		if (from.branch !== to.branch || from.head === to.head || to.index !== to.tree) throw new Error("Main refresh requires a clean descendant.");
+	}
 	readonly merged: string[] = [];
 	promotions = 0;
 	cleanupBlocked = false;
@@ -2155,4 +2158,153 @@ test("uncertain integration allocation retains intent and refuses mutation repla
 	await assert.rejects(runner.stage(action, root), /unresolved/);
 	assert.deepEqual(git.merged, []);
 	assertParsed((await runner.status(action.id, root)).state);
+});
+
+test("Main explicitly refreshes a validated generation and restages the unchanged worker without reusing validation", async (t) => {
+	const git = new StagingGit();
+	const store = { current: undefined as RecordingStore | undefined };
+	const { root, runner, runtime } = await harness(t, { integrationGit: git,
+		createStore: (agentDir) => store.current = new RecordingStore(agentDir) });
+	const id = "refresh-validated";
+	const ready = await runner.execute(request(id, [changesetTask("change")] ), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const choose = (generation: number, expectedTip: WorkspaceIdentity) => ({ id, action: "stage" as const,
+		generation, taskId: candidate.taskId, attempt: candidate.attempt, candidate: candidate.tip, expectedTip });
+	const staged = await runner.stage(choose(1, ready.state.main), root);
+	const oldTip = staged.state.integration.generations[0]!.combinedTip!;
+	await runner.integrate({ id, generation: 1, action: "validate", expectedTip: oldTip }, root);
+	const advanced = identity("b");
+	runtime.main = advanced;
+	const action = { id, generation: 2, action: "refresh" as const, expectedTip: oldTip,
+		expectedMain: ready.state.main, newMain: advanced };
+	await assert.rejects(runner.integrate({ ...action, expectedMain: advanced }, root), /stale/);
+	const refreshed = await runner.integrate(action, root);
+	assert.equal(refreshed.state.integration.generations[0]?.status, "superseded");
+	assert.equal(refreshed.state.integration.generations[0]?.checks, undefined);
+	assert.equal(refreshed.state.integration.generations[1]?.worktree?.baseCommit, advanced.head);
+	assert.deepEqual(refreshed.state.integration.generations[1]?.order, []);
+	assert.equal(refreshed.state.integration.refresh?.status, "ready");
+	assert.deepEqual(refreshed.state.main, advanced);
+	assertParsed(refreshed.state);
+	await assert.rejects(runner.integrate(action, root), /stale/);
+	await assert.rejects(runner.stage(choose(1, ready.state.main), root), /stale generation/);
+	const replay = await runner.stage(choose(2, refreshed.state.integration.generations[1]!.integrationBase), root);
+	assert.equal(replay.state.integration.generations[1]?.stages[0]?.status, "staged");
+	assert.equal(replay.state.integration.generations[1]?.checks, undefined);
+	assert.equal(replay.state.integration.candidates[0]?.tip.head, candidate.tip.head);
+	assert.equal(runtime.main.head, advanced.head);
+	for (const snapshot of store.current!.snapshots) assertParsed(snapshot);
+});
+
+test("refresh with ambiguous owned worktree creation retains recovery evidence and never restages", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "refresh-unknown";
+	const ready = await runner.execute(request(id, [changesetTask("change")]), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	runtime.main = identity("b");
+	git.allocationUnknown = true;
+	const action = { id, action: "refresh" as const, generation: 1, expectedMain: ready.state.main,
+		newMain: runtime.main, expectedTip: ready.state.main };
+	const unknown = await runner.integrate(action, root);
+	assert.equal(unknown.state.integration.refresh?.status, "unknown");
+	assert.equal(unknown.state.integration.generations[0]?.stages.length, 0);
+	assertParsed(unknown.state);
+	await assert.rejects(runner.integrate(action, root), /stale/);
+	await assert.rejects(runner.stage({ id, action: "stage", generation: 1,
+		taskId: candidate.taskId, attempt: candidate.attempt, candidate: candidate.tip, expectedTip: runtime.main }, root), /uncertain/);
+});
+
+test("Main refresh invalidates candidates launched from an old staged snapshot and refuses Main drift", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "refresh-dependent";
+	const ready = await runner.execute(request(id, [changesetTask("first"),
+		{ ...changesetTask("dependent"), dependsOn: ["first"] }]), root);
+	const first = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, generation: 1, action: "stage", taskId: first.taskId,
+		attempt: first.attempt, candidate: first.tip, expectedTip: ready.state.main }, root);
+	const oldTip = staged.state.integration.generations[0]!.combinedTip!;
+	const advanced = await runner.integrate({ id, generation: 1, action: "advance", expectedTip: oldTip }, root);
+	const dependent = advanced.state.integration.candidates[1]!;
+	const next = identity("b");
+	const action = { id, action: "refresh" as const, generation: 2, expectedMain: ready.state.main,
+		newMain: next, expectedTip: oldTip };
+	await assert.rejects(runner.integrate(action, root), /exact new clean Main/);
+	assert.equal((await runner.status(id, root)).state.integration.generations[0]?.status, "staging");
+	runtime.main = next;
+	const refreshed = await runner.integrate(action, root);
+	assert.equal(refreshed.state.integration.generations[0]?.status, "superseded");
+	assert.equal(changesetState(refreshed.state, "dependent").status, "pending");
+	assert.equal(changesetState(refreshed.state, "dependent").attempts[0]?.superseded, true);
+	assert.equal(refreshed.state.integration.candidates[1]?.decision, "rejected");
+	assertParsed(refreshed.state);
+	await assert.rejects(runner.stage({ id, action: "stage", generation: 2, taskId: dependent.taskId,
+		attempt: dependent.attempt, candidate: dependent.tip,
+		expectedTip: refreshed.state.integration.generations[1]!.integrationBase }, root), /stale or unowned candidate/);
+});
+
+test("two bounded clean Main advances before staging retain both allocations and the original candidate", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "refresh-twice";
+	const ready = await runner.execute(request(id, [changesetTask("change")]), root);
+	runtime.main = identity("b");
+	const first = await runner.integrate({ id, generation: 1, action: "refresh", expectedTip: ready.state.main,
+		expectedMain: ready.state.main, newMain: runtime.main }, root);
+	const base = first.state.integration.generations[0]!.integrationBase;
+	runtime.main = identity("c");
+	const second = await runner.integrate({ id, generation: 2, action: "refresh", expectedTip: base,
+		expectedMain: first.state.main, newMain: runtime.main }, root);
+	assert.equal(second.state.integration.generations[0]?.status, "superseded");
+	assert.equal(second.state.integration.generations[1]?.status, "staging");
+	assertParsed(second.state);
+	const candidate = ready.state.integration.candidates[0]!;
+	const replay = await runner.stage({ id, generation: 2, action: "stage", taskId: candidate.taskId,
+		attempt: candidate.attempt, candidate: candidate.tip,
+		expectedTip: second.state.integration.generations[1]!.integrationBase }, root);
+	assert.equal(replay.state.integration.generations[1]?.stages[0]?.status, "staged");
+	assertParsed(replay.state);
+});
+
+test("a proven promotion drift can refresh without replaying the failed promotion", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "refresh-after-drift");
+	await runner.integrate({ ...action, action: "validate" }, root);
+	git.promoteResult = { outcome: "drift", failure: "Main advanced before guarded promotion." };
+	const originalPromote = git.promote.bind(git);
+	git.promote = async (input) => { runtime.main = identity("b"); return await originalPromote(input); };
+	const failed = await runner.integrate({ ...action, action: "promote" }, root);
+	assert.equal(failed.state.integration.generations[0]?.promotion?.outcome, "drift");
+	const refreshed = await runner.integrate({ id: action.id, generation: 2, action: "refresh",
+		expectedTip: action.expectedTip, expectedMain: failed.state.integration.generations[0]!.expectedMain,
+		newMain: runtime.main }, root);
+	assert.equal(refreshed.state.integration.generations[0]?.supersededPromotion?.outcome, "drift");
+	assert.equal(refreshed.state.integration.generations[0]?.checks, undefined);
+	assert.equal(refreshed.state.integration.generations[1]?.status, "staging");
+	assert.equal(git.promotions, 1);
+	assertParsed(refreshed.state);
+});
+
+test("Main refreshes after prior rejection already froze its integration generation", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "refresh-after-rejection";
+	const ready = await runner.execute(request(id, [changesetTask("first"), changesetTask("second")]), root);
+	const first = ready.state.integration.candidates[0]!;
+	const second = ready.state.integration.candidates[1]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: first.taskId,
+		attempt: first.attempt, candidate: first.tip, expectedTip: ready.state.main }, root);
+	const tip = staged.state.integration.generations[0]!.combinedTip!;
+	const rejected = await runner.stage({ id, action: "reject", generation: 1, taskId: first.taskId,
+		attempt: first.attempt, candidate: first.tip, expectedTip: tip }, root);
+	assert.equal(rejected.state.integration.generations[0]?.status, "superseded");
+	runtime.main = identity("b");
+	const refreshed = await runner.integrate({ id, action: "refresh", generation: 2,
+		expectedTip: ready.state.main, expectedMain: ready.state.main, newMain: runtime.main }, root);
+	assert.equal(refreshed.state.integration.generations[1]?.status, "staging");
+	assertParsed(refreshed.state);
+	const result = await runner.stage({ id, action: "stage", generation: 2, taskId: second.taskId,
+		attempt: second.attempt, candidate: second.tip,
+		expectedTip: refreshed.state.integration.generations[1]!.integrationBase }, root);
+	assert.equal(result.state.integration.generations[1]?.stages[0]?.status, "staged");
 });

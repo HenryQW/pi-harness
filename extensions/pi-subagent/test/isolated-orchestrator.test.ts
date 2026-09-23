@@ -73,6 +73,7 @@ const PRIVATE_STATE = {
 	version: 5,
 	request: EXECUTE_REQUEST,
 	root: CANONICAL_ROOT,
+	main: RECORDED_MAIN,
 	status: "needs_attention",
 	accepted: false,
 	tasks: [{
@@ -309,6 +310,7 @@ function expectedPublicState() {
 		id: "request-one",
 		status: "needs_attention",
 		accepted: false,
+		main: RECORDED_MAIN,
 		tasks: [{ taskId: "unit-one", status: "needs_attention" }],
 		final: { status: "pending" },
 		integration: { candidates: [], generations: [] },

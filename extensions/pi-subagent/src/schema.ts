@@ -221,12 +221,22 @@ export const StageRequestSchema = Type.Object({
 	instruction: Type.Optional(TextSchema),
 }, { additionalProperties: false });
 export type StageRequest = Static<typeof StageRequestSchema>;
-export const IntegrationActionSchema = Type.Object({
-	id: IdSchema,
-	generation: Type.Integer({ minimum: 1, maximum: 32 }),
-	action: Type.Union([Type.Literal("advance"), Type.Literal("validate"), Type.Literal("correct"), Type.Literal("promote"), Type.Literal("reconcile"), Type.Literal("cleanup")]),
-	expectedTip: WorkspaceSchema,
-}, { additionalProperties: false });
+export const IntegrationActionSchema = Type.Union([
+	Type.Object({
+		id: IdSchema,
+		generation: Type.Integer({ minimum: 1, maximum: 32 }),
+		action: Type.Literal("refresh"),
+		expectedTip: WorkspaceSchema,
+		expectedMain: WorkspaceSchema,
+		newMain: WorkspaceSchema,
+	}, { additionalProperties: false }),
+	Type.Object({
+		id: IdSchema,
+		generation: Type.Integer({ minimum: 1, maximum: 32 }),
+		action: Type.Union([Type.Literal("advance"), Type.Literal("validate"), Type.Literal("correct"), Type.Literal("promote"), Type.Literal("reconcile"), Type.Literal("cleanup")]),
+		expectedTip: WorkspaceSchema,
+	}, { additionalProperties: false }),
+]);
 export type IntegrationAction = Static<typeof IntegrationActionSchema>;
 export function parseIntegrationAction(value: unknown): IntegrationAction {
 	if (!Check(IntegrationActionSchema, value)) throw schemaValidationError("subagent_integrate requires an exact generation and tip", Errors(IntegrationActionSchema, value));
@@ -429,6 +439,7 @@ const PromotionSchema = Type.Object({
 	expectedMain: WorkspaceSchema,
 	tip: WorkspaceSchema,
 	mainAfter: Type.Optional(WorkspaceSchema),
+	outcome: Type.Optional(Type.Literal("drift")),
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
@@ -441,7 +452,7 @@ const IntegrationGenerationSchema = Type.Object({
 	]),
 	expectedMain: WorkspaceSchema,
 	integrationBase: WorkspaceSchema,
-	order: Type.Array(IdSchema, { minItems: 1, maxItems: MAX_TASKS }),
+	order: Type.Array(IdSchema, { maxItems: MAX_TASKS }),
 	stages: Type.Array(IntegrationStageSchema, { maxItems: MAX_TASKS }),
 	worktree: Type.Optional(WorktreeRecordSchema),
 	combinedTip: Type.Optional(WorkspaceSchema),
@@ -449,10 +460,11 @@ const IntegrationGenerationSchema = Type.Object({
 	checks: Type.Optional(CheckBatchEvidenceSchema),
 	review: Type.Optional(ReviewEvidenceSchema),
 	promotion: Type.Optional(PromotionSchema),
+	supersededPromotion: Type.Optional(PromotionSchema),
 	cleanup: Type.Optional(Type.Array(CleanupStepSchema, { minItems: 2, maxItems: 2 })),
 	supersededFrom: Type.Optional(Type.Union([
 		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
-		Type.Literal("ready"),
+		Type.Literal("ready"), Type.Literal("promotion_failed"),
 	])),
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
@@ -460,6 +472,13 @@ const IntegrationGenerationSchema = Type.Object({
 export const IntegrationStateSchema = Type.Object({
 	candidates: Type.Array(IntegrationCandidateSchema, { maxItems: MAX_TASKS * 2 }),
 	generations: Type.Array(IntegrationGenerationSchema, { maxItems: 32 }),
+	refresh: Type.Optional(Type.Object({
+		from: WorkspaceSchema,
+		to: WorkspaceSchema,
+		generation: Type.Integer({ minimum: 1, maximum: 32 }),
+		status: Type.Union([Type.Literal("pending"), Type.Literal("ready"), Type.Literal("unknown")]),
+		failure: OptionalRuntimeTextSchema,
+	}, { additionalProperties: false })),
 }, { additionalProperties: false });
 
 export type IntegrationCandidate = Static<typeof IntegrationCandidateSchema>;
@@ -863,6 +882,15 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 		candidates.set(key, candidate);
 		latestCandidates.set(candidate.taskId, candidate);
 	}
+	const refresh = state.refresh;
+	if (refresh && (!isCleanCommitted(refresh.from) || !isCleanCommitted(refresh.to)
+		|| refresh.from.branch !== refresh.to.branch || refresh.from.head === refresh.to.head
+		|| refresh.generation !== state.generations.length + (refresh.status === "pending" ? 1 : 0)
+		|| (refresh.status === "ready" ? refresh.failure !== undefined : refresh.failure !== undefined && !refresh.failure.trim())
+		|| (refresh.generation > 1 && (state.generations[refresh.generation - 2]?.status !== "superseded"
+			|| !sameIdentity(state.generations[refresh.generation - 2]!.expectedMain, refresh.from))))) {
+		throw new Error("Refresh intent has invalid Main lineage or status.");
+	}
 	for (const [index, generation] of state.generations.entries()) {
 		if (generation.number !== index + 1 || (index > 0 && state.generations[index - 1]!.status !== "superseded")) {
 			throw new Error("Integration generations must be ordered and superseded before replacement.");
@@ -882,6 +910,17 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 				|| generation.integrationBase.branch !== `refs/heads/${generation.worktree.branch}`) {
 				throw new Error(`Generation ${generation.number} has a mismatched integration worktree.`);
 			}
+		}
+		if (refresh?.generation === generation.number) {
+			if (!sameIdentity(generation.expectedMain, refresh.to)
+				|| (refresh.status === "unknown" && (generation.order.length || generation.stages.length))
+				|| refresh.status === "pending") throw new Error("Refreshed generation does not match its durable intent.");
+		}
+		if (!generation.order.length && (!generation.worktree
+			|| (generation.status !== "superseded" && (index !== state.generations.length - 1 || !refresh
+				|| refresh.generation !== generation.number || generation.status !== "staging"))
+			|| generation.stages.length || generation.combinedTip || generation.checks || generation.review || generation.promotion)) {
+			throw new Error("Empty integration generation requires an exact refreshed worktree.");
 		}
 		const chosen = new Set(generation.order);
 		if (chosen.size !== generation.order.length || generation.order.some((id) => !latestCandidates.has(id))
@@ -954,20 +993,29 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			|| !sameIdentity(promotion.tip, generation.combinedTip!))) {
 			throw new Error(`Generation ${generation.number} promotion has stale evidence or lineage.`);
 		}
-		if (promotion && (promotion.status === "promoting"
+		if (promotion && (promotion.outcome !== undefined && (promotion.status !== "failed" || promotion.outcome !== "drift")
+			|| (promotion.status === "promoting"
 			? promotion.mainAfter !== undefined || promotion.failure !== undefined
 			: promotion.status === "promoted"
 				? !promotion.mainAfter || promotion.failure !== undefined
 					|| promotion.mainAfter.branch !== promotion.expectedMain.branch
 					|| promotion.mainAfter.head !== promotion.tip.head || !isCleanCommitted(promotion.mainAfter)
-				: promotion.mainAfter !== undefined || !promotion.failure?.trim())) {
+				: promotion.mainAfter !== undefined || !promotion.failure?.trim()))) {
 			throw new Error(`Generation ${generation.number} has inconsistent promotion outcome.`);
 		}
 		const expectedStatus = promotion?.status === "unknown" ? "promotion_unknown"
 			: promotion?.status === "failed" ? "promotion_failed" : promotion?.status;
+		if (generation.supersededPromotion && (generation.status !== "superseded" || generation.supersededFrom !== "promotion_failed"
+			|| generation.supersededPromotion.status !== "failed" || generation.supersededPromotion.outcome !== "drift"
+			|| generation.supersededPromotion.mainAfter || !generation.supersededPromotion.failure?.trim()
+			|| !sameIdentity(generation.supersededPromotion.expectedMain, generation.expectedMain)
+			|| !sameIdentity(generation.supersededPromotion.tip, generation.correction?.to ?? previous))) {
+			throw new Error("Superseded promotion lacks proven exact drift evidence.");
+		}
 		if (generation.status === "superseded") {
 			if (!generation.supersededFrom || !generation.failure?.trim() || generation.promotion
-				|| generation.checks || generation.review || generation.combinedTip || generation.correction) {
+				|| generation.checks || generation.review || generation.combinedTip
+				|| (generation.supersededFrom === "promotion_failed" ? !generation.supersededPromotion : generation.correction || generation.supersededPromotion)) {
 				throw new Error(`Superseded generation ${generation.number} retains usable evidence or lacks its reason.`);
 			}
 		} else if (generation.supersededFrom !== undefined || (promotion ? generation.status !== expectedStatus
@@ -986,6 +1034,9 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 			&& state.candidates.some((candidate) => candidate.worker !== "retained")) {
 			throw new Error(`Generation ${generation.number} released an unpromoted worker.`);
 		}
+	}
+	if (refresh?.status === "pending" && state.generations.at(-1)?.status !== "superseded" && state.generations.length) {
+		throw new Error("Pending refresh must freeze the old generation.");
 	}
 	const promoted = state.generations.at(-1)?.status === "promoted";
 	if (state.candidates.some((candidate) => candidate.worker !== "retained" && (!promoted
@@ -1019,6 +1070,11 @@ export function parseRunState(value: unknown): RunState {
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
 	parseIntegrationState(state.integration, request);
+	const refresh = state.integration.refresh;
+	if (refresh && (refresh.generation === 1 && !sameIdentity(refresh.from, state.requestStartMain)
+		|| (state.integration.generations.at(-1)?.status !== "promoted" && !sameIdentity(refresh.to, state.main)))) {
+		throw new Error("Refreshed Main identity breaks recorded lineage.");
+	}
 	for (const wave of state.waves) {
 		for (const id of wave.taskIds) {
 			const definition = request.tasks.find((task) => task.id === id);

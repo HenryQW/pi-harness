@@ -4,6 +4,7 @@ import {
 	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	MAX_TASKS,
 	parseIntegrationState,
+	parseIntegrationAction,
 	integrationGenerationPasses,
 	parseExecuteRequest,
 	parseIdOnly,
@@ -875,4 +876,39 @@ test("candidate and combined judgments must cover their exact bases and tips", (
 	delete generation.checks;
 	delete generation.review;
 	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+});
+
+test("refresh intent binds empty new generation to the new Main and invalidates previous gates", () => {
+	const { request: definition, state } = integrationFixture();
+	const old = state.generations[0]!;
+	old.status = "superseded";
+	old.supersededFrom = "ready";
+	old.failure = "Main advanced; retain old checkout.";
+	delete old.combinedTip;
+	delete old.checks;
+	const newMain = { ...old.expectedMain, head: "f".repeat(40), index: "f".repeat(40), tree: "f".repeat(40) };
+	state.refresh = { from: old.expectedMain, to: newMain, generation: 2, status: "pending" };
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	const branch = "pi-subagent/subagent-123456789012345678901234";
+	const path = "/repo/.worktrees/subagent-123456789012345678901234";
+	state.generations.push({ number: 2, status: "staging", expectedMain: newMain,
+		integrationBase: { ...newMain, branch: `refs/heads/${branch}` }, order: [], stages: [],
+		worktree: { branch, path, cwd: path, repoRoot: "/repo", baseCommit: newMain.head } });
+	state.refresh = { ...state.refresh, status: "unknown", failure: "Allocation uncertain." };
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	state.refresh = { ...state.refresh, status: "ready", failure: undefined };
+	assert.doesNotThrow(() => parseIntegrationState(state, definition));
+	state.generations[1]!.expectedMain = old.expectedMain;
+	assert.throws(() => parseIntegrationState(state, definition), /invalid Main base|Refreshed generation/);
+});
+
+test("refresh action requires exact old/new identities and excludes unrelated fields", () => {
+	const old = identity();
+	const next = { ...old, head: "f".repeat(40), index: "f".repeat(40), tree: "f".repeat(40) };
+	const action = { id: "request-one", generation: 1, action: "refresh", expectedTip: old,
+		expectedMain: old, newMain: next };
+	assert.deepEqual(parseIntegrationAction(action), action);
+	assert.throws(() => parseIntegrationAction({ ...action, newMain: undefined }), /subagent_integrate/);
+	assert.throws(() => parseIntegrationAction({ ...action, instruction: "ignore" }), /subagent_integrate/);
+	assert.throws(() => parseIntegrationAction({ ...action, action: "promote" }), /subagent_integrate/);
 });
