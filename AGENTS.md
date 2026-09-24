@@ -14,6 +14,8 @@ When `.codegraph/codegraph.db` exists, use `codegraph_explore` for symbol lookup
 
 ## Package releases
 
+For every published package, runtime imports reachable from its entry points must resolve from files in the packed artifact or declared runtime dependencies. If an extension imports sibling `src/` files, publish them; if it imports `dist/` files, build and pack them. Verify changed import paths or package layouts against `npm pack --dry-run`.
+
 Follow [the release runbook](docs/releasing.md) and `scripts/check-package-versions.mjs` for published-file classification, version choice, lockfile updates, and publishing. Run `pnpm run check:package-versions` before the final release commit or any push. Before finishing, state which packages release and why; if none changed, state that CI will not publish.
 
 ## Documentation

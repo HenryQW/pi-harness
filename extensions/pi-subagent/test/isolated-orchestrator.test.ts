@@ -27,7 +27,7 @@ import {
 	parseResumeRequest,
 	type ExecuteRequest,
 	type RunState,
-} from "../src/schema.ts";
+} from "../dist/schema.js";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CANONICAL_ROOT = "/canonical/repository";

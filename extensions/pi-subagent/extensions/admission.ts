@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Role } from "../src/index.ts";
+import type { Role } from "../dist/index.js";
 
 const READ_ONLY_TOOLS = new Set([
 	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status",
