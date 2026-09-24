@@ -34,6 +34,11 @@ Run `/task-models` to complete the first setup:
 3. Choose a different fallback model and thinking level, or choose `None`.
 4. Reopen `/task-models`. The `fast` row now shows the saved route instead of `not configured`.
 
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/task-models` | command | For people: configure shared profile routes and assign profiles to active consumer tasks. |
+| Session start | ui | For people: when the shared config is missing, show a warning that points to `/task-models`. |
+
 Repeat these steps for `balanced`, `frontier`, or `fav` when a consumer needs them. The `fav` profile has no fallback.
 
 Select an active task to override its declared profile. Choosing that task's declared default removes the override.
@@ -44,7 +49,7 @@ Consumers register declarations at extension load. When `/task-models` opens, th
 
 The control plane lists each active task's effective profile. Hidden explicit assignments stay stored when a consumer is disabled.
 
-Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. An empty scope uses Pi's full available model registry. Numbered Codex account aliases are deduplicated.
+Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. An empty scope uses available text models from Pi's registry. Numbered Codex account aliases are deduplicated.
 
 Fallback choices exclude the selected primary. BTW selects the first authenticated viable route before pane launch.
 
@@ -98,11 +103,17 @@ Model references use canonical `provider/model`. Numbered Codex account aliases 
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
+| `PROFILE_NAMES` | constant | Lists the shared profiles: `fast`, `balanced`, `frontier`, and `fav`. |
 | `ModelTask` | type | Describes a consumer-owned independently executed model operation. |
+| `ResolvedTaskRoute` | type | Represents a model and thinking level resolved for the current session. |
 | `registerModelTask(pi, task)` | function | Registers a consumer's task declaration at extension load. |
 | `loadTaskModelsConfig()` | function | Reads and validates the owner config file when present. |
 | `resolveConfiguredTaskRoute(ctx, task)` | function | Resolves the first usable route for a task. |
 | `resolveConfiguredTaskRoutes(ctx, task)` | function | Resolves the task's configured route candidates. |
+| `availableTaskModels(ctx)` | function | Lists usable text models from the current session scope or, when empty, Pi's registry. |
+| `modelReference(model)` | function | Formats a model as `provider/model`. |
+| `resolveAvailableModel(models, reference, preferredProvider?)` | function | Finds a model by reference, including numbered Codex aliases. |
+| `taskThinkingLevels(ctx, model)` | function | Lists supported thinking levels, honoring any session-pinned level. |
 | `executeTaskRoutes(routes, attempt, { shouldFallback, signal? })` | function | Tries supplied resolved routes in order and returns the first success. |
 
 Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use.
