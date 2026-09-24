@@ -30,7 +30,8 @@ Commands are for people; tools and skills are for the agent. The extension expos
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/pr [--feedback \| --base BRANCH [instructions]]` | command | Human command that discovers the current pull request and runs its next safe route. |
+| `/pr [--base BRANCH] [creation instructions]` | command | Discover the current pull request and run its next safe route; base and instructions apply only to creation. |
+| `/pr --feedback` | command | Explicitly start or resume the guarded feedback sweep. |
 | `pi_pr_create` | tool | Agent-only guarded actions for pull-request creation. |
 | `pi_pr_fix_ci` | tool | Agent-only guarded actions for repairing failed GitHub Actions. |
 | `pi_pr_sweep` | tool | Agent-only guarded actions for reviewing and resolving feedback. |

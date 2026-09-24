@@ -45,6 +45,8 @@ import { loadOpenInConfig } from "@henryqw/pi-open-in/open-uri";
 const { source, value } = loadOpenInConfig();
 ```
 
+These exports serve package consumers; the commands in Use are the Pi interfaces.
+
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `default` (`openInExtension(pi)`) | function | Registers the extension's commands with Pi. |
