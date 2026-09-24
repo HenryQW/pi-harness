@@ -204,23 +204,34 @@ test("shows installed CodeGraph first and marks active calls without showing an 
 	});
 	let statuses = new Map<string, string>([["pi-rewind", "↩ rewind"]]);
 	let renders = 0;
+	const colors: Array<[string, string]> = [];
 	const footer = factory(
 		{ requestRender() { renders++; } },
-		{ fg: (_color, text) => text },
+		{ fg: (color, text) => { colors.push([color, text]); return text; } },
 		{ getGitBranch: () => undefined, getExtensionStatuses: () => statuses, onBranchChange: () => () => {} },
 	);
-	const third = () => stripTerminalSequences(footer.render(100)[2]!);
+	const third = () => {
+		colors.length = 0;
+		return stripTerminalSequences(footer.render(100)[2]!);
+	};
+	const expectBadge = (status: string, glyph: string, color: string) => {
+		statuses.set("pi-codegraph", status);
+		assert.ok(third().startsWith(`${glyph} CG · ↩ rewind `));
+		assert.deepEqual(colors.filter(([, text]) => "●✓○◐!?".includes(text)), [[color, glyph]]);
+		assert.ok(colors.every(([, text]) => !text.includes("CG")));
+	};
 	assert.match(third(), /^↩ rewind +◷ 0s$/);
-	statuses = new Map([["pi-rewind", "↩ rewind"], ["pi-codegraph", "pi-codegraph: missing"]]);
-	assert.match(third(), /^○ CG · ↩ rewind +◷ 0s$/);
-	statuses.set("pi-codegraph", "pi-codegraph: indexing…");
-	assert.match(third(), /^◐ CG · ↩ rewind +◷ 0s$/);
-	statuses.set("pi-codegraph", "pi-codegraph: setup failed");
-	assert.match(third(), /^! CG · ↩ rewind +◷ 0s$/);
-	statuses.set("pi-codegraph", "pi-codegraph: indexed");
+	expectBadge("pi-codegraph: missing", "○", "dim");
+	expectBadge("pi-codegraph: checking index…", "◐", "warning");
+	expectBadge("pi-codegraph: indexing…", "◐", "warning");
+	expectBadge("pi-codegraph: prerequisites missing", "!", "error");
+	expectBadge("pi-codegraph: setup failed", "!", "error");
+	expectBadge("pi-codegraph: unknown", "?", "warning");
+	expectBadge("pi-codegraph: indexed", "✓", "success");
 	await handlers.get("tool_execution_start")!({ toolCallId: "cg-1", toolName: "codegraph_explore", args: {} });
 	await handlers.get("tool_execution_start")!({ toolCallId: "other", toolName: "mcp", args: { server: "other", tool: "codegraph_explore" } });
 	assert.match(third(), /^● CG · ↩ rewind +◷ 0s$/);
+	assert.ok(colors.some(([color, text]) => color === "accent" && text === "●"));
 	await handlers.get("tool_execution_end")!({ toolCallId: "other", toolName: "mcp" });
 	assert.match(third(), /^● CG · /);
 	await handlers.get("tool_execution_end")!({ toolCallId: "cg-1", toolName: "codegraph_explore" });

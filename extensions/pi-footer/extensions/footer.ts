@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
 
@@ -174,16 +174,16 @@ function isCodegraphCall(toolName: string, args: unknown): boolean {
 	return server === "henryqw_pi-codegraph__codegraph" && typeof tool === "string" && tool.startsWith("codegraph_");
 }
 
-function codegraphBadge(status: string, inUse: boolean): string {
-	if (inUse) return "● CG";
+function codegraphBadge(status: string, inUse: boolean, theme: Theme): string {
+	if (inUse) return `${theme.fg("accent", "●")} CG`;
 	switch (status) {
-		case "pi-codegraph: indexed": return "✓ CG";
-		case "pi-codegraph: missing": return "○ CG";
+		case "pi-codegraph: indexed": return `${theme.fg("success", "✓")} CG`;
+		case "pi-codegraph: missing": return `${theme.fg("dim", "○")} CG`;
 		case "pi-codegraph: checking index…":
-		case "pi-codegraph: indexing…": return "◐ CG";
+		case "pi-codegraph: indexing…": return `${theme.fg("warning", "◐")} CG`;
 		case "pi-codegraph: prerequisites missing":
-		case "pi-codegraph: setup failed": return "! CG";
-		default: return "? CG";
+		case "pi-codegraph: setup failed": return `${theme.fg("error", "!")} CG`;
+		default: return `${theme.fg("warning", "?")} CG`;
 	}
 }
 
@@ -378,7 +378,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const extensionStatuses = data.getExtensionStatuses();
 					const prStatus = sanitizeStatus(extensionStatuses.get("pi-pr") ?? "");
 					const codegraphStatus = extensionStatuses.get("pi-codegraph");
-					const codegraph = codegraphStatus === undefined ? "" : codegraphBadge(codegraphStatus, activeCodegraphCalls.size > 0);
+					const codegraph = codegraphStatus === undefined ? "" : codegraphBadge(codegraphStatus, activeCodegraphCalls.size > 0, theme);
 					const statuses = [...extensionStatuses]
 						.filter(([key]) => key !== "pi-pr" && key !== "pi-codegraph")
 						.sort(([a], [b]) => a.localeCompare(b))

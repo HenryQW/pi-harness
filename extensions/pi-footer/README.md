@@ -31,7 +31,7 @@ pi-harness · clear-field-f8d2 [+2 ~3 ?1 ↑2] · PR #123 · approved    Codex #
 
 - The first line shows the repository, branch, Git state, and `pi-pr` pull request status. Linked-worktree branches drop the generated `worktree/` prefix.
 - The second line shows cumulative input tokens, output tokens, latest cache-hit rate, and tokens per second for the most recent assistant response. It also shows estimated cost and context usage. Totals include reported tool usage and finished `pi-subagent` background workflows. The active model and thinking level are right-aligned.
-- The third line shows a compact CodeGraph badge first when loaded: `✓ CG` indexed, `● CG` in use, `◐ CG` checking or indexing, `○ CG` missing, `! CG` setup problem, or `? CG` unknown state. When pi-codegraph is not loaded, no badge appears. A middle dot separates statuses from different extensions; cumulative agent-work time stays on the right, beneath the active model.
+- The third line shows a compact CodeGraph badge first when loaded: `✓ CG` indexed, `● CG` in use, `◐ CG` checking or indexing, `○ CG` missing, `! CG` setup problem, or `? CG` unknown state. Its icon uses the active theme's state color; `CG` remains plain so the badge is readable without color. When pi-codegraph is not loaded, no badge appears. A middle dot separates statuses from different extensions; cumulative agent-work time stays on the right, beneath the active model.
 
 Git badges appear only when action is needed:
 
