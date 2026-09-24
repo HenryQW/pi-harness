@@ -14,6 +14,8 @@ Follow [ADR 016](../../docs/adr/016-pi-subagent-architecture.md) and the [orches
 - Route precedence is call `modelClass` > Role `modelClass` > configured Model Task assignment/default. Main uses `extensions/model-class-policy.ts` for explicit classes; direct `model` replaces only the route model, not its thinking level. Apply the same policy in every delegation tool.
 - Fail before launch on malformed config or unavailable explicitly requested resources, naming the missing value and provider. Launch only through active Pi; no standalone discovery or fallback runtime.
 - Disable ambient child extensions and Skills. An explicitly selected Role or caller extension activates all its registered tools and Pi-discovered Skills, alongside named Role Skills. Exclude Main-only delegation/orchestration tools, and verify explicit tool names against the final registry.
+- Keep `delegate_task` mode explicit. Direct mode runs read-only single, parallel, and chain tasks in current-workspace Herdr tabs. Write-capable work requires isolated checked task graphs; neither mode may silently fall back to the other.
+- Keep Roles capability-focused; requests own isolation. pi-subagent owns checked validation, judgment, integration, recovery, and cleanup while library exports remain reusable mechanisms.
 
 ## Executor and evidence
 
@@ -24,6 +26,7 @@ Follow [ADR 016](../../docs/adr/016-pi-subagent-architecture.md) and the [orches
 
 ## Results and validation
 
-- Keep discriminated outcome/status unions exhaustive. Tie background delivery to the launching session generation: suppress stale ordinary results after replacement or shutdown, but report retained isolated work for recovery.
+- Keep discriminated outcome/status unions exhaustive. Tie asynchronous follow-up delivery to the launching session generation: suppress stale results after replacement or shutdown, retaining exact direct tab identities and isolated work for recovery.
+- Do not introduce a whole-request productive deadline; child, I/O, status, termination, and cleanup safety bounds remain local.
 - Update compact UI state on events; rendering reads memory only. Bound visible text while preserving structured identity, status, usage, and recovery details.
-- Test policy at its owning layer: parsing/planning directly, executor protocol in `ephemeral.test.ts`, delegation in `subagent.test.ts`, and worktree/evidence mechanics in their focused suites. Prove performance invariants with operation counts or forbidden-operation assertions, not timing thresholds.
+- Test policy at its owning layer: parsing/planning directly, executor protocol in `ephemeral.test.ts`, direct delegation in `subagent.test.ts`, checked orchestration in isolated runner/runtime suites, and worktree/evidence mechanics in their focused suites. Prove performance invariants with operation counts or forbidden-operation assertions, not timing thresholds.

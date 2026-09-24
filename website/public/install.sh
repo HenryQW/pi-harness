@@ -11,9 +11,9 @@ PI_MIN_VERSION="0.85.1"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
 HERDR_LATEST_URL="https://herdr.dev/latest.json"
 HERDR_MIN_VERSION="0.7.4"
-HERDR_ORCHESTRATOR_MIN_VERSION="0.9.0"
-ORCHESTRATOR_PACKAGE="@henryqw/pi-orchestrator"
-LEGACY_AUTO_DAG_SOURCE="npm:@henryqw/pi-auto-dag"
+HERDR_SUBAGENT_MIN_VERSION="0.9.0"
+SUBAGENT_PACKAGE="@henryqw/pi-subagent"
+RETIRED_PACKAGE_SOURCES="npm:@henryqw/pi-auto-dag npm:@henryqw/pi-orchestrator"
 
 # BEGIN GENERATED EXTENSIONS
 EXTENSIONS='
@@ -32,7 +32,6 @@ EXTENSIONS='
 @henryqw/pi-multi-codex
 @henryqw/pi-notes
 @henryqw/pi-open-in
-@henryqw/pi-orchestrator
 @henryqw/pi-pr
 @henryqw/pi-prompt-creator
 @henryqw/pi-rtk-test
@@ -287,11 +286,11 @@ ensure_pi() {
 
 select_herdr_minimum() {
   required_herdr_version=$HERDR_MIN_VERSION
-  orchestrator_selected=false
+  subagent_selected=false
   for extension in $selected_extensions; do
-    if [ "$extension" = "$ORCHESTRATOR_PACKAGE" ]; then
-      required_herdr_version=$HERDR_ORCHESTRATOR_MIN_VERSION
-      orchestrator_selected=true
+    if [ "$extension" = "$SUBAGENT_PACKAGE" ]; then
+      required_herdr_version=$HERDR_SUBAGENT_MIN_VERSION
+      subagent_selected=true
       return 0
     fi
   done
@@ -435,27 +434,30 @@ choose_extensions() {
   done
 }
 
-remove_legacy_auto_dag() {
-  [ "$orchestrator_selected" = true ] || return 0
+source_is_installed() {
+  printf '%s\n' "$1" | grep -Fx -e "$2" -e "  $2" >/dev/null
+}
+
+remove_retired_package_sources() {
+  [ "$subagent_selected" = true ] || return 0
 
   if ! installed_sources=$("$pi_bin" list); then
-    die "Could not list installed Pi package sources before checking for the retired Auto DAG package."
+    die "Could not list installed Pi package sources before checking for retired packages."
   fi
-  if ! printf '%s\n' "$installed_sources" \
-    | grep -Fx -e "$LEGACY_AUTO_DAG_SOURCE" -e "  $LEGACY_AUTO_DAG_SOURCE" >/dev/null; then
-    return 0
-  fi
-
-  info "Removing retired Auto DAG package source..."
-  "$pi_bin" uninstall "$LEGACY_AUTO_DAG_SOURCE" || die "Could not remove retired Pi package source $LEGACY_AUTO_DAG_SOURCE."
-  if ! installed_sources=$("$pi_bin" list); then
-    die "Could not verify removal of retired Pi package source $LEGACY_AUTO_DAG_SOURCE."
-  fi
-  if printf '%s\n' "$installed_sources" \
-    | grep -Fx -e "$LEGACY_AUTO_DAG_SOURCE" -e "  $LEGACY_AUTO_DAG_SOURCE" >/dev/null; then
-    die "Retired Pi package source $LEGACY_AUTO_DAG_SOURCE is still installed."
-  fi
-  success "Removed retired Pi package source $LEGACY_AUTO_DAG_SOURCE."
+  for source in $RETIRED_PACKAGE_SOURCES; do
+    if ! source_is_installed "$installed_sources" "$source"; then
+      continue
+    fi
+    info "Removing retired package source $source..."
+    "$pi_bin" uninstall "$source" || die "Could not remove retired Pi package source $source."
+    if ! installed_sources=$("$pi_bin" list); then
+      die "Could not verify removal of retired Pi package source $source."
+    fi
+    if source_is_installed "$installed_sources" "$source"; then
+      die "Retired Pi package source $source is still installed."
+    fi
+    success "Removed retired Pi package source $source."
+  done
 }
 
 install_extensions() {
@@ -487,7 +489,7 @@ install_extensions() {
   done
   [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || printf '\n'
   success "Installed $installed extension(s)."
-  remove_legacy_auto_dag
+  remove_retired_package_sources
   info "Start Pi with: $pi_bin"
 }
 

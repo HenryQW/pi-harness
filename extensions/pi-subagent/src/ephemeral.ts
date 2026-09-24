@@ -13,7 +13,7 @@ export const DEFAULT_MAX_TURNS = 50;
 export const EXECUTION_BUDGET_ENV = "PI_SUBAGENT_EXECUTION_BUDGET";
 export interface EphemeralSubagentExecutionBudget {
 	maxTurns: number;
-	maxMs: number;
+	maxMs: number | null;
 	startedAt: number;
 	maxTokens?: number;
 }
@@ -57,7 +57,7 @@ const JSON_OVERSIZED_TOOL_START = new RegExp(
 
 export interface EphemeralSubagentTimeout {
 	idleMs: number;
-	maxMs: number;
+	maxMs: number | null;
 }
 
 export interface EphemeralSubagentExecutorOptions {
@@ -147,9 +147,9 @@ function validateOptions(options: EphemeralSubagentExecutorOptions): ValidatedEx
 	if (!options.timeout || typeof options.timeout !== "object") throw new TypeError("timeout is required.");
 	const timeout = {
 		idleMs: positiveDelay(options.timeout.idleMs, "timeout.idleMs"),
-		maxMs: positiveDelay(options.timeout.maxMs, "timeout.maxMs"),
+		maxMs: options.timeout.maxMs === null ? null : positiveDelay(options.timeout.maxMs, "timeout.maxMs"),
 	};
-	if (timeout.maxMs <= timeout.idleMs) throw new RangeError("timeout.maxMs must be greater than timeout.idleMs.");
+	if (timeout.maxMs !== null && timeout.maxMs <= timeout.idleMs) throw new RangeError("timeout.maxMs must be greater than timeout.idleMs.");
 	return {
 		maxConcurrency: options.maxConcurrency,
 		maxTurns,
@@ -457,7 +457,7 @@ async function runPi(
 	return await new Promise<EphemeralSubagentResult>((resolve, reject) => {
 		const args = [...invocation.args, "--mode", "json", "-p", ...prepared.launch.args, `Task: ${prepared.task}`];
 		const startedAt = Date.now();
-		const maxDeadline = startedAt + timeoutPolicy.maxMs;
+		const maxDeadline = timeoutPolicy.maxMs === null ? undefined : startedAt + timeoutPolicy.maxMs;
 		let child: ReturnType<typeof spawn>;
 		try {
 			const executionBudget = {
@@ -507,7 +507,7 @@ async function runPi(
 		const tokenLimited = () => tokenBudget === "limited";
 		let startedTurns = 0;
 		let lastEventAt = startedAt;
-		let deadline = Math.min(startedAt + timeoutPolicy.idleMs, maxDeadline);
+		let deadline = Math.min(startedAt + timeoutPolicy.idleMs, maxDeadline ?? startedAt + timeoutPolicy.idleMs);
 		let timedOutAfterMs: number | undefined;
 		let timeoutReason: "idle" | "maximum" | undefined;
 		let childExited = false;
@@ -636,7 +636,7 @@ async function runPi(
 
 		const scheduleDeadline = () => {
 			if (deadlineTimer) clearTimeout(deadlineTimer);
-			deadline = Math.min(lastEventAt + timeoutPolicy.idleMs, maxDeadline);
+			deadline = Math.min(lastEventAt + timeoutPolicy.idleMs, maxDeadline ?? lastEventAt + timeoutPolicy.idleMs);
 			const scheduledDeadline = deadline;
 			deadlineTimer = setTimeout(
 				() => timeout(scheduledDeadline - startedAt, scheduledDeadline === maxDeadline ? "maximum" : "idle"),
@@ -888,7 +888,7 @@ async function runPi(
 			void killTree(false);
 			killTimer = setTimeout(
 				() => void killTree(true),
-				Math.min(5_000, Math.max(0, maxDeadline - Date.now())),
+				maxDeadline === undefined ? 5_000 : Math.min(5_000, Math.max(0, maxDeadline - Date.now())),
 			);
 			killTimer.unref();
 		}
@@ -937,7 +937,7 @@ async function runPi(
 					"Subagent callback did not settle before the post-exit drain deadline.",
 				);
 				signalCallbackFailure();
-			}, Math.min(5_000, Math.max(0, maxDeadline - Date.now())));
+			}, maxDeadline === undefined ? 5_000 : Math.min(5_000, Math.max(0, maxDeadline - Date.now())));
 			await Promise.race([Promise.all(pendingCallbacks), callbackFailed]);
 			complete(code);
 		};

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-process",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bounded UTF-8 child-process execution for Pi packages.",
   "keywords": [
     "pi-package",

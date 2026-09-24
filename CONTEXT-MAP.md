@@ -5,7 +5,6 @@
 | `pi-add-dir` | [`extensions/pi-add-dir/CONTEXT.md`](extensions/pi-add-dir/CONTEXT.md) | External directories, context files, skills, and file search |
 | `pi-ask-question` | [`extensions/pi-ask-question/CONTEXT.md`](extensions/pi-ask-question/CONTEXT.md) | Interactive user questions with predefined or custom answers |
 | `pi-auto-compact` | [`extensions/pi-auto-compact/CONTEXT.md`](extensions/pi-auto-compact/CONTEXT.md) | Proactive Pi context compaction and task resumption |
-| `pi-orchestrator` | [`extensions/pi-orchestrator/CONTEXT.md`](extensions/pi-orchestrator/CONTEXT.md) | Durable checked implementation graphs using pi-subagent Roles and Herdr workers |
 | `pi-bark` | [`extensions/pi-bark/CONTEXT.md`](extensions/pi-bark/CONTEXT.md) | Bark Device Keys, servers, push requests, and push notifications |
 | `pi-deps` | [`extensions/pi-deps/CONTEXT.md`](extensions/pi-deps/CONTEXT.md) | Opt-in dependency preparation for new Git worktrees |
 | `pi-herdr` | [`packages/pi-herdr/CONTEXT.md`](packages/pi-herdr/CONTEXT.md) | Shared Herdr CLI execution for Pi packages |
@@ -20,7 +19,7 @@
 | `pi-footer` | [`extensions/pi-footer/CONTEXT.md`](extensions/pi-footer/CONTEXT.md) | Henry's opinionated Pi footer identity and usage display |
 | `pi-pr` | [`extensions/pi-pr/CONTEXT.md`](extensions/pi-pr/CONTEXT.md) | Current-branch pull request lifecycle in the Pi footer |
 | `pi-prompt-creator` | [`extensions/pi-prompt-creator/CONTEXT.md`](extensions/pi-prompt-creator/CONTEXT.md) | Current-conversation signals and user-approved global prompt candidates |
-| `pi-subagent` | [`extensions/pi-subagent/CONTEXT.md`](extensions/pi-subagent/CONTEXT.md) | Role-configured isolated Pi subagents |
+| `pi-subagent` | [`extensions/pi-subagent/CONTEXT.md`](extensions/pi-subagent/CONTEXT.md) | Direct Role delegation and durable checked isolated graphs |
 | `pi-open-in` | [`extensions/pi-open-in/CONTEXT.md`](extensions/pi-open-in/CONTEXT.md) | Open current Pi working directory with configurable command |
 
 Context glossaries are created lazily when domain terms are resolved.

@@ -758,7 +758,7 @@ test("finalizeChildWorktree counts the dedicated branch when the checkout is gon
 	assert.equal(unproven.dirty, undefined);
 });
 
-test("loadRoles accepts isolation worktree and rejects other values", async (t) => {
+test("loadRoles rejects retired Role isolation values", async (t) => {
 	const acceptDir = join(tmpdir(), "pi-subagent-iso-ok-");
 	const rejectDir = join(tmpdir(), "pi-subagent-iso-bad-");
 	await Promise.all([acceptDir, rejectDir].map((dir) => mkdir(join(dir, "config", "pi-subagent"), { recursive: true })));
@@ -768,8 +768,6 @@ test("loadRoles accepts isolation worktree and rejects other values", async (t) 
 	await writeFile(join(acceptDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 
-	const roles = loadRoles(acceptDir);
-	assert.equal(roles.length, 4);
-	assert.equal(roles.find(({ name }) => name === "iso")!.isolation, "worktree");
-	assert.throws(() => loadRoles(rejectDir), /isolation must be "worktree"/);
+	assert.throws(() => loadRoles(acceptDir), /Role isolation is retired.*mode "isolated"/i);
+	assert.throws(() => loadRoles(rejectDir), /Role isolation is retired.*mode "isolated"/i);
 });

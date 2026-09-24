@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-codegraph",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Initialize CodeGraph indexes in opted-in Git worktrees and expose CodeGraph through pi-mcp-adapter.",
   "keywords": [
     "pi-package",

@@ -1,113 +1,40 @@
-import { basename } from "node:path";
-import type { Usage } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
-import {
-	availableTaskModels,
-	loadTaskModelsConfig,
-	modelReference,
-	registerModelTask,
-	resolveAvailableModel,
-	type ResolvedTaskRoute,
-	taskThinkingLevels,
-} from "@henryqw/pi-task-models";
-import {
-	capEphemeralSubagentOutput as capOutput,
-	createChildWorktree,
-	createEphemeralSubagentExecutor,
-	DELEGATE_TASK,
-	DEFAULT_MAX_TURNS,
-	EphemeralSubagentError,
-	finalizeChildWorktree,
-	finalizeRoleLaunch,
-	formatDuration,
-	loadRoles,
-	prepareRoleLaunch,
-	WorktreeSetupError,
-	worktreeContextNote,
-	type EphemeralSubagentActivityEvent,
-	type EphemeralSubagentResult,
-	type EphemeralSubagentTimeout,
-	type Role,
-	type WorktreeInfo,
-	type WorktreePayload,
-} from "@henryqw/pi-subagent";
-import { DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, type SubagentTimeoutConfig } from "./config.ts";
+import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
+import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type EphemeralSubagentTimeout, type Role } from "@henryqw/pi-subagent";
+import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
+import { createCheckoutAdmission, roleCanWrite } from "./admission.ts";
+import { registerIsolatedExtension } from "./isolated.ts";
+import { registerSubagentCommand, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
-import {
-	formatBackgroundWorkflowResult,
-	formatWorkflowResult,
-	formatWorkflowUpdate,
-	presentWorkflowEntryStatus,
-	WorkflowAbortedError,
-	WorkflowFailureError,
-	type BackgroundWorkflowTransportDetails,
-	type WorkflowTransportEntry,
-} from "./result-transport.ts";
-import {
-	identifyWorkflowEntries,
-	parseWorkflow,
-	runForegroundWorkflow,
-	WorkflowSchema,
-	type Delegation,
-	type ParsedWorkflow,
-	type WorkflowEntry,
-} from "./workflow.ts";
+import { formatWorkflowResult, presentWorkflowEntryStatus, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
+import { DelegateTaskSchema, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
+import { createDirectHerdr, type DirectHandle, type DirectTab } from "../src/direct-herdr.ts";
+import { materializeTransientLaunch } from "../src/launch-runtime.ts";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;
 const MAX_WIDGET_LINES = 6;
 const MAX_WIDGET_GROUP_ROWS = 3;
-export const MAX_WIDGET_ACTIVE_TOOLS = 8;
-const DEFAULT_TIMEOUT_POLICY = {
-	idleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
-	maxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
-};
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type TimeoutPolicy = EphemeralSubagentTimeout;
-
-/** Merge validated config-file timeout fields over defaults; absent keys keep defaults. */
-export function resolveTimeoutPolicy(partial: SubagentTimeoutConfig | undefined): TimeoutPolicy {
-	return {
-		idleMs: partial?.idleMinutes === undefined ? DEFAULT_TIMEOUT_POLICY.idleMs : partial.idleMinutes * 60_000,
-		maxMs: partial?.maxMinutes === undefined ? DEFAULT_TIMEOUT_POLICY.maxMs : partial.maxMinutes * 60_000,
-	};
-}
 type WidgetStatus = "working" | "success" | "failure" | "aborted";
-type WidgetActiveTool = {
-	toolName: string;
-	path?: string;
-	startedAt: number;
-	order: number;
-};
 type WidgetItem = {
 	role: string;
 	model: string;
 	thinkingLevel: string;
 	taskId: string;
 	name: string;
-	tokens: number;
 	startedAt: number;
 	status: WidgetStatus;
 	finishedAt?: number;
-	completedAssistantTurns: number;
-	startedToolCount: number;
-	activeTools: Map<string, WidgetActiveTool>;
-	activeToolId?: string;
-	activityOrder: number;
 };
 
 function roleBadge(role: string): string {
 	const initial = Array.from(role)[0]!.toUpperCase();
 	return `[${Array.from(initial)[0]!}]`;
-}
-
-function formatTokens(tokens: number): string {
-	if (tokens < 1_000) return String(tokens);
-	if (tokens < 100_000) return `${(tokens / 1_000).toFixed(1)}k`;
-	if (tokens < 1_000_000) return `${Math.round(tokens / 1_000)}k`;
-	return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
 function statusGlyph(status: WidgetStatus, spinnerIndex: number, theme: Theme): string {
@@ -128,31 +55,15 @@ function statusLabel(status: WidgetStatus): string {
 	}
 }
 
-function activityLabel(item: WidgetItem, now: number): string {
+function activityLabel(item: WidgetItem): string {
 	if (item.status === "success") return "Done";
 	if (item.status === "failure") return "Failed";
 	if (item.status === "aborted") return "Stopped";
-	const activeTool = item.activeToolId === undefined ? undefined : item.activeTools.get(item.activeToolId);
-	if (!activeTool) return "thinking…";
-	return [
-		activeTool.toolName,
-		formatDuration(now - activeTool.startedAt),
-		...(activeTool.path === undefined ? [] : [activeTool.path]),
-	].join(" · ");
+	return "working…";
 }
 
 function activityMetrics(item: WidgetItem, now: number): string {
-	return [
-		...(item.completedAssistantTurns === 0
-			? []
-			: [`${item.completedAssistantTurns} turn${item.completedAssistantTurns === 1 ? "" : "s"}`]),
-		...(item.startedToolCount === 0
-			? []
-			: [`${item.startedToolCount} tool${item.startedToolCount === 1 ? "" : "s"}`]),
-		`${item.model}·${item.thinkingLevel}`,
-		`${formatTokens(item.tokens)} tok`,
-		formatDuration((item.finishedAt ?? now) - item.startedAt),
-	].join(" · ");
+	return `${item.model}·${item.thinkingLevel} · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`;
 }
 
 function renderWidgetRows(
@@ -186,7 +97,7 @@ function renderWidgetRows(
 		for (const item of group.items.slice(0, childCount)) {
 			visible.add(item);
 			lines.push(truncateToWidth(
-				`  ${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", activityLabel(item, now))} · ${theme.fg("muted", activityMetrics(item, now))}`,
+				`  ${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", activityLabel(item))} · ${theme.fg("muted", activityMetrics(item, now))}`,
 				width,
 			));
 		}
@@ -217,20 +128,13 @@ function replaceRouteModel(ctx: ExtensionContext, reference: string, route: Reso
 	return { model, thinkingLevel: route.thinkingLevel };
 }
 
-const BACKGROUND_RESULT_TYPE = "subagent-background-result";
+const DIRECT_RESULT_TYPE = "subagent-direct-result";
+const DIRECT_TAB_TYPE = "subagent-direct-tab";
+type DirectTabRecord = DirectTab & { taskId: string; entryId: string };
 
 function boundedError(error: unknown): Error {
 	const message = capOutput(error instanceof Error ? error.message : String(error));
 	return error instanceof Error && error.message === message ? error : new Error(message, { cause: error });
-}
-
-function failedToolPatch(error: WorkflowFailureError | WorkflowAbortedError) {
-	return {
-		content: [{ type: "text" as const, text: error.message }],
-		details: error.details,
-		isError: true as const,
-		...(error.usage === undefined ? {} : { usage: error.usage }),
-	};
 }
 
 const roleSummary = (): string => {
@@ -245,15 +149,16 @@ export default function subagentExtension(
 	pi: ExtensionAPI,
 	overrideTimeoutPolicy?: TimeoutPolicy,
 ): void {
+	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) return;
 	registerModelTask(pi, DELEGATE_TASK);
-	pi.registerMessageRenderer(BACKGROUND_RESULT_TYPE, (message, { expanded, outputPad }, theme) => {
-		const details = message.details as BackgroundWorkflowTransportDetails | undefined;
+	pi.registerMessageRenderer(DIRECT_RESULT_TYPE, (message, { expanded, outputPad }, theme) => {
+		const details = message.details as (BackgroundWorkflowTransportDetails & { tabs?: readonly DirectTabRecord[] }) | undefined;
 		const content = typeof message.content === "string"
 			? message.content
 			: message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 		if (!details?.entries) return new Text(content, outputPad, 0);
 		const count = details.entries.length;
-		const subject = count === 1 ? "Background subagent" : `${count} background subagents`;
+		const subject = count === 1 ? "Direct subagent" : `${count} direct subagents`;
 		const state = details.recovery ? "stopped; recovery needed"
 			: details.outcome === "completed" ? "completed"
 				: details.outcome === "failed" ? "failed" : "stopped";
@@ -267,49 +172,83 @@ export default function subagentExtension(
 		return new Text([
 			theme.fg(color, `${glyph} ${subject} ${state}`),
 			...rows,
+			...(details.tabs?.length ? ["Recovery: /subagent (exact tabs and sessions)"] : []),
 			...(expanded ? ["", raw] : []),
 		].join("\n"), outputPad, 0);
 	});
 	const widgetItems = new Map<string, WidgetItem>();
-	// Each child is a full Pi process issuing its own model calls; cap parallel
-	// spend. Precedence: PI_SUBAGENT_MAX_SUBAGENTS env > config/pi-subagent/config.json
-	// maxSubagents > default 5. Invalid present config falls back to the default
-	// and is reported at session start; an invalid env value fails fast.
 	const loadedConfig = readSubagentConfig();
-	let maxActiveSubagents = loadedConfig.config.maxSubagents ?? 5;
-	const maxSubagentsRaw = process.env.PI_SUBAGENT_MAX_SUBAGENTS;
-	if (maxSubagentsRaw !== undefined) {
-		// Reject "2workers", "1.5", "1e3" — parseInt would silently accept prefixes —
-		// and digit strings that overflow to Infinity, which would disable the cap.
-		if (!/^\d+$/.test(maxSubagentsRaw) || !/^[1-9]\d*$/.test(maxSubagentsRaw)) {
-			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS must be a positive integer, got ${JSON.stringify(maxSubagentsRaw)}.`));
-		}
-		const parsed = Number.parseInt(maxSubagentsRaw, 10);
-		if (!Number.isSafeInteger(parsed)) {
-			throw boundedError(new Error(`PI_SUBAGENT_MAX_SUBAGENTS exceeds the supported range, got ${JSON.stringify(maxSubagentsRaw)}.`));
-		}
-		maxActiveSubagents = parsed;
+	let initialPolicy: EffectiveExecutionPolicy;
+	try {
+		initialPolicy = resolveExecutionPolicy(loadedConfig);
+	} catch {
+		initialPolicy = {
+			maxSubagents: DEFAULT_EXECUTION_POLICY.maxSubagents,
+			maxTurns: DEFAULT_EXECUTION_POLICY.maxTurns,
+			childIdleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
+			childMaxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
+			maxCorrections: DEFAULT_EXECUTION_POLICY.maxCorrections,
+		};
 	}
-	let backgroundSequence = 0;
-	// Explicit policy argument (tests/embedders) wins; otherwise resolve from
-	// config file over defaults.
-	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? resolveTimeoutPolicy(loadedConfig.config.timeout);
+	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? {
+		idleMs: initialPolicy.childIdleMs,
+		maxMs: initialPolicy.childMaxMs,
+	};
+	const effectiveInitialPolicy: EffectiveExecutionPolicy = {
+		...initialPolicy,
+		childIdleMs: timeoutPolicy.idleMs,
+		childMaxMs: timeoutPolicy.maxMs ?? initialPolicy.childMaxMs,
+	};
 	const executor = createEphemeralSubagentExecutor({
-		maxConcurrency: maxActiveSubagents,
-		maxTurns: loadedConfig.config.maxTurns ?? DEFAULT_MAX_TURNS,
-		maxTokens: loadedConfig.config.maxTokens,
+		maxConcurrency: effectiveInitialPolicy.maxSubagents,
+		maxTurns: effectiveInitialPolicy.maxTurns,
+		maxTokens: effectiveInitialPolicy.maxTokens,
 		timeout: timeoutPolicy,
 	});
-	// Background children outlive the launching tool call, so they get their own
-	// abort signal: tied to the session, not to the turn that started them.
-	const backgroundTasks = new Map<string, { controller: AbortController; settled: Promise<void> }>();
-	const failedToolPatches = new Map<string, ReturnType<typeof failedToolPatch>>();
-	// Latest known session context; refreshed on session lifecycle and model
-	// changes so queued background launches resolve against effective state.
+	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(readSubagentConfig());
+	const canWrite = (input: unknown): boolean => {
+		try {
+			const parsed = parseDelegateTask(input);
+			if (parsed.mode === "isolated") return true;
+			const roles = new Map(loadRoles().map((role) => [role.name, role]));
+			return parsed.workflow.delegations.some((delegation) => roleCanWrite(roles.get(delegation.role) ?? { name: delegation.role } as Role));
+		} catch {
+			return true;
+		}
+	};
+	const admission = createCheckoutAdmission();
+	admission.register(pi, canWrite);
+	const isolatedSurface = registerIsolatedExtension(pi, {
+		executor,
+		policy: effectiveInitialPolicy,
+		currentPolicy,
+	});
+	let directSequence = 0;
+	const directTasks = new Map<string, { controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[] }>();
 	let latestCtx: ExtensionContext | undefined;
-	// Bumped by session_start and session_shutdown; background tasks may only
-	// deliver into the exact session that launched them.
 	let sessionEpoch = 0;
+	registerSubagentCommand(pi, {
+		direct(ctx): DirectTask[] {
+			const grouped = new Map<string, DirectTask & { tabs: Array<DirectTask["tabs"][number]> }>();
+			for (const entry of ctx.sessionManager.getBranch()) {
+				if (entry.type !== "custom" || entry.customType !== DIRECT_TAB_TYPE || !entry.data) continue;
+				const tab = entry.data as DirectTabRecord;
+				const observed = directTasks.has(tab.taskId);
+				const existing = grouped.get(tab.taskId);
+				const record = { entryId: tab.entryId, name: tab.name, tabId: tab.tabId, paneId: tab.paneId, sessionFile: tab.sessionFile };
+				if (existing) {
+					if (!existing.tabs.some((item) => item.tabId === tab.tabId)) existing.tabs.push(record);
+				} else grouped.set(tab.taskId, { id: tab.taskId, name: tab.name, status: observed ? "observed locally" : "recorded (not observed)", tabs: [record] });
+			}
+			return [...grouped.values()];
+		},
+		isolated: (cwd) => isolatedSurface.inventory(cwd),
+		inspect: (root, id) => isolatedSurface.inspect(root, id),
+		canFollowup: (root, id, task) => isolatedSurface.canFollowup(root, id, task),
+		enqueue: (root, id, task, text, current) => isolatedSurface.enqueue(root, id, task, text, current),
+		drain: (root, id, task, current) => isolatedSurface.drain(root, id, task, current),
+		epoch: () => sessionEpoch,
+	});
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
@@ -367,64 +306,10 @@ export default function subagentExtension(
 			thinkingLevel: thinkingLevel ?? "default",
 			taskId,
 			name,
-			tokens: 0,
 			startedAt: Date.now(),
 			status: "working",
-			completedAssistantTurns: 0,
-			startedToolCount: 0,
-			activeTools: new Map(),
-			activityOrder: 0,
 		});
 		startWidgetTimer();
-		requestWidgetRender();
-	};
-
-	const updateWidgetTokens = (id: string, tokens: number) => {
-		const item = widgetItems.get(id);
-		if (!item) return;
-		item.tokens = tokens;
-		requestWidgetRender();
-	};
-
-	const updateWidgetActivity = (id: string, event: EphemeralSubagentActivityEvent) => {
-		const item = widgetItems.get(id);
-		if (!item || item.status !== "working") return;
-		switch (event.type) {
-			case "tool_execution_start": {
-				if (item.activeTools.has(event.toolCallId)) break;
-				if (item.activeTools.size >= MAX_WIDGET_ACTIVE_TOOLS) {
-					let oldest: [string, WidgetActiveTool] | undefined;
-					for (const candidate of item.activeTools) {
-						if (!oldest || candidate[1].order < oldest[1].order) oldest = candidate;
-					}
-					if (oldest) item.activeTools.delete(oldest[0]);
-				}
-				const path = event.path === undefined ? undefined : basename(event.path);
-				item.startedToolCount += 1;
-				item.activeTools.set(event.toolCallId, {
-					toolName: event.toolName,
-					...(path ? { path } : {}),
-					startedAt: Date.now(),
-					order: ++item.activityOrder,
-				});
-				item.activeToolId = event.toolCallId;
-				break;
-			}
-			case "tool_execution_end": {
-				item.activeTools.delete(event.toolCallId);
-				if (item.activeToolId === event.toolCallId) {
-					let latest: [string, WidgetActiveTool] | undefined;
-					for (const candidate of item.activeTools) {
-						if (!latest || candidate[1].order > latest[1].order) latest = candidate;
-					}
-					item.activeToolId = latest?.[0];
-				}
-				break;
-			}
-			case "message_end":
-				item.completedAssistantTurns += 1;
-				break;
-		}
 		requestWidgetRender();
 	};
 
@@ -433,14 +318,31 @@ export default function subagentExtension(
 		if (!item) return;
 		item.status = status;
 		item.finishedAt = Date.now();
-		item.activeTools.clear();
-		item.activeToolId = undefined;
 		if (![...widgetItems.values()].some(({ status }) => status === "working")) stopWidgetTimer();
 		requestWidgetRender();
 	};
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		sessionEpoch += 1;
+		if (latestCtx) {
+			const previous = [...directTasks.values()];
+			for (const { controller, handles } of previous) {
+				controller.abort();
+				await Promise.allSettled(handles.map((handle) => handle.cancel()));
+			}
+			await Promise.allSettled(previous.map(({ settled }) => settled));
+			// A switch discards the old session's ordinary follow-up. Carry exact
+			// recovery identities into the new branch as well as the original one.
+			const recorded = new Set(ctx.sessionManager.getBranch().flatMap((entry) =>
+				entry.type === "custom" && entry.customType === DIRECT_TAB_TYPE && entry.data
+					? [(entry.data as DirectTabRecord).tabId] : []));
+			for (const { tabs } of previous) for (const tab of tabs) {
+				if (!recorded.has(tab.tabId)) {
+					pi.appendEntry(DIRECT_TAB_TYPE, tab);
+					recorded.add(tab.tabId);
+				}
+			}
+		}
 		latestCtx = ctx;
 		ensureWidget(ctx);
 		if (loadedConfig.error !== undefined) ctx.ui.notify(loadedConfig.error, "warning");
@@ -453,7 +355,6 @@ export default function subagentExtension(
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
-		failedToolPatches.clear();
 		stopWidgetTimer();
 		widgetItems.clear();
 		activeTui = undefined;
@@ -462,10 +363,13 @@ export default function subagentExtension(
 		// Invalidate ordinary outcomes, abort children, then let preserved isolated
 		// work report into the outgoing session before Pi tears it down.
 		sessionEpoch += 1;
-		const tasks = [...backgroundTasks.values()];
-		for (const { controller } of tasks) controller.abort();
+		const tasks = [...directTasks.values()];
+		for (const { controller, handles } of tasks) {
+			controller.abort();
+			await Promise.allSettled(handles.map((handle) => handle.cancel()));
+		}
 		await Promise.allSettled(tasks.map(({ settled }) => settled));
-		backgroundTasks.clear();
+		directTasks.clear();
 	});
 	// btw-style context refresh: model_select carries the new model on the event,
 	// agent_settled delivers the freshest full context after each turn.
@@ -482,79 +386,39 @@ export default function subagentExtension(
 	pi.on("agent_settled", (_event, ctx) => {
 		latestCtx = ctx;
 	});
-	pi.on("tool_result", (event) => {
-		if (event.toolName !== "delegate_task") return;
-		const patch = failedToolPatches.get(event.toolCallId);
-		if (!patch) return;
-		failedToolPatches.delete(event.toolCallId);
-		return patch;
-	});
 
-	const reportBackground = (
+	const reportDirect = (
 		launchEpoch: number,
 		taskId: string,
 		mode: ParsedWorkflow["mode"],
 		entries: readonly WorkflowTransportEntry[],
-		setupRecoveries: ReadonlyMap<string, string>,
+		tabs: readonly DirectTabRecord[],
 	): void => {
 		const stale = launchEpoch !== sessionEpoch;
-		const recoveries = entries.flatMap((entry) => {
-			const worktree = entry.worktreePayload;
-			return worktree === undefined || worktree.outcome === "pruned" ? [] : [{ entry, worktree }];
-		});
-		if (stale && !recoveries.length && !setupRecoveries.size) return;
-		const transport = formatBackgroundWorkflowResult(mode, entries);
-		const outcome: BackgroundWorkflowTransportDetails["outcome"] = stale ? "aborted" : transport.failed ? "failed" : "completed";
-		const content = stale
-			? capOutput([
-				"Background workflow left recoverable isolated work after session shutdown.",
-				`Task ID: ${taskId}`,
-				`Mode: ${mode}`,
-				"Recovery locations:",
-				...recoveries.map(({ entry, worktree }) =>
-					`- [${entry.index}] worktree path=${JSON.stringify(worktree.path)} branch=${JSON.stringify(worktree.branch)}`),
-				...[...setupRecoveries].map(([id, recovery]) => {
-					const entry = entries.find((candidate) => candidate.id === id)!;
-					return `- [${entry.index}] setup state: ${recovery}`;
-				}),
-				"Evidence:",
-				...recoveries.flatMap(({ entry, worktree }) => {
-					const measurements = [
-						...(worktree.commits === undefined ? [] : [`commits=${worktree.commits}`]),
-						...(worktree.dirty === undefined ? [] : [`dirty=${worktree.dirty}`]),
-					];
-					return [
-						`- [${entry.index}] ${worktree.outcome} worktree${measurements.length ? ` ${measurements.join(" ")}` : ""}`,
-						...(worktree.outcome === "recovery" ? [`  ${worktree.note}`] : []),
-					];
-				}),
-				...[...setupRecoveries].map(([id, recovery]) => {
-					const entry = entries.find((candidate) => candidate.id === id)!;
-					return `- [${entry.index}] recoverable WorktreeSetupError: ${recovery}`;
-				}),
-			].join("\n"))
-			: transport.text;
-		const details: BackgroundWorkflowTransportDetails = {
+		if (stale) return;
+		const transport = formatWorkflowResult(mode, entries);
+		const outcome: BackgroundWorkflowTransportDetails["outcome"] = transport.failed ? "failed" : "completed";
+		const content = [transport.text, ...(tabs.length ? ["Recovery (also available via /subagent):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile }) =>
+			`- ${taskId} · ${entryId} · tab ${tabId} · pane ${paneId} · agent ${name} · session ${sessionFile}`)] : [])].join("\n");
+		const details: BackgroundWorkflowTransportDetails & { tabs: readonly DirectTabRecord[] } = {
 			...transport.details,
 			taskId,
 			outcome,
-			...(transport.usage === undefined ? {} : { usage: transport.usage }),
-			...(stale ? { recovery: true } : {}),
+			tabs: [...tabs],
 		};
 		try {
-			// Custom messages convert to user-role LLM messages, so the parent agent
-			// sees the aggregate on its next turn without forcing one now.
+			// Queue behind the current turn, then trigger one follow-up turn.
 			pi.sendMessage({
-				customType: BACKGROUND_RESULT_TYPE,
+				customType: DIRECT_RESULT_TYPE,
 				content,
 				display: true,
 				details,
-			}, { triggerTurn: false });
+			}, { triggerTurn: true, deliverAs: "followUp" });
 		} catch (error) {
 			// Delivery can disappear during teardown; only an active UI gets a visible failure.
-			if (!stale && latestCtx?.hasUI) {
+			if (latestCtx?.hasUI) {
 				latestCtx.ui.notify(boundedError(new Error(
-					`Background workflow ${taskId} result delivery failed: ${error instanceof Error ? error.message : String(error)}`,
+					`Direct workflow ${taskId} result delivery failed: ${error instanceof Error ? error.message : String(error)}`,
 				)).message, "error");
 			}
 		}
@@ -563,299 +427,159 @@ export default function subagentExtension(
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate one selected single, parallel, or chain workflow of bounded tasks to isolated Pi Subagents. Roles: ${roleSummary()}.`,
-		promptSnippet: "Delegate one bounded single, parallel, or chain workflow to isolated roles",
+		description: `Delegate read-only direct work in Herdr or a durable checked isolated graph to Pi Roles. Roles: ${roleSummary()}.`,
+		promptSnippet: "Delegate read-only direct work or a checked isolated task graph",
 		promptGuidelines: [
-			"Use delegate_task with exactly one mode: role+name+task for one task, tasks for 1–8 independent tasks, or chain for 1–8 dependent tasks using {previous}. Prefer parallel whenever at least two outcomes are independently deliverable and verifiable; never split one invariant.",
-			"Each delegate_task entry needs one bounded outcome, scope and exclusions, context and constraints, deliverable, and focused validation. Discover unclear scope first; never pass the parent request unchanged. Parallel mutations need non-overlapping ownership; read-only tasks may overlap only for distinct questions. Keep integration and cross-cutting decisions in Main.",
+			"Keep trivial mechanically verifiable work in Main. Use mode direct only for read-only research, analysis, or review in the current workspace. Use mode isolated for any implementation, write-capable Role, or checked changeset; explicit mode never falls back.",
+			"Direct requests use one compact role/name/task packet, tasks for independent packets, or chain with {previous}. Direct work returns a Herdr handle after launch; results arrive as one follow-up message.",
+			"Isolation uses typed tasks and dependencies. Keep tightly coupled changes with one owner; do not split by file count. Failures, ambiguity, limits, and conflicts retain work and never waive checks or identity guards.",
 			`For delegate_task, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
-			"Use delegate_task background only when the user explicitly requests non-blocking work.",
 		],
-		parameters: WorkflowSchema,
+		parameters: DelegateTaskSchema,
 		prepareArguments(args) {
 			try {
-				const workflow = parseWorkflow(args);
-				if (workflow.mode === "single") return { ...workflow.delegations[0], background: workflow.background };
-				if (workflow.mode === "parallel") return { tasks: workflow.delegations, background: workflow.background };
-				return { chain: workflow.delegations, background: workflow.background };
-			} catch (error) {
-				throw boundedError(error);
-			}
+				const parsed = parseDelegateTask(args);
+				if (parsed.mode === "isolated") return parsed.request;
+				const workflow = parsed.workflow;
+				if (workflow.mode === "single") return { mode: "direct" as const, ...workflow.delegations[0] };
+				if (workflow.mode === "parallel") return { mode: "direct" as const, tasks: workflow.delegations };
+				return { mode: "direct" as const, chain: workflow.delegations };
+			} catch (error) { throw boundedError(error); }
 		},
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			const throwIfAborted = () => {
-				if (signal?.aborted) throw new EphemeralSubagentError("aborted", "Subagent was aborted.", signal.reason);
-			};
-			throwIfAborted();
-			let workflow: ParsedWorkflow;
-			try {
-				workflow = parseWorkflow(params);
-				const roles = loadRoles();
-				const knownRoles = new Set(roles.map(({ name }) => name));
-				for (const { role } of workflow.delegations) {
-					if (!knownRoles.has(role)) {
-						throw new Error(`Unknown Subagent role: ${role}. Available roles: ${roles.map(({ name }) => name).join(", ") || "none"}.`);
-					}
-				}
-			} catch (error) {
-				throw boundedError(error);
+		async execute(toolCallId, params, signal, _onUpdate, ctx) {
+			signal?.throwIfAborted();
+			const parsed = parseDelegateTask(params);
+			if (parsed.mode === "isolated") return await isolatedSurface.execute(parsed.request, signal, ctx);
+			const workflow = parsed.workflow;
+			const roles = new Map(loadRoles().map((role) => [role.name, role]));
+			for (const delegation of workflow.delegations) {
+				const role = roles.get(delegation.role);
+				if (!role) throw boundedError(new Error(`Unknown Subagent role: ${delegation.role}. Available roles: ${[...roles.keys()].join(", ") || "none"}.`));
+				if (roleCanWrite(role)) throw new Error(`Role ${role.name} exposes write-capable or unverified resources. Use mode isolated for this Role; direct is read-only.`);
 			}
-			throwIfAborted();
-			const reloadRole = (name: string): Role => {
-				let freshRoles: Role[];
-				try {
-					freshRoles = loadRoles();
-				} catch (error) {
-					throw boundedError(new Error(
-						`Couldn't reload Subagent role ${JSON.stringify(name)} after it waited for an executor permit. Fix the Role configuration and retry: ${error instanceof Error ? error.message : String(error)}`,
-						{ cause: error },
-					));
-				}
-				const role = freshRoles.find((candidate) => candidate.name === name);
-				if (role) return role;
-				throw boundedError(new Error(
-					`Subagent role ${JSON.stringify(name)} disappeared while waiting for an executor permit. Restore it and retry. Available roles: ${freshRoles.map(({ name: available }) => available).join(", ") || "none"}.`,
-				));
-			};
-
-			// Resolve against the latest known session context after each FIFO permit.
-			const launchCtx = () => latestCtx ?? ctx;
-			const prepareLaunch = (role: Role, delegation: Delegation) => {
-				const context = launchCtx();
-				const launch = prepareRoleLaunch(pi, context, {
-					role,
-					task: DELEGATE_TASK,
-					...(delegation.modelClass === undefined ? {} : { modelClass: delegation.modelClass }),
-				});
-				if (delegation.model === undefined) return launch;
-				return prepareRoleLaunch(pi, context, {
-					role,
-					route: replaceRouteModel(context, delegation.model, launch),
-				});
-			};
-			const foregroundWorkflow: ParsedWorkflow = { ...workflow, background: false };
-			const entries = identifyWorkflowEntries(toolCallId, foregroundWorkflow);
+			const policy = currentPolicy();
+			const herdr = createDirectHerdr(pi, ctx.cwd, policy.childIdleMs);
+			const entries = identifyWorkflowEntries(toolCallId, workflow);
 			const states = new Map<string, WorkflowTransportEntry>(entries.map((entry) => [entry.id, {
-				id: entry.id,
-				index: entry.index,
-				name: entry.delegation.name,
-				role: entry.delegation.role,
-				status: "pending",
+				id: entry.id, index: entry.index, name: entry.delegation.name, role: entry.delegation.role, status: "pending",
 			}]));
-			const setupRecoveries = new Map<string, string>();
-			const emitUpdate = (enabled: boolean) => {
-				if (!enabled) return;
-				const update = formatWorkflowUpdate(workflow.mode, [...states.values()]);
-				onUpdate?.({
-					content: [{ type: "text", text: update.text }],
-					details: update.details,
-					...(update.usage === undefined ? {} : { usage: update.usage }),
+			const taskId = `direct-${++directSequence}-${Date.now().toString(36)}`;
+			const controller = new AbortController();
+			const launchEpoch = sessionEpoch;
+			const handles: DirectHandle[] = [];
+			const tabs: DirectTabRecord[] = [];
+			const tabByEntry = new Map<string, DirectTabRecord>();
+			let resolveSettled!: () => void;
+			const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+			// Register before Herdr can create a tab: session switches must await this
+			// launch, including its identity callback, before copying recovery records.
+			directTasks.set(taskId, { controller, settled, handles, tabs });
+			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
+				activeSignal.throwIfAborted();
+				const role = loadRoles().find((candidate) => candidate.name === entry.delegation.role);
+				if (!role || roleCanWrite(role)) throw new Error(`Role ${entry.delegation.role} disappeared or became write-capable; use mode isolated.`);
+				const context = latestCtx ?? ctx;
+				const route = prepareRoleLaunch(pi, context, { role, task: DELEGATE_TASK,
+					...(entry.delegation.modelClass === undefined ? {} : { modelClass: entry.delegation.modelClass }) });
+				const prepared = entry.delegation.model === undefined ? route : prepareRoleLaunch(pi, context, {
+					role, route: replaceRouteModel(context, entry.delegation.model, route),
 				});
-			};
-			const runWorkflow = async (workflowSignal: AbortSignal | undefined, emitToolUpdates: boolean) => {
+				const base = states.get(entry.id)!;
+				states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
+				model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
+				startWidgetItem(entry.id, taskId, role.name, prepared.model.id, prepared.thinkingLevel, entry.delegation.name, ctx);
+				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
+					promptArgIndex: prepared.promptArgIndex }, activeSignal);
+				let handle: DirectHandle;
 				try {
-					return await runForegroundWorkflow<EphemeralSubagentResult>(toolCallId, foregroundWorkflow, async (entry: WorkflowEntry) => {
-					let model: string | undefined;
-					let thinkingLevel: string | undefined;
-					let worktree: WorktreeInfo | undefined;
-					let worktreePayload: WorktreePayload | undefined;
-					let child: EphemeralSubagentResult | undefined;
-					let rejected: unknown;
-					let rejectedUsage: Usage | undefined;
-					let aborted = false;
-					let status: "succeeded" | "failed" | "rejected" = "rejected";
-					let text = "Subagent did not start.";
-					const setState = (
-						nextStatus: "running" | "succeeded" | "failed" | "rejected",
-						nextText: string,
-					) => {
-						const usage = child?.usage ?? rejectedUsage;
-						const base = {
-							id: entry.id,
-							index: entry.index,
-							name: entry.delegation.name,
-							role: entry.delegation.role,
-							...(model === undefined ? {} : { model }),
-							...(thinkingLevel === undefined ? {} : { thinkingLevel }),
-							...(worktreePayload === undefined ? {} : { worktreePayload }),
-							...(usage === undefined ? {} : { usage }),
-						};
-						states.set(entry.id, nextStatus === "failed" || nextStatus === "rejected"
-							? { ...base, status: nextStatus, failure: nextText }
-							: { ...base, status: nextStatus, assistantOutput: nextText });
-					};
-					try {
-						child = await executor.run({
-							signal: workflowSignal,
-							onUpdate: (output) => {
-								setState("running", output);
-								emitUpdate(emitToolUpdates);
-							},
-							onTokens: (tokens) => updateWidgetTokens(entry.id, tokens),
-							onActivity: (event) => updateWidgetActivity(entry.id, event),
-							prepare: async () => {
-								// Route and effective Role resources resolve only after this entry's
-								// shared executor permit, before isolated state is created.
-								const role = reloadRole(entry.delegation.role);
-								const preparedLaunch = prepareLaunch(role, entry.delegation);
-								model = modelReference(preparedLaunch.model);
-								thinkingLevel = preparedLaunch.thinkingLevel;
-								if (preparedLaunch.isolation === "worktree") {
-									worktree = await createChildWorktree(ctx.cwd, entry.id, undefined, workflowSignal);
-								}
-								startWidgetItem(entry.id, entry.id, preparedLaunch.role, preparedLaunch.model.id, preparedLaunch.thinkingLevel, entry.delegation.name, ctx);
-								setState("running", "");
-								emitUpdate(emitToolUpdates);
-								const task = worktree ? `${entry.delegation.task}${worktreeContextNote(worktree)}` : entry.delegation.task;
-								const cwd = worktree?.cwd ?? ctx.cwd;
-								return { launch: finalizeRoleLaunch(preparedLaunch), task, cwd };
-							},
+					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
+						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, entry.delegation.name, entry.delegation.task, activeSignal, (tab) => {
+							const record = { taskId, entryId: entry.id, ...tab };
+							// Persist before agent start, including launches interrupted by a session switch.
+							pi.appendEntry(DIRECT_TAB_TYPE, record);
+							tabs.push(record);
+							tabByEntry.set(entry.id, record);
 						});
-						if (child.outcome === "failure") {
-							status = "failed";
-							text = capOutput(child.errorMessage || child.stderr.trim() || child.output || `Subagent exited with code ${child.exitCode}.`);
-						} else {
-							status = "succeeded";
-							text = child.output;
-						}
-					} catch (error) {
-						rejected = error;
-						aborted = error instanceof EphemeralSubagentError && error.code === "aborted";
-						rejectedUsage = error instanceof EphemeralSubagentError
-							? (error as EphemeralSubagentError & { usage?: Usage }).usage
-							: undefined;
-						const cause = error instanceof EphemeralSubagentError ? error.cause : error;
-						if (cause instanceof WorktreeSetupError) {
-							setupRecoveries.set(entry.id, cause.message);
-						}
-						text = capOutput(error instanceof Error ? error.message : String(error));
-					}
-					try {
-						worktreePayload = worktree ? await finalizeChildWorktree(worktree) : undefined;
-					} catch (error) {
-						rejected = error;
-						aborted = false;
-						status = "rejected";
-						text = capOutput(error instanceof Error ? error.message : String(error));
-						worktreePayload = worktree ? {
-							outcome: "recovery",
-							path: worktree.path,
-							branch: worktree.branch,
-							note: capOutput(`Worktree finalization failed (${text}); commits/dirty UNKNOWN. Inspect ${worktree.path} (branch ${worktree.branch}) before assuming no work.`),
-						} : undefined;
-					}
-					if (worktreePayload?.outcome === "recovery") {
-						const note = capOutput(worktreePayload.note);
-						worktreePayload = { ...worktreePayload, note };
-						rejected = new Error(note, rejected === undefined ? undefined : { cause: rejected });
-						status = "rejected";
-						text = capOutput(`${note}\n${text}`);
-					}
-					if (rejected !== undefined) status = "rejected";
-					setState(status, text);
-					try {
-						finishWidgetItem(entry.id, aborted ? "aborted" : status === "succeeded" ? "success" : "failure");
-					} catch (error) {
-						rejected = error;
-						status = "rejected";
-						setState("rejected", capOutput(error instanceof Error ? error.message : String(error)));
-						finishWidgetItem(entry.id, "failure");
-					}
-					if (rejected !== undefined) throw rejected;
-						return child!.outcome === "success"
-							? { ok: true, assistantOutput: text, result: child! }
-							: { ok: false, result: child! };
-					}, workflowSignal);
-				} finally {
-					if (workflow.mode === "chain" && (workflowSignal?.aborted
-						|| [...states.values()].some(({ status }) => status === "failed" || status === "rejected"))) {
-						for (const [id, state] of states) {
-							if (state.status === "pending") states.set(id, { ...state, status: "skipped" });
-						}
-					}
+				} catch (error) {
+					// A failed start can still be in flight. Keep its private prompt for recovery.
+					throw new Error(`${error instanceof Error ? error.message : String(error)}. Direct Role prompt retained at ${transient.launch.args[prepared.promptArgIndex + 1]} after uncertain start.`, { cause: error });
 				}
+				await transient.cleanup();
+				handles.push(handle);
+				return handle;
 			};
-
-			const recordInfrastructureFailure = (error: unknown) => {
-				if ([...states.values()].some(({ status }) => status === "failed" || status === "rejected")) return;
-				const target = [...states.values()].find(({ status }) => status === "pending" || status === "running")
-					?? [...states.values()].at(-1)!;
-				states.set(target.id, {
-					id: target.id,
-					index: target.index,
-					name: target.name,
-					role: target.role,
-					...(target.model === undefined ? {} : { model: target.model }),
-					...(target.thinkingLevel === undefined ? {} : { thinkingLevel: target.thinkingLevel }),
-					...(target.worktreePayload === undefined ? {} : { worktreePayload: target.worktreePayload }),
-					...(target.usage === undefined ? {} : { usage: target.usage }),
-					status: "rejected",
-					failure: capOutput(error instanceof Error ? error.message : String(error)),
-				});
-			};
-
-			throwIfAborted();
-			if (workflow.background) {
-				const taskId = `bg-${++backgroundSequence}-${Date.now().toString(36)}`;
-				const controller = new AbortController();
-				// Freeze the launching session now: a task that settles after a
-				// reload must not deliver into whichever session is active then.
-				const launchEpoch = sessionEpoch;
-				const settled = (async () => {
-					try {
-						// Let the acknowledgement resolve before any route, Skill, worktree,
-						// permit, or child work starts.
-						await new Promise<void>((resolve) => setImmediate(resolve));
-						try {
-							await runWorkflow(controller.signal, false);
-						} catch (error) {
-							if (!controller.signal.aborted) recordInfrastructureFailure(error);
-						}
-						reportBackground(launchEpoch, taskId, workflow.mode, [...states.values()], setupRecoveries);
-					} finally {
-						backgroundTasks.delete(taskId);
-					}
-				})();
-				backgroundTasks.set(taskId, { controller, settled });
-				void settled;
-				const title = workflow.mode === "single" ? "Background delegation"
-					: workflow.mode === "parallel" ? "Background parallel delegation" : "Background delegation chain";
-				const acknowledgement = capOutput([
-					`${title} started${entries.length === 1 ? "" : ` · ${entries.length} tasks`}`,
-					...entries.map((entry, index) =>
-						`○ [${index + 1}/${entries.length}] ${entry.delegation.name} · ${entry.delegation.role}`),
-					"Results will arrive in one message.",
-				].join("\n"));
-				return {
-					content: [{ type: "text" as const, text: acknowledgement }],
-					details: {
-						taskId,
-						background: true,
-						mode: workflow.mode,
-						entries: entries.map((entry) => ({ id: entry.id, index: entry.index, name: entry.delegation.name, role: entry.delegation.role })),
-					},
-				};
-			}
-
-			let outcomes: Awaited<ReturnType<typeof runWorkflow>>;
+			// The first tab is verified before returning a handle; subsequent independent
+			// entries launch asynchronously and retain chain/parallel dependency semantics.
+			let first: DirectHandle;
+			const abortLaunch = () => controller.abort(signal?.reason);
+			signal?.addEventListener("abort", abortLaunch, { once: true });
 			try {
-				outcomes = await runWorkflow(signal, true);
+				first = await launch(workflow.mode === "chain" ? {
+					...entries[0]!, delegation: { ...entries[0]!.delegation, task: entries[0]!.delegation.task.replaceAll("{previous}", "") },
+				} : entries[0]!, controller.signal);
+				if (launchEpoch !== sessionEpoch || controller.signal.aborted) {
+					await first.cancel();
+					throw new Error(`Launching session changed during direct start; inspect Herdr tab ${first.tabId}.`);
+				}
 			} catch (error) {
-				if (!signal?.aborted) throw error;
-				const aborted = new WorkflowAbortedError(workflow.mode, [...states.values()], signal.reason);
-				failedToolPatches.set(toolCallId, failedToolPatch(aborted));
-				throw aborted;
-			}
-			if (outcomes.some(({ status }) => status === "failed" || status === "rejected")) {
-				const failure = new WorkflowFailureError(workflow.mode, [...states.values()]);
-				failedToolPatches.set(toolCallId, failedToolPatch(failure));
-				throw failure;
-			}
-			const result = formatWorkflowResult(workflow.mode, [...states.values()]);
+				controller.abort();
+				finishWidgetItem(entries[0]!.id, "failure");
+				directTasks.delete(taskId);
+				resolveSettled();
+				throw boundedError(error);
+			} finally { signal?.removeEventListener("abort", abortLaunch); }
+			void (async () => {
+				try {
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					let active = 0;
+					const queue: Array<() => void> = [];
+					const permit = async () => {
+						if (active >= policy.maxSubagents) await new Promise<void>((resolve) => queue.push(resolve));
+						active++;
+						return () => { active--; queue.shift()?.(); };
+					};
+					await runForegroundWorkflow(toolCallId, workflow, async (entry) => {
+						const release = await permit();
+						try {
+							controller.signal.throwIfAborted();
+							const handle = entry.index === 0 ? first : await launch(entry, controller.signal);
+							const answer = await handle.answer(Math.floor(40 * 1024 / entries.length));
+							const base = states.get(entry.id)!;
+							states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
+								...(base.model ? { model: base.model } : {}), ...(base.thinkingLevel ? { thinkingLevel: base.thinkingLevel } : {}),
+								status: "succeeded", assistantOutput: answer });
+							finishWidgetItem(entry.id, "success");
+							return answer;
+						} catch (error) {
+							const base = states.get(entry.id)!;
+							states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
+								...(base.model ? { model: base.model } : {}), ...(base.thinkingLevel ? { thinkingLevel: base.thinkingLevel } : {}),
+								status: "rejected", failure: `${tabByEntry.has(entry.id) ? `recover from Herdr tab ${tabByEntry.get(entry.id)!.tabId}, agent ${tabByEntry.get(entry.id)!.name}, session ${tabByEntry.get(entry.id)!.sessionFile}: ` : ""}${capOutput(error instanceof Error ? error.message : String(error))}` });
+							finishWidgetItem(entry.id, "failure");
+							throw error;
+						} finally { release(); }
+					}, controller.signal);
+				} catch (error) {
+					if (!controller.signal.aborted) {
+						const state = [...states.values()].find(({ status }) => status === "running" || status === "pending");
+						if (state) states.set(state.id, { id: state.id, index: state.index, name: state.name, role: state.role, status: "rejected", failure: capOutput(String(error)) });
+					}
+				} finally {
+					for (const [id, state] of states) {
+						if (state.status === "pending" || state.status === "running") states.set(id, {
+							id: state.id, index: state.index, name: state.name, role: state.role,
+							status: "skipped",
+						});
+					}
+					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, workflow.mode, [...states.values()], tabs);
+					directTasks.delete(taskId);
+					resolveSettled();
+				}
+			})();
 			return {
-				content: [{ type: "text" as const, text: result.text }],
-				details: result.details,
-				...(result.usage === undefined ? {} : { usage: result.usage }),
+				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${taskId}\nHerdr tab: ${first.tabId} · pane: ${first.paneId} · agent: ${first.name}\nExact session: ${first.sessionFile}\nAll launched tabs: /subagent (on this session branch).\n${entries.length} task(s); result will arrive in one follow-up message.`) }],
+				details: { taskId, mode: workflow.mode, tabId: first.tabId, sessionFile: first.sessionFile,
+					entries: entries.map(({ id, index, delegation }) => ({ id, index, name: delegation.name, role: delegation.role })) },
 			};
 		},
 	});

@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "18.0.1",
-  "description": "Delegate bounded single, parallel, or chained tasks to isolated Pi roles.",
+  "version": "22.0.0",
+  "description": "Delegate bounded direct work or durable checked isolated task graphs to Pi roles.",
   "keywords": [
     "pi-package",
     "pi",
@@ -19,8 +19,10 @@
     "extensions",
     "docs",
     "examples",
+    "example.png",
     "README.md",
-    "CONTEXT.md"
+    "CONTEXT.md",
+    "skills"
   ],
   "types": "./dist/index.d.ts",
   "exports": {
@@ -58,17 +60,23 @@
     "extensions": [
       "./extensions/subagent.ts"
     ],
+    "skills": [
+      "./skills"
+    ],
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-subagent/example.png"
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^2.0.0",
+    "@henryqw/pi-herdr": "^0.4.7",
     "@henryqw/pi-multi-codex": "^2.0.0",
-    "@henryqw/pi-process": "^0.1.0",
-    "@henryqw/pi-task-models": "^7.0.0"
+    "@henryqw/pi-process": "^0.2.0",
+    "@henryqw/pi-task-models": "^7.0.0",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.87.0",
     "@earendil-works/pi-coding-agent": "0.87.0",
-    "@earendil-works/pi-tui": "0.87.0"
+    "@earendil-works/pi-tui": "0.87.0",
+    "@types/proper-lockfile": "^4.1.4"
   }
 }

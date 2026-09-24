@@ -8,6 +8,8 @@ README contract:
 - Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
 - Limits and recovery, when present, must be last.
 - Keep simple packages short. Use simple English. Preserve exact commands, paths, errors, safety advice, and recovery steps.
+- Prefer tables for structured information with multiple comparable rows (interfaces, settings, modes, limits, or recovery cases). Use prose for explanations and numbered lists for ordered workflows; do not force narrative or single items into tables.
+- When a package exposes two or more discoverable interfaces, include exactly one complete interface-discovery table near the start of Use. Include every package-owned command, agent tool, skill, shortcut, and UI entry point; distinguish their types and explain their audience. Do not split the inventory by mode, normal use, or recovery. Keep detailed behavior in prose or H3 subsections, and public library exports in API.
 - Start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.
 -->
 
@@ -36,7 +38,7 @@ pi install npm:@henryqw/<package>
 | [`@henryqw/<companion-a>`](https://pi.henry.wang/extensions/<companion-a>) | Required | <What the package provides.> |
 | [`@henryqw/<companion-b>`](https://pi.henry.wang/extensions/<companion-b>) | Improves | <What becomes better.> |
 
-<!-- Optional: include only when users need package-specific usage information. Start with the shortest successful workflow and its expected result. For two or more comparable user surfaces, use exactly this table with lowercase types such as command, tool, skill, or ui. Use H3 headings only when a surface needs more detail. -->
+<!-- Optional: include only when users need package-specific usage information. Start with the shortest successful workflow and its expected result, then the single complete discovery table when two or more interfaces exist. Use exactly these columns and lowercase types such as command, tool, skill, shortcut, or ui. Explain that commands are for humans and tools are for agents when both exist; identify other audiences where needed. Include command arguments needed for use. Do not repeat partial inventories in later sections. For one trivial interface, concise prose or code is enough. Use H3 headings only when an interface needs more detail. -->
 ## Use
 
 <First successful workflow and expected result. Delete this paragraph only when a trivial command makes the result obvious.>

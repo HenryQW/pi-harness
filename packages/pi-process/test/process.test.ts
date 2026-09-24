@@ -56,7 +56,16 @@ test("bounded spawn rejects when the child closes stdin before consuming it", as
 	);
 });
 
-test("bounded spawn aborts and cleans up an in-flight child", async (t) => {
+test("spawn without an elapsed-time limit survives the default timeout", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const running = spawnBounded(process.execPath, ["-e", "console.log('done')"], {
+		cwd: process.cwd(), timeoutMs: null,
+	});
+	t.mock.timers.tick(31 * 60_000);
+	assert.equal((await running).stdout, "done\n");
+});
+
+test("spawn without an elapsed-time limit still aborts and cleans up an in-flight child", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pi-process-abort-"));
 	const pidPath = join(root, "child.pid");
 	let childPid: number | undefined;
@@ -77,6 +86,7 @@ test("bounded spawn aborts and cleans up an in-flight child", async (t) => {
 	].join("\n")], {
 		cwd: root,
 		signal: controller.signal,
+		timeoutMs: null,
 	});
 	const pidText = await waitForFile(pidPath, 500);
 	const pid = Number(pidText);

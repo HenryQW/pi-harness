@@ -17,14 +17,13 @@ test("missing config directory still returns validated built-in implementer, rev
 	const roles = loadRoles(agentDir);
 	const [implementer, reviewer, scout] = roles;
 
-	assert.deepEqual(roles.map(({ name, description, tools, isolation, extensions, skills, mcps }) => ({
-		name, description, tools, isolation, extensions, skills, mcps,
+	assert.deepEqual(roles.map(({ name, description, tools, extensions, skills, mcps }) => ({
+		name, description, tools, extensions, skills, mcps,
 	})), [
 		{
 			name: "implementer",
-			description: "Implements and validates one bounded change, requesting worktree isolation",
+			description: "Implements and validates one bounded change in the checkout selected by Main",
 			tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-			isolation: "worktree",
 			extensions: [],
 			skills: [],
 			mcps: [],
@@ -33,7 +32,6 @@ test("missing config directory still returns validated built-in implementer, rev
 			name: "reviewer",
 			description: "Reviews one bounded change for correctness without changing files",
 			tools: ["read", "grep", "find", "ls"],
-			isolation: undefined,
 			extensions: [],
 			skills: [],
 			mcps: [],
@@ -42,7 +40,6 @@ test("missing config directory still returns validated built-in implementer, rev
 			name: "scout",
 			description: "Maps relevant code and evidence for one bounded task without changing files",
 			tools: ["read", "grep", "find", "ls"],
-			isolation: undefined,
 			extensions: [],
 			skills: [],
 			mcps: [],
@@ -61,8 +58,8 @@ test("missing config directory still returns validated built-in implementer, rev
 		/Never use `git clean` or blanket deletion.*exact path as a blocker/is,
 		/credentials or the network.*extra artifacts.*broaden scope only when the task requires/is,
 		/external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i,
-		/Commit completed scoped changes.*Do not create or manage another worktree/is,
-		/assigned worktree and branch intact.*Never push or open a pull request/is,
+		/task's commit policy.*Direct delegation leaves changes uncommitted.*isolated delegation commits completed scoped changes.*Do not create or manage another worktree/is,
+		/assigned checkout and branch intact.*Never push or open a pull request/is,
 		/outcome, commit, checks, and remaining risks/i,
 	]) assert.match(implementer!.systemPrompt, contract);
 
@@ -121,7 +118,6 @@ Custom scout body.
 		name: "implementer",
 		description: "Custom implementation policy",
 		tools: ["read"],
-		isolation: undefined,
 		extensions: [],
 		skills: [],
 		mcps: [],
@@ -131,7 +127,6 @@ Custom scout body.
 		name: "scout",
 		description: "Custom discovery policy",
 		tools: ["read"],
-		isolation: undefined,
 		extensions: [],
 		skills: [],
 		mcps: [],
@@ -169,6 +164,14 @@ test("Role display fields reject C0/C1 controls while system prompts stay multil
 	}
 	await writeFile(rolePath, "---\nname: role\ndescription: Visible role\ntools: []\nextensions: []\nskills: []\n---\nFirst line.\nSecond line.\n");
 	assert.equal(loadRoles(agentDir).find(({ name }) => name === "role")!.systemPrompt, "First line.\nSecond line.");
+});
+
+test("Role isolation is rejected because mode owns checkout policy", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(join(rolesDir, "role.md"), "---\nname: role\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	assert.throws(() => loadRoles(agentDir), /Role isolation is retired.*mode "isolated"/i);
 });
 
 test("Role capability lists are required arrays", async (t) => {

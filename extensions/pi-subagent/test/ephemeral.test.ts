@@ -95,6 +95,17 @@ test("executor acquires FIFO permits before prepare without consuming child dead
 	assert.deepEqual(calls, [1, 2, 3]);
 });
 
+test("executor can omit elapsed-time expiry while preserving its child budget", async (t) => {
+	const cwd = await useRunner(t, `const budget = JSON.parse(process.env.${EXECUTION_BUDGET_ENV});
+console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(budget.maxMs) }], stopReason: "stop" } }));`);
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const untimed = createEphemeralSubagentExecutor({ maxConcurrency: 1, timeout: { idleMs: 60 * 60_000, maxMs: null } });
+	const running = untimed.run({ prepare: async () => prepared(cwd) });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	t.mock.timers.tick(31 * 60_000);
+	assert.equal((await running).output, "null");
+});
+
 test("queued abort never calls prepare and preserves the abort cause", async (t) => {
 	const cwd = await useRunner(t, successfulRunner);
 	let releaseFirst!: () => void;

@@ -20,3 +20,11 @@ Use `--update` to approve available updates without a prompt:
 ```sh
 curl -fsSL https://pi.henry.wang/install.sh | sh -s -- --update
 ```
+
+## Extension dependencies
+
+Each row is an active extension; a filled square marks a **direct** dependency on the package named above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package. The table below is a text version of the diagram.
+
+![Matrix showing direct workspace dependencies for all 22 active Pi extensions](./docs/extension-dependencies.svg)
+
+Deprecated extensions and `@deprecated/` are excluded.

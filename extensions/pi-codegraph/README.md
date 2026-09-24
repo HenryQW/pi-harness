@@ -5,10 +5,6 @@ Get a separate [CodeGraph](https://github.com/colbymchenry/codegraph) index when
 ## Install
 
 ```bash
-pi install npm:@henryqw/pi-codegraph
-```
-
-```bash
 npm install -g @colbymchenry/codegraph
 pi install npm:pi-mcp-adapter
 pi install npm:@henryqw/pi-codegraph
@@ -43,6 +39,10 @@ At startup, the extension checks for a loaded adapter and runs `codegraph --vers
 
 Initialization uses an exclusive `pi-codegraph-init.lock` in the worktree's Git metadata. Failed or interrupted initialization keeps the lock so a partial database is not accepted. To recover: remove the lock directory with `rmdir` only after `codegraph index` succeeds, then run `/reload`.
 
-The package never installs prerequisites automatically. The `codegraph` executable must be available to both Pi and its MCP child process. An alternate `CODEGRAPH_DIR` is not supported. The extension does not add ignore rules, delete indexes, or prune worktrees — add `.codegraph/` to your own ignore rules if needed. Pi Subagent and Pi Orchestrator conservatively treat ignored files as retained work.
+The package never installs prerequisites automatically. The `codegraph` executable must be available to both Pi and its MCP child process. Only Git worktree-root indexes using the default `.codegraph` directory are supported; nested monorepo indexes are not initialized automatically. The primary checkout must remain indexed for automatic opt-in detection.
 
-If you already configured a `codegraph` server manually, remove that entry after confirming the package server works.
+Do not remove an active lock. Existing indexes without an extension-owned lock are not health-checked. The lock coordinates this extension's sessions, not manual `codegraph init` commands; avoid running those during initialization.
+
+The extension does not add ignore rules, delete indexes, or prune worktrees — add `.codegraph/` to your own ignore rules if needed. Pi Subagent conservatively treats ignored files as retained work: an indexed worker worktree may require manual cleanup.
+
+If you already configured a `codegraph` server manually, remove that entry after confirming the package server works. Keeping both can expose duplicate servers/tools. The extension does not change your MCP configuration.
