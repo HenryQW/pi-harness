@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { EphemeralSubagentExecutor } from "../dist/ephemeral.js";
 import { ROLE_TOOL_POLICY_FLAG } from "../dist/index.js";
 import type { EffectiveExecutionPolicy } from "./config.ts";
@@ -118,7 +119,7 @@ export function workspaceWidgetLines(state: RunState): string[] | undefined {
 		const status = state.status === "aborted" ? "aborted" : workspaceStatus(taskState.status);
 		if (taskState.kind === "text") {
 			return taskState.status === "running" || taskState.status === "needs_attention"
-				? [`${taskState.status === "needs_attention" ? "!" : "◌"} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${status === "attention" ? compactWidgetField(taskState.failure ?? status) : status}`]
+				? [`${status === "attention" ? "!" : status === "aborted" ? "■" : "◌"} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${status === "attention" ? `attention · ${compactWidgetField(taskState.failure ?? status)}` : status}`]
 				: [];
 		}
 		const attempt = taskState.attempts.at(-1);
@@ -128,9 +129,10 @@ export function workspaceWidgetLines(state: RunState): string[] | undefined {
 		);
 		const workspaceCleanup = attempt?.cleanup.find((step) => step.kind === "workspace");
 		if (workspaceCleanup?.status === "completed" || (!allocation && !["allocating", "working", "attention"].includes(status))) return [];
-		const symbol = status === "attention" ? "!" : status === "ready" ? "✓" : status === "working" || status === "allocating" ? "◌" : "■";
+		const symbol = status === "attention" ? "!" : status === "ready" || status === "completed" ? "✓"
+			: ["working", "allocating", "integrating", "cleanup"].includes(status) ? "◌" : "■";
 		const detail = status === "ready" ? "candidate ready · Main not promoted"
-			: status === "attention" ? compactWidgetField(taskState.failure ?? "needs attention") : status;
+			: status === "attention" ? `attention · ${compactWidgetField(taskState.failure ?? "needs attention")}` : status;
 		return `${symbol} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${detail}${allocation ? ` · ${compactWidgetField(allocation.label)}` : ""}`;
 	});
 	return rows.length ? rows : undefined;
@@ -147,7 +149,16 @@ function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState, rowsByReq
 	const shown = allRows.length > MAX_WORKSPACE_WIDGET_LINES
 		? [...allRows.slice(0, MAX_WORKSPACE_WIDGET_LINES - 1), `+${allRows.length - MAX_WORKSPACE_WIDGET_LINES + 1} more · /subagent`]
 		: allRows;
-	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, shown.length ? shown : undefined);
+	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, shown.length ? (_tui, theme) => ({
+		invalidate() {},
+		render(width) {
+			return shown.map((line) => {
+				const color = line.startsWith("!") ? "error" : line.startsWith("◌") ? "accent"
+					: line.startsWith("✓") ? "success" : line.startsWith("■") ? "warning" : undefined;
+				return truncateToWidth(color ? theme.fg(color, line[0]!) + line.slice(1) : line, width);
+			});
+		},
+	}) : undefined);
 }
 
 function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState, rowsByRequest: Map<string, string[]>): void {

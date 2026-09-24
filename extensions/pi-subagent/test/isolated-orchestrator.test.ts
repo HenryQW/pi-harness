@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import {
 	createIsolatedComponents,
@@ -50,6 +51,12 @@ const POLICY = {
 	childMaxMs: 1_800_000,
 	maxCorrections: 1,
 };
+
+type WidgetContent = string[] | ((tui: TUI, theme: Theme) => Component) | undefined;
+const plainTheme = { fg: (_color: string, text: string) => text } as Theme;
+function renderWidget(content: WidgetContent, theme = plainTheme): string[] | undefined {
+	return typeof content === "function" ? content({} as TUI, theme).render(200) : content;
+}
 
 const EXECUTE_REQUEST: ExecuteRequest = {
 	id: "request-one",
@@ -397,7 +404,7 @@ test("workspace widget lists every uncleaned workspace with status and agent con
 	state.tasks.push(secondTask);
 
 	assert.deepEqual(workspaceWidgetLines(state), [
-		"! I [I1] unit-one · The task needs a deliberate rec~ · 012345",
+		"! I [I1] unit-one · attention · The task needs a deliberate rec~ · 012345",
 		"◌ I [R2] unit-two · working · fedcba",
 	]);
 
@@ -428,7 +435,7 @@ test("status restores active workspace rows and provides the non-TUI fallback", 
 	const tuiContext = {
 		cwd: "/repo",
 		hasUI: true,
-		ui: { setWidget: (_key: string, lines: string[] | undefined) => widgets.push(lines) },
+		ui: { setWidget: (_key: string, content: WidgetContent) => widgets.push(renderWidget(content)) },
 	} as unknown as ExtensionContext;
 	const harness = createHarness({ responseState: state });
 	harness.handlers.get("session_start")!({}, tuiContext);
@@ -443,7 +450,37 @@ test("status restores active workspace rows and provides the non-TUI fallback", 
 		undefined,
 		{ cwd: "/repo", hasUI: false } as ExtensionContext,
 	);
-	assert.equal(rpcResult.content[0]!.text, "bounded status result\n\nActive workspaces:\n! I [I1] unit-one · The task needs a deliberate rec~ · 012345");
+	assert.equal(rpcResult.content[0]!.text, "bounded status result\n\nActive workspaces:\n! I [I1] unit-one · attention · The task needs a deliberate rec~ · 012345");
+});
+
+test("isolated widget colors status glyphs with the active TUI theme while retaining plain status text", async () => {
+	let widget: WidgetContent;
+	const ctx = { cwd: "/repo", hasUI: true,
+		ui: { setWidget: (_key: string, content: WidgetContent) => { widget = content; } } } as unknown as ExtensionContext;
+	const harness = createHarness();
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	const state = structuredClone(PRIVATE_STATE);
+	addWorkspace(state);
+	const task = state.tasks[0]!;
+	const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` } as Theme;
+	const show = () => {
+		harness.getStateSaved()(state);
+		assert.equal(typeof widget, "function");
+		return renderWidget(widget, theme)![0]!;
+	};
+	assert.match(show(), /^<error>!<\/error> I \[I1\] unit-one · attention · /);
+	assert.match(renderWidget(widget)![0]!, /^! I \[I1\] unit-one · attention · /);
+	const narrow = (widget as (tui: TUI, theme: Theme) => Component)({} as TUI, theme).render(24)[0]!;
+	assert.match(narrow, /^<error>!<\/error>/);
+	assert.ok(visibleWidth(narrow) <= 24);
+	task.status = "working";
+	assert.match(show(), /^<accent>◌<\/accent> I \[I1\] unit-one · working · /);
+	task.status = "ready_to_integrate";
+	assert.match(show(), /^<success>✓<\/success> I \[I1\] unit-one · candidate ready · Main not promoted/);
+	task.status = "completed";
+	assert.match(show(), /^<success>✓<\/success> I \[I1\] unit-one · completed · /);
+	state.status = "aborted";
+	assert.match(show(), /^<warning>■<\/warning> I \[I1\] unit-one · aborted · /);
 });
 
 test("isolated work remains visible before any workspace is allocated", () => {
@@ -454,12 +491,18 @@ test("isolated work remains visible before any workspace is allocated", () => {
 	state.request.tasks[0] = { id: "research", kind: "text", role: "scout", modelClass: "fast", requirements: "Investigate", deliverable: "Report", dependsOn: [], contextFrom: [] };
 	state.tasks[0] = { taskId: "research", kind: "text", status: "running", attempts: [{ number: 1, status: "running" }] };
 	assert.deepEqual(workspaceWidgetLines(state), ["◌ I [S1] research · running"]);
+	const textTask = state.tasks[0]!;
+	textTask.status = "needs_attention";
+	textTask.failure = "Recover the task";
+	assert.deepEqual(workspaceWidgetLines(state), ["! I [S1] research · attention · Recover the task"]);
+	state.status = "aborted";
+	assert.deepEqual(workspaceWidgetLines(state), ["■ I [S1] research · aborted"]);
 });
 
 test("isolated widget caps rows and keeps attention visible", async () => {
 	const widgets: Array<string[] | undefined> = [];
 	const ctx = { cwd: "/repo", hasUI: true,
-		ui: { setWidget: (_key: string, rows: string[] | undefined) => widgets.push(rows) } } as unknown as ExtensionContext;
+		ui: { setWidget: (_key: string, content: WidgetContent) => widgets.push(renderWidget(content)) } } as unknown as ExtensionContext;
 	const harness = createHarness();
 	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
 	const state = structuredClone(PRIVATE_STATE);
@@ -481,7 +524,7 @@ test("saved state updates and clears the workspace widget", async () => {
 	const ctx = {
 		cwd: "/repo",
 		hasUI: true,
-		ui: { setWidget: (_key: string, lines: string[] | undefined) => widgets.push(lines) },
+		ui: { setWidget: (_key: string, content: WidgetContent) => widgets.push(renderWidget(content)) },
 	} as unknown as ExtensionContext;
 	const harness = createHarness();
 	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
@@ -789,7 +832,7 @@ test("resume saved before session replacement cannot acknowledge or paint the ne
 	const widgets: Array<string[] | undefined> = [];
 	const oldCtx = {
 		...context(CANONICAL_ROOT), hasUI: true,
-		ui: { setWidget: (_key: string, rows: string[] | undefined) => { widgets.push(rows); } },
+		ui: { setWidget: (_key: string, content: WidgetContent) => { widgets.push(renderWidget(content)); } },
 		sessionManager: { getSessionId: () => "origin" },
 	} as unknown as ExtensionContext;
 	const newCtx = {
@@ -817,7 +860,7 @@ test("resume saved before session replacement cannot acknowledge or paint the ne
 		/saved.*launching session changed.*subagent_status/i,
 	);
 	assert.equal(runSignal?.aborted, true);
-	assert.deepEqual(widgets, [undefined, ["! I [I1] unit-one · The task needs a deliberate rec~ · 012345"], undefined]);
+	assert.deepEqual(widgets, [undefined, ["! I [I1] unit-one · attention · The task needs a deliberate rec~ · 012345"], undefined]);
 	assert.equal(harness.sent.length, 0);
 	done.resolve(response("resume", true));
 	await new Promise(setImmediate);
