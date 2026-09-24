@@ -82,6 +82,7 @@ const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts"
 export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
+export const EXECUTION_BUDGET_FLAG = "pi-subagent-execution-budget";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
 	"ask_question",

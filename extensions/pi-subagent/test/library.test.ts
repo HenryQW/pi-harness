@@ -7,6 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import childToolPolicy from "../extensions/role-tools.ts";
 import {
 	createRoleLaunch,
+	EXECUTION_BUDGET_FLAG,
 	EXECUTION_BUDGET_ENV,
 	finalizeRoleLaunch,
 	parseRoleMcpAllowlist,
@@ -39,10 +40,9 @@ test("child role policy keeps selected built-ins and activates loaded extension 
 	let sessionStart: (() => void) | undefined;
 	let activeTools = ["read", "bash", "edit", "write", "extension_tool"];
 	const pi = {
-		registerFlag(name: string) { assert.equal(name, ROLE_TOOL_POLICY_FLAG); },
+		registerFlag(name: string) { assert.ok([ROLE_TOOL_POLICY_FLAG, EXECUTION_BUDGET_FLAG].includes(name)); },
 		getFlag(name: string) {
-			assert.equal(name, ROLE_TOOL_POLICY_FLAG);
-			return JSON.stringify(["read"]);
+			return name === ROLE_TOOL_POLICY_FLAG ? JSON.stringify(["read"]) : undefined;
 		},
 		on(event: string, handler: () => void) {
 			if (event === "session_start") sessionStart = handler;
@@ -73,7 +73,7 @@ test("child role policy verifies the final filtered registry once before the fir
 		let activeTools: string[] = ["read"];
 		const pi = {
 			registerFlag() {},
-			getFlag: () => JSON.stringify(requested),
+			getFlag: (name: string) => name === ROLE_TOOL_POLICY_FLAG ? JSON.stringify(requested) : undefined,
 			on(event: string, handler: () => void) {
 				if (event === "session_start") handlers.push(handler);
 			},
@@ -119,7 +119,7 @@ test("child role policy rejects a malformed tool flag", () => {
 	let sessionStart: (() => void) | undefined;
 	const pi = {
 		registerFlag() {},
-		getFlag: () => "not-json",
+		getFlag: (name: string) => name === ROLE_TOOL_POLICY_FLAG ? "not-json" : undefined,
 		on(event: string, handler: () => void) {
 			if (event === "session_start") sessionStart = handler;
 		},
@@ -134,7 +134,7 @@ test("child budget payload requires the executor runtime origin", () => {
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 50, maxMs: 30 * 60_000 });
 	try {
-		assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+		assert.throws(() => childToolPolicy({ registerFlag() {}, getFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
 	} finally {
 		if (previousBudget === undefined) delete process.env[EXECUTION_BUDGET_ENV];
 		else process.env[EXECUTION_BUDGET_ENV] = previousBudget;
@@ -145,11 +145,14 @@ test("child budget requires maxTurns and optional maxTokens to be safe integers 
 	const previousBudget = process.env[EXECUTION_BUDGET_ENV];
 	try {
 		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0, maxTokens: 1 });
-		assert.doesNotThrow(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI));
+		assert.doesNotThrow(() => childToolPolicy({ registerFlag() {}, getFlag() {}, on() {} } as unknown as ExtensionAPI));
+		delete process.env[EXECUTION_BUDGET_ENV];
+		assert.doesNotThrow(() => childToolPolicy({ registerFlag() {}, getFlag: () => JSON.stringify({ maxTurns: 1, maxMs: null, startedAt: 0 }), on() {} } as unknown as ExtensionAPI));
+		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0, maxTokens: 1 });
 		for (const field of ["maxTurns", "maxTokens"] as const) {
 			for (const value of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
 				process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns: 1, maxMs: 30 * 60_000, startedAt: 0, [field]: value });
-				assert.throws(() => childToolPolicy({ registerFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
+				assert.throws(() => childToolPolicy({ registerFlag() {}, getFlag() {}, on() {} } as unknown as ExtensionAPI), /JSON execution budget/);
 			}
 		}
 	} finally {
@@ -170,6 +173,7 @@ test("child budget warnings use executor time and apply each threshold once", ()
 			const sent: Array<{ message: any; options: any }> = [];
 			childToolPolicy({
 				registerFlag() {},
+				getFlag() {},
 				on(event: string, handler: (event: any) => void) {
 					if (event === "turn_end") turnEnd = handler;
 				},
@@ -249,7 +253,7 @@ test("one-turn Role starts with exactly one response-only handoff", () => {
 	try {
 		childToolPolicy({
 			registerFlag() {},
-			getFlag: () => JSON.stringify(["read"]),
+			getFlag: (name: string) => name === ROLE_TOOL_POLICY_FLAG ? JSON.stringify(["read"]) : undefined,
 			on(event: string, handler: (event: any) => any) { handlers.set(event, handler); },
 			getAllTools() {
 				events.push("getAllTools");
@@ -305,7 +309,7 @@ test("child final handoff preserves exact-output contracts and reserves the fina
 		process.env[EXECUTION_BUDGET_ENV] = JSON.stringify({ maxTurns, maxMs: 30 * 60_000, startedAt: Date.now(), ...(maxTokens === undefined ? {} : { maxTokens }) });
 		childToolPolicy({
 			registerFlag() {},
-			getFlag: () => JSON.stringify(["read"]),
+			getFlag: (name: string) => name === ROLE_TOOL_POLICY_FLAG ? JSON.stringify(["read"]) : undefined,
 			on(event: string, handler: (event: any) => any) { handlers.set(event, handler); },
 			getAllTools() {
 				events.push("getAllTools");
@@ -428,7 +432,7 @@ test("empty Role tools activate only trusted extension tools and caller addition
 	let activeTools = ["read", "bash", "edit", "role_extension", "caller_protocol", "caller_extension"];
 	const childPi = {
 		registerFlag() {},
-		getFlag: () => valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`),
+		getFlag: (name: string) => name === ROLE_TOOL_POLICY_FLAG ? valueAfter(launch.args, `--${ROLE_TOOL_POLICY_FLAG}`) : undefined,
 		on(event: string, handler: () => void) {
 			if (event === "session_start") sessionStart = handler;
 		},
