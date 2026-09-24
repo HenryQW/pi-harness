@@ -157,7 +157,7 @@ Session and top-level `contentTruncated` report transcript budget trimming only.
 Pin the previous release:
 
 ```bash
-pi install npm:@henryqw/pi-session-recall@2.1.1
+pi install npm:@henryqw/pi-session-recall@4.0.1
 ```
 
 No index migration or cleanup is needed.
