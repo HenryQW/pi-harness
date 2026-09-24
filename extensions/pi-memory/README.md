@@ -22,19 +22,18 @@ Run `/task-models` and configure the `balanced` profile before adding memory. Op
 | [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Improves | Marks side-thread children, suppressing parent-only memory injection and dream advice. |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides candidate-review routes. |
 
-Candidate review does not use the current session model as a substitute.
-
 ## Use
 
-Run `/remember I prefer concise release notes.` Approve an explicit conflict choice only if Pi finds one.
+Run `/remember I prefer concise release notes.` Pi normalizes a suitable preference and reviews it. An unconflicted preference is saved in `USER.md`; if Pi finds a conflict, only `Add separately` or `Add anyway` saves the original.
 
-Read `~/.pi/agent/config/pi-memory/memory/USER.md` to verify the default store. Start a new session to use its frozen snapshot.
+Read `~/.pi/agent/config/pi-memory/memory/USER.md` to confirm the saved entry. Start a new session to use its frozen snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/remember <instruction>` | command | Process an instruction into compact durable memory; semantic conflicts require user resolution; busy requests queue in FIFO order. |
-| `/dream` | command | Promote invariant memory instructions into the agent-global `~/.pi/agent/SYSTEM.md`. |
-| `memory` | tool | Add, replace, remove, or batch-edit entries across sessions. |
+| `/remember <instruction>` | command | For humans: process an instruction into compact durable memory; semantic conflicts require user resolution; busy requests queue in FIFO order. |
+| `/dream` | command | For humans: promote invariant memory instructions into the agent-global `~/.pi/agent/SYSTEM.md`. |
+| `memory` | tool | For agents: add, replace, remove, or batch-edit entries across sessions. |
+| `pi-memory/reviewCandidate` | model task | For `/task-models` users: configure the route that reviews memory additions; its default profile is `balanced`. |
 
 ## Flow
 
@@ -54,7 +53,7 @@ A missing shared task-model config warns once at session start. Configure `pi-me
 
 An overlap or contradiction pauses through `ask_question`. MEMORY/USER conflicts recommend merge or replacement. SYSTEM conflicts recommend keeping SYSTEM because pi-memory never edits it.
 
-Exact duplicate single adds and duplicate-only add batches remain deterministic and idempotent without a model call. Merge, replacement, cancellation, custom answers, and non-interactive UI leave the add unwritten. Only explicit `Add separately` or `Add anyway` writes the original add after a conflict.
+Merge, replacement, cancellation, custom answers, and non-interactive UI leave the add unwritten. Only explicit `Add separately` or `Add anyway` writes the original add after a conflict.
 
 ### `/remember`
 
@@ -84,7 +83,7 @@ Use the memory tool immediately only when something qualifies. Save inferred hab
 
 ## Config
 
-Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory/config.json`. All fields are optional. A missing file uses defaults. Startup never creates or rewrites the file.
+Package-owned: `~/.pi/agent/config/pi-memory/config.json`. You write this optional file; pi-memory reads it at session start and never creates or rewrites it. All fields are optional. A missing file uses defaults. Start a new session for config changes to take effect.
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
@@ -92,7 +91,7 @@ Optional JSON file at the exact package-owned path `~/.pi/agent/config/pi-memory
 | `memoryCharLimit` | Caps `MEMORY.md` by character count. | Safe integer from 1 to 100000. | `8800` |
 | `userCharLimit` | Caps `USER.md` by character count. | Safe integer from 1 to 100000. | `5500` |
 
-Any other invalid configuration fails fast. Malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values throw an error naming the problem. The file is never rewritten.
+Malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values fail initialization with an error naming the problem; persistent memory is disabled for that session. Fix the file and start a new session. The file is never rewritten.
 
 ## State and storage
 
@@ -125,4 +124,4 @@ Both limits are checked before source loading or review. Calls over either limit
 
 An external edit or sync can push an on-disk file over its cap. The session snapshot then omits the overflow and warns instead of injecting it.
 
-Startup lists at most three unexpected regular filenames in `directory`. It stops on the fourth and reports `at least four`.
+Startup lists at most three unexpected regular filenames in `directory`. It stops on the fourth and reports `at least four unexpected files`. Only `MEMORY.md` and `USER.md` are loaded; reconcile or remove the unexpected files.
