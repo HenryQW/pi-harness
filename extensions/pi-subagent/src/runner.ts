@@ -835,7 +835,8 @@ export class IsolatedRunner {
 		return { invalidIds, requests: states.map(({ state }) => ({
 			id: state.request.id, name: state.request.goal,
 			status: state.status === "completed" && (state.tasks.some((task) => task.kind === "changeset" && task.attempts.some((attempt) => attempt.cleanup.some((step) => step.status !== "completed")))
-				|| state.integration.generations.some((generation) => generation.cleanup?.some((step) => step.status !== "completed")))
+				|| state.integration.generations.some((generation) => generation.cleanup?.some((step) => step.status !== "completed")
+					|| (generation.worktree && generation.cleanup?.every((step) => step.status === "completed") !== true)))
 				? "completed · retained" : state.status,
 			tasks: state.request.tasks.map((task) => ({
 				id: task.id, name: task.requirements, kind: task.kind,

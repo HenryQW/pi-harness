@@ -2053,6 +2053,8 @@ test("rejected staged candidate freezes validation and requires explicit replay 
 	assert.equal(promoted.state.integration.candidates[0]?.worker, "retained");
 	assert.equal(promoted.state.integration.generations[0]?.status, "superseded");
 	assert.equal(promoted.state.integration.generations[0]?.worktree?.path, staged.state.integration.generations[0]?.worktree?.path);
+	assert.equal(promoted.state.integration.generations[0]?.cleanup, undefined);
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "completed · retained");
 	assertParsed(promoted.state);
 	const releaseCandidate = { id, generation: 2, action: "release" as const,
 		taskId: "first", attempt: first!.attempt, expectedTip: first!.tip };
@@ -2062,6 +2064,7 @@ test("rejected staged candidate freezes validation and requires explicit replay 
 	const blocked = await runner.integrate(releaseOld, root);
 	assert.equal(blocked.state.integration.generations[0]?.cleanup?.[0]?.status, "running");
 	assert.equal(blocked.state.integration.candidates[0]?.worker, "retained");
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "completed · retained");
 	git.releaseBlocked = false;
 	const cleanedOld = await runner.integrate(releaseOld, root);
 	assert.deepEqual(cleanedOld.state.integration.generations[0]?.cleanup?.map((step) => step.status), ["completed", "completed"]);
@@ -2070,6 +2073,7 @@ test("rejected staged candidate freezes validation and requires explicit replay 
 	assert.deepEqual(changesetState(cleanedCandidate.state, "first").attempts[0]?.cleanup.map((step) => step.status),
 		["completed", "completed", "completed", "completed"]);
 	assert.equal(cleanedCandidate.state.accepted, true);
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "completed");
 	assertParsed(cleanedCandidate.state);
 });
 
@@ -2125,7 +2129,13 @@ test("post-seal same-worker revision invalidates old stage and retains a newly c
 	assert.equal(promoted.state.status, "completed", "old generation remains retained without blocking the accepted selection");
 	assert.equal(promoted.state.accepted, true);
 	assert.equal(promoted.state.integration.generations[0]?.worktree?.path, staged.state.integration.generations[0]?.worktree?.path);
+	assert.equal(promoted.state.integration.generations[0]?.cleanup, undefined);
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "completed · retained");
 	assertParsed(promoted.state);
+	const released = await runner.integrate({ id, action: "release", generation: 1,
+		expectedTip: staged.state.integration.generations[0]!.stages[0]!.tip! }, root);
+	assert.deepEqual(released.state.integration.generations[0]?.cleanup?.map((step) => step.status), ["completed", "completed"]);
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "completed");
 });
 
 test("one exact Main correction after failed combination invalidates failed evidence and rechecks the new tip", async (t) => {
