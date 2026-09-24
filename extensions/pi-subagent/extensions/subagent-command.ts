@@ -62,10 +62,13 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			const manager = ctx.sessionManager;
 			const session = manager.getSessionId();
 			const file = manager.getSessionFile();
-			const leaf = manager.getLeafId();
+			const branch = manager.getBranch().map((entry) => entry.id);
 			const epoch = adapter.epoch();
-			const current = () => adapter.epoch() === epoch && manager.getSessionId() === session
-				&& manager.getSessionFile() === file && (leaf === null || manager.getBranch().some((entry) => entry.id === leaf));
+			const current = () => {
+				if (adapter.epoch() !== epoch || manager.getSessionId() !== session || manager.getSessionFile() !== file) return false;
+				const now = manager.getBranch();
+				return now.length >= branch.length && branch.every((id, index) => now[index]?.id === id);
+			};
 			const valid = () => {
 				if (current()) return true;
 				ctx.ui.notify("Session or branch changed; reopen /subagent in the current context.", "warning");
@@ -82,11 +85,11 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				catch (error) { unavailable = errorText(error); }
 				if (!valid()) return;
 				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct branch recovery remains available; check the canonical Git checkout/configuration.`, "warning");
-				if (inventory?.invalidIds.length) ctx.ui.notify(`Unreadable isolated state IDs: ${inventory.invalidIds.map((id) => clean(id, 256)).join(", ")}. Preserve these files; inspect the state store before making changes.`, "warning");
+				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${clean(id, 256)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "close" };
 				const selections: Pick<Selection>[] = [
 					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${task.name} · ${task.status} · ${task.id}`, value: { kind: "direct" as const, task } })),
-					...(inventory?.requests ?? []).filter((request) => history || !completed(request.status)).map((request) => ({ label: `Isolated · ${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
+					...(inventory?.requests ?? []).filter((request) => history || !completed(request.status) || /retained/i.test(request.status)).map((request) => ({ label: `Isolated · ${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
 					{ label: "Refresh", value: { kind: "refresh" as const } },
 					{ label: history ? "Active work" : "Completed / history (including retained work)", value: { kind: "history" as const } },
 					{ label: "Close", value: { kind: "close" as const } },

@@ -29,8 +29,7 @@ Commands are for you; tools and the packaged skill are for Main. You do not need
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/subagent-direct-recovery` | command | List recorded direct-worker tabs, agents, and Pi session files on the current session branch. Does not resume work. |
-| `/subagent-followup <request-id> <task-id> <instruction>` | command | Queue a revision for an actively working isolated changeset. Late follow-ups fail. |
+| `/subagent` | command | Pick direct or isolated work to inspect; send or edit pending instructions for a locally active isolated changeset. Requires interactive TUI or RPC. |
 | `delegate_task` | tool | Start read-only direct work or a durable isolated checked graph. |
 | `subagent_status` | tool | Read durable isolated state and the exact allowed continuation without replaying work. |
 | `subagent_resume` | tool | Perform the reported `retry`, `verify`, or `finalize` continuation; does not replace staging or integration. |
@@ -73,7 +72,7 @@ Chain:    { mode: "direct", chain: [{ role, name, task, ... }] }
 
 Only Roles with known read-only tools and no extensions or MCP servers may run direct. Write-capable Roles and direct `changeset` tasks are rejected; use isolated mode for implementation. Parallel tasks run independently; chains replace each literal `{previous}` with the preceding successful answer and stop on failure.
 
-The tool returns a task ID and first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues it after the current turn; if idle, it starts a turn. A blocked, stalled, unknown, or truncated result is not reported as success. Session switch or shutdown stops observation and preserves tab identities for recovery. Run `/subagent-direct-recovery` on the session branch to list exact tabs, agents, and Pi session files, including tabs launched after the first.
+The tool returns a task ID and first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues it after the current turn; if idle, it starts a turn. A blocked, stalled, unknown, or truncated result is not reported as success. Session switch or shutdown stops observation and preserves tab identities for recovery. Open `/subagent` on the session branch to inspect exact tabs, agents, and Pi session files, including tabs launched after the first. A recorded tab may no longer be running; locally observed work is labelled separately.
 
 ### Isolated checked graphs
 
@@ -126,11 +125,9 @@ An isolated request has one durable ID, one goal, and 1–8 typed tasks:
 
 The worker produces a clean committed candidate, then runs focused preliminary checks and optional judgment. The runner records a ready candidate but **does not integrate it automatically**. Main inspects `subagent_status`, selects each exact candidate with `subagent_stage` in an owned integration worktree, and resolves conflicts there. `subagent_integrate` can advance dependent tasks from a staged snapshot, validate the combined tip with full root checks and optional final judgment, and promote it to Main only after exact validation. A definitive failed combined check/review allows one committed correction in the integration checkout followed by another validation. Main must explicitly promote; promotion and cleanup never silently discard retained work.
 
-You may queue a bounded same-worker revision while the task is actively working:
+Open `/subagent` without arguments to pick work by label. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout (including requests launched in other sessions). Pick a task to inspect recovery locations or status; refresh or choose completed/history for older work. Invalid state IDs are warned about and preserved. Outside Git or when isolated inventory is unavailable, direct recovery still works. Browsing does not resume work or change resources.
 
-```text
-/subagent-followup <request-id> <task-id> <instruction>
-```
+For a locally active unsealed isolated changeset, choose **Send follow-up instructions** to open a native multiline editor; submission queues the instruction, not a completed revision. Choose **Edit queued instructions** to withdraw *all still-pending* instructions for that selected task before the editor opens. Their full text appears in FIFO order separated by blank lines. Explicit submission queues **one replacement** at the tail. Cancel leaves the withdrawn instructions removed; already-claimed instructions, initial prompts, and automatic corrections cannot be recalled. A worker may seal during editing: failed submission reopens the full submitted text for deliberate editing or copying, never automatically requeues it. Combined text above the single-instruction limit is preserved in the editor but rejected until shortened. Cancelling before withdrawal makes no change. Neither action touches Main's editor or Pi's global Option+Up queue shortcut. No-UI sessions must use the agent tools for inspection and recovery.
 
 A queued follow-up runs after the current turn settles and must produce a new clean commit that passes preliminary checks again. When no queued revision remains, the checked candidate seals immediately; there is no guaranteed post-completion editing window. Late follow-ups fail visibly.
 

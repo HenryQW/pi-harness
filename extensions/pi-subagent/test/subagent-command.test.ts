@@ -64,7 +64,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		setActive: (value: boolean) => { active = value; },
 		get inspectCount() { return inspectCount; },
 		changeSession: () => { session = "next"; }, changeFile: () => { file = "next.jsonl"; },
-		changeBranch: () => { branch = ["root", "other-branch"]; }, append: () => { branch.push("new-leaf"); },
+		changeBranch: () => { branch = ["root", "other-branch"]; }, navigateAncestor: () => { branch = ["root"]; }, append: () => { branch.push("new-leaf"); },
 		shutdown: () => { epoch++; },
 	};
 }
@@ -141,12 +141,20 @@ test("overlong combined text remains intact in the editor after refusal", async 
 });
 
 test("changed branch, session, or shutdown across a dialog prevents drain and submission; appended entries do not", async () => {
-	for (const change of ["changeBranch", "changeSession", "changeFile", "shutdown"] as const) {
+	for (const change of ["changeBranch", "navigateAncestor", "changeSession", "changeFile", "shutdown"] as const) {
 		const h = harness(); h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), () => { h[change](); return "task"; });
 		await h.run(); assert.equal(h.queues.get("task")!.length, 3); assert.deepEqual(h.sent, []);
 	}
 	const h = harness(); h.responses.push(h.pick("Isolated"), h.pick("Send follow-up"), h.pick("· task ["), () => { h.append(); return "hello"; }, h.pick("Back"), h.pick("Close"));
 	await h.run(); assert.deepEqual(h.sent, ["task:hello"]);
+});
+
+test("navigation after drain leaves withdrawn text unqueued", async () => {
+	const h = harness();
+	h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["), () => { h.navigateAncestor(); return "submitted"; });
+	await h.run();
+	assert.deepEqual(h.queues.get("task"), []);
+	assert.deepEqual(h.sent, []);
 });
 
 test("durable-only or other-owner requests cannot offer follow-up; task sealing before drain refuses without withdrawing", async () => {

@@ -33,6 +33,7 @@ import {
 	type WorkspaceAllocationIntent,
 } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
+import type { IsolatedInventory } from "./subagent-command.ts";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
 const PUBLIC_EVIDENCE_MAX_BYTES = 512;
@@ -312,6 +313,11 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 
 export interface IsolatedSurface {
 	execute(params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
+	inventory(cwd: string): Promise<IsolatedInventory>;
+	inspect(root: string, requestId: string): Promise<string>;
+	canFollowup(root: string, requestId: string, taskId: string): boolean;
+	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
+	drain(root: string, requestId: string, taskId: string, current: () => boolean): readonly string[];
 }
 
 export interface RegisterIsolatedOptions {
@@ -324,7 +330,8 @@ export interface RegisterIsolatedOptions {
 /** Register lifecycle surfaces; delegate_task remains the only start tool. */
 export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIsolatedOptions): IsolatedSurface {
 	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) {
-		return { execute: async () => { throw new Error("Child Roles cannot start isolated delegation."); } };
+		const denied = (): never => { throw new Error("Child Roles cannot access isolated delegation."); };
+		return { execute: async () => denied(), inventory: async () => denied(), inspect: async () => denied(), canFollowup: denied, enqueue: denied, drain: denied };
 	}
 	const componentsFactory = options.componentsFactory ?? createIsolatedComponents;
 	let latestCtx: ExtensionContext | undefined;
@@ -381,17 +388,9 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.on("model_select", (event, ctx) => { latestCtx = { ...ctx, model: event.model } as ExtensionContext; });
 	pi.on("agent_settled", (_event, ctx) => { latestCtx = ctx; });
 
-	pi.registerCommand("subagent-followup", {
-		description: "Queue a revision for an active isolated changeset task",
-		handler: async (args, ctx) => {
-			latestCtx = ctx;
-			const match = /^(\S+)\s+(\S+)\s+([\s\S]+)$/.exec(args.trim());
-			if (!match) throw new Error("Usage: /subagent-followup <request-id> <task-id> <message>");
-			const [, requestId, taskId, instruction] = match;
-			const root = await lookupRoot(ctx.cwd);
-			ctx.ui.notify(getComponents().runner.queueFollowup(root, requestId!, taskId!, instruction!), "info");
-		},
-	});
+	const requireCurrent = (current: () => boolean) => {
+		if (!current() || sessionClosed) throw new Error("Session or branch changed; reopen /subagent.");
+	};
 	// FileRunStore emits the initial state only after fsync. A resumed run emits its
 	// recovery record after saving it. Neither the tool call nor its abort signal
 	// owns productive work after that durable boundary.
@@ -545,6 +544,23 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		},
 	});
 	return {
+		async inventory(cwd) {
+			const root = await lookupRoot(cwd);
+			return { root, ...await getComponents().runner.listRequests(root) };
+		},
+		async inspect(root, requestId) {
+			const response = await getComponents().runner.status(requestId, root);
+			return JSON.stringify({ status: response.state.status, continuation: response.continuation, needsAttention: publicNeedsAttention(response.state), main: response.main, state: publicState(response.state) });
+		},
+		canFollowup: (root, requestId, taskId) => !sessionClosed && (components?.runner.canFollowup(root, requestId, taskId) ?? false),
+		enqueue(root, requestId, taskId, text, current) {
+			requireCurrent(current);
+			return getComponents().runner.queueFollowup(root, requestId, taskId, text);
+		},
+		drain(root, requestId, taskId, current) {
+			requireCurrent(current);
+			return getComponents().runner.drainFollowups(root, requestId, taskId);
+		},
 		async execute(params, signal, ctx) {
 			latestCtx = ctx;
 			latestContext();

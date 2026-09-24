@@ -250,7 +250,7 @@ function harness(options: {
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: { getAvailable: () => options.availableModels ?? [model] },
 		scopedModels: options.scopedModels ?? [],
-		sessionManager: { getBranch: () => sessionEntries },
+		sessionManager: { getBranch: () => sessionEntries, getSessionId: () => "test-session", getSessionFile: () => "test.jsonl" },
 		ui: {
 			notify: (message: string, type: string) => notifications.push({ message, type }),
 			setWidget: (_key: string, content: any) => {
@@ -275,6 +275,17 @@ function harness(options: {
 		handlers,
 		commands,
 	};
+}
+
+async function recoverDirect(app: ReturnType<typeof harness>): Promise<void> {
+	let shown = false;
+	app.ctx.hasUI = true;
+	app.ctx.ui.select = async (_title: string, choices: string[]) => {
+		if (shown) return undefined;
+		shown = true;
+		return choices.find((choice) => choice.startsWith("Direct ·"));
+	};
+	await app.commands.get("subagent")!.handler("", app.ctx);
 }
 
 async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -377,7 +388,7 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			assert.match(result.content[0].text, /Herdr tab: w-test:t2/);
 			await waitFor(() => app.sentMessages.length === 1);
 			const message = app.sentMessages[0]!.message;
-			assert.ok(message.content.startsWith("Delegation completed · 1 completed\n✓ [1/1] Check · worker — exact answer\nResults:\n- [1/1] Check · worker · result:\nexact answer\nRecovery (also available via /subagent-direct-recovery):\n"));
+			assert.ok(message.content.startsWith("Delegation completed · 1 completed\n✓ [1/1] Check · worker — exact answer\nResults:\n- [1/1] Check · worker · result:\nexact answer\nRecovery (also available via /subagent):\n"));
 			assert.match(message.content, /tab w-test:t2 · pane w-test:p2/);
 			assert.deepEqual(message.details.entries.map(({ id, index, name, role, status, summary }: any) => ({ id, index, name, role, status, summary })), [
 				{ id: "call:single:0", index: 0, name: "Check", role: "worker", status: "succeeded", summary: "exact answer" },
@@ -510,9 +521,9 @@ test("parallel tabs persist exact identities across a session switch without a f
 			release();
 			await switched;
 			assert.equal(app.sentMessages.length, 0);
-			await app.commands.get("subagent-direct-recovery")!.handler("", app.ctx);
+			await recoverDirect(app);
 			for (const record of app.sessionEntries) {
-				assert.match(app.notifications.at(-1)!.message, new RegExp(`tab ${record.data.tabId} .* session ${record.data.sessionFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+				assert.ok(app.notifications.some(({ message }) => message.includes(record.data.tabId) && message.includes(record.data.sessionFile)));
 			}
 			assert.deepEqual(originalBranch.map(({ data }) => data.tabId), ["w-test:t2", "w-test:t3"]);
 			assert.deepEqual(app.sessionEntries.map(({ data }) => data.tabId), ["w-test:t2", "w-test:t3"]);
@@ -571,8 +582,8 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				assert.equal(app.sessionEntries[0]!.data.tabId, "w-test:t2");
 				assert.equal(originalBranch.length, stage === "tab" ? 0 : 1);
 				assert.equal(fake.calls.filter(([kind, action]) => kind === "agent" && action === "prompt").length, stage === "prompt" ? 1 : 0);
-				await app.commands.get("subagent-direct-recovery")!.handler("", app.ctx);
-				assert.match(app.notifications.at(-1)!.message, /tab w-test:t2 .* session .*session.jsonl/);
+				await recoverDirect(app);
+				assert.ok(app.notifications.some(({ message }) => /tab w-test:t2 .* session .*session.jsonl/.test(message)));
 			}
 		});
 	});

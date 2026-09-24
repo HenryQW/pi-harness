@@ -121,7 +121,7 @@ function verify(observed: Observation, expectedMode: string, names: string[]): R
 	assert.deepEqual(observed.message.details.entries.map((entry: RecordValue) => entry.name), names);
 	assert.deepEqual(observed.message.details.entries.map((entry: RecordValue) => entry.status), names.map(() => "succeeded"));
 	assert.equal(observed.message.details.tabs.length, names.length);
-	assert.match(observed.message.content, /Recovery \(also available via \/subagent-direct-recovery\):/);
+	assert.match(observed.message.content, /Recovery \(also available via \/subagent\):/);
 	return observed.message.details.tabs;
 }
 

@@ -618,6 +618,27 @@ test("malformed or unreadable v4 state fails closed without changing bytes", asy
 	assert.deepEqual(runtime.workerCalls, []);
 });
 
+test("inventory lists healthy requests beside preserved invalid state without reconciling resources", async (t) => {
+	const { root, runner, runtime, store } = await harness(t);
+	let release!: () => void;
+	const paused = new Promise<void>((resolve) => { release = resolve; });
+	runtime.workerPause = async (call) => { if (call.kind === "initial") await paused; };
+	const execution = runner.execute(request("inventory-good", [changesetTask("change")]), root);
+	await waitUntil(() => runtime.workerCalls.length === 1);
+	const badPath = store.statePath(root, "inventory-bad");
+	const bytes = Buffer.from("{malformed");
+	await writeFile(badPath, bytes);
+	const before = runtimeCallCounts(runtime);
+	const listed = await runner.listRequests(root);
+	assert.deepEqual(listed.invalidIds, ["inventory-bad"]);
+	assert.deepEqual(listed.requests.map(({ id }) => id), ["inventory-good"]);
+	assert.equal(listed.requests[0]!.tasks[0]!.kind, "changeset");
+	assert.deepEqual(runtimeCallDelta(runtime, before), Object.fromEntries(Object.keys(before).map((key) => [key, 0])));
+	assert.deepEqual(await readFile(badPath), bytes);
+	release();
+	await execution;
+});
+
 test("queued follow-ups reuse the same worker before automatic readiness seals the candidate", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	let releaseInitial!: () => void;
@@ -643,6 +664,13 @@ test("queued follow-ups reuse the same worker before automatic readiness seals t
 		runner.queueFollowup(root, definition.id, "change", "Polish the revision one more time."),
 		"Queued follow-up for automatic-followups/change.",
 	);
+	assert.equal(runner.canFollowup(root, definition.id, "change"), true);
+	assert.deepEqual(runner.drainFollowups(root, definition.id, "change"), [
+		"Revise the first candidate without restarting the task.", "Polish the revision one more time.",
+	]);
+	assert.deepEqual(runner.drainFollowups(root, definition.id, "change"), []);
+	runner.queueFollowup(root, definition.id, "change", "Replacement revision.");
+	runner.queueFollowup(root, definition.id, "change", "Polish the revision one more time.");
 	releaseInitial();
 
 	const result = await execution;
@@ -654,21 +682,49 @@ test("queued follow-ups reuse the same worker before automatic readiness seals t
 		{ taskId: "change", kind: "followup" },
 	]);
 	assert.deepEqual(runtime.followupInstructions, [
-		"Revise the first candidate without restarting the task.",
+		"Replacement revision.",
 		"Polish the revision one more time.",
 	]);
 	assert.deepEqual(task.attempts[0]?.prompts.map(({ kind, instruction }) => ({ kind, instruction })), [
 		{ kind: "initial", instruction: undefined },
-		{ kind: "followup", instruction: "Revise the first candidate without restarting the task." },
+		{ kind: "followup", instruction: "Replacement revision." },
 		{ kind: "followup", instruction: "Polish the revision one more time." },
 	]);
 	assert.equal(task.attempts[0]?.readiness?.candidate.head, task.attempts[0]?.prompts[2]?.candidate?.head);
 	assert.equal(runtime.terminationCalls.length, 0);
+	assert.equal(runner.canFollowup(root, definition.id, "change"), false);
+	assert.throws(() => runner.drainFollowups(root, definition.id, "change"), /not an active unsealed changeset/);
 	assert.throws(
 		() => runner.queueFollowup(root, definition.id, "change", "Too late."),
 		/not an active unsealed changeset/,
 	);
 	assertParsed(result.state);
+});
+
+test("drain after worker claim withdraws only the remaining task instructions", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	let releaseInitial!: () => void;
+	let releaseClaimed!: () => void;
+	let claimed!: () => void;
+	const initial = new Promise<void>((resolve) => { releaseInitial = resolve; });
+	const paused = new Promise<void>((resolve) => { releaseClaimed = resolve; });
+	const started = new Promise<void>((resolve) => { claimed = resolve; });
+	runtime.workerPause = async (call) => {
+		if (call.kind === "initial") await initial;
+		if (call.kind === "followup") { claimed(); await paused; }
+	};
+	const definition = request("claimed-followup", [changesetTask("change")]);
+	const execution = runner.execute(definition, root);
+	await waitUntil(() => runtime.workerCalls.length === 1);
+	runner.queueFollowup(root, definition.id, "change", "Already claimed.");
+	runner.queueFollowup(root, definition.id, "change", "Still pending.");
+	releaseInitial();
+	await started;
+	assert.deepEqual(runner.drainFollowups(root, definition.id, "change"), ["Still pending."]);
+	assert.deepEqual(runtime.followupInstructions, ["Already claimed."]);
+	releaseClaimed();
+	await execution;
+	assert.deepEqual(runtime.followupInstructions, ["Already claimed."]);
 });
 
 test("a follow-up admitted during final preliminary-evidence persistence is rechecked before sealing", async (t) => {

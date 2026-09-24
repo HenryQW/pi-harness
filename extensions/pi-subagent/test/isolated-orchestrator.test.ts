@@ -163,6 +163,7 @@ type RegisteredTool = {
 type RunnerCall = { method: string; args: unknown[] };
 
 interface Harness {
+	surface: ReturnType<typeof registerIsolatedExtension>;
 	pi: ExtensionAPI;
 	tools: RegisteredTool[];
 	commands: Map<string, RegisteredCommand>;
@@ -250,6 +251,18 @@ function createHarness(options: {
 			runnerCalls.push({ method: "queueFollowup", args });
 			return "follow-up queued";
 		},
+		listRequests(...args: unknown[]) {
+			runnerCalls.push({ method: "listRequests", args });
+			return { requests: [{ id: "request-one", name: "Goal", status: "working", tasks: [{ id: "unit-one", name: "Task", kind: "changeset", status: "working" }] }], invalidIds: ["damaged"] };
+		},
+		canFollowup(...args: unknown[]) {
+			runnerCalls.push({ method: "canFollowup", args });
+			return true;
+		},
+		drainFollowups(...args: unknown[]) {
+			runnerCalls.push({ method: "drainFollowups", args });
+			return ["first", "second"];
+		},
 	} as unknown as IsolatedExtensionComponents["runner"];
 
 	const createComponents: CreateIsolatedComponents = (createdOptions) => {
@@ -278,6 +291,7 @@ function createHarness(options: {
 	});
 
 	return {
+		surface: isolated,
 		pi,
 		tools,
 		commands,
@@ -464,7 +478,7 @@ test("registers six strict tools without constructing runtime components", () =>
 		"subagent_integrate",
 		"subagent_abort",
 	]);
-	assert.deepEqual([...harness.commands.keys()], ["subagent-followup"]);
+	assert.deepEqual([...harness.commands.keys()], []);
 	assert.equal(harness.getComponentCreations(), 0);
 
 	const [execute, status, resume, stage, integrate, abort] = harness.tools;
@@ -489,27 +503,20 @@ test("registers six strict tools without constructing runtime components", () =>
 	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /must match one strict action/i);
 });
 
-test("the follow-up command routes optional revisions to the active runner", async () => {
+test("inventory and status remain read-only; synchronous mutations reject stale UI context", async () => {
 	const harness = createHarness();
-	const notifications: Array<{ message: string; type: string }> = [];
-	const ctx = {
-		cwd: "/repo/subdir",
-		ui: { notify: (message: string, type: string) => notifications.push({ message, type }) },
-	} as unknown as ExtensionContext;
-
-	await harness.commands.get("subagent-followup")!.handler(
-		"request-one unit-one revise the current candidate",
-		ctx,
-	);
-
+	const surface = harness.surface;
+	assert.deepEqual((await surface.inventory("/repo/subdir")).invalidIds, ["damaged"]);
+	assert.equal(harness.runnerCalls.filter(({ method }) => method === "listRequests").length, 1);
+	assert.match(await surface.inspect(CANONICAL_ROOT, "request-one"), /retainedWorktree/);
+	assert.equal(surface.canFollowup(CANONICAL_ROOT, "request-one", "unit-one"), true);
+	assert.throws(() => surface.drain(CANONICAL_ROOT, "request-one", "unit-one", () => false), /Session or branch changed/);
+	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "drainFollowups"), []);
+	assert.deepEqual(surface.drain(CANONICAL_ROOT, "request-one", "unit-one", () => true), ["first", "second"]);
+	assert.equal(surface.enqueue(CANONICAL_ROOT, "request-one", "unit-one", "instruction", () => true), "follow-up queued");
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup"), [
-		{ method: "queueFollowup", args: [CANONICAL_ROOT, "request-one", "unit-one", "revise the current candidate"] },
+		{ method: "queueFollowup", args: [CANONICAL_ROOT, "request-one", "unit-one", "instruction"] },
 	]);
-	assert.deepEqual(notifications, [{ message: "follow-up queued", type: "info" }]);
-	await assert.rejects(
-		async () => await harness.commands.get("subagent-followup")!.handler("request-one unit-one", ctx),
-		/Usage: \/subagent-followup/,
-	);
 });
 
 test("Role child argv causes zero registration and dependency side effects", () => {
