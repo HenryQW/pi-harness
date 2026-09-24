@@ -16,7 +16,9 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - **Direct task**: one read-only assignment in a Herdr tab in Main's current workspace.
 - **Isolated request**: one durable ID, goal, and checked task graph.
 - **Candidate**: exact clean committed task-worktree identity produced by an isolated changeset worker.
-- **Readiness**: durable proof that one exact live-worker candidate passed its preliminary checks and is sealed for automatic integration; it is not a separate user approval.
+- **Readiness**: durable proof that one exact live-worker candidate passed its preliminary checks and is sealed for Main's explicit selection; it is not a separate user approval.
+- **Integration generation**: Main's owned, ordered assembly of selected candidates in a separate checkout; each replaced assembly remains an inspectable superseded generation.
+- **Release**: Main's explicit, exact-identity cleanup of a rejected worker or superseded generation after proving it is no longer selected; it never discards dirty or conflicted work.
 - **Productive lease**: repository-scoped process lease that excludes concurrent execute/resume while permitting status and abort.
 - **Safety budget**: finite timeout for child work, process I/O, status, termination, or cleanup. It is not a whole-run deadline.
 
@@ -46,12 +48,12 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 ### Isolated lifecycle
 
 - Changeset tasks durably record allocation intent before each external side effect. Unknown outcomes are retained and never guessed.
-- One worker remains live across prompts, preliminary checks, follow-up/correction, readiness, rebase, authoritative validation, guarded integration, durable integration recording, exact termination, and cleanup.
+- One worker remains live across prompts, preliminary checks, follow-up/correction, readiness, Main's staging decisions, combined validation, and guarded promotion. Selected workers terminate after promotion; rejected workers terminate on explicit rejection.
 - Optional same-worker follow-ups are admitted only while a changeset is actively working. After the final checked-evidence save, one synchronous queue-or-seal transition prevents admitted revisions from being lost; the runner never waits for routine input.
 - Preliminary checks gate readiness. Any changed candidate invalidates previous readiness and validation.
-- Authoritative task checks and optional exact-`PASS` judgment run after any required rebase. Final checks and optional final judgment bind to resulting Main.
-- Integration requires exact expected Main and exact ready candidate identities. Same-wave integration follows request order.
-- Integration is durably recorded before worker termination and cleanup. Recovery never rolls back recorded integration.
+- Optional task judgment binds to the exact preliminary candidate. Main selects and orders candidates in a separate owned integration checkout, where final full-suite checks and optional final judgment bind to the clean combined tip before promotion.
+- Promotion requires exact unchanged clean Main and a passing combined generation. Durable promotion evidence precedes selected-worker termination and cleanup; recovery never rolls back a proven promotion.
+- Rejected workers and superseded generations stay retained until Main explicitly releases their exact clean, proved-owned resources. At most two unreleased integration checkouts coexist.
 - Failures, ambiguity, interruption, review findings, conflicts, drift, unproved termination, or cleanup failure enter `needs_attention` and preserve evidence.
 - `subagent_status` is read-only. `subagent_resume` accepts only strict `retry`, `verify`, or `finalize` continuations. `subagent_abort` terminates only exact owned workers.
 - The extension never pushes, opens a pull request, publishes, deploys, stashes, resets, force-cleans, or deletes unproved recoverable work.

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { runGit, type GitResult } from "./git-process.ts";
 import { CheckedGitRuntime } from "./git-runtime.ts";
-import { createChildWorktree, WorktreeSetupError, type WorktreeInfo } from "./worktree.ts";
+import { createChildWorktree, inspectWorktreeDirty, WorktreeSetupError, type WorktreeInfo } from "./worktree.ts";
 import {
 	checkBatchPasses, reviewEvidencePasses, sameIdentity, type CheckBatchEvidence,
 	type CheckCommand, type ReviewEvidence, type WorkspaceIdentity,
@@ -333,6 +333,51 @@ export class IntegrationGit {
 			if (main.branch === base.branch && main.head === tip.head && main.index === tip.index && main.tree === tip.tree) return { outcome: "ready", value: main };
 		} catch { /* Retain all resources when verification fails. */ }
 		return { outcome: "unknown", failure: "Promotion returned success but exact clean Main tip could not be proved.", possibleResources: [integration.path, integration.branch] };
+	}
+
+	/** Explicit release of an unselected clean checkout. The branch deletion is an exact ref compare-and-swap. */
+	async release(root: string, info: WorktreeInfo, expected: WorkspaceIdentity, kind: "worktree" | "branch", signal: AbortSignal): Promise<GitOutcome<"removed" | "absent">> {
+		const possibleResources = [info.path, info.branch];
+		try {
+			await ownershipMetadata(root, info, signal);
+			if (expected.branch !== `refs/heads/${info.branch}` || expected.index !== expected.tree
+				|| !await ancestor(info.baseCommit, expected.head, root, signal)) {
+				return { outcome: "blocked", failure: "Release lacks an exact clean owned branch and base lineage." };
+			}
+			const registered = await requireGit(["worktree", "list", "--porcelain", "-z"], root, signal);
+			const present = registered.split("\0").includes(`worktree ${info.path}`);
+			const pathPresent = await exists(info.path);
+			const ref = `refs/heads/${info.branch}`;
+			if (!present && registered.split("\0").includes(`branch ${ref}`)) {
+				return { outcome: "blocked", failure: "Owned branch is checked out in a different registered worktree." };
+			}
+			const branch = await git(["rev-parse", "--verify", ref], root, signal);
+			if (branch.code !== 0 && branch.code !== 128) throw new Error("Owned branch tip could not be inspected.");
+			if (kind === "worktree") {
+				if (!present && !pathPresent) return { outcome: "ready", value: "absent" };
+				if (!present || !pathPresent || branch.stdout.trim() !== expected.head
+					|| !sameIdentity(await current(root, info, signal), expected)) {
+					return { outcome: "blocked", failure: "Owned checkout, registration, branch or clean candidate changed." };
+				}
+				const dirty = await inspectWorktreeDirty(info.path, (args, cwd) => git(args, cwd, signal));
+				if (dirty.failure || dirty.dirty) return { outcome: "blocked", failure: "Owned checkout has ignored, untracked or tracked changes; release preserves them." };
+				const args = ["worktree", "remove", info.path];
+				const removed = await git(args, root, signal);
+				if (removed.code !== 0) return unknown(failure(args, removed), info);
+				const after = await requireGit(["worktree", "list", "--porcelain", "-z"], root, signal);
+				if (await exists(info.path) || after.split("\0").includes(`worktree ${info.path}`)) return unknown("Worktree removal returned success but checkout remains.", info);
+				return { outcome: "ready", value: "removed" };
+			}
+			if (present || pathPresent) return { outcome: "blocked", failure: "Release the exact checkout before branch deletion." };
+			if (branch.code === 128) return { outcome: "ready", value: "absent" };
+			if (branch.stdout.trim() !== expected.head) return { outcome: "blocked", failure: "Owned branch differs from the approved tip." };
+			const args = ["update-ref", "-d", ref, expected.head];
+			const deleted = await git(args, root, signal);
+			if (deleted.code !== 0) return unknown(failure(args, deleted), info);
+			const after = await git(["show-ref", "--verify", "--quiet", ref], root, signal);
+			if (after.code !== 1) return unknown("Ref deletion returned success but absence could not be proved.", info);
+			return { outcome: "ready", value: "removed" };
+		} catch (error) { return { outcome: "unknown", failure: `Release state uncertain: ${String(error)}`, possibleResources }; }
 	}
 
 	/** Cleanup is deliberately separate per resource; callers persist each proven substep. */

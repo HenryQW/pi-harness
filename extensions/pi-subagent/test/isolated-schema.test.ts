@@ -113,7 +113,7 @@ function state(requestValue: ExecuteRequest): RunState {
 	};
 }
 
-function completedChangesetState(): RunState {
+function retainedChangesetState(): RunState {
 	const definition = parseExecuteRequest(request([changesetTask("change", {
 		judgment: { role: "reviewer", modelClass: "frontier", criterion: "Review the exact candidate." },
 	})]));
@@ -123,8 +123,7 @@ function completedChangesetState(): RunState {
 	const worktreeBase = { ...base, branch: "refs/heads/subagent/change" };
 	const revision = "b".repeat(40);
 	const candidate: WorkspaceIdentity = { ...worktreeBase, head: revision, index: revision, tree: revision };
-	const mainAfter: WorkspaceIdentity = { ...candidate, branch: base.branch };
-	const correlationToken = "completed-change-token";
+		const correlationToken = "completed-change-token";
 	const attempt: ChangesetTaskAttempt = {
 		number: 1,
 		waveNumber: 1,
@@ -198,34 +197,15 @@ function completedChangesetState(): RunState {
 			at: 2,
 		},
 		readiness: { candidate, base, at: 3 },
-		transitions: [{ kind: "rebase", status: "rebased", sourceBase: base, from: candidate, onto: base, to: candidate, at: 10 }],
-		termination: { status: "terminated", workerId: "worker-change", candidate, at: 6 },
-		integrationBase: base,
-		integrationCandidate: candidate,
-		authoritativeChecks: {
-			phase: "authoritative",
-			candidate,
-			identityAfter: candidate,
-			results: [{ ...task.checks[0]!, code: 0, killed: false, stdout: "", stderr: "" }],
-			passed: true,
-			at: 4,
+		preliminaryReview: {
+			phase: "preliminary", criterion: task.judgment.criterion, base, tip: candidate,
+			identityAfter: candidate, verdict: "PASS", passed: true, at: 2,
 		},
-		authoritativeReview: {
-			phase: "authoritative",
-			criterion: task.judgment.criterion,
-			base,
-			tip: candidate,
-			identityAfter: candidate,
-			verdict: "PASS",
-			passed: true,
-			at: 5,
-		},
-		integration: { status: "integrated", expectedMain: base, candidate, mainAfter },
 		cleanup: [
-			{ kind: "worker_tab", status: "completed" },
-			{ kind: "workspace", status: "completed" },
-			{ kind: "worktree", status: "completed" },
-			{ kind: "branch", status: "completed" },
+			{ kind: "worker_tab", status: "pending" },
+			{ kind: "workspace", status: "pending" },
+			{ kind: "worktree", status: "pending" },
+			{ kind: "branch", status: "pending" },
 		],
 	};
 	return {
@@ -241,11 +221,12 @@ function completedChangesetState(): RunState {
 		correctionCount: 0,
 		root: "/repo",
 		requestStartMain: base,
-		main: mainAfter,
+		main: base,
 		status: "running",
-		tasks: [{ taskId: task.id, kind: "changeset", status: "completed", attempts: [attempt] }],
+		tasks: [{ taskId: task.id, kind: "changeset", status: "ready_to_integrate", attempts: [attempt] }],
 		waves: [{ number: 1, base, taskIds: [task.id], status: "completed" }],
-		integration: { candidates: [], generations: [] },
+		integration: { candidates: [{ taskId: task.id, attempt: 1, base, tip: candidate,
+			checks: attempt.preliminaryChecks!, review: attempt.preliminaryReview!, worker: "retained" }], generations: [] },
 		final: { status: "pending" },
 		accepted: false,
 		createdAt: 1,
@@ -253,14 +234,14 @@ function completedChangesetState(): RunState {
 	};
 }
 
-function completedChangesetTask(value: RunState): ChangesetTaskState {
+function retainedChangesetTask(value: RunState): ChangesetTaskState {
 	const task = value.tasks[0];
 	if (task?.kind !== "changeset") throw new Error("Expected a changeset task.");
 	return task;
 }
 
-function completedChangesetAttempt(value: RunState): ChangesetTaskAttempt {
-	const attempt = completedChangesetTask(value).attempts.at(-1);
+function retainedChangesetAttempt(value: RunState): ChangesetTaskAttempt {
+	const attempt = retainedChangesetTask(value).attempts.at(-1);
 	if (!attempt) throw new Error("Expected a changeset attempt.");
 	return attempt;
 }
@@ -364,8 +345,8 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 });
 
 test("follow-up prompt evidence requires exact bounded instructions", () => {
-	const valid = completedChangesetState();
-	const attempt = completedChangesetAttempt(valid);
+	const valid = retainedChangesetState();
+	const attempt = retainedChangesetAttempt(valid);
 	const candidate = attempt.candidate!;
 	attempt.prompts.push({
 		kind: "followup",
@@ -375,16 +356,16 @@ test("follow-up prompt evidence requires exact bounded instructions", () => {
 		instruction: "Revise the retained candidate.",
 		at: 3,
 	});
-	assert.equal(parseRunState(structuredClone(valid)).tasks[0]?.status, "completed");
+	assert.equal(parseRunState(structuredClone(valid)).tasks[0]?.status, "ready_to_integrate");
 
 	for (const instruction of [" padded ", "bad\0instruction"]) {
 		const invalid = structuredClone(valid);
-		completedChangesetAttempt(invalid).prompts.at(-1)!.instruction = instruction;
+		retainedChangesetAttempt(invalid).prompts.at(-1)!.instruction = instruction;
 		assert.throws(() => parseRunState(invalid), /Follow-up prompt instruction.*exact non-empty text/);
 	}
 
-	const repeatedCorrection = completedChangesetState();
-	const repeatedAttempt = completedChangesetAttempt(repeatedCorrection);
+	const repeatedCorrection = retainedChangesetState();
+	const repeatedAttempt = retainedChangesetAttempt(repeatedCorrection);
 	for (let index = 0; index < 2; index += 1) {
 		repeatedAttempt.prompts.push({
 			kind: "correction",
@@ -399,143 +380,22 @@ test("follow-up prompt evidence requires exact bounded instructions", () => {
 	assert.throws(() => parseRunState(repeatedCorrection), /repeated correction history/);
 });
 
-test("completed changesets require exact terminal evidence", () => {
-	const valid = completedChangesetState();
-	assert.equal(completedChangesetTask(parseRunState(structuredClone(valid))).status, "completed");
-
-	const invalidStates: Array<{
-		name: string;
-		mutate: (value: RunState) => void;
-		error: RegExp;
-	}> = [
-		{
-			name: "worker termination names another agent",
-			mutate: (value) => { completedChangesetAttempt(value).termination!.workerId = "other-agent"; },
-			error: /does not match the exact owned agent/,
-		},
-		{
-			name: "worker termination is not complete",
-			mutate: (value) => {
-				const termination = completedChangesetAttempt(value).termination;
-				if (!termination) throw new Error("Expected worker termination evidence.");
-				termination.status = "terminating";
-				delete termination.at;
-			},
-			error: /no exact recorded worker termination/,
-		},
-		{
-			name: "integrated task has no durable readiness",
-			mutate: (value) => { delete completedChangesetAttempt(value).readiness; },
-			error: /does not match its exact candidate lineage/,
-		},
-		{
-			name: "integrated task ends with an unresolved rebase",
-			mutate: (value) => {
-				const transition = completedChangesetAttempt(value).transitions[0]!;
-				transition.status = "rebasing";
-				delete transition.to;
-			},
-			error: /does not match its exact candidate lineage/,
-		},
-		{
-			name: "ready rebase lineage is disconnected",
-			mutate: (value) => {
-				completedChangesetAttempt(value).transitions[0]!.from = { ...identity(), head: "c".repeat(40), index: "c".repeat(40), tree: "c".repeat(40) };
-			},
-			error: /breaks exact lineage/,
-		},
-		{
-			name: "authoritative checks do not pass",
-			mutate: (value) => {
-				const checks = completedChangesetAttempt(value).authoritativeChecks;
-				if (!checks) throw new Error("Expected authoritative checks.");
-				checks.results[0]!.code = 1;
-				checks.results[0]!.stderr = "check failed";
-				checks.passed = false;
-			},
-			error: /lacks authoritative passing checks on its exact candidate/,
-		},
-		{
-			name: "authoritative checks cover another candidate",
-			mutate: (value) => {
-				const checks = completedChangesetAttempt(value).authoritativeChecks;
-				if (!checks) throw new Error("Expected authoritative checks.");
-				const other = { ...checks.candidate, head: "c".repeat(40), index: "c".repeat(40), tree: "c".repeat(40) };
-				checks.candidate = other;
-				checks.identityAfter = other;
-			},
-			error: /lacks authoritative passing checks on its exact candidate/,
-		},
-		{
-			name: "required judgment is missing",
-			mutate: (value) => { delete completedChangesetAttempt(value).authoritativeReview; },
-			error: /lacks an exact authoritative passing review/,
-		},
-		{
-			name: "required judgment does not pass",
-			mutate: (value) => {
-				const review = completedChangesetAttempt(value).authoritativeReview;
-				if (!review) throw new Error("Expected authoritative review.");
-				review.verdict = "NEEDS_WORK";
-				review.passed = false;
-			},
-			error: /lacks an exact authoritative passing review/,
-		},
-		{
-			name: "integrated task identity is dirty",
-			mutate: (value) => {
-				const mainAfter = completedChangesetAttempt(value).integration?.mainAfter;
-				if (!mainAfter) throw new Error("Expected final task identity.");
-				mainAfter.index = "c".repeat(40);
-			},
-			error: /lacks exact integration evidence/,
-		},
-		{
-			name: "integrated task identity does not match the candidate",
-			mutate: (value) => {
-				const mainAfter = completedChangesetAttempt(value).integration?.mainAfter;
-				if (!mainAfter) throw new Error("Expected final task identity.");
-				mainAfter.head = "c".repeat(40);
-				mainAfter.index = mainAfter.head;
-				mainAfter.tree = mainAfter.head;
-			},
-			error: /lacks exact integration evidence/,
-		},
-		{
-			name: "latest attempt is still integrating",
-			mutate: (value) => {
-				const integration = completedChangesetAttempt(value).integration;
-				if (!integration) throw new Error("Expected integration evidence.");
-				integration.status = "integrating";
-				delete integration.mainAfter;
-			},
-			error: /lacks exact integration evidence/,
-		},
-		{
-			name: "cleanup is incomplete",
-			mutate: (value) => { completedChangesetAttempt(value).cleanup[2]!.status = "pending"; },
-			error: /has incomplete cleanup/,
-		},
-		{
-			name: "completed task has no attempt",
-			mutate: (value) => { completedChangesetTask(value).attempts = []; },
-			error: /lacks an exact owned worktree record/,
-		},
-	];
-	for (const { name, mutate, error } of invalidStates) {
-		const candidate = structuredClone(valid);
-		mutate(candidate);
-		assert.throws(() => parseRunState(candidate), error, name);
-	}
-
-	const interruptedFinalization = structuredClone(valid);
-	interruptedFinalization.status = "needs_attention";
-	interruptedFinalization.accepted = false;
-	const interruptedTask = completedChangesetTask(interruptedFinalization);
-	interruptedTask.status = "needs_attention";
-	interruptedTask.failure = "Finalization was interrupted.";
-	delete completedChangesetAttempt(interruptedFinalization).integration!.mainAfter;
-	assert.throws(() => parseRunState(interruptedFinalization), /lacks exact integration evidence/);
+test("v5 rejects completion without Main-owned promotion and obsolete per-task evidence", () => {
+	const completed = retainedChangesetState();
+	retainedChangesetTask(completed).status = "completed";
+	assert.throws(() => parseRunState(completed), /lacks a promoted Main-owned integration generation/);
+	const legacy = retainedChangesetState();
+	const attempt = retainedChangesetAttempt(legacy) as object as Record<string, unknown>;
+	attempt.integration = { status: "integrated" };
+	assert.throws(() => parseRunState(legacy), /Unsupported or malformed pi-subagent v5 state/);
+	const unprovedRelease = retainedChangesetState();
+	retainedChangesetTask(unprovedRelease).status = "rejected";
+	retainedChangesetAttempt(unprovedRelease).termination = {
+		status: "terminated", workerId: "worker-change", candidate: retainedChangesetAttempt(unprovedRelease).candidate!, at: 5,
+	};
+	unprovedRelease.integration.candidates[0]!.decision = "rejected";
+	unprovedRelease.integration.candidates[0]!.worker = "released";
+	assert.throws(() => parseRunState(unprovedRelease), /lost its exact worker accounting/);
 });
 
 test("v5 state maps text task attempts exactly and rejects v4 and launch state", () => {

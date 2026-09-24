@@ -98,6 +98,37 @@ test("same-file isolated candidates merge in Main-ordered integration checkout; 
 	}
 });
 
+test("explicit unselected release preserves dirty work and removes only the exact owned branch", async (t) => {
+	const root = await repo(t);
+	const runtime = new IntegrationGit();
+	const inspected = (path: string) => new CheckedGitRuntime().inspectMain({ root: path },
+		{ signal, deadline: Date.now() + 30_000, timeoutMs: 30_000 });
+	const base = await inspected(root);
+	const worker = await allocate(runtime, root, base, "unselected");
+	await commit(worker.path, "rejected work");
+	const candidate = await inspected(worker.path);
+	await writeFile(join(worker.path, "scratch.txt"), "preserve\n");
+	const untracked = await runtime.release(root, worker, candidate, "worktree", signal);
+	assert.notEqual(untracked.outcome, "ready", JSON.stringify(untracked));
+	assert.equal(git(worker.path, "rev-parse", "HEAD"), candidate.head);
+	await rm(join(worker.path, "scratch.txt"));
+	await writeFile(join(worker.path, "ignored.log"), "preserve ignored\n");
+	await writeFile(join(root, ".git", "info", "exclude"), "*.log\n");
+	assert.equal((await runtime.release(root, worker, candidate, "worktree", signal)).outcome, "blocked");
+	await rm(join(worker.path, "ignored.log"));
+	assert.deepEqual(await runtime.release(root, worker, candidate, "worktree", signal), { outcome: "ready", value: "removed" });
+	assert.deepEqual(await runtime.release(root, worker, candidate, "worktree", signal), { outcome: "ready", value: "absent" });
+	assert.equal((await runtime.release(root, worker, { ...candidate, head: base.head }, "branch", signal)).outcome, "blocked");
+	assert.equal(git(root, "rev-parse", `refs/heads/${worker.branch}`), candidate.head);
+	assert.deepEqual(await runtime.release(root, worker, candidate, "branch", signal), { outcome: "ready", value: "removed" });
+	assert.deepEqual(await runtime.release(root, worker, candidate, "branch", signal), { outcome: "ready", value: "absent" });
+	const moved = await allocate(runtime, root, base, "moved");
+	const relocated = join(root, ".worktrees", "other-checkout");
+	git(root, "worktree", "move", moved.path, relocated);
+	assert.equal((await runtime.release(root, moved, { ...base, branch: `refs/heads/${moved.branch}` }, "branch", signal)).outcome, "blocked");
+	assert.deepEqual(await inspected(root), base);
+});
+
 test("text and changeset dependents read and edit an exact staged predecessor without moving Main", async (t) => {
 	const root = await repo(t);
 	const runtime = new IntegrationGit();

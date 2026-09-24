@@ -1,6 +1,4 @@
-import { chmod, lstat, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { lstat, realpath } from "node:fs/promises";
 import {
 	createChildWorktree,
 	inspectIndexFlags,
@@ -10,9 +8,6 @@ import {
 } from "./worktree.ts";
 import { prepareExactReviewEvidence } from "./review-evidence.ts";
 import {
-	checkBatchPasses,
-	isCleanCommitted,
-	reviewEvidencePasses,
 	sameIdentity,
 	type CheckCommand,
 	type ReviewEvidence,
@@ -26,14 +21,11 @@ import {
 	type AllocationReconciliation,
 	type CheckRunResult,
 	type CommandResult,
-	type GitCleanupKind,
 	type GitRuntime,
 	type InFlightTaskCandidateInspection,
 	type InFlightTaskCandidateInspector,
-	type IntegrationResult,
 	type TaskCandidateInspector,
 	type OperationContext,
-	type RebaseResult,
 	type ReviewResult,
 	type TransientLaunchHandle,
 	type WorktreeAllocationResult,
@@ -44,7 +36,6 @@ import { runProcess as defaultRunProcess } from "./process.ts";
 
 const GIT_OPERATION_CAP_MS = 30_000;
 const DIAGNOSTIC_LIMIT = 1_000;
-const REF_TRANSACTION_MISMATCH = "pi-subagent: guarded fast-forward rejected unexpected ref transaction";
 
 type ProcessResult = { code: number; killed: boolean; stdout: string; stderr: string };
 
@@ -105,50 +96,6 @@ function oid(value: string, field: string): string {
 function commandFailure(args: readonly string[], result: ProcessResult): string {
 	const detail = (result.stderr.trim() || result.stdout.trim()).slice(0, DIAGNOSTIC_LIMIT);
 	return `git ${args.map((arg) => JSON.stringify(arg)).join(" ")} failed with exit ${result.code}${detail ? `: ${detail}` : ""}`;
-}
-
-function referenceTransactionGuard(expectedBranch: string, expectedHead: string, candidateHead: string): string {
-	return `#!/usr/bin/env node
-const { readFileSync } = require("node:fs");
-const mismatch = ${JSON.stringify(REF_TRANSACTION_MISMATCH)};
-const expectedBranch = ${JSON.stringify(expectedBranch)};
-const expectedHead = ${JSON.stringify(expectedHead)};
-const candidateHead = ${JSON.stringify(candidateHead)};
-const state = process.argv[2];
-if (state !== "preparing" && state !== "prepared") process.exit(0);
-const input = readFileSync(0, "utf8");
-function reject() {
-	process.stderr.write(mismatch + "\\n");
-	process.exit(1);
-}
-if (!input.endsWith("\\n")) reject();
-const updates = input.slice(0, -1).split("\\n").map((line) => {
-	const first = line.indexOf(" ");
-	const second = line.indexOf(" ", first + 1);
-	if (first < 1 || second <= first + 1 || second === line.length - 1) reject();
-	return { oldValue: line.slice(0, first), newValue: line.slice(first + 1, second), ref: line.slice(second + 1) };
-});
-if (new Set(updates.map((update) => update.ref)).size !== updates.length) reject();
-if (updates.some((update) => update.ref !== "ORIG_HEAD"
-	&& update.ref !== "AUTO_MERGE"
-	&& update.ref !== "HEAD"
-	&& !update.ref.startsWith("refs/"))) reject();
-const originalHead = updates.filter((update) => update.ref === "ORIG_HEAD");
-if (originalHead.some((update) => update.newValue !== expectedHead)) reject();
-const moving = updates.filter((update) => update.ref === "HEAD" || update.ref.startsWith("refs/"));
-if (moving.length === 0) process.exit(0);
-function exact(update, ref) {
-	return update.ref === ref && update.oldValue === expectedHead && update.newValue === candidateHead;
-}
-const valid = state === "preparing"
-	? moving.length === 1 && exact(moving[0], "HEAD")
-	: moving.length === 1
-		? exact(moving[0], expectedBranch)
-		: moving.length === 2
-			&& moving.some((update) => exact(update, "HEAD"))
-			&& moving.some((update) => exact(update, expectedBranch));
-if (!valid) reject();
-`;
 }
 
 function worktreeIntent(attempt: TaskAttempt): WorktreeAllocationPlan {
@@ -375,16 +322,15 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (input.scope === "final") {
 			if (input.phase !== "final" || input.attempt) throw new Error("Final review received task-scoped evidence.");
 		} else {
-			if (!input.attempt || input.phase !== "authoritative") {
-				throw new Error("Task review requires exact authoritative attempt evidence.");
+			if (!input.attempt || input.phase !== "preliminary") {
+				throw new Error("Task review requires exact preliminary attempt evidence.");
 			}
-			if (!input.attempt.readiness || input.attempt.termination) {
-				throw new Error("Authoritative review requires exact durable readiness and a live worker.");
-			}
-			const expectedBase = input.attempt.integrationBase;
-			const expectedTip = input.attempt.integrationCandidate;
-			if (!expectedBase || !expectedTip || !sameIdentity(input.base, expectedBase) || !sameIdentity(input.tip, expectedTip)) {
-				throw new Error("Authoritative review base or tip does not match the exact persisted task evidence.");
+			const { candidateBase, candidate, preliminaryChecks, termination } = input.attempt;
+			if (!candidateBase || !candidate || termination || preliminaryChecks?.phase !== "preliminary"
+				|| !preliminaryChecks.passed || !sameIdentity(preliminaryChecks.candidate, candidate)
+				|| !sameIdentity(preliminaryChecks.identityAfter, candidate)
+				|| !sameIdentity(input.base, candidateBase) || !sameIdentity(input.tip, candidate)) {
+				throw new Error("Preliminary review requires a live worker and exact passing candidate evidence.");
 			}
 		}
 		const cwd = await this.requireScopeIdentity({ ...input, candidate: input.tip }, context);
@@ -477,213 +423,6 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 
 	async inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity> {
 		return await this.inspectTask(input.root, input.task, input.attempt, undefined, input.attempt.waveBase.head, context);
-	}
-
-	async rebase(input: {
-		root: string;
-		task: TaskRequest;
-		attempt: TaskAttempt;
-		candidate: WorkspaceIdentity;
-		sourceBase: WorkspaceIdentity;
-		onto: WorkspaceIdentity;
-	}, context: OperationContext): Promise<RebaseResult> {
-		const main = await this.inspectMain({ root: input.root }, context);
-		if (!sameIdentity(main, input.onto)) return { outcome: "blocked", failure: "Main drifted before task rebase." };
-		const current = await this.inspectTask(input.root, input.task, input.attempt, input.candidate, input.sourceBase.head, context);
-		if (input.sourceBase.head === input.onto.head) {
-			return { outcome: "ready", base: input.onto, candidate: current };
-		}
-		const worktree = worktreeIntent(input.attempt);
-		const args = ["rebase", "--no-update-refs", "--no-autostash", input.onto.head];
-		const rebased = await this.git(args, worktree.cwd, context);
-		if (rebased.code !== 0 || rebased.killed) {
-			return {
-				outcome: "blocked",
-				failure: `${commandFailure(args, rebased)} The exact rebase worktree and conflict state were retained without abort, reset, stash, or discard.`,
-			};
-		}
-		const candidate = await this.inspectTask(input.root, input.task, input.attempt, undefined, input.onto.head, context);
-		const after = await this.inspectMain({ root: input.root }, context);
-		return sameIdentity(after, input.onto)
-			? { outcome: "ready", base: input.onto, candidate }
-			: { outcome: "drift", base: input.onto, candidate, failure: "Main drifted during task rebase." };
-	}
-
-	async reconcileRebase(
-		input: Parameters<GitRuntime["reconcileRebase"]>[0],
-		context: OperationContext,
-	): Promise<import("./runner.ts").RebaseReconciliation> {
-		const transition = input.transition;
-		if (transition.status !== "rebasing") {
-			return { outcome: "unknown", failure: "Only a persisted rebasing intent can be reconciled." };
-		}
-		try {
-			await this.inspectTask(input.root, input.task, input.attempt, transition.from, transition.sourceBase.head, context);
-			return { outcome: "not_started" };
-		} catch {
-			// A changed exact worktree may be the completed rebase; prove it below.
-		}
-		try {
-			const current = await this.inspectTask(input.root, input.task, input.attempt, undefined, transition.onto.head, context);
-			if (!isCleanCommitted(current)) {
-				return { outcome: "unknown", failure: "Interrupted rebase candidate is not clean and committed." };
-			}
-			const worktree = worktreeIntent(input.attempt);
-			const [before, after] = await Promise.all([
-				this.stablePatchIds(transition.sourceBase.head, transition.from.head, worktree.cwd, context),
-				this.stablePatchIds(transition.onto.head, current.head, worktree.cwd, context),
-			]);
-			if (before.length !== after.length || before.some((patch, index) => patch !== after[index])) {
-				return { outcome: "unknown", failure: "Interrupted rebase patch identity or commit order could not be proved." };
-			}
-			return { outcome: "rebased", candidate: current };
-		} catch (error) {
-			return { outcome: "unknown", failure: `Interrupted rebase could not be reconciled exactly: ${text(error)}` };
-		}
-	}
-
-	async integrate(input: {
-		root: string;
-		task: TaskRequest;
-		attempt: TaskAttempt;
-		expectedMain: WorkspaceIdentity;
-		candidate: WorkspaceIdentity;
-		checks: import("./schema.ts").CheckBatchEvidence;
-		review?: ReviewEvidence;
-	}, context: OperationContext): Promise<IntegrationResult> {
-		if (input.task.kind !== "changeset") {
-			return { outcome: "failed", failure: "Integration requires a changeset task." };
-		}
-		if (!input.attempt.readiness || input.attempt.termination) {
-			return { outcome: "failed", failure: "Integration requires exact durable readiness and a live worker." };
-		}
-		if (!input.attempt.integrationBase || !sameIdentity(input.attempt.integrationBase, input.expectedMain)
-			|| !input.attempt.integrationCandidate || !sameIdentity(input.attempt.integrationCandidate, input.candidate)) {
-			return { outcome: "failed", failure: "Integration inputs do not match the persisted base and candidate." };
-		}
-		if (!checkBatchPasses(input.checks, input.task.checks, input.candidate)
-			|| !checkBatchPasses(input.attempt.authoritativeChecks, input.task.checks, input.candidate)) {
-			return { outcome: "failed", failure: "Integration requires exact persisted authoritative passing checks." };
-		}
-		if (input.task.judgment) {
-			if (!reviewEvidencePasses(
-				input.review,
-				"authoritative",
-				input.task.judgment.criterion,
-				input.expectedMain,
-				input.candidate,
-			) || !reviewEvidencePasses(
-				input.attempt.authoritativeReview,
-				"authoritative",
-				input.task.judgment.criterion,
-				input.expectedMain,
-				input.candidate,
-			)) return { outcome: "failed", failure: "Integration requires exact persisted authoritative PASS review evidence." };
-		}
-
-		const main = await this.inspectMain({ root: input.root }, context);
-		if (!sameIdentity(main, input.expectedMain)) return { outcome: "drift", failure: "Main drifted before fast-forward integration." };
-		await this.inspectTask(input.root, input.task, input.attempt, input.candidate, input.expectedMain.head, context);
-		const hookDirectory = await mkdtemp(join(tmpdir(), "pi-subagent-ref-guard-"));
-		const hookPath = join(hookDirectory, "reference-transaction");
-		const args = ["-c", `core.hooksPath=${hookDirectory}`, "merge", "--no-overwrite-ignore", "--no-autostash", "--ff-only", input.candidate.head];
-		let merged: ProcessResult;
-		try {
-			await writeFile(hookPath, referenceTransactionGuard(input.expectedMain.branch, input.expectedMain.head, input.candidate.head));
-			await chmod(hookPath, 0o700);
-			merged = await this.git(args, input.root, context);
-		} finally {
-			await rm(hookDirectory, { recursive: true });
-		}
-		if (merged.code !== 0 || merged.killed) {
-			if (merged.stderr.includes(REF_TRANSACTION_MISMATCH)) {
-				return { outcome: "drift", failure: "Main drifted at the guarded fast-forward ref transaction." };
-			}
-			try {
-				const afterFailure = await this.inspectMain({ root: input.root }, context);
-				if (sameIdentity(afterFailure, input.expectedMain)) {
-					return { outcome: "failed", failure: commandFailure(args, merged) };
-				}
-			} catch {
-				// The failed operation is uncertain; preserve all task resources below.
-			}
-			return { outcome: "unknown", failure: `Fast-forward integration result is uncertain. ${commandFailure(args, merged)}` };
-		}
-		let integrated: WorkspaceIdentity;
-		try {
-			integrated = await this.inspectMain({ root: input.root }, context);
-		} catch (error) {
-			return { outcome: "unknown", failure: `Fast-forward returned success but Main could not be verified: ${text(error)}` };
-		}
-		if (integrated.branch !== input.expectedMain.branch || integrated.head !== input.candidate.head) {
-			return { outcome: "unknown", failure: "Fast-forward returned success with an unexpected Main identity." };
-		}
-		return { outcome: "integrated", main: integrated };
-	}
-
-	async cleanupGit(input: {
-		root: string;
-		kind: GitCleanupKind;
-		task: TaskRequest;
-		attempt: TaskAttempt;
-	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }> {
-		try {
-			const worktree = worktreeIntent(input.attempt);
-			const integrationBase = input.attempt.integrationBase;
-			const integrationCandidate = input.attempt.integrationCandidate;
-			const integration = input.attempt.integration;
-			if (!integrationBase || !integrationCandidate || integration?.status !== "integrated"
-				|| !sameIdentity(integration.expectedMain, integrationBase)
-				|| !sameIdentity(integration.candidate, integrationCandidate)
-				|| !integration.mainAfter
-				|| integration.mainAfter.branch !== integrationBase.branch
-				|| integration.mainAfter.head !== integrationCandidate.head
-				|| !isCleanCommitted(integration.mainAfter)) {
-				return { outcome: "blocked", failure: "Git cleanup requires complete exact integration evidence." };
-			}
-			const approvedTip = integrationCandidate.head;
-			const registered = await this.registeredWorktreePaths(input.root, context);
-			const checkout = await pathExists(worktree.path);
-			const branch = await this.branchTip(input.root, worktree.branch, context);
-
-			if (input.kind === "worktree") {
-				if (!checkout && !registered.includes(worktree.path)) return { outcome: "absent" };
-				if (!checkout || !registered.includes(worktree.path)) {
-					return { outcome: "blocked", failure: "Worktree path and Git registration disagree; cleanup refused." };
-				}
-				if (branch !== approvedTip) return { outcome: "blocked", failure: "Worktree branch no longer names the approved tip." };
-				await this.inspectTask(input.root, input.task, input.attempt, integrationCandidate, integrationBase.head, context);
-				const currentMain = await this.inspectMain({ root: input.root }, context);
-				if (!sameIdentity(currentMain, integration.mainAfter)) {
-					return { outcome: "blocked", failure: "Main no longer matches the exact recorded post-integration identity." };
-				}
-				const removed = await this.git(["worktree", "remove", worktree.path], input.root, context);
-				if (removed.code !== 0 || removed.killed) return { outcome: "blocked", failure: commandFailure(["worktree", "remove", worktree.path], removed) };
-				if (await pathExists(worktree.path)
-					|| (await this.registeredWorktreePaths(input.root, context)).includes(worktree.path)) {
-					return { outcome: "blocked", failure: "git worktree remove returned success but the exact worktree still exists." };
-				}
-				return { outcome: "completed" };
-			}
-
-			if (checkout || registered.includes(worktree.path)) {
-				return { outcome: "blocked", failure: "Branch cleanup requires the exact worktree to be absent first." };
-			}
-			if (branch === undefined) return { outcome: "absent" };
-			if (branch !== approvedTip) return { outcome: "blocked", failure: "Task branch no longer names the approved tip." };
-			const currentMain = await this.inspectMain({ root: input.root }, context);
-			if (!sameIdentity(currentMain, integration.mainAfter)) {
-				return { outcome: "blocked", failure: "Main no longer matches the exact recorded post-integration identity." };
-			}
-			const deleted = await this.git(["branch", "-d", "--", worktree.branch], input.root, context);
-			if (deleted.code !== 0 || deleted.killed) return { outcome: "blocked", failure: commandFailure(["branch", "-d", "--", worktree.branch], deleted) };
-			if (await this.branchExists(input.root, worktree.branch, context)) {
-				return { outcome: "blocked", failure: "git branch -d returned success but the exact branch still exists." };
-			}
-			return { outcome: "completed" };
-		} catch (error) {
-			return { outcome: "blocked", failure: text(error) };
-		}
 	}
 
 	private async requireScopeIdentity(input: {
@@ -824,30 +563,6 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (result.code === 0 && !result.killed) return oid(result.stdout, "branch tip");
 		if (result.code === 1 && !result.killed) return;
 		throw new Error(commandFailure(args, result));
-	}
-
-	private async stablePatchIds(base: string, tip: string, cwd: string, context: OperationContext): Promise<string[]> {
-		const listed = await this.requireGit(["rev-list", "--reverse", `${base}..${tip}`], cwd, context);
-		const commits = listed.trim() ? listed.trim().split(/\r?\n/).map((value) => oid(value, "rebase commit")) : [];
-		const patches: string[] = [];
-		for (const commit of commits) {
-			const patch = await this.requireGit([
-				"show", "--pretty=email", "--binary", "--no-ext-diff", "--no-textconv", commit,
-			], cwd, context);
-			const result = await this.execute("git", ["patch-id", "--stable"], {
-				cwd,
-				signal: context.signal,
-				timeoutMs: Math.min(GIT_OPERATION_CAP_MS, context.timeoutMs ?? GIT_OPERATION_CAP_MS),
-				stdin: patch,
-			});
-			if (result.code !== 0 || result.killed || result.stderr.trim()) {
-				throw new Error(commandFailure(["patch-id", "--stable"], result));
-			}
-			const match = /^([0-9a-f]{40}|[0-9a-f]{64})\s+(?:[0-9a-f]{40}|[0-9a-f]{64})(?:\r?\n)?$/.exec(result.stdout);
-			if (!match) throw new Error("git patch-id --stable returned malformed exact evidence.");
-			patches.push(match[1]!);
-		}
-		return patches;
 	}
 
 	private async isAncestor(base: string, tip: string, cwd: string, context: OperationContext): Promise<boolean> {

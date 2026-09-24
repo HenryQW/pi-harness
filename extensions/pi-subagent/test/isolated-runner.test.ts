@@ -16,9 +16,7 @@ import {
 	type HostAllocationKind,
 	type HostAllocationResult,
 	type HostRuntime,
-	type IntegrationResult,
 	type OperationContext,
-	type RebaseResult,
 	type TaskCandidateInspector,
 	type TransientLaunchHandle,
 	type VerifiedLaunch,
@@ -104,10 +102,6 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	readonly terminationResults: Array<{ outcome: "terminated" } | { outcome: "unknown"; failure: string }> = [];
 	readonly terminationReconciliations: Array<{ outcome: "terminated" | "active" } | { outcome: "unknown"; failure: string }> = [];
 	readonly terminationReconciliationCalls: Array<{ workerId: string; candidate: WorkspaceIdentity }> = [];
-	readonly integrations: string[] = [];
-	readonly rebaseCalls: string[] = [];
-	readonly rebaseInputs: Array<{ sourceBase: WorkspaceIdentity; candidate: WorkspaceIdentity; onto: WorkspaceIdentity }> = [];
-	readonly mainAfterRebases: WorkspaceIdentity[] = [];
 	readonly reviewCalls: Array<RoleCall & { scope: "task" | "final"; taskId?: string; criterion: string }> = [];
 	readonly inspectMainCalls: OperationContext[] = [];
 	readonly inspectMainFailures: Error[] = [];
@@ -339,11 +333,11 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 			this.failFinalChecks -= 1;
 			throw new Error("final check transport interrupted");
 		}
-		const preliminary = input.scope === "task" && !input.attempt?.integrationCandidate;
+		const preliminary = input.scope === "task";
 		const failed = preliminary && this.failPreliminaryChecks > 0;
 		if (failed) this.failPreliminaryChecks -= 1;
 		if (input.scope === "task") {
-			this.changesetCallOrder.push(`check:${preliminary ? "preliminary" : "authoritative"}:${failed ? "fail" : "pass"}`);
+			this.changesetCallOrder.push(`check:preliminary:${failed ? "fail" : "pass"}`);
 		}
 		return {
 			results: input.checks.map((check) => ({ ...check, code: failed || (input.scope === "final" && this.failCombinedExit) ? 1 : 0, killed: false, stdout: "", stderr: "" })),
@@ -378,40 +372,9 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 		return { ...input.attempt.candidate };
 	}
 
-	async rebase(input: Parameters<GitRuntime["rebase"]>[0], _context: OperationContext): Promise<RebaseResult> {
-		this.rebaseCalls.push(input.task.id);
-		this.rebaseInputs.push({
-			sourceBase: { ...input.sourceBase },
-			candidate: { ...input.candidate },
-			onto: { ...input.onto },
-		});
-		const mainAfter = this.mainAfterRebases.shift();
-		if (mainAfter) this.main = { ...mainAfter };
-		return { outcome: "ready", base: { ...input.onto }, candidate: { ...input.candidate } };
-	}
-
-	async reconcileRebase(input: Parameters<GitRuntime["reconcileRebase"]>[0]): Promise<import("../src/runner.ts").RebaseReconciliation> {
-		return { outcome: "not_started" };
-	}
-
-	async integrate(input: Parameters<GitRuntime["integrate"]>[0], _context: OperationContext): Promise<IntegrationResult> {
-		this.integrations.push(input.task.id);
-		this.changesetCallOrder.push(`integrate:${input.task.id}`);
-		this.main = identity(input.candidate.head[0]!, input.expectedMain.branch);
-		return { outcome: "integrated", main: { ...this.main } };
-	}
-
 	async cleanupHost(input: Parameters<HostRuntime["cleanupHost"]>[0], _context: OperationContext) {
 		this.cleanupCalls.push(input.kind);
 		this.changesetCallOrder.push(`cleanup-host:${input.kind}`);
-		const failure = this.cleanupFailures.shift();
-		if (failure) throw failure;
-		return { outcome: "completed" as const };
-	}
-
-	async cleanupGit(input: Parameters<GitRuntime["cleanupGit"]>[0], _context: OperationContext) {
-		this.cleanupCalls.push(input.kind);
-		this.changesetCallOrder.push(`cleanup-git:${input.kind}`);
 		const failure = this.cleanupFailures.shift();
 		if (failure) throw failure;
 		return { outcome: "completed" as const };
@@ -584,8 +547,6 @@ function runtimeCallCounts(runtime: FakeRuntime) {
 		checks: runtime.checkCalls.length,
 		terminations: runtime.terminationCalls.length,
 		reviews: runtime.reviewCalls.length,
-		rebases: runtime.rebaseCalls.length,
-		integrations: runtime.integrations.length,
 		cleanups: runtime.cleanupCalls.length,
 		mainInspections: runtime.inspectMainCalls.length,
 	};
@@ -759,7 +720,6 @@ test("failed readiness persistence returns attention without integrating or term
 	assert.equal(task.status, "needs_attention");
 	assert.match(task.failure ?? "", /simulated readiness persistence failure/);
 	assert.ok(task.attempts[0]?.readiness);
-	assert.deepEqual(runtime.integrations, []);
 	assert.deepEqual(runtime.terminationCalls, []);
 	assert.deepEqual(result.continuation, { id: "readiness-save-failure", action: "verify", taskId: "change" });
 	assertParsed(result.state);
@@ -770,7 +730,6 @@ test("failed readiness persistence returns attention without integrating or term
 	const recovered = await runner.resume(result.continuation!, root);
 	assert.equal(recovered.state.status, "needs_attention");
 	assert.deepEqual(runtime.workerCalls, [{ taskId: "change", kind: "initial" }]);
-	assert.deepEqual(runtime.integrations, []);
 	assertParsed(recovered.state);
 });
 
@@ -841,7 +800,6 @@ test("abort during agent startup waits for durable ownership and terminates that
 	assert.equal(attempt.termination?.status, "terminated");
 	assert.deepEqual(runtime.terminationCalls, [{ workerId: "change-agent", candidate: attempt.waveBase }]);
 	assert.deepEqual(runtime.workerCalls, []);
-	assert.deepEqual(runtime.integrations, []);
 	assert.equal(aborted.state.status, "aborted");
 	assert.deepEqual(result.state, aborted.state);
 	assertParsed(aborted.state);
@@ -889,7 +847,6 @@ test("a productive lease admits read-only status and abort during a paused worke
 	if (!agent?.agentName) throw new Error("Expected an exact retained worker fixture.");
 	assert.equal(aborted.state.status, "aborted");
 	assert.deepEqual(completedExecution.state, aborted.state);
-	assert.deepEqual(runtime.integrations, []);
 	assert.deepEqual(runtime.terminationCalls, [{ workerId: agent.agentName, candidate: abortedAttempt.prompts[0]!.preCandidate }]);
 	assert.equal(abortedAttempt.termination?.status, "terminated");
 	assert.throws(
@@ -922,7 +879,6 @@ test("parallel wave completions cannot overwrite a concurrent abort", async (t) 
 	assert.equal(aborted.state.status, "aborted");
 	assert.deepEqual(result.state, aborted.state);
 	assert.equal(runtime.terminationCalls.length, 2);
-	assert.deepEqual(runtime.integrations, []);
 	assert.ok(aborted.state.tasks.every((task) => task.kind !== "changeset"
 		|| task.attempts[0]?.termination?.status === "terminated"));
 	assertParsed(aborted.state);
@@ -959,7 +915,6 @@ test("paused worker results adopt a concurrent durable abort before surfacing ca
 	assert.equal(result.state.status, "aborted");
 	assert.deepEqual(result.state, durable);
 	assert.equal(changesetState(result.state, "change").status, "working");
-	assert.deepEqual(runtime.integrations, []);
 	assertParsed(result.state);
 });
 
@@ -1009,7 +964,6 @@ test("ready changeset waves run concurrently, integrate in request order, and re
 	assert.equal(result.state.status, "needs_attention");
 	assert.deepEqual(result.state.waves.map(({ taskIds }) => taskIds), [["first", "second"]]);
 	assert.equal(runtime.maxConcurrentWorkers, 2);
-	assert.deepEqual(runtime.integrations, []);
 	assert.equal(first.preliminaryChecks?.passed, true);
 	assert.equal(first.preliminaryReview?.verdict, "PASS");
 	assert.equal(result.state.integration.candidates.length, 2);
@@ -1153,9 +1107,7 @@ test("text producers feed ordered synthesis context into an integrated changeset
 		taskId: "apply",
 		criterion: "The synthesis was applied exactly.",
 	}]);
-	assert.deepEqual(runtime.integrations, []);
 	assert.equal(apply.status, "ready_to_integrate");
-	assert.equal(apply.attempts[0]?.integration, undefined);
 	assert.equal(result.state.status, "needs_attention");
 	assert.equal(result.state.accepted, false);
 	assert.equal(result.state.final.checks, undefined);
@@ -1193,7 +1145,6 @@ test("a failed preliminary changeset check gets one same-worker correction befor
 	assert.deepEqual(attempt.readiness?.candidate, attempt.prompts[1]?.candidate);
 	assert.ok((attempt.readiness?.at ?? 0) > (attempt.prompts[1]?.at ?? Number.MAX_SAFE_INTEGER));
 	assert.equal(attempt.preliminaryReview?.passed, true);
-	assert.equal(attempt.authoritativeChecks, undefined);
 	assertParsed(result.state);
 });
 
@@ -1211,8 +1162,6 @@ test("a blocked diagnostic is normalized before same-worker correction", async (
 	]);
 	assert.deepEqual(runtime.correctionFailures, ["diagnostic"]);
 	assert.equal(attempt.prompts[0]?.failure, "diagnostic");
-	assert.equal(attempt.integration, undefined);
-	assert.deepEqual(runtime.integrations, []);
 	assertParsed(result.state);
 });
 
@@ -1259,8 +1208,7 @@ test("a follow-up queued during a failing follow-up is honored", async (t) => {
 			]);
 			assert.deepEqual(attempt.prompts.map(({ kind }) => kind), ["initial", "followup", "followup"]);
 			assert.equal(attempt.termination, undefined);
-			assert.equal(attempt.integration, undefined);
-			assertParsed(result.state);
+					assertParsed(result.state);
 		});
 	}
 });
@@ -1378,8 +1326,6 @@ test("status preserves interrupted and ambiguous changeset prompts without produ
 				checks: 0,
 				terminations: 0,
 				reviews: 0,
-				rebases: 0,
-				integrations: 0,
 				cleanups: 0,
 				mainInspections: 1,
 			});
@@ -1430,8 +1376,6 @@ test("status reports Main drift and inspection expiry or failure without mutatio
 				checks: 0,
 				terminations: 0,
 				reviews: 0,
-				rebases: 0,
-				integrations: 0,
 				cleanups: 0,
 				mainInspections: 1,
 			});
@@ -1625,6 +1569,8 @@ class StagingGit extends IntegrationGit {
 	readonly merged: string[] = [];
 	promotions = 0;
 	cleanupBlocked = false;
+	releaseBlocked = false;
+	readonly releases: string[] = [];
 	promoteResult?: GitOutcome<WorkspaceIdentity>;
 	promoteMain?: (tip: WorkspaceIdentity) => void;
 	combinedTip?: WorkspaceIdentity;
@@ -1652,6 +1598,12 @@ class StagingGit extends IntegrationGit {
 	}
 	override async cleanup(): Promise<GitOutcome<"removed">> {
 		return this.cleanupBlocked ? { outcome: "blocked", failure: "Exact checkout is dirty; inspect the retained worktree." }
+			: { outcome: "ready", value: "removed" };
+	}
+	override async release(_root: string, info: WorktreeInfo, _tip: WorkspaceIdentity,
+		kind: "worktree" | "branch"): Promise<GitOutcome<"removed">> {
+		this.releases.push(`${info.branch}:${kind}`);
+		return this.releaseBlocked ? { outcome: "blocked", failure: "Owned checkout is dirty." }
 			: { outcome: "ready", value: "removed" };
 	}
 	resolved = false;
@@ -1700,7 +1652,6 @@ test("Main selects two retained candidates in order; conflict and resolution nev
 	const ready = await runner.execute(definition, root);
 	assert.equal(ready.state.status, "needs_attention");
 	assert.equal(ready.state.integration.candidates.length, 2);
-	assert.deepEqual(runtime.integrations, []);
 	assert.deepEqual(runtime.terminationCalls, []);
 	assert.equal(runtime.main.head, identity("a").head);
 	assertParsed(ready.state);
@@ -1725,7 +1676,7 @@ test("Main selects two retained candidates in order; conflict and resolution nev
 	assert.deepEqual(git.merged, [first!.tip.head, second!.tip.head]);
 	await assert.rejects(runner.stage(secondAction, root), /unresolved/);
 	await assert.rejects(runner.resume({ id: definition.id, action: "finalize" }, root), /require subagent_stage/);
-	await assert.rejects(runner.abort(definition.id, root), /cannot be aborted/);
+	await assert.rejects(runner.abort(definition.id, root), /must be explicitly rejected and released/);
 	const resolveAction = { ...secondAction, action: "resolve" as const };
 	const pending = await runner.stage(resolveAction, root);
 	assert.equal(pending.state.integration.generations[0]?.status, "conflict");
@@ -2047,6 +1998,41 @@ test("rejected staged candidate freezes validation and requires explicit replay 
 	assert.equal(promoted.state.integration.generations[0]?.status, "superseded");
 	assert.equal(promoted.state.integration.generations[0]?.worktree?.path, staged.state.integration.generations[0]?.worktree?.path);
 	assertParsed(promoted.state);
+	const releaseCandidate = { id, generation: 2, action: "release" as const,
+		taskId: "first", attempt: first!.attempt, expectedTip: first!.tip };
+	await assert.rejects(runner.integrate(releaseCandidate, root), /retained staged generation/);
+	const releaseOld = { id, generation: 1, action: "release" as const, expectedTip: firstTip };
+	git.releaseBlocked = true;
+	const blocked = await runner.integrate(releaseOld, root);
+	assert.equal(blocked.state.integration.generations[0]?.cleanup?.[0]?.status, "running");
+	assert.equal(blocked.state.integration.candidates[0]?.worker, "retained");
+	git.releaseBlocked = false;
+	const cleanedOld = await runner.integrate(releaseOld, root);
+	assert.deepEqual(cleanedOld.state.integration.generations[0]?.cleanup?.map((step) => step.status), ["completed", "completed"]);
+	const cleanedCandidate = await runner.integrate(releaseCandidate, root);
+	assert.equal(cleanedCandidate.state.integration.candidates[0]?.worker, "released");
+	assert.deepEqual(changesetState(cleanedCandidate.state, "first").attempts[0]?.cleanup.map((step) => step.status),
+		["completed", "completed", "completed", "completed"]);
+	assert.equal(cleanedCandidate.state.accepted, true);
+	assertParsed(cleanedCandidate.state);
+});
+
+test("explicit rejection and release allow abort without discarding a retained worker", async (t) => {
+	const git = new StagingGit();
+	const { root, runner } = await harness(t, { integrationGit: git });
+	const id = "reject-and-release";
+	const ready = await runner.execute(request(id, [changesetTask("change")]), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const rejected = await runner.stage({ id, action: "reject", generation: 1, taskId: "change",
+		attempt: candidate.attempt, candidate: candidate.tip, expectedTip: ready.state.main }, root);
+	assert.equal(rejected.state.tasks[0]?.status, "rejected");
+	await assert.rejects(runner.abort(id, root), /explicitly rejected and released/);
+	const released = await runner.integrate({ id, action: "release", generation: 1,
+		taskId: "change", attempt: candidate.attempt, expectedTip: candidate.tip }, root);
+	assert.equal(released.state.integration.candidates[0]?.worker, "released");
+	const aborted = await runner.abort(id, root);
+	assert.equal(aborted.state.status, "aborted");
+	assertParsed(aborted.state);
 });
 
 test("post-seal same-worker revision invalidates old stage and retains a newly checked candidate", async (t) => {

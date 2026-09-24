@@ -108,8 +108,8 @@ const PRIVATE_STATE = {
 					stderr: "focused check failed",
 				}],
 			},
-			authoritativeReview: {
-				phase: "authoritative",
+			preliminaryReview: {
+				phase: "preliminary",
 				tip: RECORDED_MAIN,
 				identityAfter: RECORDED_MAIN,
 				passed: false,
@@ -332,7 +332,7 @@ function expectedPublicState() {
 				stderr: "focused check failed",
 			},
 			failedReview: {
-				phase: "authoritative",
+				phase: "preliminary",
 				verdict: "NEEDS_WORK",
 				identityChanged: false,
 			},
@@ -775,7 +775,7 @@ test("text recovery exposes only bounded text attempt evidence", async () => {
 	const attemptFailure = `${"界".repeat(1_000)}UNEXPOSED_ATTEMPT_TAIL`;
 	const textAttempt = { number: 2, status: "failed", failure: attemptFailure };
 	for (const field of [
-		"allocations", "preliminaryChecks", "authoritativeChecks", "authoritativeReview", "cleanup", "output",
+		"allocations", "preliminaryChecks", "preliminaryReview", "cleanup", "output",
 	]) {
 		Object.defineProperty(textAttempt, field, {
 			enumerable: true,

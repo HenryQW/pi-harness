@@ -194,12 +194,8 @@ function publicTaskRecovery(task: RunState["tasks"][number]) {
 	}
 
 	const attempt = task.attempts.at(-1);
-	const failedCheck = publicFailedCheck(
-		attempt?.authoritativeChecks?.passed === false
-			? attempt.authoritativeChecks
-			: attempt?.preliminaryChecks?.passed === false ? attempt.preliminaryChecks : undefined,
-	);
-	const failedReview = publicFailedReview(attempt?.authoritativeReview);
+	const failedCheck = publicFailedCheck(attempt?.preliminaryChecks);
+	const failedReview = publicFailedReview(attempt?.preliminaryReview);
 	const cleanup = attempt?.cleanup
 		.filter((step) => step.status !== "completed")
 		.map((step) => ({
@@ -527,7 +523,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_integrate",
 		label: "Subagent integrate",
-		description: "Explicitly refresh from an exact recorded Main to a clean same-branch descendant (old integration and checks are invalidated; restage immutable candidates), validate, correct, promote, or reconcile an interrupted promotion. Never replays an uncertain mutation.",
+		description: "Main advances staged dependents, refreshes after clean Main drift, validates, corrects, promotes, reconciles an interrupted promotion, cleans up promoted resources, or explicitly releases rejected/superseded owned resources. Never replays an uncertain mutation.",
 		parameters: IntegrationActionSchema,
 		prepareArguments: parseIntegrationAction,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -539,7 +535,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_abort",
 		label: "Subagent abort",
-		description: "Explicitly terminate owned workers and abort one unfinished isolated request.",
+		description: "Abort one unfinished isolated request; retained candidates and integration checkouts must be explicitly rejected and released first. Terminate only exact owned workers.",
 		parameters: IdOnlySchema,
 		prepareArguments: parseIdOnly,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

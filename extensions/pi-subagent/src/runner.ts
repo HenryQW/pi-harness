@@ -31,7 +31,6 @@ import {
 	type HostAllocationPlan,
 	type ModelClass,
 	type PromptRecord,
-	type RebaseTransition,
 	type ReviewEvidence,
 	type ResumeRequest,
 	type RunState,
@@ -120,19 +119,6 @@ export interface ReviewResult {
 	identityAfter: WorkspaceIdentity;
 }
 
-export type RebaseResult =
-	| { outcome: "ready" | "drift"; base: WorkspaceIdentity; candidate: WorkspaceIdentity; failure?: string }
-	| { outcome: "blocked"; failure: string };
-
-export type RebaseReconciliation =
-	| { outcome: "not_started" }
-	| { outcome: "rebased"; candidate: WorkspaceIdentity }
-	| { outcome: "unknown"; failure: string };
-
-export type IntegrationResult =
-	| { outcome: "integrated"; main: WorkspaceIdentity }
-	| { outcome: "failed" | "drift" | "unknown"; failure: string };
-
 /** A just-in-time launch whose argv contains only an ephemeral Role prompt path. */
 export interface VerifiedLaunch {
 	readonly role: string;
@@ -193,7 +179,6 @@ export interface CoordinatorRuntime {
 
 export type HostAllocationKind = Exclude<AllocationKind, "worktree">;
 export type HostCleanupKind = Extract<CleanupKind, "worker_tab" | "workspace">;
-export type GitCleanupKind = Extract<CleanupKind, "worktree" | "branch">;
 
 export interface HostRuntime {
 	planHostAllocation(input: {
@@ -298,35 +283,6 @@ export interface GitRuntime {
 		acquireLaunch(): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 	}, context: OperationContext): Promise<ReviewResult>;
 	inspectRetainedTask(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
-	rebase(input: {
-		root: string;
-		task: TaskRequest;
-		attempt: TaskAttempt;
-		candidate: WorkspaceIdentity;
-		sourceBase: WorkspaceIdentity;
-		onto: WorkspaceIdentity;
-	}, context: OperationContext): Promise<RebaseResult>;
-	reconcileRebase(input: {
-		root: string;
-		task: TaskRequest;
-		attempt: TaskAttempt;
-		transition: RebaseTransition;
-	}, context: OperationContext): Promise<RebaseReconciliation>;
-	integrate(input: {
-		root: string;
-		task: TaskRequest;
-		attempt: TaskAttempt;
-		expectedMain: WorkspaceIdentity;
-		candidate: WorkspaceIdentity;
-		checks: CheckBatchEvidence;
-		review?: ReviewEvidence;
-	}, context: OperationContext): Promise<IntegrationResult>;
-	cleanupGit(input: {
-		root: string;
-		kind: GitCleanupKind;
-		task: TaskRequest;
-		attempt: TaskAttempt;
-	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }>;
 }
 
 export type MainStatus =
@@ -636,18 +592,9 @@ function nextAttemptEventAt(attempt: TaskAttempt, now: number): number {
 	const latest = Math.max(
 		0,
 		...attempt.prompts.map(({ at }) => at),
-		...attempt.transitions.map(({ at }) => at),
 		attempt.readiness?.at ?? 0,
 	);
 	return Math.max(now, latest + 1);
-}
-
-function latestTransitionAfter(attempt: TaskAttempt, after: number): RebaseTransition | undefined {
-	for (let index = attempt.transitions.length - 1; index >= 0; index -= 1) {
-		const transition = attempt.transitions[index]!;
-		if (transition.at > after) return transition;
-	}
-	return undefined;
 }
 
 type AllocationOfKind<Kind extends AllocationKind> = Extract<AllocationIntent, { kind: Kind }>;
@@ -696,14 +643,6 @@ function correctionEligible(request: ChangesetTaskRequest, attempt: TaskAttempt)
 		|| attempt.termination) return false;
 	const latestPrompt = attempt.prompts.at(-1)!;
 	if (latestPrompt.status !== "settled") return false;
-	const latestTransition = attempt.transitions.at(-1);
-	if (!attempt.readiness && latestTransition?.status === "rebased" && latestTransition.to
-		&& attempt.candidate && attempt.candidateBase
-		&& sameIdentity(attempt.candidate, latestTransition.to)
-		&& sameIdentity(attempt.candidateBase, latestTransition.onto)
-		&& !attempt.preliminaryChecks && !attempt.authoritativeChecks && !attempt.authoritativeReview && !attempt.integration) {
-		return true;
-	}
 	if (!attempt.candidate) {
 		return attempt.prompts.length === 1 && !attempt.preliminaryChecks && Boolean(initial.failure?.trim());
 	}
@@ -1152,7 +1091,7 @@ export class IsolatedRunner {
 					throw new Error("A dependent has exhausted its bounded fresh attempts; arbitration cannot invalidate it safely.");
 				}
 				if (generation && generation.status !== "superseded" && generation.stages.some((stage) => stage.taskId === action.taskId)
-					&& generations.filter((item) => item.worktree).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
+					&& generations.filter((item) => item.worktree && !item.cleanup?.every((step) => step.status === "completed")).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
 					throw new Error("Retained integration worktree limit is exhausted; reconcile the owned checkouts before another rebuild.");
 				}
 				if (affected.some((dependent) => dependent.kind === "changeset" && (
@@ -1263,7 +1202,7 @@ export class IsolatedRunner {
 			if (!sameIdentity(actualMain, state.main)) throw new Error("Main changed or became dirty; staging is blocked.");
 			if (!generation) {
 				if (action.action !== "stage") throw new Error("No integration generation exists to resolve.");
-				if (generations.filter((item) => item.worktree).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
+				if (generations.filter((item) => item.worktree && !item.cleanup?.every((step) => step.status === "completed")).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
 					throw new Error("Retained integration worktree limit is exhausted; no new generation may be allocated.");
 				}
 				const result = await scope.call((context) => this.integrationGit.allocate(root,
@@ -1341,6 +1280,38 @@ export class IsolatedRunner {
 			const state = handle.state;
 			const request = parseExecuteRequest(state.request);
 			const generation = state.integration.generations.at(-1);
+			if (action.action === "release") {
+				const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
+					() => this.coordinatorRuntime.now(), outerSignal);
+				if (action.taskId !== undefined || action.attempt !== undefined) {
+					if (!action.taskId || !action.attempt || action.generation !== (generation?.number ?? 1)) {
+						throw new Error("Candidate release requires the latest generation and exact task attempt.");
+					}
+					const task = changesetTaskState(state, action.taskId);
+					const attempt = task.attempts[action.attempt - 1];
+					const candidates = state.integration.candidates.filter((item) => item.taskId === action.taskId && item.attempt === action.attempt);
+					const candidate = candidates.find((item) => sameIdentity(item.tip, action.expectedTip));
+					const worker = attempt?.allocations.find((item): item is WorktreeAllocationIntent => item.kind === "worktree" && item.status === "owned")?.worktree;
+					if (!candidate || candidate.decision !== "rejected" || task.status !== "rejected"
+						|| attempt?.termination?.status !== "terminated"
+						|| !sameIdentity(attempt.termination.candidate, action.expectedTip) || !worker
+						|| candidates.some((item) => !item.decision)
+						|| state.integration.generations.some((item) => item.stages.some((stage) => stage.taskId === action.taskId
+							&& stage.attempt === action.attempt && item.cleanup?.every((step) => step.status === "completed") !== true))) {
+						throw new Error("Release requires a rejected terminated worker and no retained staged generation using its checkout.");
+					}
+					await this.releaseRejected(handle, task, attempt, worker as WorktreeInfo, scope);
+					return this.response(state);
+				}
+				const superseded = state.integration.generations[action.generation - 1];
+				if (!superseded?.worktree || superseded.status !== "superseded"
+					|| !sameIdentity(action.expectedTip, superseded.stages.at(-1)?.tip ?? superseded.integrationBase)
+					|| superseded.stages.some((stage) => stage.status === "pending" || stage.status === "staging")) {
+					throw new Error("Release requires an exact superseded integration checkout without an uncertain stage.");
+				}
+				await this.releaseSuperseded(handle, superseded, action.expectedTip, scope);
+				return this.response(state);
+			}
 			if (action.action === "refresh") {
 				if (terminal(state) || state.status !== "needs_attention" || state.integration.refresh?.status === "pending"
 					|| state.integration.refresh?.status === "unknown" || !sameIdentity(state.main, action.expectedMain)
@@ -1357,7 +1328,7 @@ export class IsolatedRunner {
 				if (!state.integration.candidates.some((candidate) => !candidate.decision && candidate.worker === "retained")) {
 					throw new Error("Refresh requires at least one retained immutable candidate.");
 				}
-				if (state.integration.generations.filter((item) => item.worktree).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
+				if (state.integration.generations.filter((item) => item.worktree && !item.cleanup?.every((step) => step.status === "completed")).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
 					throw new Error("Retained integration worktree limit is exhausted.");
 				}
 				const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
@@ -1594,6 +1565,66 @@ export class IsolatedRunner {
 		});
 	}
 
+	private async releaseRejected(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt,
+		worker: WorktreeInfo, scope: RuntimeScope): Promise<void> {
+		const state = handle.state;
+		const candidates = state.integration.candidates.filter((item) => item.taskId === task.taskId && item.attempt === attempt.number);
+		for (const candidate of candidates) candidate.worker = "release_pending";
+		await this.saveProductive(handle);
+		try {
+			for (const kind of CLEANUP_KINDS) {
+				const step = attempt.cleanup.find((item) => item.kind === kind)!;
+				if (step.status === "completed") continue;
+				step.status = "running";
+				await this.saveProductive(handle);
+				if (kind === "worker_tab" || kind === "workspace") {
+					const result = await this.callProductive(handle, scope, (context) => this.hostRuntime.cleanupHost({
+						requestId: state.request.id, kind, task: changesetTaskRequest(state, task.taskId), attempt,
+					}, context));
+					if (result.outcome === "blocked") throw new Error(result.failure);
+				} else {
+					const candidate = attempt.termination!.candidate;
+					const result = await this.callProductive(handle, scope, (context) => this.integrationGit.release(
+						state.root, worker, candidate, kind, context.signal));
+					if (result.outcome !== "ready") throw new Error(result.failure);
+				}
+				step.status = "completed";
+				delete step.failure;
+				await this.saveProductive(handle);
+			}
+			for (const candidate of candidates) candidate.worker = "released";
+			await this.saveProductive(handle);
+		} catch (error) {
+			const pending = attempt.cleanup.find((step) => step.status === "running");
+			if (pending) pending.failure = bounded(`Release requires attention: ${errorText(error)}`);
+			await this.saveProductive(handle);
+		}
+	}
+
+	private async releaseSuperseded(handle: RunStateHandle, generation: IntegrationGeneration,
+		tip: WorkspaceIdentity, scope: RuntimeScope): Promise<void> {
+		generation.cleanup ??= [{ kind: "worktree", status: "pending" }, { kind: "branch", status: "pending" }];
+		await this.saveProductive(handle);
+		try {
+			for (const kind of ["worktree", "branch"] as const) {
+				const step = generation.cleanup.find((item) => item.kind === kind)!;
+				if (step.status === "completed") continue;
+				step.status = "running";
+				await this.saveProductive(handle);
+				const result = await this.callProductive(handle, scope, (context) => this.integrationGit.release(
+					handle.state.root, generation.worktree!, tip, kind, context.signal));
+				if (result.outcome !== "ready") throw new Error(result.failure);
+				step.status = "completed";
+				delete step.failure;
+				await this.saveProductive(handle);
+			}
+		} catch (error) {
+			const pending = generation.cleanup.find((step) => step.status === "running");
+			if (pending) pending.failure = bounded(`Release requires attention: ${errorText(error)}`);
+			await this.saveProductive(handle);
+		}
+	}
+
 	private async cleanupPromoted(handle: RunStateHandle, generation: IntegrationGeneration,
 		receipts: StageReceipt[], scope: RuntimeScope): Promise<void> {
 		const state = handle.state;
@@ -1721,8 +1752,10 @@ export class IsolatedRunner {
 			const handle = await this.store.load(root, id);
 			const state = handle.state;
 			if (terminal(state)) return this.response(state);
-			if (state.integration.candidates.length || state.integration.generations.length) {
-				throw new Error("Retained candidates and integration worktrees cannot be aborted before explicit rejection/cleanup is implemented.");
+			if (state.integration.candidates.some((candidate) => candidate.worker !== "released")
+				|| state.integration.generations.some((generation) => generation.worktree
+					&& !generation.cleanup?.every((step) => step.status === "completed"))) {
+				throw new Error("Retained candidates and integration worktrees must be explicitly rejected and released before abort.");
 			}
 			const activeControls = this.activeControls(root, id);
 			for (const { control } of activeControls) control.invalidate();
@@ -1847,7 +1880,6 @@ export class IsolatedRunner {
 						allocationGeneration: 1,
 						allocations: [],
 						prompts: [],
-						transitions: [],
 						cleanup: CLEANUP_KINDS.map((kind) => ({ kind, status: "pending" })),
 					});
 				}
@@ -2184,11 +2216,6 @@ export class IsolatedRunner {
 				attempt.readiness = undefined;
 				attempt.preliminaryChecks = undefined;
 				attempt.preliminaryReview = undefined;
-				attempt.integrationBase = undefined;
-				attempt.integrationCandidate = undefined;
-				attempt.authoritativeChecks = undefined;
-				attempt.authoritativeReview = undefined;
-				attempt.integration = undefined;
 			}
 			let preCandidate: WorkspaceIdentity;
 			try {
@@ -2353,8 +2380,7 @@ export class IsolatedRunner {
 
 
 	private terminationCandidate(attempt: TaskAttempt): WorkspaceIdentity {
-		return attempt.integrationCandidate
-			?? attempt.candidate
+		return attempt.candidate
 			?? attempt.prompts.at(-1)?.candidate
 			?? attempt.prompts.at(-1)?.preCandidate
 			?? attempt.waveBase;
@@ -2526,7 +2552,6 @@ export class IsolatedRunner {
 		scope: RuntimeScope,
 	): Promise<RunResponse> {
 		const attempt = latestAttempt(task);
-		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be adopted or reintegrated automatically.");
 		if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
 			throw new Error("An ambiguous delivered prompt is retained for inspection or explicit abort and is never replayed.");
 		}
@@ -2535,9 +2560,7 @@ export class IsolatedRunner {
 		}, context)), "Retained task candidate identity");
 		if (!isCleanCommitted(candidate)) throw new Error("Retained task candidate is not clean and committed.");
 		if (attempt.readiness) {
-			const expected = latestTransitionAfter(attempt, attempt.readiness!.at)?.to
-				?? attempt.readiness.candidate;
-			if (!sameIdentity(candidate, expected)) throw new Error("Ready retained task candidate drifted from its exact lineage.");
+			if (!sameIdentity(candidate, attempt.readiness.candidate)) throw new Error("Ready retained task candidate drifted from its exact lineage.");
 			task.status = "ready_to_integrate";
 			task.failure = undefined;
 			await this.saveProductive(handle);
@@ -2581,7 +2604,6 @@ export class IsolatedRunner {
 			await this.saveProductive(handle);
 			return await this.run(handle, scope, undefined);
 		}
-		if (attempt.integration?.status === "unknown") throw new Error("An unknown integration result cannot be retried or adopted automatically.");
 		if (attempt.prompts.length) {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
 				throw new Error("An ambiguous delivered prompt is never replayed.");
@@ -2802,10 +2824,6 @@ export class IsolatedRunner {
 					attempt.termination.status = "unknown";
 					attempt.termination.failure = "Worker termination was interrupted and remains unproved.";
 				}
-				if (attempt.integration?.status === "integrating") {
-					attempt.integration.status = "unknown";
-					attempt.integration.failure = "Integration was interrupted after intent persistence and was not adopted.";
-				}
 				for (const step of attempt.cleanup) if (step.status === "running") step.status = "pending";
 			}
 			this.attention(task, state.recovery?.taskId === task.taskId
@@ -2934,8 +2952,7 @@ export class IsolatedRunner {
 				const attempt = attention.attempts.at(-1);
 				if (attempt && this.correctionAllowed(state, changesetTaskRequest(state, attention.taskId), attempt)) {
 					continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
-				} else if (attempt?.integration?.status === "integrated"
-					|| (attempt?.readiness && !state.integration.candidates.length)
+				} else if ((attempt?.readiness && !state.integration.candidates.length)
 					|| (attempt?.candidate && attempt.candidateBase
 						&& checkBatchPasses(attempt.preliminaryChecks, changesetTaskRequest(state, attention.taskId).checks, attempt.candidate))) {
 					continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
@@ -2969,11 +2986,12 @@ export class IsolatedRunner {
 				...(state.integration.generations.at(-1)!.checks?.passed === false ? ["Combined checks failed; Main was not changed."] : []),
 				...(state.integration.generations.at(-1)!.status === "promoted" ? ["Promotion proven; worker cleanup is pending or completed. Use subagent_integrate cleanup with the exact tip if interrupted."] : []),
 				] : []),
-				...(state.integration.generations.some((item) => item.status === "superseded" && item.worktree) ? [
-					`Superseded integration worktrees remain owned (see generation paths/status); inspect and reconcile these exact resources manually. They are not counted as selected or cleaned.`,
+				...(state.integration.generations.some((item) => item.status === "superseded" && item.worktree
+					&& !item.cleanup?.every((step) => step.status === "completed")) ? [
+					"Superseded integration worktrees remain owned. Use subagent_integrate release with their exact generation and last staged tip; dirty or conflicted work stays retained.",
 				] : []),
-				...(state.integration.candidates.some((item) => item.decision === "rejected" && item.worker === "retained") ? [
-					"Rejected candidate resources remain retained; inspect task attempt identities and cleanup steps in subagent_status before manual recovery.",
+				...(state.integration.candidates.some((item) => item.decision === "rejected" && item.worker !== "released") ? [
+					"Rejected candidate resources remain retained. After proving worker termination and releasing any superseded stage, use subagent_integrate release with the exact task, attempt and candidate tip.",
 				] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),

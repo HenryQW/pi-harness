@@ -178,7 +178,6 @@ function baseAttempt(paths: Paths, token = TOKEN): TaskAttempt {
 			},
 		}],
 		prompts: [],
-		transitions: [],
 		cleanup: ["worker_tab", "workspace", "worktree", "branch"].map((kind) => ({
 			kind: kind as "worker_tab" | "workspace" | "worktree" | "branch",
 			status: "pending" as const,
