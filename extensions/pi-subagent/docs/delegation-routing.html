@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delegation routing and checked task lifecycle</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; } body { margin: 0; padding: 32px; background: #f0eee9; color: #101828; font-family: 'Geist', sans-serif; }
+  main { max-width: 1280px; margin: auto; } h1 { font: 400 28px 'Instrument Serif', serif; margin: 0 0 16px; }
+  svg { display: block; width: 100%; height: auto; }
+</style>
+</head>
+<body><main><h1>Delegation routing and checked task lifecycle</h1>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="delegation-routing-title delegation-routing-desc">
+<title id="delegation-routing-title">Delegation routing and checked task lifecycle</title>
+<desc id="delegation-routing-desc">A read-only Role runs direct in the current workspace; implementation uses an isolated checked graph. In that graph workers produce a checked candidate, Main stages and validates the combined tip, then explicitly promotes it. Interruptions retain work for recovery and revalidation.</desc>
+<defs>
+<marker id="routing-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+<marker id="routing-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+<marker id="routing-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+</defs>
+<rect width="1280" height="720" fill="#f0eee9"/>
+<text x="48" y="60" fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1.5">PI SUBAGENT / ROUTING + LIFECYCLE</text>
+<text x="48" y="99" fill="#101828" font-family="'Instrument Serif',serif" font-size="28">One explicit mode; only checked work can be promoted</text>
+<text x="48" y="126" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Direct work returns an observed result. Isolated changesets yield a candidate that Main must validate and promote.</text>
+<!-- Routes and transitions are drawn before nodes. -->
+<line x1="224" y1="212" x2="248" y2="212" stroke="#4c5665" marker-end="url(#routing-arrow)"/>
+<path d="M336 268 V296 Q336 304 328 304 H192 Q184 304 184 312 V352" fill="none" stroke="#4c5665" marker-end="url(#routing-arrow)"/>
+<path d="M424 212 H488 Q496 212 496 220 V352" fill="none" stroke="#1d4ed8" stroke-width="1.4" marker-end="url(#routing-arrow-accent)"/>
+<line x1="560" y1="400" x2="624" y2="400" stroke="#4c5665" marker-end="url(#routing-arrow)"/>
+<line x1="784" y1="400" x2="848" y2="400" stroke="#4c5665" marker-end="url(#routing-arrow)"/>
+<line x1="1008" y1="400" x2="1072" y2="400" stroke="#1d4ed8" stroke-width="1.4" marker-end="url(#routing-arrow-accent)"/>
+<!-- Interruption / re-entry paths use separate attach points. -->
+<line x1="448" y1="448" x2="448" y2="512" stroke="#4c5665" stroke-dasharray="5,4" marker-end="url(#routing-arrow)"/>
+<line x1="512" y1="512" x2="512" y2="448" stroke="#4c5665" stroke-dasharray="5,4" marker-end="url(#routing-arrow)"/>
+<line x1="896" y1="448" x2="896" y2="512" stroke="#4c5665" stroke-dasharray="5,4" marker-end="url(#routing-arrow)"/>
+<line x1="960" y1="512" x2="960" y2="448" stroke="#4c5665" stroke-dasharray="5,4" marker-end="url(#routing-arrow)"/>
+<!-- Arrow labels have an 8px gap to their strokes. -->
+<g fill="#4c5665" font-family="'Geist Mono',monospace" font-size="8" text-anchor="middle">
+<rect x="256" y="284" width="48" height="12" rx="2" fill="#f0eee9"/><text x="280" y="293">YES</text>
+<rect x="432" y="192" width="72" height="12" rx="2" fill="#f0eee9"/><text x="468" y="201" fill="#1d4ed8">NO / GRAPH</text>
+<rect x="568" y="380" width="48" height="12" rx="2" fill="#f0eee9"/><text x="592" y="389">CHECK</text>
+<rect x="792" y="380" width="48" height="12" rx="2" fill="#f0eee9"/><text x="816" y="389">STAGE</text>
+<rect x="1016" y="380" width="48" height="12" rx="2" fill="#f0eee9"/><text x="1040" y="389" fill="#1d4ed8">VERIFY</text>
+<rect x="384" y="472" width="56" height="12" rx="2" fill="#f0eee9"/><text x="412" y="481">PAUSE</text>
+<rect x="520" y="472" width="56" height="12" rx="2" fill="#f0eee9"/><text x="548" y="481">RESUME</text>
+<rect x="816" y="472" width="72" height="12" rx="2" fill="#f0eee9"/><text x="852" y="481">MAIN DRIFT</text>
+<rect x="968" y="472" width="72" height="12" rx="2" fill="#f0eee9"/><text x="1004" y="481">RECHECK</text>
+</g>
+<!-- Mode selection. -->
+<rect x="80" y="180" width="144" height="64" rx="24" fill="#ffffff" stroke="#101828"/>
+<text x="152" y="217" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Delegate task</text>
+<polygon points="336,156 424,212 336,268 248,212" fill="#ffffff" stroke="#101828"/>
+<text x="336" y="208" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Direct</text>
+<text x="336" y="226" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">eligible?</text>
+<!-- Direct is intentionally a single terminal branch: no worktree or candidate. -->
+<text x="80" y="336" fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1">DIRECT</text>
+<rect x="80" y="352" width="208" height="96" rx="8" fill="#ffffff" stroke="#101828"/>
+<text x="184" y="384" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Herdr tabs</text>
+<text x="184" y="406" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Current workspace</text>
+<text x="184" y="428" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Observe result</text>
+<text x="80" y="477" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Single · parallel · chain</text>
+<!-- Isolated changeset rail. -->
+<text x="400" y="336" fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1">ISOLATED / CHECKED CHANGESET</text>
+<rect x="400" y="352" width="160" height="96" rx="8" fill="#ffffff" stroke="#101828"/>
+<text x="480" y="387" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Saved + working</text>
+<text x="480" y="411" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Durable ID</text>
+<text x="480" y="429" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Owned worktree</text>
+<rect x="624" y="352" width="160" height="96" rx="8" fill="#ffffff" stroke="#101828"/>
+<text x="704" y="390" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Ready candidate</text>
+<text x="704" y="416" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Clean commit + checks</text>
+<rect x="848" y="352" width="160" height="96" rx="8" fill="#ffffff" stroke="#101828"/>
+<text x="928" y="390" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Staged by Main</text>
+<text x="928" y="416" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Exact candidate tip</text>
+<rect x="1072" y="352" width="160" height="96" rx="8" fill="#1d4ed8" fill-opacity="0.08" stroke="#1d4ed8"/>
+<text x="1152" y="390" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Promoted by Main</text>
+<text x="1152" y="416" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">After combined checks</text>
+<!-- Recovery states do not erase or bypass exact checks. -->
+<text x="400" y="497" fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1">WAIT / RECOVERY</text>
+<rect x="400" y="512" width="160" height="72" rx="8" fill="#e6e4de" stroke="#4c5665" stroke-dasharray="5,4"/>
+<text x="480" y="541" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Needs attention</text>
+<text x="480" y="562" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Status / retry</text>
+<rect x="848" y="512" width="160" height="72" rx="8" fill="#e6e4de" stroke="#4c5665" stroke-dasharray="5,4"/>
+<text x="928" y="541" text-anchor="middle" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">Revalidate</text>
+<text x="928" y="562" text-anchor="middle" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">Restage if needed</text>
+<line x1="48" y1="648" x2="1232" y2="648" stroke="#101828" stroke-opacity="0.12"/>
+<text x="48" y="674" fill="#4c5665" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1">GUARD</text>
+<text x="128" y="674" fill="#101828" font-family="'Geist',sans-serif" font-size="12">No fallback between modes. Failed validation retains evidence; abort requires no retained work.</text>
+</svg></main></body></html>

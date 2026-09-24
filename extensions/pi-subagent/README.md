@@ -19,18 +19,38 @@ Install `pi-mcp-adapter` only when a Role declares an MCP server allowlist:
 pi install npm:pi-mcp-adapter
 ```
 
-## Choose a mode
+## Use
 
-Every `delegate_task` call declares its mode. The extension never falls back between modes.
+![Delegation mode routing and the checked changeset lifecycle through recovery, validation, and promotion](./docs/delegation-routing.svg)
 
-| Mode | Use it for | Checkout behavior |
+Ask Main to delegate a bounded task, such as “Have a scout trace sign-in without editing files.” Main uses `delegate_task`; you receive progress and a result or an actionable failure while Main remains available.
+
+Commands are for you; tools and the packaged skill are for Main. You do not need to call agent tools or manage candidate identities yourself.
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/subagent-direct-recovery` | command | List recorded direct-worker tabs, agents, and Pi session files on the current session branch. Does not resume work. |
+| `/subagent-followup <request-id> <task-id> <instruction>` | command | Queue a revision for an actively working isolated changeset. Late follow-ups fail. |
+| `delegate_task` | tool | Start read-only direct work or a durable isolated checked graph. |
+| `subagent_status` | tool | Read durable isolated state and the exact allowed continuation without replaying work. |
+| `subagent_resume` | tool | Perform the reported `retry`, `verify`, or `finalize` continuation; does not replace staging or integration. |
+| `subagent_stage` | tool | Stage or resolve an exact candidate, or reject/revise it; rejection of a staged candidate freezes that generation. |
+| `subagent_integrate` | tool | Advance staged dependents, refresh after clean Main drift, validate, record one correction, promote, reconcile interrupted promotion, clean up proven promotion, or explicitly release rejected/superseded resources. |
+| `subagent_abort` | tool | Abort an isolated request only when no retained candidates or integration worktrees remain; cannot discard them. |
+| `pi-subagent` | skill | Guide Main through delegation, authorization, checks, integration, and recovery. |
+
+### How Main routes delegation
+
+Main chooses the mode from your request; you do not need to select one. Words like “direct” and “isolated” can signal your intent, but the work determines the route. Main declares the chosen mode in every `delegate_task` call, and the extension never falls back between modes.
+
+| Mode | Request that triggers it | Checkout behavior |
 | --- | --- | --- |
 | `direct` | Read-only research, analysis, or review | Opens non-focused Herdr tabs in Main's current workspace. No worktree is created. |
-| `isolated` | Any implementation or checked task graph | Runs changesets in owned Herdr worktrees; Main selects, validates, and promotes exact candidates. |
+| `isolated` | Implementation or a checked task graph | Runs changesets in owned Herdr worktrees; Main selects, validates, and promotes exact candidates. |
 
 Keep trivial mechanically verifiable work in Main. Keep tightly coupled changes under one owner rather than splitting by file count.
 
-## Direct delegation
+### Direct delegation
 
 A read-only task:
 
@@ -55,7 +75,7 @@ Only Roles with known read-only tools and no extensions or MCP servers may run d
 
 The tool returns a task ID and first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues it after the current turn; if idle, it starts a turn. A blocked, stalled, unknown, or truncated result is not reported as success. Session switch or shutdown stops observation and preserves tab identities for recovery. Run `/subagent-direct-recovery` on the session branch to list exact tabs, agents, and Pi session files, including tabs launched after the first.
 
-## Isolated checked graphs
+### Isolated checked graphs
 
 An isolated request has one durable ID, one goal, and 1–8 typed tasks:
 
@@ -114,15 +134,9 @@ You may queue a bounded same-worker revision while the task is actively working:
 
 A queued follow-up runs after the current turn settles and must produce a new clean commit that passes preliminary checks again. When no queued revision remains, the checked candidate seals immediately; there is no guaranteed post-completion editing window. Late follow-ups fail visibly.
 
-### Recovery tools
+### Isolated recovery
 
-| Surface | Purpose |
-| --- | --- |
-| `subagent_status` | Read durable state and the exact allowed continuation without replaying work. |
-| `subagent_resume` | Perform the reported `retry`, `verify`, or `finalize` continuation (not a substitute for staging/integration). |
-| `subagent_stage` | Main stages or resolves an exact candidate, or rejects/revises it; a staged rejection freezes that generation. |
-| `subagent_integrate` | Main advances staged dependents, refreshes after a clean Main advance, validates, records one correction, promotes, reconciles an interrupted promotion, cleans up after proven promotion, or explicitly releases rejected/superseded resources. |
-| `subagent_abort` | Abort when no retained candidates or integration worktrees remain; it cannot discard those resources. |
+Main uses the recovery tools in the interface table above. The following details describe their exact identity and retained-work requirements.
 
 Pass the exact `generation`, candidate (`taskId`, `attempt`, `candidate`) and `expectedTip` identities reported by status to stage; pass the generation and combined `expectedTip` to integrate. If Main advances cleanly before promotion, call `subagent_integrate refresh` with the recorded `expectedMain`, old `expectedTip`, and new clean `newMain`. Main must restage selected immutable candidates into the new generation and rerun combined checks. Dirty or divergent Main blocks refresh. Stale identities fail. At most two integration worktrees may remain unreleased per request; a superseded generation is read-only. To release a superseded *clean* integration checkout, call `subagent_integrate` with `{ id, action: "release", generation, expectedTip }`, using that generation's last staged tip (or integration base when no stage completed). To release a rejected candidate after its worker has terminated and all generations using it are released, pass `{ id, action: "release", generation: <latest generation number, or 1>, taskId, attempt, expectedTip: <candidate tip> }`. Release persists each host/checkout/branch step, verifies ownership and cleanliness (including ignored files), and deletes the branch only if its ref still names the exact tip. Dirty, conflicted, changed, or uncertain resources remain for manual inspection; retry the same release after resolving the obstacle. Released checkouts free a retained slot; abort is available after every retained resource is released. Rejection can invalidate dependent work; if fresh dependent execution is impossible, start a new request instead of forcing promotion. Productive requests have no whole-run wall-clock deadline. Resume does not reset the recorded policy or correction count. Child limits, abort signals, process I/O, status inspection, exact termination, and cleanup retain finite safety bounds.
 
@@ -132,20 +146,20 @@ The extension never pushes, opens a pull request, publishes, deploys, force-clea
 
 pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. A missing file silently uses defaults.
 
-| Name | Contract | Default |
-| --- | --- | --- |
-| `maxSubagents` | Concurrent direct Herdr workers and ephemeral child-process limit; safe integer ≥ 1 | `5` |
-| `maxTurns` | Provider-turn limit per child; safe integer ≥ 1 | `50` |
-| `maxTokens` | Optional token limit per child; safe integer ≥ 1 | Unlimited |
-| `maxCorrections` | Same-worker automatic corrections per isolated request; safe integer ≥ 0 | `1` |
-| `timeout.idleMinutes` | Direct worker and ephemeral child idle timeout; positive and within Node's timer range | `10` |
-| `timeout.maxMinutes` | Ephemeral child hard runtime; greater than idle and within Node's timer range | `30` |
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `maxSubagents` | Concurrent direct Herdr workers and ephemeral child-process limit | Safe integer ≥ 1 | `5` |
+| `maxTurns` | Provider-turn limit per child | Safe integer ≥ 1 | `50` |
+| `maxTokens` | Optional token limit per child | Safe integer ≥ 1 | Unlimited |
+| `maxCorrections` | Same-worker automatic corrections per isolated request | Safe integer ≥ 0 | `1` |
+| `timeout.idleMinutes` | Direct worker and ephemeral child idle timeout | Positive and within Node's timer range | `10` |
+| `timeout.maxMinutes` | Ephemeral child hard runtime | Greater than idle and within Node's timer range | `30` |
 
 Limits come only from this global file. Request fields cannot override or replenish them. Existing durable requests keep their recorded policy, while a lower current correction limit can tighten recovery. There is intentionally no whole-run timeout setting.
 
 Malformed or unreadable JSON, unknown keys, and invalid values block delegation with one actionable warning. The file is preserved and never rewritten automatically.
 
-## Roles
+### Roles
 
 Role Markdown lives in `~/.pi/agent/config/pi-subagent/` and requires frontmatter plus a Markdown system prompt.
 
@@ -163,7 +177,7 @@ Roles describe responsibility and capabilities. They do not choose isolation; ea
 
 Children disable ambient extension and Skill discovery. Only declared resources and required internal policy adapters load. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. Main-only delegation and recovery tools plus `ask_question` are excluded from children.
 
-## Public API
+## API
 
 The package root exports the Role loader and launch APIs, the FIFO ephemeral executor, child-worktree helpers, exact review and working-change evidence helpers, checked isolated schemas, runtimes, and runner types.
 
@@ -171,8 +185,10 @@ The package root exports the Role loader and launch APIs, the FIFO ephemeral exe
 
 See [Orchestration and package-author API](./docs/orchestration.md) for the detailed contracts and recovery model.
 
-## Safety
+## State and storage
 
-Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. Read-only direct Roles cannot write through their declared tools. This is a capability check, not an OS sandbox; external processes and changes to Main's checkout can still make a concurrent read stale.
+Durable state is private under `config/pi-subagent/state/`. State v5 rejects v4 and older files rather than migrating them; retain the old state and recover its work manually.
 
-Durable state is private under `config/pi-subagent/state/`. State v5 rejects v4 and older files rather than migrating them; retain the old state and recover its work manually. Retained-work reports identify exact resources for deliberate recovery.
+## Limits and recovery
+
+Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. Read-only direct Roles cannot write through their declared tools. This is a capability check, not an OS sandbox; external processes and changes to Main's checkout can still make a concurrent read stale. Retained-work reports identify exact resources for deliberate recovery.
