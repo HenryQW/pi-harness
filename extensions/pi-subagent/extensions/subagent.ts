@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Text, type TUI, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type EphemeralSubagentTimeout, type Role } from "@henryqw/pi-subagent";
 import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
@@ -13,10 +13,9 @@ import { DelegateTaskSchema, identifyWorkflowEntries, parseDelegateTask, runFore
 import { createDirectHerdr, type DirectHandle, type DirectTab } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
-const WIDGET_INTERVAL_MS = 80;
+const WIDGET_INTERVAL_MS = 1_000;
 const MAX_WIDGET_ITEMS = 8;
 const MAX_WIDGET_LINES = 6;
-const MAX_WIDGET_GROUP_ROWS = 3;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 type TimeoutPolicy = EphemeralSubagentTimeout;
@@ -30,6 +29,7 @@ type WidgetItem = {
 	startedAt: number;
 	status: WidgetStatus;
 	finishedAt?: number;
+	tokens?: number;
 };
 
 function roleBadge(role: string): string {
@@ -55,15 +55,8 @@ function statusLabel(status: WidgetStatus): string {
 	}
 }
 
-function activityLabel(item: WidgetItem): string {
-	if (item.status === "success") return "Done";
-	if (item.status === "failure") return "Failed";
-	if (item.status === "aborted") return "Stopped";
-	return "working…";
-}
-
-function activityMetrics(item: WidgetItem, now: number): string {
-	return `${item.model}·${item.thinkingLevel} · ${formatDuration((item.finishedAt ?? now) - item.startedAt)}`;
+function tokenLabel(tokens: number | undefined): string {
+	return tokens === undefined ? "— tok" : `${tokens < 1_000 ? tokens : `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`} tok`;
 }
 
 function renderWidgetRows(
@@ -73,36 +66,26 @@ function renderWidgetRows(
 	spinnerIndex: number,
 	theme: Theme,
 ): string[] {
-	const ordered = [...items.filter(({ status }) => status === "working"), ...items.filter(({ status }) => status !== "working")];
-	if (!ordered.length) return [];
-	const groups = new Map<string, { name: string; items: WidgetItem[] }>();
-	for (const item of ordered) {
-		const group = groups.get(item.taskId);
-		if (group) group.items.push(item);
-		else groups.set(item.taskId, { name: item.name, items: [item] });
-	}
-	const maxVisibleLines = ordered.length + groups.size > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES;
-	const workingGroups = [...groups.values()].filter(({ items }) => items.some(({ status }) => status === "working"));
-	const visibleWorkingGroups = new Set(workingGroups.slice(0, Math.floor(maxVisibleLines / 2)));
-	let remainingWorkingGroups = visibleWorkingGroups.size;
-	const visible = new Set<WidgetItem>();
-	const lines: string[] = [];
-	for (const group of groups.values()) {
-		const working = group.items.some(({ status }) => status === "working");
-		if (working && !visibleWorkingGroups.has(group)) continue;
-		const reservedLines = working ? --remainingWorkingGroups * 2 : 0;
-		const childCount = Math.min(MAX_WIDGET_GROUP_ROWS, group.items.length, maxVisibleLines - lines.length - reservedLines - 1);
-		if (childCount < 1) continue;
-		lines.push(truncateToWidth(theme.fg("text", group.name), width));
-		for (const item of group.items.slice(0, childCount)) {
-			visible.add(item);
-			lines.push(truncateToWidth(
-				`  ${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", item.role)} ${theme.fg("text", activityLabel(item))} · ${theme.fg("muted", activityMetrics(item, now))}`,
-				width,
-			));
+	const ordered = [...items].sort((a, b) =>
+		(a.status === "failure" ? 0 : a.status === "working" ? 1 : 2)
+		- (b.status === "failure" ? 0 : b.status === "working" ? 1 : 2));
+	const visible = ordered.slice(0, ordered.length > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES);
+	const lines = visible.map((item) => {
+		const prefix = `${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", `D ${item.role}`)} ${item.status === "working" ? "" : `${statusLabel(item.status)} · `}`;
+		const metrics = [
+			`${item.model}/${item.thinkingLevel}`,
+			tokenLabel(item.tokens),
+			formatDuration((item.finishedAt ?? now) - item.startedAt),
+		];
+		while (metrics.length && width - visibleWidth(prefix) - visibleWidth(` · ${metrics.join(" · ")}`) < 8) {
+			if (metrics.length === 2) metrics.shift(); // Preserve measured tokens ahead of route details.
+			else metrics.pop();
 		}
-	}
-	const hidden = ordered.filter((item) => !visible.has(item));
+		const suffix = metrics.length ? ` · ${theme.fg("muted", metrics.join(" · "))}` : "";
+		const name = truncateToWidth(theme.fg("text", item.name), Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffix)));
+		return truncateToWidth(`${prefix}${name}${suffix}`, width);
+	});
+	const hidden = ordered.slice(visible.length);
 	if (hidden.length) {
 		const counts: Record<WidgetStatus, number> = { working: 0, success: 0, failure: 0, aborted: 0 };
 		for (const { status } of hidden) counts[status] += 1;
@@ -177,6 +160,8 @@ export default function subagentExtension(
 		].join("\n"), outputPad, 0);
 	});
 	const widgetItems = new Map<string, WidgetItem>();
+	const tokenHandles = new Map<string, DirectHandle>();
+	const samplingTokens = new Set<string>();
 	const loadedConfig = readSubagentConfig();
 	let initialPolicy: EffectiveExecutionPolicy;
 	try {
@@ -252,6 +237,7 @@ export default function subagentExtension(
 	let widgetInstalled = false;
 	let widgetTimer: ReturnType<typeof setInterval> | undefined;
 	let spinnerIndex = 0;
+	let widgetTicks = 0;
 	let activeTui: TUI | undefined;
 	const stopWidgetTimer = () => {
 		if (!widgetTimer) return;
@@ -266,6 +252,19 @@ export default function subagentExtension(
 		widgetTimer = setInterval(() => {
 			spinnerIndex = (spinnerIndex + 1) % SPINNER_FRAMES.length;
 			requestWidgetRender();
+			if (++widgetTicks % 2 !== 0) return;
+			for (const [id, handle] of tokenHandles) {
+				if (samplingTokens.has(id)) continue;
+				samplingTokens.add(id);
+				void handle.usageTokens().then((tokens) => {
+					const item = widgetItems.get(id);
+					if (tokens !== undefined && item?.status === "working" && tokenHandles.get(id) === handle) {
+						item.tokens = tokens;
+						requestWidgetRender();
+					}
+				}).catch(() => { /* Usage is optional; never interrupt work for telemetry. */ })
+					.finally(() => samplingTokens.delete(id));
+			}
 		}, WIDGET_INTERVAL_MS);
 		widgetTimer.unref();
 	};
@@ -316,6 +315,7 @@ export default function subagentExtension(
 	const finishWidgetItem = (id: string, status: Exclude<WidgetStatus, "working">) => {
 		const item = widgetItems.get(id);
 		if (!item) return;
+		tokenHandles.delete(id);
 		item.status = status;
 		item.finishedAt = Date.now();
 		if (![...widgetItems.values()].some(({ status }) => status === "working")) stopWidgetTimer();
@@ -357,6 +357,8 @@ export default function subagentExtension(
 	pi.on("session_shutdown", async (_event, ctx) => {
 		stopWidgetTimer();
 		widgetItems.clear();
+		tokenHandles.clear();
+		samplingTokens.clear();
 		activeTui = undefined;
 		widgetInstalled = false;
 		if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, undefined);
@@ -506,6 +508,7 @@ export default function subagentExtension(
 				}
 				await transient.cleanup();
 				handles.push(handle);
+				if (widgetItems.has(entry.id)) tokenHandles.set(entry.id, handle);
 				return handle;
 			};
 			// The first tab is verified before returning a handle; subsequent independent
@@ -544,6 +547,10 @@ export default function subagentExtension(
 							controller.signal.throwIfAborted();
 							const handle = entry.index === 0 ? first : await launch(entry, controller.signal);
 							const answer = await handle.answer(Math.floor(40 * 1024 / entries.length));
+							try {
+								const tokens = await handle.usageTokens();
+								if (tokens !== undefined && widgetItems.has(entry.id)) widgetItems.get(entry.id)!.tokens = tokens;
+							} catch { /* Optional telemetry. */ }
 							const base = states.get(entry.id)!;
 							states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
 								...(base.model ? { model: base.model } : {}), ...(base.thinkingLevel ? { thinkingLevel: base.thinkingLevel } : {}),

@@ -27,6 +27,8 @@ Ask Main to delegate a bounded task, such as “Have a scout trace sign-in witho
 
 Commands are for you; tools and the packaged skill are for Main. You do not need to call agent tools or manage candidate identities yourself.
 
+In the TUI, the compact widget uses one row per visible agent/task: `D` or `I` marks direct or isolated work, and `[S]` or `[I3]` identifies the Role initial (plus the isolated model class: `1` fast, `2` balanced, `3` frontier, `*` fav). Direct rows show the launched model, thinking level, elapsed time, and measured session tokens (`— tok` until usage is available). Isolated rows show the recorded task state and any retained workspace; Herdr does not currently provide reliable live model, thinking, or token readings for those rows. Attention appears before ordinary work, with a `+N more` summary when direct rows overflow. A ready isolated candidate is **not promoted** to Main. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
+
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/subagent` | command | Pick direct or isolated work to inspect; send or edit pending instructions for a locally active isolated changeset. Requires interactive TUI or RPC. |

@@ -39,6 +39,7 @@ const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
 const PUBLIC_EVIDENCE_MAX_BYTES = 512;
 const WORKSPACE_WIDGET_KEY = "pi-subagent-workspaces";
 const WIDGET_FIELD_MAX_CHARS = 32;
+const MAX_WORKSPACE_WIDGET_LINES = 6;
 
 export interface IsolatedExtensionComponents {
 	runner: IsolatedRunner;
@@ -112,18 +113,25 @@ function workspaceStatus(status: RunState["tasks"][number]["status"]): string {
 
 export function workspaceWidgetLines(state: RunState): string[] | undefined {
 	const rows = state.tasks.flatMap((taskState) => {
-		if (taskState.kind !== "changeset") return [];
+		const task = state.request.tasks.find((candidate) => candidate.id === taskState.taskId);
+		if (!task) return [];
+		const status = state.status === "aborted" ? "aborted" : workspaceStatus(taskState.status);
+		if (taskState.kind === "text") {
+			return taskState.status === "running" || taskState.status === "needs_attention"
+				? [`${taskState.status === "needs_attention" ? "!" : "◌"} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${status === "attention" ? compactWidgetField(taskState.failure ?? status) : status}`]
+				: [];
+		}
 		const attempt = taskState.attempts.at(-1);
 		const allocation = [...(attempt?.allocations ?? [])].reverse().find(
 			(candidate): candidate is WorkspaceAllocationIntent =>
 				candidate.kind === "workspace" && candidate.status !== "absent",
 		);
 		const workspaceCleanup = attempt?.cleanup.find((step) => step.kind === "workspace");
-		if (!allocation || workspaceCleanup?.status === "completed") return [];
-		const task = state.request.tasks.find((candidate) => candidate.id === taskState.taskId);
-		if (!task || task.kind !== "changeset") return [];
-		const status = state.status === "aborted" ? "aborted" : workspaceStatus(taskState.status);
-		return `${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(allocation.label)} · ${status} · ${compactWidgetField(task.id)}`;
+		if (workspaceCleanup?.status === "completed" || (!allocation && !["allocating", "working", "attention"].includes(status))) return [];
+		const symbol = status === "attention" ? "!" : status === "ready" ? "✓" : status === "working" || status === "allocating" ? "◌" : "■";
+		const detail = status === "ready" ? "candidate ready · Main not promoted"
+			: status === "attention" ? compactWidgetField(taskState.failure ?? "needs attention") : status;
+		return `${symbol} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${detail}${allocation ? ` · ${compactWidgetField(allocation.label)}` : ""}`;
 	});
 	return rows.length ? rows : undefined;
 }
@@ -134,8 +142,12 @@ function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState, rowsByReq
 	if (rows) rowsByRequest.set(key, rows);
 	else rowsByRequest.delete(key);
 	if (!ctx.hasUI) return;
-	const allRows = [...rowsByRequest.values()].flat();
-	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, allRows.length ? allRows : undefined);
+	const allRows = [...rowsByRequest.values()].flat().sort((a, b) =>
+		(a.startsWith("!") ? 0 : a.startsWith("◌") ? 1 : 2) - (b.startsWith("!") ? 0 : b.startsWith("◌") ? 1 : 2));
+	const shown = allRows.length > MAX_WORKSPACE_WIDGET_LINES
+		? [...allRows.slice(0, MAX_WORKSPACE_WIDGET_LINES - 1), `+${allRows.length - MAX_WORKSPACE_WIDGET_LINES + 1} more · /subagent`]
+		: allRows;
+	ctx.ui.setWidget(WORKSPACE_WIDGET_KEY, shown.length ? shown : undefined);
 }
 
 function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState, rowsByRequest: Map<string, string[]>): void {

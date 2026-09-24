@@ -397,22 +397,25 @@ test("workspace widget lists every uncleaned workspace with status and agent con
 	state.tasks.push(secondTask);
 
 	assert.deepEqual(workspaceWidgetLines(state), [
-		"[I1] 012345 · attention · unit-one",
-		"[R2] fedcba · working · unit-two",
+		"! I [I1] unit-one · The task needs a deliberate rec~ · 012345",
+		"◌ I [R2] unit-two · working · fedcba",
 	]);
 
 	state.status = "aborted";
 	const firstWorkspace = firstTask.attempts[0]!.allocations.find((allocation) => allocation.kind === "workspace")!;
 	firstWorkspace.label = "x".repeat(64);
 	assert.deepEqual(workspaceWidgetLines(state), [
-		`[I1] ${"x".repeat(31)}~ · aborted · unit-one`,
-		"[R2] fedcba · aborted · unit-two",
+		`■ I [I1] unit-one · aborted · ${"x".repeat(31)}~`,
+		"■ I [R2] unit-two · aborted · fedcba",
 	]);
 	state.status = "needs_attention";
+	firstTask.status = "ready_to_integrate";
+	assert.match(workspaceWidgetLines(state)![0]!, /candidate ready · Main not promoted/);
+	firstTask.status = "needs_attention";
 
 	firstTask.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
 	assert.deepEqual(workspaceWidgetLines(state), [
-		"[R2] fedcba · working · unit-two",
+		"◌ I [R2] unit-two · working · fedcba",
 	]);
 	secondTask.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
 	assert.equal(workspaceWidgetLines(state), undefined);
@@ -440,7 +443,37 @@ test("status restores active workspace rows and provides the non-TUI fallback", 
 		undefined,
 		{ cwd: "/repo", hasUI: false } as ExtensionContext,
 	);
-	assert.equal(rpcResult.content[0]!.text, "bounded status result\n\nActive workspaces:\n[I1] 012345 · attention · unit-one");
+	assert.equal(rpcResult.content[0]!.text, "bounded status result\n\nActive workspaces:\n! I [I1] unit-one · The task needs a deliberate rec~ · 012345");
+});
+
+test("isolated work remains visible before any workspace is allocated", () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const changeset = state.tasks[0]!;
+	changeset.status = "allocating";
+	assert.deepEqual(workspaceWidgetLines(state), ["◌ I [I1] unit-one · allocating"]);
+	state.request.tasks[0] = { id: "research", kind: "text", role: "scout", modelClass: "fast", requirements: "Investigate", deliverable: "Report", dependsOn: [], contextFrom: [] };
+	state.tasks[0] = { taskId: "research", kind: "text", status: "running", attempts: [{ number: 1, status: "running" }] };
+	assert.deepEqual(workspaceWidgetLines(state), ["◌ I [S1] research · running"]);
+});
+
+test("isolated widget caps rows and keeps attention visible", async () => {
+	const widgets: Array<string[] | undefined> = [];
+	const ctx = { cwd: "/repo", hasUI: true,
+		ui: { setWidget: (_key: string, rows: string[] | undefined) => widgets.push(rows) } } as unknown as ExtensionContext;
+	const harness = createHarness();
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	const state = structuredClone(PRIVATE_STATE);
+	addWorkspace(state);
+	const original = state.tasks[0]!;
+	if (original.kind !== "changeset") throw new Error("Expected a changeset task.");
+	for (let index = 2; index <= 7; index++) {
+		state.request.tasks.push({ ...state.request.tasks[0]!, id: `unit-${index}` });
+		state.tasks.push({ ...structuredClone(original), taskId: `unit-${index}`, status: "working", failure: undefined });
+	}
+	harness.getStateSaved()(state);
+	assert.equal(widgets.at(-1)?.length, 6);
+	assert.match(widgets.at(-1)![0]!, /^! I /);
+	assert.equal(widgets.at(-1)![5], "+2 more · /subagent");
 });
 
 test("saved state updates and clears the workspace widget", async () => {
@@ -460,12 +493,12 @@ test("saved state updates and clears the workspace widget", async () => {
 	const otherState = structuredClone(PRIVATE_STATE);
 	otherState.request.id = "request-two";
 	harness.getStateSaved()(otherState);
-	assert.deepEqual(widgets.at(-1), workspaceWidgetLines(state));
+	assert.deepEqual(widgets.at(-1), [...workspaceWidgetLines(state)!, ...workspaceWidgetLines(otherState)!]);
 	const task = state.tasks[0]!;
 	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
 	task.attempts[0]!.cleanup.find(({ kind }) => kind === "workspace")!.status = "completed";
 	harness.getStateSaved()(state);
-	assert.equal(widgets.at(-1), undefined);
+	assert.deepEqual(widgets.at(-1), workspaceWidgetLines(otherState));
 });
 
 test("registers six strict tools without constructing runtime components", () => {
@@ -784,7 +817,7 @@ test("resume saved before session replacement cannot acknowledge or paint the ne
 		/saved.*launching session changed.*subagent_status/i,
 	);
 	assert.equal(runSignal?.aborted, true);
-	assert.deepEqual(widgets, [undefined, ["[I1] 012345 · attention · unit-one"], undefined]);
+	assert.deepEqual(widgets, [undefined, ["! I [I1] unit-one · The task needs a deliberate rec~ · 012345"], undefined]);
 	assert.equal(harness.sent.length, 0);
 	done.resolve(response("resume", true));
 	await new Promise(setImmediate);
