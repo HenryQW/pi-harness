@@ -1689,6 +1689,7 @@ class StagingGit extends IntegrationGit {
 	}
 	override async reconcileStage(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
 		stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt | "not_started">> {
+		if (this.allocationUnknown) return { outcome: "ready", value: "not_started" };
 		if (!this.resolved) return { outcome: "conflict", failure: "Merge remains unresolved in the owned worktree." };
 		return { outcome: "ready", value: {
 			previous: stages.at(-1)!.tip, worker: candidate,
@@ -2209,6 +2210,10 @@ test("uncertain integration allocation retains intent and refuses mutation repla
 	assert.deepEqual(git.merged, []);
 	await assert.rejects(runner.stage(action, root), /unresolved/);
 	assert.deepEqual(git.merged, []);
+	const integrationBase = uncertain.state.integration.generations[0]!.integrationBase;
+	const reconciled = await runner.stage({ ...action, action: "resolve", expectedTip: integrationBase }, root);
+	assert.equal(reconciled.state.integration.generations[0]?.stages[0]?.status, "staged");
+	assert.deepEqual(git.merged, [candidate.tip.head]);
 	assertParsed((await runner.status(action.id, root)).state);
 });
 

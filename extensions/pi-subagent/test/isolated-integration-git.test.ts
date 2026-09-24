@@ -41,6 +41,22 @@ function checks(tip: WorkspaceIdentity): CheckBatchEvidence {
 	return { phase: "final", candidate: tip, identityAfter: tip, passed: true, results: [], at: Date.now() };
 }
 
+test("integration worktrees are owned by the primary repository when Main is a linked worktree", async (t) => {
+	const root = await repo(t);
+	const linked = await mkdtemp(join(tmpdir(), "integration-linked-"));
+	await rm(linked, { recursive: true });
+	git(root, "worktree", "add", "-qb", "linked-main", linked);
+	t.after(async () => await rm(linked, { recursive: true, force: true }));
+	const runtime = new IntegrationGit();
+	const base = await new CheckedGitRuntime().inspectMain({ root: linked }, { signal, deadline: Date.now() + 30_000, timeoutMs: 30_000 });
+	const integration = await allocate(runtime, linked, base, "linked-integration");
+	const worker = await allocate(runtime, linked, base, "linked-worker");
+	await commit(worker.path, "worker");
+	const candidate = await new CheckedGitRuntime().inspectMain({ root: worker.path }, { signal, deadline: Date.now() + 30_000, timeoutMs: 30_000 });
+	assert.deepEqual(await runtime.reconcileStage(linked, integration, base, [], worker, candidate, signal), { outcome: "ready", value: "not_started" });
+	git(root, "worktree", "remove", "--force", linked);
+});
+
 test("same-file isolated candidates merge in Main-ordered integration checkout; Main moves only after exact combined-tip gates", async (t) => {
 	const root = await repo(t);
 	const runtime = new IntegrationGit();

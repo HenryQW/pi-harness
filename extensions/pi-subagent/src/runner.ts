@@ -1213,7 +1213,7 @@ export class IsolatedRunner {
 			}
 			if (action.action === "resolve") {
 				const pending = generation?.stages.at(-1);
-				if (!pending || !["staging", "conflict"].includes(pending.status)
+				if (!pending || !["pending", "staging", "conflict"].includes(pending.status)
 					|| pending.taskId !== action.taskId || pending.attempt !== action.attempt
 					|| !sameIdentity(pending.source, action.candidate)
 					|| !sameIdentity(pending.onto, action.expectedTip)) throw new Error("Resolve action has no exact pending stage intent.");
@@ -1278,9 +1278,16 @@ export class IsolatedRunner {
 				}
 				await this.saveProductive(handle); // Exact candidate and previous tip before merge.
 			}
-			const outcome = await scope.call((context) => action.action === "stage"
+			let outcome = await scope.call((context) => action.action === "stage"
 				? this.integrationGit.stage(root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal)
 				: this.integrationGit.reconcileStage(root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal));
+			if (action.action === "resolve" && stage!.status === "pending"
+				&& outcome.outcome === "ready" && outcome.value === "not_started") {
+				stage!.status = "staging";
+				await this.saveProductive(handle); // Read-only proof before Main's explicit merge request.
+				outcome = await scope.call((context) => this.integrationGit.stage(
+					root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal));
+			}
 			if (outcome.outcome === "ready" && outcome.value !== "not_started") {
 				stage!.status = "staged";
 				stage!.tip = outcome.value.tip;
