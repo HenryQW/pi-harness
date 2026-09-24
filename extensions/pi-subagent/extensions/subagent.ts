@@ -10,8 +10,8 @@ import { registerSubagentCommand, type DirectTask } from "./subagent-command.ts"
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { formatWorkflowResult, presentWorkflowEntryStatus, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskSchema, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
-import { createDirectHerdr, type DirectHandle, type DirectTab } from "../src/direct-herdr.ts";
-import { materializeTransientLaunch } from "../src/launch-runtime.ts";
+import { createDirectHerdr, type DirectHandle, type DirectTab } from "../dist/direct-herdr.js";
+import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 80;
 const MAX_WIDGET_ITEMS = 8;

@@ -3,7 +3,7 @@ import { DISPLAY_TEXT_CONTRACT } from "@henryqw/pi-subagent";
 import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
-import { ExecuteRequestSchema, parseExecuteRequest, type ExecuteRequest } from "../src/schema.ts";
+import { ExecuteRequestSchema, parseExecuteRequest, type ExecuteRequest } from "../dist/schema.js";
 import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
 export const MAX_WORKFLOW_ENTRIES = 8;

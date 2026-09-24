@@ -1,19 +1,19 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { EphemeralSubagentExecutor } from "../src/ephemeral.ts";
-import { ROLE_TOOL_POLICY_FLAG } from "../src/index.ts";
+import type { EphemeralSubagentExecutor } from "../dist/ephemeral.js";
+import { ROLE_TOOL_POLICY_FLAG } from "../dist/index.js";
 import type { EffectiveExecutionPolicy } from "./config.ts";
 import {
 	createCanonicalGitRootResolver,
 	createExactJudgmentExecutor,
-} from "../src/composition.ts";
+} from "../dist/composition.js";
 import {
 	CheckedGitRuntime,
 	type DirectProcessRunner,
-} from "../src/git-runtime.ts";
-import { HerdrHostRuntime } from "../src/herdr-runtime.ts";
-import { runProcess as directRunProcess } from "../src/process.ts";
-import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../src/launch-runtime.ts";
-import { IsolatedRunner, type OperationContext, type RunResponse } from "../src/runner.ts";
+} from "../dist/git-runtime.js";
+import { HerdrHostRuntime } from "../dist/herdr-runtime.js";
+import { runProcess as directRunProcess } from "../dist/process.js";
+import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../dist/launch-runtime.js";
+import { IsolatedRunner, type OperationContext, type RunResponse } from "../dist/runner.js";
 import {
 	IdOnlySchema,
 	ResumeRequestSchema,
@@ -31,8 +31,8 @@ import {
 	type RunState,
 	type WorktreeAllocationIntent,
 	type WorkspaceAllocationIntent,
-} from "../src/schema.ts";
-import { FileRunStore } from "../src/store.ts";
+} from "../dist/schema.js";
+import { FileRunStore } from "../dist/store.js";
 import type { IsolatedInventory } from "./subagent-command.ts";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
