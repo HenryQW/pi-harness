@@ -12,7 +12,7 @@ pi install npm:@henryqw/pi-open-in
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
-| [`@henryqw/pi-config-store`](https://pi.henry.wang/extensions/pi-config-store) | Required | Owns config-home resolution and storage. |
+| [`@henryqw/pi-config-store`](https://github.com/HenryQW/pi-harness/tree/main/packages/pi-config-store) | Required | Owns config-home resolution and storage. |
 
 ## Use
 
