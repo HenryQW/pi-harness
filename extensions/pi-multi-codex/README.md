@@ -21,19 +21,17 @@ pi install npm:@henryqw/pi-multi-codex
 
 ## Use
 
-Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`, then run `/login` and select the new `OpenAI Codex #<n>` provider. Restart Pi or update model scope, then run `/codex-status`.
-
-`/codex-status` lists the new slot. It shows cached quota when available, or `unavailable` until the first successful snapshot.
-
-The footer and `/codex-status` show the five-hour reset countdown for Free, Go, and Plus tiers. They show the seven-day reset countdown for Pro Lite and other tiers.
+Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`, then run `/login` and select the new `OpenAI Codex #<n>` provider. Restart Pi or update model scope, then run `/codex-status`. The status lists the new slot with cached quota when available, or `unavailable` until the first successful snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/codex-add` | command | Create the next numbered slot, then authenticate that slot. |
-| `/codex-status` | command | Show shared quota snapshots and five-hour blocks. Never waits on network. |
-| `/codex-switch` | command | Pick an authenticated slot. |
+| `/codex-add` | command | For people: create the next numbered slot, then authenticate that slot. |
+| `/codex-status` | command | For people: show shared quota snapshots and five-hour blocks; never waits on network. |
+| `/codex-switch` | command | For people: select an authenticated, scope-allowed slot for the current Codex model. |
+| Pi model selector (`OpenAI Codex`, `OpenAI Codex #<n>`) | ui | Choose an authenticated account slot. |
+| Pi status `pi-multi-codex` | ui | Report the active slot's fresh quota, five-hour limit countdown, or stale/unavailable state; `@henryqw/pi-footer` displays it in the footer. |
 
-A numbered slot is one Codex account position in Pi.
+The footer and `/codex-status` show the five-hour reset countdown for Free, Go, and Plus tiers. They show the seven-day reset countdown for Pro Lite and other tiers. A numbered slot is one Codex account position in Pi.
 
 ## Flow
 
@@ -53,9 +51,9 @@ Package-owned: `~/.pi/agent/config/pi-multi-codex/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `autoSwitchOn429` | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` |
+| `autoSwitchOn429` | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` when the config file is missing |
 
-Set `autoSwitchOn429` to `false` to disable automatic switching. The config must contain only this field as a boolean. Invalid config is preserved and disables automatic switching.
+Edit this file yourself; the extension does not create or write it. A missing file uses the default `true`, and config changes take effect at the next session start. Set `autoSwitchOn429` to `false` to disable automatic switching. A present config must contain only this field as a boolean. Invalid config is preserved, warns, and disables automatic switching for the session. Fix the file and start a new session to recover.
 
 ## State and storage
 
