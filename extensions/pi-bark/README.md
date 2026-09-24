@@ -30,11 +30,26 @@ A test URL such as `https://api.day.app/your-device-key/Test` contains the Devic
 
 Treat the Device Key as a secret. Anyone with it can send push notifications to your device.
 
+## Works with
+
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-herdr-rename`](https://pi.henry.wang/extensions/pi-herdr-rename) | Improves | Adds the same Pi session title to automatic Bark status notifications. |
+
 ## Use
 
-Run `/copyb` with no arguments.
+Run `/copyb` with no arguments to copy Pi's latest response to your clipboard and send it to your Bark device.
 
-The command copies the last agent message to your clipboard. It then sends a Bark V2 push request to `<serverUrl>/push`.
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/bark <on\|off\|inherit> \| default <on\|off>` | command | Set a notification override for the current CWD or change the default. |
+| `/copyb` | command | Copy the last agent message and send a Bark push notification. |
+| `/set-bark <device-key> [server-url]` | command | Save the Device Key and Bark server URL. |
+| `pi-bark-key [--force \| --disable]` | command | Terminal command to generate, replace, or disable the Custom Encryption Key. |
+
+The `/` commands are for people using Pi; run `pi-bark-key` in a terminal.
+
+`/copyb` copies the last agent message to your clipboard. It then sends a Bark V2 push request to `<serverUrl>/push`.
 
 Without push encryption, the JSON request uses Bark's standard parameter names:
 
@@ -46,14 +61,6 @@ Without push encryption, the JSON request uses Bark's standard parameter names:
 ```
 
 The `body` value is the same text that Pi's `/copy` command selects. Markdown, code blocks, spacing, and line breaks stay unchanged.
-
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `/copyb` | command | Copy the last agent message and send a Bark push notification. |
-| `/set-bark <device-key> [server-url]` | command | Save the Device Key and Bark server URL. |
-| `/bark on\|off\|inherit` | command | Override automatic status notifications for the current CWD. |
-| `/bark default on\|off` | command | Set the default for CWDs without an override. |
-| `pi-bark-key [--force \| --disable]` | executable | Generate, replace, or disable the Custom Encryption Key. |
 
 ### Automatic status notifications
 
