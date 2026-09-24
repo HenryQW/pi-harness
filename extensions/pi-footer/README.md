@@ -20,7 +20,7 @@ pi install npm:@henryqw/pi-footer
 
 ## Use
 
-The footer shows checkout, usage, model, thinking, and extension statuses.
+After installing, start a Pi TUI session to see checkout, usage, model, thinking, and extension statuses.
 
 ```text
 pi-harness · clear-field-f8d2 [+2 ~3 ?1 ↑2] · PR #123 · approved    Codex #1 · 50% · 7d 1d 1h 22m
