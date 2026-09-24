@@ -31,7 +31,7 @@ export interface IsolatedInventory {
 export interface SubagentCommandAdapter {
 	direct(ctx: ExtensionContext): readonly DirectTask[];
 	isolated(cwd: string): Promise<IsolatedInventory>;
-	inspect(root: string, requestId: string): Promise<string>;
+	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
 	drain(root: string, requestId: string, taskId: string, current: () => boolean): readonly string[];
@@ -63,11 +63,15 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			const session = manager.getSessionId();
 			const file = manager.getSessionFile();
 			const branch = manager.getBranch().map((entry) => entry.id);
+			// A branch may grow during a dialog, but navigating to a descendant that
+			// already existed when it opened must not retarget its pending actions.
+			const existing = new Set(manager.getEntries().map((entry) => entry.id));
 			const epoch = adapter.epoch();
 			const current = () => {
 				if (adapter.epoch() !== epoch || manager.getSessionId() !== session || manager.getSessionFile() !== file) return false;
 				const now = manager.getBranch();
-				return now.length >= branch.length && branch.every((id, index) => now[index]?.id === id);
+				return now.length >= branch.length && branch.every((id, index) => now[index]?.id === id)
+					&& now.slice(branch.length).every((entry) => !existing.has(entry.id));
 			};
 			const valid = () => {
 				if (current()) return true;
@@ -85,7 +89,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				catch (error) { unavailable = errorText(error); }
 				if (!valid()) return;
 				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct branch recovery remains available; check the canonical Git checkout/configuration.`, "warning");
-				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${clean(id, 256)}. Preserve this file; inspect the state store before making changes.`, "warning");
+				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${JSON.stringify(id)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "close" };
 				const selections: Pick<Selection>[] = [
 					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${task.name} · ${task.status} · ${task.id}`, value: { kind: "direct" as const, task } })),
@@ -105,9 +109,9 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (selected.kind === "refresh") continue;
 				if (selected.kind === "history") { history = !history; continue; }
 				if (selected.kind === "direct") {
-					ctx.ui.notify(clean(`Direct workflow ${selected.task.name} (${selected.task.id}) · ${selected.task.status}`, 6000), "info");
+					ctx.ui.notify(`Direct workflow ${clean(selected.task.name)} (${JSON.stringify(selected.task.id)}) · ${clean(selected.task.status)}`, "info");
 					for (const tab of selected.task.tabs) {
-						ctx.ui.notify(clean(`Task ${tab.entryId} · agent ${tab.name} · tab ${tab.tabId} · pane ${tab.paneId} · session ${tab.sessionFile}`, 6000), "info");
+						ctx.ui.notify(`Task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}`, "info");
 					}
 					continue;
 				}
@@ -125,7 +129,10 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					if (!valid() || !action) return;
 					if (action === "back") break;
 					if (action === "inspect") {
-						try { const detail = await adapter.inspect(root, request.id); if (valid()) ctx.ui.notify(clean(detail, 6000, true), "info"); }
+						try {
+							const notices = await adapter.inspect(root, request.id);
+							if (valid()) for (const notice of notices) ctx.ui.notify(notice, "info");
+						}
 						catch (error) { if (valid()) ctx.ui.notify(`Inspection failed: ${errorText(error)}`, "error"); }
 						continue;
 					}
@@ -142,7 +149,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 						} catch (error) { if (valid()) ctx.ui.notify(`Cannot withdraw: ${errorText(error)}`, "error"); continue; }
 					}
 					for (;;) {
-						const text = await ctx.ui.editor(action === "edit" ? "Edit withdrawn instructions · submit ONE replacement; Cancel discards withdrawal" : "Send follow-up instructions", prefill);
+						const text = await ctx.ui.editor(action === "edit" ? "Edit withdrawn instructions · submit ONE replacement; Cancel leaves originals withdrawn" : "Send follow-up instructions", prefill);
 						if (!valid() || text === undefined) return;
 						try {
 							ctx.ui.notify(adapter.enqueue(root, request.id, task.id, text, current), "info");

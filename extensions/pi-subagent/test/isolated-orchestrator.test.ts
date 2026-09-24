@@ -508,7 +508,7 @@ test("inventory and status remain read-only; synchronous mutations reject stale 
 	const surface = harness.surface;
 	assert.deepEqual((await surface.inventory("/repo/subdir")).invalidIds, ["damaged"]);
 	assert.equal(harness.runnerCalls.filter(({ method }) => method === "listRequests").length, 1);
-	assert.match(await surface.inspect(CANONICAL_ROOT, "request-one"), /retainedWorktree/);
+	assert.match((await surface.inspect(CANONICAL_ROOT, "request-one")).join("\n"), /\/tmp\/pi-task/);
 	assert.equal(surface.canFollowup(CANONICAL_ROOT, "request-one", "unit-one"), true);
 	assert.throws(() => surface.drain(CANONICAL_ROOT, "request-one", "unit-one", () => false), /Session or branch changed/);
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "drainFollowups"), []);
@@ -517,6 +517,40 @@ test("inventory and status remain read-only; synchronous mutations reject stale 
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "queueFollowup"), [
 		{ method: "queueFollowup", args: [CANONICAL_ROOT, "request-one", "unit-one", "instruction"] },
 	]);
+});
+
+test("inspection exposes late retained resources without dumping irrelevant state or mutating it", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const task = state.tasks[0]!;
+	if (task.kind !== "changeset") throw new Error("Expected changeset");
+	const early = task.attempts[0]!;
+	early.number = 1;
+	early.preliminaryChecks!.results[0]!.stderr = "IRRELEVANT_PRIVATE_OUTPUT".repeat(1000);
+	const late = structuredClone(early);
+	late.preliminaryChecks = undefined;
+	late.number = 2;
+	late.allocations = [
+		{ kind: "worktree", status: "owned", worktree: { path: "/late/retained-worktree", cwd: "/late/retained-worktree", branch: "refs/heads/late", repoRoot: CANONICAL_ROOT, baseCommit: "a".repeat(40) } },
+		{ kind: "agent", status: "owned", agentName: "late-worker", workspaceId: "late-workspace", tabId: "late-tab", paneId: "late-pane", worktreeCwd: "/late/retained-worktree", leasePath: "/late/lease" },
+	] as typeof late.allocations;
+	task.attempts.push(late);
+	const generations = state.integration.generations;
+	for (let number = 1; number <= 32; number++) generations.push({
+		number, status: "superseded", expectedMain: RECORDED_MAIN, integrationBase: RECORDED_MAIN, order: [], stages: [],
+		...(number === 32 ? { worktree: { path: "/late/integration", cwd: "/late/integration", branch: "refs/heads/late-integration", repoRoot: CANONICAL_ROOT, baseCommit: "a".repeat(40) }, failure: "Blocked: inspect late integration checkout" } : {}),
+	} as RunState["integration"]["generations"][number]);
+	const harness = createHarness({ runner: { async status() { harness.runnerCalls.push({ method: "status", args: [] }); return { ...response("status", true, state), main: { status: "drifted" as const, expected: RECORDED_MAIN, actual: CURRENT_MAIN } }; } } as never });
+	const notices = await harness.surface.inspect(CANONICAL_ROOT, "request-one");
+	const text = notices.join("\n");
+	assert.match(text, /\/late\/retained-worktree/);
+	assert.match(text, /late-worker/);
+	assert.match(text, /\/late\/lease/);
+	assert.match(text, /\/late\/integration/);
+	assert.match(text, /Blocked: inspect late integration checkout/);
+	assert.match(text, /Reported continuation.*finalize/);
+	assert.ok(notices.length < 15);
+	assert.doesNotMatch(text, /IRRELEVANT_PRIVATE_OUTPUT|PRIVATE IMPLEMENTER PROMPT|SECRET_TOKEN/);
+	assert.deepEqual(harness.runnerCalls.map(({ method }) => method), ["status"]);
 });
 
 test("Role child argv causes zero registration and dependency side effects", () => {

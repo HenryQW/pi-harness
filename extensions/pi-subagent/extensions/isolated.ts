@@ -292,6 +292,53 @@ function publicState(state: RunState, preferredTaskId?: string) {
 	};
 }
 
+function inspectionNotices({ state, main, continuation }: RunResponse): string[] {
+	const lines = [
+		`Isolated request ${state.request.id}: ${state.status}; accepted: ${state.accepted}; final: ${state.final.status}; Main: ${main?.status ?? "not checked"}.`,
+		...(continuation ? [`Reported continuation: ${JSON.stringify(continuation)}`] : []),
+	];
+	if (main) lines.push(main.status === "unavailable"
+		? `Main inspection unavailable: ${boundedPublicText(main.failure)}; expected: ${JSON.stringify(main.expected)}`
+		: `Main ${main.status}: ${JSON.stringify({ expected: main.expected, actual: main.actual })}`);
+	if (state.integration.refresh) lines.push(`Integration refresh: ${state.integration.refresh.status}${state.integration.refresh.failure ? `; blockage: ${boundedPublicText(state.integration.refresh.failure)}` : ""}.`);
+	const attention = publicNeedsAttention(state);
+	if (attention) lines.push(`Reported blockage: ${JSON.stringify({ scope: attention.scope, failure: attention.failure, failedCheck: "failedCheck" in attention ? attention.failedCheck : undefined, failedReview: "failedReview" in attention ? attention.failedReview : undefined })}`);
+	if (state.final.failure) lines.push(`Final blockage: ${boundedPublicText(state.final.failure)}`);
+	for (const task of state.tasks) {
+		lines.push(`Task ${task.taskId}: ${task.status}${task.failure ? `; blockage: ${boundedPublicText(task.failure)}` : ""}.`);
+		if (task.kind !== "changeset") continue;
+		for (const attempt of task.attempts) {
+			const label = `Task ${task.taskId} attempt ${attempt.number}`;
+			if (attempt.termination) lines.push(`${label} worker termination: ${JSON.stringify({ status: attempt.termination.status, workerId: attempt.termination.workerId, failure: attempt.termination.failure ? boundedPublicText(attempt.termination.failure) : undefined })}`);
+			for (const allocation of attempt.allocations) {
+				if (allocation.status === "absent") continue;
+				const resource = allocation.kind === "worktree"
+					? { worktree: allocation.worktree && { path: allocation.worktree.path, cwd: allocation.worktree.cwd, branch: allocation.worktree.branch, repoRoot: allocation.worktree.repoRoot } }
+					: allocation.kind === "workspace" ? { label: allocation.label, workspaceId: allocation.workspaceId, worktreeCwd: allocation.worktreeCwd, mainRoot: allocation.mainRoot, herdrRepoRoot: allocation.herdrRepoRoot, repoKey: allocation.repoKey, rootTabId: allocation.rootTabId, rootPaneId: allocation.rootPaneId }
+					: allocation.kind === "worker_tab" ? { label: allocation.label, workspaceId: allocation.workspaceId, workspaceRootTabId: allocation.workspaceRootTabId, workspaceRootPaneId: allocation.workspaceRootPaneId, tabId: allocation.tabId, paneId: allocation.paneId, leasePath: allocation.leasePath, worktreeCwd: allocation.worktreeCwd }
+					: { agentName: allocation.agentName, workspaceId: allocation.workspaceId, tabId: allocation.tabId, paneId: allocation.paneId, leasePath: allocation.leasePath, worktreeCwd: allocation.worktreeCwd };
+				lines.push(`${label} ${allocation.kind} (${allocation.status}): ${JSON.stringify({ ...resource, possibleResources: allocation.possibleResources, failure: allocation.failure ? boundedPublicText(allocation.failure) : undefined })}`);
+			}
+			const cleanup = attempt.cleanup.filter((step) => step.status !== "completed");
+			if (cleanup.length) lines.push(`${label} cleanup pending: ${JSON.stringify(cleanup.map((step) => ({ kind: step.kind, status: step.status, failure: step.failure ? boundedPublicText(step.failure) : undefined })))}`);
+		}
+	}
+	for (const candidate of state.integration.candidates) lines.push(`Candidate ${candidate.taskId} attempt ${candidate.attempt}: ${candidate.worker}${candidate.decision ? `; ${candidate.decision}` : ""}; tip: ${JSON.stringify({ branch: candidate.tip.branch, head: candidate.tip.head })}.`);
+	for (const generation of state.integration.generations) {
+		if (!generation.worktree && !generation.failure && !/conflict|failed|unknown/.test(generation.status)
+			&& !generation.cleanup?.some((step) => step.status !== "completed")
+			&& !generation.stages.some((stage) => stage.status === "conflict" || stage.failure)
+			&& !generation.promotion?.failure && !generation.supersededPromotion?.failure
+			&& generation !== state.integration.generations.at(-1)) continue;
+		const stagedTip = [...generation.stages].reverse().find((stage) => stage.tip)?.tip ?? generation.integrationBase;
+		lines.push(`Integration generation ${generation.number}: ${generation.status}; ${generation.worktree ? `worktree: ${JSON.stringify({ path: generation.worktree.path, cwd: generation.worktree.cwd, branch: generation.worktree.branch, repoRoot: generation.worktree.repoRoot })}; ` : ""}last staged tip: ${JSON.stringify(stagedTip)}${generation.combinedTip ? `; combined tip: ${JSON.stringify(generation.combinedTip)}` : ""}${generation.failure ? `; blockage: ${boundedPublicText(generation.failure)}` : ""}.`);
+		for (const stage of generation.stages.filter((item) => item.status === "conflict" || item.failure)) lines.push(`Integration generation ${generation.number} stage ${stage.taskId} attempt ${stage.attempt}: ${stage.status}${stage.failure ? `; blockage: ${boundedPublicText(stage.failure)}` : ""}.`);
+		for (const promotion of [generation.promotion, generation.supersededPromotion]) if (promotion?.failure) lines.push(`Integration generation ${generation.number} promotion ${promotion.status}: ${boundedPublicText(promotion.failure)}`);
+		if (generation.cleanup?.some((step) => step.status !== "completed")) lines.push(`Integration generation ${generation.number} cleanup pending: ${JSON.stringify(generation.cleanup.filter((step) => step.status !== "completed").map((step) => ({ kind: step.kind, status: step.status, failure: step.failure ? boundedPublicText(step.failure) : undefined })))}`);
+	}
+	return lines;
+}
+
 function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest: Map<string, string[]>) {
 	updateWorkspaceWidgetSafely(ctx, response.state, rowsByRequest);
 	const preferredTaskId = response.continuation && "taskId" in response.continuation
@@ -314,7 +361,7 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 export interface IsolatedSurface {
 	execute(params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string): Promise<IsolatedInventory>;
-	inspect(root: string, requestId: string): Promise<string>;
+	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
 	drain(root: string, requestId: string, taskId: string, current: () => boolean): readonly string[];
@@ -550,7 +597,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		},
 		async inspect(root, requestId) {
 			const response = await getComponents().runner.status(requestId, root);
-			return JSON.stringify({ status: response.state.status, continuation: response.continuation, needsAttention: publicNeedsAttention(response.state), main: response.main, state: publicState(response.state) });
+			return inspectionNotices(response);
 		},
 		canFollowup: (root, requestId, taskId) => !sessionClosed && (components?.runner.canFollowup(root, requestId, taskId) ?? false),
 		enqueue(root, requestId, taskId, text, current) {

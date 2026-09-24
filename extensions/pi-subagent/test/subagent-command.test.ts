@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { registerSubagentCommand, type IsolatedInventory, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
 type Dialog = { kind: "select" | "editor"; title: string; options?: string[]; prefill?: string };
-function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]> } = {}) {
+function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; inspection?: readonly string[] } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
@@ -15,13 +15,14 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	let session = "session";
 	let file = "session.jsonl";
 	let branch = ["root", "leaf"];
+	const entries = ["root", "leaf", "existing-child", "sibling"];
 	let active = true;
 	let inspectCount = 0;
 	const inventory = options.inventory ?? { root: "/git", requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
 	const adapter: SubagentCommandAdapter = {
 		direct: () => options.direct ?? [],
 		isolated: async () => { if (options.isolatedError) throw options.isolatedError; return inventory; },
-		inspect: async (_root, id) => { inspectCount++; return `Status for ${id}: retained worktree /safe; continuation: ask Main`; },
+		inspect: async (_root, id) => { inspectCount++; return options.inspection ?? [`Status for ${id}: retained worktree /safe; continuation: ask Main`]; },
 		canFollowup: () => active,
 		epoch: () => epoch,
 		drain: (root, id, task, current) => {
@@ -42,6 +43,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		sessionManager: {
 			getSessionId: () => session, getSessionFile: () => file,
 			getLeafId: () => branch.at(-1), getBranch: () => branch.map((id) => ({ id })),
+			getEntries: () => entries.map((id) => ({ id })),
 		},
 		ui: {
 			notify: (message: string, level: string) => notices.push({ message, level }),
@@ -64,7 +66,10 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		setActive: (value: boolean) => { active = value; },
 		get inspectCount() { return inspectCount; },
 		changeSession: () => { session = "next"; }, changeFile: () => { file = "next.jsonl"; },
-		changeBranch: () => { branch = ["root", "other-branch"]; }, navigateAncestor: () => { branch = ["root"]; }, append: () => { branch.push("new-leaf"); },
+		changeBranch: () => { branch = ["root", "sibling"]; }, navigateAncestor: () => { branch = ["root"]; },
+		navigateDescendant: () => { branch.push("existing-child"); },
+		emptyBranch: () => { branch = []; entries.length = 0; entries.push("existing-child"); },
+		append: () => { branch.push("new-leaf"); entries.push("new-leaf"); },
 		shutdown: () => { epoch++; },
 	};
 }
@@ -82,6 +87,17 @@ test("direct recovery, history and duplicate labels retain exact records", async
 	assert.equal(h.inspectCount, 1);
 	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Isolated")));
 	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Direct")));
+});
+
+test("inspection presents every resource notice without a global 6000-character cutoff or mutation", async () => {
+	const path = `/retained/${"x".repeat(6100)}/late`;
+	const h = harness({ inspection: [...Array.from({ length: 40 }, (_, index) => `Earlier resource ${index}`), `Worktree ${path}`] });
+	h.responses.push(h.pick("Isolated"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
+	await h.run();
+	assert.ok(h.notices.some(({ message }) => message === `Worktree ${path}`));
+	assert.equal(h.inspectCount, 1);
+	assert.deepEqual(h.queues.get("task"), ["first", "first", "third"]);
+	assert.deepEqual(h.sent, []);
 });
 
 test("failed isolated discovery preserves direct branch recovery and invalid inventory does not suppress healthy requests", async () => {
@@ -141,7 +157,7 @@ test("overlong combined text remains intact in the editor after refusal", async 
 });
 
 test("changed branch, session, or shutdown across a dialog prevents drain and submission; appended entries do not", async () => {
-	for (const change of ["changeBranch", "navigateAncestor", "changeSession", "changeFile", "shutdown"] as const) {
+	for (const change of ["changeBranch", "navigateAncestor", "navigateDescendant", "changeSession", "changeFile", "shutdown"] as const) {
 		const h = harness(); h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), () => { h[change](); return "task"; });
 		await h.run(); assert.equal(h.queues.get("task")!.length, 3); assert.deepEqual(h.sent, []);
 	}
@@ -149,12 +165,24 @@ test("changed branch, session, or shutdown across a dialog prevents drain and su
 	await h.run(); assert.deepEqual(h.sent, ["task:hello"]);
 });
 
+test("existing descendant of an empty branch cannot withdraw or enqueue from a stale dialog", async () => {
+	for (const action of ["Edit queued", "Send follow-up"]) {
+		const h = harness(); h.emptyBranch();
+		h.responses.push(h.pick("Isolated"), h.pick(action), () => { h.navigateDescendant(); return "task"; });
+		await h.run();
+		assert.deepEqual(h.queues.get("task"), ["first", "first", "third"]);
+		assert.deepEqual(h.sent, []);
+	}
+});
+
 test("navigation after drain leaves withdrawn text unqueued", async () => {
-	const h = harness();
-	h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["), () => { h.navigateAncestor(); return "submitted"; });
-	await h.run();
-	assert.deepEqual(h.queues.get("task"), []);
-	assert.deepEqual(h.sent, []);
+	for (const change of ["navigateAncestor", "navigateDescendant"] as const) {
+		const h = harness();
+		h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["), () => { h[change](); return "submitted"; });
+		await h.run();
+		assert.deepEqual(h.queues.get("task"), []);
+		assert.deepEqual(h.sent, []);
+	}
 });
 
 test("durable-only or other-owner requests cannot offer follow-up; task sealing before drain refuses without withdrawing", async () => {
