@@ -34,6 +34,7 @@ export interface DirectHandle {
 	sessionFile: string;
 	prompt: string;
 	answer(maxBytes: number): Promise<string>;
+	usageTokens(): Promise<number | undefined>;
 	cancel(): Promise<void>;
 }
 
@@ -77,6 +78,33 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 	if (!text.trim()) throw new Error("Pi persisted an empty final answer.");
 	if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`Pi final answer exceeds the ${maxBytes}-byte workflow limit; read the private session file for recovery.`);
 	return text;
+}
+
+// Ignore a partial trailing JSONL entry while the child is writing it.
+export function directSessionTokens(jsonl: string, prompt: string): number | undefined {
+	let active = false;
+	let total = 0;
+	let observed = false;
+	for (const line of jsonl.split("\n")) {
+		if (!line.trim()) continue;
+		let entry: Json;
+		try { entry = JSON.parse(line) as Json; } catch { break; }
+		if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+		const message = entry.message as Json;
+		if (message.role === "user") {
+			active = Array.isArray(message.content) && message.content.length === 1
+				&& (message.content[0] as Json)?.text === prompt;
+			if (active) { total = 0; observed = false; }
+		} else if (active && message.role === "assistant" && message.usage && typeof message.usage === "object") {
+			const usage = message.usage as Json;
+			const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
+			if (values.every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
+				total += (values as number[]).reduce((sum, value) => sum + value, 0);
+				observed = true;
+			}
+		}
+	}
+	return observed ? total : undefined;
 }
 
 export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile">;
@@ -135,8 +163,19 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				const accepted = await herdr.json(["agent", "prompt", name, prompt], options(signal));
 				const state = inspect(accepted, "agent_prompted", name, paneId, tabId);
 				if (state === "blocked" || state === "unknown") throw new Error(`Herdr agent became ${state}; inspect it before retrying.`);
+				let lastUsageSize = -1;
+				let lastTokens: number | undefined;
 				return {
 				name, tabId, paneId, sessionFile, prompt,
+				async usageTokens() {
+					const info = await stat(sessionFile);
+					if (info.size > SESSION_LIMIT) return undefined;
+					if (info.size !== lastUsageSize) {
+						lastTokens = directSessionTokens(await readFile(sessionFile, "utf8"), prompt);
+						lastUsageSize = info.size;
+					}
+					return lastTokens;
+				},
 				async answer(maxBytes) {
 					const readAnswer = async () => {
 						const info = await stat(sessionFile);

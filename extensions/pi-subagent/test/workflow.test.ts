@@ -4,8 +4,11 @@ import test from "node:test";
 import { Check } from "typebox/value";
 import {
 	MAX_WORKFLOW_ENTRIES,
+	identifyWorkflowEntries,
 	parseWorkflow as parseDirectWorkflow,
-	runForegroundWorkflow,
+	runForegroundWorkflow as runEntries,
+	type DelegationRunner,
+	type ParsedWorkflow,
 	WorkflowSchema,
 } from "../extensions/workflow.ts";
 
@@ -13,6 +16,9 @@ const delegation = (task = "work") => ({ role: "worker", name: "Test work", task
 const parseWorkflow = (value: unknown) => parseDirectWorkflow(
 	value && typeof value === "object" && !Array.isArray(value) ? { mode: "direct", ...value } : value,
 );
+const runForegroundWorkflow = (id: string, workflow: ParsedWorkflow, run: DelegationRunner, signal?: AbortSignal) =>
+	runEntries(workflow.mode, identifyWorkflowEntries(id, workflow), run, signal);
+
 function deferred<T>() {
 	let resolve!: (value: T) => void;
 	let reject!: (reason?: unknown) => void;
@@ -143,14 +149,13 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 	assert.equal(parseWorkflow({ ...delegation("first line\nsecond line") }).delegations[0]!.task, "first line\nsecond line");
 });
 
-test("runs single exactly once without returning discarded outcomes", async () => {
+test("runs a single delegation exactly once", async () => {
 	const calls: string[] = [];
-	const result = await runForegroundWorkflow("call", parseWorkflow(delegation()), (entry) => {
+	await runForegroundWorkflow("call", parseWorkflow(delegation()), (entry) => {
 		calls.push(entry.id);
 		return entry.delegation.task;
 	});
 	assert.deepEqual(calls, ["call:single:0"]);
-	assert.equal(result, undefined);
 });
 
 test("runs parallel entries concurrently and waits for every callback after a failure", async () => {

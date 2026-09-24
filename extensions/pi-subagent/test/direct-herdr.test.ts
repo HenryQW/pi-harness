@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { exactDirectAnswer } from "../src/direct-herdr.ts";
+import { directSessionTokens, exactDirectAnswer } from "../src/direct-herdr.ts";
 
 const prompt = "inspect\n\nTurn identity: unique";
 const lines = (messages: unknown[]) => [
@@ -17,6 +17,17 @@ test("native Pi session records exact bounded final assistant text, not interim 
 	assert.equal(exactDirectAnswer(session, prompt), "exact answer");
 	assert.throws(() => exactDirectAnswer(session, "other prompt"), /exact successful final answer/);
 	assert.throws(() => exactDirectAnswer(session, prompt, 5), /exceeds the 5-byte workflow limit/);
+});
+
+test("direct usage counts only completed Pi usage records for the exact turn", () => {
+	const usage = (input: number) => ({ input, output: 2, cacheRead: 3, cacheWrite: 4 });
+	const session = lines([
+		{ type: "message", id: "one", message: { role: "assistant", usage: usage(10) } },
+		{ type: "message", id: "two", message: { role: "assistant", usage: usage(20) } },
+	]) + '{"type":"message"';
+	assert.equal(directSessionTokens(session, prompt), 48);
+	assert.equal(directSessionTokens(session, "another prompt"), undefined);
+	assert.equal(directSessionTokens(lines([]), prompt), undefined);
 });
 
 test("native Pi session errors and unrelated turns cannot masquerade as successful results", () => {

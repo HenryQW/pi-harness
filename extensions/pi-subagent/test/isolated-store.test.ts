@@ -86,9 +86,13 @@ test("the store persists v5 text state, rejects duplicate creates, and preserves
 		const created = state(root);
 		const handle = await store.create(created);
 		assert.deepEqual(savedStates, [created]);
+		savedStates[0]!.request.goal = "changed by callback";
+		assert.equal(handle.state.request.goal, created.request.goal);
 		handle.state.updatedAt = 2;
 		await handle.save();
 		assert.deepEqual(savedStates.map(({ updatedAt }) => updatedAt), [1, 2]);
+		savedStates[1]!.request.goal = "changed after save";
+		assert.equal(handle.state.request.goal, created.request.goal);
 		const contents = await readFile(handle.path, "utf8");
 		assert.doesNotMatch(contents, /launchRecords|fingerprint|LaunchRecord/);
 		await assert.rejects(store.create(created), {

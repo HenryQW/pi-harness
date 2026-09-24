@@ -49,10 +49,6 @@ export type WorkflowTransport = {
 
 type Evidence = { heading: string; preview: string; remainder: string };
 
-function compareEntries(left: WorkflowTransportEntry, right: WorkflowTransportEntry): number {
-	return left.index - right.index || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
-}
-
 function splitEvidence(text: string): [string, string] {
 	const preview = Array.from(text).slice(0, EVIDENCE_PREVIEW_CODE_POINTS).join("");
 	return [preview, text.slice(preview.length)];
@@ -114,7 +110,7 @@ function evidenceFor(entry: WorkflowTransportEntry, position: number, total: num
 }
 
 export function formatWorkflowResult(mode: WorkflowMode, entries: readonly WorkflowTransportEntry[]): WorkflowTransport {
-	const ordered = [...entries].sort(compareEntries);
+	const ordered = [...entries].sort((left, right) => left.index - right.index);
 	if (ordered.some(({ status }) => status === "pending" || status === "running")) {
 		throw new TypeError("Final workflow transport requires terminal entry states.");
 	}

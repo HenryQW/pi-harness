@@ -4,9 +4,16 @@ import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { ExecuteRequestSchema, parseExecuteRequest, type ExecuteRequest } from "../dist/schema.js";
-import { TaskNameSchema, normalizeTaskName } from "./task-name.ts";
 
 export const MAX_WORKFLOW_ENTRIES = 8;
+
+const TASK_NAME_MAX_LENGTH = 29;
+const TaskNameSchema = Type.String({
+	minLength: 1,
+	maxLength: TASK_NAME_MAX_LENGTH,
+	description: `Short descriptive task name, about five words and fewer than ${TASK_NAME_MAX_LENGTH + 1} characters; C0/C1 control characters are rejected.`,
+	pattern: DISPLAY_TEXT_CONTRACT.pattern,
+});
 
 const RoleSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Configured Subagent role name" });
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
@@ -52,6 +59,12 @@ const DELEGATION_KEYS = ["role", "name", "task", "kind", "model", "modelClass"] 
 function text(value: string, path: string): string {
 	const normalized = value.trim();
 	if (!normalized || value.includes("\0")) throw new Error(`${path} must be non-empty text without NUL.`);
+	return normalized;
+}
+
+function normalizeTaskName(value: string, path: string): string {
+	const normalized = value.trim();
+	if (!normalized) throw new Error(`${path} must be non-empty text.`);
 	return normalized;
 }
 
@@ -118,19 +131,18 @@ async function runEntry(entry: WorkflowEntry, run: DelegationRunner): Promise<st
 }
 
 export async function runForegroundWorkflow(
-	toolCallId: string,
-	workflow: ParsedWorkflow,
+	mode: WorkflowMode,
+	entries: readonly WorkflowEntry[],
 	run: DelegationRunner,
 	signal?: AbortSignal,
 ): Promise<void> {
 	signal?.throwIfAborted();
-	const entries = identifyWorkflowEntries(toolCallId, workflow);
-	if (workflow.mode === "single") {
+	if (mode === "single") {
 		await runEntry(entries[0]!, run);
 		signal?.throwIfAborted();
 		return;
 	}
-	if (workflow.mode === "parallel") {
+	if (mode === "parallel") {
 		await Promise.all(entries.map((entry) => runEntry(entry, run)));
 		signal?.throwIfAborted();
 		return;

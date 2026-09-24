@@ -227,7 +227,7 @@ export class FileRunStore {
 			if (isAlreadyPresent(error)) throw new Error(`Pi Subagent request ${state.request.id} already exists.`);
 			throw error;
 		}
-		const saved = parseRunState(structuredClone(state));
+		const saved = JSON.parse(contents) as RunState;
 		this.onStateSaved?.(structuredClone(saved));
 		return this.handle(saved, path);
 	}
@@ -317,7 +317,7 @@ export class FileRunStore {
 		return new RunStateHandle(state, path, async (contents) => {
 			await this.assertSafeDestination(state.root, path);
 			await writePrivateTextFileAtomically(path, contents);
-			this.onStateSaved?.(parseRunState(JSON.parse(contents)));
+			this.onStateSaved?.(JSON.parse(contents) as RunState);
 		});
 	}
 }
