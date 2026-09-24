@@ -31,7 +31,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Publish new package versions
-        shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -42,12 +41,12 @@ jobs:
           for manifest in packages/pi-config-store/package.json packages/pi-herdr/package.json extensions/pi-multi-codex/package.json extensions/pi-task-models/package.json extensions/pi-subagent/package.json extensions/*/package.json packages/*/package.json; do
             [ "${seen[$manifest]:-0}" = 1 ] && continue
             seen[$manifest]=1
-            name="$(node -p "require('./$manifest').name")"
-            if [ "$(node -p "Boolean(require('./$manifest').private)")" = true ]; then
+            metadata="$(node -p "((p) => [p.name, p.version, Boolean(p.private)].join(' '))(require('./$manifest'))")"
+            read -r name local_version private <<< "$metadata"
+            if [ "$private" = true ]; then
               continue
             fi
 
-            local_version="$(node -p "require('./$manifest').version")"
             remote_version="$(npm view "$name" version 2>/dev/null || true)"
             if [ "$local_version" = "$remote_version" ]; then
               continue
