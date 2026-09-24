@@ -17,6 +17,7 @@ pi install npm:@henryqw/pi-footer
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Adds active Codex subscription quota and reset status. |
 | [`@henryqw/pi-open-in`](https://pi.henry.wang/extensions/pi-open-in) | Improves | Adds `/open` and `/set-open-in` commands for editor configuration. |
 | [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves | Adds current-branch pull-request status. |
+| [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph) | Improves | Shows CodeGraph index and direct tool activity when loaded. |
 
 ## Use
 
@@ -25,12 +26,12 @@ The footer shows checkout, usage, model, thinking, and extension statuses.
 ```text
 pi-harness · clear-field-f8d2 [+2 ~3 ?1 ↑2] · PR #123 · approved    Codex #1 · 50% · 7d 1d 1h 22m
 ↑ 12.4k · ↓ 2.1k · ↺ 84.3% · ⚡ 87.4 t/s · $ 0.127 · ◔ 36.8%    gpt-5.6-luna • high
-●  🐴 ponytail: ⚡ FULL                                                    ◷ 12m 34s
+✓ CG · ●  🐴 ponytail: ⚡ FULL                                           ◷ 12m 34s
 ```
 
 - The first line shows the repository, branch, Git state, and `pi-pr` pull request status. Linked-worktree branches drop the generated `worktree/` prefix.
 - The second line shows cumulative input tokens, output tokens, latest cache-hit rate, and tokens per second for the most recent assistant response. It also shows estimated cost and context usage. Totals include reported tool usage and finished `pi-subagent` background workflows. The active model and thinking level are right-aligned.
-- The third line shows other extension statuses on the left and cumulative agent-work time on the right, beneath the active model.
+- The third line shows a compact CodeGraph badge first when loaded: `✓ CG` indexed, `● CG` in use, `◐ CG` checking or indexing, `○ CG` missing, `! CG` setup problem, or `? CG` unknown state. When pi-codegraph is not loaded, no badge appears. A middle dot separates statuses from different extensions; cumulative agent-work time stays on the right, beneath the active model.
 
 Git badges appear only when action is needed:
 
@@ -57,7 +58,7 @@ Unavailable values render as `—` without a misleading percent sign.
 
 Non-empty statuses from `@henryqw` extensions, currently Codex quota, occupy the right side of the first line.
 
-Statuses from all other extensions, including Ponytail and `pi-rewind`, share the left side. They are sorted by key with producer text, spacing, colors, links, and glyphs preserved.
+Statuses from other extensions, including Ponytail and `pi-rewind`, share the left side. They are sorted by key with producer text, spacing, colors, links, and glyphs preserved. Scripted `mcpScript` calls are not visible as individual tool calls, so they do not trigger the `● CG` badge.
 
 ## Limits and recovery
 
