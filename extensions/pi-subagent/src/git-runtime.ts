@@ -498,7 +498,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			const branch = oneLine(await this.requireGit(["symbolic-ref", "--quiet", "HEAD"], cwd, context), "branch reference");
 			const head = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd, context), "HEAD");
 			const hadGitlinks = await this.hasGitlinks(cwd, context);
-			const inspection = await inspectWorktreeDirty(cwd, this.gitRunner(context));
+			const inspection = await inspectWorktreeDirty(cwd, this.gitRunner(context), false);
 			if (inspection.failure) throw new Error(`Worktree inspection failed: ${inspection.failure}`);
 			const index = oid(await this.requireGit(["write-tree"], cwd, context), "index tree");
 			const tree = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{tree}"], cwd, context), "HEAD tree");

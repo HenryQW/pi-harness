@@ -12,6 +12,7 @@ import {
 import { sameIdentity, type ChangesetTaskRequest, type CheckBatchEvidence, type CommandEvidence, type TaskAttempt, type WorktreeAllocationIntent, type WorkspaceIdentity } from "../src/schema.ts";
 import type { OperationContext, TransientLaunchHandle, VerifiedLaunch } from "../src/runner.ts";
 import { runProcess } from "../src/process.ts";
+import { inspectWorktreeDirty } from "../src/worktree.ts";
 
 const launch: VerifiedLaunch = {
 	role: "reviewer",
@@ -461,6 +462,14 @@ test("in-flight candidate inspection reports transient states without relaxing w
 	assert.notEqual(changed.candidate.head, base.head);
 	assert.equal(changed.clean, true);
 	assert.equal(changed.valid, true);
+
+	await commit(worktree.cwd, ".gitignore", "generated/\n");
+	await mkdir(join(worktree.cwd, "generated"));
+	await writeFile(join(worktree.cwd, "generated", "cache"), "generated\n");
+	const generated = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.equal(generated.clean, true);
+	assert.equal(generated.valid, true);
+	assert.equal((await inspectWorktreeDirty(worktree.cwd)).dirty, true);
 
 	git(root, "worktree", "remove", "--force", worktree.path);
 	await mkdir(worktree.path, { recursive: true });
