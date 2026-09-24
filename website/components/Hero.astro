@@ -13,27 +13,68 @@ const {
 const statusId = `${id}-copy-status`;
 const benchmarkId = `${id}-benchmark-heading`;
 const comparisonDescriptionId = `${id}-comparison-description`;
-const piTickEnds = [7.70001, 10.9, 12.2, 7.39001, 8.38, 12.34, 6.41, 12.74, 12.12, 7.17999, 12.07, 8.92999, 8.38, 13.42, 8.64999, 7.67999, 6.67999, 11.98, 7.07999, 6.42999, 6.39001, 13.87, 7.04999, 10.18, 7.32001];
-const piTickOpacities = [0.93, 0.89, 0.89, 0.67, 0.73, 0.71, 0.98, 0.87, 0.62, 0.61, 0.7, 0.97, 0.74, 0.94, 0.89, 0.79, 0.63, 0.85, 0.75, 0.66, 0.66, 0.91, 0.71, 0.8, 0.99];
-const codexTickEnds = [42.86, 41.21, 44.13, 40.23, 43.15, 44.89, 44.35, 40.52, 38.77, 43.96, 45.28, 43.43, 44.11, 44.7, 45.38, 40.84, 40.94, 43.77, 42.21, 44.97, 45.14, 45.85, 42.82, 41.29, 44.14, 44.28, 41.38, 44.97, 44.37, 41.22, 45.79, 40.54, 43.12, 45.1, 44.35, 44.34, 44.75, 43.08, 40.74, 43.61, 43.5, 44.07, 44.03, 42.55, 41.04, 38.66, 39.2, 45.34, 45.87, 42.54, 43.07, 42.94, 40.02, 38.86, 44.32, 43.86, 44.91, 43.18, 38.05, 44.33, 43.22, 38.62, 40.51, 39.94, 42.35, 40.25, 42.4, 43.11, 44.82, 40.86, 40.26, 42.12, 42.67, 41.08, 43.42, 42.92, 39.18, 40.66, 40.26, 44.17, 41.46, 41.4, 38.11, 44.39, 40.53, 39.45, 40.58, 38.42, 40.37, 43.18, 44.93, 42.49, 39.57, 39.56, 44.64, 40.54, 38.13, 45.03, 44.74, 45.56];
-const codexTickOpacities = [0.64, 0.66, 0.74, 0.78, 0.74, 0.77, 0.67, 0.88, 0.83, 0.7, 0.91, 0.75, 0.71, 0.74, 0.84, 0.92, 0.59, 0.79, 0.7, 0.66, 0.88, 0.85, 0.99, 0.78, 0.98, 0.72, 0.61, 0.64, 0.85, 0.58, 0.93, 0.59, 0.79, 0.89, 0.81, 0.73, 0.99, 0.6, 0.64, 0.61, 0.7, 0.69, 0.95, 0.79, 0.96, 0.63, 0.66, 0.93, 0.9, 0.94, 0.61, 0.64, 0.87, 0.6, 0.97, 0.95, 0.78, 0.62, 0.89, 0.68, 0.88, 0.97, 1, 0.82, 0.81, 0.61, 0.63, 0.95, 0.62, 0.95, 0.69, 0.99, 0.85, 0.82, 0.89, 0.99, 0.96, 0.87, 0.77, 0.86, 0.83, 0.92, 0.81, 0.92, 0.82, 0.94, 0.6, 0.68, 0.58, 0.93, 0.72, 0.87, 0.9, 0.65, 0.91, 0.59, 0.99, 0.94, 0.68, 0.89];
+const piTickEnds = [
+  7.70001, 10.9, 12.2, 7.39001, 8.38, 12.34, 6.41, 12.74, 12.12, 7.17999, 12.07,
+  8.92999, 8.38, 13.42, 8.64999, 7.67999, 6.67999, 11.98, 7.07999, 6.42999,
+  6.39001, 13.87, 7.04999, 10.18, 7.32001,
+];
+const piTickOpacities = [
+  0.93, 0.89, 0.89, 0.67, 0.73, 0.71, 0.98, 0.87, 0.62, 0.61, 0.7, 0.97, 0.74,
+  0.94, 0.89, 0.79, 0.63, 0.85, 0.75, 0.66, 0.66, 0.91, 0.71, 0.8, 0.99,
+];
+const codexTickEnds = [
+  42.86, 41.21, 44.13, 40.23, 43.15, 44.89, 44.35, 40.52, 38.77, 43.96, 45.28,
+  43.43, 44.11, 44.7, 45.38, 40.84, 40.94, 43.77, 42.21, 44.97, 45.14, 45.85,
+  42.82, 41.29, 44.14, 44.28, 41.38, 44.97, 44.37, 41.22, 45.79, 40.54, 43.12,
+  45.1, 44.35, 44.34, 44.75, 43.08, 40.74, 43.61, 43.5, 44.07, 44.03, 42.55,
+  41.04, 38.66, 39.2, 45.34, 45.87, 42.54, 43.07, 42.94, 40.02, 38.86, 44.32,
+  43.86, 44.91, 43.18, 38.05, 44.33, 43.22, 38.62, 40.51, 39.94, 42.35, 40.25,
+  42.4, 43.11, 44.82, 40.86, 40.26, 42.12, 42.67, 41.08, 43.42, 42.92, 39.18,
+  40.66, 40.26, 44.17, 41.46, 41.4, 38.11, 44.39, 40.53, 39.45, 40.58, 38.42,
+  40.37, 43.18, 44.93, 42.49, 39.57, 39.56, 44.64, 40.54, 38.13, 45.03, 44.74,
+  45.56,
+];
+const codexTickOpacities = [
+  0.64, 0.66, 0.74, 0.78, 0.74, 0.77, 0.67, 0.88, 0.83, 0.7, 0.91, 0.75, 0.71,
+  0.74, 0.84, 0.92, 0.59, 0.79, 0.7, 0.66, 0.88, 0.85, 0.99, 0.78, 0.98, 0.72,
+  0.61, 0.64, 0.85, 0.58, 0.93, 0.59, 0.79, 0.89, 0.81, 0.73, 0.99, 0.6, 0.64,
+  0.61, 0.7, 0.69, 0.95, 0.79, 0.96, 0.63, 0.66, 0.93, 0.9, 0.94, 0.61, 0.64,
+  0.87, 0.6, 0.97, 0.95, 0.78, 0.62, 0.89, 0.68, 0.88, 0.97, 1, 0.82, 0.81,
+  0.61, 0.63, 0.95, 0.62, 0.95, 0.69, 0.99, 0.85, 0.82, 0.89, 0.99, 0.96, 0.87,
+  0.77, 0.86, 0.83, 0.92, 0.81, 0.92, 0.82, 0.94, 0.6, 0.68, 0.58, 0.93, 0.72,
+  0.87, 0.9, 0.65, 0.91, 0.59, 0.99, 0.94, 0.68, 0.89,
+];
 const tickX = (index: number) => (137.62 + index * 3.24).toFixed(2);
 const tabletTickX = (index: number) => (113.33 + index * 2.67).toFixed(2);
-const stackedTabletTickX = (index: number) => `${(((113.33 + index * 2.67) / 456) * 100).toFixed(4)}%`;
-const mobilePiTickX = (index: number) => (index * (82 / (piTickEnds.length - 1))).toFixed(2);
-const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.length - 1))).toFixed(2);
+const stackedTabletTickX = (index: number) =>
+  `${(((113.33 + index * 2.67) / 456) * 100).toFixed(4)}%`;
+const mobilePiTickX = (index: number) =>
+  (index * (82 / (piTickEnds.length - 1))).toFixed(2);
+const mobileCodexTickX = (index: number) =>
+  (index * (328 / (codexTickEnds.length - 1))).toFixed(2);
 ---
 
-<section class:list={["hero", className]} id={id} aria-labelledby={`${id}-heading`} data-copy-scope>
+<section
+  class:list={["hero", className]}
+  id={id}
+  aria-labelledby={`${id}-heading`}
+  data-copy-scope
+>
   <div class="homepage-container hero-layout">
     <div class="hero-heading">
-      <h1 id={`${id}-heading`}>Ship faster<br />with <span>fewer tokens.</span></h1>
+      <h1 id={`${id}-heading`}>
+        Ship faster<br />with <span>fewer tokens.</span>
+      </h1>
     </div>
 
     <div class="hero-proof-grid">
       <article class="hero-installer" aria-label="Henry Pi Harness installer">
         <div class="hero-command-row">
-          <code class="hero-command"><span class="hero-shell-prompt" aria-hidden="true">$ </span>{installCommand}</code>
+          <code class="hero-command"
+            ><span class="hero-shell-prompt" aria-hidden="true">$ </span>{
+              installCommand
+            }</code
+          >
           <button
             class="hero-copy"
             type="button"
@@ -41,109 +82,535 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
             aria-label="Copy installer command"
             aria-describedby={statusId}
           >
-            <svg aria-hidden="true" focusable="false" width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <path d="M4.5 4.5H10.5C11.0523 4.5 11.5 4.94772 11.5 5.5V11.5C11.5 12.0523 11.0523 12.5 10.5 12.5H4.5C3.94772 12.5 3.5 12.0523 3.5 11.5V5.5C3.5 4.94772 3.94772 4.5 4.5 4.5Z" stroke="currentColor" stroke-width="1.25" />
-              <path d="M2.5 9.5H2C1.44772 9.5 1 9.05228 1 8.5V2C1 1.44772 1.44772 1 2 1H8.5C9.05228 1 9.5 1.44772 9.5 2V2.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+            <svg
+              aria-hidden="true"
+              focusable="false"
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+            >
+              <path
+                d="M4.5 4.5H10.5C11.0523 4.5 11.5 4.94772 11.5 5.5V11.5C11.5 12.0523 11.0523 12.5 10.5 12.5H4.5C3.94772 12.5 3.5 12.0523 3.5 11.5V5.5C3.5 4.94772 3.94772 4.5 4.5 4.5Z"
+                stroke="currentColor"
+                stroke-width="1.25"></path>
+              <path
+                d="M2.5 9.5H2C1.44772 9.5 1 9.05228 1 8.5V2C1 1.44772 1.44772 1 2 1H8.5C9.05228 1 9.5 1.44772 9.5 2V2.5"
+                stroke="currentColor"
+                stroke-width="1.25"
+                stroke-linecap="round"></path>
             </svg>
             <span class="sr-only" data-copy-label>COPY</span>
           </button>
         </div>
         <p class="hero-copy-status">
           <span class="hero-spinner" aria-hidden="true">⠋</span>
-          <span id={statusId} data-copy-status aria-live="polite">One script to install Pi, Herdr, Henry Pi Harness…</span>
+          <span id={statusId} data-copy-status aria-live="polite"
+            >One script to install Pi, Herdr, Henry Pi Harness…</span
+          >
         </p>
       </article>
 
-      <article class="hero-benchmark" aria-labelledby={benchmarkId} aria-describedby={comparisonDescriptionId}>
-        <h2 class="hero-proof-stat" id={benchmarkId}><span>~75%</span> fewer total tokens.</h2>
+      <article
+        class="hero-benchmark"
+        aria-labelledby={benchmarkId}
+        aria-describedby={comparisonDescriptionId}
+      >
+        <h2 class="hero-proof-stat" id={benchmarkId}>
+          <span>~75%</span> fewer total tokens.
+        </h2>
         <p class="sr-only" id={comparisonDescriptionId}>
-          Pi + Harness used 177M total tokens. Codex used 709M total tokens. Pi + Harness used about 75% fewer total tokens.
+          Pi + Harness used 17.7M total tokens. Codex used 70.9M total tokens.
+          Pi + Harness used about 75% fewer total tokens.
         </p>
-        <svg class="hero-comparison hero-comparison-desktop" aria-hidden="true" focusable="false" width="556" height="64" viewBox="0 0 556 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <text x="0" y="27" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="13">Pi + Harness</text>
-          <line x1="136" y1="22" x2="460" y2="22" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {piTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={tickX(index)} y1="22" x2={tickX(index)} y2={end} stroke="#8FB3FF" stroke-opacity={piTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {piTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={tickX(index)} cy="27" r="1.2" fill="#8FB3FF" fill-opacity="0.42" />
-          ))}
-          <text x="523" y="26" fill="#8FB3FF" font-family="Geist Mono, ui-monospace, monospace" font-size="14">177M</text>
+        <svg
+          class="hero-comparison hero-comparison-desktop"
+          aria-hidden="true"
+          focusable="false"
+          width="556"
+          height="64"
+          viewBox="0 0 556 64"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <text
+            x="0"
+            y="27"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="13">Pi + Harness</text
+          >
+          <line
+            x1="136"
+            y1="22"
+            x2="460"
+            y2="22"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            piTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={tickX(index)}
+                y1="22"
+                x2={tickX(index)}
+                y2={end}
+                stroke="#8FB3FF"
+                stroke-opacity={piTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            piTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={tickX(index)}
+                    cy="27"
+                    r="1.2"
+                    fill="#8FB3FF"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
+          <text
+            x="523"
+            y="26"
+            fill="#8FB3FF"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="14">17.7M</text
+          >
 
-          <text x="0" y="59" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="13">Codex</text>
-          <line x1="136" y1="54" x2="460" y2="54" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {codexTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={tickX(index)} y1="54" x2={tickX(index)} y2={end} stroke="#F0EEE9" stroke-opacity={codexTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {codexTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={tickX(index)} cy="59" r="1.2" fill="#F0EEE9" fill-opacity="0.42" />
-          ))}
-          <text x="523" y="58" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="14">709M</text>
+          <text
+            x="0"
+            y="59"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="13">Codex</text
+          >
+          <line
+            x1="136"
+            y1="54"
+            x2="460"
+            y2="54"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            codexTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={tickX(index)}
+                y1="54"
+                x2={tickX(index)}
+                y2={end}
+                stroke="#F0EEE9"
+                stroke-opacity={codexTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            codexTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={tickX(index)}
+                    cy="59"
+                    r="1.2"
+                    fill="#F0EEE9"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
+          <text
+            x="523"
+            y="58"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="14">70.9M</text
+          >
         </svg>
-        <svg class="hero-comparison hero-comparison-tablet" aria-hidden="true" focusable="false" width="456" height="53" viewBox="0 0 456 53" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <text x="0" y="21" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="400">Pi + Harness</text>
-          <line x1="112" y1="17" x2="378" y2="17" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {piTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={tabletTickX(index)} y1="17" x2={tabletTickX(index)} y2={(end - 5).toFixed(2)} stroke="#8FB3FF" stroke-opacity={piTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {piTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={tabletTickX(index)} cy="22" r="1.2" fill="#8FB3FF" fill-opacity="0.42" />
-          ))}
-          <text x="456" y="21" text-anchor="end" fill="#8FB3FF" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="500">177M</text>
+        <svg
+          class="hero-comparison hero-comparison-tablet"
+          aria-hidden="true"
+          focusable="false"
+          width="456"
+          height="53"
+          viewBox="0 0 456 53"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <text
+            x="0"
+            y="21"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="400">Pi + Harness</text
+          >
+          <line
+            x1="112"
+            y1="17"
+            x2="378"
+            y2="17"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            piTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={tabletTickX(index)}
+                y1="17"
+                x2={tabletTickX(index)}
+                y2={(end - 5).toFixed(2)}
+                stroke="#8FB3FF"
+                stroke-opacity={piTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            piTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={tabletTickX(index)}
+                    cy="22"
+                    r="1.2"
+                    fill="#8FB3FF"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
+          <text
+            x="456"
+            y="21"
+            text-anchor="end"
+            fill="#8FB3FF"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="500">17.7M</text
+          >
 
-          <text x="0" y="48" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="400">Codex</text>
-          <line x1="112" y1="44" x2="378" y2="44" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {codexTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={tabletTickX(index)} y1="44" x2={tabletTickX(index)} y2={(end - 10).toFixed(2)} stroke="#F0EEE9" stroke-opacity={codexTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {codexTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={tabletTickX(index)} cy="49" r="1.2" fill="#F0EEE9" fill-opacity="0.42" />
-          ))}
-          <text x="456" y="48" text-anchor="end" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="500">709M</text>
+          <text
+            x="0"
+            y="48"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="400">Codex</text
+          >
+          <line
+            x1="112"
+            y1="44"
+            x2="378"
+            y2="44"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            codexTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={tabletTickX(index)}
+                y1="44"
+                x2={tabletTickX(index)}
+                y2={(end - 10).toFixed(2)}
+                stroke="#F0EEE9"
+                stroke-opacity={codexTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            codexTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={tabletTickX(index)}
+                    cy="49"
+                    r="1.2"
+                    fill="#F0EEE9"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
+          <text
+            x="456"
+            y="48"
+            text-anchor="end"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="500">70.9M</text
+          >
         </svg>
-        <svg class="hero-comparison hero-comparison-stacked-tablet" aria-hidden="true" focusable="false" width="100%" height="53" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <text x="0" y="21" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="400">Pi + Harness</text>
-          <line x1="24.5614%" y1="17" x2="82.8947%" y2="17" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {piTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={stackedTabletTickX(index)} y1="17" x2={stackedTabletTickX(index)} y2={(end - 5).toFixed(2)} stroke="#8FB3FF" stroke-opacity={piTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {piTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={stackedTabletTickX(index)} cy="22" r="1.2" fill="#8FB3FF" fill-opacity="0.42" />
-          ))}
-          <text x="100%" y="21" text-anchor="end" fill="#8FB3FF" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="500">177M</text>
+        <svg
+          class="hero-comparison hero-comparison-stacked-tablet"
+          aria-hidden="true"
+          focusable="false"
+          width="100%"
+          height="53"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <text
+            x="0"
+            y="21"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="400">Pi + Harness</text
+          >
+          <line
+            x1="24.5614%"
+            y1="17"
+            x2="82.8947%"
+            y2="17"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            piTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={stackedTabletTickX(index)}
+                y1="17"
+                x2={stackedTabletTickX(index)}
+                y2={(end - 5).toFixed(2)}
+                stroke="#8FB3FF"
+                stroke-opacity={piTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            piTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={stackedTabletTickX(index)}
+                    cy="22"
+                    r="1.2"
+                    fill="#8FB3FF"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
+          <text
+            x="100%"
+            y="21"
+            text-anchor="end"
+            fill="#8FB3FF"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="500">17.7M</text
+          >
 
-          <text x="0" y="48" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="400">Codex</text>
-          <line x1="24.5614%" y1="44" x2="82.8947%" y2="44" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {codexTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={stackedTabletTickX(index)} y1="44" x2={stackedTabletTickX(index)} y2={(end - 10).toFixed(2)} stroke="#F0EEE9" stroke-opacity={codexTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {codexTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={stackedTabletTickX(index)} cy="49" r="1.2" fill="#F0EEE9" fill-opacity="0.42" />
-          ))}
-          <text x="100%" y="48" text-anchor="end" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12.5" font-weight="500">709M</text>
+          <text
+            x="0"
+            y="48"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="400">Codex</text
+          >
+          <line
+            x1="24.5614%"
+            y1="44"
+            x2="82.8947%"
+            y2="44"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            codexTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={stackedTabletTickX(index)}
+                y1="44"
+                x2={stackedTabletTickX(index)}
+                y2={(end - 10).toFixed(2)}
+                stroke="#F0EEE9"
+                stroke-opacity={codexTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            codexTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={stackedTabletTickX(index)}
+                    cy="49"
+                    r="1.2"
+                    fill="#F0EEE9"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
+          <text
+            x="100%"
+            y="48"
+            text-anchor="end"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12.5"
+            font-weight="500">70.9M</text
+          >
         </svg>
-        <svg class="hero-comparison hero-comparison-mobile" aria-hidden="true" focusable="false" width="342" height="88" viewBox="0 0 342 88" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <text x="0" y="0" dominant-baseline="hanging" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12" font-weight="500">Pi + Harness</text>
-          <text x="342" y="0" dominant-baseline="hanging" text-anchor="end" fill="#8FB3FF" font-family="Geist Mono, ui-monospace, monospace" font-size="12" font-weight="500">177M</text>
-          <line x1="0" y1="34" x2="82" y2="34" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {piTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={mobilePiTickX(index)} y1="34" x2={mobilePiTickX(index)} y2={(end + 12).toFixed(2)} stroke="#8FB3FF" stroke-opacity={piTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {piTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={mobilePiTickX(index)} cy="39" r="1.2" fill="#8FB3FF" fill-opacity="0.42" />
-          ))}
+        <svg
+          class="hero-comparison hero-comparison-mobile"
+          aria-hidden="true"
+          focusable="false"
+          width="342"
+          height="88"
+          viewBox="0 0 342 88"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <text
+            x="0"
+            y="0"
+            dominant-baseline="hanging"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12"
+            font-weight="500">Pi + Harness</text
+          >
+          <text
+            x="342"
+            y="0"
+            dominant-baseline="hanging"
+            text-anchor="end"
+            fill="#8FB3FF"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12"
+            font-weight="500">17.7M</text
+          >
+          <line
+            x1="0"
+            y1="34"
+            x2="82"
+            y2="34"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            piTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={mobilePiTickX(index)}
+                y1="34"
+                x2={mobilePiTickX(index)}
+                y2={(end + 12).toFixed(2)}
+                stroke="#8FB3FF"
+                stroke-opacity={piTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            piTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={mobilePiTickX(index)}
+                    cy="39"
+                    r="1.2"
+                    fill="#8FB3FF"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
 
-          <text x="0" y="48" dominant-baseline="hanging" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12" font-weight="500">Codex</text>
-          <text x="342" y="48" dominant-baseline="hanging" text-anchor="end" fill="#F0EEE9" font-family="Geist Mono, ui-monospace, monospace" font-size="12" font-weight="500">709M</text>
-          <line x1="0" y1="82" x2="328" y2="82" stroke="#F0EEE9" stroke-opacity="0.18" stroke-width="0.8" />
-          {codexTickEnds.map((end, index) => (
-            <line class="hero-tick" style={`--hero-tick-delay: ${index * 72}ms;`} x1={mobileCodexTickX(index)} y1="82" x2={mobileCodexTickX(index)} y2={(end + 28).toFixed(2)} stroke="#F0EEE9" stroke-opacity={codexTickOpacities[index]} stroke-width="1.25" stroke-linecap="round" />
-          ))}
-          {codexTickEnds.map((_, index) => index % 5 === 4 && (
-            <circle cx={mobileCodexTickX(index)} cy="87" r="1.2" fill="#F0EEE9" fill-opacity="0.42" />
-          ))}
+          <text
+            x="0"
+            y="48"
+            dominant-baseline="hanging"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12"
+            font-weight="500">Codex</text
+          >
+          <text
+            x="342"
+            y="48"
+            dominant-baseline="hanging"
+            text-anchor="end"
+            fill="#F0EEE9"
+            font-family="Geist Mono, ui-monospace, monospace"
+            font-size="12"
+            font-weight="500">70.9M</text
+          >
+          <line
+            x1="0"
+            y1="82"
+            x2="328"
+            y2="82"
+            stroke="#F0EEE9"
+            stroke-opacity="0.18"
+            stroke-width="0.8"></line>
+          {
+            codexTickEnds.map((end, index) => (
+              <line
+                class="hero-tick"
+                style={`--hero-tick-delay: ${index * 72}ms;`}
+                x1={mobileCodexTickX(index)}
+                y1="82"
+                x2={mobileCodexTickX(index)}
+                y2={(end + 28).toFixed(2)}
+                stroke="#F0EEE9"
+                stroke-opacity={codexTickOpacities[index]}
+                stroke-width="1.25"
+                stroke-linecap="round"
+              />
+            ))
+          }
+          {
+            codexTickEnds.map(
+              (_, index) =>
+                index % 5 === 4 && (
+                  <circle
+                    cx={mobileCodexTickX(index)}
+                    cy="87"
+                    r="1.2"
+                    fill="#F0EEE9"
+                    fill-opacity="0.42"
+                  />
+                ),
+            )
+          }
         </svg>
-        <p class="hero-proof-method">INPUT + OUTPUT + CACHE · Implemented pi-pr v1.0.0 from the same plan.</p>
+        <p class="hero-proof-method">
+          INPUT + OUTPUT + CACHE · Implemented pi-pr v1.0.0 from the same plan.
+        </p>
       </article>
     </div>
 
@@ -156,79 +623,106 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
   const heroCleanups = new Map<HTMLElement, () => void>();
 
   const initializeHeroes = () => {
-    document.querySelectorAll<HTMLElement>("[data-copy-scope]").forEach((scope) => {
-      if (scope.dataset.heroInitialized) return;
+    document
+      .querySelectorAll<HTMLElement>("[data-copy-scope]")
+      .forEach((scope) => {
+        if (scope.dataset.heroInitialized) return;
 
-      const controller = new AbortController();
-      const comparisons = scope.querySelectorAll<SVGSVGElement>(".hero-comparison");
-      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-      let observer: IntersectionObserver | undefined;
-      let spinnerTimer: number | undefined;
-      scope.dataset.heroInitialized = "true";
+        const controller = new AbortController();
+        const comparisons =
+          scope.querySelectorAll<SVGSVGElement>(".hero-comparison");
+        const reducedMotion = window.matchMedia(
+          "(prefers-reduced-motion: reduce)",
+        );
+        let observer: IntersectionObserver | undefined;
+        let spinnerTimer: number | undefined;
+        scope.dataset.heroInitialized = "true";
 
-      if (comparisons.length && !reducedMotion.matches && "IntersectionObserver" in window) {
-        const onscreen = new Set<SVGSVGElement>();
-        const updateMotion = () => {
-          comparisons.forEach((comparison) => {
-            comparison.toggleAttribute("data-motion-active", onscreen.has(comparison) && document.visibilityState === "visible");
+        if (
+          comparisons.length &&
+          !reducedMotion.matches &&
+          "IntersectionObserver" in window
+        ) {
+          const onscreen = new Set<SVGSVGElement>();
+          const updateMotion = () => {
+            comparisons.forEach((comparison) => {
+              comparison.toggleAttribute(
+                "data-motion-active",
+                onscreen.has(comparison) &&
+                  document.visibilityState === "visible",
+              );
+            });
+          };
+
+          observer = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+              const comparison = entry.target as SVGSVGElement;
+              if (entry.isIntersecting) onscreen.add(comparison);
+              else onscreen.delete(comparison);
+            });
+            updateMotion();
           });
-        };
-
-        observer = new IntersectionObserver((entries) => {
-          entries.forEach((entry) => {
-            const comparison = entry.target as SVGSVGElement;
-            if (entry.isIntersecting) onscreen.add(comparison);
-            else onscreen.delete(comparison);
+          comparisons.forEach((comparison) => observer?.observe(comparison));
+          document.addEventListener("visibilitychange", updateMotion, {
+            signal: controller.signal,
           });
-          updateMotion();
+        }
+
+        const spinner = scope.querySelector<HTMLElement>(".hero-spinner");
+        if (spinner && !reducedMotion.matches) {
+          let frame = 0;
+          spinnerTimer = window.setInterval(() => {
+            frame = (frame + 1) % brailleFrames.length;
+            spinner.textContent = brailleFrames[frame];
+          }, 100);
+        }
+
+        const button = scope.querySelector<HTMLButtonElement>(
+          "[data-copy-command]",
+        );
+        const buttonLabel =
+          scope.querySelector<HTMLElement>("[data-copy-label]");
+        const status = scope.querySelector<HTMLElement>("[data-copy-status]");
+        if (button && buttonLabel && status) {
+          button.addEventListener(
+            "click",
+            async () => {
+              const command = button.dataset.copyCommand;
+              if (!command) {
+                status.textContent =
+                  "Copy failed. The installer command is unavailable.";
+                status.setAttribute("data-error", "true");
+                return;
+              }
+
+              try {
+                if (!navigator.clipboard?.writeText)
+                  throw new Error("Clipboard API unavailable");
+                await navigator.clipboard.writeText(command);
+                buttonLabel.textContent = "Copied";
+                status.textContent = "Copied installer command.";
+                status.removeAttribute("data-error");
+              } catch {
+                buttonLabel.textContent = "COPY";
+                status.textContent =
+                  "Copy failed. Select the command and copy it manually.";
+                status.setAttribute("data-error", "true");
+              }
+            },
+            { signal: controller.signal },
+          );
+        }
+
+        heroCleanups.set(scope, () => {
+          controller.abort();
+          observer?.disconnect();
+          if (spinnerTimer !== undefined) window.clearInterval(spinnerTimer);
+          comparisons.forEach((comparison) =>
+            comparison.removeAttribute("data-motion-active"),
+          );
+          delete scope.dataset.heroInitialized;
         });
-        comparisons.forEach((comparison) => observer?.observe(comparison));
-        document.addEventListener("visibilitychange", updateMotion, { signal: controller.signal });
-      }
-
-      const spinner = scope.querySelector<HTMLElement>(".hero-spinner");
-      if (spinner && !reducedMotion.matches) {
-        let frame = 0;
-        spinnerTimer = window.setInterval(() => {
-          frame = (frame + 1) % brailleFrames.length;
-          spinner.textContent = brailleFrames[frame];
-        }, 100);
-      }
-
-      const button = scope.querySelector<HTMLButtonElement>("[data-copy-command]");
-      const buttonLabel = scope.querySelector<HTMLElement>("[data-copy-label]");
-      const status = scope.querySelector<HTMLElement>("[data-copy-status]");
-      if (button && buttonLabel && status) {
-        button.addEventListener("click", async () => {
-          const command = button.dataset.copyCommand;
-          if (!command) {
-            status.textContent = "Copy failed. The installer command is unavailable.";
-            status.setAttribute("data-error", "true");
-            return;
-          }
-
-          try {
-            if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
-            await navigator.clipboard.writeText(command);
-            buttonLabel.textContent = "Copied";
-            status.textContent = "Copied installer command.";
-            status.removeAttribute("data-error");
-          } catch {
-            buttonLabel.textContent = "COPY";
-            status.textContent = "Copy failed. Select the command and copy it manually.";
-            status.setAttribute("data-error", "true");
-          }
-        }, { signal: controller.signal });
-      }
-
-      heroCleanups.set(scope, () => {
-        controller.abort();
-        observer?.disconnect();
-        if (spinnerTimer !== undefined) window.clearInterval(spinnerTimer);
-        comparisons.forEach((comparison) => comparison.removeAttribute("data-motion-active"));
-        delete scope.dataset.heroInitialized;
       });
-    });
   };
 
   const disposeHeroes = () => {
@@ -243,9 +737,9 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
 
 <style>
   .hero {
-    --hero-paper: #F0EEE9;
+    --hero-paper: #f0eee9;
     --hero-navy: #111827;
-    --hero-blue: #8FB3FF;
+    --hero-blue: #8fb3ff;
     background: var(--hero-navy);
     color: var(--hero-paper);
   }
@@ -305,7 +799,7 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
 
   .hero-installer {
     align-self: center;
-    background: #09090B;
+    background: #09090b;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
     display: flex;
@@ -327,7 +821,10 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
   .hero-command {
     color: var(--hero-paper);
     flex: 1 1 auto;
-    font-family: Geist Mono, ui-monospace, monospace;
+    font-family:
+      Geist Mono,
+      ui-monospace,
+      monospace;
     font-size: 13px;
     line-height: 18px;
     min-width: 0;
@@ -353,7 +850,9 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     height: 40px;
     justify-content: center;
     padding: 0;
-    transition: filter 160ms ease, transform 160ms ease;
+    transition:
+      filter 160ms ease,
+      transform 160ms ease;
     width: 46px;
   }
 
@@ -365,7 +864,10 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
   .hero-copy-status {
     align-items: center;
     display: flex;
-    font-family: Geist Mono, ui-monospace, monospace;
+    font-family:
+      Geist Mono,
+      ui-monospace,
+      monospace;
     font-size: 13px;
     gap: 14px;
     line-height: 18px;
@@ -377,7 +879,10 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
     color: var(--hero-blue);
     display: inline-block;
     flex: 0 0 13px;
-    font-family: Geist Mono, ui-monospace, monospace;
+    font-family:
+      Geist Mono,
+      ui-monospace,
+      monospace;
     font-size: 16px;
     height: 13px;
     line-height: 13px;
@@ -427,7 +932,8 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
   }
 
   .hero-tick {
-    animation: hero-tick-wave 7.2s ease-in-out var(--hero-tick-delay) infinite both;
+    animation: hero-tick-wave 7.2s ease-in-out var(--hero-tick-delay) infinite
+      both;
     animation-play-state: paused;
     transform-box: fill-box;
     transform-origin: center bottom;
@@ -458,7 +964,10 @@ const mobileCodexTickX = (index: number) => (index * (328 / (codexTickEnds.lengt
 
   .hero-proof-method {
     color: rgb(240 238 233 / 72%);
-    font-family: Geist Mono, ui-monospace, monospace;
+    font-family:
+      Geist Mono,
+      ui-monospace,
+      monospace;
     font-size: 11px;
     left: 0;
     line-height: 13px;
