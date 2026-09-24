@@ -250,7 +250,7 @@ function harness(options: {
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: { getAvailable: () => options.availableModels ?? [model] },
 		scopedModels: options.scopedModels ?? [],
-		sessionManager: { getBranch: () => sessionEntries, getSessionId: () => "test-session", getSessionFile: () => "test.jsonl" },
+		sessionManager: { getBranch: () => sessionEntries, getEntries: () => sessionEntries, getSessionId: () => "test-session", getSessionFile: () => "test.jsonl" },
 		ui: {
 			notify: (message: string, type: string) => notifications.push({ message, type }),
 			setWidget: (_key: string, content: any) => {
@@ -583,7 +583,8 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				assert.equal(originalBranch.length, stage === "tab" ? 0 : 1);
 				assert.equal(fake.calls.filter(([kind, action]) => kind === "agent" && action === "prompt").length, stage === "prompt" ? 1 : 0);
 				await recoverDirect(app);
-				assert.ok(app.notifications.some(({ message }) => /tab w-test:t2 .* session .*session.jsonl/.test(message)));
+				assert.ok(app.notifications.some(({ message }) => message.includes(`tab ${JSON.stringify(app.sessionEntries[0]!.data.tabId)}`)
+					&& message.includes(`session ${JSON.stringify(app.sessionEntries[0]!.data.sessionFile)}`)));
 			}
 		});
 	});
