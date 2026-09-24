@@ -2,7 +2,7 @@
 
 Turn repeated requests or corrections in the current conversation into a reviewed global Pi prompt. A tool-free child drafts one candidate, while Main and the user control review and saving.
 
-Nothing is shown or saved until you choose it.
+Automatic analysis only prepares a candidate; the extension never saves it without your approval.
 
 ## Install
 
@@ -29,13 +29,10 @@ Run `/promptor` in the interactive TUI after a repeated request or correction ap
 
 The prompt is created at `~/.pi/agent/prompts/<name>.md`, then Pi reloads its resources. No selection menu or name prompt is required.
 
-| Command | Action |
-| --- | --- |
-| `/promptor` | Start analysis, or show a candidate prepared by automatic analysis. |
-| `/promptor analyze` | Analyze again after a candidate has been reviewed or dismissed. |
-| `/promptor save [name]` | Save Main's newest completed review reply, using the suggested name by default. |
-| `/promptor dismiss` | Forget a candidate prepared by automatic analysis. |
-| `/promptor automatic <on\|off>` | Enable or disable automatic analysis. |
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/promptor [analyze|dismiss|save [name]|automatic <on\|off>]` | command | For users in the interactive TUI: start or show analysis, dismiss a pending candidate, save a reviewed prompt, or control automatic analysis. |
+| Analysis status widget and candidate message | ui | Show analysis progress, readiness, or failure; a displayed candidate is marked as untrusted. |
 
 ## Flow
 
@@ -65,23 +62,19 @@ New user input does not stop a running child. Branch navigation discards its old
 
 ### Review and save
 
-A manually requested analysis displays its completed candidate immediately. Automatic background analysis keeps its candidate behind the `Prompt ready — /promptor` widget until you run `/promptor` or `/promptor dismiss`, so background work never interrupts the conversation.
+A manually requested analysis displays its completed candidate immediately. Automatic analysis shows a running widget, then keeps a completed candidate behind the `Prompt ready — /promptor` widget until you run `/promptor` or `/promptor dismiss`, so background work never interrupts the conversation.
 
 Displayed candidates are visible messages marked as untrusted.
 
 Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving it with `/promptor save [name]`.
 
-The save item appears only after you show a candidate and Main then completes a valid Markdown review reply.
-
-Saving uses that latest retained Main reply as the entire file. Replies before the active compaction or branch summary cannot be saved.
+Saving is allowed only after you show a candidate and Main then completes a valid Markdown review reply. Saving uses that latest retained Main reply as the entire file. Replies before the active compaction or branch summary cannot be saved.
 
 An interrupted, failed, empty, or tool-use reply cannot be saved. The extension never falls back to an older reply.
 
 A successful save ends that review. Show another candidate and complete another Main review reply before saving again.
 
-The menu asks for a lowercase kebab-case name. A candidate name appears only as a hint.
-
-Names start with a letter and contain at most 64 ASCII characters. Existing command names and prompt files are rejected.
+`/promptor save` uses the suggested candidate name. Pass `/promptor save <name>` to choose another. Names must be lowercase kebab-case, start with a letter, and contain at most 64 ASCII characters. Existing command names and prompt files are rejected.
 
 A successful save reloads Pi resources. If reload fails, the prompt remains saved and `/reload` can load it.
 
@@ -106,7 +99,7 @@ A missing file quietly uses both defaults. Startup never creates or rewrites the
 
 Malformed config or unknown keys disable automatic analysis. Pi warns once and leaves the file unchanged.
 
-Only `Automatic On` or `Automatic Off` writes the config. Toggling preserves the configured threshold.
+Only `/promptor automatic on` or `/promptor automatic off` writes the config. Toggling preserves the configured threshold.
 
 ## State and storage
 
