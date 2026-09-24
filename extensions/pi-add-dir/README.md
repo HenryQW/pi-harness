@@ -2,7 +2,7 @@
 
 Give the current Pi session context, skills, and searchable files from directories outside the workspace. Reuse those resources in place without copying or linking their directories.
 
-![Pi using added external directories by name](./example.png)
+![Pi using added external directories by name](https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-add-dir/example.png)
 
 ## Install
 
@@ -12,17 +12,19 @@ pi install npm:@henryqw/pi-add-dir
 
 ## Use
 
-Run `/dir-add`, enter a directory, then run `/dir-ls`. Pi lists the directory and exposes its supported resources.
+Run `/dir-add`, enter a directory, then run `/dir-ls` to confirm it was added. Pi lists the directory and exposes its supported resources.
+
+Use slash commands from the Pi prompt as a human; Pi agents use the tools.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/dir-add [path]` | command | Add to the current session; no path opens input. Supports `~`. |
-| `/dir-add --project [path]` | command | Persist for the current Git repository and all its linked worktrees. |
-| `/dir-add --global [path]` | command | Persist for every Pi workspace for this user. |
+| `/dir-add [path]` | command | Add to this session by default; pass `--project` or `--global` before the path to persist for this Git repository's linked worktrees or every workspace. Omit the path to enter it when prompted; supports `~`. |
 | `/dir-ls` | command | List directories with their scope; select one to remove from that scope. |
 | `/dir-reload` | command | Reload external directory resources. |
-| `add_directory` | tool | Add a directory. |
-| `search_external_files` | tool | Glob-search added directories. |
+| `add_directory(path)` | tool | Add a directory to this session and return its context and instructions. |
+| `search_external_files(pattern, maxResults?)` | tool | Glob-search added directories; returns up to 50 results by default, configurable to 1,000. |
+| `@` file autocomplete | ui | Find files in added directories and insert their absolute paths. |
+| External directory widget | ui | Show added directories and point to `/dir-ls` for management. |
 
 Added directories give Pi these resources:
 
