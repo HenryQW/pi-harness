@@ -58,17 +58,18 @@ function harness(cwd: string, options: {
 		},
 	} as unknown as ExtensionAPI;
 	const widgets: { key: string; content: string | string[] | undefined }[] = [];
+	const statuses: (string | undefined)[] = [];
 	const ctx = {
 		cwd,
 		hasUI: options.hasUI ?? true,
 		ui: {
 			notify: (message: string, level: string) => notices.push({ message, level }),
 			setWidget: (_key: string, content: string | string[] | undefined) => widgets.push({ key: _key, content }),
-			setStatus: (_key: string, text: string | undefined) => options.onStatus?.(text),
+			setStatus: (_key: string, text: string | undefined) => { statuses.push(text); options.onStatus?.(text); },
 		},
 	} as unknown as ExtensionContext;
 	codegraphExtension(pi);
-	return { start: () => start({}, ctx), notices, calls, widgets };
+	return { start: () => start({}, ctx), notices, calls, widgets, statuses };
 }
 
 test("initializes an opted-in linked worktree at its root once, including nested launches", async (t) => {
@@ -83,6 +84,8 @@ test("initializes an opted-in linked worktree at its root once, including nested
 		{ command: "codegraph", args: ["init", "--yes", worktree], cwd: worktree },
 	]);
 	assert.deepEqual(run.widgets, [{ key: "pi-codegraph", content: ["pi-codegraph: index ready"] }]);
+	assert.ok(run.statuses.includes("pi-codegraph: indexing…"));
+	assert.equal(run.statuses.at(-1), "pi-codegraph: indexed");
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
@@ -93,12 +96,14 @@ test("does not index non-Git directories, unopted repositories, or existing inde
 		await run.start();
 		assert.equal(run.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 		assert.deepEqual(run.notices, []);
+		assert.equal(run.statuses.at(-1), "pi-codegraph: missing");
 	}
 	await index(worktree);
 	const existing = harness(worktree);
 	await existing.start();
 	assert.equal(existing.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 	assert.deepEqual(existing.notices, []);
+	assert.equal(existing.statuses.at(-1), "pi-codegraph: indexed");
 });
 
 test("warns with install commands for either or both unavailable prerequisites without creating a lock", async (t) => {
@@ -111,6 +116,7 @@ test("warns with install commands for either or both unavailable prerequisites w
 		await run.start();
 		assert.deepEqual(run.calls, [{ command: "codegraph", args: ["--version"], cwd: worktree }]);
 		assert.equal(run.notices[0]!.level, "warning");
+		assert.equal(run.statuses.at(-1), "pi-codegraph: prerequisites missing");
 		assert.equal(run.notices[0]!.message.includes("pi install npm:pi-mcp-adapter"), !adapter);
 		assert.equal(run.notices[0]!.message.includes("npm install -g @colbymchenry/codegraph"), !codegraph);
 		await assert.rejects(rmdir(lock), { code: "ENOENT" });
@@ -141,7 +147,7 @@ test("serializes simultaneous sessions and does not accept an in-progress partia
 		return { code: 0, stdout: "", stderr: "", killed: false };
 	} });
 	const second = harness(worktree, { onStatus: (text) => {
-		if (text?.includes("waiting")) waiting.resolve();
+		if (text === "pi-codegraph: indexing…") waiting.resolve();
 	} });
 	const firstRun = first.start();
 	await entered.promise;
@@ -165,10 +171,11 @@ test("failed init preserves its lock, reports recovery, and a later launch rejec
 	assert.match(failed.notices[0]!.message, /index worker failed/);
 	assert.ok(failed.notices[0]!.message.includes(lock));
 	assert.equal(failed.notices[0]!.level, "error");
+	assert.equal(failed.statuses.at(-1), "pi-codegraph: setup failed");
 	t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
 	const waiting = Promise.withResolvers<void>();
 	const retry = harness(worktree, { onStatus: (text) => {
-		if (text?.includes("waiting")) waiting.resolve();
+		if (text === "pi-codegraph: indexing…") waiting.resolve();
 	} });
 	const retryRun = retry.start();
 	await waiting.promise;

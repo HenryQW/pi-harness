@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
 
@@ -167,6 +167,26 @@ function rainbow(text: string): string {
 	return [...text].map((character, index) => color(character, colors[index % colors.length]!)).join("");
 }
 
+function isCodegraphCall(toolName: string, args: unknown): boolean {
+	if (toolName === "codegraph_explore") return true;
+	if (toolName !== "mcp" || !args || typeof args !== "object") return false;
+	const { tool, server } = args as { tool?: unknown; server?: unknown };
+	return server === "henryqw_pi-codegraph__codegraph" && typeof tool === "string" && tool.startsWith("codegraph_");
+}
+
+function codegraphBadge(status: string, inUse: boolean, theme: Theme): string {
+	if (inUse) return `${theme.fg("accent", "●")} CG`;
+	switch (status) {
+		case "pi-codegraph: indexed": return `${theme.fg("success", "✓")} CG`;
+		case "pi-codegraph: missing": return `${theme.fg("dim", "○")} CG`;
+		case "pi-codegraph: checking index…":
+		case "pi-codegraph: indexing…": return `${theme.fg("warning", "◐")} CG`;
+		case "pi-codegraph: prerequisites missing":
+		case "pi-codegraph: setup failed": return `${theme.fg("error", "!")} CG`;
+		default: return `${theme.fg("warning", "?")} CG`;
+	}
+}
+
 export default function footerExtension(pi: ExtensionAPI): void {
 	let activeMilliseconds = 0;
 	let activeStartedAt: number | undefined;
@@ -174,6 +194,15 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	let runtimeTimer: ReturnType<typeof setInterval> | undefined;
 	let requestRuntimeRender: (() => void) | undefined;
 	let refreshGitStatus: (() => Promise<void>) | undefined;
+	const activeCodegraphCalls = new Set<string>();
+	pi.on("tool_execution_start", (event) => {
+		if (!isCodegraphCall(event.toolName, event.args)) return;
+		activeCodegraphCalls.add(event.toolCallId);
+		requestRuntimeRender?.();
+	});
+	pi.on("tool_execution_end", (event) => {
+		if (activeCodegraphCalls.delete(event.toolCallId)) requestRuntimeRender?.();
+	});
 	const stopRuntimeTimer = () => {
 		if (runtimeTimer === undefined) return;
 		clearInterval(runtimeTimer);
@@ -230,6 +259,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		activeStartedAt = undefined;
 		promptPaused = false;
 		refreshGitStatus = undefined;
+		activeCodegraphCalls.clear();
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -238,6 +268,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		promptPaused = false;
 		requestRuntimeRender = undefined;
 		refreshGitStatus = undefined;
+		activeCodegraphCalls.clear();
 		// Latest valid entry wins; stored data is untrusted.
 		activeMilliseconds = 0;
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -346,8 +377,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const openUri = configuredOpenUri(ctx.cwd);
 					const extensionStatuses = data.getExtensionStatuses();
 					const prStatus = sanitizeStatus(extensionStatuses.get("pi-pr") ?? "");
+					const codegraphStatus = extensionStatuses.get("pi-codegraph");
+					const codegraph = codegraphStatus === undefined ? "" : codegraphBadge(codegraphStatus, activeCodegraphCalls.size > 0, theme);
 					const statuses = [...extensionStatuses]
-						.filter(([key]) => key !== "pi-pr")
+						.filter(([key]) => key !== "pi-pr" && key !== "pi-codegraph")
 						.sort(([a], [b]) => a.localeCompare(b))
 						.map(([key, text]) => [key, sanitizeStatus(text)] as const)
 						.filter(([, text]) => Boolean(text));
@@ -385,7 +418,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const lines = [
 						firstLine,
 						align(usage, model, width, ellipsis),
-						alignRightReserved(externalStatuses.join(" "), runtime, width, ellipsis),
+						alignRightReserved([codegraph, ...externalStatuses].filter(Boolean).join(" · "), runtime, width, ellipsis),
 					];
 					return lines.map((line) => truncateToWidth(line, width, ellipsis));
 				},
