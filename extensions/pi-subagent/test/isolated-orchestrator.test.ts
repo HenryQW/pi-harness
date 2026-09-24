@@ -519,6 +519,54 @@ test("inventory and status remain read-only; synchronous mutations reject stale 
 	]);
 });
 
+test("inspection distinguishes released saved records from partial cleanup and keeps retained paths", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const task = state.tasks[0]!;
+	if (task.kind !== "changeset") throw new Error("Expected changeset");
+	const attempt = task.attempts[0]!;
+	attempt.number = 1;
+	addWorkspace(state);
+	attempt.allocations.push(
+		{ kind: "worker_tab", generation: 1, token: "0123456789abcdef", status: "owned", label: "worker-tab", workspaceId: "workspace-one", workspaceRootTabId: "root-tab", workspaceRootPaneId: "root-pane", tabId: "tab-one", paneId: "pane-one", leasePath: "/late/lease", worktreeCwd: "/tmp/pi-task" },
+		{ kind: "agent", generation: 1, token: "0123456789abcdef", status: "owned", agentName: "saved-agent", workspaceId: "workspace-one", tabId: "tab-one", paneId: "pane-one", leasePath: "/late/lease", worktreeCwd: "/tmp/pi-task" },
+	);
+	attempt.termination = { status: "terminated", workerId: "saved-agent", candidate: RECORDED_MAIN } as typeof attempt.termination;
+	const generation = {
+		number: 1, status: "superseded", expectedMain: RECORDED_MAIN, integrationBase: RECORDED_MAIN, order: [], stages: [],
+		worktree: { path: "/late/integration", cwd: "/late/integration", branch: "refs/heads/late-integration", repoRoot: CANONICAL_ROOT, baseCommit: "a".repeat(40) },
+		cleanup: [{ kind: "worktree", status: "completed" }, { kind: "branch", status: "completed" }],
+	} as RunState["integration"]["generations"][number];
+	state.integration.generations.push(generation);
+	for (const step of attempt.cleanup) step.status = "completed";
+	const released = (await createHarness({ responseState: state }).surface.inspect(CANONICAL_ROOT, "request-one")).join("\n");
+	assert.doesNotMatch(released, /\/tmp\/pi-task|\/late\/integration|\/late\/lease|agent \(owned\)/);
+
+	attempt.cleanup.find((step) => step.kind === "workspace")!.status = "pending";
+	attempt.cleanup.find((step) => step.kind === "branch")!.status = "pending";
+	generation.cleanup![1]!.status = "pending";
+	const partial = (await createHarness({ responseState: state }).surface.inspect(CANONICAL_ROOT, "request-one")).join("\n");
+	assert.match(partial, /workspace \(owned\).*workspace-one/);
+	assert.match(partial, /worktree \(owned; historical checkout; branch cleanup pending\).*\/tmp\/pi-task/);
+	assert.match(partial, /Integration generation 1: superseded; historical checkout; branch cleanup pending:.*\/late\/integration/);
+	assert.doesNotMatch(partial, /worker_tab \(owned\)|agent \(owned\)|Integration generation 1: superseded; worktree:/);
+	assert.match(partial, /cleanup pending:.*"kind":"branch"/);
+
+	attempt.cleanup.find((step) => step.kind === "worktree")!.status = "pending";
+	attempt.cleanup.find((step) => step.kind === "branch")!.status = "completed";
+	generation.cleanup![0]!.status = "pending";
+	generation.cleanup![1]!.status = "completed";
+	attempt.termination!.status = "unknown";
+	const uncertain = (await createHarness({ responseState: state }).surface.inspect(CANONICAL_ROOT, "request-one")).join("\n");
+	assert.match(uncertain, /worktree \(owned\).*\/tmp\/pi-task/);
+	assert.match(uncertain, /Integration generation 1: superseded; worktree:.*\/late\/integration/);
+	assert.match(uncertain, /agent \(owned\).*saved-agent/);
+
+	attempt.cleanup.find((step) => step.kind === "worker_tab")!.status = "running";
+	const tabPending = (await createHarness({ responseState: state }).surface.inspect(CANONICAL_ROOT, "request-one")).join("\n");
+	assert.match(tabPending, /worker_tab \(owned\).*\/late\/lease/);
+	assert.match(tabPending, /agent \(owned\).*saved-agent/);
+});
+
 test("inspection exposes late retained resources without dumping irrelevant state or mutating it", async () => {
 	const state = structuredClone(PRIVATE_STATE);
 	const task = state.tasks[0]!;

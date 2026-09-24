@@ -312,12 +312,25 @@ function inspectionNotices({ state, main, continuation }: RunResponse): string[]
 			if (attempt.termination) lines.push(`${label} worker termination: ${JSON.stringify({ status: attempt.termination.status, workerId: attempt.termination.workerId, failure: attempt.termination.failure ? boundedPublicText(attempt.termination.failure) : undefined })}`);
 			for (const allocation of attempt.allocations) {
 				if (allocation.status === "absent") continue;
+				const cleanupKind = allocation.kind === "agent" ? "worker_tab" : allocation.kind;
+				const cleaned = (allocation.kind !== "agent" || attempt.termination?.status === "terminated")
+					&& attempt.cleanup.find((step) => step.kind === cleanupKind)?.status === "completed";
+				const branchPending = allocation.kind === "worktree"
+					&& attempt.cleanup.find((step) => step.kind === "branch")?.status !== "completed";
+				// A worktree can be gone while its branch is still retained. Keep its saved
+				// identity available for recovery, but never present the checkout as live.
+				if (allocation.status === "owned" && cleaned && !branchPending) continue;
+				const displayStatus = cleaned
+					? `${allocation.status}; ${branchPending ? "historical checkout; branch cleanup pending" : "cleanup completed (saved allocation)"}`
+					: allocation.kind === "agent" && attempt.termination?.status === "terminated"
+						? `${allocation.status}; worker terminated; tab cleanup pending`
+						: allocation.status;
 				const resource = allocation.kind === "worktree"
 					? { worktree: allocation.worktree && { path: allocation.worktree.path, cwd: allocation.worktree.cwd, branch: allocation.worktree.branch, repoRoot: allocation.worktree.repoRoot } }
 					: allocation.kind === "workspace" ? { label: allocation.label, workspaceId: allocation.workspaceId, worktreeCwd: allocation.worktreeCwd, mainRoot: allocation.mainRoot, herdrRepoRoot: allocation.herdrRepoRoot, repoKey: allocation.repoKey, rootTabId: allocation.rootTabId, rootPaneId: allocation.rootPaneId }
 					: allocation.kind === "worker_tab" ? { label: allocation.label, workspaceId: allocation.workspaceId, workspaceRootTabId: allocation.workspaceRootTabId, workspaceRootPaneId: allocation.workspaceRootPaneId, tabId: allocation.tabId, paneId: allocation.paneId, leasePath: allocation.leasePath, worktreeCwd: allocation.worktreeCwd }
 					: { agentName: allocation.agentName, workspaceId: allocation.workspaceId, tabId: allocation.tabId, paneId: allocation.paneId, leasePath: allocation.leasePath, worktreeCwd: allocation.worktreeCwd };
-				lines.push(`${label} ${allocation.kind} (${allocation.status}): ${JSON.stringify({ ...resource, possibleResources: allocation.possibleResources, failure: allocation.failure ? boundedPublicText(allocation.failure) : undefined })}`);
+				lines.push(`${label} ${allocation.kind} (${displayStatus}): ${JSON.stringify({ ...resource, possibleResources: allocation.possibleResources, failure: allocation.failure ? boundedPublicText(allocation.failure) : undefined })}`);
 			}
 			const cleanup = attempt.cleanup.filter((step) => step.status !== "completed");
 			if (cleanup.length) lines.push(`${label} cleanup pending: ${JSON.stringify(cleanup.map((step) => ({ kind: step.kind, status: step.status, failure: step.failure ? boundedPublicText(step.failure) : undefined })))}`);
@@ -325,13 +338,16 @@ function inspectionNotices({ state, main, continuation }: RunResponse): string[]
 	}
 	for (const candidate of state.integration.candidates) lines.push(`Candidate ${candidate.taskId} attempt ${candidate.attempt}: ${candidate.worker}${candidate.decision ? `; ${candidate.decision}` : ""}; tip: ${JSON.stringify({ branch: candidate.tip.branch, head: candidate.tip.head })}.`);
 	for (const generation of state.integration.generations) {
-		if (!generation.worktree && !generation.failure && !/conflict|failed|unknown/.test(generation.status)
+		const checkoutCleaned = generation.cleanup?.find((step) => step.kind === "worktree")?.status === "completed";
+		const branchCleaned = generation.cleanup?.find((step) => step.kind === "branch")?.status === "completed";
+		const retainedPath = generation.worktree && !(checkoutCleaned && branchCleaned);
+		if (!retainedPath && !generation.failure && !/conflict|failed|unknown/.test(generation.status)
 			&& !generation.cleanup?.some((step) => step.status !== "completed")
 			&& !generation.stages.some((stage) => stage.status === "conflict" || stage.failure)
 			&& !generation.promotion?.failure && !generation.supersededPromotion?.failure
 			&& generation !== state.integration.generations.at(-1)) continue;
 		const stagedTip = [...generation.stages].reverse().find((stage) => stage.tip)?.tip ?? generation.integrationBase;
-		lines.push(`Integration generation ${generation.number}: ${generation.status}; ${generation.worktree ? `worktree: ${JSON.stringify({ path: generation.worktree.path, cwd: generation.worktree.cwd, branch: generation.worktree.branch, repoRoot: generation.worktree.repoRoot })}; ` : ""}last staged tip: ${JSON.stringify(stagedTip)}${generation.combinedTip ? `; combined tip: ${JSON.stringify(generation.combinedTip)}` : ""}${generation.failure ? `; blockage: ${boundedPublicText(generation.failure)}` : ""}.`);
+		lines.push(`Integration generation ${generation.number}: ${generation.status}; ${retainedPath ? `${checkoutCleaned ? "historical checkout; branch cleanup pending" : "worktree"}: ${JSON.stringify({ path: generation.worktree!.path, cwd: generation.worktree!.cwd, branch: generation.worktree!.branch, repoRoot: generation.worktree!.repoRoot })}; ` : ""}last staged tip: ${JSON.stringify(stagedTip)}${generation.combinedTip ? `; combined tip: ${JSON.stringify(generation.combinedTip)}` : ""}${generation.failure ? `; blockage: ${boundedPublicText(generation.failure)}` : ""}.`);
 		for (const stage of generation.stages.filter((item) => item.status === "conflict" || item.failure)) lines.push(`Integration generation ${generation.number} stage ${stage.taskId} attempt ${stage.attempt}: ${stage.status}${stage.failure ? `; blockage: ${boundedPublicText(stage.failure)}` : ""}.`);
 		for (const promotion of [generation.promotion, generation.supersededPromotion]) if (promotion?.failure) lines.push(`Integration generation ${generation.number} promotion ${promotion.status}: ${boundedPublicText(promotion.failure)}`);
 		if (generation.cleanup?.some((step) => step.status !== "completed")) lines.push(`Integration generation ${generation.number} cleanup pending: ${JSON.stringify(generation.cleanup.filter((step) => step.status !== "completed").map((step) => ({ kind: step.kind, status: step.status, failure: step.failure ? boundedPublicText(step.failure) : undefined })))}`);
