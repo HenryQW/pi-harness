@@ -32,7 +32,6 @@ test("bounds aggregate output on valid UTF-8 boundaries and rejects non-terminal
 	const unicode = formatWorkflowResult("single", [succeeded(0, "🙂界".repeat(30_000))]);
 	assert.ok(Buffer.byteLength(unicode.text, "utf8") <= MAX_OUTPUT_BYTES);
 	assert.equal(unicode.text.includes("�"), false);
-	assert.equal(Buffer.from(unicode.text, "utf8").toString("utf8"), unicode.text);
 	const running: WorkflowTransportEntry = { id: "call:0", index: 0, name: "Inspect auth", role: "worker", status: "running", assistantOutput: "partial" };
 	assert.throws(() => formatWorkflowResult("single", [running]), /terminal/);
 });

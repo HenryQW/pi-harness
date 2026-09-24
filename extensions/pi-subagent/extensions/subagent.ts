@@ -541,7 +541,7 @@ export default function subagentExtension(
 						active++;
 						return () => { active--; queue.shift()?.(); };
 					};
-					await runForegroundWorkflow(toolCallId, workflow, async (entry) => {
+					await runForegroundWorkflow(workflow.mode, entries, async (entry) => {
 						const release = await permit();
 						try {
 							controller.signal.throwIfAborted();
