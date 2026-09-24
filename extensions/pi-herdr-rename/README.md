@@ -24,6 +24,7 @@ In a new, untitled conversation, send the first real prompt. Pi generates a titl
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | First real user prompt | ui | In a new, untitled conversation, starts title generation once the expanded prompt is ready. |
+| `pi-herdr-rename/rename` | model task | Title-generation route; users configure its profile through `/task-models`. |
 | `/rename` | command | For people: generate a new title from up to five recent user messages. |
 
 ## Flow
