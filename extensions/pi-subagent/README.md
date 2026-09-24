@@ -1,6 +1,6 @@
 # `@henryqw/pi-subagent`
 
-Delegate work to configured Pi Roles with one tool. Read-only direct tasks run in Herdr tabs in your current workspace; checked implementation runs in isolated Herdr worktrees. Both return a handle so Main can continue while they work.
+Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Read-only direct tasks run in Herdr tabs in your current workspace; checked implementation runs in isolated Herdr worktrees. Both return a handle so Main can continue while they work.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
 
@@ -11,9 +11,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
-Delegation requires a Herdr-managed Pi session; isolated changeset tasks require Herdr `0.9.0` or newer. Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use.
-
-`@henryqw/pi-orchestrator` is retired. Isolated `delegate_task` absorbed that protocol. Remove the old package with `pi remove npm:@henryqw/pi-orchestrator`. Old orchestrator state is not migrated.
+Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use.
 
 Install `pi-mcp-adapter` only when a Role declares an MCP server allowlist:
 
