@@ -284,8 +284,12 @@ function harness(options: {
 		execCalls,
 		appended,
 		context,
+		async startNow(ctx: ExtensionContext): Promise<void> {
+			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
+		},
 		async start(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
+			await flush();
 		},
 		async shutdown(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionShutdown, "session_shutdown")({} as never, callbackContext(ctx));
@@ -949,6 +953,27 @@ test("direct workflow tools without a route tell the caller to run /pr", async (
 	}
 });
 
+test("starts PR discovery without blocking the next extension and publishes the result later", async () => {
+	const pending = deferred<CurrentPullRequest>();
+	const app = harness({ async load() { return pending.promise; } });
+	const ctx = app.context();
+
+	try {
+		const started = await Promise.race([
+			app.startNow(ctx).then(() => true),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
+		]);
+		assert.equal(started, true, "session_start must not await GitHub discovery");
+		assert.deepEqual(app.statuses, []);
+		pending.resolve(currentPullRequest());
+		await flush();
+		assert.match(app.statuses.at(-1) ?? "", /PR #42/);
+	} finally {
+		pending.resolve(currentPullRequest());
+		await app.shutdown(ctx);
+	}
+});
+
 test("stays silent outside a Git worktree", async () => {
 	let loads = 0;
 	const app = harness({
@@ -1355,7 +1380,7 @@ test("shows the create widget only after preflight reports an ahead commit", asy
 	}
 });
 
-test("propagates render failures before mutating UI", async () => {
+test("reports startup render failures without publishing a broken status", async () => {
 	const app = harness({
 		async load() {
 			return currentPullRequest();
@@ -1366,9 +1391,9 @@ test("propagates render failures before mutating UI", async () => {
 	});
 	const ctx = app.context();
 
-	await assert.rejects(app.start(ctx), /theme failed/);
+	await app.start(ctx);
+	assert.deepEqual(app.notifications, [{ message: "PR status refresh failed: status unavailable", type: "error" }]);
 	assert.deepEqual(app.statuses, []);
-	assert.deepEqual(app.widgets, []);
 	await app.shutdown(ctx);
 });
 

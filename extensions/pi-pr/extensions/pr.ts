@@ -717,12 +717,12 @@ export default function pullRequestExtension(
 		}
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", (_event, ctx) => {
 		stop();
 		observation = latestObservation(ctx);
 		if (!ctx.hasUI) return;
 		context = ctx;
-		await refresh();
+		refreshInBackground();
 	});
 
 	pi.on("session_shutdown", stop);

@@ -636,6 +636,6 @@ test("captures repair HEAD internally and pushes one explicit OID refspec with a
 	]]);
 	const pushIndex = app.calls.findIndex(({ command, args }) => command === "git" && args[0] === "push");
 	assert.equal(app.calls[pushIndex - 1]?.args.join(" "), "rev-parse --verify HEAD^{commit}");
-	assert.equal(app.calls.filter(({ command, args }) => command === "gh" && args[0] === "repo" && args[1] === "view").length, 4);
+	assert.equal(app.calls.filter(({ command, args }) => command === "gh" && args[0] === "repo" && args[1] === "view").length, 2);
 	assert.equal(app.calls.filter(({ args }) => /check-runs\?.*page=1$/.test(args.at(-1) ?? "")).length, 4);
 });
