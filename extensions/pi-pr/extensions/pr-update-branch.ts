@@ -147,6 +147,10 @@ export class PullRequestBranchUpdater {
 			const mergeBase = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", [
 				"merge-base", this.authority.base.oid, this.authority.head.oid,
 			], this.execOptions())).stdout, "rebase fork point"), "rebase fork point");
+			const mergeCommits = (await runChecked(this.exec, "git", [
+				"rev-list", "--max-count=1", "--min-parents=2", `${mergeBase}..${this.authority.head.oid}`,
+			], this.execOptions())).stdout.trim();
+			if (mergeCommits) throw new Error("Branch update cannot rebase a branch with merge commits; preserve its resolutions manually");
 			await this.freshAuthority(this.authority.head.oid, true);
 			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.backend=merge", "rebase", "--no-autostash", "--onto", this.authority.base.oid, mergeBase], this.execOptions());
 			if (result.killed) throw new Error("git rebase was killed; its outcome is unknown");

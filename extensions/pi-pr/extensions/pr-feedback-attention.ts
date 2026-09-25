@@ -20,6 +20,24 @@ async function markerPath(cwd: string, agentDir?: string, signal?: AbortSignal, 
 	return join(extensionConfigDir("pi-pr", agentDir), "feedback", `${identity}.json`);
 }
 
+async function readMarker(path: string, signal?: AbortSignal): Promise<{ url: string; fingerprint: string } | null> {
+	let raw: string;
+	try {
+		raw = await readTextFileBounded(path, 2_048, { signal });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+	let marker: unknown;
+	try { marker = JSON.parse(raw); } catch { throw new Error(`Invalid feedback attention marker is preserved at ${path}`); }
+	if (!isRecord(marker) || Object.keys(marker).sort().join(",") !== "fingerprint,url,version" ||
+		marker.version !== 1 || typeof marker.url !== "string" || typeof marker.fingerprint !== "string" ||
+		!/^[0-9a-f]{64}$/.test(marker.fingerprint)) {
+		throw new Error(`Invalid feedback attention marker is preserved at ${path}`);
+	}
+	return { url: marker.url, fingerprint: marker.fingerprint };
+}
+
 export async function needsFeedbackAttention(
 	current: CurrentPullRequest,
 	options: { cwd: string; agentDir?: string; signal?: AbortSignal; exec?: Exec; load?: typeof loadCurrentPullRequest },
@@ -35,22 +53,8 @@ export async function needsFeedbackAttention(
 	}
 	const entries = feedbackEntries(snapshot);
 	if (!entries.length) return false;
-	const path = await markerPath(cwd, agentDir, signal, exec);
-	let raw: string;
-	try {
-		raw = await readTextFileBounded(path, 2_048, { signal });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-		throw error;
-	}
-	let marker: unknown;
-	try { marker = JSON.parse(raw); } catch { throw new Error(`Invalid feedback attention marker is preserved at ${path}`); }
-	if (!isRecord(marker) || Object.keys(marker).sort().join(",") !== "fingerprint,url,version" ||
-		marker.version !== 1 || typeof marker.url !== "string" || typeof marker.fingerprint !== "string" ||
-		!/^[0-9a-f]{64}$/.test(marker.fingerprint)) {
-		throw new Error(`Invalid feedback attention marker is preserved at ${path}`);
-	}
-	return marker.url !== current.url.href || marker.fingerprint !== fingerprint(snapshot);
+	const marker = await readMarker(await markerPath(cwd, agentDir, signal, exec), signal);
+	return !marker || marker.url !== current.url.href || marker.fingerprint !== fingerprint(snapshot);
 }
 
 export async function markFeedbackHandled(
@@ -58,6 +62,7 @@ export async function markFeedbackHandled(
 	options: { cwd: string; agentDir?: string; signal?: AbortSignal; exec?: Exec },
 ): Promise<void> {
 	const path = await markerPath(options.cwd, options.agentDir, options.signal, options.exec);
+	await readMarker(path, options.signal);
 	await writePrivateTextFileAtomically(path, `${JSON.stringify({ version: 1, url: snapshot.pullRequest.url, fingerprint: fingerprint(snapshot) })}\n`, {
 		signal: options.signal,
 	});

@@ -170,7 +170,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 - Direct merges always use squash. GitHub rejects the mutation if repository policy does not allow it.
 - Before merge, `/pr` fetches the exact head OID from the validated push URL without shared fetch state.
 - A merge, rebase, cherry-pick, revert, or sequencer state blocks direct merge, even when `git status` is empty.
-- A conflict rebase resolves the base repository ref directly. It stops if that ref moves before rebase or force-with-lease push.
+- A conflict rebase resolves the base repository ref directly. It stops if that ref moves before rebase or force-with-lease push. Branches with merge commits since the fork point cannot be rebased automatically; preserve their merge resolutions manually.
 - Before a comment-sweep push, it revalidates the configured destination, full PR identity, and local HEAD. It pushes the captured OID.
 - CI repair resolves workflow runs from check-suite IDs. It does not treat HTML details links as identity.
 - It streams a bounded failed-step log tail and runs one narrow local reproducer before editing.

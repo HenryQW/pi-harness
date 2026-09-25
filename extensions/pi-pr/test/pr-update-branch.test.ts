@@ -177,6 +177,51 @@ test("does not push when HEAD or target authority changes after final base check
 	}
 });
 
+test("refuses to rebase a merge-containing PR branch before changing HEAD", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-merge-history-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const worktree = join(directory, "worktree");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+	execFileSync("git", ["init", "--initial-branch=main", worktree]);
+	git("config", "user.name", "Rebase Test");
+	git("config", "user.email", "rebase@example.test");
+	writeFileSync(join(worktree, "file.txt"), "original\n");
+	git("add", "file.txt");
+	git("commit", "-m", "initial");
+	git("switch", "-c", "feature");
+	writeFileSync(join(worktree, "file.txt"), "feature\n");
+	git("commit", "-am", "feature");
+	git("switch", "-c", "topic");
+	writeFileSync(join(worktree, "topic.txt"), "topic\n");
+	git("add", "topic.txt");
+	git("commit", "-m", "topic");
+	git("switch", "feature");
+	git("merge", "--no-ff", "topic", "-m", "merge topic");
+	const featureHead = git("rev-parse", "HEAD");
+	git("switch", "main");
+	writeFileSync(join(worktree, "base.txt"), "base\n");
+	git("add", "base.txt");
+	git("commit", "-m", "base");
+	const baseHead = git("rev-parse", "HEAD");
+	git("switch", "feature");
+	const authority = pullRequest({
+		base: { repository: "acme/project", ref: "main", oid: baseHead },
+		head: { repository: "acme/fork", ref: "feature", oid: featureHead },
+	});
+	let rebases = 0;
+	const exec: Exec = async (command, args, options) => {
+		if (command === "gh") return result("ssh\n");
+		if (command === "git" && args[0] === "fetch") return result();
+		if (command === "git" && args.includes("rebase")) rebases++;
+		return await spawnBounded(command, args, options);
+	};
+	const workflow = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+	await assert.rejects(workflow.rebase(), /merge commits/);
+	assert.equal(rebases, 0);
+	assert.equal(git("rev-parse", "HEAD"), featureHead);
+});
+
 test("confirmed conflict rebases only onto the pinned base and publishes the rewritten head once", async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-pr-rebase-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));

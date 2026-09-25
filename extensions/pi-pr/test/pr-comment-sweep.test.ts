@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -966,6 +967,26 @@ test("failed feedback marker write retains finalization recovery for retry", asy
 	await workflow.finalize(resolved.guard, resolved.projection!, []);
 	assert.equal(await needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec: app.exec,
 		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), false);
+});
+
+test("finalization preserves a malformed existing feedback marker and its recovery", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const recorded = await workflow.record(started.guard, ledger(started), []);
+	const published = await publishApproved(workflow, recorded);
+	const pending = await workflow.refresh(published.guard);
+	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const recovery = await workflow.recoveryPath();
+	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
+	mkdirSync(folder, { recursive: true });
+	const marker = join(folder, `${createHash("sha256").update(realpathSync(app.root)).digest("hex")}.json`);
+	writeFileSync(marker, "{ malformed");
+	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, []), /marker is preserved/);
+	assert.equal(readFileSync(marker, "utf8"), "{ malformed");
+	assert.equal(readFileSync(recovery, "utf8").includes('"phase":"resolved"'), true);
 });
 
 test("finalized sweep records standalone feedback attention and new comments retrigger it", async (t) => {
