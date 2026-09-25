@@ -662,7 +662,17 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			leaseBusy ? "Wait for the active productive run; use subagent_status to inspect its current state. No work was taken over."
 				: "Main: inspect subagent_status for exact identities and blockers before deciding stage, promote, resume, or guarded release. No worker prompt, merge, promotion, or cleanup was replayed.",
 			];
-			return lines.join("\n");
+			const report: string[] = [];
+			let bytes = 0;
+			let omitted = 0;
+			for (const line of lines.flatMap((entry) => entry.split("\n"))) {
+				const size = Buffer.byteLength(`${line}\n`, "utf8");
+				if (bytes + size > 7_900) { omitted++; continue; }
+				report.push(line);
+				bytes += size;
+			}
+			if (omitted) report.push(`[${omitted} recovery report lines omitted; use subagent_status for exact request evidence.]`);
+			return report.join("\n");
 		},
 		async inspect(root, requestId) {
 			const response = await getComponents().runner.status(requestId, root);

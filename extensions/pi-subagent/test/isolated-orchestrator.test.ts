@@ -888,6 +888,20 @@ test("production components complete host preflight before inspecting Main", asy
 	assert.deepEqual(calls, [{ command: "git", args: ["rev-parse", "--show-toplevel"] }]);
 });
 
+test("one-command recovery bounds the Main handoff across many retained requests", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const harness = createHarness({ runner: { async recoverRepository() {
+		return { requests: Array.from({ length: 90 }, (_, index) => ({
+			...response("recover", false, { ...state, request: { ...state.request, id: `request-${index}` } }),
+			main: { status: "drifted" as const, expected: RECORDED_MAIN, actual: CURRENT_MAIN },
+		})), invalidIds: Array.from({ length: 20 }, (_, index) => `invalid-${index}`), leaseBusy: false };
+	} } as never });
+	const report = await harness.surface.recover("/workspace");
+	assert.ok(Buffer.byteLength(report, "utf8") <= 8_192);
+	assert.match(report, /report lines omitted; use subagent_status/);
+	assert.match(report, /request-0: needs_attention/);
+});
+
 test("one-command recovery formats existing status, blockers, continuations and invalid IDs for Main", async () => {
 	const state = structuredClone(PRIVATE_STATE);
 	const harness = createHarness({
