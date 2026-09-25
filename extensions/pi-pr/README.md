@@ -80,7 +80,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
 | Open PR with intended uncommitted or ahead local work | Only when local HEAD descends from the published PR head: inspect, scope, commit if needed, validate and push the exact OID with the saved lease. A behind or diverged HEAD blocks commits. Ask only when ownership is ambiguous or unrelated work cannot be separated. |
-| Confirmed merge conflict | Rebase onto the pinned base commit when the tree is clean and local HEAD equals the PR head. Resolve conflicts only with clear intent; otherwise ask. |
+| Confirmed merge conflict | Rebase onto the pinned base commit when the tree is clean and local HEAD equals the PR head. Resolve conflicts only with clear intent; otherwise ask. A previously verified rebase resumes guarded publication instead of rewriting HEAD again. |
 | GitHub Actions job failed | Run the CI fix workflow when the same local prerequisite holds. |
 | External check or commit status failed | Show `CI failed` as a no-action blocker. |
 | Changes requested or unresolved review threads | Start or resume the package comment sweep when the same local prerequisite holds. |
@@ -92,7 +92,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 
 The base always comes from validated `origin`. The head may use that repository or a fork with the same GitHub source. Base and head must use the same GitHub host. Other fork relationships stop before mutation.
 
-It does not merge or rebase the base during creation. The package helper inspects and commits selected pending paths. After a clean verification and relevant validation, it pushes the captured OID.
+It does not merge or rebase the base during creation. The package helper inspects and commits selected pending paths, including both sides of a staged rename. After a clean verification and relevant validation, it pushes the captured OID.
 
 A configured target never changes branch upstream settings. Without a target, the helper pushes the captured OID to the local branch ref on validated `origin` and fetches its tracking ref. It leaves upstream unset. It creates or updates and validates the exact PR before it sets and verifies upstream. A failed setup rolls back only unchanged helper-owned settings. If configuration changed concurrently, it stops without overwriting it. Retrying `publish` resumes setup without another push or PR mutation.
 
@@ -106,11 +106,11 @@ Each helper workflow receives a random run ID and its first action. The run stay
 
 For comment sweeps, `/pr` checks the package recovery file without changing it. It selects `start` when recovery is absent. It selects `resume` only when valid recovery matches the fresh route authority. Invalid recovery stays unchanged and blocks dispatch with its path and reason. One `/pr` inspects all feedback, lists proposed fixes and non-actionable reasons, and asks for confirmation before editing. Both the confirmation prompt and approval write require a clean worktree at the original head for new sweeps; the prompt shows the saved ledger and owned paths. Version-one recovery that already has owned changes can still be approved after an explicit warning and ownership check, but that approval cannot precede existing edits. Resume exposes the saved plan and whether it was approved. After approval it commits any fixes, validates, publishes, and asks for renewed approval of the complete refreshed feedback ledger before replying to or resolving eligible review threads. Declining renewed approval preserves recovery without mutating threads. A declined plan can be resumed later.
 
-A flagless `/pr` reads complete standalone and inline feedback before merge or waiting when the tree is clean and HEAD equals the configured PR head. It compares feedback against the last finalized sweep. New or edited feedback selects the guarded sweep; comments already assessed in that sweep do not. A malformed attention marker is preserved and blocks routing rather than silently losing triage history.
+A flagless `/pr` reads complete standalone and inline feedback before merge or waiting when the tree is clean and HEAD equals the configured PR head. It compares feedback against the last finalized sweep. New or edited feedback selects the guarded sweep; comments already assessed in that sweep do not. After merge confirmation, it checks again and cancels if feedback arrived meanwhile. A malformed attention marker is preserved and blocks routing rather than silently losing triage history.
 
 Direct skill or `pi_pr_*` tool calls cannot create route authority. Run `/pr` to reserve a fresh route.
 
-Only one helper run can exist at a time. Most runs expire when the agent settles. A branch-update conflict stays available for one user-guided continuation, then expires after that continuation settles. Session replacement and shutdown forget the run without aborting or cleaning a pending rebase.
+Only one helper run can exist at a time. Most runs expire when the agent settles. A branch-update conflict stays available for one user-guided continuation, then expires after that continuation settles. Session replacement and shutdown forget the run without aborting or cleaning a pending rebase. A verified rebase can be resumed through a fresh `/pr` run; an unverified rebase intent requires manual recovery, never an automatic retry.
 
 After a `/pr` create workflow settles, the extension waits for a refresh that finds a configured current PR. It then prefixes the Herdr workspace label with `#<number> • `.
 
@@ -124,11 +124,11 @@ If Herdr lookup, JSON validation, or rename fails, the PR and normal UI refresh 
 
 Current-branch discovery reads pull requests associated with the exact push repository ref. It does not run a global branch search. It finds a fork-head PR whose base is an upstream repository. A unique historical match uses the exact remote push-ref OID, not local HEAD.
 
-A no-action state includes drafts, merged or closed pull requests, unsupported failed CI, pending review, and blocked merge policy. Running CI blocks merge but not other mutating workflows. A dirty tree or ahead local HEAD selects the scoped local publication helper first, except matching preserved comment-sweep recovery takes priority. A behind or diverged head remains a blocker unless that matching recovery can resume.
+A no-action state includes drafts, merged or closed pull requests, unsupported failed CI, pending review, and blocked merge policy. Running CI blocks merge but not other mutating workflows. A matching verified branch-update recovery takes priority, then matching comment-sweep recovery. Otherwise a dirty tree or ahead local HEAD selects the scoped local publication helper first. A behind or diverged head remains a blocker unless matching recovery can resume.
 
 ### Route priority
 
-A missing pull request uses creation. For an existing configured open, non-draft pull request, matching sweep recovery is checked before local clean/equal gates; it can resume owned edits or a published head. Otherwise, the first matching condition wins:
+A missing pull request uses creation. For an existing configured open, non-draft pull request, verified branch-update recovery is checked first, then matching sweep recovery. They can resume guarded publication or owned edits before the local clean/equal gate. Otherwise, the first matching condition wins:
 
 1. Merged, closed, or draft: no action.
 2. Dirty worktree or ahead local HEAD: scope and publish intended local work. In-progress Git operations block its helper; unrelated pending paths require an ownership decision.
@@ -176,6 +176,14 @@ original head and lease, full feedback, ledger, owned paths, and mutation attemp
 cover it before thread mutations or finalization. Resume rechecks local state and the remote head
 and reconciles attempted mutations before issuing a new run. Malformed or mismatched recovery is
 preserved and blocks dispatch; never remove it or replay an uncertain mutation to continue.
+
+A branch update keeps a private recovery file under `<agent-dir>/config/pi-pr/update-branch/`.
+It records the original lease before rewriting HEAD, then the verified HEAD after checking the clean
+branch against the pinned base. A fresh `/pr` run checks that record and the branch before returning
+the verified result for validation and exact-lease publication; it never repeats Git rebase.
+If a rebase ended without verification, the record is preserved and routing stops for manual
+recovery. After an uncertain push, publication checks the exact remote postcondition without
+replaying the push. Malformed or mismatched records stay unchanged and block routing.
 
 - `/pr` accepts no arguments and does not open a browser.
 - It does not run `/done` or `/sweep`.

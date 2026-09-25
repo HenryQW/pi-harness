@@ -83,7 +83,7 @@ export class PullRequestWorkPublisher {
 				throw new Error("Pending changes moved after inspection; inspect again in a new /pr");
 			}
 			// Never let an already-staged unrelated path enter this commit.
-			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--name-only", "-z"], this.execOptions())).stdout, "Staged paths");
+			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--no-renames", "--name-only", "-z"], this.execOptions())).stdout, "Staged paths");
 			if (staged.some((path) => !paths.includes(path))) throw new Error("Unrelated staged changes require an ownership decision");
 			this.consumed = true;
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.execOptions());

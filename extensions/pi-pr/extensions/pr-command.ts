@@ -55,6 +55,7 @@ export type PrCommandDependencies = {
 	needsFeedbackAttention?: typeof needsFeedbackAttention;
 	linkInferredPullRequest?: typeof linkInferredPullRequest;
 	inspectSweepRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
+	inspectBranchRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
 	reserveWorkflow?: (
 		reservation: WorkflowReservation,
 		ctx: ExtensionContext,
@@ -168,6 +169,7 @@ async function mergePullRequest(
 	ctx: ExtensionContext,
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
+	needsFeedback: typeof needsFeedbackAttention,
 ): Promise<boolean> {
 	const confirmed = await ctx.ui.confirm(
 		`Merge PR #${current.number}?`,
@@ -198,6 +200,9 @@ async function mergePullRequest(
 			}
 			if (deriveNextStep(discovery) !== "merge") {
 				throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
+			}
+			if (await needsFeedback(fresh, { cwd: ctx.cwd, signal: ctx.signal, load })) {
+				throw new Error(`PR #${fresh.number} merge cancelled: new feedback needs review`);
 			}
 		},
 	});
@@ -235,6 +240,7 @@ export function createPrCommandHandler(
 	const needsFeedback = dependencies.needsFeedbackAttention ?? needsFeedbackAttention;
 	const link = dependencies.linkInferredPullRequest ?? linkInferredPullRequest;
 	const inspectSweepRecovery = dependencies.inspectSweepRecovery ?? (async () => false);
+	const inspectBranchRecovery = dependencies.inspectBranchRecovery ?? (async () => false);
 	const reserve = dependencies.reserveWorkflow ?? (async () => {
 		throw new Error("/pr workflow tools are unavailable");
 	});
@@ -249,6 +255,12 @@ export function createPrCommandHandler(
 		commandInvocation?.assertCurrent();
 		let nextStep = deriveNextStep(discovery);
 		if (discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
+			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
+			await inspectBranchRecovery(discovery.pullRequest, ctx)) {
+			nextStep = "update-branch";
+			commandInvocation?.assertCurrent();
+		}
+		if (nextStep !== "update-branch" && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
 			await inspectSweepRecovery(discovery.pullRequest, ctx)) {
 			nextStep = "sweep";
@@ -280,7 +292,7 @@ export function createPrCommandHandler(
 		}
 		if (nextStep === "merge") {
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
-			return await mergePullRequest(pi, ctx, discovery.pullRequest, load) ? "merge" : "none";
+			return await mergePullRequest(pi, ctx, discovery.pullRequest, load, needsFeedback) ? "merge" : "none";
 		}
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);

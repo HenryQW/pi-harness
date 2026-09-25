@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
-import { PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
+import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
 
 const oldHead = "a".repeat(40);
 const base = "b".repeat(40);
@@ -120,6 +120,10 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 		if (command === "git" && args[0] === "rev-parse") return result(`${merged}\n`);
 		if (command === "git" && args[0] === "status") return result();
 		if (command === "git" && args[0] === "merge-base") return result();
+		if (command === "git" && args[0] === "ls-remote") {
+			if (pushes) throw new Error("remote unavailable after push");
+			return result(`${oldHead}\trefs/heads/feature\n`);
+		}
 		if (command === "git" && args[0] === "push") {
 			pushes += 1;
 			throw new Error("response lost");
@@ -153,6 +157,7 @@ test("does not push when HEAD or target authority changes after final base check
 			if (command === "git" && args[0] === "branch") return result("feature\n");
 			if (command === "git" && args[0] === "rev-parse") return result(`${localHead}\n`);
 			if (command === "git" && args[0] === "status") return result();
+			if (command === "git" && args[0] === "ls-remote") return result(`${oldHead}\trefs/heads/feature\n`);
 			if (command === "git" && args[0] === "merge-base") {
 				ancestryChecks += 1;
 				if (ancestryChecks === 1) {
@@ -252,7 +257,16 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 		target: { ...pullRequest().target, fetchSource: remote, remoteOid: featureHead },
 	});
 	let pushes = 0;
+	let rebases = 0;
 	const exec: Exec = async (command, args, options) => {
+		if (command === "git" && args.includes("rebase")) {
+			rebases += 1;
+			if (args.includes("--onto")) {
+				const recoveryDir = join(directory, "agent", "config", "pi-pr", "update-branch");
+				const record = JSON.parse(readFileSync(join(recoveryDir, readdirSync(recoveryDir)[0]!), "utf8"));
+				assert.equal(record.phase, "pending");
+			}
+		}
 		if (command === "gh" && args.join(" ") === "config get git_protocol --host github.com") return result("ssh\n");
 		if (command === "git" && args[0] === "fetch" && args.includes("git@github.com:acme/project.git")) {
 			args = args.map((value) => value === "git@github.com:acme/project.git" ? remote : value);
@@ -266,13 +280,49 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	});
 	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"] });
 	assert.equal(pushes, 0);
+	await assert.rejects(inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }),
+		/unverified; recover manually/);
 	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
 	const verified = await workflow.continue(["file.txt"]);
 	assert.equal(verified.kind, "verified");
 	assert.equal(git("merge-base", "--is-ancestor", baseHead, git("rev-parse", "HEAD")), "");
 	assert.equal(git("status", "--porcelain"), "");
-	assert.deepEqual(await workflow.publish(), { kind: "published", head: git("rev-parse", "HEAD") });
+	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
+	const resumed = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+	assert.equal(await resumed.recoveryLaunchAction(), "rebase");
+	assert.deepEqual(await resumed.rebase(), verified);
+	assert.equal(rebases, 2); // Only the original rebase and its conflict continuation ran Git.
+	assert.deepEqual(await resumed.publish(), { kind: "published", head: git("rev-parse", "HEAD") });
 	assert.equal(pushes, 1);
 	assert.equal(git("ls-remote", remote, "refs/heads/feature").split("\t")[0], git("rev-parse", "HEAD"));
-	await assert.rejects(workflow.publish(), /not ready to publish/);
+	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), false);
+	await assert.rejects(resumed.publish(), /not ready to publish/);
+
+	// Simulate a lost response after the remote moved but before the published marker was saved.
+	const recoveryDir = join(directory, "agent", "config", "pi-pr", "update-branch");
+	const recoveryFile = join(recoveryDir, readdirSync(recoveryDir)[0]!);
+	const saved = JSON.parse(readFileSync(recoveryFile, "utf8"));
+	writeFileSync(recoveryFile, `${JSON.stringify({ ...saved, phase: "verified" })}\n`);
+	const unexpectedRemote = pullRequest({ ...authority, head: { ...authority.head, oid: "f".repeat(40) },
+		target: { ...authority.target, remoteOid: "f".repeat(40) } });
+	await assert.rejects(inspectVerifiedRebaseRecovery(unexpectedRemote, { cwd: worktree, agentDir: join(directory, "agent") }),
+		/recovery authority changed/);
+	const publishedAuthority = pullRequest({ ...authority,
+		head: { ...authority.head, oid: verified.head },
+		target: { ...authority.target, remoteOid: verified.head },
+		conditions: { ...authority.conditions, conflict: false },
+	});
+	assert.equal(await inspectVerifiedRebaseRecovery(publishedAuthority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
+	const reconciled = new PullRequestBranchUpdater({ cwd: worktree, authority: publishedAuthority, exec,
+		agentDir: join(directory, "agent"),
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: publishedAuthority }) });
+	assert.equal(await reconciled.recoveryLaunchAction(), "rebase");
+	await reconciled.rebase();
+	assert.deepEqual(await reconciled.publish(), { kind: "published", head: verified.head });
+	assert.equal(pushes, 1);
+	writeFileSync(recoveryFile, "{malformed\n");
+	await assert.rejects(inspectVerifiedRebaseRecovery(publishedAuthority, { cwd: worktree, agentDir: join(directory, "agent") }),
+		/Invalid branch update recovery is preserved/);
+	assert.equal(readFileSync(recoveryFile, "utf8"), "{malformed\n");
 });

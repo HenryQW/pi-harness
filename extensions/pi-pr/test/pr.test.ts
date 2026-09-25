@@ -180,6 +180,7 @@ function harness(options: {
 	createPullRequestCreator?: ExtensionDependencies["createPullRequestCreator"];
 	createCommentSweep?: ExtensionDependencies["createCommentSweep"];
 	inspectSweepRecovery?: ExtensionDependencies["inspectSweepRecovery"];
+	inspectBranchRecovery?: ExtensionDependencies["inspectBranchRecovery"];
 	createCiFixer?: ExtensionDependencies["createCiFixer"];
 	isIdle?: () => boolean;
 }) {
@@ -218,7 +219,9 @@ function harness(options: {
 		createBranchUpdater: options.createBranchUpdater,
 		createPullRequestCreator: options.createPullRequestCreator,
 		createCommentSweep: options.createCommentSweep,
-		inspectSweepRecovery: options.inspectSweepRecovery ?? (async () => false),		createCiFixer: options.createCiFixer,
+		inspectSweepRecovery: options.inspectSweepRecovery ?? (async () => false),
+		inspectBranchRecovery: options.inspectBranchRecovery ?? (async () => false),
+		createCiFixer: options.createCiFixer,
 		needsFeedbackAttention: async () => false,
 	};
 	if (!options.useDefaultCommandHandler) {
@@ -387,6 +390,7 @@ test("one /pr continues after create, conflict rebase, CI repair and approved fe
 		} as never; },
 		createBranchUpdater() { return {
 			state: { phase: "verified" },
+			async recoveryLaunchAction() { return "rebase" as const; },
 			async publish() { stage = 2; return { kind: "published", head: "b".repeat(40) }; },
 		} as never; },
 		createCiFixer() { return {
@@ -451,6 +455,31 @@ test("matching sweep recovery precedes a dirty or behind local gate", async () =
 	} finally { await app.shutdown(ctx); }
 });
 
+test("matching verified rebase recovery outranks a diverged local head and sweep", async () => {
+	const pr = currentPullRequest({ conditions: { conflict: false, unresolvedThreads: 1 } });
+	pr.local.head = "diverged";
+	const app = harness({
+		async load() { return pr; }, useDefaultCommandHandler: true,
+		inspectBranchRecovery: async () => true,
+		inspectSweepRecovery: async () => { throw new Error("sweep must wait for rebase publication"); },
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createBranchUpdater() { return {
+			state: { phase: "verified" },
+			async recoveryLaunchAction() { return "rebase" as const; },
+			async rebase() { return { kind: "verified", head: pr.head.oid, fastForward: false }; },
+		} as never; },
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [`/skill:pi-pr-update-branch runId=${routeRunId} action=rebase`]);
+		assert.deepEqual((await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx)).details,
+			{ kind: "verified", head: pr.head.oid, fastForward: false });
+	} finally { await app.shutdown(ctx); }
+});
+
 test("binds one update run to its session, worktree, route, and fresh authority", async () => {
 	const authority = currentPullRequest({ conditions: { conflict: true } });
 	const calls: string[] = [];
@@ -468,6 +497,7 @@ test("binds one update run to its session, worktree, route, and fresh authority"
 			assert.equal(options.authority, authority);
 			return {
 				state,
+				async recoveryLaunchAction() { return "rebase" as const; },
 				async rebase() { calls.push("rebase"); state.phase = "verified"; return { kind: "verified", head: authority.head.oid, fastForward: false }; },
 				async continue() { calls.push("continue"); return { kind: "verified", head: authority.head.oid, fastForward: false }; },
 				async publish() { calls.push("publish"); return { kind: "published", head: authority.head.oid }; },
@@ -591,7 +621,7 @@ test("releases a stale reservation when replacement wins before dispatch resumes
 			replacementStart = app.start(replacement);
 			return routeRunId;
 		},
-		createBranchUpdater() { reservations += 1; return {} as never; },
+		createBranchUpdater() { reservations += 1; return { async recoveryLaunchAction() { return "rebase" as const; } } as never; },
 	});
 	const first = app.context();
 	replacement = app.context();
@@ -633,6 +663,7 @@ test("session replacement aborts an in-flight workflow helper", async () => {
 			helperSignal = signal;
 			return {
 				state,
+				async recoveryLaunchAction() { return "rebase" as const; },
 				async rebase() {
 					actionStarted.resolve();
 					return await waitForAbort(signal);
@@ -679,6 +710,7 @@ test("tool cancellation reaches only its active workflow action", async () => {
 			helperSignal = signal;
 			return {
 				state,
+				async recoveryLaunchAction() { return "rebase" as const; },
 				async rebase() {
 					return { kind: "verified", head: authority.head.oid, fastForward: false };
 				},
@@ -789,6 +821,7 @@ test("keeps an exact conflict context for continuation, then clears it on settle
 		createBranchUpdater() {
 			return {
 				state,
+				async recoveryLaunchAction() { return "rebase" as const; },
 				async rebase() {
 					calls.push("rebase");
 					state.phase = "conflict-awaiting-user";
@@ -841,6 +874,7 @@ test("clears a conflict run after one user turn without a valid continuation", a
 		createBranchUpdater() {
 			return {
 				state,
+				async recoveryLaunchAction() { return "rebase" as const; },
 				async rebase() {
 					state.phase = "conflict-awaiting-user";
 					return { kind: "conflict", paths: ["conflicted.ts"] };

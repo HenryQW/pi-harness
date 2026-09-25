@@ -82,6 +82,7 @@ type HarnessOptions = {
 	remoteNames?: string[];
 	sendError?: Error;
 	reservationAction?: "start" | "resume";
+	feedbackChecks?: boolean[];
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -164,6 +165,7 @@ function harness(options: HarnessOptions) {
 	let statusIndex = 0;
 	let headIndex = 0;
 	let baseTargetIndex = 0;
+	let feedbackIndex = 0;
 	let active: PullRequestSpec | null = null;
 	const configuredLocalHead = options.localHead ?? localHead;
 	const nextHost = () => options.states[stateIndex]?.host ?? DEFAULT_HOST;
@@ -282,7 +284,7 @@ function harness(options: HarnessOptions) {
 	return {
 		pi,
 		handler: createPrCommandHandler(pi, {
-			needsFeedbackAttention: async () => false,
+			needsFeedbackAttention: async () => options.feedbackChecks?.[feedbackIndex++] ?? false,
 			async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
 				if (options.states[stateIndex] === null) {
 					events.push("load");
@@ -697,6 +699,12 @@ test("cancels when the base retargets or advances during final readiness evaluat
 		assert.ok(finalFetch >= 0 && readiness > finalFetch, candidate.name);
 		assert.equal(app.calls.slice(readiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false, candidate.name);
 	}
+});
+
+test("cancels a confirmed merge when standalone feedback arrives during confirmation", async () => {
+	const app = harness({ states: [{}, {}], feedbackChecks: [false, true] });
+	await assert.rejects(app.handler("", app.context), /new feedback needs review/);
+	assert.equal(mutationCalls(app.calls).length, 0);
 });
 
 test("merges unchanged confirmed context with the atomic expected head", async () => {

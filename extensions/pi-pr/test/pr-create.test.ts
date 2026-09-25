@@ -789,4 +789,13 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	assert.deepEqual(await workflow.verify(), { kind: "verified", head: committed.head, fastForward: false });
 	git("commit", "--allow-empty", "-m", "unrelated change");
 	await assert.rejects(workflow.push(), /verified HEAD changed/);
+	git("mv", "file.txt", "renamed.txt");
+	const renamed = new PullRequestCreator({ cwd: root, target: creationTarget, agentDir: join(directory, "agent"),
+		exec: async (command, args, options) => command === "gh" ? result(baseOutput()) : await spawnBounded(command, args, options),
+		loadCurrentPullRequest: async () => none(creationTarget, { ahead: 1, worktree: "dirty", relation: "distinct-ref" }),
+	});
+	renamed.state.phase = "prepared";
+	assert.deepEqual((await renamed.inspect()).paths, ["renamed.txt", "file.txt"]);
+	await assert.rejects(renamed.commit(["renamed.txt"], "fix: rename"), /Unrelated staged changes/);
+	assert.equal(git("status", "--porcelain=v1"), "R  file.txt -> renamed.txt");
 });

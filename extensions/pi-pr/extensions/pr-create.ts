@@ -303,7 +303,7 @@ export class PullRequestCreator {
 				(await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options())).stdout !== this.state.pending!.status) {
 				throw new Error("Pending work changed after inspection");
 			}
-			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--name-only", "-z"], this.options())).stdout, "Staged paths");
+			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--no-renames", "--name-only", "-z"], this.options())).stdout, "Staged paths");
 			if (staged.some((path) => !paths.includes(path))) throw new Error("Unrelated staged changes require an ownership decision");
 			this.state.pending = undefined; // Commit outcome may be uncertain; never replay it.
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.options());

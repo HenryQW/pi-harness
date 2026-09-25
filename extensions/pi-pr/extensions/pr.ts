@@ -38,7 +38,7 @@ import {
 	unavailablePrDisplay,
 	type PrDisplay,
 } from "./pr-ui.ts";
-import { PullRequestBranchUpdater, type UpdateBranchOptions } from "./pr-update-branch.ts";
+import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater, type UpdateBranchOptions } from "./pr-update-branch.ts";
 
 const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -148,7 +148,7 @@ const FixCiParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
 ]);
 
-type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "rebase" | "continue" | "publish">;
+type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "inspect" | "commit" | "verify" | "push" | "publish">;
 type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "approval" | "confirmApproval" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
@@ -175,6 +175,7 @@ type PullRequestExtensionDependencies = {
 	createPrCommandHandler?: typeof createPrCommandHandler;
 	needsFeedbackAttention?: typeof needsFeedbackAttention;
 	inspectSweepRecovery?: NonNullable<PrCommandDependencies["inspectSweepRecovery"]>;
+	inspectBranchRecovery?: NonNullable<PrCommandDependencies["inspectBranchRecovery"]>;
 	createBranchUpdater?: (options: UpdateBranchOptions) => UpdateBranchWorkflow;
 	createPullRequestCreator?: (options: CreatePullRequestOptions) => CreateWorkflow;
 	createCommentSweep?: (options: PullRequestCommentSweepOptions) => SweepWorkflow;
@@ -337,8 +338,8 @@ export default function pullRequestExtension(
 			completed: false,
 		};
 		switch (reservation.route) {
-			case "update-branch":
-				workflowContext = {
+			case "update-branch": {
+				const selected: Extract<WorkflowContext, { route: "update-branch" }> = {
 					...common,
 					route: "update-branch",
 					workflow: createBranchUpdater({
@@ -348,7 +349,17 @@ export default function pullRequestExtension(
 						loadCurrentPullRequest: load,
 					}),
 				};
-				return { runId, action: "rebase" };
+				workflowContext = selected;
+				try {
+					const action = await selected.workflow.recoveryLaunchAction();
+					invocation.assertCurrent();
+					if (workflowContext !== selected) throw new Error("PR workflow session changed during recovery inspection");
+					return { runId, action };
+				} catch (error) {
+					clearWorkflow(selected);
+					throw error;
+				}
+			}
 			case "create":
 				workflowContext = {
 					...common,
@@ -896,6 +907,10 @@ export default function pullRequestExtension(
 	const commandHandler = createCommandHandler(pi, {
 		loadCurrentPullRequest: load,
 		needsFeedbackAttention: dependencies.needsFeedbackAttention,
+		inspectBranchRecovery: dependencies.inspectBranchRecovery ?? (async (pullRequest, ctx) => {
+			const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
+			return await inspectVerifiedRebaseRecovery(pullRequest, { cwd: worktree, signal: ctx.signal });
+		}),
 		inspectSweepRecovery: dependencies.inspectSweepRecovery ?? (async (pullRequest, ctx) => {
 			const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
 			const sweep = createCommentSweep({ cwd: worktree, authority: pullRequest, signal: ctx.signal, loadCurrentPullRequest: load });
