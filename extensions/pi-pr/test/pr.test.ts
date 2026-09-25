@@ -284,8 +284,12 @@ function harness(options: {
 		execCalls,
 		appended,
 		context,
+		async startNow(ctx: ExtensionContext): Promise<void> {
+			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
+		},
 		async start(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionStart, "session_start")({} as never, callbackContext(ctx));
+			await flush();
 		},
 		async shutdown(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionShutdown, "session_shutdown")({} as never, callbackContext(ctx));
@@ -949,6 +953,83 @@ test("direct workflow tools without a route tell the caller to run /pr", async (
 	}
 });
 
+test("starts PR discovery without blocking the next extension and publishes the result later", async () => {
+	const pending = deferred<CurrentPullRequest>();
+	const app = harness({ async load() { return pending.promise; } });
+	const ctx = app.context();
+
+	try {
+		const started = await Promise.race([
+			app.startNow(ctx).then(() => true),
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
+		]);
+		assert.equal(started, true, "session_start must not await GitHub discovery");
+		assert.equal(app.statuses.at(-1), undefined);
+		assert.equal(app.widgets.at(-1), undefined);
+		pending.resolve(currentPullRequest());
+		await flush();
+		assert.match(app.statuses.at(-1) ?? "", /PR #42/);
+	} finally {
+		pending.resolve(currentPullRequest());
+		await app.shutdown(ctx);
+	}
+});
+
+test("cancels pending presentation discovery before /pr reads fresh authority", async () => {
+	const pending = deferred<CurrentPullRequestDiscovery>();
+	let loads = 0;
+	let presentationAbortedAtCommandLoad = false;
+	let presentationSignal: AbortSignal | undefined;
+	const app = harness({
+		useDefaultCommandHandler: true,
+		async load(_pi, context) {
+			if (++loads === 1) {
+				presentationSignal = context.signal;
+				return pending.promise;
+			}
+			if (loads === 2) presentationAbortedAtCommandLoad = presentationSignal?.aborted ?? false;
+			return { kind: "inactive" };
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.startNow(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.equal(loads >= 2, true, "/pr must perform fresh discovery");
+		assert.equal(presentationAbortedAtCommandLoad, true);
+		pending.resolve({ kind: "current", pullRequest: currentPullRequest() });
+		await flush();
+		assert.equal(app.statuses.at(-1), undefined, "cancelled presentation must not overwrite the command result");
+	} finally {
+		pending.resolve({ kind: "inactive" });
+		await app.shutdown(ctx);
+	}
+});
+
+test("clears the previous session PR status and action while new discovery is pending", async () => {
+	const pending = deferred<CurrentPullRequestDiscovery>();
+	let loads = 0;
+	const app = harness({ async load() { return ++loads === 1 ? currentPullRequest() : pending.promise; } });
+	const first = app.context();
+	const replacement = app.context();
+
+	try {
+		await app.start(first);
+		assert.match(app.statuses.at(-1) ?? "", /PR #42/);
+		assert.notEqual(app.widgets.at(-1), undefined);
+		await app.startNow(replacement);
+		assert.equal(app.statuses.at(-1), undefined);
+		assert.equal(app.widgets.at(-1), undefined);
+		pending.resolve({ kind: "inactive" });
+		await flush();
+		assert.equal(app.statuses.at(-1), undefined);
+	} finally {
+		pending.resolve({ kind: "inactive" });
+		await app.shutdown(replacement);
+	}
+});
+
 test("stays silent outside a Git worktree", async () => {
 	let loads = 0;
 	const app = harness({
@@ -960,8 +1041,8 @@ test("stays silent outside a Git worktree", async () => {
 	const ctx = app.context();
 
 	await app.start(ctx);
-	assert.deepEqual(app.statuses, [undefined]);
-	assert.deepEqual(app.widgets, [undefined]);
+	assert.ok(app.statuses.every((status) => status === undefined));
+	assert.ok(app.widgets.every((widget) => widget === undefined));
 	assert.deepEqual(app.notifications, []);
 	assert.equal(loads, 1);
 
@@ -1355,7 +1436,7 @@ test("shows the create widget only after preflight reports an ahead commit", asy
 	}
 });
 
-test("propagates render failures before mutating UI", async () => {
+test("reports startup render failures without publishing a broken status", async () => {
 	const app = harness({
 		async load() {
 			return currentPullRequest();
@@ -1366,9 +1447,9 @@ test("propagates render failures before mutating UI", async () => {
 	});
 	const ctx = app.context();
 
-	await assert.rejects(app.start(ctx), /theme failed/);
-	assert.deepEqual(app.statuses, []);
-	assert.deepEqual(app.widgets, []);
+	await app.start(ctx);
+	assert.deepEqual(app.notifications, [{ message: "PR status refresh failed: status unavailable", type: "error" }]);
+	assert.ok(app.statuses.every((status) => status === undefined));
 	await app.shutdown(ctx);
 });
 
@@ -1445,8 +1526,8 @@ test("reports lookup failures once, clears stale actions, and resets after recov
 		message: "PR status refresh failed: status unavailable",
 		type: "error",
 	}]);
-	assert.deepEqual(app.statuses.map((status) => plain(status ?? "")), ["PR · status unavailable"]);
-	assert.deepEqual(app.widgets, [undefined]);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR · status unavailable");
+	assert.equal(app.widgets.at(-1), undefined);
 
 	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(app.notifications.length, 1, "repeated lookup failures must not spam notifications");

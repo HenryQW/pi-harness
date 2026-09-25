@@ -1630,6 +1630,11 @@ test("requires one matching credential-free fetch URL for the named remote", asy
 		const app = harness(candidate.options);
 		await assert.rejects(loadCurrentPullRequest(app.pi, app.context), candidate.error, candidate.name);
 		assert.equal(app.calls.some(({ command, args }) => command === "git" && args[0] === "ls-remote"), false, candidate.name);
+		if (candidate.name === "different repository") {
+			assert.equal(app.calls.filter(({ command, args }) =>
+				command === "gh" && args[0] === "repo" && args[1] === "view"
+			).length, 2);
+		}
 	}
 
 	const inferred = harness({
@@ -1658,7 +1663,7 @@ test("accepts a matching fetch URL over another protocol while retaining the pus
 	assert.equal(loaded.headFetchSource, pushUrl);
 	assert.equal(calls.filter(({ command, args }) =>
 		command === "gh" && args.join(" ") === "repo view github.com/acme/fork --json nameWithOwner,url"
-	).length, 2);
+	).length, 1);
 	assert.ok(calls.some(({ command, args }) =>
 		command === "git" && args.join(" ") === "remote get-url --all fork"
 	));

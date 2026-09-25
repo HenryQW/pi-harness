@@ -1240,18 +1240,19 @@ async function readRemoteAuthority(
 			if (urls.length !== 1) fail(action, `multiple ${kind} URLs are configured`);
 			return parseRemoteUrl(urls[0], kind);
 		};
-		const readRepository = async (remoteUrl: PushUrl, kind: "push" | "fetch"): Promise<PushRepository> => {
-			const action = `Read ${kind} repository`;
-			const result = await execute(pi, context, action, "gh", [
+		const readRepository = async (remoteUrl: PushUrl, kind: "push" | "fetch"): Promise<string> => {
+			const result = await execute(pi, context, `Read ${kind} repository`, "gh", [
 				"repo", "view", remoteUrl.locator, "--json", "nameWithOwner,url",
 			]);
-			return parseRemoteRepository(result.stdout, remoteUrl, kind);
+			return result.stdout;
 		};
 
 		const pushUrl = await readUrl("push");
-		const pushRepository = await readRepository(pushUrl, "push");
+		const pushOutput = await readRepository(pushUrl, "push");
+		const pushRepository = parseRemoteRepository(pushOutput, pushUrl, "push");
 		const fetchUrl = await readUrl("fetch");
-		const fetchRepository = await readRepository(fetchUrl, "fetch");
+		const fetchOutput = fetchUrl.locator === pushUrl.locator ? pushOutput : await readRepository(fetchUrl, "fetch");
+		const fetchRepository = parseRemoteRepository(fetchOutput, fetchUrl, "fetch");
 		if (
 			fetchRepository.host !== pushRepository.host ||
 			fetchRepository.normalizedName !== pushRepository.normalizedName
