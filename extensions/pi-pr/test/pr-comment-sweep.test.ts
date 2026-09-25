@@ -287,6 +287,39 @@ test("a legacy non-actionable projection can resume and acknowledge its open thr
 	await workflow.finalize(resolved.guard, resolved.projection!, []);
 });
 
+test("approval requires the original clean worktree before and after the prompt", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
+	writeFileSync(join(app.root, "file.txt"), "uncommitted\n");
+	await assert.rejects(workflow.approval(recorded.guard), /clean worktree/);
+	await assert.rejects(workflow.confirmApproval(recorded.guard), /clean worktree/);
+	writeFileSync(join(app.root, "file.txt"), "initial\n");
+	assert.equal((await workflow.approval(recorded.guard)).approved, false);
+	git(app.root, "commit", "--allow-empty", "-m", "unrelated head");
+	await assert.rejects(workflow.confirmApproval(recorded.guard), /local HEAD changed/);
+	assert.equal((await workflow.resume()).approved, false);
+});
+
+test("recorded plans remain available after resume with their approval state", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const entries = ledger(started);
+	const recorded = await workflow.record(started.guard, entries, ["file.txt"]);
+	assert.deepEqual(recorded.plan, { ledger: entries, ownedPaths: ["file.txt"] });
+	const resumed = await workflow.resume();
+	assert.deepEqual(resumed.plan, recorded.plan);
+	assert.equal(resumed.approved, false);
+	await workflow.confirmApproval(resumed.guard);
+	const approved = await workflow.resume();
+	assert.deepEqual(approved.plan, recorded.plan);
+	assert.equal(approved.approved, true);
+});
+
 test("runs exact coverage, guarded publication, fresh resolution, checks, and final projection end to end", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
@@ -307,10 +340,11 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
 	assert.equal(recorded.approved, false);
 	await assert.rejects(workflow.publish(recorded.guard), /not ready to publish/);
+	await workflow.confirmApproval(recorded.guard);
 	writeFileSync(join(app.root, "file.txt"), "fixed\n");
 	git(app.root, "add", "file.txt");
 	git(app.root, "commit", "-m", "fix: address review");
-	const published = await publishApproved(workflow, recorded);
+	const published = await workflow.publish(recorded.guard);
 	assert.equal(published.approved, true);
 	assert.equal(published.phase, "published");
 	assert.equal(app.world.pushCalls, 1);
@@ -426,11 +460,11 @@ test("committed rename ownership includes the source and destination", async (t)
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), ["renamed.txt"]);
+	await workflow.confirmApproval(recorded.guard);
 	git(app.root, "config", "diff.renames", "true");
 	git(app.root, "mv", "file.txt", "renamed.txt");
 	git(app.root, "commit", "-m", "fix: rename reviewed file");
 
-	await workflow.confirmApproval(recorded.guard);
 	await assert.rejects(workflow.publish(recorded.guard), /changed outside owned paths: file\.txt/);
 	assert.equal(app.world.pushCalls, 0);
 });
@@ -489,10 +523,10 @@ test("resume reconciles a lost push response, rotates the run, and never replays
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
+	await workflow.confirmApproval(recorded.guard);
 	writeFileSync(join(app.root, "file.txt"), "fixed\n");
 	git(app.root, "add", "file.txt");
 	git(app.root, "commit", "-m", "fix: address review");
-	await workflow.confirmApproval(recorded.guard);
 	await assert.rejects(workflow.publish(recorded.guard), /push response lost/);
 	assert.equal(app.world.pushCalls, 1);
 	const resumed = await app.workflow(["33333333-3333-4333-8333-333333333333"]).resume();
@@ -515,10 +549,10 @@ test("resume permits a new push only after proving a lost push was not applied",
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
+	await workflow.confirmApproval(recorded.guard);
 	writeFileSync(join(app.root, "file.txt"), "fixed\n");
 	git(app.root, "add", "file.txt");
 	git(app.root, "commit", "-m", "fix: address review");
-	await workflow.confirmApproval(recorded.guard);
 	await assert.rejects(workflow.publish(recorded.guard), /push response lost/);
 	const resumed = await workflow.resume();
 	assert.equal(resumed.attempts.push, "none");
@@ -592,7 +626,7 @@ test("non-actionable threads receive the approved reason before resolution", asy
 	await workflow.finalize(resolved.guard, resolved.projection!, []);
 });
 
-test("lost reply is reconciled without posting a duplicate", async (t) => {
+test("a lost reply with a matching new comment remains ambiguous and is never replayed", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
 	const workflow = app.workflow();
@@ -605,12 +639,29 @@ test("lost reply is reconciled without posting a duplicate", async (t) => {
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
 	assert.equal(app.world.replyCalls, 1);
 	assert.equal(app.world.mutationCalls, 0);
-	const resumed = await workflow.resume();
-	assert.deepEqual(resumed.attempts.resolutions.map(({ step, state }) => [step, state]), [["reply", "applied"]]);
-	const resolved = await workflow.resolve(resumed.guard, ["thread-1"]);
-	assert.equal(resolved.phase, "resolved");
+	const recoveryPath = await workflow.recoveryPath();
+	const recovery = readFileSync(recoveryPath, "utf8");
+	await assert.rejects(workflow.resume(), /Reply attempt outcome is ambiguous/);
+	assert.equal(readFileSync(recoveryPath, "utf8"), recovery);
 	assert.equal(app.world.replyCalls, 1);
-	assert.equal(app.world.mutationCalls, 1);
+	assert.equal(app.world.mutationCalls, 0);
+});
+
+test("another actor's identical reply cannot satisfy a lost mutation", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
+	const pending = await workflow.refresh(published.guard);
+	const refreshed = await workflow.record(pending.guard, ledger(pending));
+	app.world.applyReply = false;
+	app.world.loseReplyResponse = true;
+	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
+	app.world.replyBody = `https://github.com/acme/project/commit/${published.publicationHead}`;
+	await assert.rejects(workflow.resume(), /Reply attempt outcome is ambiguous/);
+	assert.equal(app.world.replyCalls, 1);
+	assert.equal(app.world.mutationCalls, 0);
 });
 
 test("a lost reply may be retried only after recovery proves it was not posted", async (t) => {

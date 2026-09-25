@@ -84,6 +84,7 @@ export type SweepStatus = {
 	feedbackCount: number;
 	feedback: Array<{ id: string; kind: FeedbackKind }>;
 	ledgerComplete: boolean;
+	plan: { ledger: SweepLedgerEntry[]; ownedPaths: string[] } | null;
 	approved: boolean;
 	projection: SweepFinalProjection | null;
 	attempts: {
@@ -515,6 +516,7 @@ function status(state: SweepState): SweepStatus {
 		feedbackCount: feedback.length,
 		feedback,
 		ledgerComplete: state.ledger !== null,
+		plan: state.ledger ? { ledger: structuredClone(state.ledger), ownedPaths: [...state.ownedPaths] } : null,
 		approved: state.approved,
 		projection: state.projection ? structuredClone(state.projection) : null,
 		attempts: {
@@ -800,14 +802,15 @@ export class PullRequestCommentSweep {
 			if (!thread || (attempt.step === "resolve" && feedbackContentFingerprint(current) !== state.feedback.contentFingerprint)) {
 				throw new Error("Resolution attempt feedback generation changed during recovery");
 			}
-			const replyId = attempt.step === "reply" ? addedReply(state.feedback.snapshot, current, attempt.threadId, attempt.body!) : null;
-			if (replyId || (attempt.step === "resolve" && thread.isResolved && onlyResolutionChanged(state.feedback.snapshot, current, attempt.threadId))) {
+			if (feedbackFingerprint(current) === state.feedback.fingerprint) {
+				attempt.state = "blocked";
+			} else if (attempt.step === "reply") {
+				// An identical new comment might be another actor's; a lost reply has no unique ID to verify.
+				throw new Error("Reply attempt outcome is ambiguous; recovery is preserved without replaying the reply");
+			} else if (thread.isResolved && onlyResolutionChanged(state.feedback.snapshot, current, attempt.threadId)) {
 				attempt.state = "applied";
 				attempt.afterFingerprint = feedbackFingerprint(current);
-				if (replyId) this.applyReply(state, current, attempt.threadId, replyId);
-				else this.setFeedback(state, current);
-			} else if (feedbackFingerprint(current) === state.feedback.fingerprint) {
-				attempt.state = "blocked";
+				this.setFeedback(state, current);
 			} else {
 				throw new Error("Resolution attempt outcome is not exactly reconcilable");
 			}
@@ -880,6 +883,8 @@ export class PullRequestCommentSweep {
 			const state = await this.loadState(await this.location());
 			requireGuard(state, guard);
 			if (state.phase !== "recorded" || !state.ledger) throw new Error("Comment sweep is not ready for approval");
+			await this.requireCleanPublication(state, state.original.head);
+			await this.currentAuthority(state.authority, state.original.lease);
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
@@ -890,6 +895,8 @@ export class PullRequestCommentSweep {
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
 			if (state.phase !== "recorded" || !state.ledger) throw new Error("Comment sweep is not ready for approval");
+			await this.requireCleanPublication(state, state.original.head);
+			await this.currentAuthority(state.authority, state.original.lease);
 			state.version = 2;
 			state.approved = true;
 			await this.save(location, state);

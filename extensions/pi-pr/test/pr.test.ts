@@ -874,7 +874,10 @@ test("feedback approval confirms the recorded plan inline without another /pr", 
 		createCommentSweep() {
 			return {
 				async recoveryLaunchAction() { return "start" as const; },
-				async approval() { calls.push("guard"); return { phase: "recorded" }; },
+				async approval() { calls.push("guard"); return { phase: "recorded", plan: {
+					ledger: [{ kind: "thread", id: "thread-1", disposition: "addressed", note: "Fix the parser" }],
+					ownedPaths: ["file.txt"],
+				} }; },
 				async confirmApproval() { calls.push("approved"); },
 			} as never;
 		},
@@ -892,7 +895,7 @@ test("feedback approval confirms the recorded plan inline without another /pr", 
 			summary: "Fix the parser; leave obsolete feedback closed.",
 		}, ctx);
 		assert.deepEqual(result.details, { approved: true });
-		assert.deepEqual(calls, ["guard", "Apply PR feedback fixes?: Fix the parser; leave obsolete feedback closed.", "approved"]);
+		assert.deepEqual(calls, ["guard", "Apply PR feedback fixes?: Fix the parser; leave obsolete feedback closed.\n\nSaved plan:\nthread:thread-1 — addressed: Fix the parser\n\nOwned paths:\nfile.txt", "approved"]);
 	} finally {
 		await app.shutdown(ctx);
 	}

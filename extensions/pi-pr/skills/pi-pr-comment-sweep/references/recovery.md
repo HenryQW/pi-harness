@@ -31,9 +31,11 @@ Malformed, oversized, obsolete, wrong-worktree, or route-mismatched recovery is
 preserved and blocks dispatch. Never repair, move, replace, or delete it
 automatically. Report the state path and exact blocker.
 
-A recorded plan needs user approval before publication. Approval survives a
-resume; if approval was declined, show the plan and ask again. Version-one
+A recorded plan needs user approval before publication. Resume returns the
+saved ledger and owned paths, and approval displays that exact plan. Approval
+survives a resume; if declined, show the saved plan and ask again. Version-one
 recovery is retained and can be resumed without discarding in-progress work.
 
-An unknown mutation is never replayed. If reconciliation cannot prove its exact
-result, stop and report the state path and blocker.
+An unknown mutation is never replayed. A same-body new reply cannot prove who
+posted it, so a lost reply response blocks recovery rather than resolving the
+thread. Report the preserved state path and blocker.
