@@ -713,7 +713,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		const current = await loadReviewSnapshot(state.config!, state.stores!, state);
 		if (!sameReviewSnapshot(snapshot, current)) throw new MemoryReviewError("Memory changed during /remember preparation. Retry with the latest entries.");
 		signal?.throwIfAborted();
-		const result = await memoryTool.execute("remember", { action: "add", ...proposal }, signal, undefined, ctx);
+		const result = await memoryTool.execute("remember", { action: "add", ...proposal }, signal, undefined, ctx, generation);
 		ctx.ui.notify((result.details as { status?: string } | undefined)?.status ?? "Remembered.", "info");
 	};
 
@@ -949,7 +949,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 
 	// Tool is registered unconditionally at factory time so a failed init
 	// degrades to per-call errors instead of a missing tool.
-	const memoryTool: Parameters<ExtensionAPI["registerTool"]>[0] = {
+	const memoryTool = {
 		name: "memory",
 		label: "Memory",
 		description: `${MEMORY_DESCRIPTION}\n\nTo see current live entries, read MEMORY.md in the configured memory directory with the read tool.`,
@@ -972,7 +972,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		}),
 		executionMode: "sequential",
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx, expectedGeneration?: number) {
 			const args = params as MemoryMutation;
 			if (state.initError) throw new Error(`Memory extension failed to initialize and is disabled: ${state.initError}`);
 			if (!state.config || !state.stores) throw new Error("Memory extension is not initialized.");
@@ -1012,6 +1012,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			});
 			const write = async (resolved?: MemoryOperation) => {
 				signal?.throwIfAborted();
+				if (expectedGeneration !== undefined && expectedGeneration !== state.sessionGeneration) {
+					throw new MemoryReviewError("Session changed during /remember review; nothing was written.");
+				}
 				const result = resolved ? await store.apply(resolved) : validated.kind === "single"
 					? await store.apply(validated.operation)
 					: await store.applyBatch(validated.operations);
@@ -1094,7 +1097,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 			return new Text(text, 0, 0);
 		},
-	};
+	} satisfies Parameters<ExtensionAPI["registerTool"]>[0];
 	pi.registerTool(memoryTool);
 
 	pi.on("before_agent_start", (event) => {

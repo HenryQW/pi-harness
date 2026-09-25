@@ -83,6 +83,7 @@ type ReviewFixture = {
 	commands: Map<string, CapturedCommand>;
 	notifications: string[];
 	settled: Handler;
+	modelSelect: Handler;
 	questions: string[];
 	selections: string[][];
 };
@@ -197,7 +198,7 @@ async function withReviewFixture(
 				input: async () => options.input,
 			},
 		} as unknown as ExtensionContext;
-		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, questions, selections });
+		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, questions, selections });
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -318,6 +319,24 @@ test("/remember also passes cancellation into the add review", async () => {
 		assert.deepEqual(calls.map((call) => call.options.signal), [controller.signal, controller.signal]);
 		assert.match(notifications.at(-1)!, /review cancelled/);
 		await assert.rejects(readFile(join(memoryDir, "USER.md")), /ENOENT/);
+	});
+});
+
+test("/remember cannot write after a model switch during review without an idle signal", async () => {
+	let modelSelect!: Handler;
+	await withReviewFixture({
+		responses: [
+			JSON.stringify({ target: "memory", content: "candidate" }),
+			async () => {
+				await modelSelect({ type: "model_select" });
+				return JSON.stringify({ verdict: "distinct", explanation: "New fact." });
+			},
+		],
+	}, async ({ memoryDir, commands, ctx, modelSelect: handler, notifications }) => {
+		modelSelect = handler;
+		await commands.get("remember")!.handler("candidate", ctx);
+		assert.match(notifications.at(-1)!, /Session changed during \/remember/);
+		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
 	});
 });
 

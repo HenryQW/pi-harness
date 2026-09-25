@@ -61,7 +61,7 @@ Exact duplicate single adds and duplicate-only add batches are idempotent and sk
 
 `/remember <instruction>` uses the bounded `pi-memory/prepareCandidate` Model Task to propose a target and exact entry or decline the request. It checks for source changes, then saves through the same reviewed memory tool. It does not dispatch an open-ended instruction to the session agent. The configured `balanced` task-model profile must be available.
 
-If Pi is busy, it queues the trimmed instruction. Once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
+If Pi is busy, it queues the trimmed instruction. Once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. If the session starts, shuts down, or changes model during review, `/remember` rejects the write even when Pi provides no idle cancellation signal; retry in the current session. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
 
 ### `/dream`
 
