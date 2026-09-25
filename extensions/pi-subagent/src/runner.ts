@@ -1240,6 +1240,7 @@ export class IsolatedRunner {
 			if (generation?.status === "superseded") generation = undefined;
 			if (generation && generation.status !== "staging" && generation.status !== "conflict") throw new Error("Stage action has a stale generation.");
 			const previousStage = generation?.stages.at(-1);
+			const pendingAllocation = action.action === "resolve" && previousStage?.status === "pending";
 			const expected = previousStage?.status === "staged"
 				? previousStage.tip! : previousStage?.onto ?? generation?.integrationBase;
 			if (action.action === "stage" && generation?.stages.some((stage) => stage.status !== "staged")) {
@@ -1271,6 +1272,18 @@ export class IsolatedRunner {
 			}
 			const actualMain = await scope.call((context) => this.gitRuntime.inspectMain({ root }, context));
 			if (!sameIdentity(actualMain, state.main)) throw new Error("Main changed or became dirty; staging is blocked.");
+			if (pendingAllocation) {
+				if (!generation?.worktree || generation.status !== "staging" || generation.stages.length !== 1
+					|| !sameIdentity(action.expectedTip, generation.integrationBase)) {
+					throw new Error("Pending integration allocation is not an exact initial stage.");
+				}
+				const checkout = generation.worktree;
+				const base = await scope.call((context) => this.integrationGit.inspectCombined(root,
+					checkout, state.main, [], context.signal));
+				if (!sameIdentity(base, generation.integrationBase)) throw new Error("Pending integration checkout is not the clean recorded base.");
+				previousStage!.status = "staging";
+				await this.saveProductive(handle); // Explicit resolve proves allocation; merge intent precedes the first merge.
+			}
 			if (!generation) {
 				if (action.action !== "stage") throw new Error("No integration generation exists to resolve.");
 				if (generations.filter((item) => item.worktree && !item.cleanup?.every((step) => step.status === "completed")).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
@@ -1312,16 +1325,9 @@ export class IsolatedRunner {
 				}
 				await this.saveProductive(handle); // Exact candidate and previous tip before merge.
 			}
-			let outcome = await scope.call((context) => action.action === "stage"
+			const outcome = await scope.call((context) => action.action === "stage" || pendingAllocation
 				? this.integrationGit.stage(root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal)
 				: this.integrationGit.reconcileStage(root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal));
-			if (action.action === "resolve" && stage!.status === "pending"
-				&& outcome.outcome === "ready" && outcome.value === "not_started") {
-				stage!.status = "staging";
-				await this.saveProductive(handle); // Read-only proof before Main's explicit merge request.
-				outcome = await scope.call((context) => this.integrationGit.stage(
-					root, worktree, state.main, receipts, worker as WorktreeInfo, candidate.tip, context.signal));
-			}
 			if (outcome.outcome === "ready" && outcome.value !== "not_started") {
 				stage!.status = "staged";
 				stage!.tip = outcome.value.tip;

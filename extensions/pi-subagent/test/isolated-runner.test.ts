@@ -2339,6 +2339,16 @@ test("uncertain integration allocation retains intent and refuses mutation repla
 	assert.equal(reconciled.state.integration.generations[0]?.stages[0]?.status, "staged");
 	assert.deepEqual(git.merged, [candidate.tip.head]);
 	assertParsed((await runner.status(action.id, root)).state);
+	const integrationBase = uncertain.state.integration.generations[0]!.integrationBase;
+	git.combinedTip = identity("b", integrationBase.branch);
+	await assert.rejects(runner.stage({ ...action, action: "resolve", expectedTip: integrationBase }, root), /clean recorded base/);
+	assert.deepEqual(git.merged, []);
+	git.combinedTip = integrationBase;
+	const proven = await runner.stage({ ...action, action: "resolve", expectedTip: integrationBase }, root);
+	assert.equal(proven.state.integration.generations[0]?.stages[0]?.status, "staged");
+	assert.deepEqual(git.merged, [candidate.tip.head]);
+	await assert.rejects(runner.stage({ ...action, expectedTip: integrationBase }, root), /stale|repeated/);
+	assert.deepEqual(git.merged, [candidate.tip.head]);
 });
 
 test("Main explicitly refreshes a validated generation and restages the unchanged worker without reusing validation", async (t) => {
