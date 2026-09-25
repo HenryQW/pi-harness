@@ -32,6 +32,8 @@ query ThreadReplies($threadId:ID!,$cursor:String){node(id:$threadId){... on Pull
 }}}`;
 const RESOLVE_THREAD_MUTATION = `
 mutation ResolveThread($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}`;
+const REPLY_THREAD_MUTATION = `
+mutation ReplyThread($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id body}}}`;
 
 type FeedbackAuthor = { login: string } | null;
 type FeedbackComment = {
@@ -377,7 +379,9 @@ class FeedbackClient {
 
 	private async request(query: string, variables: Record<string, string | number | null>, host: string, readOnly: boolean): Promise<Record<string, unknown>> {
 		const args = ["api", "graphql", "--hostname", requiredText(host, "GitHub host"), "-F", "query=@-"];
-		for (const [name, value] of Object.entries(variables)) if (value !== null) args.push("-F", `${name}=${value}`);
+		for (const [name, value] of Object.entries(variables)) {
+			if (value !== null) args.push(typeof value === "number" ? "-F" : "-f", `${name}=${value}`);
+		}
 		for (let attempt = 0; ; attempt += 1) {
 			try {
 				this.pages += 1;
@@ -497,6 +501,23 @@ export async function collectPullRequestFeedback(
 		reviews: results.reviews,
 		reviewThreads: threads,
 	});
+}
+
+export async function replyToPullRequestThread(
+	authorityInput: FeedbackAuthority,
+	threadIdInput: string,
+	bodyInput: string,
+	options: FeedbackClientOptions,
+): Promise<void> {
+	const authority = parseAuthority(authorityInput);
+	const threadId = requiredText(threadIdInput, "review thread ID");
+	const body = requiredText(bodyInput, "review thread reply");
+	const data = await new FeedbackClient(options).mutate(REPLY_THREAD_MUTATION, { threadId, body }, authority.host);
+	if (!isRecord(data.addPullRequestReviewThreadReply) || !isRecord(data.addPullRequestReviewThreadReply.comment) ||
+		data.addPullRequestReviewThreadReply.comment.body !== body ||
+		typeof data.addPullRequestReviewThreadReply.comment.id !== "string") {
+		throw new Error(`GitHub did not confirm reply to ${threadId}`);
+	}
 }
 
 export async function resolvePullRequestThread(

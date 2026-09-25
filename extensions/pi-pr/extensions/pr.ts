@@ -117,6 +117,7 @@ const SweepParameters = Type.Union([
 		ledger: SweepLedger,
 		ownedPaths: Type.Optional(OwnedPaths),
 	}, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("approve"), guard: SweepGuard, summary: Type.String({ minLength: 1, maxLength: 4_096 }) }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("refresh"), guard: SweepGuard }, CLOSED),
 	Type.Object({
@@ -140,7 +141,7 @@ const FixCiParameters = Type.Union([
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "merge" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "merge" | "continue" | "push" | "publish">;
-type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "publish" | "refresh" | "resolve" | "finalize">;
+type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "approval" | "confirmApproval" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
 
 type WorkflowContextBase = {
@@ -476,6 +477,12 @@ export default function pullRequestExtension(
 					case "resume": return await selected.workflow.resume();
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
+					case "approve": {
+						await selected.workflow.approval(params.guard);
+						const approved = await ctx.ui.confirm("Apply PR feedback fixes?", params.summary);
+						if (approved) await selected.workflow.confirmApproval(params.guard);
+						return { approved };
+					}
 					case "publish": return await selected.workflow.publish(params.guard);
 					case "refresh": return await selected.workflow.refresh(params.guard);
 					case "resolve": return await selected.workflow.resolve(params.guard, params.threadIds);

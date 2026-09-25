@@ -334,7 +334,7 @@ test("registers exactly four sequential tools with closed action schemas", () =>
 	const expected = new Map([
 		["pi_pr_update_branch", ["merge", "continue", "publish"]],
 		["pi_pr_create", ["prepare", "merge", "continue", "push", "publish"]],
-		["pi_pr_sweep", ["start", "resume", "show", "record", "publish", "refresh", "resolve", "finalize"]],
+		["pi_pr_sweep", ["start", "resume", "show", "record", "approve", "publish", "refresh", "resolve", "finalize"]],
 		["pi_pr_fix_ci", ["collect", "publish"]],
 	]);
 
@@ -861,6 +861,40 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 		assert.deepEqual(ciCalls, ["collect", "publish"]);
 	} finally {
 		await ci.shutdown(ciContext);
+	}
+});
+
+test("feedback approval confirms the recorded plan inline without another /pr", async () => {
+	const calls: string[] = [];
+	const app = harness({
+		async load() { return currentPullRequest({ conditions: { unresolvedThreads: 1 } }); },
+		useDefaultCommandHandler: true,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createCommentSweep() {
+			return {
+				async recoveryLaunchAction() { return "start" as const; },
+				async approval() { calls.push("guard"); return { phase: "recorded" }; },
+				async confirmApproval() { calls.push("approved"); },
+			} as never;
+		},
+	});
+	const base = app.context();
+	const ctx = { ...base, ui: { ...base.ui, async confirm(title: string, summary: string) {
+		calls.push(`${title}: ${summary}`);
+		return true;
+	} } } as ExtensionContext;
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		const result = await app.callTool("pi_pr_sweep", {
+			runId: routeRunId, action: "approve", guard: { epoch: 1, runId: "sweep", generation: 1, fingerprint: "a".repeat(64) },
+			summary: "Fix the parser; leave obsolete feedback closed.",
+		}, ctx);
+		assert.deepEqual(result.details, { approved: true });
+		assert.deepEqual(calls, ["guard", "Apply PR feedback fixes?: Fix the parser; leave obsolete feedback closed.", "approved"]);
+	} finally {
+		await app.shutdown(ctx);
 	}
 });
 

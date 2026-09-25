@@ -96,7 +96,7 @@ The creation workflow repeats destination, remote OID, PR, and configuration che
 
 Each helper workflow receives a random run ID and its first action. The run stays bound to one session, canonical worktree, route, and fresh authority. Helper calls from another run, session, worktree, or route fail.
 
-For comment sweeps, `/pr` checks the package recovery file without changing it. It selects `start` when recovery is absent. It selects `resume` only when valid recovery matches the fresh route authority. Invalid recovery stays unchanged and blocks dispatch with its path and reason.
+For comment sweeps, `/pr` checks the package recovery file without changing it. It selects `start` when recovery is absent. It selects `resume` only when valid recovery matches the fresh route authority. Invalid recovery stays unchanged and blocks dispatch with its path and reason. One `/pr` inspects all feedback, lists proposed fixes and non-actionable reasons, and asks for confirmation before editing. After approval it commits any fixes, validates, publishes, and replies to and resolves eligible review threads without another `/pr`. A declined plan can be resumed later.
 
 `/pr --feedback` uses the same discovery, reservation, recovery, and guard checks. It can select the sweep even when CI failure or merge readiness would otherwise select another route. Without the flag, route priority stays unchanged.
 
@@ -133,9 +133,9 @@ Ordinary conversation comments do not trigger a route or block a merge. Changes 
 
 The comment sweep resolves its bundled helper and references from the installed package skill path. It does not require an external `jq` executable.
 
-After publishing, `refresh` freezes the complete latest feedback and returns only IDs and kinds. Use `show` to inspect every fresh item.
+After publishing, `refresh` freezes the complete latest feedback and returns only IDs and kinds. Use `show` to inspect every fresh item. New actionable feedback after publication needs a separate follow-up sweep.
 
-A second guarded `record` must cover that exact snapshot before resolution or finalization. It keeps the paths from the initial record.
+A second guarded `record` must cover that exact snapshot before resolution or finalization. It keeps the paths from the initial record. The helper posts only a commit URL to each addressed unresolved review thread, or a one-sentence reason to each non-actionable unresolved thread, then resolves it through `gh api graphql`. Blocked threads stay open. Replies change the feedback snapshot, so finalization uses the guard and projection returned by resolution. GitHub does not offer resolution for standalone conversation comments or review bodies; these are assessed and reported, not marked resolved.
 
 The sweep runs existing non-destructive checks on the clean committed `HEAD` before publishing. Finalization reruns them as a later state guard.
 
@@ -161,7 +161,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 - `/pr` accepts either standalone `--feedback` or creation syntax with leading `--base BRANCH` and optional guidance. It rejects unknown or conflicting options. It does not open a browser.
 - It does not run `/done` or `/sweep`.
-- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep starts or resumes only when an explicit `/pr` selects it.
+- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep starts or resumes only when an explicit `/pr` selects it. Ordinary conversation comments still require `/pr --feedback` unless another review condition selects the sweep.
 - It does not enable auto-merge or add a merge queue.
 - It does not rebase the local branch, overwrite concurrent remote updates, delete branches, or clean up worktrees. Creation uses exact leases plus ancestry checks; an empty lease is only an atomic absence check.
 - Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.
