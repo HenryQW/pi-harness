@@ -37,12 +37,12 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 	}
 	if (prerequisites.length) {
 		const message = `pi-codegraph: setup skipped.\n${prerequisites.join("\n")}\nThen restart Pi or /reload.`;
-		ctx.ui.setStatus("pi-codegraph", "CodeGraph: prerequisites missing");
+		ctx.ui.setStatus("pi-codegraph", "pi-codegraph: prerequisites missing");
 		if (ctx.hasUI) ctx.ui.notify(message, "warning");
 		else console.warn(message);
 		return;
 	}
-	ctx.ui.setStatus("pi-codegraph", undefined);
+	ctx.ui.setStatus("pi-codegraph", "pi-codegraph: missing");
 	const rootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd, timeout: 10_000 });
 	if (rootResult.code !== 0 || rootResult.killed) {
 		if (!rootResult.killed && rootResult.stderr.includes("not a git repository")) return;
@@ -59,7 +59,8 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 	// Check the lock before the database: an in-progress/failed init can leave a partial DB.
 	const recovery = `Inspect CodeGraph in ${root}. If no initializer is running, run codegraph index in that directory, then remove ${lock} with rmdir and /reload.`;
 	const deadline = Date.now() + LOCK_WAIT_MS;
-	ctx.ui.setStatus("pi-codegraph", "CodeGraph: checking index…");
+	ctx.ui.setStatus("pi-codegraph", "pi-codegraph: checking index…");
+	let indexed = false;
 	try {
 		while (true) {
 			try {
@@ -68,26 +69,30 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 				if (Date.now() >= deadline) throw new Error(`Timed out waiting for CodeGraph initialization. ${recovery}`);
-				ctx.ui.setStatus("pi-codegraph", "CodeGraph: waiting for initialization…");
+				ctx.ui.setStatus("pi-codegraph", "pi-codegraph: indexing…");
 				await delay(250);
 			}
 		}
 		let attempted = false;
 		let succeeded = false;
 		try {
-			if (await hasIndex(root)) return;
+			if (await hasIndex(root)) {
+				indexed = true;
+				return;
+			}
 			const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"]);
 			const first = worktrees.split("\0", 1)[0];
 			if (!first?.startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
 			const primary = first.slice("worktree ".length);
 			if (!primary || primary === root || !(await hasIndex(primary))) return;
-			ctx.ui.setStatus("pi-codegraph", "CodeGraph: building worktree index…");
+			ctx.ui.setStatus("pi-codegraph", "pi-codegraph: indexing…");
 			attempted = true;
 			const result = await pi.exec("codegraph", ["init", "--yes", root], { cwd: root, timeout: INIT_TIMEOUT_MS });
 			if (result.code !== 0 || result.killed || !(await hasIndex(root))) {
 				throw new Error(`CodeGraph init failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${(result.stderr || result.stdout).trim().slice(-2000)}`);
 			}
 			succeeded = true;
+			indexed = true;
 			if (ctx.hasUI) {
 				ctx.ui.setWidget(WIDGET_KEY, ["pi-codegraph: index ready"]);
 				setTimeout(() => ctx.ui.setWidget(WIDGET_KEY, undefined), SUCCESS_TTL_MS);
@@ -102,7 +107,7 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 			if (!attempted || succeeded) await rmdir(lock);
 		}
 	} finally {
-		ctx.ui.setStatus("pi-codegraph", undefined);
+		ctx.ui.setStatus("pi-codegraph", indexed ? "pi-codegraph: indexed" : "pi-codegraph: missing");
 	}
 }
 
@@ -112,7 +117,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 			await initialize(pi, ctx);
 		} catch (error) {
 			const message = `pi-codegraph: ${error instanceof Error ? error.message : String(error)}`;
-			ctx.ui.setStatus("pi-codegraph", "CodeGraph: setup failed");
+			ctx.ui.setStatus("pi-codegraph", "pi-codegraph: setup failed");
 			if (ctx.hasUI) ctx.ui.notify(message, "error");
 			else throw new Error(message, { cause: error });
 		}

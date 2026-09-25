@@ -134,7 +134,7 @@ test("renders family status on the first line and external statuses beside runti
 	const modelText = "gpt-5.6-luna • high";
 	assert.match(stripTerminalSequences(rendered[0]!), /^repo · clear-field-f8d2 · PR #123 · approved +Codex #1 · 50% · 7d 1d 1h 22m$/);
 	assert.match(stripTerminalSequences(rendered[1]!), new RegExp(`^${usageText.replace("$", "\\$")} +${modelText}$`));
-	assert.match(stripTerminalSequences(rendered[2]!), /^↩ rewind ●  🐴\tponytail: ⚡ FULL ready +◷ 0s$/);
+	assert.match(stripTerminalSequences(rendered[2]!), /^↩ rewind · ●  🐴\tponytail: ⚡ FULL ready +◷ 0s$/);
 	assert.match(rendered[0]!, /\x1b\[32mPR #123 · approved\x1b\[39m/);
 	assert.doesNotMatch(rendered[2]!, /PR #123|Codex/);
 
@@ -195,6 +195,52 @@ test("renders family status on the first line and external statuses beside runti
 	);
 	assert.equal(stripTerminalSequences(submoduleFooter.render(100)[0]!), "child · main");
 	submoduleFooter.dispose();
+});
+
+test("shows installed CodeGraph first and marks active calls without showing an absent install", async () => {
+	const { handlers, start } = setupFooter();
+	const factory = await start({
+		mode: "tui", cwd: "/repo", sessionManager: { getEntries: () => [] }, getContextUsage: () => undefined,
+	});
+	let statuses = new Map<string, string>([["pi-rewind", "↩ rewind"]]);
+	let renders = 0;
+	const colors: Array<[string, string]> = [];
+	const footer = factory(
+		{ requestRender() { renders++; } },
+		{ fg: (color, text) => { colors.push([color, text]); return text; } },
+		{ getGitBranch: () => undefined, getExtensionStatuses: () => statuses, onBranchChange: () => () => {} },
+	);
+	const third = () => {
+		colors.length = 0;
+		return stripTerminalSequences(footer.render(100)[2]!);
+	};
+	const expectBadge = (status: string, glyph: string, color: string) => {
+		statuses.set("pi-codegraph", status);
+		assert.ok(third().startsWith(`${glyph} CG · ↩ rewind `));
+		assert.deepEqual(colors.filter(([, text]) => "●✓○◐!?".includes(text)), [[color, glyph]]);
+		assert.ok(colors.every(([, text]) => !text.includes("CG")));
+	};
+	assert.match(third(), /^↩ rewind +◷ 0s$/);
+	expectBadge("pi-codegraph: missing", "○", "dim");
+	expectBadge("pi-codegraph: checking index…", "◐", "warning");
+	expectBadge("pi-codegraph: indexing…", "◐", "warning");
+	expectBadge("pi-codegraph: prerequisites missing", "!", "error");
+	expectBadge("pi-codegraph: setup failed", "!", "error");
+	expectBadge("pi-codegraph: unknown", "?", "warning");
+	expectBadge("pi-codegraph: indexed", "✓", "success");
+	await handlers.get("tool_execution_start")!({ toolCallId: "cg-1", toolName: "codegraph_explore", args: {} });
+	await handlers.get("tool_execution_start")!({ toolCallId: "other", toolName: "mcp", args: { server: "other", tool: "codegraph_explore" } });
+	assert.match(third(), /^● CG · ↩ rewind +◷ 0s$/);
+	assert.ok(colors.some(([color, text]) => color === "accent" && text === "●"));
+	await handlers.get("tool_execution_end")!({ toolCallId: "other", toolName: "mcp" });
+	assert.match(third(), /^● CG · /);
+	await handlers.get("tool_execution_end")!({ toolCallId: "cg-1", toolName: "codegraph_explore" });
+	assert.match(third(), /^✓ CG · ↩ rewind +◷ 0s$/);
+	await handlers.get("tool_execution_start")!({ toolCallId: "cg-2", toolName: "mcp", args: { server: "henryqw_pi-codegraph__codegraph", tool: "codegraph_search" } });
+	assert.match(third(), /^● CG · /);
+	assert.ok(renders >= 3);
+	await handlers.get("session_shutdown")!(undefined);
+	footer.dispose();
 });
 
 test("shows deterministic Git status and refreshes after an agent run", async (t) => {

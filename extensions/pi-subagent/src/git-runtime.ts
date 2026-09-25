@@ -466,9 +466,8 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		if (!await this.isAncestor(requiredBase, identity.head, worktree.cwd, context)) {
 			throw new Error(`Task ${task.id} tip does not descend from its recorded base ${requiredBase}.`);
 		}
-		if (requireChange) {
-			const count = Number.parseInt(oneLine(await this.requireGit(["rev-list", "--count", `${requiredBase}..${identity.head}`], worktree.cwd, context), "task commit count"), 10);
-			if (!Number.isSafeInteger(count) || count < 1) throw new Error(`Task ${task.id} has no committed change from its recorded base.`);
+		if (requireChange && identity.head === requiredBase) {
+			throw new Error(`Task ${task.id} has no committed change from its recorded base.`);
 		}
 		return identity;
 	}

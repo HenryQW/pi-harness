@@ -43,6 +43,7 @@ The adapter discovers tools lazily.
 - Initialization happens when Pi launches, not when Git creates the worktree.
 - Each linked worktree keeps its own `.codegraph`; databases are never copied or shared between branches.
 - Non-Git directories and repositories without a primary index are not initialized.
+- When loaded, the extension reports whether the local index is `indexed`, `missing`, or `indexing…` through Pi's status channel. The `pi-footer` extension places a compact `CG` badge first on its third line and temporarily shows `● CG` during direct CodeGraph tool calls.
 
 ## State and storage
 
@@ -50,7 +51,7 @@ The extension relies on CodeGraph's own state — each worktree maintains its ow
 
 ## Limits and recovery
 
-At startup, the extension checks for a loaded adapter and runs `codegraph --version`. If either prerequisite is unavailable, Pi warns and skips setup. Restart Pi or run `/reload` after fixing prerequisites.
+At startup, the extension checks for a loaded adapter and runs `codegraph --version`. If either prerequisite is unavailable, Pi warns, reports `prerequisites missing`, and skips setup. Restart Pi or run `/reload` after fixing prerequisites.
 
 Initialization uses an exclusive `pi-codegraph-init.lock` in the worktree's Git metadata. Failed or interrupted initialization keeps the lock so a partial database is not accepted. To recover: remove the lock directory with `rmdir` only after `codegraph index` succeeds, then run `/reload`.
 

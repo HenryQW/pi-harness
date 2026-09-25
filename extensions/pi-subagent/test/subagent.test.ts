@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { execFile, execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -326,7 +327,7 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exac
 		await writeFile(identity.path, [
 			{ type: "session", id: "session" },
 			{ type: "message", id: "user", parentId: "session", message: { role: "user", content: [{ type: "text", text: identity.prompt }] } },
-			{ type: "message", id: "final", parentId: "user", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } },
+			{ type: "message", id: "final", parentId: "user", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", usage: { input: 1_200, output: 40, cacheRead: 300, cacheWrite: 0 } } },
 		].map((line) => JSON.stringify(line)).join("\n") + "\n");
 	};
 	return {
@@ -401,6 +402,27 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			assert.ok(startArgs.every((arg) => !/[\r\n]/.test(arg)), "Herdr launch arguments must be shell-safe");
 			await assert.rejects(stat(startArgs[startArgs.indexOf("--append-system-prompt") + 1]!), { code: "ENOENT" });
 			assert.ok(fake.calls.some((args) => args.includes("--no-focus") && args.includes(cwd)));
+		});
+	});
+});
+
+test("direct widget shows one compact mode, role, route and measured-usage row", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, () => "answer", gate);
+			const app = harness({ cwd, herdr: fake.exec, ui: true });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("widget", { role: "worker", name: "Search audit", task: "inspect" }, undefined, undefined, app.ctx);
+			assert.equal(app.widget?.render(120).length, 1);
+			assert.match(app.widget!.render(120)[0]!, /^⠋ D \[W\] Search audit · .*\/.* · — tok · /);
+			release();
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.match(app.widget!.render(120)[0]!, /✓ D \[W\] complete · Search audit · .* · 1\.5k tok · /);
+			assert.ok(visibleWidth(app.widget!.render(26)[0]!) <= 26);
+			assert.match(app.widget!.render(26)[0]!, /^✓ D \[W\] complete · /);
 		});
 	});
 });

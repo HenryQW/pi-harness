@@ -216,7 +216,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		if (typeof resolvedRoot !== "string" || !isAbsolute(resolvedRoot) || resolvedRoot.includes("\0")) {
 			throw new Error("Pi Subagent root resolver must return an absolute canonical path.");
 		}
-		const root = normalize(await realpath(resolvedRoot));
+		const root = await realpath(resolvedRoot);
 		if (root !== resolvedRoot) throw new Error("Pi Subagent root resolver returned a non-canonical path.");
 		const rootInfo = await lstat(root);
 		if (!rootInfo.isDirectory()) throw new Error("Pi Subagent root must be an existing local directory.");
