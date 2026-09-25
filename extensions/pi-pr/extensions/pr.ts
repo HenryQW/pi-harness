@@ -722,6 +722,8 @@ export default function pullRequestExtension(
 		observation = latestObservation(ctx);
 		if (!ctx.hasUI) return;
 		context = ctx;
+		ctx.ui.setStatus(UI_KEY, undefined);
+		ctx.ui.setWidget(UI_KEY, undefined);
 		refreshInBackground();
 	});
 

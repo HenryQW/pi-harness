@@ -141,7 +141,7 @@ The sweep runs existing non-destructive checks on the clean committed `HEAD` bef
 
 ### Refresh
 
-PR discovery starts in the background at session start, so the Pi footer appears before the PR status is ready. The PR status and action hint appear when discovery finishes. A directory outside a Git worktree stays silent. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
+PR discovery starts in the background at session start, so the Pi footer appears before the PR status is ready. When switching sessions, the previous PR status and action hint clear immediately; the new ones appear when discovery finishes. A directory outside a Git worktree stays silent. The UI shows `PR · status unavailable` for other discovery failures and reports only a generic error.
 
 They refresh after local commits, PR creation, pushes, and each dispatched workflow settles. During creation, intermediate refreshes wait until the workflow settles. They also refresh after any successful delegated task settles. There is no periodic presentation refresh, so external changes may leave the footer and widget stale indefinitely. `/pr` reads fresh state before routing or acting and remains authoritative.
 
