@@ -975,6 +975,38 @@ test("starts PR discovery without blocking the next extension and publishes the 
 	}
 });
 
+test("cancels pending presentation discovery before /pr reads fresh authority", async () => {
+	const pending = deferred<CurrentPullRequestDiscovery>();
+	let loads = 0;
+	let presentationAbortedAtCommandLoad = false;
+	let presentationSignal: AbortSignal | undefined;
+	const app = harness({
+		useDefaultCommandHandler: true,
+		async load(_pi, context) {
+			if (++loads === 1) {
+				presentationSignal = context.signal;
+				return pending.promise;
+			}
+			if (loads === 2) presentationAbortedAtCommandLoad = presentationSignal?.aborted ?? false;
+			return { kind: "inactive" };
+		},
+	});
+	const ctx = app.context();
+
+	try {
+		await app.startNow(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.equal(loads >= 2, true, "/pr must perform fresh discovery");
+		assert.equal(presentationAbortedAtCommandLoad, true);
+		pending.resolve(currentPullRequest());
+		await flush();
+		assert.equal(app.statuses.at(-1), undefined, "cancelled presentation must not overwrite the command result");
+	} finally {
+		pending.resolve({ kind: "inactive" });
+		await app.shutdown(ctx);
+	}
+});
+
 test("clears the previous session PR status and action while new discovery is pending", async () => {
 	const pending = deferred<CurrentPullRequestDiscovery>();
 	let loads = 0;

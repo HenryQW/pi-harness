@@ -781,6 +781,7 @@ export default function pullRequestExtension(
 		description: "[--feedback | --base <branch> [instructions]] — Run the current branch pull request next step",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
+			cancelRefresh();
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");
