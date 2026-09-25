@@ -245,9 +245,79 @@ test("/remember rejects invalid preparation and queues busy requests in order", 
 		await remember.handler("second", { ...ctx, isIdle: () => false });
 		assert.equal(calls.length, 2);
 		await settled({ type: "agent_settled" }, ctx);
-		await settled({ type: "agent_settled" }, ctx);
 		assert.deepEqual(calls.slice(2).map((call) => JSON.parse(call.context.messages[0]!.content).candidate), ["first", "second"]);
 		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+	});
+});
+
+test("/remember drains a busy queue with fresh state from earlier queued writes", async () => {
+	await withReviewFixture({
+		responses: [
+			JSON.stringify({ target: "memory", content: "first fact" }),
+			JSON.stringify({ verdict: "distinct", explanation: "New fact." }),
+			JSON.stringify({ skip: "Second declined." }),
+		],
+	}, async ({ memoryDir, commands, ctx, calls, settled }) => {
+		const remember = commands.get("remember")!;
+		await remember.handler("first", { ...ctx, isIdle: () => false });
+		await remember.handler("second", { ...ctx, isIdle: () => false });
+		await settled({ type: "agent_settled" }, ctx);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "first fact");
+		assert.deepEqual(calls.map((call) => JSON.parse(call.context.messages[0]!.content).candidate).filter(Boolean), ["first", "second"]);
+		assert.deepEqual(JSON.parse(calls[2]!.context.messages[0]!.content).entries.memory, ["first fact"]);
+	});
+});
+
+test("/remember prepares from the snapshot actually checked after a concurrent edit", async () => {
+	await withReviewFixture({ memory: "stale fact", responses: [JSON.stringify({ skip: "Already known." })] }, async ({ memoryDir, commands, ctx, calls }) => {
+		const path = join(memoryDir, "MEMORY.md");
+		const original = MemoryStore.prototype.load;
+		let reads = 0;
+		try {
+			MemoryStore.prototype.load = async function () {
+				if (this.path === path && ++reads === 2) await writeFile(path, "fresh fact");
+				return original.call(this);
+			};
+			await commands.get("remember")!.handler("fresh fact", ctx);
+		} finally {
+			MemoryStore.prototype.load = original;
+		}
+		assert.deepEqual(JSON.parse(calls[0]!.context.messages[0]!.content).entries.memory, ["fresh fact"]);
+		assert.equal(await readFile(path, "utf8"), "fresh fact");
+	});
+});
+
+test("/remember passes cancellation through preparation and leaves memory untouched", async () => {
+	const controller = new AbortController();
+	await withReviewFixture({
+		responses: [async () => {
+			controller.abort(new Error("remember cancelled"));
+			return JSON.stringify({ target: "memory", content: "candidate" });
+		}],
+	}, async ({ memoryDir, commands, ctx, calls, notifications }) => {
+		await commands.get("remember")!.handler("candidate", { ...ctx, signal: controller.signal });
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0]!.options.signal, controller.signal);
+		assert.match(notifications.at(-1)!, /remember cancelled/);
+		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+	});
+});
+
+test("/remember also passes cancellation into the add review", async () => {
+	const controller = new AbortController();
+	await withReviewFixture({
+		responses: [
+			JSON.stringify({ target: "user", content: "candidate" }),
+			async () => {
+				controller.abort(new Error("review cancelled"));
+				return JSON.stringify({ verdict: "distinct", explanation: "New fact." });
+			},
+		],
+	}, async ({ memoryDir, commands, ctx, calls, notifications }) => {
+		await commands.get("remember")!.handler("candidate", { ...ctx, signal: controller.signal });
+		assert.deepEqual(calls.map((call) => call.options.signal), [controller.signal, controller.signal]);
+		assert.match(notifications.at(-1)!, /review cancelled/);
+		await assert.rejects(readFile(join(memoryDir, "USER.md")), /ENOENT/);
 	});
 });
 
@@ -458,6 +528,40 @@ test("/dream cancellation and source drift preserve SYSTEM, entries, and timesta
 		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "original");
 		assert.equal(await readFile(memoryPath, "utf8"), "changed entry");
 		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "dream.json")), /ENOENT/);
+	});
+});
+
+test("/dream rejects a unique substring removal before editing SYSTEM", async () => {
+	await withReviewFixture({
+		system: "global rules", memory: "Always verify production changes and preserve backups",
+		responses: [JSON.stringify({
+			reason: "Global rule.", system: { find: "", replace: "\nVerify changes." },
+			remove: { memory: ["verify"], user: [] },
+		})],
+	}, async ({ agentDir, memoryDir, commands, ctx, questions, notifications }) => {
+		await commands.get("dream")!.handler("", ctx);
+		assert.match(notifications.at(-1)!, /exact existing whole memory entries/);
+		assert.deepEqual(questions, []);
+		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "global rules");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "Always verify production changes and preserve backups");
+	});
+});
+
+test("/dream cancellation during approval prevents SYSTEM and memory writes", async () => {
+	const controller = new AbortController();
+	await withReviewFixture({
+		system: "original", memory: "entry",
+		responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } })],
+		select: (choices) => {
+			controller.abort(new Error("dream cancelled"));
+			return choices.find((choice) => choice.includes("Apply promotion"));
+		},
+	}, async ({ agentDir, memoryDir, commands, ctx, calls, notifications }) => {
+		await commands.get("dream")!.handler("", { ...ctx, signal: controller.signal });
+		assert.equal(calls[0]!.options.signal, controller.signal);
+		assert.match(notifications.at(-1)!, /dream cancelled/);
+		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "original");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
 	});
 });
 

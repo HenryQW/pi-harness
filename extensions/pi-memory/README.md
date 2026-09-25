@@ -61,7 +61,7 @@ Exact duplicate single adds and duplicate-only add batches are idempotent and sk
 
 `/remember <instruction>` uses the bounded `pi-memory/prepareCandidate` Model Task to propose a target and exact entry or decline the request. It checks for source changes, then saves through the same reviewed memory tool. It does not dispatch an open-ended instruction to the session agent. The configured `balanced` task-model profile must be available.
 
-If Pi is busy, it queues the trimmed instruction. It processes one queued instruction after each settled response with freshly read live entries. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
+If Pi is busy, it queues the trimmed instruction. Once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
 
 ### `/dream`
 
@@ -71,7 +71,7 @@ It recommends `/dream` when either store is at least 70% full and the last dream
 
 `/dream` uses `pi-memory/promoteEntries` to propose one exact edit to the agent-global `~/.pi/agent/SYSTEM.md` and the whole entries represented by the result. It previews the proposal for approval in the interactive UI. After approval, it checks that SYSTEM and both memory stores are unchanged, writes SYSTEM first, then removes the selected entries. A failed SYSTEM write removes nothing. If removal fails after SYSTEM was updated, rerun `/dream` to reconcile; the timestamp is not advanced. Successful runs record their time in `~/.pi/agent/config/pi-memory/dream.json`.
 
-SYSTEM.md must already exist, be readable, and not be a symlink. Establish it deliberately and completely: a partial SYSTEM replaces Pi's default prompt. A SYSTEM edit takes effect in a new session, not the current frozen snapshot. `/dream` cannot run without an interactive UI or a configured `balanced` task-model route.
+SYSTEM.md must already exist, be readable, and not be a symlink. Establish it deliberately and completely: a partial SYSTEM replaces Pi's default prompt. A SYSTEM edit takes effect in a new session, not the current frozen snapshot. `/dream` cannot run without an interactive UI or a configured `balanced` task-model route. If Pi supplies a cancellation signal, commands stop before writing when it is aborted; Pi may provide no signal while idle. Once a SYSTEM edit is saved, entry removal continues so the promotion can be reconciled on retry.
 
 ### Per-turn memory check
 
