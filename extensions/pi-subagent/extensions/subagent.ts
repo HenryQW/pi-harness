@@ -243,7 +243,50 @@ export default function subagentExtension(
 			return [...grouped.values()];
 		},
 		isolated: (cwd) => isolatedSurface.inventory(cwd),
-		inspect: (root, id) => isolatedSurface.inspect(root, id),
+		async inspectInTab(root, id, ctx, current) {
+			const notices = await isolatedSurface.inspect(root, id);
+			if (!current()) throw new Error("Session or branch changed before status inspection.");
+			const snapshot = notices.join("\n");
+			if (Buffer.byteLength(snapshot, "utf8") > 32_000) throw new Error("Status exceeds the 32 KiB inspection limit; use subagent_status for exact evidence.");
+			const role = loadRoles().find((candidate) => candidate.name === "scout");
+			if (!role || roleCanWrite(role)) throw new Error("Status inspection requires a configured read-only scout Role.");
+			const prepared = prepareRoleLaunch(pi, ctx, { role, task: DELEGATE_TASK, modelClass: "fast" });
+			const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
+			const controller = new AbortController();
+			const taskId = `inspect-${id}-${randomUUID()}`;
+			const handles: DirectHandle[] = [];
+			const tabs: DirectTabRecord[] = [];
+			let resolveSettled!: () => void;
+			const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
+			directTasks.set(taskId, { controller, settled, handles, tabs });
+			try {
+				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
+					promptArgIndex: prepared.promptArgIndex }, controller.signal);
+				let handle: DirectHandle;
+				try {
+					handle = await herdr.start(
+						{ ...prepared, args: [...transient.launch.args] }, `i-${randomUUID().replaceAll("-", "").slice(0, 24)}`,
+						`Inspect ${id}`, `Analyze this saved, read-only status snapshot for request ${id}. Summarize blockers and safe next decisions; do not infer missing evidence or mutate resources. The subagent_status tool in Main remains authoritative for exact action identities.\n\n${snapshot}`,
+						controller.signal, (tab) => {
+							const record = { taskId, entryId: id, ...tab };
+							pi.appendEntry(DIRECT_TAB_TYPE, record);
+							tabs.push(record);
+						});
+				} catch (error) {
+					throw new Error(`${error instanceof Error ? error.message : String(error)}. Inspection Role prompt retained at ${transient.launch.args[prepared.promptArgIndex + 1]} after uncertain start.`, { cause: error });
+				}
+				handles.push(handle);
+				await transient.cleanup();
+				if (!current() || controller.signal.aborted) {
+					await handle.cancel();
+					throw new Error(`Session changed during inspection launch; inspect Herdr tab ${handle.tabId}.`);
+				}
+				return { tabId: handle.tabId, name: handle.name, sessionFile: handle.sessionFile };
+			} finally {
+				directTasks.delete(taskId);
+				resolveSettled();
+			}
+		},
 		canFollowup: (root, id, task) => isolatedSurface.canFollowup(root, id, task),
 		enqueue: (root, id, task, text, current) => isolatedSurface.enqueue(root, id, task, text, current),
 		drain: (root, id, task, current) => isolatedSurface.drain(root, id, task, current),

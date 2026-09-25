@@ -475,8 +475,11 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		const controller = new AbortController();
 		activeJobs.add(controller);
 		jobOwners.set(key, canDeliver);
+		const notified = new Set<string>();
+		let candidateListener: ((state: RunState) => void) | undefined;
 		const finish = () => {
 			activeJobs.delete(controller);
+			if (candidateListener) stateListeners.delete(candidateListener);
 			if (jobOwners.get(key) === canDeliver) jobOwners.delete(key);
 		};
 		const abortBeforeAck = () => controller.abort(signal?.reason);
@@ -491,6 +494,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			if (state.root !== root || state.request.id !== id) return;
 			latestState = state;
 			if (!acknowledged(state)) return;
+			for (const candidate of state.integration.candidates) notified.add(`${candidate.taskId}\0${candidate.attempt}\0${candidate.tip.head}`);
 			stateListeners.delete(listener);
 			removeTurnAbort();
 			accept(state);
@@ -516,6 +520,17 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				if (ctx.hasUI) ctx.ui.notify(`Pi Subagent ${id} result delivery failed; use subagent_status to recover.`, "error");
 			}
 		};
+		candidateListener = (state) => {
+			if (state.root !== root || state.request.id !== id || state.status !== "running" || !canDeliver()) return;
+			latestState = state;
+			for (const candidate of state.integration.candidates) {
+				const identity = `${candidate.taskId}\0${candidate.attempt}\0${candidate.tip.head}`;
+				if (candidate.decision || notified.has(identity)) continue;
+				notified.add(identity);
+				deliver(`Pi Subagent ${id}: ${candidate.taskId} ready to integrate. Inspect the exact candidate with subagent_status and stage it now; other workers may still be running.`);
+			}
+		};
+		stateListeners.add(candidateListener);
 		void Promise.resolve().then(() => start(controller.signal)).then(
 			(response) => {
 				finish();
@@ -591,6 +606,12 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
+			if (params.action === "advance") {
+				return await startInSession(params.id, root, signal, ctx,
+					(state) => state.status === "running" && state.waves.at(-1)?.status === "dispatching"
+						&& sameIdentity(state.waves.at(-1)!.base, params.expectedTip),
+					(runSignal) => getComponents().runner.integrate(params, root, runSignal));
+			}
 			return toolResult(await getComponents().runner.integrate(params, root, signal), ctx, workspaceRowsByRequest);
 		},
 	});

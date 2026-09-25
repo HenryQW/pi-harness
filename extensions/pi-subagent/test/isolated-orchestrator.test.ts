@@ -699,6 +699,63 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 	assert.equal(harness.sent.length, 2);
 });
 
+test("a ready worker sends Main a stageable follow-up before the wave finishes", async () => {
+	const done = deferred<RunResponse>();
+	let save!: (state: RunState) => void;
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async execute() {
+			const pending = structuredClone(PRIVATE_STATE);
+			pending.status = "pending";
+			pending.updatedAt = pending.createdAt;
+			pending.tasks[0]!.status = "pending";
+			pending.tasks[0]!.attempts = [];
+			save(pending);
+			return await done.promise;
+		} } as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	const ready = structuredClone(PRIVATE_STATE);
+	ready.status = "running";
+	ready.tasks[0]!.status = "ready_to_integrate";
+	ready.integration.candidates = [{ taskId: "unit-one", attempt: 1, base: RECORDED_MAIN,
+		tip: CURRENT_MAIN, checks: { phase: "preliminary", candidate: CURRENT_MAIN, identityAfter: CURRENT_MAIN,
+			passed: true, results: [], at: 200 }, worker: "retained" }];
+	save(ready);
+	save(ready);
+	assert.equal(harness.sent.length, 1);
+	assert.match(harness.sent[0]!.message.content, /unit-one.*ready to integrate/);
+	assert.deepEqual(harness.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+	assert.equal((harness.sent[0]!.message.details as { state: { status: string } }).state.status, "running");
+	done.resolve(response("execute", true, ready));
+	await new Promise(setImmediate);
+});
+
+test("advance acknowledges a dependent wave before its workers finish", async () => {
+	const done = deferred<RunResponse>();
+	let save!: (state: RunState) => void;
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async integrate() {
+			const running = structuredClone(PRIVATE_STATE);
+			running.status = "running";
+			running.waves = [{ number: 1, base: RECORDED_MAIN, taskIds: ["unit-one"], status: "dispatching" }];
+			save(running);
+			return await done.promise;
+		} } as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	const result = await executeTool(namedTool(harness, "subagent_integrate"),
+		{ id: "request-one", generation: 1, action: "advance", expectedTip: RECORDED_MAIN }, undefined, ctx);
+	assert.match(result.content[0]!.text, /durable request accepted/);
+	done.resolve(response("advance"));
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 1);
+});
+
 test("preflight errors reject before acknowledgement; post-save failures report durable recovery", async () => {
 	const failedPreflight = createHarness({ runner: { async execute() { throw new Error("host preflight failed"); } } as never });
 	await assert.rejects(executeTool(namedTool(failedPreflight, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT)), /host preflight failed/);

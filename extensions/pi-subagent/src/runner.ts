@@ -315,7 +315,9 @@ class DurableRunStopped extends Error {
 
 type ProductiveLifecycle = {
 	readonly lease: ProductiveRunLease;
+	readonly stages: Set<Promise<RunResponse>>;
 	stopped: boolean;
+	handle?: RunStateHandle;
 };
 
 interface RuntimeScope {
@@ -882,11 +884,12 @@ export class IsolatedRunner {
 			if (this.productiveLifecycles.has(root)) {
 				throw new Error("Another Pi Subagent productive request is active in this runner.");
 			}
-			const lifecycle: ProductiveLifecycle = { lease, stopped: false };
+			const lifecycle: ProductiveLifecycle = { lease, stages: new Set(), stopped: false };
 			this.productiveLifecycles.set(root, lifecycle);
 			try {
 				return await operation(lifecycle);
 			} finally {
+				await Promise.allSettled(lifecycle.stages);
 				this.productiveLifecycles.delete(root);
 			}
 		});
@@ -1065,10 +1068,11 @@ export class IsolatedRunner {
 	async stage(value: unknown, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const action = parseStageRequest(value);
 		root = realpathSync.native(root);
-		return await this.withProductiveRun(root, async (lifecycle) => {
-			const handle = await this.store.withLock(root, async () => await this.store.load(root, action.id), { productiveRunLease: lifecycle.lease });
+		const stageSelected = async (handle: RunStateHandle, duringWave: boolean): Promise<RunResponse> => {
 			const state = handle.state;
-			if (terminal(state) || state.status !== "needs_attention" || (state.integration.refresh && state.integration.refresh.status !== "ready")) {
+			if (terminal(state) || (state.status !== "needs_attention"
+				&& !(duringWave && state.status === "running" && (action.action === "stage" || action.action === "resolve")))
+				|| (state.integration.refresh && state.integration.refresh.status !== "ready")) {
 				throw new Error("Request is not waiting for Main staging or refresh allocation remains uncertain.");
 			}
 			const candidate = state.integration.candidates.find((item) => item.taskId === action.taskId && item.attempt === action.attempt
@@ -1308,6 +1312,25 @@ export class IsolatedRunner {
 			// Unproved outcomes keep the intent; never replay a merge automatically.
 			await this.saveProductive(handle);
 			return this.response(state);
+		};
+		const active = this.productiveLifecycles.get(root);
+		if (active?.handle?.state.request.id === action.id) {
+			if (active.stopped) throw new DurableRunStopped(active.handle.state);
+			if (action.action !== "stage" && action.action !== "resolve") {
+				throw new Error("Wait for active workers before revising or rejecting a candidate.");
+			}
+			if (active.stages.size) throw new Error("Another stage or resolution is active; retry after it finishes.");
+			const stage = stageSelected(active.handle, true);
+			active.stages.add(stage);
+			try {
+				return await stage;
+			} finally {
+				active.stages.delete(stage);
+			}
+		}
+		return await this.withProductiveRun(root, async (lifecycle) => {
+			const handle = await this.store.withLock(root, async () => await this.store.load(root, action.id), { productiveRunLease: lifecycle.lease });
+			return await stageSelected(handle, false);
 		});
 	}
 
@@ -1863,6 +1886,8 @@ export class IsolatedRunner {
 		stagedSnapshot?: WorkspaceIdentity,
 	): Promise<RunResponse> {
 		const state = handle.state;
+		const lifecycle = this.productiveLifecycles.get(state.root)!;
+		lifecycle.handle = handle;
 		let saveOnExit = true;
 		state.status = "running";
 		state.updatedAt = this.coordinatorRuntime.now();
@@ -1931,6 +1956,10 @@ export class IsolatedRunner {
 				const dispatched = await Promise.allSettled(ready.map(async (task) => {
 					try {
 						await this.dispatchTask(handle, task, scope);
+						if (task.kind === "changeset" && task.status === "ready_to_integrate") {
+							this.retainCandidate(state, task);
+							await this.saveProductive(handle);
+						}
 					} catch (error) {
 						this.rethrowStopped(error);
 						const failure = isDeadline(error, scope)
@@ -1957,7 +1986,6 @@ export class IsolatedRunner {
 					forceTextTaskId = undefined;
 					continue;
 				}
-				for (const task of ready) if (task.kind === "changeset") this.retainCandidate(state, task);
 				wave.status = "needs_attention";
 				state.status = "needs_attention";
 				await this.saveProductive(handle);
@@ -1982,9 +2010,13 @@ export class IsolatedRunner {
 			return this.response(state);
 		} finally {
 			this.closeRequestControls(state.root, state.request.id);
-			if (saveOnExit) {
-				state.updatedAt = this.coordinatorRuntime.now();
-				await this.saveProductive(handle);
+			try {
+				if (saveOnExit) {
+					state.updatedAt = this.coordinatorRuntime.now();
+					await this.saveProductive(handle);
+				}
+			} finally {
+				if (lifecycle.handle === handle) delete lifecycle.handle;
 			}
 		}
 	}
@@ -2588,6 +2620,8 @@ export class IsolatedRunner {
 			tip: attempt.candidate, checks: attempt.preliminaryChecks,
 			...(request.judgment ? { review: attempt.preliminaryReview } : {}), worker: "retained",
 		});
+		state.integration.candidates.sort((a, b) => state.tasks.findIndex((item) => item.taskId === a.taskId)
+			- state.tasks.findIndex((item) => item.taskId === b.taskId));
 	}
 
 	private async verifyRetainedTask(

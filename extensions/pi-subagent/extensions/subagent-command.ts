@@ -31,7 +31,7 @@ export interface IsolatedInventory {
 export interface SubagentCommandAdapter {
 	direct(ctx: ExtensionContext): readonly DirectTask[];
 	isolated(cwd: string): Promise<IsolatedInventory>;
-	inspect(root: string, requestId: string): Promise<readonly string[]>;
+	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ tabId: string; name: string; sessionFile: string }>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
 	drain(root: string, requestId: string, taskId: string, current: () => boolean): readonly string[];
@@ -130,8 +130,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					if (action === "back") break;
 					if (action === "inspect") {
 						try {
-							const notices = await adapter.inspect(root, request.id);
-							if (valid()) for (const notice of notices) ctx.ui.notify(notice, "info");
+							const tab = await adapter.inspectInTab(root, request.id, ctx, current);
+							if (valid()) ctx.ui.notify(`Status inspection started in Herdr tab ${tab.tabId} · agent ${tab.name} · session ${tab.sessionFile}.`, "info");
 						}
 						catch (error) { if (valid()) ctx.ui.notify(`Inspection failed: ${errorText(error)}`, "error"); }
 						continue;

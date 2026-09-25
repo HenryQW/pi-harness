@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { registerSubagentCommand, type IsolatedInventory, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
 type Dialog = { kind: "select" | "editor"; title: string; options?: string[]; prefill?: string };
-function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; inspection?: readonly string[] } = {}) {
+function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]> } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
@@ -22,7 +22,10 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	const adapter: SubagentCommandAdapter = {
 		direct: () => options.direct ?? [],
 		isolated: async () => { if (options.isolatedError) throw options.isolatedError; return inventory; },
-		inspect: async (_root, id) => { inspectCount++; return options.inspection ?? [`Status for ${id}: retained worktree /safe; continuation: ask Main`]; },
+		inspectInTab: async (_root, id, _ctx, current) => {
+			assert.equal(current(), true); inspectCount++;
+			return { tabId: `tab-${id}`, name: "status-scout", sessionFile: "/status/session.jsonl" };
+		},
 		canFollowup: () => active,
 		epoch: () => epoch,
 		drain: (root, id, task, current) => {
@@ -89,15 +92,24 @@ test("direct recovery, history and duplicate labels retain exact records", async
 	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Direct")));
 });
 
-test("inspection presents every resource notice without a global 6000-character cutoff or mutation", async () => {
-	const path = `/retained/${"x".repeat(6100)}/late`;
-	const h = harness({ inspection: [...Array.from({ length: 40 }, (_, index) => `Earlier resource ${index}`), `Worktree ${path}`] });
+test("inspection launches a Herdr tab without queuing a Main turn or changing work", async () => {
+	const h = harness();
 	h.responses.push(h.pick("Isolated"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
-	assert.ok(h.notices.some(({ message }) => message === `Worktree ${path}`));
+	assert.ok(h.notices.some(({ message }) => message.includes("Herdr tab tab-request · agent status-scout")));
 	assert.equal(h.inspectCount, 1);
 	assert.deepEqual(h.queues.get("task"), ["first", "first", "third"]);
 	assert.deepEqual(h.sent, []);
+});
+
+test("inspection does not launch after the session changes in the menu", async () => {
+	const h = harness();
+	h.responses.push(h.pick("Isolated"), (dialog) => {
+		h.changeSession();
+		return dialog.options!.find((option) => option.includes("Inspect"));
+	});
+	await h.run();
+	assert.equal(h.inspectCount, 0);
 });
 
 test("failed isolated discovery preserves direct branch recovery and invalid inventory does not suppress healthy requests", async () => {
