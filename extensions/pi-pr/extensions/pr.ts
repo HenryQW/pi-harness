@@ -478,8 +478,13 @@ export default function pullRequestExtension(
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
 					case "approve": {
-						await selected.workflow.approval(params.guard);
-						const approved = await ctx.ui.confirm("Apply PR feedback fixes?", params.summary);
+						const recorded = await selected.workflow.approval(params.guard);
+						if (!recorded.plan) throw new Error("Comment sweep approval has no recorded plan");
+						const plan = recorded.plan.ledger.map(({ kind, id, disposition, note }) =>
+							`${kind}:${id} — ${disposition}: ${note}`).join("\n");
+						const paths = recorded.plan.ownedPaths.join("\n") || "(none)";
+						const approved = await ctx.ui.confirm("Apply PR feedback fixes?",
+							`${params.summary}\n\nSaved plan:\n${plan}\n\nOwned paths:\n${paths}`);
 						if (approved) await selected.workflow.confirmApproval(params.guard);
 						return { approved };
 					}
