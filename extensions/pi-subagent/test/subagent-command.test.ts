@@ -18,10 +18,14 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	const entries = ["root", "leaf", "existing-child", "sibling"];
 	let active = true;
 	let inspectCount = 0;
+	let recoverCount = 0;
+	const messages: string[] = [];
+	let recoverPause: (() => Promise<void>) | undefined;
 	const inventory = options.inventory ?? { root: "/git", requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
 	const adapter: SubagentCommandAdapter = {
 		direct: () => options.direct ?? [],
 		isolated: async () => { if (options.isolatedError) throw options.isolatedError; return inventory; },
+		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
 		inspectInTab: async (_root, id, _ctx, current) => {
 			assert.equal(current(), true); inspectCount++;
 			return { tabId: `tab-${id}`, name: "status-scout", sessionFile: "/status/session.jsonl" };
@@ -60,12 +64,16 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 			},
 		},
 	} as unknown as ExtensionContext;
-	registerSubagentCommand({ registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; } } as ExtensionAPI, adapter);
+	registerSubagentCommand({ registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
+		sendMessage: (message: { content: string }) => { messages.push(message.content); },
+	} as unknown as ExtensionAPI, adapter);
 	const pick = (contains: string) => (dialog: Dialog) => {
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, pick,
+	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick,
+		setRecoverPause: (pause: () => Promise<void>) => { recoverPause = pause; },
+		get recoverCount() { return recoverCount; },
 		setActive: (value: boolean) => { active = value; },
 		get inspectCount() { return inspectCount; },
 		changeSession: () => { session = "next"; }, changeFile: () => { file = "next.jsonl"; },
@@ -208,6 +216,22 @@ test("durable-only or other-owner requests cannot offer follow-up; task sealing 
 	race.responses.push(race.pick("Isolated"), race.pick("Edit queued"), (dialog) => { race.setActive(false); return dialog.options!.find((option) => option.includes("· task [")); }, race.pick("Back"), race.pick("Close"));
 	await race.run(); assert.equal(race.queues.get("task")!.length, 3);
 	assert.ok(race.notices.some((notice) => notice.message.includes("Cannot withdraw")));
+});
+
+test("recover delivers one Main follow-up without interactive UI or menu actions", async () => {
+	const h = harness({ ui: false });
+	await h.run("recover");
+	assert.deepEqual(h.messages, ["Recovery report for Main"]);
+	assert.equal(h.recoverCount, 1);
+	assert.deepEqual(h.dialogs, []);
+	assert.deepEqual(h.sent, []);
+});
+
+test("recover does not deliver a stale follow-up after session replacement", async () => {
+	const h = harness();
+	h.setRecoverPause(async () => { h.changeSession(); });
+	await h.run("recover");
+	assert.deepEqual(h.messages, []);
 });
 
 test("no UI and unknown arguments fail before dialogs or mutations", async () => {

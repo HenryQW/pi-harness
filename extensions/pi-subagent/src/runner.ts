@@ -43,7 +43,7 @@ import {
 	type WorktreeAllocationPlan,
 	type WorkspaceIdentity,
 } from "./schema.ts";
-import { FileRunStore, type ProductiveRunLease, type RunStateHandle } from "./store.ts";
+import { FileRunStore, ProductiveRunLeaseBusyError, type ProductiveRunLease, type RunStateHandle } from "./store.ts";
 
 const TRUNCATION_MARKER = "\n[truncated]";
 const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
@@ -845,6 +845,36 @@ export class IsolatedRunner {
 				status: state.tasks.find((item) => item.taskId === task.id)!.status,
 			})),
 		})) };
+	}
+
+	/** Classify orphaned work under the same repository lease as productive execution.
+	 * Status remains read-only; Main alone chooses any subsequent action. */
+	async recoverRepository(root: string): Promise<{ requests: RunResponse[]; invalidIds: string[]; leaseBusy: boolean }> {
+		root = realpathSync.native(root);
+		let leaseBusy = false;
+		let inventory: Awaited<ReturnType<IsolatedRunner["listRequests"]>>;
+		try {
+			inventory = await this.withProductiveRun(root, async (lifecycle) => await this.store.withLock(root, async () => {
+				const listed = await this.listRequests(root);
+				for (const request of listed.requests) {
+					if (request.status !== "pending" && request.status !== "running") continue;
+					const handle = await this.store.load(root, request.id);
+					if (this.recoverInterrupted(handle.state)) await handle.save();
+				}
+				return listed;
+			}, { productiveRunLease: lifecycle.lease }));
+		} catch (error) {
+			if (!(error instanceof ProductiveRunLeaseBusyError)) throw error;
+			leaseBusy = true;
+			inventory = await this.listRequests(root);
+		}
+		const requests: RunResponse[] = [];
+		for (const request of inventory.requests) {
+			if (["pending", "running", "needs_attention", "completed · retained"].includes(request.status)) {
+				requests.push(await this.status(request.id, root));
+			}
+		}
+		return { requests, invalidIds: inventory.invalidIds, leaseBusy };
 	}
 
 	canFollowup(root: string, requestId: string, taskId: string): boolean {

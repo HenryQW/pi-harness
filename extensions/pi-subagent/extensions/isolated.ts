@@ -377,6 +377,7 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 export interface IsolatedSurface {
 	execute(params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string): Promise<IsolatedInventory>;
+	recover(cwd: string): Promise<string>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
@@ -394,7 +395,7 @@ export interface RegisterIsolatedOptions {
 export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIsolatedOptions): IsolatedSurface {
 	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) {
 		const denied = (): never => { throw new Error("Child Roles cannot access isolated delegation."); };
-		return { execute: async () => denied(), inventory: async () => denied(), inspect: async () => denied(), canFollowup: denied, enqueue: denied, drain: denied };
+		return { execute: async () => denied(), inventory: async () => denied(), recover: async () => denied(), inspect: async () => denied(), canFollowup: denied, enqueue: denied, drain: denied };
 	}
 	const componentsFactory = options.componentsFactory ?? createIsolatedComponents;
 	let latestCtx: ExtensionContext | undefined;
@@ -631,6 +632,37 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		async inventory(cwd) {
 			const root = await lookupRoot(cwd);
 			return { root, ...await getComponents().runner.listRequests(root) };
+		},
+		async recover(cwd) {
+			const root = await lookupRoot(cwd);
+			const { requests, invalidIds, leaseBusy } = await getComponents().runner.recoverRepository(root);
+			const lines = [
+				`Pi Subagent recovery in ${root}: ${leaseBusy ? "productive lease is live; no state changed" : "orphaned interruptions classified; no work replayed"}.`,
+				...(requests.length ? requests.map((response) => {
+					const state = response.state;
+					const blockers = state.tasks.flatMap((task) => [
+						...(task.failure ? [`${task.taskId}: ${boundedPublicText(task.failure)}`] : []),
+						...(task.kind === "changeset" && task.attempts.some((attempt) => attempt.prompts.some((prompt) => prompt.status === "ambiguous"))
+							? [`${task.taskId}: ambiguous worker prompt; do not replay`] : []),
+					]);
+					const generation = state.integration.generations.at(-1);
+					const readyCandidates = state.integration.candidates.filter((candidate) => candidate.worker === "retained" && !candidate.decision);
+					return [
+						`${state.request.id}: ${state.status}; Main ${response.main?.status ?? "not checked"}.`,
+						...blockers.map((blocker) => `  Blocker: ${blocker}`),
+						...(state.final.failure ? [`  Final blocker: ${boundedPublicText(state.final.failure)}`] : []),
+						...(generation?.failure ? [`  Integration blocker: ${boundedPublicText(generation.failure)}`] : []),
+						...(state.status !== "completed" && readyCandidates.length ? [`  ${readyCandidates.length} retained candidate(s); Main selects exact candidates with subagent_stage after subagent_status.`] : []),
+						...(state.status === "completed" ? ["  Retained resources after completion; inspect subagent_status for guarded cleanup."] : []),
+						...(generation ? [`  Generation ${generation.number}: ${generation.status}; inspect subagent_status before any subagent_integrate action.`] : []),
+						...(!leaseBusy && response.continuation ? [`  Reported next action: subagent_resume ${JSON.stringify(response.continuation)}.`] : []),
+					].join("\n");
+			}) : ["No unfinished or retained isolated requests."]),
+			...(invalidIds.length ? [`Unreadable state IDs (preserved; inspect with their compatible owner): ${invalidIds.map((id) => JSON.stringify(id)).join(", ")}.`] : []),
+			leaseBusy ? "Wait for the active productive run; use subagent_status to inspect its current state. No work was taken over."
+				: "Main: inspect subagent_status for exact identities and blockers before deciding stage, promote, resume, or guarded release. No worker prompt, merge, promotion, or cleanup was replayed.",
+			];
+			return lines.join("\n");
 		},
 		async inspect(root, requestId) {
 			const response = await getComponents().runner.status(requestId, root);
