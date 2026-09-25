@@ -23,8 +23,8 @@
 <body>
   <main>
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="pr-routing-title pr-routing-desc">
-      <title id="pr-routing-title">How /pr picks one route</title>
-      <desc id="pr-routing-desc">The /pr command creates a pull request when needed, gates branch update, feedback sweep, and CI repair on a clean worktree with local HEAD equal to the PR head, and permits direct merge when clean local HEAD is equal to or behind the PR head.</desc>
+      <title id="pr-routing-title">How /pr picks each next route</title>
+      <desc id="pr-routing-desc">The /pr command creates a pull request when needed, scopes local work before publication, rebases only confirmed conflicts, and checks new feedback before merge, and permits direct merge when clean local HEAD is equal to or behind the PR head.</desc>
       <defs>
         <marker id="pr-routing-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
           <polygon points="0 0, 8 4, 0 8" fill="#4c5665"/>
@@ -40,10 +40,10 @@
       <rect width="1280" height="720" fill="#f0eee9"/>
 
       <!-- Header -->
-      <text x="80" y="68" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">How /pr picks one route</text>
-      <text x="80" y="88" fill="#4c5665" font-size="8" font-family="'Geist', sans-serif">Fresh state enters a strict, top-down priority ladder.</text>
+      <text x="80" y="68" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">How /pr picks each next route</text>
+      <text x="80" y="88" fill="#4c5665" font-size="8" font-family="'Geist', sans-serif">Fresh state enters a strict, top-down priority ladder after each completed route.</text>
       <text x="1200" y="48" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.12em">FIRST MATCHING CONDITION WINS</text>
-      <text x="1200" y="68" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.12em">AT MOST ONE ROUTE</text>
+      <text x="1200" y="68" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.12em">FRESH AFTER EACH ROUTE</text>
 
       <!-- Continuation arrows, drawn before nodes -->
       <g fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#pr-routing-arrow)">
@@ -89,10 +89,10 @@
       <line x1="704" y1="296" x2="704" y2="328" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
       <text x="148" y="320" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">3</text>
       <text x="200" y="304" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Base behind or conflicted</text>
+      <text x="200" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Dirty/ahead work or confirmed conflict</text>
       <text x="728" y="304" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Update if clean + equal</text>
-      <text x="1136" y="324" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">otherwise no action</text>
+      <text x="728" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Publish work or rebase conflict</text>
+      <text x="1136" y="324" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">safe authority required</text>
 
       <!-- 4 -->
       <rect x="120" y="352" width="1040" height="48" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
@@ -111,7 +111,7 @@
       <line x1="704" y1="424" x2="704" y2="456" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
       <text x="148" y="448" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">5</text>
       <text x="200" y="432" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="452" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Changes requested or unresolved threads</text>
+      <text x="200" y="452" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Changes requested or new feedback</text>
       <text x="728" y="432" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
       <text x="728" y="452" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Sweep if clean + equal</text>
       <text x="1136" y="452" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">otherwise no action</text>
@@ -125,7 +125,7 @@
       <text x="200" y="516" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Other waiting or merge-local block</text>
       <text x="728" y="496" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
       <text x="728" y="516" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">No action</text>
-      <text x="1136" y="516" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">CI running, review or policy pending, dirty, ahead, or diverged</text>
+      <text x="1136" y="516" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">CI running, review or policy pending, behind, or diverged</text>
 
       <!-- 7 -->
       <rect x="120" y="544" width="1040" height="48" rx="6" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
@@ -143,9 +143,9 @@
       <line x1="80" y1="636" x2="80" y2="664" stroke="#4c5665" stroke-width="1.2" marker-end="url(#pr-routing-arrow)"/>
       <text x="104" y="640" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">DOWNWARD CONNECTOR</text>
       <text x="104" y="664" fill="#101828" font-size="8" font-family="'Geist', sans-serif">Otherwise, continue to the next condition.</text>
-      <text x="668" y="660" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">1×</text>
-      <text x="724" y="640" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ONE-ROUTE RULE</text>
-      <text x="724" y="664" fill="#101828" font-size="8" font-family="'Geist', sans-serif">At most one route: first matching condition wins, then /pr stops.</text>
+      <text x="668" y="660" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">↻</text>
+      <text x="724" y="640" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONTINUATION RULE</text>
+      <text x="724" y="664" fill="#101828" font-size="8" font-family="'Geist', sans-serif">The first match runs; completed routes return to fresh discovery.</text>
     </svg>
   </main>
 </body>

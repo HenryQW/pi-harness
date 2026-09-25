@@ -15,7 +15,8 @@ const DEFAULT_HOST = "github.com";
 const workflowRunId = "11111111-1111-4111-8111-111111111111";
 const workflowActions = {
 	create: "prepare",
-	"update-branch": "merge",
+	"publish-work": "inspect",
+	"update-branch": "rebase",
 	sweep: "start",
 	"fix-ci": "collect",
 } as const;
@@ -281,6 +282,7 @@ function harness(options: HarnessOptions) {
 	return {
 		pi,
 		handler: createPrCommandHandler(pi, {
+			needsFeedbackAttention: async () => false,
 			async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
 				if (options.states[stateIndex] === null) {
 					events.push("load");
@@ -329,7 +331,7 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 			statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })],
 		},
 		command: "skill:pi-pr-update-branch",
-		action: "merge",
+		action: "rebase",
 	},
 	{
 		name: "CI repair outranks review sweep",
@@ -401,44 +403,12 @@ test("dispatches creation for dirty-only zero-ahead work", async () => {
 	assert.equal(app.reservations.length, 1);
 });
 
-test("explicit feedback starts a sweep without automatic feedback signals", async () => {
-	const app = harness({
-		states: [{}],
-		commands: [packageCommand("skill:pi-pr-comment-sweep")],
-	});
-
-	assert.equal(await app.handler("--feedback", app.context), "sweep");
-	assert.equal(app.reservations.length, 1);
-	assert.equal((app.reservations[0] as { route: string }).route, "sweep");
-	assert.equal((app.reservations[0] as { pullRequest: { number: number } }).pullRequest.number, 42);
-	assert.deepEqual(app.messages, [{
-		content: `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=start`,
-		options: { expandPromptTemplates: true },
-	}]);
-	assert.deepEqual(app.confirmations, []);
-});
-
-test("explicit feedback overrides failed-CI routing and resumes recovery", async () => {
-	const app = harness({
-		states: [{ statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
-		commands: [packageCommand("skill:pi-pr-comment-sweep")],
-		reservationAction: "resume",
-	});
-
-	await app.handler("--feedback", app.context);
-
-	assert.deepEqual(app.messages, [{
-		content: `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=resume`,
-		options: { expandPromptTemplates: true },
-	}]);
-	assert.equal((app.reservations[0] as { route: string }).route, "sweep");
-});
-
 test("names and confirms an inferred target before linking it", async () => {
 	const state: PullRequestSpec = {};
 	const app = harness({ states: [state, state], pushReference: "", remoteNames: ["fork"] });
 	let linked = false;
 	const handler = createPrCommandHandler(app.pi, {
+		needsFeedbackAttention: async () => false,
 		async linkInferredPullRequest(_pi, _context, current) {
 			linked = true;
 			return { ...current, target: { ...current.target, provenance: "configured" } };
@@ -477,43 +447,16 @@ test("does not route an observed GitHub lookup failure to PR creation", async ()
 	assert.deepEqual(app.messages, []);
 });
 
-test("explicit feedback rejects unsafe local state before reservation", async () => {
-	const cases: Array<{
-		name: string;
-		status?: string;
-		ancestry?: "behind" | "ahead" | "diverged";
-		error: RegExp;
-	}> = [
-		{ name: "dirty", status: " M file.ts\n", error: /dirty worktree/ },
-		{ name: "behind", ancestry: "behind", error: /local HEAD behind/ },
-		{ name: "ahead", ancestry: "ahead", error: /local HEAD ahead/ },
-		{ name: "diverged", ancestry: "diverged", error: /local HEAD diverged/ },
-	];
-
-	for (const candidate of cases) {
-		const app = harness({
-			states: [{ ...(candidate.ancestry ? { headRefOid: nextHead } : {}) }],
-			commands: [packageCommand("skill:pi-pr-comment-sweep")],
-			status: candidate.status,
-			ancestry: candidate.ancestry,
-		});
-		await assert.rejects(app.handler("--feedback", app.context), candidate.error, candidate.name);
-		assert.deepEqual(app.reservations, [], candidate.name);
-		assert.deepEqual(app.messages, [], candidate.name);
-	}
-});
-
-test("does not dispatch mutating workflows when the worktree is dirty or local HEAD is behind", async () => {
+test("publishes scoped dirty work before other routes and blocks a behind local head", async () => {
 	const conditions: Array<{ name: string; state: PullRequestSpec }> = [
 		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } },
 		{ name: "comment sweep", state: { reviewDecision: "CHANGES_REQUESTED" } },
 		{ name: "CI fix", state: { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] } },
 	];
 	for (const route of conditions) {
-		const dirty = harness({ states: [route.state], status: " M file.ts\n" });
-		await dirty.handler("", dirty.context);
-		assert.deepEqual(dirty.messages, [], `${route.name} dirty`);
-		assert.match(dirty.notifications[0]?.message ?? "", /dirty worktree/, `${route.name} dirty`);
+		const dirty = harness({ states: [route.state], status: " M file.ts\n", commands: [packageCommand("skill:pi-pr-publish-work")] });
+		assert.equal(await dirty.handler("", dirty.context), "publish-work", `${route.name} dirty`);
+		assert.equal(dirty.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect`);
 
 		const behind = harness({
 			states: [{ ...route.state, headRefOid: nextHead }],
@@ -537,87 +480,6 @@ test("dispatches a workflow as a follow-up only while the agent is busy", async 
 		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
 		options: { deliverAs: "followUp", expandPromptTemplates: true },
 	}]);
-});
-
-test("parses a leading branch base before discovery and sends only remaining creation guidance", async () => {
-	const app = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
-	const reservations: unknown[] = [];
-	let explicitBase: string | undefined;
-	const handler = createPrCommandHandler(app.pi, {
-		async loadCurrentPullRequest(...args) {
-			explicitBase = args[4];
-			return noPullRequest();
-		},
-		async reserveWorkflow(reservation) {
-			reservations.push(reservation);
-			return { runId: workflowRunId, action: "prepare" };
-		},
-	});
-
-	await handler("  --base release/2026  Keep the title concise.  ", app.context);
-	assert.equal(explicitBase, "release/2026");
-	assert.deepEqual(reservations, [{
-		route: "create",
-		target: noPullRequest().creationTarget,
-		base: "release/2026",
-	}]);
-	assert.deepEqual(app.messages, [{
-		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare Keep the title concise.`,
-		options: { expandPromptTemplates: true },
-	}]);
-});
-
-test("rejects malformed, unknown, and conflicting options before discovery", async () => {
-	const app = harness({ states: [null] });
-	let loads = 0;
-	const handler = createPrCommandHandler(app.pi, {
-		async loadCurrentPullRequest() {
-			loads += 1;
-			return noPullRequest();
-		},
-	});
-
-	for (const { input, message } of [
-		{ input: "--base", message: "/pr --base requires a branch" },
-		{ input: "  --base \t\n", message: "/pr --base requires a branch" },
-		{ input: "--base=release", message: "/pr base syntax is --base <branch>" },
-		{ input: "--feedback extra", message: "/pr --feedback cannot be combined with other options or instructions" },
-		{ input: "--feedback --base main", message: "/pr --feedback cannot be combined with other options or instructions" },
-		{ input: "--base main --feedback", message: "/pr --feedback cannot be combined with other options or instructions" },
-		{ input: "--feedback=true", message: "/pr feedback syntax is --feedback" },
-		{ input: "--unknown", message: "Unknown /pr option: --unknown" },
-	]) {
-		await assert.rejects(handler(input, app.context), (error: unknown) => error instanceof Error && error.message === message, input);
-	}
-	assert.equal(loads, 0);
-});
-
-test("rejects a branch base outside creation without running creation preflight", async () => {
-	const app = harness({ states: [{ state: "MERGED" }] });
-	let explicitBase: string | undefined;
-	const handler = createPrCommandHandler(app.pi, {
-		async loadCurrentPullRequest(...args) {
-			explicitBase = args[4];
-			return await discoverCurrentPullRequest(...args);
-		},
-	});
-
-	await assert.rejects(handler("--base release", app.context), /accepted only for pull request creation/);
-	assert.equal(explicitBase, "release");
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === "check-ref-format --branch release"
-	), false);
-});
-
-test("rejects instructions for non-create helper routes before reservation", async () => {
-	const app = harness({
-		states: [{ statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }],
-		commands: [packageCommand("skill:pi-pr-fix-ci")],
-	});
-
-	await assert.rejects(app.handler("rerun the job", app.context), /helper route does not accept instructions/);
-	assert.deepEqual(app.reservations, []);
-	assert.deepEqual(app.messages, []);
 });
 
 test("checks command generation after discovery and reservation and immediately before send", async () => {
@@ -657,7 +519,7 @@ test("rolls back exactly the new reservation when prompt dispatch fails", async 
 test("rejects instructions when the current route handles the action directly", async () => {
 	const app = harness({ states: [{}] });
 
-	await assert.rejects(app.handler("use squash", app.context), /current \/pr route does not accept instructions/);
+	await assert.rejects(app.handler("use squash", app.context), /\/pr does not accept arguments/);
 	assert.deepEqual(app.confirmations, []);
 	assert.equal(mutationCalls(app.calls).length, 0);
 });
@@ -697,8 +559,6 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 		{ name: "CI running", state: { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] }, message: "PR #42 is waiting for CI", type: "warning" },
 		{ name: "review pending", state: { reviewDecision: "REVIEW_REQUIRED" }, message: "PR #42 is waiting for review", type: "warning" },
 		{ name: "merge policy pending", state: { mergeStateStatus: "BLOCKED" }, message: "PR #42 is blocked by merge policy", type: "warning" },
-		{ name: "dirty worktree", state: {}, status: " M file.ts\n", message: "PR #42 is blocked by a dirty worktree", type: "warning" },
-		{ name: "ahead local HEAD", state: { headRefOid: nextHead }, ancestry: "ahead", message: "PR #42 is blocked by local HEAD ahead", type: "warning" },
 		{ name: "diverged local HEAD", state: { headRefOid: nextHead }, ancestry: "diverged", message: "PR #42 is blocked by local HEAD diverged", type: "warning" },
 	];
 
@@ -888,4 +748,25 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 		],
 	}]);
 	assert.equal(app.calls.some(({ args }) => args.includes("--web")), false);
+});
+
+test("flagless /pr routes freshly detected standalone feedback before merge", async () => {
+	const app = harness({ states: [{}], commands: [packageCommand("skill:pi-pr-comment-sweep")] });
+	const handler = createPrCommandHandler(app.pi, {
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: {
+			id: "PR_kwDOExample", number: 42, url: new URL("https://github.com/acme/project/pull/42"),
+			host: "github.com", approved: true, lifecycle: "open", base: { repository: "acme/project", ref: "main", oid: baseHead },
+			head: { repository: "acme/project", ref: "feature/pr", oid: localHead }, headFetchSource: "git@github.com:acme/project.git",
+			target: { ...noPullRequest().creationTarget, provenance: "configured" }, local: { worktree: "clean", head: "equal" },
+			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: false,
+				unresolvedThreads: 0, ci: "success", review: "ready", policy: "ready" },
+		} }),
+		needsFeedbackAttention: async () => true,
+		reserveWorkflow: async (reservation) => {
+			assert.equal(reservation.route, "sweep");
+			return { runId: workflowRunId, action: "start" };
+		},
+	});
+	assert.equal(await handler("", app.context), "sweep");
+	assert.equal(app.messages[0]?.content, `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=start`);
 });

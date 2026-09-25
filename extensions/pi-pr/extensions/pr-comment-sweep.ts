@@ -3,6 +3,7 @@ import { realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
+import { markFeedbackHandled } from "./pr-feedback-attention.ts";
 import {
 	extensionConfigDir,
 	readTextFileBounded,
@@ -125,6 +126,7 @@ type SweepState = {
 	};
 	ledger: SweepLedgerEntry[] | null;
 	approved: boolean;
+	approvalGeneration: number | null;
 	ownedPaths: string[];
 	publicationHead: string | null;
 	projection: SweepFinalProjection | null;
@@ -225,10 +227,10 @@ function parseAuthority(value: unknown): SweepAuthority {
 	};
 }
 
-function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHead: string): boolean {
+function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHead: string, allowBaseDrift = false): boolean {
 	return expected.id === current.id && expected.number === current.number && expected.url === current.url &&
 		expected.host === current.host && expected.base.repository === current.base.repository &&
-		expected.base.ref === current.base.ref && expected.base.oid === current.base.oid &&
+		expected.base.ref === current.base.ref && (allowBaseDrift || expected.base.oid === current.base.oid) &&
 		expected.head.repository === current.head.repository && expected.head.ref === current.head.ref &&
 		expected.headFetchSource === current.headFetchSource && expected.target.branch === current.target.branch &&
 		expected.target.remote === current.target.remote && expected.target.ref === current.target.ref &&
@@ -244,7 +246,8 @@ function recoveryMatchesRouteAuthority(state: SweepState, suppliedAuthority: Swe
 		(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
 		state.publicationHead
 	) permittedHeads.add(state.publicationHead);
-	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head));
+	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head,
+		state.attempts.push.state === "applied"));
 }
 
 function feedbackMatchesAuthority(snapshot: FeedbackSnapshot, authority: SweepAuthority, head: string): boolean {
@@ -397,7 +400,8 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 	}
 	exactKeys(value, [
 		"version", "workflow", "worktree", "epoch", "runId", "phase", "authority", "original", "feedback",
-		"ledger", ...(value.version === 1 && !("approved" in value) ? [] : ["approved"]), "ownedPaths", "publicationHead", "projection", "attempts",
+		"ledger", ...(value.version === 1 && !("approved" in value) ? [] : ["approved"]),
+		...("approvalGeneration" in value ? ["approvalGeneration"] : []), "ownedPaths", "publicationHead", "projection", "attempts",
 	], "sweep recovery state");
 	if ((value.version !== 1 && value.version !== STATE_VERSION) || value.workflow !== "pi-pr-comment-sweep") throw new Error("unsupported sweep recovery state version");
 	if (!(["triage", "recorded", "published", "refresh-pending", "refreshed", "resolving", "resolved"] as unknown[]).includes(value.phase)) {
@@ -430,6 +434,11 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 	const ledger = value.ledger === null ? null : exactLedger(value.ledger, snapshot);
 	const approved = value.version === 1 && !("approved" in value) ? false : value.approved;
 	if (typeof approved !== "boolean") throw new Error("sweep approval is invalid");
+	const approvalGeneration = value.approvalGeneration === undefined || value.approvalGeneration === null
+		? null : integer(value.approvalGeneration, "sweep approval generation");
+	// Old recovery could mark a refreshed ledger approved using only the original plan's approval.
+	const freshApproved = ["refreshed", "resolving", "resolved"].includes(value.phase as string)
+		? approved && approvalGeneration === feedback.generation : approved;
 	const ownedPaths = parseOwnedPaths(value.ownedPaths);
 	const publicationHead = value.publicationHead === null ? null : requiredOid(value.publicationHead, "publication head");
 	const projection = value.projection === null ? null : parseProjection(value.projection);
@@ -465,7 +474,8 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		original,
 		feedback,
 		ledger,
-		approved,
+		approved: freshApproved,
+		approvalGeneration,
 		ownedPaths,
 		publicationHead,
 		projection,
@@ -651,11 +661,11 @@ export class PullRequestCommentSweep {
 		await writePrivateTextFileAtomically(location.path, contents, { signal: this.signal });
 	}
 
-	private async currentAuthority(expected: SweepAuthority, remoteHead: string): Promise<CurrentPullRequest> {
+	private async currentAuthority(expected: SweepAuthority, remoteHead: string, allowBaseDrift = false): Promise<CurrentPullRequest> {
 		const discovery = await this.load(this.pi(), this.context());
 		if (discovery.kind !== "current") throw new Error("Comment sweep cancelled: current pull request authority is unavailable");
 		const current = authorityFromCurrent(discovery.pullRequest);
-		if (!sameLinkage(expected, current, remoteHead)) throw new Error("Comment sweep cancelled: canonical pull request authority changed");
+		if (!sameLinkage(expected, current, remoteHead, allowBaseDrift)) throw new Error("Comment sweep cancelled: canonical pull request authority changed");
 		const remote = await readRemoteOid(this.exec, this.options(), expected.target.fetchSource, expected.target.ref);
 		if (remote !== remoteHead) throw new Error("Comment sweep cancelled: remote lease changed");
 		return discovery.pullRequest;
@@ -760,6 +770,7 @@ export class PullRequestCommentSweep {
 				},
 				ledger: null,
 				approved: false,
+				approvalGeneration: null,
 				ownedPaths: [],
 				publicationHead: null,
 				projection: null,
@@ -795,7 +806,7 @@ export class PullRequestCommentSweep {
 			: state.original.lease;
 		remote = await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref);
 		if (remote !== expectedRemote) throw new Error("Comment sweep remote authority cannot be reconciled");
-		await this.currentAuthority(state.authority, expectedRemote);
+		await this.currentAuthority(state.authority, expectedRemote, state.attempts.push.state === "applied");
 
 		const pending = state.attempts.resolutions.filter(({ state: attempt }) => attempt === "attempting" || attempt === "unknown");
 		if (pending.length > 1) throw new Error("Multiple unresolved mutation attempts cannot be reconciled");
@@ -834,6 +845,10 @@ export class PullRequestCommentSweep {
 			if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
 				throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
 			}
+			if (state.version === 1 && state.projection && state.ledger) {
+				// Version-one projections could resolve a parent despite a blocked child.
+				state.projection = buildProjection(state.feedback.generation, state.feedback.snapshot, state.ledger);
+			}
 			await this.reconcile(state);
 			state.attempts.resolutions = state.attempts.resolutions.filter(({ state: attempt }) => attempt !== "blocked");
 			if (state.attempts.push.state === "blocked") {
@@ -843,7 +858,7 @@ export class PullRequestCommentSweep {
 			if (state.attempts.finalize.state === "blocked") state.attempts.finalize = { state: "none", checks: [] };
 			const published = state.attempts.push.state === "applied";
 			const expectedRemote = published ? state.publicationHead! : state.original.lease;
-			await this.currentAuthority(state.authority, expectedRemote);
+			await this.currentAuthority(state.authority, expectedRemote, published);
 			await this.requireOwnedLocalState(state, published ? expectedRemote : undefined);
 			state.epoch += 1;
 			state.runId = safeRunId(this.newRunId());
@@ -889,10 +904,17 @@ export class PullRequestCommentSweep {
 		return await withWorktreeLock(this.cwd, async () => {
 			const state = await this.loadState(await this.location());
 			requireGuard(state, guard);
-			if (state.phase !== "recorded" || !state.ledger) throw new Error("Comment sweep is not ready for approval");
-			if (state.version === 1) await this.requireOwnedLocalState(state);
-			else await this.requireCleanPublication(state, state.original.head);
-			await this.currentAuthority(state.authority, state.original.lease);
+			if (!["recorded", "refreshed", "resolved"].includes(state.phase) || !state.ledger) {
+				throw new Error("Comment sweep is not ready for approval");
+			}
+			if (state.phase !== "recorded") {
+				await this.requireCleanPublication(state, state.publicationHead!);
+				await this.currentAuthority(state.authority, state.publicationHead!);
+			} else {
+				if (state.version === 1) await this.requireOwnedLocalState(state);
+				else await this.requireCleanPublication(state, state.original.head);
+				await this.currentAuthority(state.authority, state.original.lease);
+			}
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
@@ -902,12 +924,20 @@ export class PullRequestCommentSweep {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (state.phase !== "recorded" || !state.ledger) throw new Error("Comment sweep is not ready for approval");
-			if (state.version === 1) await this.requireOwnedLocalState(state);
-			else await this.requireCleanPublication(state, state.original.head);
-			await this.currentAuthority(state.authority, state.original.lease);
+			if (!["recorded", "refreshed", "resolved"].includes(state.phase) || !state.ledger) {
+				throw new Error("Comment sweep is not ready for approval");
+			}
+			if (state.phase !== "recorded") {
+				await this.requireCleanPublication(state, state.publicationHead!);
+				await this.currentAuthority(state.authority, state.publicationHead!);
+			} else {
+				if (state.version === 1) await this.requireOwnedLocalState(state);
+				else await this.requireCleanPublication(state, state.original.head);
+				await this.currentAuthority(state.authority, state.original.lease);
+			}
 			state.version = 2;
 			state.approved = true;
+			state.approvalGeneration = state.feedback.generation;
 			await this.save(location, state);
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
@@ -977,12 +1007,16 @@ export class PullRequestCommentSweep {
 				throw new Error("Comment sweep has an unreconciled finalization attempt; use resume");
 			}
 			await this.requireCleanPublication(state, state.publicationHead);
-			await this.currentAuthority(state.authority, state.publicationHead);
-			const snapshot = await this.collect(state.authority, state.publicationHead);
-			await this.currentAuthority(state.authority, state.publicationHead);
+			const current = await this.currentAuthority(state.authority, state.publicationHead, true);
+			const authority = { ...state.authority, base: { ...state.authority.base, oid: current.base.oid } };
+			const snapshot = await this.collect(authority, state.publicationHead);
+			await this.currentAuthority(authority, state.publicationHead);
 			await this.requireCleanPublication(state, state.publicationHead);
+			state.authority = authority;
 			this.setFeedback(state, snapshot, state.feedback.generation + 1);
 			state.ledger = null;
+			state.approved = false;
+			state.approvalGeneration = null;
 			state.projection = null;
 			state.attempts.resolutions = [];
 			state.attempts.finalize = { state: "none", checks: [] };
@@ -997,7 +1031,7 @@ export class PullRequestCommentSweep {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (!["refreshed", "resolving", "resolved"].includes(state.phase) || !state.publicationHead || !state.ledger || !state.projection) {
+			if (!["refreshed", "resolving", "resolved"].includes(state.phase) || !state.publicationHead || !state.ledger || !state.projection || !state.approved) {
 				throw new Error("Comment sweep is not ready to resolve threads");
 			}
 			if (state.attempts.resolutions.some(({ state: attempt }) => attempt !== "applied")) {
@@ -1139,7 +1173,7 @@ export class PullRequestCommentSweep {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (!["refreshed", "resolving", "resolved"].includes(state.phase) || !state.projection || !state.publicationHead) {
+			if (!["refreshed", "resolving", "resolved"].includes(state.phase) || !state.projection || !state.publicationHead || !state.approved) {
 				throw new Error("Comment sweep is not ready to finalize");
 			}
 			const projection = parseProjection(projectionInput);
@@ -1184,6 +1218,7 @@ export class PullRequestCommentSweep {
 			await this.freshProjection(state);
 			await this.save(location, state);
 			await rm(location.path);
+			await markFeedbackHandled(state.feedback.snapshot, { cwd: this.cwd, agentDir: this.agentDir, signal: this.signal, exec: this.exec });
 			return { kind: "finalized", pullRequestUrl: state.authority.url, head: state.publicationHead, checks: checks.length };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}

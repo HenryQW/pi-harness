@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	cloneCurrentPullRequest,
@@ -13,6 +15,7 @@ import {
 	isAncestor,
 	parseNulPaths,
 	parseSingleOutputLine,
+	inspectGitOperation,
 	readHead,
 	readRemoteOid,
 	requiredOid,
@@ -27,7 +30,7 @@ type UpdateBranchPhase = "ready" | "conflict-awaiting-user" | "verified" | "publ
 type UpdateBranchState = {
 	phase: UpdateBranchPhase;
 	verifiedHead?: string;
-	conflict?: { paths: string[]; statusBaseline: string };
+	conflict?: { paths: string[]; statusBaseline: string; head: string };
 };
 
 type UpdateBranchResult =
@@ -48,7 +51,7 @@ export type UpdateBranchOptions = {
 
 function sameAuthority(frozen: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
 	return samePullRequestSnapshot(frozen, fresh) && frozen.base.oid === fresh.base.oid &&
-		fresh.lifecycle === "open" && (fresh.conditions.baseUpdateRequired || fresh.conditions.conflict);
+		fresh.lifecycle === "open" && fresh.conditions.conflict;
 }
 
 export class PullRequestBranchUpdater {
@@ -100,39 +103,32 @@ export class PullRequestBranchUpdater {
 		return discovery.pullRequest;
 	}
 
-	private async verifyMerge(originalHead: string): Promise<{ head: string; fastForward: boolean }> {
+	private async verifyRebase(): Promise<UpdateBranchResult> {
 		const head = await readHead(this.exec, this.execOptions());
-		const parentsOutput = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", "HEAD"], this.execOptions())).stdout, "merge parents");
-		const commits = parentsOutput.split(" ").map((value, index) => requiredOid(value, index === 0 ? "merged HEAD" : "merge parent"));
-		if (commits[0] !== head) throw new Error("Branch update merge verification returned a different HEAD");
-		let fastForward = false;
-		if (head === this.authority.base.oid && commits.length >= 2 && await isAncestor(this.exec, this.execOptions(), originalHead, head)) {
-			fastForward = true;
-		} else if (commits.length !== 3 || commits[1] !== originalHead || commits[2] !== this.authority.base.oid) {
-			throw new Error("Branch update did not produce the exact configured fast-forward or two-parent merge");
-		}
-		if (await inspectWorktree(this.exec, this.execOptions()) !== "clean") {
-			throw new Error("Branch update merge left a dirty worktree or Git operation in progress");
+		if (await inspectWorktree(this.exec, this.execOptions()) !== "clean" ||
+			!(await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, head))) {
+			throw new Error("Rebase did not leave a clean branch based on the frozen base");
 		}
 		this.state.phase = "verified";
 		this.state.verifiedHead = head;
 		delete this.state.conflict;
-		return { head, fastForward };
+		return { kind: "verified", head, fastForward: false };
 	}
 
-	private async captureConflict(): Promise<string[]> {
-		const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.execOptions())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
-		if (mergeHead !== this.authority.base.oid) throw new Error("Failed merge did not retain the frozen base");
+	private async captureConflict(): Promise<UpdateBranchResult> {
+		if (await inspectGitOperation(this.exec, this.execOptions()) === null) {
+			throw new Error("Failed rebase did not retain an in-progress Git operation");
+		}
 		const paths = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
-		if (!paths.length) throw new Error("git merge failed without bounded unmerged paths");
+		if (!paths.length) throw new Error("git rebase failed without bounded unmerged paths");
 		const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 		this.state.phase = "conflict-awaiting-user";
-		this.state.conflict = { paths, statusBaseline: status.stdout };
-		return paths;
+		this.state.conflict = { paths, statusBaseline: status.stdout, head: await readHead(this.exec, this.execOptions()) };
+		return { kind: "conflict", paths };
 	}
 
-	async merge(): Promise<UpdateBranchResult> {
-		if (this.state.phase !== "ready") throw new Error("Branch update merge action was already consumed");
+	async rebase(): Promise<UpdateBranchResult> {
+		if (this.state.phase !== "ready") throw new Error("Branch conflict rebase action was already consumed");
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshAuthority(this.authority.head.oid, true);
 			const source = await resolveRepositoryFetchSource(this.exec, this.execOptions(), {
@@ -146,47 +142,48 @@ export class PullRequestBranchUpdater {
 			await runChecked(this.exec, "git", ["cat-file", "-e", `${this.authority.base.oid}^{commit}`], this.execOptions());
 			await this.freshAuthority(this.authority.head.oid, true);
 			if (await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, this.authority.head.oid)) {
-				this.state.phase = "verified";
-				this.state.verifiedHead = this.authority.head.oid;
-				return { kind: "verified", head: this.authority.head.oid, fastForward: false };
+				return await this.verifyRebase();
 			}
-
-			const result = await this.exec("git", ["merge", "--no-edit", this.authority.base.oid], this.execOptions());
-			if (result.killed) throw new Error("git merge was killed; its outcome is unknown");
-			if (result.code === 0) {
-				const verified = await this.verifyMerge(this.authority.head.oid);
-				return { kind: "verified", ...verified };
-			}
+			const mergeBase = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", [
+				"merge-base", this.authority.base.oid, this.authority.head.oid,
+			], this.execOptions())).stdout, "rebase fork point"), "rebase fork point");
+			await this.freshAuthority(this.authority.head.oid, true);
+			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.backend=merge", "rebase", "--no-autostash", "--onto", this.authority.base.oid, mergeBase], this.execOptions());
+			if (result.killed) throw new Error("git rebase was killed; its outcome is unknown");
+			if (result.code === 0) return await this.verifyRebase();
 			try {
-				const paths = await this.captureConflict();
-				return { kind: "conflict", paths: [...paths] };
+				return await this.captureConflict();
 			} catch (error) {
-				const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
-				throw new Error(`git merge failed: ${detail}; ${error instanceof Error ? error.message : String(error)}`);
+				throw new Error(`git rebase failed: ${result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`}; ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
 	async continue(resolvedPaths: readonly string[]): Promise<UpdateBranchResult> {
 		if (this.state.phase !== "conflict-awaiting-user" || !this.state.conflict) {
-			throw new Error("Branch update has no conflict awaiting continuation");
+			throw new Error("Branch rebase has no conflict awaiting continuation");
 		}
 		const paths = validateResolvedConflictPaths(resolvedPaths, this.state.conflict.paths);
 		return await withWorktreeLock(this.cwd, async () => {
-			await this.freshAuthority(this.authority.head.oid, false);
-			const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.execOptions())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
-			if (mergeHead !== this.authority.base.oid) throw new Error("Branch update merge context changed");
+			const discovery = await this.load(this.pi(), this.context());
+			if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
+				throw new Error("Branch rebase authority changed");
+			}
+			const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
+			if ((await readFile(resolve(this.cwd, path), "utf8")).trim() !== `refs/heads/${this.authority.target.branch}` ||
+				await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
+				throw new Error("Branch rebase context changed");
+			}
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
-
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", ["add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
 			if (unmerged.length) throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
-
-			await runChecked(this.exec, "git", ["-c", "core.editor=true", "merge", "--continue"], this.execOptions());
-			const verified = await this.verifyMerge(this.authority.head.oid);
-			return { kind: "verified", ...verified };
+			const result = await this.exec("git", ["-c", "core.editor=true", "rebase", "--continue"], this.execOptions());
+			if (result.killed) throw new Error("git rebase continuation was killed; its outcome is unknown");
+			if (result.code === 0) return await this.verifyRebase();
+			return await this.captureConflict();
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
@@ -202,20 +199,34 @@ export class PullRequestBranchUpdater {
 			}
 			const original = this.authority.target.remoteOid;
 			if (original === null) throw new Error("Current pull request remote ref is absent");
-			if (!(await isAncestor(this.exec, this.execOptions(), original, head))) {
-				throw new Error("Published branch would not be a fast-forward of the frozen remote OID");
-			}
 			await this.freshAuthority(head, true);
+			if (head === original) {
+				this.state.phase = "published";
+				return { kind: "published", head };
+			}
 			this.state.phase = "blocked";
-			await runChecked(this.exec, "git", [
-				"push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
-				"--recurse-submodules=no", "--", this.authority.target.fetchSource,
-				`${head}:refs/heads/${this.authority.target.ref}`,
-			], this.execOptions());
-			const remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref);
-			if (remote !== head) throw new Error("Published remote ref did not match verified HEAD");
-			this.state.phase = "published";
-			return { kind: "published", head };
+			let pushError: unknown;
+			try {
+				await runChecked(this.exec, "git", [
+					"push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
+					"--recurse-submodules=no", "--", this.authority.target.fetchSource,
+					`${head}:refs/heads/${this.authority.target.ref}`,
+				], this.execOptions());
+			} catch (error) {
+				pushError = error;
+			}
+			let remote: string | null;
+			try {
+				remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref);
+			} catch {
+				throw new Error("Rebase push outcome is unknown; do not retry");
+			}
+			if (remote === head) {
+				this.state.phase = "published";
+				return { kind: "published", head };
+			}
+			if (remote === original) throw new Error(`Rebase push was not applied${pushError ? ": " + String(pushError) : ""}`);
+			throw new Error("Rebase push outcome is unknown; remote ref has an unexpected OID; do not retry");
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 }

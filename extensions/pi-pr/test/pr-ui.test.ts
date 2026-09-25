@@ -117,11 +117,10 @@ test("projects normal runnable, merge, and no-action states", () => {
 		},
 		{
 			name: "required base update",
-			input: pullRequest({ conditions: { baseUpdateRequired: true } }),
-			nextStep: "update-branch",
+			input: pullRequest({ conditions: { baseUpdateRequired: true, policy: "pending" } }),
+			nextStep: "none",
 			footer: "base update required",
 			color: "warning",
-			widget: "Run /pr to update branch",
 		},
 		{
 			name: "merge conflict",
@@ -267,17 +266,17 @@ test("uses visible-condition priority for combined states", () => {
 			widget: "Run /pr to resolve merge conflict",
 		},
 		{
-			name: "base update before feedback and CI",
+			name: "behind base does not suppress CI",
 			input: pullRequest({ conditions: {
 				baseUpdateRequired: true,
 				changesRequested: true,
 				unresolvedThreads: 3,
 				ci: "failure",
 			} }),
-			nextStep: "update-branch",
+			nextStep: "fix-ci",
 			footer: "base update required",
 			color: "warning",
-			widget: "Run /pr to update branch",
+			widget: "Run /pr to fix CI",
 		},
 		{
 			name: "unresolved feedback before changes requested",
@@ -355,10 +354,10 @@ test("prefixes plain actions with themed semantic icons", () => {
 		},
 		{
 			name: "warning",
-			display: projectPrDisplay(pullRequest({ conditions: { baseUpdateRequired: true } })),
-			color: "warning",
-			icon: "!",
-			text: "Run /pr to update branch",
+			display: projectPrDisplay(pullRequest({ conditions: { conflict: true, baseUpdateRequired: true } })),
+			color: "error",
+			icon: "✗",
+			text: "Run /pr to resolve merge conflict",
 		},
 		{
 			name: "success",
@@ -396,13 +395,13 @@ test("truncates the themed action line to narrow TUI widths", () => {
 	assert.ok(widget?.every((line) => visibleWidth(line) <= 8));
 });
 
-test("keeps a blocked mutating condition in the footer without a widget", () => {
+test("routes dirty work before a merge conflict", () => {
 	const display = projectPrDisplay(pullRequest({
 		conditions: { conflict: true },
 		local: { worktree: "dirty", head: "equal" },
 	}));
-	assert.equal(display.nextStep, "none");
+	assert.equal(display.nextStep, "publish-work");
 	assert.equal(display.footer?.text, "merge conflict");
 	assert.equal(display.footer?.color, "error");
-	assert.equal(display.widget, undefined);
+	assert.equal(display.widget, "Run /pr to publish local work");
 });

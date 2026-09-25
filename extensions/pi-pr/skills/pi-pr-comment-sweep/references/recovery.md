@@ -15,7 +15,11 @@ without changing it. It selects `start` when the file is absent. It selects
 `resume` only when valid recovery matches the fresh route authority.
 
 Resume checks the canonical worktree, local changes, PR linkage, and remote
-head again under its lock. It reconciles an attempted push, review-thread reply,
+head again under its lock. After publication it tolerates a moved base OID
+only while the base repository/ref and exact published head remain fixed.
+`refresh` then rechecks the new base on both sides of feedback collection and
+saves it with the new snapshot; resolution and finalization do not inherit
+this exception. It reconciles an attempted push, review-thread reply,
 or resolution before issuing a new epoch and run ID. Calls from the old run then
 fail. Direct
 skill or tool calls cannot create route authority.
@@ -25,7 +29,7 @@ replacement ledger. Recovery keeps that snapshot in `refresh-pending`, with its
 new generation and fingerprint. Its status exposes only item IDs and kinds.
 Use `show` with the resumed guard to inspect each frozen item. Then use `record`
 without `ownedPaths` to supply exact complete coverage for that snapshot.
-Resolution and finalization remain blocked until this record succeeds.
+Resolution and finalization remain blocked until this record succeeds and the user approves the refreshed plan again. An old approval never authorizes changed feedback decisions.
 
 Malformed, oversized, obsolete, wrong-worktree, or route-mismatched recovery is
 preserved and blocks dispatch. Never repair, move, replace, or delete it
