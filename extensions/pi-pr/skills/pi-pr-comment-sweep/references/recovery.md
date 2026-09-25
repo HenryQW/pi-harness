@@ -34,7 +34,8 @@ automatically. Report the state path and exact blocker.
 A recorded plan needs user approval before publication. Resume returns the
 saved ledger and owned paths, and approval displays that exact plan. Approval
 survives a resume; if declined, show the saved plan and ask again. Version-one
-recovery is retained and can be resumed without discarding in-progress work.
+recovery with existing owned work can be approved with an explicit warning;
+new sweeps require the original clean HEAD before and after confirmation.
 
 An unknown mutation is never replayed. A same-body new reply cannot prove who
 posted it, so a lost reply response blocks recovery rather than resolving the

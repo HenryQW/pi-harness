@@ -19,6 +19,7 @@ import {
 	resolvePullRequestThread,
 	replyToPullRequestThread,
 	FEEDBACK_MAX_RECORDS,
+	FEEDBACK_SNAPSHOT_MAX_BYTES,
 	type FeedbackItem,
 	type FeedbackKind,
 	type FeedbackSnapshot,
@@ -50,6 +51,7 @@ export const SWEEP_RECOVERY_MAX_BYTES = 1024 * 1024;
 const STATE_VERSION = 2;
 const STATE_FILE = "state.json";
 const LEDGER_NOTE_MAX_BYTES = 2 * 1024;
+const REPLY_METADATA_RESERVE_BYTES = 8 * 1024;
 const CHECK_MAX_COUNT = 32;
 const CHECK_ARGUMENTS_MAX_BYTES = 32 * 1024;
 const ATTEMPT_STATES = new Set<AttemptState>(["none", "attempting", "applied", "blocked", "unknown"]);
@@ -86,6 +88,7 @@ export type SweepStatus = {
 	ledgerComplete: boolean;
 	plan: { ledger: SweepLedgerEntry[]; ownedPaths: string[] } | null;
 	approved: boolean;
+	legacyRecovery: boolean;
 	projection: SweepFinalProjection | null;
 	attempts: {
 		push: AttemptState;
@@ -309,7 +312,7 @@ function parseChecks(value: unknown): SweepCheck[] {
 	return checks;
 }
 
-function buildProjection(generation: number, snapshot: FeedbackSnapshot, ledger: SweepLedgerEntry[], resolveNonActionable = true): SweepFinalProjection {
+function buildProjection(generation: number, snapshot: FeedbackSnapshot, ledger: SweepLedgerEntry[], resolveNonActionable = true, legacyChildren = false): SweepFinalProjection {
 	const dispositions = new Map(ledger.map((entry) => [entry.id, entry]));
 	return {
 		generation,
@@ -318,8 +321,11 @@ function buildProjection(generation: number, snapshot: FeedbackSnapshot, ledger:
 			left.id.localeCompare(right.id) || left.kind.localeCompare(right.kind)),
 		threads: snapshot.reviewThreads.map((thread) => ({
 			id: thread.id,
-			isResolved: thread.isResolved || dispositions.get(thread.id)?.disposition === "addressed" ||
-				(resolveNonActionable && dispositions.get(thread.id)?.disposition === "non-actionable"),
+			isResolved: thread.isResolved || (
+				(legacyChildren || !thread.comments.some((comment) => dispositions.get(comment.id)?.disposition === "blocked")) &&
+				(dispositions.get(thread.id)?.disposition === "addressed" ||
+					(resolveNonActionable && dispositions.get(thread.id)?.disposition === "non-actionable"))
+			),
 		})).sort((left, right) => left.id.localeCompare(right.id)),
 	};
 }
@@ -483,7 +489,7 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 	}
 	if (hasFinalProjection !== (projection !== null)) throw new Error("sweep phase and final projection are inconsistent");
 	if (projection && (!ledger || (!isDeepStrictEqual(projection, buildProjection(feedback.generation, snapshot, ledger)) &&
-		!(value.version === 1 && isDeepStrictEqual(projection, buildProjection(feedback.generation, snapshot, ledger, false)))))) {
+		!(value.version === 1 && isDeepStrictEqual(projection, buildProjection(feedback.generation, snapshot, ledger, false, true)))))) {
 		throw new Error("final projection does not match feedback and ledger coverage");
 	}
 	return state;
@@ -518,6 +524,7 @@ function status(state: SweepState): SweepStatus {
 		ledgerComplete: state.ledger !== null,
 		plan: state.ledger ? { ledger: structuredClone(state.ledger), ownedPaths: [...state.ownedPaths] } : null,
 		approved: state.approved,
+		legacyRecovery: state.version === 1,
 		projection: state.projection ? structuredClone(state.projection) : null,
 		attempts: {
 			push: state.attempts.push.state,
@@ -883,7 +890,8 @@ export class PullRequestCommentSweep {
 			const state = await this.loadState(await this.location());
 			requireGuard(state, guard);
 			if (state.phase !== "recorded" || !state.ledger) throw new Error("Comment sweep is not ready for approval");
-			await this.requireCleanPublication(state, state.original.head);
+			if (state.version === 1) await this.requireOwnedLocalState(state);
+			else await this.requireCleanPublication(state, state.original.head);
 			await this.currentAuthority(state.authority, state.original.lease);
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
@@ -895,7 +903,8 @@ export class PullRequestCommentSweep {
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
 			if (state.phase !== "recorded" || !state.ledger) throw new Error("Comment sweep is not ready for approval");
-			await this.requireCleanPublication(state, state.original.head);
+			if (state.version === 1) await this.requireOwnedLocalState(state);
+			else await this.requireCleanPublication(state, state.original.head);
 			await this.currentAuthority(state.authority, state.original.lease);
 			state.version = 2;
 			state.approved = true;
@@ -1011,6 +1020,24 @@ export class PullRequestCommentSweep {
 				if (disposition === "non-actionable" && !ledger.get(threadId)!.note.trim()) {
 					throw new Error(`Non-actionable review thread needs a reason: ${threadId}`);
 				}
+				if (thread.comments.some((comment) => ledger.get(comment.id)?.disposition === "blocked")) {
+					throw new Error(`Review thread has blocked child feedback: ${threadId}`);
+				}
+			}
+			const replyBodies = new Map(threadIds.filter((threadId) => !state.attempts.resolutions.some((attempt) =>
+				attempt.generation === state.feedback.generation && attempt.threadId === threadId && attempt.step === "reply" && attempt.state === "applied"
+			)).map((threadId) => {
+				const entry = ledger.get(threadId)!;
+				return [threadId, entry.disposition === "addressed"
+					? `${new URL(state.authority.url).origin}/${state.authority.base.repository}/commit/${state.publicationHead}`
+					: entry.note.trim()] as const;
+			}));
+			const reserveBytes = [...replyBodies.values()].reduce((total, body) =>
+				total + REPLY_METADATA_RESERVE_BYTES + 2 * Buffer.byteLength(body, "utf8"), 0);
+			if (feedbackEntries(state.feedback.snapshot).length + replyBodies.size > FEEDBACK_MAX_RECORDS ||
+				Buffer.byteLength(JSON.stringify(state.feedback.snapshot), "utf8") + reserveBytes > FEEDBACK_SNAPSHOT_MAX_BYTES ||
+				Buffer.byteLength(JSON.stringify(state), "utf8") + 2 * reserveBytes > SWEEP_RECOVERY_MAX_BYTES) {
+				throw new Error("Comment sweep has insufficient feedback capacity for review thread replies");
 			}
 			for (const threadId of threadIds) {
 				await this.requireCleanPublication(state, state.publicationHead);
@@ -1026,10 +1053,7 @@ export class PullRequestCommentSweep {
 				const replied = state.attempts.resolutions.some((attempt) =>
 					attempt.generation === state.feedback.generation && attempt.threadId === threadId && attempt.step === "reply" && attempt.state === "applied");
 				if (!replied) {
-					const entry = ledger.get(threadId)!;
-					const body = entry.disposition === "addressed"
-						? `${new URL(state.authority.url).origin}/${state.authority.base.repository}/commit/${state.publicationHead}`
-						: entry.note.trim();
+					const body = replyBodies.get(threadId)!;
 					const replyAttempt: ResolutionAttempt = {
 						generation: state.feedback.generation, threadId, step: "reply", body,
 						state: "attempting", beforeFingerprint: state.feedback.fingerprint, afterFingerprint: null,
