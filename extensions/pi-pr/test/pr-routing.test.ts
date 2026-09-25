@@ -141,7 +141,7 @@ test("mutating workflows require a clean worktree with local HEAD equal to the P
 		] as const) {
 			assert.equal(
 				deriveNextStep(pullRequest({ conditions: routeConditions, local: blocked })),
-				blocked.worktree === "dirty" || blocked.head === "ahead" ? "publish-work" : "none",
+				(blocked.worktree === "dirty" && blocked.head === "equal") || blocked.head === "ahead" ? "publish-work" : "none",
 				`${expected} ${blocked.worktree}/${blocked.head}`,
 			);
 		}
@@ -153,7 +153,8 @@ test("only clean local branches equal to or behind the PR head can merge", () =>
 		[{ worktree: "clean", head: "equal" }, "merge"],
 		[{ worktree: "clean", head: "behind" }, "merge"],
 		[{ worktree: "dirty", head: "equal" }, "publish-work"],
-		[{ worktree: "dirty", head: "behind" }, "publish-work"],
+		[{ worktree: "dirty", head: "behind" }, "none"],
+		[{ worktree: "dirty", head: "diverged" }, "none"],
 		[{ worktree: "clean", head: "ahead" }, "publish-work"],
 		[{ worktree: "clean", head: "diverged" }, "none"],
 	];

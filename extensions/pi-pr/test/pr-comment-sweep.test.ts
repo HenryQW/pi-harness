@@ -969,6 +969,24 @@ test("failed feedback marker write retains finalization recovery for retry", asy
 		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), false);
 });
 
+test("blocked standalone feedback remains attention-worthy after finalization", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const options = { cwd: app.root, agentDir: app.agentDir, exec: app.exec,
+		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) };
+	const started = await workflow.start();
+	const recorded = await workflow.record(started.guard, ledger(started), []);
+	const published = await publishApproved(workflow, recorded);
+	const pending = await workflow.refresh(published.guard);
+	const classified = ledger(pending).map((entry) => entry.id === "conversation-1"
+		? { ...entry, disposition: "blocked" as const, note: "Follow-up required" } : entry);
+	const refreshed = await recordRefreshed(workflow, pending.guard, classified);
+	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	assert.equal(await needsFeedbackAttention(app.current(), options), true);
+});
+
 test("finalization preserves a malformed existing feedback marker and its recovery", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
@@ -1011,4 +1029,12 @@ test("finalized sweep records standalone feedback attention and new comments ret
 	writeFileSync(marker, "{ malformed");
 	await assert.rejects(needsFeedbackAttention(app.current(), options), /marker is preserved/);
 	assert.equal(readFileSync(marker, "utf8"), "{ malformed");
+	const emptyExec: Exec = async (command, args, options) => command === "gh" && args[0] === "api"
+		? result(JSON.stringify({ data: { repository: { pullRequest: {
+			comments: page([]), reviews: page([]), reviewThreads: page([]),
+		} } } })) : app.exec(command, args, options);
+	const emptySnapshot = await collectPullRequestFeedback({ ...authority(app.current().head.oid), base: app.current().base }, { cwd: app.root, exec: emptyExec });
+	assert.equal(emptySnapshot.conversationComments.length + emptySnapshot.reviews.length + emptySnapshot.reviewThreads.length, 0);
+	await assert.rejects(needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec: emptyExec,
+		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), /marker is preserved/);
 });

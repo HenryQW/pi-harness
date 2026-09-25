@@ -80,4 +80,14 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	assert.deepEqual(await resumed.publish(), { kind: "published", head: second.head });
 	assert.equal(pushes, 2);
 	await assert.rejects(resumed.publish(), /not validated/);
+
+	git("reset", "--hard", oldHead);
+	writeFileSync(join(root, "file.txt"), "local work on stale head\n");
+	authority = { ...authority, local: { worktree: "dirty", head: "equal" },
+		head: { ...authority.head, oid: second.head }, target: { ...authority.target, remoteOid: second.head } };
+	const stale = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+	await assert.rejects(stale.inspect(), /not a descendant/);
+	assert.equal(git("rev-parse", "HEAD"), oldHead);
+	assert.equal(git("status", "--porcelain=v1"), "M file.txt");
 });

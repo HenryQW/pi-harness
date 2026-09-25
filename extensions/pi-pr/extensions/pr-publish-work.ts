@@ -20,6 +20,9 @@ export class PullRequestWorkPublisher {
 		if (options.authority.lifecycle !== "open" || options.authority.target.provenance !== "configured") {
 			throw new Error("Local publication requires a configured open pull request");
 		}
+		if (options.authority.local.head === "behind" || options.authority.local.head === "diverged") {
+			throw new Error("Local publication requires a branch descended from the published PR head");
+		}
 		this.options = options;
 		this.authority = cloneCurrentPullRequest(options.authority);
 		this.exec = options.exec ?? spawnBounded;
@@ -53,6 +56,9 @@ export class PullRequestWorkPublisher {
 			await this.authorityCheck();
 			if (await inspectWorktreeState(this.exec, this.execOptions()) === "operation") throw new Error("Git operation in progress");
 			const head = await readHead(this.exec, this.execOptions());
+			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head))) {
+				throw new Error("Local HEAD is not a descendant of the published PR head");
+			}
 			const status = (await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions())).stdout;
 			const paths = [...parseStatusSnapshot(status).keys()];
 			parseNulPaths(paths.map((path) => `${path}\0`).join(""), "Pending paths");

@@ -69,7 +69,7 @@ Each footer entry is one linked `PR #number` plus one plain-language status: `N 
 | No current-branch pull request, no published matching ref, safe Git push configuration, and a commit or ordinary pending work | Start pull-request creation. |
 | One open pull request inferred from a published matching ref | Confirm the exact `remote/ref`, then link the local branch. |
 | Ambiguous or unsafe discovery | Show the blocked reason and do not mutate Git or GitHub. |
-| Open PR with intended uncommitted or ahead local work | Inspect, scope, commit if needed, validate and push the exact OID with the saved lease. Ask only when ownership is ambiguous or unrelated work cannot be separated. |
+| Open PR with intended uncommitted or ahead local work | Only when local HEAD descends from the published PR head: inspect, scope, commit if needed, validate and push the exact OID with the saved lease. A behind or diverged HEAD blocks commits. Ask only when ownership is ambiguous or unrelated work cannot be separated. |
 | Confirmed merge conflict | Rebase onto the pinned base commit when the tree is clean and local HEAD equals the PR head. Resolve conflicts only with clear intent; otherwise ask. |
 | GitHub Actions job failed | Run the CI fix workflow when the same local prerequisite holds. |
 | External check or commit status failed | Show `CI failed` as a no-action blocker. |
@@ -161,7 +161,7 @@ The GitHub response must match the observed URL, host, repository, head ref, hea
 
 - `/pr` accepts no arguments and does not open a browser.
 - It does not run `/done` or `/sweep`.
-- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep starts or resumes only when an explicit `/pr` selects it. New standalone comments can select the sweep automatically after fresh inspection.
+- Presentation refreshes do not auto-triage comments or start a workflow. The package comment sweep starts or resumes only when an explicit `/pr` selects it. New or blocked standalone comments can select the sweep again after fresh inspection.
 - It does not enable auto-merge or add a merge queue.
 - It rebases only after a confirmed conflict. It never rebases merely because the base is behind, overwrites concurrent remote updates, deletes branches, or cleans up worktrees. Creation uses exact leases and an empty lease is only an atomic absence check.
 - Creation, discovery, and comment-sweep pushes require one unambiguous push URL for the configured destination.

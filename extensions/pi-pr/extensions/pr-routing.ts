@@ -72,6 +72,7 @@ function localMergeSafe(local: LocalMergeSafety): boolean {
 export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<NextStep, "create" | "link-branch" | "blocked"> {
 	const { lifecycle, conditions, local } = pullRequest;
 	if (lifecycle !== "open" || conditions.draft) return "none";
+	if (local.worktree === "dirty" && (local.head === "behind" || local.head === "diverged")) return "none";
 	if (local.worktree === "dirty" || local.head === "ahead") return "publish-work";
 	if (conditions.conflict) {
 		return localMutationSafe(local) ? "update-branch" : "none";

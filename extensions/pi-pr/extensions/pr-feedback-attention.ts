@@ -7,8 +7,8 @@ import { collectPullRequestFeedback, feedbackAuthorityFromCurrent, feedbackEntri
 import { loadCurrentPullRequest, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
 import { extensionExecApi, isRecord, parseSingleOutputLine, runChecked } from "./pr-execution.ts";
 
-function fingerprint(snapshot: FeedbackSnapshot): string {
-	const entries = feedbackEntries(snapshot).map(({ id, kind, node }) => ({
+function fingerprint(snapshot: FeedbackSnapshot, blockedIds: ReadonlySet<string> = new Set()): string {
+	const entries = feedbackEntries(snapshot).filter(({ id }) => !blockedIds.has(id)).map(({ id, kind, node }) => ({
 		id, kind, body: "body" in node ? node.body : null,
 	})).sort((a, b) => a.id.localeCompare(b.id));
 	return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
@@ -51,19 +51,19 @@ export async function needsFeedbackAttention(
 		current.base.oid !== discovery.pullRequest.base.oid) {
 		throw new Error("Feedback discovery cancelled: pull request authority changed");
 	}
+	const marker = await readMarker(await markerPath(cwd, agentDir, signal, exec), signal);
 	const entries = feedbackEntries(snapshot);
 	if (!entries.length) return false;
-	const marker = await readMarker(await markerPath(cwd, agentDir, signal, exec), signal);
 	return !marker || marker.url !== current.url.href || marker.fingerprint !== fingerprint(snapshot);
 }
 
 export async function markFeedbackHandled(
 	snapshot: FeedbackSnapshot,
-	options: { cwd: string; agentDir?: string; signal?: AbortSignal; exec?: Exec },
+	options: { cwd: string; agentDir?: string; signal?: AbortSignal; exec?: Exec; blockedIds?: readonly string[] },
 ): Promise<void> {
 	const path = await markerPath(options.cwd, options.agentDir, options.signal, options.exec);
 	await readMarker(path, options.signal);
-	await writePrivateTextFileAtomically(path, `${JSON.stringify({ version: 1, url: snapshot.pullRequest.url, fingerprint: fingerprint(snapshot) })}\n`, {
+	await writePrivateTextFileAtomically(path, `${JSON.stringify({ version: 1, url: snapshot.pullRequest.url, fingerprint: fingerprint(snapshot, new Set(options.blockedIds)) })}\n`, {
 		signal: options.signal,
 	});
 }
