@@ -1310,6 +1310,68 @@ test("abort terminates exact ambiguous workers without replay", async (t) => {
 	assertParsed(aborted.state);
 });
 
+test("recovery refuses a live productive lease without changing running state", async (t) => {
+	const { root, runtime, runner, store, agentDir } = await harness(t);
+	let release!: () => void;
+	const paused = new Promise<void>((resolve) => { release = resolve; });
+	runtime.workerPause = async () => await paused;
+	const id = "live-recovery";
+	const execution = runner.execute(request(id, [changesetTask("change")]), root);
+	try {
+		await waitUntil(() => runtime.workerCalls.length === 1);
+		const before = await readFile(store.statePath(root, id));
+		const other = new IsolatedRunner(runtime, runtime, runtime, new FileRunStore(agentDir), unusedTextExecutor);
+		const result = await other.recoverRepository(root);
+		assert.equal(result.leaseBusy, true);
+		assert.equal(result.requests[0]?.state.status, "running");
+		assert.deepEqual(await readFile(store.statePath(root, id)), before);
+		assert.equal(runtime.workerCalls.length, 1);
+	} finally {
+		release();
+		await execution;
+	}
+});
+
+test("recovery classifies ambiguous workers once, preserves malformed files and retained candidates", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	const interrupted = request("orphaned-worker", [changesetTask("change")]);
+	runtime.workerFailures.push(new Error("worker result unavailable"));
+	await runner.execute(interrupted, root);
+	const handle = await store.load(root, interrupted.id);
+	const task = changesetState(handle.state, "change");
+	task.status = "working";
+	task.failure = undefined;
+	handle.state.status = "running";
+	task.attempts[0]!.prompts[0]!.status = "submitting";
+	task.attempts[0]!.prompts[0]!.failure = undefined;
+	await handle.save();
+	const retained = request("saved-candidate", [changesetTask("change")]);
+	await runner.execute(retained, root);
+	const candidateBefore = await readFile(store.statePath(root, retained.id));
+	const badPath = store.statePath(root, "bad-state");
+	const badBytes = Buffer.from("{malformed");
+	await writeFile(badPath, badBytes);
+	const calls = runtimeCallCounts(runtime);
+	const recovered = await runner.recoverRepository(root);
+	assert.equal(recovered.leaseBusy, false);
+	assert.deepEqual(recovered.invalidIds, ["bad-state"]);
+	assert.deepEqual(recovered.requests.map(({ state }) => state.request.id), ["orphaned-worker", "saved-candidate"]);
+	const attempt = changesetState(recovered.requests[0]!.state, "change").attempts[0]!;
+	assert.equal(attempt.prompts[0]!.status, "ambiguous");
+	assert.equal(recovered.requests[0]!.state.status, "needs_attention");
+	assert.equal(recovered.requests[1]!.state.integration.candidates.length, 1);
+	assert.deepEqual(await readFile(store.statePath(root, retained.id)), candidateBefore);
+	assert.deepEqual(await readFile(badPath), badBytes);
+	const saved = await readFile(store.statePath(root, interrupted.id));
+	const again = await runner.recoverRepository(root);
+	assert.deepEqual(await readFile(store.statePath(root, interrupted.id)), saved);
+	assert.equal(again.requests[0]!.state.status, "needs_attention");
+	assert.deepEqual(runtimeCallDelta(runtime, calls), {
+		...Object.fromEntries(Object.keys(calls).map((key) => [key, 0])),
+		mainInspections: 4,
+	});
+});
+
 test("status preserves interrupted and ambiguous changeset prompts without productive replay", async (t) => {
 	for (const boundary of ["interrupted", "ambiguous"] as const) {
 		await t.test(boundary, async (t) => {

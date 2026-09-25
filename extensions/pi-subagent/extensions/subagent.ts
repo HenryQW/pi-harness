@@ -243,6 +243,7 @@ export default function subagentExtension(
 			return [...grouped.values()];
 		},
 		isolated: (cwd) => isolatedSurface.inventory(cwd),
+		recover: (cwd) => isolatedSurface.recover(cwd),
 		async inspectInTab(root, id, ctx, current) {
 			const notices = await isolatedSurface.inspect(root, id);
 			if (!current()) throw new Error("Session or branch changed before status inspection.");

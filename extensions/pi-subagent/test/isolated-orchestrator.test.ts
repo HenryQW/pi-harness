@@ -888,6 +888,25 @@ test("production components complete host preflight before inspecting Main", asy
 	assert.deepEqual(calls, [{ command: "git", args: ["rev-parse", "--show-toplevel"] }]);
 });
 
+test("one-command recovery formats existing status, blockers, continuations and invalid IDs for Main", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const harness = createHarness({
+		runner: {
+			async recoverRepository(root: string) {
+				assert.equal(root, CANONICAL_ROOT);
+				return { requests: [{ ...response("recover", true, state), main: { status: "drifted" } }],
+					invalidIds: ["broken-state"], leaseBusy: false };
+			},
+		} as never,
+	});
+	const report = await harness.surface.recover("/workspace");
+	assert.match(report, /request-one: needs_attention; Main drifted/);
+	assert.match(report, /Blocker: unit-one:/);
+	assert.match(report, /subagent_resume/);
+	assert.match(report, /broken-state.*preserved|preserved.*broken-state/);
+	assert.doesNotMatch(report, /SECRET_TOKEN|PRIVATE/);
+});
+
 test("public recovery evidence stays bounded and omits private durable state", async () => {
 	const state = structuredClone(PRIVATE_STATE);
 	const task = state.tasks[0]!;
