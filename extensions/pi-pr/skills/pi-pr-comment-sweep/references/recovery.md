@@ -15,7 +15,11 @@ without changing it. It selects `start` when the file is absent. It selects
 `resume` only when valid recovery matches the fresh route authority.
 
 Resume checks the canonical worktree, local changes, PR linkage, and remote
-head again under its lock. It reconciles an attempted push, review-thread reply,
+head again under its lock. After publication it tolerates a moved base OID
+only while the base repository/ref and exact published head remain fixed.
+`refresh` then rechecks the new base on both sides of feedback collection and
+saves it with the new snapshot; resolution and finalization do not inherit
+this exception. It reconciles an attempted push, review-thread reply,
 or resolution before issuing a new epoch and run ID. Calls from the old run then
 fail. Direct
 skill or tool calls cannot create route authority.
@@ -37,6 +41,22 @@ survives a resume; if declined, show the saved plan and ask again. Version-one
 recovery with existing owned work can be approved with an explicit warning;
 new sweeps require the original clean HEAD before and after confirmation.
 
-An unknown mutation is never replayed. A same-body new reply cannot prove who
-posted it, so a lost reply response blocks recovery rather than resolving the
-thread. Report the preserved state path and blocker.
+An unknown mutation is never replayed. The reply mutation returns a GitHub
+comment ID; when it is observed, the helper verifies that ID on the intended
+thread. If other feedback changes at the same time, it preserves the confirmed
+reply ID across `refresh` and requires fresh triage before resolving. The
+helper verifies that same ID and body on the thread instead of reposting it.
+
+If the mutation response was lost, a same-body comment cannot prove who posted
+it. After an ambiguous `resume`, `recover-reply` shows the one live candidate
+absent from the frozen snapshot, including its ID, author, time, URL, and body.
+Only explicit operator confirmation marks that attempt applied. It rechecks the
+candidate and full live fingerprint under the lock, sends no GitHub mutation,
+and then requires `refresh` and fresh triage. Older refreshed recovery may have
+lost an applied reply receipt: after recording the complete fresh feedback,
+`recover-reply` can explicitly attest to one existing commit-link comment on
+an unresolved addressed thread. It stores that exact comment ID before
+`resolve`, without reposting. If the comment is absent, multiple candidates
+match, the evidence changes, or the operator cannot attest to it, leave the
+recovery file untouched and report the blocker. Never delete or edit recovery
+by hand.

@@ -334,7 +334,7 @@ test("registers exactly four sequential tools with closed action schemas", () =>
 	const expected = new Map([
 		["pi_pr_update_branch", ["merge", "continue", "publish"]],
 		["pi_pr_create", ["prepare", "merge", "continue", "push", "publish"]],
-		["pi_pr_sweep", ["start", "resume", "show", "record", "approve", "publish", "refresh", "resolve", "finalize"]],
+		["pi_pr_sweep", ["start", "resume", "recover-reply", "show", "record", "approve", "publish", "refresh", "resolve", "finalize"]],
 		["pi_pr_fix_ci", ["collect", "publish"]],
 	]);
 

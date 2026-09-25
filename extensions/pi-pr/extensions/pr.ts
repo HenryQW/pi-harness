@@ -109,6 +109,7 @@ const CreateParameters = Type.Union([
 const SweepParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("start") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("resume") }, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("recover-reply") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("show"), guard: SweepGuard, id: Type.String({ minLength: 1, maxLength: 1_024 }) }, CLOSED),
 	Type.Object({
 		runId: RouteRunId,
@@ -141,7 +142,7 @@ const FixCiParameters = Type.Union([
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "merge" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "merge" | "continue" | "push" | "publish">;
-type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "approval" | "confirmApproval" | "publish" | "refresh" | "resolve" | "finalize">;
+type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "replyRecoveryEvidence" | "confirmReplyRecovery" | "show" | "record" | "approval" | "confirmApproval" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
 
 type WorkflowContextBase = {
@@ -475,6 +476,12 @@ export default function pullRequestExtension(
 				switch (params.action) {
 					case "start": return await selected.workflow.start();
 					case "resume": return await selected.workflow.resume();
+					case "recover-reply": {
+						const evidence = await selected.workflow.replyRecoveryEvidence();
+						const confirmed = await ctx.ui.confirm("Attest to ambiguous PR reply?",
+							`This live comment matches the expected commit-link reply, but matching text and author cannot prove who posted it.\n\nThread: ${evidence.threadId}\nReply: ${evidence.reply.id}\nAuthor: ${evidence.reply.author ?? "unknown"}\nCreated: ${evidence.reply.createdAt}\nURL: ${evidence.reply.url}\nBody: ${evidence.reply.body}\n\nConfirm only after independently verifying this is the intended reply. This action sends no reply or resolution. Refresh and re-triage after an unknown attempt; otherwise resolve using this confirmed receipt.`);
+						return confirmed ? await selected.workflow.confirmReplyRecovery(evidence) : { approved: false };
+					}
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
 					case "approve": {

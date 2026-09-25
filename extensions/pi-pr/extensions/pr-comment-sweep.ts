@@ -104,6 +104,7 @@ type ResolutionAttempt = {
 	threadId: string;
 	step: "reply" | "resolve";
 	body: string | null;
+	replyId?: string;
 	state: AttemptState;
 	beforeFingerprint: string;
 	afterFingerprint: string | null;
@@ -225,10 +226,10 @@ function parseAuthority(value: unknown): SweepAuthority {
 	};
 }
 
-function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHead: string): boolean {
+function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHead: string, allowBaseDrift = false): boolean {
 	return expected.id === current.id && expected.number === current.number && expected.url === current.url &&
 		expected.host === current.host && expected.base.repository === current.base.repository &&
-		expected.base.ref === current.base.ref && expected.base.oid === current.base.oid &&
+		expected.base.ref === current.base.ref && (allowBaseDrift || expected.base.oid === current.base.oid) &&
 		expected.head.repository === current.head.repository && expected.head.ref === current.head.ref &&
 		expected.headFetchSource === current.headFetchSource && expected.target.branch === current.target.branch &&
 		expected.target.remote === current.target.remote && expected.target.ref === current.target.ref &&
@@ -244,7 +245,8 @@ function recoveryMatchesRouteAuthority(state: SweepState, suppliedAuthority: Swe
 		(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
 		state.publicationHead
 	) permittedHeads.add(state.publicationHead);
-	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head));
+	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head,
+		state.attempts.push.state === "applied"));
 }
 
 function feedbackMatchesAuthority(snapshot: FeedbackSnapshot, authority: SweepAuthority, head: string): boolean {
@@ -370,18 +372,22 @@ function resolutionAttempt(value: unknown, index: number, version: number): Reso
 	const legacy = version === 1 && !("step" in value);
 	exactKeys(value, legacy
 		? ["generation", "threadId", "state", "beforeFingerprint", "afterFingerprint"]
-		: ["generation", "threadId", "step", "body", "state", "beforeFingerprint", "afterFingerprint"], `resolution attempt ${index + 1}`);
+		: ["generation", "threadId", "step", "body", "state", "beforeFingerprint", "afterFingerprint", ...("replyId" in value ? ["replyId"] : [])], `resolution attempt ${index + 1}`);
 	const step = legacy ? "resolve" : value.step;
 	const body = legacy ? null : value.body;
 	if (step !== "reply" && step !== "resolve") throw new Error(`resolution attempt ${index + 1} step is invalid`);
 	if (step === "reply" ? typeof body !== "string" || !body : body !== null) {
 		throw new Error(`resolution attempt ${index + 1} body is invalid`);
 	}
+	if ("replyId" in value && (step !== "reply" || typeof value.replyId !== "string" || !value.replyId)) {
+		throw new Error(`resolution attempt ${index + 1} reply ID is invalid`);
+	}
 	return {
 		generation: integer(value.generation, `resolution attempt ${index + 1} generation`),
 		threadId: requiredText(value.threadId, `resolution attempt ${index + 1} thread ID`),
 		step,
 		body: body as string | null,
+		...("replyId" in value ? { replyId: requiredText(value.replyId, `resolution attempt ${index + 1} reply ID`) } : {}),
 		state: attemptState(value.state, `resolution attempt ${index + 1} state`),
 		beforeFingerprint: sha256(requiredText(value.beforeFingerprint, `resolution attempt ${index + 1} before fingerprint`), `resolution attempt ${index + 1} before fingerprint`),
 		afterFingerprint: value.afterFingerprint === null
@@ -651,11 +657,11 @@ export class PullRequestCommentSweep {
 		await writePrivateTextFileAtomically(location.path, contents, { signal: this.signal });
 	}
 
-	private async currentAuthority(expected: SweepAuthority, remoteHead: string): Promise<CurrentPullRequest> {
+	private async currentAuthority(expected: SweepAuthority, remoteHead: string, allowBaseDrift = false): Promise<CurrentPullRequest> {
 		const discovery = await this.load(this.pi(), this.context());
 		if (discovery.kind !== "current") throw new Error("Comment sweep cancelled: current pull request authority is unavailable");
 		const current = authorityFromCurrent(discovery.pullRequest);
-		if (!sameLinkage(expected, current, remoteHead)) throw new Error("Comment sweep cancelled: canonical pull request authority changed");
+		if (!sameLinkage(expected, current, remoteHead, allowBaseDrift)) throw new Error("Comment sweep cancelled: canonical pull request authority changed");
 		const remote = await readRemoteOid(this.exec, this.options(), expected.target.fetchSource, expected.target.ref);
 		if (remote !== remoteHead) throw new Error("Comment sweep cancelled: remote lease changed");
 		return discovery.pullRequest;
@@ -795,7 +801,7 @@ export class PullRequestCommentSweep {
 			: state.original.lease;
 		remote = await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref);
 		if (remote !== expectedRemote) throw new Error("Comment sweep remote authority cannot be reconciled");
-		await this.currentAuthority(state.authority, expectedRemote);
+		await this.currentAuthority(state.authority, expectedRemote, state.attempts.push.state === "applied");
 
 		const pending = state.attempts.resolutions.filter(({ state: attempt }) => attempt === "attempting" || attempt === "unknown");
 		if (pending.length > 1) throw new Error("Multiple unresolved mutation attempts cannot be reconciled");
@@ -843,10 +849,72 @@ export class PullRequestCommentSweep {
 			if (state.attempts.finalize.state === "blocked") state.attempts.finalize = { state: "none", checks: [] };
 			const published = state.attempts.push.state === "applied";
 			const expectedRemote = published ? state.publicationHead! : state.original.lease;
-			await this.currentAuthority(state.authority, expectedRemote);
+			await this.currentAuthority(state.authority, expectedRemote, published);
 			await this.requireOwnedLocalState(state, published ? expectedRemote : undefined);
 			state.epoch += 1;
 			state.runId = safeRunId(this.newRunId());
+			await this.save(location, state);
+			return status(state);
+		}, { agentDir: this.agentDir, signal: this.signal });
+	}
+
+	private async recoveryReply(state: SweepState) {
+		const attempt = state.attempts.resolutions.find(({ step, state: result }) => step === "reply" && (result === "unknown" || result === "attempting"));
+		if (!state.publicationHead || (attempt && (attempt.generation !== state.feedback.generation ||
+			attempt.beforeFingerprint !== state.feedback.fingerprint || !attempt.body)) ||
+			(!attempt && (state.phase !== "refreshed" || !state.ledger))) {
+			throw new Error("No recoverable reply belongs to the current feedback generation");
+		}
+		await this.requireCleanPublication(state, state.publicationHead);
+		const current = await this.currentAuthority(state.authority, state.publicationHead, true);
+		const authority = { ...state.authority, base: { ...state.authority.base, oid: current.base.oid } };
+		const snapshot = await this.collect(authority, state.publicationHead);
+		await this.currentAuthority(authority, state.publicationHead);
+		await this.requireCleanPublication(state, state.publicationHead);
+		if (!attempt && feedbackFingerprint(snapshot) !== state.feedback.fingerprint) {
+			throw new Error("Feedback changed before reply attestation; refresh and re-triage first");
+		}
+		const previous = new Set(attempt ? feedbackEntries(state.feedback.snapshot).map(({ id }) => id) : []);
+		const ledger = new Map(state.ledger?.map((entry) => [entry.id, entry]));
+		const body = attempt?.body ?? `${new URL(state.authority.url).origin}/${state.authority.base.repository}/commit/${state.publicationHead}`;
+		const matches = snapshot.reviewThreads.flatMap((thread) => {
+			if (attempt ? thread.id !== attempt.threadId : thread.isResolved || ledger.get(thread.id)?.disposition !== "addressed" ||
+				state.attempts.resolutions.some((item) => item.threadId === thread.id && item.step === "reply" && item.replyId)) return [];
+			return thread.comments.filter((comment) => !previous.has(comment.id) && comment.body === body &&
+				(attempt || ledger.get(comment.id)?.disposition === "non-actionable")).map((reply) => ({ threadId: thread.id, reply }));
+		});
+		if (matches.length !== 1) throw new Error("Recoverable reply has no unique matching comment; recovery is preserved");
+		const { threadId, reply } = matches[0]!;
+		return { threadId, fingerprint: feedbackFingerprint(snapshot), reply: {
+			id: reply.id, url: reply.url, body: reply.body, author: reply.author?.login ?? null, createdAt: reply.createdAt,
+		} };
+	}
+
+	async replyRecoveryEvidence() {
+		return await withWorktreeLock(this.cwd, async () => {
+			const state = await this.loadState(await this.location());
+			return await this.recoveryReply(state);
+		}, { agentDir: this.agentDir, signal: this.signal });
+	}
+
+	async confirmReplyRecovery(evidence: { threadId: string; fingerprint: string; reply: { id: string } }): Promise<SweepStatus> {
+		return await withWorktreeLock(this.cwd, async () => {
+			const location = await this.location();
+			const state = await this.loadState(location);
+			const current = await this.recoveryReply(state);
+			if (current.threadId !== evidence.threadId || current.fingerprint !== evidence.fingerprint || current.reply.id !== evidence.reply.id) {
+				throw new Error("Reply recovery evidence changed; inspect it again before confirming");
+			}
+			const attempt = state.attempts.resolutions.find(({ step, state: result }) => step === "reply" && (result === "unknown" || result === "attempting"));
+			if (attempt) {
+				attempt.state = "applied";
+				attempt.replyId = current.reply.id;
+				attempt.afterFingerprint = current.fingerprint;
+			} else {
+				state.attempts.resolutions.push({ generation: state.feedback.generation, threadId: current.threadId,
+					step: "reply", body: current.reply.body, replyId: current.reply.id, state: "applied",
+					beforeFingerprint: state.feedback.fingerprint, afterFingerprint: current.fingerprint });
+			}
 			await this.save(location, state);
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
@@ -977,14 +1045,17 @@ export class PullRequestCommentSweep {
 				throw new Error("Comment sweep has an unreconciled finalization attempt; use resume");
 			}
 			await this.requireCleanPublication(state, state.publicationHead);
-			await this.currentAuthority(state.authority, state.publicationHead);
-			const snapshot = await this.collect(state.authority, state.publicationHead);
-			await this.currentAuthority(state.authority, state.publicationHead);
+			const current = await this.currentAuthority(state.authority, state.publicationHead, true);
+			const authority = { ...state.authority, base: { ...state.authority.base, oid: current.base.oid } };
+			const snapshot = await this.collect(authority, state.publicationHead);
+			await this.currentAuthority(authority, state.publicationHead);
 			await this.requireCleanPublication(state, state.publicationHead);
+			state.authority = authority;
 			this.setFeedback(state, snapshot, state.feedback.generation + 1);
 			state.ledger = null;
 			state.projection = null;
-			state.attempts.resolutions = [];
+			state.attempts.resolutions = state.attempts.resolutions.filter((attempt) =>
+				attempt.step === "reply" && attempt.state === "applied" && attempt.replyId);
 			state.attempts.finalize = { state: "none", checks: [] };
 			state.phase = "refresh-pending";
 			await this.save(location, state);
@@ -1007,6 +1078,8 @@ export class PullRequestCommentSweep {
 			const threadIds = threadIdsInput.map((id, index) => requiredText(id, `thread ID ${index + 1}`));
 			if (new Set(threadIds).size !== threadIds.length) throw new Error("threadIds contain duplicates");
 			const ledger = new Map(state.ledger.map((entry) => [entry.id, entry]));
+			const receipt = (threadId: string) => state.attempts.resolutions.find((attempt) =>
+				attempt.threadId === threadId && attempt.step === "reply" && attempt.state === "applied" && attempt.replyId);
 			for (const threadId of threadIds) {
 				const thread = state.feedback.snapshot.reviewThreads.find(({ id }) => id === threadId);
 				const disposition = ledger.get(threadId)?.disposition;
@@ -1023,10 +1096,16 @@ export class PullRequestCommentSweep {
 				if (thread.comments.some((comment) => ledger.get(comment.id)?.disposition === "blocked")) {
 					throw new Error(`Review thread has blocked child feedback: ${threadId}`);
 				}
+				if (state.attempts.resolutions.some((attempt) => attempt.threadId === threadId && attempt.step === "reply" &&
+					attempt.state === "applied" && !attempt.replyId)) {
+					throw new Error(`Confirmed reply has no captured ID; refresh and attest before resolving: ${threadId}`);
+				}
+				const confirmed = receipt(threadId);
+				if (confirmed && !thread.comments.some(({ id, body }) => id === confirmed.replyId && body === confirmed.body)) {
+					throw new Error(`Confirmed review reply is missing or changed: ${threadId}`);
+				}
 			}
-			const replyBodies = new Map(threadIds.filter((threadId) => !state.attempts.resolutions.some((attempt) =>
-				attempt.generation === state.feedback.generation && attempt.threadId === threadId && attempt.step === "reply" && attempt.state === "applied"
-			)).map((threadId) => {
+			const replyBodies = new Map(threadIds.filter((threadId) => !receipt(threadId)).map((threadId) => {
 				const entry = ledger.get(threadId)!;
 				return [threadId, entry.disposition === "addressed"
 					? `${new URL(state.authority.url).origin}/${state.authority.base.repository}/commit/${state.publicationHead}`
@@ -1050,9 +1129,7 @@ export class PullRequestCommentSweep {
 				await this.requireCleanPublication(state, state.publicationHead);
 				const thread = before.reviewThreads.find(({ id }) => id === threadId);
 				if (!thread || thread.isResolved) throw new Error(`Review thread is no longer unresolved: ${threadId}`);
-				const replied = state.attempts.resolutions.some((attempt) =>
-					attempt.generation === state.feedback.generation && attempt.threadId === threadId && attempt.step === "reply" && attempt.state === "applied");
-				if (!replied) {
+				if (!receipt(threadId)) {
 					const body = replyBodies.get(threadId)!;
 					const replyAttempt: ResolutionAttempt = {
 						generation: state.feedback.generation, threadId, step: "reply", body,
@@ -1064,23 +1141,30 @@ export class PullRequestCommentSweep {
 					let afterReply: FeedbackSnapshot;
 					let replyId: string;
 					try {
-						await replyToPullRequestThread(state.feedback.snapshot.pullRequest, threadId, body, {
+						replyId = await replyToPullRequestThread(state.feedback.snapshot.pullRequest, threadId, body, {
 							exec: this.exec, cwd: this.cwd, signal: this.signal, pause: this.pause,
 						});
 						afterReply = await this.collect(state.authority, state.publicationHead);
 						await this.currentAuthority(state.authority, state.publicationHead);
 						await this.requireCleanPublication(state, state.publicationHead);
-						const verified = addedReply(before, afterReply, threadId, body);
-						if (!verified) throw new Error(`Thread reply did not produce the exact verified transition: ${threadId}`);
-						replyId = verified;
+						const confirmed = afterReply.reviewThreads.find(({ id }) => id === threadId)?.comments.some((comment) =>
+							comment.id === replyId && comment.body === body);
+						if (!confirmed || feedbackEntries(before).some(({ id }) => id === replyId)) {
+							throw new Error(`Thread reply was not visible with its confirmed ID: ${threadId}`);
+						}
 					} catch (error) {
 						replyAttempt.state = "unknown";
 						await this.save(location, state);
 						throw error;
 					}
-					this.applyReply(state, afterReply, threadId, replyId);
 					replyAttempt.state = "applied";
-					replyAttempt.afterFingerprint = state.feedback.fingerprint;
+					replyAttempt.replyId = replyId;
+					replyAttempt.afterFingerprint = feedbackFingerprint(afterReply);
+					if (!addedReply(before, afterReply, threadId, body)) {
+						await this.save(location, state);
+						throw new Error("Other PR feedback changed after the confirmed reply; refresh before resolving");
+					}
+					this.applyReply(state, afterReply, threadId, replyId);
 					await this.save(location, state);
 				}
 				const beforeResolution = state.feedback.snapshot;
