@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { EXECUTION_BUDGET_ENV } from "../src/ephemeral.ts";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import {
 	HerdrHostRuntime,
@@ -138,6 +139,7 @@ function runtime(
 		delay?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 		now?: () => number;
 		inspectInFlightTaskCandidate?: (input: TaskCandidateInput, operation: OperationContext) => Promise<InFlightTaskCandidateInspection>;
+		executionBudget?: () => { maxTurns: number; maxMs: null; maxTokens?: number };
 	} = {},
 ): HerdrHostRuntime {
 	return new HerdrHostRuntime({
@@ -154,6 +156,7 @@ function runtime(
 		env: { HERDR_ENV: "1", HERDR_PANE_ID: "pane-current" },
 		leaseDirectory: paths.leases,
 		lsofCommand: "lsof-test",
+		executionBudget: timing.executionBudget,
 	});
 }
 
@@ -871,6 +874,7 @@ test("agent allocation accepts the task's explicit Role and rejects launch misma
 		error?: RegExp;
 	}> = [
 		{ name: "matching non-implementer Role", launchRole: roleTask.role },
+		{ name: "trusted execution budget", launchRole: roleTask.role, env: { [EXECUTION_BUDGET_ENV]: "budget" } },
 		{ name: "mismatched Role", launchRole: "implementer", error: /wrong Role/ },
 		{ name: "caller Role environment", launchRole: roleTask.role, env: { CALLER_SECRET: "forbidden" }, error: /must not receive caller Role environment variables/ },
 	];
@@ -879,7 +883,9 @@ test("agent allocation accepts the task's explicit Role and rejects launch misma
 		await t.test(candidate.name, async (t) => {
 			const fixture = await paths(t);
 			const script = new ScriptedProcess();
-			const host = runtime(fixture, script);
+			const host = runtime(fixture, script, undefined, {
+				executionBudget: candidate.name === "trusted execution budget" ? () => ({ maxTurns: 10, maxMs: null }) : undefined,
+			});
 			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
 			attempt.allocations.pop();
 			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
@@ -1043,7 +1049,7 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 test("worker tab waits for a stable host pane layout before create", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
-	const host = runtime(fixture, script);
+	const host = runtime(fixture, script, undefined, { executionBudget: () => ({ maxTurns: 10, maxMs: null, maxTokens: 2000 }) });
 	const attempt = baseAttempt(fixture);
 	script.push(repositoryIdentityStep(fixture));
 	const workspaceDetails = await host.planHostAllocation({ requestId: REQUEST_ID, goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
@@ -1058,7 +1064,9 @@ test("worker tab waits for a stable host pane layout before create", async (t) =
 			command: "herdr",
 			args: [
 				"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
-				"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
+				"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${intent.leasePath}`,
+				"--env", `${EXECUTION_BUDGET_ENV}={"maxTurns":10,"maxMs":null,"maxTokens":2000,"startedAt":1000}`,
+				"--no-focus",
 			],
 			result: success({
 				type: "tab_created",

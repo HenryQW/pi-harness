@@ -65,18 +65,19 @@ export const createIsolatedComponents: CreateIsolatedComponents = ({
 		: await directRunProcess(command, args, options);
 	const resolveRoot = createCanonicalGitRootResolver({ runProcess });
 	const git = new CheckedGitRuntime({ runProcess, executeReview: createExactJudgmentExecutor(executor) });
-	const host = new HerdrHostRuntime({ inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git), runProcess });
+	const executionBudget = () => ({
+		maxTurns: policy.maxTurns,
+		maxMs: null,
+		...(policy.maxTokens === undefined ? {} : { maxTokens: policy.maxTokens }),
+	});
+	const host = new HerdrHostRuntime({ inspectInFlightTaskCandidate: git.inspectInFlightTaskCandidate.bind(git), runProcess, executionBudget });
 	const coordinator = new RoleLaunchRuntime({
 		pi,
 		context,
 		resolveRoot,
 		preflightHost: async ({ root }, operation) => await host.preflightHost({ root }, operation),
 		inspectMain: async (input, operation) => await git.inspectMain(input, operation),
-		executionBudget: () => ({
-			maxTurns: policy.maxTurns,
-			maxMs: null,
-			...(policy.maxTokens === undefined ? {} : { maxTokens: policy.maxTokens }),
-		}),
+		executionBudget,
 	});
 	return {
 		resolveRoot,

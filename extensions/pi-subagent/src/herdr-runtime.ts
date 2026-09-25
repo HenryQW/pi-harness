@@ -48,6 +48,7 @@ import {
 	type WorkspaceAllocationResult,
 } from "./runner.ts";
 import { runProcess as defaultRunProcess } from "./process.ts";
+import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
 
 const MIN_HERDR_VERSION = [0, 9, 0] as const;
 const MIN_HERDR_PROTOCOL = 22;
@@ -88,6 +89,7 @@ export interface HerdrHostRuntimeOptions {
 	env?: NodeJS.ProcessEnv;
 	leaseDirectory?: string;
 	lsofCommand?: string;
+	executionBudget?: () => Omit<EphemeralSubagentExecutionBudget, "startedAt">;
 }
 
 type RepositoryIdentity = Pick<WorkspaceAllocationIntent, "repoKey" | "herdrRepoRoot">;
@@ -337,6 +339,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	private readonly env: NodeJS.ProcessEnv;
 	private readonly leaseDirectory: string;
 	private readonly lsofCommand: string;
+	private readonly executionBudget?: HerdrHostRuntimeOptions["executionBudget"];
 
 	constructor(options: HerdrHostRuntimeOptions) {
 		this.inspectInFlightCandidate = options.inspectInFlightTaskCandidate;
@@ -349,6 +352,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		this.env = options.env ?? process.env;
 		this.leaseDirectory = resolve(options.leaseDirectory ?? join(extensionConfigDir("pi-subagent"), "leases"));
 		this.lsofCommand = options.lsofCommand ?? "lsof";
+		this.executionBudget = options.executionBudget;
 	}
 
 	/** Fail-closed Herdr caller/capability gate. This method creates no state or host resource. */
@@ -872,9 +876,12 @@ export class HerdrHostRuntime implements HostRuntime {
 		assertWorkerTabIntent(allocation, task, attempt);
 		await this.createPrivateLease(allocation.leasePath, allocation.token);
 		await this.waitForStableWorkspacePanes(allocation.workspaceId, allocation.worktreeCwd, context);
+		const budget = this.executionBudget?.();
 		const args = [
 			"tab", "create", "--workspace", allocation.workspaceId, "--cwd", allocation.worktreeCwd,
-			"--label", allocation.label, "--env", `${PROCESS_LEASE_ENV}=${allocation.leasePath}`, "--no-focus",
+			"--label", allocation.label, "--env", `${PROCESS_LEASE_ENV}=${allocation.leasePath}`,
+			...(budget ? ["--env", `${EXECUTION_BUDGET_ENV}=${JSON.stringify({ ...budget, startedAt: this.now() })}`] : []),
+			"--no-focus",
 		];
 		const response = await this.herdr.exec(args, this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 		if (response.code !== 0 || response.killed) {
@@ -917,7 +924,9 @@ export class HerdrHostRuntime implements HostRuntime {
 		const handle = await acquireLaunch();
 		return await withTransientLaunch(handle, async (launch) => {
 			if (launch.role !== expectedRole) throw new Error("Agent start acquisition returned the wrong Role.");
-			if (Object.keys(launch.env).length) throw new Error("Herdr agent launch must not receive caller Role environment variables.");
+			if (Object.keys(launch.env).some((name) => name !== EXECUTION_BUDGET_ENV || !this.executionBudget)) {
+				throw new Error("Herdr agent launch must not receive caller Role environment variables.");
+			}
 			const response = await startPiAgent(this.herdr, {
 				name: allocation.agentName,
 				pane: allocation.paneId,
