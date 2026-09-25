@@ -400,6 +400,7 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 export interface IsolatedSurface {
 	execute(params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string): Promise<IsolatedInventory>;
+	recover(cwd: string): Promise<string>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
@@ -417,7 +418,7 @@ export interface RegisterIsolatedOptions {
 export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIsolatedOptions): IsolatedSurface {
 	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) {
 		const denied = (): never => { throw new Error("Child Roles cannot access isolated delegation."); };
-		return { execute: async () => denied(), inventory: async () => denied(), inspect: async () => denied(), canFollowup: denied, enqueue: denied, drain: denied };
+		return { execute: async () => denied(), inventory: async () => denied(), recover: async () => denied(), inspect: async () => denied(), canFollowup: denied, enqueue: denied, drain: denied };
 	}
 	const componentsFactory = options.componentsFactory ?? createIsolatedComponents;
 	let latestCtx: ExtensionContext | undefined;
@@ -498,8 +499,11 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		const controller = new AbortController();
 		activeJobs.add(controller);
 		jobOwners.set(key, canDeliver);
+		const notified = new Set<string>();
+		let candidateListener: ((state: RunState) => void) | undefined;
 		const finish = () => {
 			activeJobs.delete(controller);
+			if (candidateListener) stateListeners.delete(candidateListener);
 			if (jobOwners.get(key) === canDeliver) jobOwners.delete(key);
 		};
 		const abortBeforeAck = () => controller.abort(signal?.reason);
@@ -514,6 +518,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			if (state.root !== root || state.request.id !== id) return;
 			latestState = state;
 			if (!acknowledged(state)) return;
+			for (const candidate of state.integration.candidates) notified.add(`${candidate.taskId}\0${candidate.attempt}\0${candidate.tip.head}`);
 			stateListeners.delete(listener);
 			removeTurnAbort();
 			accept(state);
@@ -539,6 +544,17 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				if (ctx.hasUI) ctx.ui.notify(`Pi Subagent ${id} result delivery failed; use subagent_status to recover.`, "error");
 			}
 		};
+		candidateListener = (state) => {
+			if (state.root !== root || state.request.id !== id || state.status !== "running" || !canDeliver()) return;
+			latestState = state;
+			for (const candidate of state.integration.candidates) {
+				const identity = `${candidate.taskId}\0${candidate.attempt}\0${candidate.tip.head}`;
+				if (candidate.decision || notified.has(identity)) continue;
+				notified.add(identity);
+				deliver(`Pi Subagent ${id}: ${candidate.taskId} ready to integrate. Inspect the exact candidate with subagent_status and stage it now; other workers may still be running.`);
+			}
+		};
+		stateListeners.add(candidateListener);
 		void Promise.resolve().then(() => start(controller.signal)).then(
 			(response) => {
 				finish();
@@ -614,6 +630,12 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
+			if (params.action === "advance") {
+				return await startInSession(params.id, root, signal, ctx,
+					(state) => state.status === "running" && state.waves.at(-1)?.status === "dispatching"
+						&& sameIdentity(state.waves.at(-1)!.base, params.expectedTip),
+					(runSignal) => getComponents().runner.integrate(params, root, runSignal));
+			}
 			return toolResult(await getComponents().runner.integrate(params, root, signal), ctx, workspaceRowsByRequest);
 		},
 	});
@@ -633,6 +655,47 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		async inventory(cwd) {
 			const root = await lookupRoot(cwd);
 			return { root, ...await getComponents().runner.listRequests(root) };
+		},
+		async recover(cwd) {
+			const root = await lookupRoot(cwd);
+			const { requests, invalidIds, leaseBusy } = await getComponents().runner.recoverRepository(root);
+			const lines = [
+				`Pi Subagent recovery in ${root}: ${leaseBusy ? "productive lease is live; no state changed" : "orphaned interruptions classified; no work replayed"}.`,
+				...(requests.length ? requests.map((response) => {
+					const state = response.state;
+					const blockers = state.tasks.flatMap((task) => [
+						...(task.failure ? [`${task.taskId}: ${boundedPublicText(task.failure)}`] : []),
+						...(task.kind === "changeset" && task.attempts.some((attempt) => attempt.prompts.some((prompt) => prompt.status === "ambiguous"))
+							? [`${task.taskId}: ambiguous worker prompt; do not replay`] : []),
+					]);
+					const generation = state.integration.generations.at(-1);
+					const readyCandidates = state.integration.candidates.filter((candidate) => candidate.worker === "retained" && !candidate.decision);
+					return [
+						`${state.request.id}: ${state.status}; Main ${response.main?.status ?? "not checked"}.`,
+						...blockers.map((blocker) => `  Blocker: ${blocker}`),
+						...(state.final.failure ? [`  Final blocker: ${boundedPublicText(state.final.failure)}`] : []),
+						...(generation?.failure ? [`  Integration blocker: ${boundedPublicText(generation.failure)}`] : []),
+						...(state.status !== "completed" && readyCandidates.length ? [`  ${readyCandidates.length} retained candidate(s); Main selects exact candidates with subagent_stage after subagent_status.`] : []),
+						...(state.status === "completed" ? ["  Retained resources after completion; inspect subagent_status for guarded cleanup."] : []),
+						...(generation ? [`  Generation ${generation.number}: ${generation.status}; inspect subagent_status before any subagent_integrate action.`] : []),
+						...(!leaseBusy && response.continuation ? [`  Reported next action: subagent_resume ${JSON.stringify(response.continuation)}.`] : []),
+					].join("\n");
+			}) : ["No unfinished or retained isolated requests."]),
+			...(invalidIds.length ? [`Unreadable state IDs (preserved; inspect with their compatible owner): ${invalidIds.map((id) => JSON.stringify(id)).join(", ")}.`] : []),
+			leaseBusy ? "Wait for the active productive run; use subagent_status to inspect its current state. No work was taken over."
+				: "Main: inspect subagent_status for exact identities and blockers before deciding stage, promote, resume, or guarded release. No worker prompt, merge, promotion, or cleanup was replayed.",
+			];
+			const report: string[] = [];
+			let bytes = 0;
+			let omitted = 0;
+			for (const line of lines.flatMap((entry) => entry.split("\n"))) {
+				const size = Buffer.byteLength(`${line}\n`, "utf8");
+				if (bytes + size > 7_900) { omitted++; continue; }
+				report.push(line);
+				bytes += size;
+			}
+			if (omitted) report.push(`[${omitted} recovery report lines omitted; use subagent_status for exact request evidence.]`);
+			return report.join("\n");
 		},
 		async inspect(root, requestId) {
 			const response = await getComponents().runner.status(requestId, root);

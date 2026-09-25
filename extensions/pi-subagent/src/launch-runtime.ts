@@ -7,8 +7,8 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { resolveConfiguredRoleLaunch } from "./index.ts";
-import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
+import { EXECUTION_BUDGET_FLAG, resolveConfiguredRoleLaunch } from "./index.ts";
+import type { EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
 import { registerModelTask } from "@henryqw/pi-task-models";
 import type {
 	CoordinatorRuntime,
@@ -192,13 +192,14 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 				modelClass,
 				model: `${prepared.model.provider}/${prepared.model.id}`,
 				thinkingLevel: prepared.thinkingLevel,
-				args: Object.freeze([...prepared.args]),
-				env: Object.freeze({
-					...prepared.env,
-					...(executionBudget === undefined ? {} : {
-						[EXECUTION_BUDGET_ENV]: JSON.stringify({ ...executionBudget, startedAt: this.now() } satisfies EphemeralSubagentExecutionBudget),
-					}),
-				}),
+				args: Object.freeze([
+					...prepared.args,
+					...(executionBudget === undefined ? [] : [
+						`--${EXECUTION_BUDGET_FLAG}`,
+						JSON.stringify({ ...executionBudget, startedAt: this.now() } satisfies EphemeralSubagentExecutionBudget),
+					]),
+				]),
+				env: Object.freeze({ ...prepared.env }),
 				tools: Object.freeze([...prepared.tools]),
 			}),
 			prompt: prepared.systemPrompt,

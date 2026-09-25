@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { registerSubagentCommand, type IsolatedInventory, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
 type Dialog = { kind: "select" | "editor"; title: string; options?: string[]; prefill?: string };
-function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; inspection?: readonly string[] } = {}) {
+function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]> } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
@@ -18,11 +18,18 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	const entries = ["root", "leaf", "existing-child", "sibling"];
 	let active = true;
 	let inspectCount = 0;
+	let recoverCount = 0;
+	const messages: string[] = [];
+	let recoverPause: (() => Promise<void>) | undefined;
 	const inventory = options.inventory ?? { root: "/git", requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
 	const adapter: SubagentCommandAdapter = {
 		direct: () => options.direct ?? [],
 		isolated: async () => { if (options.isolatedError) throw options.isolatedError; return inventory; },
-		inspect: async (_root, id) => { inspectCount++; return options.inspection ?? [`Status for ${id}: retained worktree /safe; continuation: ask Main`]; },
+		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
+		inspectInTab: async (_root, id, _ctx, current) => {
+			assert.equal(current(), true); inspectCount++;
+			return { tabId: `tab-${id}`, name: "status-scout", sessionFile: "/status/session.jsonl" };
+		},
 		canFollowup: () => active,
 		epoch: () => epoch,
 		drain: (root, id, task, current) => {
@@ -57,12 +64,16 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 			},
 		},
 	} as unknown as ExtensionContext;
-	registerSubagentCommand({ registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; } } as ExtensionAPI, adapter);
+	registerSubagentCommand({ registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
+		sendMessage: (message: { content: string }) => { messages.push(message.content); },
+	} as unknown as ExtensionAPI, adapter);
 	const pick = (contains: string) => (dialog: Dialog) => {
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, pick,
+	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick,
+		setRecoverPause: (pause: () => Promise<void>) => { recoverPause = pause; },
+		get recoverCount() { return recoverCount; },
 		setActive: (value: boolean) => { active = value; },
 		get inspectCount() { return inspectCount; },
 		changeSession: () => { session = "next"; }, changeFile: () => { file = "next.jsonl"; },
@@ -89,15 +100,24 @@ test("direct recovery, history and duplicate labels retain exact records", async
 	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Direct")));
 });
 
-test("inspection presents every resource notice without a global 6000-character cutoff or mutation", async () => {
-	const path = `/retained/${"x".repeat(6100)}/late`;
-	const h = harness({ inspection: [...Array.from({ length: 40 }, (_, index) => `Earlier resource ${index}`), `Worktree ${path}`] });
+test("inspection launches a Herdr tab without queuing a Main turn or changing work", async () => {
+	const h = harness();
 	h.responses.push(h.pick("Isolated"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
-	assert.ok(h.notices.some(({ message }) => message === `Worktree ${path}`));
+	assert.ok(h.notices.some(({ message }) => message.includes("Herdr tab tab-request · agent status-scout")));
 	assert.equal(h.inspectCount, 1);
 	assert.deepEqual(h.queues.get("task"), ["first", "first", "third"]);
 	assert.deepEqual(h.sent, []);
+});
+
+test("inspection does not launch after the session changes in the menu", async () => {
+	const h = harness();
+	h.responses.push(h.pick("Isolated"), (dialog) => {
+		h.changeSession();
+		return dialog.options!.find((option) => option.includes("Inspect"));
+	});
+	await h.run();
+	assert.equal(h.inspectCount, 0);
 });
 
 test("failed isolated discovery preserves direct branch recovery and invalid inventory does not suppress healthy requests", async () => {
@@ -196,6 +216,22 @@ test("durable-only or other-owner requests cannot offer follow-up; task sealing 
 	race.responses.push(race.pick("Isolated"), race.pick("Edit queued"), (dialog) => { race.setActive(false); return dialog.options!.find((option) => option.includes("· task [")); }, race.pick("Back"), race.pick("Close"));
 	await race.run(); assert.equal(race.queues.get("task")!.length, 3);
 	assert.ok(race.notices.some((notice) => notice.message.includes("Cannot withdraw")));
+});
+
+test("recover delivers one Main follow-up without interactive UI or menu actions", async () => {
+	const h = harness({ ui: false });
+	await h.run("recover");
+	assert.deepEqual(h.messages, ["Recovery report for Main"]);
+	assert.equal(h.recoverCount, 1);
+	assert.deepEqual(h.dialogs, []);
+	assert.deepEqual(h.sent, []);
+});
+
+test("recover does not deliver a stale follow-up after session replacement", async () => {
+	const h = harness();
+	h.setRecoverPause(async () => { h.changeSession(); });
+	await h.run("recover");
+	assert.deepEqual(h.messages, []);
 });
 
 test("no UI and unknown arguments fail before dialogs or mutations", async () => {

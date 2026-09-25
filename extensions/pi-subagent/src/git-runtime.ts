@@ -493,22 +493,25 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 		cwd: string,
 		context: OperationContext,
 	): Promise<{ candidate: WorkspaceIdentity; clean: boolean; supported: boolean }> {
-		const branch = oneLine(await this.requireGit(["symbolic-ref", "--quiet", "HEAD"], cwd, context), "branch reference");
-		const head = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd, context), "HEAD");
-		const hadGitlinks = await this.hasGitlinks(cwd, context);
-		const inspection = await inspectWorktreeDirty(cwd, this.gitRunner(context));
-		if (inspection.failure) throw new Error(`Worktree inspection failed: ${inspection.failure}`);
-		const index = oid(await this.requireGit(["write-tree"], cwd, context), "index tree");
-		const tree = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{tree}"], cwd, context), "HEAD tree");
-		const hasGitlinks = hadGitlinks || await this.hasGitlinks(cwd, context);
-		const finalBranch = oneLine(await this.requireGit(["symbolic-ref", "--quiet", "HEAD"], cwd, context), "branch reference");
-		const finalHead = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd, context), "HEAD");
-		if (branch !== finalBranch || head !== finalHead) throw new Error("Git workspace changed during in-flight identity inspection.");
-		return {
-			candidate: { branch, head, index, tree },
-			clean: !inspection.dirty,
-			supported: !hasGitlinks,
-		};
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const branch = oneLine(await this.requireGit(["symbolic-ref", "--quiet", "HEAD"], cwd, context), "branch reference");
+			const head = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd, context), "HEAD");
+			const hadGitlinks = await this.hasGitlinks(cwd, context);
+			const inspection = await inspectWorktreeDirty(cwd, this.gitRunner(context), false);
+			if (inspection.failure) throw new Error(`Worktree inspection failed: ${inspection.failure}`);
+			const index = oid(await this.requireGit(["write-tree"], cwd, context), "index tree");
+			const tree = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{tree}"], cwd, context), "HEAD tree");
+			const hasGitlinks = hadGitlinks || await this.hasGitlinks(cwd, context);
+			const finalBranch = oneLine(await this.requireGit(["symbolic-ref", "--quiet", "HEAD"], cwd, context), "branch reference");
+			const finalHead = oid(await this.requireGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd, context), "HEAD");
+			if (branch !== finalBranch || head !== finalHead) continue;
+			return {
+				candidate: { branch, head, index, tree },
+				clean: !inspection.dirty,
+				supported: !hasGitlinks,
+			};
+		}
+		throw new Error("Git workspace changed during in-flight identity inspection.");
 	}
 
 	private async inspectWorkspace(cwd: string, strictIgnored: boolean, context: OperationContext): Promise<WorkspaceIdentity> {

@@ -33,6 +33,7 @@ function loadRoleTools(processLease: string | undefined): { events: string[]; to
 	try {
 		roleTools({
 			registerFlag() {},
+			getFlag() {},
 			on(event: string, handler: (...args: any[]) => unknown) {
 				events.push(event);
 				if (event === "tool_call") toolCall = handler;

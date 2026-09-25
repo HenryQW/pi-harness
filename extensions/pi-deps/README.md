@@ -10,12 +10,14 @@ pi install npm:@henryqw/pi-deps
 
 ## Use
 
-Run `/deps` in a trusted repository to enable preparation. Create a worktree, then open Pi there.
+Run `/deps` in a trusted repository to enable preparation. Create a worktree, then open Pi there to see install progress and the result. Run `/deps` again to disable future preparation.
 
-Pi shows install progress and reports the result. Run `/deps` again when you want to disable future preparation.
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/deps` | command | For humans: enable or disable preparation for future Git worktrees in this repository. |
+| Pi worktree status widget | ui | For humans: show background install progress and its result in a prepared worktree. |
 
-- Run `/deps` once from any worktree to enable preparation through the repository's shared `post-checkout` hook.
-- Run `/deps` again to disable it.
+- The shared `post-checkout` hook applies to every worktree in the repository; run `/deps` from any worktree to toggle it.
 - Hooks without this package's marker are never overwritten or removed.
 - After updating the package, run `/deps` twice in each opted-in repository. This replaces the copied hook with the current version.
 

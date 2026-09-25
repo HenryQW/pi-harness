@@ -1,4 +1,4 @@
-# @henryqw/pi-codegraph
+# `@henryqw/pi-codegraph`
 
 Get a separate [CodeGraph](https://github.com/colbymchenry/codegraph) index when you start Pi in a new Git worktree. Use CodeGraph's explore tool through pi-mcp-adapter from Pi.
 
@@ -10,7 +10,14 @@ pi install npm:pi-mcp-adapter
 pi install npm:@henryqw/pi-codegraph
 ```
 
-Requires `codegraph` CLI on `PATH`, and [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter).
+Requires the `codegraph` CLI on `PATH` and [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter).
+
+## Works with
+
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph) | Required | Builds the indexes and serves CodeGraph tools over MCP. |
+| [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | Required | Connects the MCP server to Pi. |
 
 ## Use
 
@@ -20,7 +27,15 @@ From the primary checkout, initialize CodeGraph once:
 codegraph init --yes
 ```
 
-Then launch `pi` in a linked worktree. The adapter server is `henryqw_pi-codegraph__codegraph`. It discovers tools lazily; other CodeGraph tools remain available through `mcp`.
+Then launch `pi` in a linked worktree. When the primary checkout has an index, pi-codegraph initializes a separate worktree index and exposes CodeGraph tools through pi-mcp-adapter.
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `codegraph_explore` | tool | Lets agents explore the indexed code through CodeGraph. |
+| `mcp` | tool | Lets agents call other CodeGraph tools through the `henryqw_pi-codegraph__codegraph` adapter server. |
+| CodeGraph setup status | ui | Shows users setup progress and errors, and confirms a new worktree index is ready. |
+
+The adapter discovers tools lazily.
 
 ## Flow
 

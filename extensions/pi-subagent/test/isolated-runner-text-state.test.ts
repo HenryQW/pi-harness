@@ -424,6 +424,8 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 			);
 			const dispatchingRunner = runner as unknown as DispatchTaskRunner;
 			const dispatchTask = dispatchingRunner.dispatchTask.bind(runner);
+			// This fixture does not create a checked changeset attempt; only dispatch attribution is under test.
+			(runner as unknown as { retainCandidate(): void }).retainCandidate = () => {};
 			dispatchingRunner.dispatchTask = async (handle, task, scope) => {
 				if (task.kind === "text") return await dispatchTask(handle, task, scope);
 				await new Promise<void>((resolve) => setTimeout(resolve, 1));

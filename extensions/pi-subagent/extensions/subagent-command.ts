@@ -31,7 +31,8 @@ export interface IsolatedInventory {
 export interface SubagentCommandAdapter {
 	direct(ctx: ExtensionContext): readonly DirectTask[];
 	isolated(cwd: string): Promise<IsolatedInventory>;
-	inspect(root: string, requestId: string): Promise<readonly string[]>;
+	recover(cwd: string): Promise<string>;
+	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ tabId: string; name: string; sessionFile: string }>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
 	drain(root: string, requestId: string, taskId: string, current: () => boolean): readonly string[];
@@ -55,10 +56,11 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly P
 
 export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentCommandAdapter): void {
 	pi.registerCommand("subagent", {
-		description: "Inspect direct and isolated work; send or edit pending isolated instructions",
+		description: "Inspect direct and isolated work, or recover orphaned isolated requests with /subagent recover",
 		handler: async (args, ctx) => {
-			if (args.trim()) throw new Error("Usage: /subagent (no arguments)");
-			if (!ctx.hasUI) throw new Error("/subagent requires interactive UI (TUI or RPC); use the subagent agent tools in non-interactive mode.");
+			const command = args.trim();
+			if (command && command !== "recover") throw new Error("Usage: /subagent [recover]");
+			if (!command && !ctx.hasUI) throw new Error("/subagent requires interactive UI (TUI or RPC); use the subagent agent tools in non-interactive mode.");
 			const manager = ctx.sessionManager;
 			const session = manager.getSessionId();
 			const file = manager.getSessionFile();
@@ -73,6 +75,13 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				return now.length >= branch.length && branch.every((id, index) => now[index]?.id === id)
 					&& now.slice(branch.length).every((entry) => !existing.has(entry.id));
 			};
+			if (command === "recover") {
+				const report = await adapter.recover(ctx.cwd);
+				if (!current()) return;
+				pi.sendMessage({ customType: "pi-subagent-recovery", content: report, display: true },
+					{ triggerTurn: true, deliverAs: "followUp" });
+				return;
+			}
 			const valid = () => {
 				if (current()) return true;
 				ctx.ui.notify("Session or branch changed; reopen /subagent in the current context.", "warning");
@@ -130,8 +139,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					if (action === "back") break;
 					if (action === "inspect") {
 						try {
-							const notices = await adapter.inspect(root, request.id);
-							if (valid()) for (const notice of notices) ctx.ui.notify(notice, "info");
+							const tab = await adapter.inspectInTab(root, request.id, ctx, current);
+							if (valid()) ctx.ui.notify(`Status inspection started in Herdr tab ${tab.tabId} · agent ${tab.name} · session ${tab.sessionFile}.`, "info");
 						}
 						catch (error) { if (valid()) ctx.ui.notify(`Inspection failed: ${errorText(error)}`, "error"); }
 						continue;

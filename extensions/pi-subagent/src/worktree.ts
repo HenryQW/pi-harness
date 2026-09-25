@@ -198,12 +198,12 @@ export async function inspectIndexFlags(cwd: string, run: GitRunner = runGit, si
 	return { hidden: flags.stdout.split("\0").some((entry) => /^(?:[a-z]|S) /.test(entry)) };
 }
 
-async function inspectDirty(run: GitRunner, cwd: string): Promise<WorktreeDirtyInspection> {
+async function inspectDirty(run: GitRunner, cwd: string, includeIgnored = true): Promise<WorktreeDirtyInspection> {
 	const refreshed = await run(["update-index", "--really-refresh"], cwd);
 	if (refreshed.code !== 0 && refreshed.code !== 1) {
 		return { dirty: false, failure: `update-index exit ${refreshed.code}: ${refreshed.stderr.trim().slice(0, 200)}` };
 	}
-	const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"], cwd);
+	const status = await run(["status", "--porcelain", "--untracked-files=all", ...(includeIgnored ? ["--ignored=matching"] : []), "--ignore-submodules=none"], cwd);
 	if (status.code !== 0) return { dirty: false, failure: `status exit ${status.code}: ${status.stderr.trim().slice(0, 200)}` };
 	if (refreshed.code === 1 || status.stdout.trim()) return { dirty: true };
 	const flags = await inspectIndexFlags(cwd, run);
@@ -213,8 +213,8 @@ async function inspectDirty(run: GitRunner, cwd: string): Promise<WorktreeDirtyI
 }
 
 /** Proves a worktree has no tracked, untracked, ignored, index-hidden, or nested submodule work. */
-export async function inspectWorktreeDirty(cwd: string, run: GitRunner = runGit): Promise<WorktreeDirtyInspection> {
-	const root = await inspectDirty(run, cwd);
+export async function inspectWorktreeDirty(cwd: string, run: GitRunner = runGit, includeIgnored = true): Promise<WorktreeDirtyInspection> {
+	const root = await inspectDirty(run, cwd, includeIgnored);
 	if (root.dirty || root.failure) return root;
 	const modules = await run(["submodule", "status", "--recursive"], cwd);
 	if (modules.code !== 0) return { dirty: false, failure: `submodule list exit ${modules.code}: ${modules.stderr.trim().slice(0, 200)}` };
@@ -225,12 +225,12 @@ export async function inspectWorktreeDirty(cwd: string, run: GitRunner = runGit)
 		const paths = listed.stdout.split("\0").filter(Boolean);
 		if (!paths.length) return { dirty: false, failure: "initialized submodule paths unavailable" };
 		for (const path of paths) {
-			const nested = await inspectDirty(run, path);
+			const nested = await inspectDirty(run, path, includeIgnored);
 			if (nested.failure) return { dirty: false, failure: `submodule ${path}: ${nested.failure}` };
 			if (nested.dirty) return { dirty: true };
 		}
 	}
-	const rechecked = await inspectDirty(run, cwd);
+	const rechecked = await inspectDirty(run, cwd, includeIgnored);
 	return initializedSubmodules ? { ...rechecked, initializedSubmodules } : rechecked;
 }
 

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="worker-lifecycle-title worker-lifecycle-desc">
+<title id="worker-lifecycle-title">Checked subagent lifecycle and coordinator recovery</title>
+<desc id="worker-lifecycle-desc">Main delegates to the coordinator extension in its own Pi process. The coordinator saves state and launches a Herdr subagent in an isolated worktree. After the subagent commits, the coordinator verifies and saves a checked candidate; Main explicitly stages and promotes only after combined validation. A worker failure waits for the wave to settle before an attention follow-up. If the coordinator process stops, no follow-up is guaranteed; the last durable state remains for status inspection and deliberate recovery without automatic replay.</desc>
+<defs>
+<style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
+<marker id="worker-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+<marker id="worker-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+</defs>
+<rect width="1280" height="720" fill="#f0eee9"/>
+<text x="48" y="60" fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1.5">PI SUBAGENT / ONE ISOLATED WORKER</text>
+<text x="48" y="99" fill="#101828" font-family="'Instrument Serif',serif" font-size="28">A worker commits. Main decides what is integrated.</text>
+<text x="48" y="126" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">The coordinator is extension code inside Main's Pi process, not another agent.</text>
+<rect x="64" y="158" width="1138" height="58" rx="8" fill="#e6e4de"/>
+<text x="84" y="181" fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600">One worker shown; siblings can keep working after this candidate is ready.</text>
+<text x="84" y="200" fill="#4c5665" font-family="'Geist',sans-serif" font-size="12">State is persisted by the coordinator. Herdr agent status alone does not prove a clean, checked candidate.</text>
+<!-- Connectors before nodes. Primary rail is the checked path; dashed paths retain uncertainty. -->
+<line x1="234" y1="350" x2="306" y2="350" stroke="#4c5665" marker-end="url(#worker-arrow)"/>
+<line x1="476" y1="350" x2="548" y2="350" stroke="#4c5665" marker-end="url(#worker-arrow)"/>
+<line x1="718" y1="350" x2="790" y2="350" stroke="#4c5665" marker-end="url(#worker-arrow)"/>
+<line x1="960" y1="350" x2="1032" y2="350" stroke="#1d4ed8" stroke-width="1.4" marker-end="url(#worker-arrow-accent)"/>
+<path d="M633 405 V434 Q633 442 625 442 H408 Q400 442 400 450 V512" fill="none" stroke="#4c5665" stroke-dasharray="5,4" marker-end="url(#worker-arrow)"/>
+<line x1="500" y1="546" x2="526" y2="546" stroke="#4c5665" marker-end="url(#worker-arrow)"/>
+<line x1="875" y1="405" x2="875" y2="512" stroke="#4c5665" stroke-dasharray="5,4" marker-end="url(#worker-arrow)"/>
+<line x1="968" y1="546" x2="994" y2="546" stroke="#4c5665" marker-end="url(#worker-arrow)"/>
+<!-- Transition labels sit above, not on, their strokes. -->
+<g fill="#4c5665" font-family="'Geist Mono',monospace" font-size="8" text-anchor="middle">
+<rect x="242" y="324" width="56" height="12" rx="2" fill="#f0eee9"/><text x="270" y="333">START</text>
+<rect x="484" y="324" width="56" height="12" rx="2" fill="#f0eee9"/><text x="512" y="333">LAUNCH</text>
+<rect x="726" y="324" width="56" height="12" rx="2" fill="#f0eee9"/><text x="754" y="333">CHECK</text>
+<rect x="968" y="324" width="56" height="12" rx="2" fill="#f0eee9"/><text x="996" y="333" fill="#1d4ed8">READY</text>
+</g>
+<!-- Five phases, with ownership above each. -->
+<g fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1" text-anchor="middle">
+<text x="149" y="272">MAIN AGENT</text><text x="391" y="272">COORDINATOR</text>
+<text x="633" y="272">HERDR SUBAGENT</text><text x="875" y="272">COORDINATOR</text>
+<text x="1117" y="272">MAIN AGENT</text>
+</g>
+<g fill="#ffffff" stroke="#101828">
+<rect x="64" y="295" width="170" height="110" rx="8"/>
+<rect x="306" y="295" width="170" height="110" rx="8"/>
+<rect x="548" y="295" width="170" height="110" rx="8"/>
+<rect x="790" y="295" width="170" height="110" rx="8" fill="#1d4ed8" fill-opacity="0.08" stroke="#1d4ed8"/>
+<rect x="1032" y="295" width="170" height="110" rx="8"/>
+</g>
+<g fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600" text-anchor="middle">
+<text x="149" y="339">Delegate task</text><text x="391" y="339">Save + launch</text>
+<text x="633" y="339">Implement + commit</text><text x="875" y="339">Check + seal</text>
+<text x="1117" y="339">Stage + promote</text>
+</g>
+<g fill="#4c5665" font-family="'Geist',sans-serif" font-size="11" text-anchor="middle">
+<text x="149" y="370">Bounded request</text><text x="391" y="370">Durable ID + lease</text>
+<text x="633" y="370">Isolated worktree</text><text x="875" y="370">Clean tip + task checks</text>
+<text x="1117" y="370">Combined validation first</text>
+</g>
+<!-- Recovery bands: an incomplete worker and a stopped coordinator are distinct. -->
+<rect x="286" y="468" width="448" height="146" rx="8" fill="#e6e4de"/>
+<rect x="756" y="468" width="446" height="146" rx="8" fill="#e6e4de"/>
+<g fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1">
+<text x="310" y="492">WORKER FAILURE</text><text x="778" y="492">COORDINATOR STOPS / ANY PHASE</text>
+</g>
+<g fill="#ffffff" stroke="#4c5665" stroke-dasharray="5,4">
+<rect x="310" y="512" width="190" height="68" rx="8"/>
+<rect x="526" y="512" width="192" height="68" rx="8"/>
+<rect x="778" y="512" width="190" height="68" rx="8"/>
+<rect x="994" y="512" width="190" height="68" rx="8"/>
+</g>
+<g fill="#101828" font-family="'Geist',sans-serif" font-size="12" font-weight="600" text-anchor="middle">
+<text x="405" y="540">No checked candidate</text><text x="622" y="540">Wave needs attention</text>
+<text x="873" y="540">No guaranteed message</text><text x="1089" y="540">Inspect saved state</text>
+</g>
+<g fill="#4c5665" font-family="'Geist',sans-serif" font-size="10" text-anchor="middle">
+<text x="405" y="560">Failure retained</text><text x="622" y="560">Follow-up when settled</text>
+<text x="873" y="560">Last write survives</text><text x="1089" y="560">Restart; recover deliberately</text>
+</g>
+<line x1="48" y1="648" x2="1232" y2="648" stroke="#101828" stroke-opacity="0.12"/>
+<text x="48" y="675" fill="#6a7282" font-family="'Geist Mono',monospace" font-size="8" letter-spacing="1">GUARD</text>
+<text x="128" y="675" fill="#101828" font-family="'Geist',sans-serif" font-size="12">Status reports exact saved evidence; uncertain steps are never replayed automatically.</text>
+<text x="128" y="696" fill="#4c5665" font-family="'Geist',sans-serif" font-size="11">A ready candidate may be staged while siblings run. Promotion still requires full combined validation.</text>
+</svg>

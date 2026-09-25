@@ -17,6 +17,7 @@ import {
 	type HostAllocationResult,
 	type HostRuntime,
 	type OperationContext,
+	type RunResponse,
 	type TaskCandidateInspector,
 	type TransientLaunchHandle,
 	type VerifiedLaunch,
@@ -1287,47 +1288,88 @@ test("changeset dispatch failure retains the exact allocated worker", async (t) 
 	assertParsed(stopped.state);
 });
 
-test("abort terminates all exact retained workers without replay", async (t) => {
-	const { root, runtime, store, runner } = await harness(t);
-	const definition = request("abort-active", [changesetTask("active"), changesetTask("settled")]);
-	runtime.workerFailures.push(new Error("active worker transport failed"));
+test("abort terminates exact ambiguous workers without replay", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	const definition = request("abort-active", [changesetTask("first"), changesetTask("second")]);
+	runtime.workerFailures.push(new Error("first transport failed"), new Error("second transport failed"));
 	const stopped = await runner.execute(definition, root);
-	const activeTaskId = stopped.state.tasks.find((task) => task.kind === "changeset"
-		&& task.attempts[0]?.prompts[0]?.status === "ambiguous")?.taskId;
-	const settledTaskId = stopped.state.tasks.find((task) => task.taskId !== activeTaskId)?.taskId;
-	if (!activeTaskId || !settledTaskId) throw new Error("Expected one active and one settled worker fixture.");
-
-	const handle = await store.load(root, definition.id);
-	const activeAttempt = changesetState(handle.state, activeTaskId).attempts[0]!;
-	const activeAgent = activeAttempt.allocations.find((allocation) => allocation.kind === "agent");
-	const activeCandidate = activeAttempt.prompts[0]?.preCandidate;
-	if (!activeAgent?.agentName || !activeCandidate) throw new Error("Expected an exact active worker fixture.");
-	const settledAttempt = changesetState(handle.state, settledTaskId).attempts[0]!;
-	const settledAgent = settledAttempt.allocations.find((allocation) => allocation.kind === "agent");
-	const settledCandidate = settledAttempt.candidate;
-	if (!settledAgent?.agentName || !settledCandidate) throw new Error("Expected an exact settled worker fixture.");
-	delete activeAttempt.termination;
-	await handle.save();
-	assertParsed(handle.state);
-
-	runtime.terminationCalls.length = 0;
+	assert.equal(stopped.state.integration.candidates.length, 0);
+	const workers = stopped.state.tasks.map((task) => {
+		const attempt = changesetState(stopped.state, task.taskId).attempts[0]!;
+		const workerId = attempt.allocations.find((allocation) => allocation.kind === "agent")?.agentName;
+		const candidate = attempt.prompts[0]?.preCandidate;
+		if (!workerId || !candidate) throw new Error("Expected an exact ambiguous worker fixture.");
+		return { workerId, candidate };
+	});
 	const workerCallsBeforeAbort = structuredClone(runtime.workerCalls);
 	const aborted = await runner.abort(definition.id, root);
-	const abortedActive = changesetState(aborted.state, activeTaskId).attempts[0]!;
-	const abortedSettled = changesetState(aborted.state, settledTaskId).attempts[0]!;
-
 	assert.equal(aborted.state.status, "aborted");
-	assert.deepEqual(
-		[...runtime.terminationCalls].sort((left, right) => left.workerId.localeCompare(right.workerId)),
-		[
-			{ workerId: activeAgent.agentName, candidate: activeCandidate },
-			{ workerId: settledAgent.agentName, candidate: settledCandidate },
-		].sort((left, right) => left.workerId.localeCompare(right.workerId)),
-	);
+	assert.deepEqual([...runtime.terminationCalls].sort((left, right) => left.workerId.localeCompare(right.workerId)),
+		workers.sort((left, right) => left.workerId.localeCompare(right.workerId)));
 	assert.deepEqual(runtime.workerCalls, workerCallsBeforeAbort);
-	assert.equal(abortedActive.termination?.status, "terminated");
-	assert.equal(abortedSettled.termination?.status, "terminated");
 	assertParsed(aborted.state);
+});
+
+test("recovery refuses a live productive lease without changing running state", async (t) => {
+	const { root, runtime, runner, store, agentDir } = await harness(t);
+	let release!: () => void;
+	const paused = new Promise<void>((resolve) => { release = resolve; });
+	runtime.workerPause = async () => await paused;
+	const id = "live-recovery";
+	const execution = runner.execute(request(id, [changesetTask("change")]), root);
+	try {
+		await waitUntil(() => runtime.workerCalls.length === 1);
+		const before = await readFile(store.statePath(root, id));
+		const other = new IsolatedRunner(runtime, runtime, runtime, new FileRunStore(agentDir), unusedTextExecutor);
+		const result = await other.recoverRepository(root);
+		assert.equal(result.leaseBusy, true);
+		assert.equal(result.requests[0]?.state.status, "running");
+		assert.deepEqual(await readFile(store.statePath(root, id)), before);
+		assert.equal(runtime.workerCalls.length, 1);
+	} finally {
+		release();
+		await execution;
+	}
+});
+
+test("recovery classifies ambiguous workers once, preserves malformed files and retained candidates", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	const interrupted = request("orphaned-worker", [changesetTask("change")]);
+	runtime.workerFailures.push(new Error("worker result unavailable"));
+	await runner.execute(interrupted, root);
+	const handle = await store.load(root, interrupted.id);
+	const task = changesetState(handle.state, "change");
+	task.status = "working";
+	task.failure = undefined;
+	handle.state.status = "running";
+	task.attempts[0]!.prompts[0]!.status = "submitting";
+	task.attempts[0]!.prompts[0]!.failure = undefined;
+	await handle.save();
+	const retained = request("saved-candidate", [changesetTask("change")]);
+	await runner.execute(retained, root);
+	const candidateBefore = await readFile(store.statePath(root, retained.id));
+	const badPath = store.statePath(root, "bad-state");
+	const badBytes = Buffer.from("{malformed");
+	await writeFile(badPath, badBytes);
+	const calls = runtimeCallCounts(runtime);
+	const recovered = await runner.recoverRepository(root);
+	assert.equal(recovered.leaseBusy, false);
+	assert.deepEqual(recovered.invalidIds, ["bad-state"]);
+	assert.deepEqual(recovered.requests.map(({ state }) => state.request.id), ["orphaned-worker", "saved-candidate"]);
+	const attempt = changesetState(recovered.requests[0]!.state, "change").attempts[0]!;
+	assert.equal(attempt.prompts[0]!.status, "ambiguous");
+	assert.equal(recovered.requests[0]!.state.status, "needs_attention");
+	assert.equal(recovered.requests[1]!.state.integration.candidates.length, 1);
+	assert.deepEqual(await readFile(store.statePath(root, retained.id)), candidateBefore);
+	assert.deepEqual(await readFile(badPath), badBytes);
+	const saved = await readFile(store.statePath(root, interrupted.id));
+	const again = await runner.recoverRepository(root);
+	assert.deepEqual(await readFile(store.statePath(root, interrupted.id)), saved);
+	assert.equal(again.requests[0]!.state.status, "needs_attention");
+	assert.deepEqual(runtimeCallDelta(runtime, calls), {
+		...Object.fromEntries(Object.keys(calls).map((key) => [key, 0])),
+		mainInspections: 4,
+	});
 });
 
 test("status preserves interrupted and ambiguous changeset prompts without productive replay", async (t) => {
@@ -1664,7 +1706,7 @@ class StagingGit extends IntegrationGit {
 	}
 	resolved = false;
 	allocationUnknown = false;
-	beforeMerge?: () => void;
+	beforeMerge?: () => Promise<void> | void;
 	override async allocate(root: string, _childId: string, base: WorkspaceIdentity,
 		onPrepared: (info: WorktreeInfo) => Promise<void>): Promise<GitOutcome<WorktreeInfo>> {
 		const suffix = _childId.endsWith("-integration-1") ? "" : "-2";
@@ -1681,7 +1723,7 @@ class StagingGit extends IntegrationGit {
 	}
 	override async stage(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
 		stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt>> {
-		this.beforeMerge?.();
+		await this.beforeMerge?.();
 		this.merged.push(candidate.head);
 		if (stages.length) return { outcome: "conflict", failure: "Resolve overlapping edits in the integration worktree." };
 		const previous = identity("a", `refs/heads/${_integration.branch}`);
@@ -1689,6 +1731,7 @@ class StagingGit extends IntegrationGit {
 	}
 	override async reconcileStage(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
 		stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt | "not_started">> {
+		if (this.allocationUnknown) return { outcome: "ready", value: "not_started" };
 		if (!this.resolved) return { outcome: "conflict", failure: "Merge remains unresolved in the owned worktree." };
 		return { outcome: "ready", value: {
 			previous: stages.at(-1)!.tip, worker: candidate,
@@ -1696,6 +1739,88 @@ class StagingGit extends IntegrationGit {
 		} };
 	}
 }
+
+test("Main can stage a checked worker while its sibling is still working", async (t) => {
+	const git = new StagingGit();
+	const store = { current: undefined as RecordingStore | undefined };
+	const { root, runtime, runner, agentDir } = await harness(t, {
+		integrationGit: git,
+		createStore: (agentDir) => store.current = new RecordingStore(agentDir),
+	});
+	let releaseSecond!: () => void;
+	const secondPaused = new Promise<void>((resolve) => { releaseSecond = resolve; });
+	runtime.workerPause = async (call) => { if (call.taskId === "second") await secondPaused; };
+	const definition = request("stream-stage", [changesetTask("first"), changesetTask("second")]);
+	const running = runner.execute(definition, root);
+	try {
+		await waitUntil(() => runtime.workerCalls.some((call) => call.taskId === "second")
+			&& store.current?.snapshots.some((snapshot) => snapshot.integration.candidates.some((candidate) => candidate.taskId === "first")) === true);
+		const ready = (await runner.status(definition.id, root)).state;
+		assert.equal(ready.status, "running");
+		assert.equal(changesetState(ready, "second").status, "working");
+		const first = ready.integration.candidates[0]!;
+		const action = { id: definition.id, action: "stage" as const, generation: 1,
+			taskId: first.taskId, attempt: first.attempt, candidate: first.tip, expectedTip: ready.main };
+		await assert.rejects(runner.stage({ ...action, action: "reject" }, root), /Wait for active workers/);
+		const external = new IsolatedRunner(runtime, runtime, runtime, new FileRunStore(agentDir), unusedTextExecutor,
+			undefined, undefined, git);
+		await assert.rejects(external.stage(action, root), /productive request is active/);
+		const staged = await runner.stage(action, root);
+		assert.equal(staged.state.integration.generations[0]?.stages[0]?.status, "staged");
+		assert.equal(changesetState(staged.state, "second").status, "working");
+	} finally {
+		releaseSecond();
+		await running;
+	}
+	const settled = (await runner.status(definition.id, root)).state;
+	assert.equal(settled.integration.candidates.length, 2);
+	assert.equal(settled.integration.generations[0]?.stages[0]?.taskId, "first");
+	assertParsed(settled);
+});
+
+test("the productive lease stays held when a sibling finishes during staging", async (t) => {
+	const git = new StagingGit();
+	const store = { current: undefined as RecordingStore | undefined };
+	const { root, runtime, runner } = await harness(t, {
+		integrationGit: git, createStore: (agentDir) => store.current = new RecordingStore(agentDir),
+	});
+	let releaseSecond!: () => void;
+	let releaseMerge!: () => void;
+	const secondPaused = new Promise<void>((resolve) => { releaseSecond = resolve; });
+	const mergePaused = new Promise<void>((resolve) => { releaseMerge = resolve; });
+	let merging = false;
+	git.beforeMerge = async () => { merging = true; await mergePaused; };
+	runtime.workerPause = async (call) => { if (call.taskId === "second") await secondPaused; };
+	const definition = request("stage-during-settle", [changesetTask("first"), changesetTask("second")]);
+	let settled = false;
+	const running = runner.execute(definition, root).then((result) => { settled = true; return result; });
+	let stage: Promise<RunResponse> | undefined;
+	try {
+		await waitUntil(() => runtime.workerCalls.some((call) => call.taskId === "second")
+			&& store.current?.snapshots.some((snapshot) => snapshot.integration.candidates.some((item) => item.taskId === "first")) === true);
+		const ready = (await runner.status(definition.id, root)).state;
+		const first = ready.integration.candidates.find((item) => item.taskId === "first")!;
+		const action = { id: definition.id, action: "stage" as const, generation: 1,
+			taskId: first.taskId, attempt: first.attempt, candidate: first.tip, expectedTip: ready.main };
+		stage = runner.stage(action, root);
+		await waitUntil(() => merging);
+		await assert.rejects(runner.stage(action, root), /Another stage or resolution is active/);
+		releaseSecond();
+		await waitUntil(() => store.current?.snapshots.some((snapshot) => snapshot.status === "needs_attention"
+			&& snapshot.integration.candidates.some((item) => item.taskId === "second")) === true);
+		assert.equal(settled, false, "the wave must not release its lease while staging is in flight");
+		releaseMerge();
+		await stage;
+		const done = await running;
+		assert.equal(done.state.integration.candidates.length, 2);
+		assert.equal(done.state.integration.generations[0]?.stages[0]?.status, "staged");
+		assertParsed(done.state);
+	} finally {
+		releaseSecond();
+		releaseMerge();
+		await Promise.allSettled([stage, running]);
+	}
+});
 
 test("Main selects two retained candidates in order; conflict and resolution never mutate Main or replay a stage", async (t) => {
 	const git = new StagingGit();
@@ -2209,6 +2334,10 @@ test("uncertain integration allocation retains intent and refuses mutation repla
 	assert.deepEqual(git.merged, []);
 	await assert.rejects(runner.stage(action, root), /unresolved/);
 	assert.deepEqual(git.merged, []);
+	const integrationBase = uncertain.state.integration.generations[0]!.integrationBase;
+	const reconciled = await runner.stage({ ...action, action: "resolve", expectedTip: integrationBase }, root);
+	assert.equal(reconciled.state.integration.generations[0]?.stages[0]?.status, "staged");
+	assert.deepEqual(git.merged, [candidate.tip.head]);
 	assertParsed((await runner.status(action.id, root)).state);
 });
 

@@ -22,20 +22,15 @@ Requires Herdr 0.7.4+ and a Herdr-managed pane. Run `/task-models` and configure
 
 ## Use
 
-Run `/btw Why is this test failing?` and submit the draft in the side pane. After the answer, run `/btw merge Apply the smallest safe fix` there.
+From a Herdr-managed Pi pane with a conversation, run `/btw Why is this test failing?` to open a side pane with the question as an editable draft. Submit it there; after the answer, run `/btw merge Apply the smallest safe fix`. Main receives the side transcript, regains focus, and continues with the merge prompt.
 
-Main receives the side transcript, regains focus, and continues with the merge prompt.
-
-```text
-/btw                              open an empty side pane
-/btw <question...>                open side pane with draft question
-/btw ask <question...>            escape reserved first words
-/btw config [...]                 show or change launch defaults
-/btw merge <prompt...>            merge side thread into Main and continue
-/btw help                         show grammar
-```
-
-Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `/btw [<question...>]` | command | For humans in Main: open an empty side pane or start with an editable question draft. |
+| `/btw ask <question...>` | command | For humans in Main: ask a question whose first word is `ask`, `config`, `merge`, or `help`. |
+| `/btw config [option value]` | command | For humans: show values, set `auto-submit` to `on` or `off`, set `tools` to `inherit`, `all`, `read-only`, or `none`, set `split` to `right` or `down`, or reset defaults. |
+| `/btw merge [<prompt...>]` | command | For humans: in a side pane, queue its transcript and next prompt for Main (`/btw merge` opens the prompt editor); in Main, scan for pending side-thread deliveries. |
+| `/btw help` | command | For humans: show the command grammar. |
 
 ## Flow
 
@@ -53,11 +48,10 @@ Use `/btw` to open a side thread, set its defaults, or recover a pending merge.
 
 ![Sequence showing a fixed context snapshot with live shared files; the transcript and prompt queue until Main is idle and authenticated, then Main appends the transcript and submits the prompt.](./docs/btw-merge-sequence.svg)
 
-- In the side pane, `/btw merge <prompt>` stores the user/assistant transcript and next prompt as pending delivery.
+- In the side pane, a merge stores the user/assistant transcript and next prompt as pending delivery.
 - Herdr then refocuses Main and closes the side pane.
 - Pending delivery survives side-pane shutdown. It waits for Main to settle and for current model authentication.
 - Main appends the transcript without starting a turn, then submits the prompt.
-- Bare `/btw merge` opens the prompt editor.
 - Pending delivery remains available until consumed or 24-hour stale cleanup.
 
 ## Config
@@ -79,6 +73,6 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 
 ## Limits and recovery
 
-Enabled tools can change parent-visible files.
+The side pane shares Main's working directory, so enabled tools can change parent-visible files. Choose `read-only` or `none` when the side question should not make changes.
 
-Large parent contexts can exceed child context limits.
+Large parent contexts can exceed child context limits; shorten Main's context and retry.

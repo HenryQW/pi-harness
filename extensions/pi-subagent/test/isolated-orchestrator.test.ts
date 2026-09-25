@@ -775,6 +775,63 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 	assert.equal(harness.sent.length, 2);
 });
 
+test("a ready worker sends Main a stageable follow-up before the wave finishes", async () => {
+	const done = deferred<RunResponse>();
+	let save!: (state: RunState) => void;
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async execute() {
+			const pending = structuredClone(PRIVATE_STATE);
+			pending.status = "pending";
+			pending.updatedAt = pending.createdAt;
+			pending.tasks[0]!.status = "pending";
+			pending.tasks[0]!.attempts = [];
+			save(pending);
+			return await done.promise;
+		} } as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	const ready = structuredClone(PRIVATE_STATE);
+	ready.status = "running";
+	ready.tasks[0]!.status = "ready_to_integrate";
+	ready.integration.candidates = [{ taskId: "unit-one", attempt: 1, base: RECORDED_MAIN,
+		tip: CURRENT_MAIN, checks: { phase: "preliminary", candidate: CURRENT_MAIN, identityAfter: CURRENT_MAIN,
+			passed: true, results: [], at: 200 }, worker: "retained" }];
+	save(ready);
+	save(ready);
+	assert.equal(harness.sent.length, 1);
+	assert.match(harness.sent[0]!.message.content, /unit-one.*ready to integrate/);
+	assert.deepEqual(harness.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+	assert.equal((harness.sent[0]!.message.details as { state: { status: string } }).state.status, "running");
+	done.resolve(response("execute", true, ready));
+	await new Promise(setImmediate);
+});
+
+test("advance acknowledges a dependent wave before its workers finish", async () => {
+	const done = deferred<RunResponse>();
+	let save!: (state: RunState) => void;
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async integrate() {
+			const running = structuredClone(PRIVATE_STATE);
+			running.status = "running";
+			running.waves = [{ number: 1, base: RECORDED_MAIN, taskIds: ["unit-one"], status: "dispatching" }];
+			save(running);
+			return await done.promise;
+		} } as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	const result = await executeTool(namedTool(harness, "subagent_integrate"),
+		{ id: "request-one", generation: 1, action: "advance", expectedTip: RECORDED_MAIN }, undefined, ctx);
+	assert.match(result.content[0]!.text, /durable request accepted/);
+	done.resolve(response("advance"));
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 1);
+});
+
 test("preflight errors reject before acknowledgement; post-save failures report durable recovery", async () => {
 	const failedPreflight = createHarness({ runner: { async execute() { throw new Error("host preflight failed"); } } as never });
 	await assert.rejects(executeTool(namedTool(failedPreflight, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT)), /host preflight failed/);
@@ -905,6 +962,39 @@ test("production components complete host preflight before inspecting Main", asy
 
 	await assert.rejects(runner.execute(EXECUTE_REQUEST, root), /requires HERDR_ENV=1/i);
 	assert.deepEqual(calls, [{ command: "git", args: ["rev-parse", "--show-toplevel"] }]);
+});
+
+test("one-command recovery bounds the Main handoff across many retained requests", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const harness = createHarness({ runner: { async recoverRepository() {
+		return { requests: Array.from({ length: 90 }, (_, index) => ({
+			...response("recover", false, { ...state, request: { ...state.request, id: `request-${index}` } }),
+			main: { status: "drifted" as const, expected: RECORDED_MAIN, actual: CURRENT_MAIN },
+		})), invalidIds: Array.from({ length: 20 }, (_, index) => `invalid-${index}`), leaseBusy: false };
+	} } as never });
+	const report = await harness.surface.recover("/workspace");
+	assert.ok(Buffer.byteLength(report, "utf8") <= 8_192);
+	assert.match(report, /report lines omitted; use subagent_status/);
+	assert.match(report, /request-0: needs_attention/);
+});
+
+test("one-command recovery formats existing status, blockers, continuations and invalid IDs for Main", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const harness = createHarness({
+		runner: {
+			async recoverRepository(root: string) {
+				assert.equal(root, CANONICAL_ROOT);
+				return { requests: [{ ...response("recover", true, state), main: { status: "drifted" } }],
+					invalidIds: ["broken-state"], leaseBusy: false };
+			},
+		} as never,
+	});
+	const report = await harness.surface.recover("/workspace");
+	assert.match(report, /request-one: needs_attention; Main drifted/);
+	assert.match(report, /Blocker: unit-one:/);
+	assert.match(report, /subagent_resume/);
+	assert.match(report, /broken-state.*preserved|preserved.*broken-state/);
+	assert.doesNotMatch(report, /SECRET_TOKEN|PRIVATE/);
 });
 
 test("public recovery evidence stays bounded and omits private durable state", async () => {

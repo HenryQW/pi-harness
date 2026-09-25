@@ -28,6 +28,12 @@ const LIFECYCLE_LOCK_OPTIONS = {
 type ReleaseLock = Awaited<ReturnType<typeof lock>>;
 const productiveRunLeaseBrand: unique symbol = Symbol("productiveRunLease");
 
+export class ProductiveRunLeaseBusyError extends Error {
+	constructor() {
+		super("Another Pi Subagent productive request is active in this repository.");
+	}
+}
+
 export interface ProductiveRunLease {
 	readonly [productiveRunLeaseBrand]: true;
 }
@@ -162,7 +168,7 @@ export class FileRunStore {
 			release = await lock(path, { ...LOCK_OPTIONS, lockfilePath: `${path}.lock` });
 		} catch (error) {
 			if (isLocked(error)) {
-				throw new Error("Another Pi Subagent productive request is active in this repository.");
+				throw new ProductiveRunLeaseBusyError();
 			}
 			throw error;
 		}

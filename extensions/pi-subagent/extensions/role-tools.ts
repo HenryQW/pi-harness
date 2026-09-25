@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	CHILD_EXCLUDED_TOOL_NAMES,
+	EXECUTION_BUDGET_FLAG,
 	EXECUTION_BUDGET_ENV,
 	PI_SUBAGENT_PROCESS_LEASE,
 	ROLE_TOOL_POLICY_FLAG,
@@ -47,8 +48,9 @@ function configuredTools(value: unknown): string[] {
 	return [...new Set(parsed.map((name) => name.trim()))];
 }
 
-function executionBudget(value: string | undefined): EphemeralSubagentExecutionBudget | undefined {
+function executionBudget(value: string | boolean | undefined): EphemeralSubagentExecutionBudget | undefined {
 	if (value === undefined) return;
+	if (typeof value !== "string") throw new Error(`${EXECUTION_BUDGET_ENV} must be a JSON execution budget.`);
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(value);
@@ -104,7 +106,11 @@ export default function roleTools(pi: ExtensionAPI): void {
 		description: "Internal Pi Subagent Role tool policy",
 		type: "string",
 	});
-	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
+	pi.registerFlag(EXECUTION_BUDGET_FLAG, {
+		description: "Internal Pi Subagent execution budget",
+		type: "string",
+	});
+	const budget = executionBudget(pi.getFlag(EXECUTION_BUDGET_FLAG) ?? process.env[EXECUTION_BUDGET_ENV]);
 	let handoffSent = false;
 	pi.on("session_start", () => {
 		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));

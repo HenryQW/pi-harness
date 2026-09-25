@@ -12,6 +12,7 @@ import {
 import { sameIdentity, type ChangesetTaskRequest, type CheckBatchEvidence, type CommandEvidence, type TaskAttempt, type WorktreeAllocationIntent, type WorkspaceIdentity } from "../src/schema.ts";
 import type { OperationContext, TransientLaunchHandle, VerifiedLaunch } from "../src/runner.ts";
 import { runProcess } from "../src/process.ts";
+import { inspectWorktreeDirty } from "../src/worktree.ts";
 
 const launch: VerifiedLaunch = {
 	role: "reviewer",
@@ -462,9 +463,38 @@ test("in-flight candidate inspection reports transient states without relaxing w
 	assert.equal(changed.clean, true);
 	assert.equal(changed.valid, true);
 
+	await commit(worktree.cwd, ".gitignore", "generated/\n");
+	await mkdir(join(worktree.cwd, "generated"));
+	await writeFile(join(worktree.cwd, "generated", "cache"), "generated\n");
+	const generated = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.equal(generated.clean, true);
+	assert.equal(generated.valid, true);
+	assert.equal((await inspectWorktreeDirty(worktree.cwd)).dirty, true);
+
 	git(root, "worktree", "remove", "--force", worktree.path);
 	await mkdir(worktree.path, { recursive: true });
 	await assert.rejects(runtime.inspectInFlightTaskCandidate(input, context()), /not registered/);
+});
+
+test("in-flight inspection tolerates a worker commit during its Git snapshot", async (t) => {
+	const root = await repository(t);
+	const setup = new CheckedGitRuntime();
+	const definition = task("commit-during-inspection");
+	const base = await setup.inspectMain({ root }, context());
+	const allocated = await allocate(setup, root, definition, base, "token-in-flight-0002");
+	const cwd = allocated.intent.worktree!.cwd;
+	let heads = 0;
+	const runtime = new CheckedGitRuntime({ runProcess: async (command, args, options) => {
+		const result = await directProcess(command, args, options);
+		if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}" && ++heads === 1) {
+			await commit(cwd, "candidate.txt", "candidate\n");
+		}
+		return result;
+	} });
+	const inspection = await runtime.inspectInFlightTaskCandidate({ root, task: definition, attempt: allocated.attempt }, context());
+	assert.equal(inspection.candidate.head, git(cwd, "rev-parse", "HEAD"));
+	assert.equal(inspection.clean, true);
+	assert.equal(inspection.valid, true);
 });
 
 test("initialized, uninitialized, and worker-added gitlinks are rejected", async (t) => {

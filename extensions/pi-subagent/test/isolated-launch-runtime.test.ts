@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "../src/ephemeral.ts";
+import type { EphemeralSubagentExecutionBudget } from "../src/ephemeral.ts";
+import { EXECUTION_BUDGET_FLAG } from "../src/index.ts";
 import { ISOLATED_MODEL_TASK, RoleLaunchRuntime } from "../src/launch-runtime.ts";
 import type { OperationContext } from "../src/runner.ts";
 import {
@@ -335,7 +336,8 @@ test("acquireLaunch carries one configured non-refilling budget into a retained 
 	const before = Date.now();
 	const handle = await fixture.runtime.acquireLaunch("worker", "fast", operationContext());
 	try {
-		const budget = JSON.parse(handle.launch.env[EXECUTION_BUDGET_ENV]!) as EphemeralSubagentExecutionBudget;
+		assert.deepEqual(handle.launch.env, {});
+		const budget = JSON.parse(handle.launch.args[handle.launch.args.indexOf(`--${EXECUTION_BUDGET_FLAG}`) + 1]!) as EphemeralSubagentExecutionBudget;
 		assert.deepEqual({ ...budget, startedAt: 0 }, { maxTurns: 7, maxTokens: 8_000, maxMs: 90_000, startedAt: 0 });
 		assert.ok(budget.startedAt >= before && budget.startedAt <= Date.now());
 	} finally {

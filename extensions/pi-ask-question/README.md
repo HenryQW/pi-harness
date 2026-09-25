@@ -12,7 +12,11 @@ pi install npm:@henryqw/pi-ask-question
 
 ## Use
 
-Call `ask_question` to pause for one interactive answer. Pi shows the choices and returns the selected or custom answer.
+In an interactive TUI session, call `ask_question` with a question and one to three options. Pi pauses for the user's choice and returns the selected or custom answer.
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `ask_question` | tool | For agents: pauses execution so the user can select an option or enter a custom answer. |
 
 ```json
 {
@@ -37,4 +41,6 @@ Extensions can reuse the validated interaction with `askQuestion(params, ctx, si
 
 ## Limits and recovery
 
-The tool returns an error for empty questions, blank or duplicate labels, empty lists, more than three options, and non-interactive sessions. Aborting the tool closes the pending question.
+Questions must not be blank. Supply one to three options with nonblank, case-insensitively unique labels; `Something else.` is reserved for the custom-answer option. Invalid questions return an error.
+
+The tool requires an interactive TUI. Non-interactive sessions return `UI not available (running in non-interactive mode)`; ask in plain assistant text instead. Aborting the tool closes the pending question. If the user cancels the prompt or submits an empty custom answer, the result has no answer.
