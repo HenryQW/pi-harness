@@ -1217,8 +1217,8 @@ export class PullRequestCommentSweep {
 			}
 			await this.freshProjection(state);
 			await this.save(location, state);
-			await rm(location.path);
 			await markFeedbackHandled(state.feedback.snapshot, { cwd: this.cwd, agentDir: this.agentDir, signal: this.signal, exec: this.exec });
+			await rm(location.path);
 			return { kind: "finalized", pullRequestUrl: state.authority.url, head: state.publicationHead, checks: checks.length };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}

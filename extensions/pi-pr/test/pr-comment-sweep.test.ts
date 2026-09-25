@@ -946,6 +946,28 @@ test("invalid recovery blocks launch and stays byte-for-byte preserved", async (
 });
 
 
+test("failed feedback marker write retains finalization recovery for retry", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const recorded = await workflow.record(started.guard, ledger(started), []);
+	const published = await publishApproved(workflow, recorded);
+	const pending = await workflow.refresh(published.guard);
+	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const recovery = await workflow.recoveryPath();
+	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
+	mkdirSync(dirname(folder), { recursive: true });
+	writeFileSync(folder, "blocks marker directory");
+	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, []));
+	assert.equal(readFileSync(recovery, "utf8").includes('"phase":"resolved"'), true);
+	rmSync(folder);
+	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	assert.equal(await needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec: app.exec,
+		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), false);
+});
+
 test("finalized sweep records standalone feedback attention and new comments retrigger it", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
