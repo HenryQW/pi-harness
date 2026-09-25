@@ -24,7 +24,7 @@ Run `/task-models` and configure the `balanced` profile before adding memory. Op
 
 ## Use
 
-Run `/remember I prefer concise release notes.` Pi normalizes a suitable preference and reviews it. An unconflicted preference is saved in `USER.md`; if Pi finds a conflict, only `Add separately` or `Add anyway` saves the original.
+Run `/remember I prefer concise release notes.` Pi proposes a suitable entry through a configured model task, then reviews the add. An unconflicted preference is saved in `USER.md`; a conflict asks you how to resolve it.
 
 Read `~/.pi/agent/config/pi-memory/memory/USER.md` to confirm the saved entry. Start a new session to use its frozen snapshot.
 
@@ -33,7 +33,9 @@ Read `~/.pi/agent/config/pi-memory/memory/USER.md` to confirm the saved entry. S
 | `/remember <instruction>` | command | For humans: process an instruction into compact durable memory; semantic conflicts require user resolution; busy requests queue in FIFO order. |
 | `/dream` | command | For humans: promote invariant memory instructions into the agent-global `~/.pi/agent/SYSTEM.md`. |
 | `memory` | tool | For agents: add, replace, remove, or batch-edit entries across sessions. |
-| `pi-memory/reviewCandidate` | model task | For `/task-models` users: configure the route that reviews memory additions; its default profile is `balanced`. |
+| `pi-memory/reviewCandidate` | model task | Reviews memory additions. |
+| `pi-memory/prepareCandidate` | model task | Proposes a target and entry for `/remember`, or skips it. |
+| `pi-memory/promoteEntries` | model task | Proposes one guarded `/dream` promotion. |
 
 ## Flow
 
@@ -51,15 +53,15 @@ It resolves the configured Pi registry primary route, then fallback, through `/t
 
 A missing shared task-model config warns once at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before adding memory.
 
-An overlap or contradiction pauses through `ask_question`. MEMORY/USER conflicts recommend merge or replacement. SYSTEM conflicts recommend keeping SYSTEM because pi-memory never edits it.
+An overlap or contradiction pauses through the shared `ask_question` UI. Choose **Merge with existing entries**, **Discard the new entry, keep current**, or **Replace current entry**; the UI also offers **Something else.** for a custom answer. The recommended choice comes first: merge for overlap, replace for contradiction, and discard for SYSTEM conflicts. pi-memory never edits SYSTEM.md.
 
-Exact duplicate single adds and duplicate-only add batches are idempotent when every normalized entry already exists in the selected target; they skip model review. Merge, replacement, cancellation, custom answers, and non-interactive UI leave a conflicting add unwritten. Only explicit `Add separately` or `Add anyway` writes the original add after a conflict.
+Exact duplicate single adds and duplicate-only add batches are idempotent and skip model review. For a single add conflicting with exactly one entry in the same store, approved merge or replacement is re-reviewed against the other sources and written under the store lock only if those sources remain unchanged. Discard writes nothing. Custom answers, cross-target or ambiguous conflicts, batches, cancellation, and non-interactive UI leave the candidate unwritten. pi-memory cannot resolve a SYSTEM.md conflict.
 
 ### `/remember`
 
-`/remember <instruction>` shows `Remembering…` while its processing instruction stays hidden. It normalizes a candidate, then uses the same tool review.
+`/remember <instruction>` uses the bounded `pi-memory/prepareCandidate` Model Task to propose a target and exact entry or decline the request. It checks for source changes, then saves through the same reviewed memory tool. It does not dispatch an open-ended instruction to the session agent. The configured `balanced` task-model profile must be available.
 
-If Pi is busy, it queues the trimmed instruction. It processes one queued instruction after each settled response with freshly read live entries. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
+If Pi is busy, it queues the trimmed instruction. Once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. If the session starts, shuts down, or changes model during review, `/remember` rejects the write even when Pi provides no idle cancellation signal; retry in the current session. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
 
 ### `/dream`
 
@@ -67,17 +69,15 @@ Pi recommends `/dream` when memory is non-empty and no previous dream is recorde
 
 It recommends `/dream` when either store is at least 70% full and the last dream was at least 7 days ago.
 
-`/dream` shows a compact tool block. It hides its internal instructions and live entries.
+`/dream` uses `pi-memory/promoteEntries` to propose one exact edit to the agent-global `~/.pi/agent/SYSTEM.md` and the whole entries represented by the result. It previews the proposal for approval in the interactive UI. After approval, it checks that SYSTEM and both memory stores are unchanged, writes SYSTEM first, then removes the selected entries. A failed SYSTEM write removes nothing. If removal fails after SYSTEM was updated, rerun `/dream` to reconcile; the timestamp is not advanced. Successful runs record their time in `~/.pi/agent/config/pi-memory/dream.json`.
 
-It records its completed run time in `~/.pi/agent/config/pi-memory/dream.json`. It reads both stores from the configured memory directory for every run (by default, `~/.pi/agent/config/pi-memory/memory/`) and gives the current session agent their live entries. It instructs the agent to edit only the agent-global `~/.pi/agent/SYSTEM.md`, never a project `.pi/SYSTEM.md`.
-
-That global file must already exist and be readable. Establish it deliberately and completely, because a partial SYSTEM replaces Pi's default prompt.
+SYSTEM.md must already exist, be readable, and not be a symlink. Establish it deliberately and completely: a partial SYSTEM replaces Pi's default prompt. A SYSTEM edit takes effect in a new session, not the current frozen snapshot. `/dream` cannot run without an interactive UI or a configured `balanced` task-model route. If Pi supplies a cancellation signal, commands stop before writing when it is aborted; Pi may provide no signal while idle. Once a SYSTEM edit is saved, entry removal continues so the promotion can be reconciled on retry.
 
 ### Per-turn memory check
 
-`/dream` and final memory qualification remain current-session-agent workflows, not Model Tasks.
+Final memory qualification remains a current-session-agent workflow; `/remember` and `/dream` use Model Tasks for semantic proposals and extension code for writes.
 
-Each turn's memory check asks the current agent to save qualifying durable user identity, preferences, style, or corrections immediately to `target=user`. It saves stable cross-project environment facts, conventions, workflow lessons, or tool quirks useful later to `target=memory`.
+Each turn's shorter memory check asks the current agent to save newly learned durable user identity, preferences, or corrections to `target=user`, and stable cross-project environment or workflow facts to `target=memory`.
 
 Use the memory tool immediately only when something qualifies. Save inferred habits only after two independent signals from the conversation and/or existing profile. Skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.
 
