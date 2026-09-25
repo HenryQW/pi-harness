@@ -973,6 +973,13 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (lifecycle.status === "unknown") {
 				return { outcome: "unknown", diagnostic: "Delivered prompt lifecycle is unknown." };
 			}
+			if (lifecycle.status === "working") {
+				try { await this.delay(STALLED_PROMPT_POLL_MS, context.signal); }
+				catch (error) {
+					return { outcome: this.contextInterrupted(context) ? "interrupted" : "unknown", diagnostic: `Delivered prompt polling failed: ${safeText(error)}` };
+				}
+				continue;
+			}
 
 			let inspection: InFlightTaskCandidateInspection;
 			try {

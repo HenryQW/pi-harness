@@ -1689,13 +1689,12 @@ test("initial and correction prompts include the exact request goal", async (t) 
 	script.done();
 });
 
-test("normal prompt treats transient compaction idle and dirty Git state as in flight until changed-clean", async (t) => {
+test("normal prompt waits through transient compaction idle and working until committed", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const delays: number[] = [];
 	const inspections: InFlightTaskCandidateInspection[] = [
 		{ candidate: baseIdentity(), clean: true, valid: true },
-		{ candidate: { ...changedIdentity(), index: oid("c") }, clean: false, valid: true },
 		{ candidate: changedIdentity(), clean: true, valid: true },
 	];
 	const host = runtime(fixture, script, async () => changedIdentity(), {
@@ -1726,6 +1725,33 @@ test("normal prompt treats transient compaction idle and dirty Git state as in f
 	assert.equal(inspections.length, 0);
 	assert.deepEqual(delays, [250]);
 	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+	script.done();
+});
+
+test("candidate inspection waits for the worker to finish Git writes", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	let working = true;
+	let inspections = 0;
+	const host = runtime(fixture, script, async () => changedIdentity(), {
+		delay: async () => {},
+		inspectInFlightTaskCandidate: async () => {
+			inspections += 1;
+			if (working) throw new Error("index.lock belongs to the active worker");
+			return { candidate: changedIdentity(), clean: true, valid: true };
+		},
+	});
+	const { attempt } = await fullAttempt(fixture, host, script);
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => { working = false; }, result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "done", stderr: "" } },
+	);
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	assert.equal(result.outcome, "candidate");
+	assert.equal(inspections, 1);
 	script.done();
 });
 
@@ -1887,7 +1913,7 @@ test("delivered stall treats working dirty state as transient and exact blocked 
 	);
 	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 	assert.equal(result.outcome, "blocked");
-	assert.equal(inspections, 1);
+	assert.equal(inspections, 0);
 	assert.deepEqual(delays, [250]);
 	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 	script.done();
