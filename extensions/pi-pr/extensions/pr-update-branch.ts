@@ -177,7 +177,7 @@ export class PullRequestBranchUpdater {
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
 			this.state.phase = "blocked";
-			await runChecked(this.exec, "git", ["add", "--", ...paths], this.execOptions());
+			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
 			if (unmerged.length) throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
 			const result = await this.exec("git", ["-c", "core.editor=true", "rebase", "--continue"], this.execOptions());

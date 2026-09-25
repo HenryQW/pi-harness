@@ -21,12 +21,14 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	git("config", "user.name", "Local Work Test");
 	git("config", "user.email", "local@example.test");
 	writeFileSync(join(root, "file.txt"), "original\n");
-	git("add", "file.txt");
+	writeFileSync(join(root, "*.txt"), "literal path\n");
+	git("add", "-A");
 	git("commit", "-m", "initial");
 	const oldHead = git("rev-parse", "HEAD");
 	git("remote", "add", "origin", "git@github.com:acme/project.git");
 	git("push", bare, `${oldHead}:refs/heads/feature`);
 	writeFileSync(join(root, "file.txt"), "updated\n");
+	writeFileSync(join(root, "*.txt"), "updated literal path\n");
 	let authority: CurrentPullRequest = {
 		id: "PR_123", number: 42, url: new URL("https://github.com/acme/project/pull/42"), host: "github.com",
 		approved: true, lifecycle: "open", conditions: { draft: false, baseUpdateRequired: false, conflict: false,
@@ -52,10 +54,13 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	};
 	const workflow = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
-	assert.deepEqual(await workflow.inspect(), { paths: ["file.txt"], head: oldHead });
+	assert.deepEqual(await workflow.inspect(), { paths: ["*.txt", "file.txt"], head: oldHead });
 	await assert.rejects(workflow.commit(["unknown.txt"], "fix: scope work"), /reviewed pending paths/);
-	const committed = await workflow.commit(["file.txt"], "fix: scope work");
+	const committed = await workflow.commit(["*.txt"], "fix: scope work");
 	assert.notEqual(committed.head, oldHead);
+	assert.equal(git("diff", "--name-only", `${oldHead}..${committed.head}`), "*.txt");
+	assert.equal(git("status", "--porcelain=v1", "--untracked-files=all"), "M file.txt");
+	writeFileSync(join(root, "file.txt"), "original\n");
 	assert.deepEqual(await workflow.validate([]), { head: committed.head, checks: 1 });
 	assert.deepEqual(await workflow.publish(), { kind: "published", head: committed.head });
 	assert.equal(pushes, 1);

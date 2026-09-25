@@ -306,7 +306,7 @@ export class PullRequestCreator {
 			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--name-only", "-z"], this.options())).stdout, "Staged paths");
 			if (staged.some((path) => !paths.includes(path))) throw new Error("Unrelated staged changes require an ownership decision");
 			this.state.pending = undefined; // Commit outcome may be uncertain; never replay it.
-			await runChecked(this.exec, "git", ["add", "-A", "--", ...paths], this.options());
+			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.options());
 			await runChecked(this.exec, "git", ["commit", "-m", message], this.options());
 			return { head: await readHead(this.exec, this.options()) };
 		}, { agentDir: this.agentDir, signal: this.signal });
