@@ -8,15 +8,16 @@ The workflow owns one versioned recovery file for each canonical worktree:
 
 The file is private, bounded to 1 MiB, and replaced atomically. It contains the
 frozen PR authority, original head and lease, complete feedback, exact ledger,
-owned paths, and mutation attempts.
+approval, owned paths, and mutation attempts.
 
 Run `/pr` to enter recovery. After fresh route discovery, `/pr` checks this file
 without changing it. It selects `start` when the file is absent. It selects
 `resume` only when valid recovery matches the fresh route authority.
 
 Resume checks the canonical worktree, local changes, PR linkage, and remote
-head again under its lock. It reconciles an attempted push or thread resolution
-before issuing a new epoch and run ID. Calls from the old run then fail. Direct
+head again under its lock. It reconciles an attempted push, review-thread reply,
+or resolution before issuing a new epoch and run ID. Calls from the old run then
+fail. Direct
 skill or tool calls cannot create route authority.
 
 A completed post-publish `refresh` stores the new complete snapshot before any
@@ -29,6 +30,10 @@ Resolution and finalization remain blocked until this record succeeds.
 Malformed, oversized, obsolete, wrong-worktree, or route-mismatched recovery is
 preserved and blocks dispatch. Never repair, move, replace, or delete it
 automatically. Report the state path and exact blocker.
+
+A recorded plan needs user approval before publication. Approval survives a
+resume; if approval was declined, show the plan and ask again. Version-one
+recovery is retained and can be resumed without discarding in-progress work.
 
 An unknown mutation is never replayed. If reconciliation cannot prove its exact
 result, stop and report the state path and blocker.

@@ -1,55 +1,21 @@
 ---
 name: pi-pr-comment-sweep
-description: Fetch GitHub pull request feedback, assess every item, apply scoped fixes, publish one guarded head, and resolve addressed review threads.
+description: Triage all open PR feedback in one /pr, get approval for proposed fixes, then publish, reply, and resolve review threads.
 ---
 
 # PR Comment Sweep
 
-Use the package-owned comment-sweep workflow. It exposes these closed actions:
-`start`, `resume`, `show`, `record`, `publish`, `refresh`, `resolve`, and
-`finalize`.
+Use the package-owned `pi_pr_sweep` actions `start`, `resume`, `show`, `record`, `approve`, `publish`, `refresh`, `resolve`, and `finalize`. The `/pr` prompt supplies the run ID and launch action. Do not request another `/pr` between these actions. Direct skill/tool calls cannot create route authority; run `/pr` to start. Never replace or delete blocked recovery state by hand; see [Sweep recovery](references/recovery.md).
 
-1. Use the `start` or `resume` action supplied by `/pr`. `/pr` checks saved work
-   and chooses the action. Do not change it. Direct skill or tool calls cannot
-   create route authority; run `/pr` instead. Never replace or delete blocked
-   recovery state by hand. See [Sweep recovery](references/recovery.md).
-2. Use `show` for one feedback ID at a time. Inspect every conversation
-   comment, review, thread, and thread comment. Follow
-   [Thread triage](references/thread-triage.md).
-3. Classify every item exactly once as `addressed`, `non-actionable`, or
-   `blocked`. Give each entry a short note. Use `record` with the complete
-   ledger and the exact repository-relative paths this sweep may change.
-   `ownedPaths` is required for this initial record.
-4. Make judgment calls in the model. Verify claims against the code and its
-   callers. Edit only owned paths. Add the smallest useful regression. Commit
-   accepted fixes with a scoped Conventional Commit message.
-5. Choose one or more existing non-destructive checks that cover the changes.
-   Run each on the clean committed `HEAD`. Do not call `publish` unless every
-   chosen check passes. Keep the exact commands for finalization.
-6. Call `publish`. It captures the validated clean `HEAD`. It skips the push
-   when `HEAD` is unchanged. Otherwise it performs one exact-OID push with the
-   original lease. Never retry an unknown push.
-7. Call `refresh` with the current guard and no ledger. It freezes the complete
-   fresh feedback, clears the old ledger, and returns a new guard plus bounded
-   IDs and kinds. Status never includes feedback bodies.
-8. Use `show` with the new guard for every returned ID. This catches new items
-   and edits that kept the same ID. The published head is frozen: do not edit,
-   commit, move `HEAD`, or call `publish` again after this refresh. Classify any
-   new actionable feedback not fixed in the published head as `blocked`, finish
-   this sweep, then run `/pr` again for a follow-up sweep. Call `record` with the
-   refreshed guard and one complete replacement ledger. Omit `ownedPaths`; the
-   initial ownership stays fixed. A stale guard or mismatched coverage fails.
-9. Call `resolve` only with addressed, unresolved parent thread IDs. Do not
-   resolve a thread classified as non-actionable or blocked. Do not post replies
-   unless the user asks.
-10. Call `finalize` with the exact projection returned by the post-refresh
-   `record` and the same chosen checks. Finalization reruns them, then reloads
-   feedback as a later state guard. It succeeds only when PR linkage, content,
-   and thread states still match.
+1. Start or resume. Inspect the returned phase and continue from there. `show` all conversation comments, reviews, and parent threads in parallel. Then `show` every child of unresolved threads; resolved thread children are history and need no individual lookup. Focus on unresolved review threads and relevant standalone feedback. Classify resolved history and your own prior acknowledgements as non-actionable. Check current source before judging; follow [Thread triage](references/thread-triage.md).
+2. In `triage`, classify every item exactly once as `addressed`, `non-actionable`, or `blocked`; state the proposed fix for each actionable item and a specific one-sentence reason for each non-actionable unresolved thread. Record the complete ledger and exact repository-relative paths you may change (`ownedPaths`, even if empty). Do **not** edit, commit, push, reply, or resolve yet.
+3. List the proposed fixes and non-actionable threads with their reasons to the user, including blocked items and limitations. Call `approve` with the recorded guard and a concise summary of those decisions. This asks for user confirmation inline, within the same `/pr`. If declined, stop without mutations; the saved sweep can be resumed by a later `/pr`. If resumed in `recorded` with `approved: false`, show the plan and seek approval again. If `approved: true` or already published, do not ask again.
+4. After approval, edit only owned paths, add a focused regression when needed, and commit the accepted fixes with a scoped Conventional Commit. Run appropriate existing non-destructive checks on clean committed `HEAD`. If none are needed, use an empty check list. Do not publish until they pass. `publish` pushes once with the captured exact lease, or skips a push when `HEAD` did not change.
+5. `refresh` freezes the complete latest feedback. Repeat the parent/standalone and unresolved-child lookups, including unchanged IDs (which may have edited bodies). Reassess every item and `record` a complete replacement ledger without `ownedPaths`. New actionable feedback not fixed in the published head is `blocked` for a follow-up sweep; do not edit/publish again in this run. For the original unresolved threads, preserve approved decisions only if their content is unchanged. Your own acknowledgement replies are non-actionable history.
+6. `resolve` with **all** still-unresolved parent thread IDs classified `addressed` or `non-actionable`; omit blocked threads. The helper uses `gh api graphql` to post exactly a commit URL for addressed threads, or the ledger's one-sentence reason for non-actionable threads, then resolves each thread. It guards and reconciles ambiguous mutation outcomes instead of duplicating a reply. Use the **returned** guard and projection from `resolve` for `finalize` (replies change the feedback fingerprint and projection). When no threads qualify, finalize with the `record` guard and projection. `finalize` rechecks the feedback and reruns the same checks.
 
-The bundled `scripts/pr-feedback.mjs` is a read-only diagnostic CLI. It supports
-only `fetch`, `show`, `checks`, and `self-test`. It cannot push or resolve
-threads.
+GitHub has no resolution state for standalone conversation comments or review bodies. Assess and report these but do not claim they were resolved. If a new actionable comment appeared after publication, finish the current sweep with that item blocked and explicitly request a separate follow-up `/pr` for it.
 
-Report `PR | addressed | resolved IDs | non-actionable | blocked | checks |
-commit | push`.
+The bundled `scripts/pr-feedback.mjs` is read-only (`fetch`, `show`, `checks`, `self-test`). It cannot publish, reply, or resolve.
+
+Report `PR | addressed | resolved thread IDs | non-actionable | blocked | checks | commit | push`.
