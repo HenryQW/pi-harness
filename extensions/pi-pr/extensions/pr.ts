@@ -483,8 +483,11 @@ export default function pullRequestExtension(
 						const plan = recorded.plan.ledger.map(({ kind, id, disposition, note }) =>
 							`${kind}:${id} — ${disposition}: ${note}`).join("\n");
 						const paths = recorded.plan.ownedPaths.join("\n") || "(none)";
+						const legacyWarning = recorded.legacyRecovery
+							? "Version-one recovery may already contain owned edits or commits; approval cannot precede that existing work.\n\n"
+							: "";
 						const approved = await ctx.ui.confirm("Apply PR feedback fixes?",
-							`${params.summary}\n\nSaved plan:\n${plan}\n\nOwned paths:\n${paths}`);
+							`${legacyWarning}${params.summary}\n\nSaved plan:\n${plan}\n\nOwned paths:\n${paths}`);
 						if (approved) await selected.workflow.confirmApproval(params.guard);
 						return { approved };
 					}

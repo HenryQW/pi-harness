@@ -8,6 +8,7 @@ import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import {
 	collectPullRequestFeedback,
 	FEEDBACK_API_PAGE_MAX_BYTES,
+	FEEDBACK_SNAPSHOT_MAX_BYTES,
 	replyToPullRequestThread,
 	type FeedbackAuthority,
 } from "../extensions/pr-feedback.ts";
@@ -263,6 +264,37 @@ test("version-one recovery remains resumable without discarding a pending sweep"
 	assert.equal((await workflow.show(resumed.guard, "thread-1-comment")).kind, "thread_comment");
 });
 
+test("version-one recorded sweeps retain owned edits or commits through explicit approval", async (t) => {
+	for (const committed of [false, true]) {
+		const app = fixture();
+		t.after(app.cleanup);
+		const workflow = app.workflow();
+		const started = await workflow.start();
+		await workflow.record(started.guard, ledger(started), ["file.txt"]);
+		writeFileSync(join(app.root, "file.txt"), "legacy fix\n");
+		if (committed) {
+			git(app.root, "add", "file.txt");
+			git(app.root, "commit", "-m", "fix: legacy review");
+		}
+		const path = await workflow.recoveryPath();
+		const saved = JSON.parse(readFileSync(path, "utf8"));
+		saved.version = 1;
+		delete saved.approved;
+		writeFileSync(path, `${JSON.stringify(saved)}\n`);
+		const resumed = await workflow.resume();
+		assert.equal(resumed.legacyRecovery, true);
+		assert.equal((await workflow.approval(resumed.guard)).approved, false);
+		await workflow.confirmApproval(resumed.guard);
+		if (!committed) {
+			git(app.root, "add", "file.txt");
+			git(app.root, "commit", "-m", "fix: legacy review");
+		}
+		const published = await workflow.publish(resumed.guard);
+		assert.equal(published.phase, "published");
+		assert.equal(published.legacyRecovery, false);
+	}
+});
+
 test("a legacy non-actionable projection can resume and acknowledge its open thread", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
@@ -452,6 +484,37 @@ test("edited same-ID feedback cannot inherit its pre-refresh disposition", async
 	assert.equal(refreshed.phase, "refreshed");
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
 	await workflow.finalize(resolved.guard, resolved.projection!, []);
+});
+
+test("blocked child feedback keeps its parent open and prevents resolution", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
+	const pending = await workflow.refresh(published.guard);
+	const classified = ledger(pending).map((entry) => entry.id === "thread-1-comment"
+		? { ...entry, disposition: "blocked" as const, note: "New request after publication" } : entry);
+	const refreshed = await workflow.record(pending.guard, classified);
+	assert.deepEqual(refreshed.projection?.threads, [{ id: "thread-1", isResolved: false }]);
+	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /blocked child feedback/);
+	assert.equal(app.world.replyCalls, 0);
+	assert.equal(app.world.mutationCalls, 0);
+	await workflow.finalize(refreshed.guard, refreshed.projection!, []);
+});
+
+test("near-limit feedback refuses acknowledgement before any mutation", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	app.world.body = "x".repeat(FEEDBACK_SNAPSHOT_MAX_BYTES - 8192);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
+	const pending = await workflow.refresh(published.guard);
+	const refreshed = await workflow.record(pending.guard, ledger(pending));
+	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /insufficient feedback capacity/);
+	assert.equal(app.world.replyCalls, 0);
+	assert.equal(app.world.mutationCalls, 0);
 });
 
 test("committed rename ownership includes the source and destination", async (t) => {

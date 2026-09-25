@@ -866,6 +866,7 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 
 test("feedback approval confirms the recorded plan inline without another /pr", async () => {
 	const calls: string[] = [];
+	let legacy = false;
 	const app = harness({
 		async load() { return currentPullRequest({ conditions: { unresolvedThreads: 1 } }); },
 		useDefaultCommandHandler: true,
@@ -874,7 +875,7 @@ test("feedback approval confirms the recorded plan inline without another /pr", 
 		createCommentSweep() {
 			return {
 				async recoveryLaunchAction() { return "start" as const; },
-				async approval() { calls.push("guard"); return { phase: "recorded", plan: {
+				async approval() { calls.push("guard"); return { phase: "recorded", legacyRecovery: legacy, plan: {
 					ledger: [{ kind: "thread", id: "thread-1", disposition: "addressed", note: "Fix the parser" }],
 					ownedPaths: ["file.txt"],
 				} }; },
@@ -896,6 +897,12 @@ test("feedback approval confirms the recorded plan inline without another /pr", 
 		}, ctx);
 		assert.deepEqual(result.details, { approved: true });
 		assert.deepEqual(calls, ["guard", "Apply PR feedback fixes?: Fix the parser; leave obsolete feedback closed.\n\nSaved plan:\nthread:thread-1 — addressed: Fix the parser\n\nOwned paths:\nfile.txt", "approved"]);
+		legacy = true;
+		await app.callTool("pi_pr_sweep", {
+			runId: routeRunId, action: "approve", guard: { epoch: 1, runId: "sweep", generation: 1, fingerprint: "a".repeat(64) },
+			summary: "Continue the saved plan.",
+		}, ctx);
+		assert.match(calls.at(-2)!, /Version-one recovery may already contain owned edits or commits/);
 	} finally {
 		await app.shutdown(ctx);
 	}

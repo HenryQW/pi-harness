@@ -155,11 +155,12 @@ worktree, or route fail.
 For comment sweeps, `/pr` checks the package recovery file without changing it. It selects `start`
 when recovery is absent, and `resume` only when valid recovery matches the fresh route authority.
 Invalid recovery stays unchanged and blocks dispatch with its path and reason. One `/pr` inspects all
-feedback, proposes fixes and non-actionable reasons, and asks for confirmation before editing. Both
-the confirmation prompt and approval write require a clean worktree at the original head; the
-prompt shows the saved ledger and owned paths. Resume exposes that plan and its approval state.
-After approval, the sweep commits fixes, validates, publishes, replies to and resolves eligible
-review threads. A declined plan can be resumed later.
+feedback, proposes fixes and non-actionable reasons, and asks for confirmation before editing. New
+sweeps require a clean worktree at the original head for the confirmation prompt and approval write.
+Version-one recovery with owned changes can still be approved after a warning and ownership check,
+but approval cannot precede those edits. The prompt shows the saved ledger and owned paths; resume
+exposes that plan and its approval state. After approval, the sweep commits fixes, validates,
+publishes, replies to and resolves eligible review threads. A declined plan can be resumed later.
 
 `/pr --feedback` uses the same discovery, reservation, recovery, and guard checks. It can select the
 sweep even when CI failure or merge readiness would otherwise select another route. Without the
@@ -210,13 +211,14 @@ It does not require an external `jq` executable. After publishing, `refresh` fre
 latest feedback and returns only IDs and kinds. Use `show` to inspect every fresh item. New actionable
 feedback after publication needs a separate follow-up sweep. A second guarded `record` must cover
 that exact snapshot before resolution or finalization and keeps the paths from the initial record.
-The helper posts a commit URL to each addressed unresolved review thread, or a reason to each
-non-actionable unresolved thread, then resolves it through `gh api graphql`. Blocked threads stay
-open. If a reply loses its response, a matching new comment cannot prove who posted it: recovery
-stops without replaying or resolving that thread. Replies change the feedback snapshot, so
-finalization uses the guard and projection returned by resolution. Standalone conversation comments
-and review bodies are assessed, not resolved. The sweep runs existing non-destructive checks on
-clean committed `HEAD` before publishing and reruns them at finalization.
+The helper checks feedback record and byte capacity before posting a commit URL to an addressed
+unresolved thread or a reason to a non-actionable one, then resolves it through `gh api graphql`.
+Blocked threads and threads with any blocked child stay open. If a reply loses its response, a
+matching new comment cannot prove who posted it: recovery stops without replaying or resolving
+that thread. Replies change the feedback snapshot, so finalization uses the guard and projection
+returned by resolution. Standalone conversation comments and review bodies are assessed, not
+resolved. The sweep runs existing non-destructive checks on clean committed `HEAD` before
+publishing and reruns them at finalization.
 
 ### Refresh
 
