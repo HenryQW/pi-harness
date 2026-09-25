@@ -470,12 +470,12 @@ test("in-flight candidate inspection reports transient states without relaxing w
 	assert.equal(changed.clean, true);
 	assert.equal(changed.valid, true);
 
-	await commit(worktree.cwd, ".gitignore", "generated/\n");
+	await commit(worktree.cwd, ".gitignore", "node_modules/\ngenerated/\n");
 	await mkdir(join(worktree.cwd, "generated"));
 	await writeFile(join(worktree.cwd, "generated", "cache"), "generated\n");
-	const generated = await runtime.inspectInFlightTaskCandidate(input, context());
-	assert.equal(generated.clean, true);
-	assert.equal(generated.valid, true);
+	const ignoredCache = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.equal(ignoredCache.clean, true);
+	assert.equal(ignoredCache.valid, true);
 	assert.equal((await inspectWorktreeDirty(worktree.cwd)).dirty, true);
 
 	git(root, "worktree", "remove", "--force", worktree.path);

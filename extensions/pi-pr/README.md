@@ -12,7 +12,17 @@ Requires an authenticated GitHub CLI session (`gh auth login`) and a checkout on
 
 ## Feedback snapshots
 
-`pr-feedback.mjs fetch --out FILE` prints a compact feedback index. The index
+Run the bundled read-only diagnostic CLI from the installed package directory:
+
+```bash
+node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs fetch [--pr PR] (--out FILE | --json)
+node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs show --snapshot FILE --id ID
+node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs checks [--pr PR] --expected-head SHA
+node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs self-test
+```
+
+`checks` verifies the current pull request and its checks against the full head SHA; `self-test`
+checks local CLI behavior. `pr-feedback.mjs fetch --out FILE` prints a compact feedback index. The index
 includes IDs, kinds, states, authors, locations, and parent IDs as needed. It
 does not print comment or review bodies.
 
@@ -158,6 +168,14 @@ Normal discovery always runs first. If the configured remote ref was deleted, th
 The GitHub response must match the observed URL, host, repository, head ref, head OID, and PR number. GitHub supplies fresh mutable state. Invalid session data is ignored. A failed GitHub lookup stops routing and cannot start PR creation.
 
 ## Limits and recovery
+
+A comment sweep keeps a private, atomically replaced recovery file under
+`<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`. It contains the frozen PR identity,
+original head and lease, full feedback, ledger, owned paths, and mutation attempts. After a push,
+`refresh` stores the new complete snapshot before a replacement ledger; `show` and `record` must
+cover it before thread mutations or finalization. Resume rechecks local state and the remote head
+and reconciles attempted mutations before issuing a new run. Malformed or mismatched recovery is
+preserved and blocks dispatch; never remove it or replay an uncertain mutation to continue.
 
 - `/pr` accepts no arguments and does not open a browser.
 - It does not run `/done` or `/sweep`.

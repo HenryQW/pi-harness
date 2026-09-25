@@ -2335,10 +2335,22 @@ test("uncertain integration allocation retains intent and refuses mutation repla
 	await assert.rejects(runner.stage(action, root), /unresolved/);
 	assert.deepEqual(git.merged, []);
 	const integrationBase = uncertain.state.integration.generations[0]!.integrationBase;
+	git.combinedTip = integrationBase;
 	const reconciled = await runner.stage({ ...action, action: "resolve", expectedTip: integrationBase }, root);
 	assert.equal(reconciled.state.integration.generations[0]?.stages[0]?.status, "staged");
 	assert.deepEqual(git.merged, [candidate.tip.head]);
 	assertParsed((await runner.status(action.id, root)).state);
+});
+
+test("uncertain initial integration allocation refuses changed checkout before merging", async (t) => {
+	const git = new StagingGit();
+	git.allocationUnknown = true;
+	const { root, runner } = await harness(t, { integrationGit: git });
+	const ready = await runner.execute(request("uncertain-stage-changed", [changesetTask("change")]), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const action = { id: ready.state.request.id, action: "stage" as const, generation: 1,
+		taskId: candidate.taskId, attempt: candidate.attempt, candidate: candidate.tip, expectedTip: ready.state.main };
+	const uncertain = await runner.stage(action, root);
 	const integrationBase = uncertain.state.integration.generations[0]!.integrationBase;
 	git.combinedTip = identity("b", integrationBase.branch);
 	await assert.rejects(runner.stage({ ...action, action: "resolve", expectedTip: integrationBase }, root), /clean recorded base/);
