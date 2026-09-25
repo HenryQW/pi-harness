@@ -430,6 +430,7 @@ test("pre-prompt inspection proves exact owned worktree identity and fails close
 
 test("in-flight candidate inspection reports transient states without relaxing worktree identity fences", async (t) => {
 	const root = await repository(t);
+	await commit(root, ".gitignore", "node_modules/\n");
 	const runtime = new CheckedGitRuntime();
 	const definition = task("in-flight");
 	const base = await runtime.inspectMain({ root }, context());
@@ -442,6 +443,12 @@ test("in-flight candidate inspection reports transient states without relaxing w
 	assert.equal(unchanged.candidate.head, base.head);
 	assert.equal(unchanged.clean, true);
 	assert.equal(unchanged.valid, true);
+
+	await mkdir(join(worktree.cwd, "node_modules"));
+	await writeFile(join(worktree.cwd, "node_modules", "generated.js"), "dependency\n");
+	const generated = await runtime.inspectInFlightTaskCandidate(input, context());
+	assert.equal(generated.clean, true);
+	assert.equal(generated.valid, true);
 
 	await writeFile(join(worktree.cwd, "candidate.txt"), "dirty\n");
 	const dirty = await runtime.inspectInFlightTaskCandidate(input, context());
