@@ -998,7 +998,7 @@ test("cancels pending presentation discovery before /pr reads fresh authority", 
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		assert.equal(loads >= 2, true, "/pr must perform fresh discovery");
 		assert.equal(presentationAbortedAtCommandLoad, true);
-		pending.resolve(currentPullRequest());
+		pending.resolve({ kind: "current", pullRequest: currentPullRequest() });
 		await flush();
 		assert.equal(app.statuses.at(-1), undefined, "cancelled presentation must not overwrite the command result");
 	} finally {
