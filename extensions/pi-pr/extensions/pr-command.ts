@@ -40,7 +40,7 @@ export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 export type PrCommandHandler = (
 	args: string,
 	ctx: ExtensionContext,
-	onRouteResolved?: PrCommandInvocation | ((nextStep: NextStep) => void),
+	onRouteResolved?: PrCommandInvocation,
 ) => Promise<NextStep>;
 
 export type WorkflowPromptIdentity = Readonly<{
@@ -234,15 +234,12 @@ export function createPrCommandHandler(
 	const release = dependencies.releaseWorkflow ?? (() => {});
 	const handle = async (
 		args: string, ctx: ExtensionContext,
-		onRouteResolved?: PrCommandInvocation | ((nextStep: NextStep) => void),
+		onRouteResolved?: PrCommandInvocation,
 		linkedAuthority?: CurrentPullRequest,
 	): Promise<NextStep> => {
-		const commandInvocation = onRouteResolved && "assertCurrent" in onRouteResolved
-			? onRouteResolved as PrCommandInvocation
-			: undefined;
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 		const discovery = await load(pi, ctx);
-		commandInvocation?.assertCurrent();
+		onRouteResolved?.assertCurrent();
 		if (linkedAuthority && (discovery.kind !== "current" || discovery.pullRequest.target.provenance !== "configured" ||
 			!isSameConfirmedMerge(linkedAuthority, discovery.pullRequest))) {
 			throw new Error("Link branch continuation cancelled: configured pull request context changed");
@@ -252,20 +249,20 @@ export function createPrCommandHandler(
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
 			await inspectBranchRecovery(discovery.pullRequest, ctx)) {
 			nextStep = "update-branch";
-			commandInvocation?.assertCurrent();
+			onRouteResolved?.assertCurrent();
 		}
 		if (nextStep !== "update-branch" && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
 			await inspectSweepRecovery(discovery.pullRequest, ctx)) {
 			nextStep = "sweep";
-			commandInvocation?.assertCurrent();
+			onRouteResolved?.assertCurrent();
 		}
 		if (discovery.kind === "current" && (nextStep === "merge" || nextStep === "none") &&
 			discovery.pullRequest.lifecycle === "open" && !discovery.pullRequest.conditions.draft &&
 			discovery.pullRequest.target.provenance === "configured" &&
 			discovery.pullRequest.local.worktree === "clean" && discovery.pullRequest.local.head === "equal") {
 			if (await needsFeedback(discovery.pullRequest, { cwd: ctx.cwd, signal: ctx.signal, load })) nextStep = "sweep";
-			commandInvocation?.assertCurrent();
+			onRouteResolved?.assertCurrent();
 		}
 		onRouteResolved?.(nextStep);
 		if (discovery.kind === "inactive") return nextStep;
@@ -293,7 +290,7 @@ export function createPrCommandHandler(
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
 		const route = nextStep as WorkflowNextStep;
-		if (commandInvocation?.completedRoutes?.has(route)) {
+		if (onRouteResolved?.completedRoutes?.has(route)) {
 			ctx.ui.notify(`PR ${route} already ran; inspect fresh state before retrying`, "warning");
 			return "none";
 		}
@@ -303,7 +300,7 @@ export function createPrCommandHandler(
 			ctx,
 			route,
 			reservation,
-			commandInvocation,
+			onRouteResolved,
 			reserve,
 			markPromptQueued,
 			release,

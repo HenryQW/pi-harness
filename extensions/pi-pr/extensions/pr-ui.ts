@@ -91,14 +91,12 @@ function footerStatus(input: PrDisplayInput): Pick<PrFooter, "text" | "color"> {
 	return { text: "open", color: "accent" };
 }
 
-function widgetText(input: PrDisplayInput, nextStep: NextStep): string | undefined {
+function widgetText(nextStep: NextStep): string | undefined {
 	switch (nextStep) {
 		case "publish-work":
 			return "Run /pr to publish local work";
 		case "update-branch":
-			return input.conditions.conflict
-				? "Run /pr to resolve merge conflict"
-				: "Run /pr to update branch";
+			return "Run /pr to resolve merge conflict";
 		case "sweep":
 			return "Run /pr to address review feedback";
 		case "fix-ci":
@@ -145,7 +143,7 @@ export function projectPrDisplay(
 			url: input.url.href,
 			...footerStatus(input),
 		},
-		widget: widgetText(input, nextStep),
+		widget: widgetText(nextStep),
 	};
 }
 

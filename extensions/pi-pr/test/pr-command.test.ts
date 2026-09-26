@@ -357,15 +357,21 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 
 test("signals route resolution before dispatch, notification, or mutation", async () => {
 	const create = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
-	await create.handler("", create.context, () => create.events.push("route"));
+	await create.handler("", create.context, Object.assign(() => create.events.push("route"), {
+		sessionGeneration: 1, assertCurrent() {},
+	}));
 	assert.deepEqual(create.events, ["load", "route", "reserve", "send"]);
 
 	const noAction = harness({ states: [{ state: "MERGED" }] });
-	await noAction.handler("", noAction.context, () => noAction.events.push("route"));
+	await noAction.handler("", noAction.context, Object.assign(() => noAction.events.push("route"), {
+		sessionGeneration: 1, assertCurrent() {},
+	}));
 	assert.deepEqual(noAction.events, ["load", "route", "notify"]);
 
 	const merge = harness({ states: [{}, {}] });
-	await merge.handler("", merge.context, () => merge.events.push("route"));
+	await merge.handler("", merge.context, Object.assign(() => merge.events.push("route"), {
+		sessionGeneration: 1, assertCurrent() {},
+	}));
 	assert.deepEqual(merge.events, ["load", "route", "load", "merge"]);
 });
 
