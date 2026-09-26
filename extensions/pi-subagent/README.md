@@ -24,6 +24,7 @@ pi install npm:pi-mcp-adapter
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides the configured model routes for delegated Roles. |
+| [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | Required | Loads the MCP servers named in a Role's `mcps` allowlist, only for Roles that declare one. |
 
 ## Use
 
