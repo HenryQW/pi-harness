@@ -96,7 +96,7 @@ export function isPullRequestCreationEligible(branch: BranchCreationState): bool
 		(branch.ahead > 0 || branch.worktree === "dirty");
 }
 
-function deriveAutomaticNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
+export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
 	if (discovery.kind === "inactive") return "none";
 	if (discovery.kind === "blocked") return "blocked";
 	if (discovery.kind === "none") return isPullRequestCreationEligible(discovery.branch) ? "create" : "none";
@@ -104,8 +104,4 @@ function deriveAutomaticNextStep(discovery: PullRequestDiscovery<PullRequest & {
 		return discovery.pullRequest.lifecycle === "open" ? "link-branch" : "none";
 	}
 	return derivePullRequestNextStep(discovery.pullRequest);
-}
-
-export function deriveNextStep(discovery: PullRequestDiscovery<PullRequest & { target: PullRequestTarget }>): NextStep {
-	return deriveAutomaticNextStep(discovery);
 }

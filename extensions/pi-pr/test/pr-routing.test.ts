@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	deriveNextStep as deriveDiscoveryNextStep,
+	deriveNextStep,
 	derivePullRequestNextStep,
 	type LocalMergeSafety,
 	type NextStep,
@@ -22,24 +22,6 @@ const conditions: PullRequestConditions = {
 };
 const local: LocalMergeSafety = { worktree: "clean", head: "equal" };
 
-function deriveNextStep(pullRequest: PullRequest | null): NextStep {
-	if (pullRequest) return derivePullRequestNextStep(pullRequest);
-	return deriveDiscoveryNextStep({
-		kind: "none",
-		creationTarget: {
-			provenance: "inferred",
-			branch: "feature",
-			remote: "origin",
-			ref: "feature",
-			repository: "acme/project",
-			host: "github.com",
-			fetchSource: "git@github.com:acme/project.git",
-			remoteOid: null,
-		},
-		branch: { ahead: 1, worktree: "clean", relation: "distinct-ref" },
-	});
-}
-
 function pullRequest(overrides: {
 	lifecycle?: PullRequestLifecycle;
 	conditions?: Partial<PullRequestConditions>;
@@ -53,8 +35,7 @@ function pullRequest(overrides: {
 }
 
 test("routes exactly one highest-priority next step", () => {
-	const cases: Array<{ name: string; pullRequest: PullRequest | null; expected: NextStep }> = [
-		{ name: "no PR", pullRequest: null, expected: "create" },
+	const cases: Array<{ name: string; pullRequest: PullRequest; expected: NextStep }> = [
 		{ name: "merged ignores open blockers", pullRequest: pullRequest({ lifecycle: "merged", conditions: { conflict: true, ci: "failure" } }), expected: "none" },
 		{ name: "closed ignores open blockers", pullRequest: pullRequest({ lifecycle: "closed", conditions: { changesRequested: true, ci: "failure" } }), expected: "none" },
 		{ name: "draft precedes every workflow", pullRequest: pullRequest({ conditions: { draft: true, baseUpdateRequired: true, changesRequested: true, ci: "failure" } }), expected: "none" },
@@ -73,7 +54,7 @@ test("routes exactly one highest-priority next step", () => {
 	];
 
 	for (const { name, pullRequest: candidate, expected } of cases) {
-		assert.equal(deriveNextStep(candidate), expected, name);
+		assert.equal(derivePullRequestNextStep(candidate), expected, name);
 	}
 });
 
@@ -92,11 +73,11 @@ test("routes creation for commits or ordinary pending work only on a distinct re
 		},
 		branch: { ahead: 0, worktree: "clean" as const, relation: "distinct-ref" as const },
 	};
-	assert.equal(deriveDiscoveryNextStep(creation), "none");
-	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, ahead: 1 } }), "create");
-	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, worktree: "dirty" } }), "create");
-	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, worktree: "operation" } }), "none");
-	assert.equal(deriveDiscoveryNextStep({ ...creation, branch: { ...creation.branch, worktree: "dirty", relation: "same-ref" } }), "none");
+	assert.equal(deriveNextStep(creation), "none");
+	assert.equal(deriveNextStep({ ...creation, branch: { ...creation.branch, ahead: 1 } }), "create");
+	assert.equal(deriveNextStep({ ...creation, branch: { ...creation.branch, worktree: "dirty" } }), "create");
+	assert.equal(deriveNextStep({ ...creation, branch: { ...creation.branch, worktree: "operation" } }), "none");
+	assert.equal(deriveNextStep({ ...creation, branch: { ...creation.branch, worktree: "dirty", relation: "same-ref" } }), "none");
 });
 
 test("routes discovery states without mutating ambiguous targets", () => {
@@ -110,19 +91,19 @@ test("routes discovery states without mutating ambiguous targets", () => {
 		fetchSource: "git@github.com:acme/fork.git",
 		remoteOid: "a".repeat(40),
 	};
-	assert.equal(deriveDiscoveryNextStep({
+	assert.equal(deriveNextStep({
 		kind: "current",
 		pullRequest: { ...pullRequest(), target },
 	}), "link-branch");
-	assert.equal(deriveDiscoveryNextStep({
+	assert.equal(deriveNextStep({
 		kind: "current",
 		pullRequest: { ...pullRequest({ lifecycle: "merged" }), target },
 	}), "none");
-	assert.equal(deriveDiscoveryNextStep({
+	assert.equal(deriveNextStep({
 		kind: "blocked",
 		issue: { kind: "candidate-remotes-ambiguous", remotes: ["fork", "origin"] },
 	}), "blocked");
-	assert.equal(deriveDiscoveryNextStep({ kind: "inactive" }), "none");
+	assert.equal(deriveNextStep({ kind: "inactive" }), "none");
 });
 
 test("mutating workflows require a clean worktree with local HEAD equal to the PR head", () => {
@@ -132,7 +113,7 @@ test("mutating workflows require a clean worktree with local HEAD equal to the P
 		[{ ci: "failure" }, "fix-ci"],
 	];
 	for (const [routeConditions, expected] of routes) {
-		assert.equal(deriveNextStep(pullRequest({ conditions: routeConditions })), expected);
+		assert.equal(derivePullRequestNextStep(pullRequest({ conditions: routeConditions })), expected);
 		for (const blocked of [
 			{ worktree: "dirty", head: "equal" },
 			{ worktree: "clean", head: "behind" },
@@ -140,7 +121,7 @@ test("mutating workflows require a clean worktree with local HEAD equal to the P
 			{ worktree: "clean", head: "diverged" },
 		] as const) {
 			assert.equal(
-				deriveNextStep(pullRequest({ conditions: routeConditions, local: blocked })),
+				derivePullRequestNextStep(pullRequest({ conditions: routeConditions, local: blocked })),
 				(blocked.worktree === "dirty" && blocked.head === "equal") || blocked.head === "ahead" ? "publish-work" : "none",
 				`${expected} ${blocked.worktree}/${blocked.head}`,
 			);
@@ -160,6 +141,6 @@ test("only clean local branches equal to or behind the PR head can merge", () =>
 	];
 
 	for (const [candidateLocal, expected] of cases) {
-		assert.equal(deriveNextStep(pullRequest({ local: candidateLocal })), expected, `${candidateLocal.worktree}/${candidateLocal.head}`);
+		assert.equal(derivePullRequestNextStep(pullRequest({ local: candidateLocal })), expected, `${candidateLocal.worktree}/${candidateLocal.head}`);
 	}
 });
