@@ -124,15 +124,18 @@ function latestSessionUserText(ctx: ExtensionContext): string | undefined {
 }
 
 function recentUserMessages(ctx: ExtensionContext, fallback?: string): string | undefined {
-	const messages = ctx.sessionManager.getBranch().flatMap((entry) => {
-		if (entry.type !== "message" || entry.message.role !== "user") return [];
+	const branch = ctx.sessionManager.getBranch();
+	const recentMessages: string[] = [];
+	for (let index = branch.length - 1; index >= 0 && recentMessages.length < MAX_CONTEXT_MESSAGES; index--) {
+		const entry = branch[index];
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
 		const text = messageText(entry.message.content).trim();
-		return text ? [`user: ${text.slice(0, MAX_MESSAGE_CHARS)}`] : [];
-	});
-	if (!messages.length && fallback?.trim()) messages.push(`user: ${fallback.trim().slice(0, MAX_MESSAGE_CHARS)}`);
-	if (!messages.length) return undefined;
+		if (text) recentMessages.push(`user: ${text.slice(0, MAX_MESSAGE_CHARS)}`);
+	}
+	if (!recentMessages.length && fallback?.trim()) recentMessages.push(`user: ${fallback.trim().slice(0, MAX_MESSAGE_CHARS)}`);
+	if (!recentMessages.length) return undefined;
 
-	const recentMessages = messages.slice(-MAX_CONTEXT_MESSAGES);
+	recentMessages.reverse();
 	const selected: string[] = [];
 	let remaining = MAX_CONTEXT_CHARS;
 	for (let index = recentMessages.length - 1; index >= 0 && remaining > 0; index--) {
