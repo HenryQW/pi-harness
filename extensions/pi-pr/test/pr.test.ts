@@ -1355,7 +1355,10 @@ test("warns once for one blocked issue and warns again after recovery", async ()
 	};
 	const results: Array<CurrentPullRequestDiscovery | CurrentPullRequest> = [
 		blocked,
-		blocked,
+		{ kind: "blocked", issue: { kind: "candidate-prs-ambiguous", urls: [
+			new URL("https://github.com/acme/project/pull/42"),
+			new URL("https://github.com/acme/project/pull/43"),
+		] } },
 		currentPullRequest(),
 		blocked,
 	];

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import {
+	discoveryIssueDetails,
 	formatPrFooter,
 	formatPrWidget,
 	projectPrDisplay as projectDiscoveryDisplay,
@@ -10,6 +11,7 @@ import {
 	type PrTheme,
 } from "../extensions/pr-ui.ts";
 import type {
+	DiscoveryIssue,
 	LocalMergeSafety,
 	PullRequestConditions,
 	PullRequestLifecycle,
@@ -92,6 +94,21 @@ function withCapabilities(hyperlinks: boolean, fn: () => void): void {
 		setCapabilities(previous);
 	}
 }
+
+test("blocker details preserve sorted identity and exact notification text", () => {
+	const urls = [new URL("https://github.com/acme/project/pull/43"), new URL("https://github.com/acme/project/pull/42")];
+	const cases: Array<[DiscoveryIssue, string, string]> = [
+		[{ kind: "detached-head" }, "detached-head", "PR discovery is blocked because HEAD is detached"],
+		[{ kind: "candidate-remotes-ambiguous", remotes: ["origin", "fork"] }, "candidate-remotes-ambiguous:fork,origin", "PR target is ambiguous across remotes: fork, origin"],
+		[{ kind: "candidate-prs-ambiguous", urls }, "candidate-prs-ambiguous:https://github.com/acme/project/pull/42,https://github.com/acme/project/pull/43", "PR target is ambiguous across pull requests: https://github.com/acme/project/pull/42, https://github.com/acme/project/pull/43"],
+		[{ kind: "candidate-oid-mismatch", remote: "fork", urls }, "candidate-oid-mismatch:fork:https://github.com/acme/project/pull/42,https://github.com/acme/project/pull/43", "PR discovery is blocked because fork has a different pull request head"],
+		[{ kind: "published-without-pr", remote: "fork" }, "published-without-pr:fork", "Branch is published on fork; configure it before creating a pull request"],
+		[{ kind: "link-configuration", remote: "fork" }, "link-configuration:fork", "PR discovery cannot safely link remote fork; simplify the branch push configuration first"],
+		[{ kind: "origin-invalid" }, "origin-invalid", "PR creation is blocked because origin is not one validated GitHub destination"],
+		[{ kind: "target-invalid" }, "target-invalid", "PR discovery is blocked by an invalid push target"],
+	];
+	for (const [issue, key, message] of cases) assert.deepEqual(discoveryIssueDetails(issue), { key, message });
+});
 
 test("projects normal runnable, merge, and no-action states", () => {
 	const cases: Array<{
