@@ -324,6 +324,34 @@ test("the child payload reserves its envelope and prioritizes the active summary
 	});
 });
 
+test("summary stays first while oversized messages are skipped and selected messages keep their order", async () => {
+	await withAgentDir(async (agentDir) => {
+		const child = controlledExecutor();
+		const summary = "s".repeat(29_600);
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			branch: [
+				{ type: "message", message: { role: "user", content: "Before the summary" } },
+				{ type: "compaction", summary },
+				{ type: "message", message: { role: "user", content: "Older small request" } },
+				{ type: "message", message: { role: "user", content: "x".repeat(500) } },
+				{ type: "message", message: { role: "assistant", content: "Newer small reply", stopReason: "stop" } },
+			],
+		});
+		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+		await app.registeredCommands.get("promptor")!("", app.ctx);
+		await eventually(() => child.runs.length === 1);
+		const task = child.runs[0]!.prepared.task;
+		assert.ok(task.length <= 30_000);
+		assert.deepEqual(JSON.parse(task).currentConversation, [
+			{ role: "summary", text: summary },
+			{ role: "user", text: "Older small request" },
+			{ role: "assistant", text: "Newer small reply" },
+		]);
+	});
+});
+
 test("an oversized newest message does not hide smaller older messages", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
@@ -411,7 +439,7 @@ test("analysis does not fall back to raw history when canonical context is empty
 	});
 });
 
-test("manual analysis shows its candidate directly, and invalid later output fails visibly", async () => {
+test("manual analysis shows its candidate directly, and failure requires manual restart", async () => {
 	assert.equal(parseDraftOutput('{"candidate":null}'), null);
 	assert.throws(
 		() => parseDraftOutput('{"candidate":{"name":"valid-name","markdown":"bad\\u0000text"}}'),
@@ -463,6 +491,10 @@ test("manual analysis shows its candidate directly, and invalid later output fai
 		assert.deepEqual(app.widgets.at(-1)?.content, ["Prompt analysis failed — /promptor"]);
 		app.handlers.get("input")!({ source: "interactive", text: "next request" }, app.ctx);
 		assert.equal(app.widgets.at(-1)?.content, undefined);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		assert.equal(child.runs.length, 2, "failed analysis is not retried automatically");
+		await promptor("analyze", app.ctx);
+		await eventually(() => child.runs.length === 3);
 	});
 });
 

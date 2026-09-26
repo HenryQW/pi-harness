@@ -146,34 +146,31 @@ function conversationItem(message: ContextMessage): ConversationItem | undefined
 }
 
 function boundedConversation(messages: ContextMessage[], maxChars: number): ConversationItem[] {
-	const items = messages.flatMap((message, index) => {
+	const items = messages.flatMap((message) => {
 		const item = conversationItem(message);
-		return item ? [{ index, item, chars: JSON.stringify(item).length }] : [];
+		return item ? [item] : [];
 	});
 	let summaryIndex = -1;
 	for (let index = items.length - 1; index >= 0; index--) {
-		if (items[index]!.item.role === "summary") {
+		if (items[index]!.role === "summary") {
 			summaryIndex = index;
 			break;
 		}
 	}
-	const selected = new Set<number>();
-	let used = 0;
-	if (summaryIndex >= 0 && items[summaryIndex]!.chars <= maxChars) {
-		selected.add(items[summaryIndex]!.index);
-		used = items[summaryIndex]!.chars;
-	}
+	const summary = items[summaryIndex];
+	const summaryChars = summary ? JSON.stringify(summary).length : 0;
+	const keepSummary = !!summary && summaryChars <= maxChars;
+	const selected: ConversationItem[] = [];
+	let used = keepSummary ? summaryChars : 0;
 	for (let index = items.length - 1; index > summaryIndex; index--) {
 		const item = items[index]!;
-		const cost = item.chars + (selected.size ? 1 : 0);
+		const cost = JSON.stringify(item).length + (used ? 1 : 0);
 		if (used + cost > maxChars) continue;
-		selected.add(item.index);
+		selected.push(item);
 		used += cost;
 	}
-	return items
-		.slice(summaryIndex < 0 ? 0 : summaryIndex)
-		.filter(({ index }) => selected.has(index))
-		.map(({ item }) => item);
+	selected.reverse();
+	return keepSummary ? [summary, ...selected] : selected;
 }
 
 function analysisPayload(pi: ExtensionAPI, ctx: ExtensionContext): AnalysisPayload {
@@ -378,10 +375,8 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		draft: string,
 		requestedName: string | undefined,
 		expectedReview: ReviewBoundary,
-		expectedBranch: number,
 		ctx: ExtensionCommandContext,
 	) => {
-		if (expectedBranch !== branchGeneration || reviewBoundary !== expectedReview) return;
 		const name = requestedName ?? candidateNameHint ?? "";
 		if (!isPromptName(name)) {
 			ctx.ui.notify(`Use lowercase kebab-case starting with a letter, up to ${MAX_NAME_CHARS} characters.`, "warning");
@@ -471,7 +466,6 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 				ctx.ui.notify("/promptor requires the interactive TUI.", "warning");
 				return;
 			}
-			const commandBranch = branchGeneration;
 			const review = reviewBoundary;
 			const draft = latestAssistantDraft(ctx, review);
 			const [action = "", ...values] = args.trim().split(/\s+/);
@@ -502,7 +496,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 					ctx.ui.notify("No reviewed Main draft is ready to save.", "warning");
 					return;
 				}
-				await saveLatestDraft(draft, values[0], review, commandBranch, ctx);
+				await saveLatestDraft(draft, values[0], review, ctx);
 				return;
 			}
 			if (action === "automatic" && values.length === 1 && (values[0] === "on" || values[0] === "off")) {
