@@ -117,10 +117,10 @@ export function workspaceWidgetLines(state: RunState): string[] | undefined {
 	const rows = state.tasks.flatMap((taskState) => {
 		const task = state.request.tasks.find((candidate) => candidate.id === taskState.taskId);
 		if (!task) return [];
-		const status = state.status === "aborted" ? "aborted" : workspaceStatus(taskState.status);
+		const status = workspaceStatus(taskState.status);
 		if (taskState.kind === "text") {
 			return taskState.status === "running" || taskState.status === "needs_attention"
-				? [`${status === "attention" ? "!" : status === "aborted" ? "■" : "◌"} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${status === "attention" ? `attention · ${compactWidgetField(taskState.failure ?? status)}` : status}`]
+				? [`${status === "attention" ? "!" : "◌"} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${status === "attention" ? `attention · ${compactWidgetField(taskState.failure ?? status)}` : status}`]
 				: [];
 		}
 		const attempt = taskState.attempts.at(-1);
@@ -136,7 +136,10 @@ export function workspaceWidgetLines(state: RunState): string[] | undefined {
 			: status === "attention" ? `attention · ${compactWidgetField(taskState.failure ?? "needs attention")}` : status;
 		return `${symbol} I ${workspaceBadge(task.role, task.modelClass)} ${compactWidgetField(task.id)} · ${detail}${allocation ? ` · ${compactWidgetField(allocation.label)}` : ""}`;
 	});
-	return rows.length ? rows : undefined;
+	if (!rows.length) return undefined;
+	return state.status === "aborted"
+		? [`■ I ${compactWidgetField(state.request.id)} · request aborted`, ...rows]
+		: rows;
 }
 
 function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState, rowsByRequest: Map<string, string[]>): void {
@@ -145,8 +148,9 @@ function updateWorkspaceWidget(ctx: ExtensionContext, state: RunState, rowsByReq
 	if (rows) rowsByRequest.set(key, rows);
 	else rowsByRequest.delete(key);
 	if (!ctx.hasUI) return;
-	const allRows = [...rowsByRequest.values()].flat().sort((a, b) =>
-		(a.startsWith("!") ? 0 : a.startsWith("◌") ? 1 : 2) - (b.startsWith("!") ? 0 : b.startsWith("◌") ? 1 : 2));
+	const rowOrder = (row: string) => row.endsWith(" · request aborted") ? -1
+		: row.startsWith("!") ? 0 : row.startsWith("◌") ? 1 : 2;
+	const allRows = [...rowsByRequest.values()].flat().sort((a, b) => rowOrder(a) - rowOrder(b));
 	const shown = allRows.length > MAX_WORKSPACE_WIDGET_LINES
 		? [...allRows.slice(0, MAX_WORKSPACE_WIDGET_LINES - 1), `+${allRows.length - MAX_WORKSPACE_WIDGET_LINES + 1} more · /subagent`]
 		: allRows;
