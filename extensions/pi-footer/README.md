@@ -14,10 +14,10 @@ pi install npm:@henryqw/pi-footer
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
+| [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph) | Improves | Shows CodeGraph index and direct tool activity when loaded. |
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Adds active Codex subscription quota and reset status. |
 | [`@henryqw/pi-open-in`](https://pi.henry.wang/extensions/pi-open-in) | Improves | Adds `/open` and `/set-open-in` commands for editor configuration. |
 | [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves | Adds current-branch pull-request status. |
-| [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph) | Improves | Shows CodeGraph index and direct tool activity when loaded. |
 
 ## Use
 
@@ -58,7 +58,7 @@ Unavailable values render as `—` without a misleading percent sign.
 
 Non-empty statuses from `@henryqw` extensions, currently Codex quota, occupy the right side of the first line.
 
-Statuses from other extensions, including Ponytail and `pi-rewind`, share the left side. They are sorted by key with producer text, spacing, colors, links, and glyphs preserved. Scripted `mcpScript` calls are not visible as individual tool calls, so they do not trigger the `● CG` badge.
+Statuses from other extensions, including Ponytail and `pi-rewind`, share the left side. They are sorted by key; colors, links, glyphs, and interior spacing are preserved. Leading and trailing whitespace is trimmed, line breaks become spaces, and long statuses may be clipped to fit the footer. Scripted `mcpScript` calls are not visible as individual tool calls, so they do not trigger the `● CG` badge.
 
 ## Limits and recovery
 

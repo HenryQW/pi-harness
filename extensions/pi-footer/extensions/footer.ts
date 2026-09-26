@@ -379,17 +379,14 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const prStatus = sanitizeStatus(extensionStatuses.get("pi-pr") ?? "");
 					const codegraphStatus = extensionStatuses.get("pi-codegraph");
 					const codegraph = codegraphStatus === undefined ? "" : codegraphBadge(codegraphStatus, activeCodegraphCalls.size > 0, theme);
-					const statuses = [...extensionStatuses]
-						.filter(([key]) => key !== "pi-pr" && key !== "pi-codegraph")
-						.sort(([a], [b]) => a.localeCompare(b))
-						.map(([key, text]) => [key, sanitizeStatus(text)] as const)
-						.filter(([, text]) => Boolean(text));
-					const henryStatuses = statuses
-						.filter(([key]) => key === HENRY_STATUS_KEY)
-						.map(([, text]) => text);
-					const externalStatuses = statuses
-						.filter(([key]) => key !== HENRY_STATUS_KEY)
-						.map(([, text]) => text);
+					const henryStatuses: string[] = [];
+					const externalStatuses: string[] = [];
+					for (const [key, value] of [...extensionStatuses].sort(([a], [b]) => a.localeCompare(b))) {
+						if (key === "pi-pr" || key === "pi-codegraph") continue;
+						const text = sanitizeStatus(value);
+						if (!text) continue;
+						(key === HENRY_STATUS_KEY ? henryStatuses : externalStatuses).push(text);
+					}
 					const thinking = String(ctx.thinkingLevel ?? "off");
 					const thinkingColor = THINKING_COLORS[thinking as keyof typeof THINKING_COLORS];
 					const ellipsis = theme.fg("dim", "…");
