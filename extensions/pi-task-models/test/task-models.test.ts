@@ -263,15 +263,17 @@ test("rethrows the exact final route error", async () => {
 	const firstFailure = new Error("first failed");
 	const finalFailure = new Error("final failed");
 	let attempt = 0;
+	let fallbackChecks = 0;
 	await assert.rejects(
 		executeTaskRoutes(
 			EXECUTION_ROUTES,
 			async () => { throw [firstFailure, finalFailure][attempt++]; },
-			{ shouldFallback: () => true },
+			{ shouldFallback: () => { fallbackChecks++; return true; } },
 		),
 		(error) => error === finalFailure,
 	);
 	assert.equal(attempt, 2);
+	assert.equal(fallbackChecks, 1);
 });
 
 test("rejects an empty route list", async () => {

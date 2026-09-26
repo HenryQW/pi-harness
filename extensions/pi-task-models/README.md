@@ -104,17 +104,31 @@ Model references use canonical `provider/model`. Numbered Codex account aliases 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `PROFILE_NAMES` | constant | Lists the shared profiles: `fast`, `balanced`, `frontier`, and `fav`. |
+| `THINKING_LEVELS` | constant | Lists supported thinking level names. |
+| `ProfileName` | type | Names one shared profile. |
+| `ThinkingLevel` | type | Names one thinking level. |
 | `ModelTask` | type | Describes a consumer-owned independently executed model operation. |
+| `TaskModelRoute` | type | Stores a model reference and thinking level. |
+| `TaskModelProfile` | type | Stores a primary route and optional fallback. |
+| `TaskModelsConfig` | type | Stores profile routes and explicit task assignments. |
+| `AvailableModel` | type | Represents a model from Pi's registry. |
 | `ResolvedTaskRoute` | type | Represents a model and thinking level resolved for the current session. |
+| `TaskRouteErrorCode` | type | Identifies a route-resolution failure. |
+| `TaskRouteError` | type | Carries a route error code and optional profile name. |
 | `registerModelTask(pi, task)` | function | Registers a consumer's task declaration at extension load. |
-| `loadTaskModelsConfig()` | function | Reads and validates the owner config file when present. |
-| `resolveConfiguredTaskRoute(ctx, task)` | function | Resolves the first usable route for a task. |
-| `resolveConfiguredTaskRoutes(ctx, task)` | function | Resolves the task's configured route candidates. |
-| `availableTaskModels(ctx)` | function | Lists usable text models from the current session scope or, when empty, Pi's registry. |
+| `loadTaskModelsConfig(agentDir?)` | function | Reads and validates the owner config file when present. |
+| `canonicalModelReference(model)` | function | Validates and canonicalizes `provider/model`, including numbered Codex aliases. |
 | `modelReference(model)` | function | Formats a model as `provider/model`. |
+| `dedupeAvailableModels(models, preferredProvider?)` | function | Deduplicates canonical model references, preferring a provider when requested. |
 | `resolveAvailableModel(models, reference, preferredProvider?)` | function | Finds a model by reference, including numbered Codex aliases. |
+| `availableTaskModels(ctx)` | function | Lists usable text models from the current session scope or, when empty, Pi's registry. |
 | `taskThinkingLevels(ctx, model)` | function | Lists supported thinking levels, honoring any session-pinned level. |
+| `resolveTaskModelRoute(ctx, route, thinking?)` | function | Resolves one route against the current session, if available. |
+| `resolveConfiguredTaskRoute(ctx, task, agentDir?, thinking?)` | function | Resolves the first usable route for a task. |
+| `resolveConfiguredTaskRoutes(ctx, task, agentDir?, thinking?)` | function | Resolves the task's configured route candidates. |
 | `executeTaskRoutes(routes, attempt, { shouldFallback, signal? })` | function | Tries supplied resolved routes in order and returns the first success. |
+| `orderedProfileRoutes(profile)` | function | Returns the primary route followed by the optional fallback. |
+| `createTaskModelsExtension(pi, options?)` (also the default export) | function | Registers the `/task-models` command and missing-config warning. |
 
 Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
@@ -128,18 +142,18 @@ Consumers never read or write the shared file directly.
 
 At session start, Task Models warns when the shared config is missing. Run `/task-models` to configure task routes.
 
-Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values fail visibly with `/task-models` guidance. The malformed file is preserved.
+Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values cause config loading to fail; the file is preserved. Repair or restore the file before reopening `/task-models`, which cannot load or overwrite an invalid config.
 
 Resolution errors are `TaskRouteError` values. Check `taskRouteCode`:
 
 | Code | Meaning |
 | --- | --- |
 | `config-missing` | The optional shared config file is absent. |
-| `config-read` | A present shared config file cannot be read or validated. |
-| `profile-missing` | The selected profile is not configured. |
-| `no-route` | The selected profile has no available route. |
+| `config-read` | A present shared config file cannot be read or validated; repair its contents or permissions before using `/task-models`. |
+| `profile-missing` | The selected profile is not configured; set it in `/task-models`. |
+| `no-route` | The selected profile has no available route; choose an available model and thinking level in `/task-models`. |
 
-Every error directs users to `/task-models`. A consumer may silence only `config-missing` when it has a safe current-session fallback.
+For `config-missing`, run `/task-models` to create the file. A consumer may silence only `config-missing` when it has a safe current-session fallback.
 
 `executeTaskRoutes()` uses only caller-supplied resolved routes. It does not resolve routes, authenticate, inspect providers, log, wait, or retry a route.
 
