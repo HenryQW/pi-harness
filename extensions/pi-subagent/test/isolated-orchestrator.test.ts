@@ -412,8 +412,9 @@ test("workspace widget lists every uncleaned workspace with status and agent con
 	const firstWorkspace = firstTask.attempts[0]!.allocations.find((allocation) => allocation.kind === "workspace")!;
 	firstWorkspace.label = "x".repeat(64);
 	assert.deepEqual(workspaceWidgetLines(state), [
-		`■ I [I1] unit-one · aborted · ${"x".repeat(31)}~`,
-		"■ I [R2] unit-two · aborted · fedcba",
+		"■ I request-one · request aborted",
+		`! I [I1] unit-one · attention · The task needs a deliberate rec~ · ${"x".repeat(31)}~`,
+		"◌ I [R2] unit-two · working · fedcba",
 	]);
 	state.status = "needs_attention";
 	firstTask.status = "ready_to_integrate";
@@ -453,6 +454,36 @@ test("status restores active workspace rows and provides the non-TUI fallback", 
 	assert.equal(rpcResult.content[0]!.text, "bounded status result\n\nActive workspaces:\n! I [I1] unit-one · attention · The task needs a deliberate rec~ · 012345");
 });
 
+test("aborted request keeps mixed task evidence distinct in status and widget", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	state.status = "aborted";
+	addWorkspace(state);
+	const first = state.tasks[0]!;
+	if (first.kind !== "changeset") throw new Error("Expected a changeset task.");
+	first.failure = "Worker prompt outcome ambiguous";
+	first.attempts[0]!.prompts[0]!.status = "ambiguous";
+	state.request.tasks.push({ ...state.request.tasks[0]!, id: "unit-two", role: "reviewer" });
+	state.tasks.push({ ...structuredClone(first), taskId: "unit-two", status: "working", failure: undefined });
+	const widgets: Array<string[] | undefined> = [];
+	const ctx = { cwd: "/repo", hasUI: true,
+		ui: { setWidget: (_key: string, content: WidgetContent) => widgets.push(renderWidget(content)) } } as unknown as ExtensionContext;
+	const harness = createHarness({ responseState: state });
+	const result = await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, undefined, ctx);
+	assert.deepEqual(widgets.at(-1), [
+		"■ I request-one · request aborted",
+		"! I [I1] unit-one · attention · Worker prompt outcome ambiguous · 012345",
+		"◌ I [R1] unit-two · working · 012345",
+	]);
+	const { status, tasks, integration } = (result.details as {
+		state: { status: string; tasks: Array<{ taskId: string; status: string }>; integration: { candidates: unknown[] } };
+	}).state;
+	assert.deepEqual({ status, tasks, candidates: integration.candidates }, {
+		status: "aborted",
+		tasks: [{ taskId: "unit-one", status: "needs_attention" }, { taskId: "unit-two", status: "working" }],
+		candidates: [],
+	});
+});
+
 test("isolated widget colors status glyphs with the active TUI theme while retaining plain status text", async () => {
 	let widget: WidgetContent;
 	const ctx = { cwd: "/repo", hasUI: true,
@@ -480,7 +511,7 @@ test("isolated widget colors status glyphs with the active TUI theme while retai
 	task.status = "completed";
 	assert.match(show(), /^<success>✓<\/success> I \[I1\] unit-one · completed · /);
 	state.status = "aborted";
-	assert.match(show(), /^<warning>■<\/warning> I \[I1\] unit-one · aborted · /);
+	assert.match(show(), /^<warning>■<\/warning> I request-one · request aborted$/);
 });
 
 test("isolated work remains visible before any workspace is allocated", () => {
@@ -496,7 +527,10 @@ test("isolated work remains visible before any workspace is allocated", () => {
 	textTask.failure = "Recover the task";
 	assert.deepEqual(workspaceWidgetLines(state), ["! I [S1] research · attention · Recover the task"]);
 	state.status = "aborted";
-	assert.deepEqual(workspaceWidgetLines(state), ["■ I [S1] research · aborted"]);
+	assert.deepEqual(workspaceWidgetLines(state), [
+		"■ I request-one · request aborted",
+		"! I [S1] research · attention · Recover the task",
+	]);
 });
 
 test("isolated widget caps rows and keeps attention visible", async () => {
