@@ -90,7 +90,7 @@ test("initializes an opted-in linked worktree at its root once, including nested
 });
 
 test("does not index non-Git directories, unopted repositories, or existing indexes", async (t) => {
-	const { base, primary, worktree } = await fixture(t);
+	const { base, primary, worktree, lock } = await fixture(t);
 	for (const cwd of [base, primary, worktree]) {
 		const run = harness(cwd);
 		await run.start();
@@ -104,6 +104,7 @@ test("does not index non-Git directories, unopted repositories, or existing inde
 	assert.equal(existing.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 	assert.deepEqual(existing.notices, []);
 	assert.equal(existing.statuses.at(-1), "pi-codegraph: indexed");
+	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
 test("warns with install commands for either or both unavailable prerequisites without creating a lock", async (t) => {
