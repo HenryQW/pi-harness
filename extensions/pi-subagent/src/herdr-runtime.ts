@@ -229,10 +229,6 @@ export function workspaceLabel(attempt: Pick<TaskAttempt, "correlationToken">): 
 	return attempt.correlationToken.slice(-6);
 }
 
-function legacyWorkspaceLabel(requestId: ExecuteRequest["id"], task: TaskRequest, attempt: TaskAttempt): string {
-	return `${requestId}/${task.id}#${attempt.number}`;
-}
-
 function expectedWorkerLabel(task: TaskRequest): string {
 	return `${task.role}/${task.modelClass}`;
 }
@@ -253,15 +249,9 @@ function requireIntentIdentity(intent: AllocationIntent, attempt: TaskAttempt): 
 	}
 }
 
-function assertWorkspaceIntent(
-	intent: WorkspaceAllocationIntent,
-	requestId: ExecuteRequest["id"],
-	task: TaskRequest,
-	attempt: TaskAttempt,
-): void {
+function assertWorkspaceIntent(intent: WorkspaceAllocationIntent, attempt: TaskAttempt): void {
 	const worktree = worktreeIntent(attempt);
-	const label = exactString(intent.label, "workspace label");
-	if ((label !== workspaceLabel(attempt) && label !== legacyWorkspaceLabel(requestId, task, attempt))
+	if (exactString(intent.label, "workspace label") !== workspaceLabel(attempt)
 		|| exactAbsolutePath(intent.worktreeCwd, "workspace worktree cwd") !== worktree.cwd
 		|| exactAbsolutePath(intent.mainRoot, "workspace Main root") !== worktree.repoRoot) {
 		throw new Error("Workspace allocation plan drifted from the exact owned worktree.");
@@ -472,7 +462,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		requireIntentIdentity(input.intent, input.attempt);
 		if (input.intent.kind === "workspace") {
 			if (input.acquireLaunch) throw new Error("Role launch acquisition is valid only at the exact agent allocation boundary.");
-			return await this.allocateWorkspace(input.intent, input.requestId, input.task, input.attempt, context);
+			return await this.allocateWorkspace(input.intent, input.attempt, context);
 		}
 		if (input.intent.kind === "worker_tab") {
 			if (input.acquireLaunch) throw new Error("Role launch acquisition is valid only at the exact agent allocation boundary.");
@@ -488,7 +478,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		requireIntentIdentity(input.intent, input.attempt);
 		const allocation = input.intent;
 		if (allocation.kind === "workspace") {
-			assertWorkspaceIntent(allocation, input.requestId, input.task, input.attempt);
+			assertWorkspaceIntent(allocation, input.attempt);
 			await this.assertRepositoryIdentity(allocation, context);
 			const response = await this.herdr.json(
 				["worktree", "list", "--cwd", allocation.worktreeCwd],
@@ -782,7 +772,7 @@ export class HerdrHostRuntime implements HostRuntime {
 				assertWorkerTabIntent(allocation, input.task, input.attempt);
 				const leasePath = exactString(allocation.leasePath, "saved worker lease path");
 				this.assertLeasePath(leasePath, input.attempt.correlationToken);
-				assertWorkspaceIntent(workspace, input.requestId, input.task, input.attempt);
+				assertWorkspaceIntent(workspace, input.attempt);
 				await this.assertRepositoryIdentity(workspace, context);
 				const tabId = exactString(allocation.tabId, "saved worker tab ID");
 				const workspaceId = exactString(workspace.workspaceId, "saved workspace ID");
@@ -812,7 +802,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (workerCleanup?.status !== "completed") return { outcome: "blocked", failure: "Workspace cleanup must follow worker-tab reconciliation." };
 			const allocation = ownedIntent(input.attempt, "workspace");
 			requireIntentIdentity(allocation, input.attempt);
-			assertWorkspaceIntent(allocation, input.requestId, input.task, input.attempt);
+			assertWorkspaceIntent(allocation, input.attempt);
 			await this.assertRepositoryIdentity(allocation, context);
 			const workspaceId = exactString(allocation.workspaceId, "saved workspace ID");
 			if (await this.workspaceAbsent(workspaceId, allocation, context)) return { outcome: "absent" };
@@ -832,12 +822,10 @@ export class HerdrHostRuntime implements HostRuntime {
 
 	private async allocateWorkspace(
 		allocation: WorkspaceAllocationIntent,
-		requestId: ExecuteRequest["id"],
-		task: TaskRequest,
 		attempt: TaskAttempt,
 		context: OperationContext,
 	): Promise<WorkspaceAllocationResult> {
-		assertWorkspaceIntent(allocation, requestId, task, attempt);
+		assertWorkspaceIntent(allocation, attempt);
 		await this.assertRepositoryIdentity(allocation, context);
 		const args = ["worktree", "open", "--cwd", allocation.herdrRepoRoot, "--path", allocation.worktreeCwd, "--label", allocation.label, "--no-focus"];
 		const response = await this.herdr.exec(args, this.processOptions(allocation.herdrRepoRoot, context, HERDR_OPERATION_CAP_MS));

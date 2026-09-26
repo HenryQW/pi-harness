@@ -669,6 +669,7 @@ test("workspace allocation revalidates strict persisted identity before Herdr cr
 	}> = [
 		{ name: "relative persisted Main root", mutate: (details) => { details.mainRoot = "relative-main"; }, error: /Main root must be an absolute path/, expectsProbe: false },
 		{ name: "legacy repository-root field", mutate: (details) => { details.repoRoot = details.herdrRepoRoot; delete details.herdrRepoRoot; }, error: /Herdr repository root must be a non-empty exact string/, expectsProbe: false },
+		{ name: "legacy v2 label", mutate: (details) => { details.label = `${REQUEST_ID}/${task.id}#1`; }, error: /drifted from the exact owned worktree/, expectsProbe: false },
 		{ name: "drifted persisted Main root", mutate: (details) => { details.mainRoot = fixture.worktree; }, error: /drifted from the exact owned worktree/, expectsProbe: false },
 		{ name: "drifted persisted repo key", mutate: (details) => { details.repoKey = driftedCommonDirectory; }, error: /no longer matches Git/, expectsProbe: true },
 		{ name: "drifted persisted Herdr root", mutate: (details) => { details.herdrRepoRoot = driftedRepoRoot; }, error: /no longer matches Git/, expectsProbe: true },
@@ -1239,26 +1240,6 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 			});
 		}
 	}
-});
-
-test("workspace reconciliation accepts the exact legacy v2 label", async (t) => {
-	const fixture = await paths(t);
-	const script = new ScriptedProcess();
-	const host = runtime(fixture, script);
-	const attempt = baseAttempt(fixture);
-	const intent = await plannedIntent(host, attempt, "workspace", fixture, script);
-	intent.status = "unknown";
-	intent.label = `${REQUEST_ID}/${task.id}#${attempt.number}`;
-	script.push(
-		repositoryIdentityStep(fixture),
-		{
-			command: "herdr",
-			args: ["worktree", "list", "--cwd", fixture.worktree],
-			result: success(worktreeListResult(fixture, [{ path: fixture.worktree, label: "task-a", open_workspace_id: null }])),
-		},
-	);
-	assert.equal((await host.reconcileHostAllocation({ requestId: REQUEST_ID, intent, task, attempt }, context())).outcome, "absent");
-	script.done();
 });
 
 test("unknown workspace reconciliation revalidates persisted Git identity before Herdr evidence", async (t) => {

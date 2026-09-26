@@ -176,7 +176,6 @@ function harness(options: {
 	availableModels?: any[];
 	currentModel?: any;
 	scopedModels?: any[];
-	timeoutPolicy?: { idleMs: number; maxMs: number };
 	cwd?: string;
 	sendMessageError?: Error;
 	herdr?: (args: string[], options?: { signal?: AbortSignal; timeout?: number }) => Promise<any>;
@@ -243,7 +242,7 @@ function harness(options: {
 			}));
 		},
 	} as unknown as ExtensionAPI;
-	subagentExtension(api, options.timeoutPolicy);
+	subagentExtension(api);
 	const ctx = {
 		cwd: options.cwd ?? "/tmp",
 		model: options.currentModel ?? model,

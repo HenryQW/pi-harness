@@ -8,19 +8,19 @@ function succeeded(index: number, assistantOutput: string, extra: Partial<Workfl
 	return { id: `call:parallel:${index}`, index, name: `Task ${index + 1}`, role: `role-${index}`, status: "succeeded", assistantOutput, ...extra } as WorkflowTransportEntry;
 }
 
-function failed(index: number, failure: string, extra: Partial<WorkflowTransportEntry> = {}): WorkflowTransportEntry {
-	return { id: `call:parallel:${index}`, index, name: `Task ${index + 1}`, role: `role-${index}`, status: "failed", failure, ...extra } as WorkflowTransportEntry;
+function rejected(index: number, failure: string, extra: Partial<WorkflowTransportEntry> = {}): WorkflowTransportEntry {
+	return { id: `call:parallel:${index}`, index, name: `Task ${index + 1}`, role: `role-${index}`, status: "rejected", failure, ...extra } as WorkflowTransportEntry;
 }
 
 test("formats ordered success and partial failure with exact follow-up details", () => {
 	const result = formatWorkflowResult("parallel", [
 		succeeded(1, "second evidence"),
-		failed(0, "failure evidence", { model: "provider/one", thinkingLevel: "high" }),
+		rejected(0, "failure evidence", { model: "provider/one", thinkingLevel: "high" }),
 	]);
 	assert.equal(result.text, `Parallel delegation failed · 1 failed · 1 completed\n✗ [1/2] Task 1 · role-0 — failure evidence\n✓ [2/2] Task 2 · role-1 — second evidence\nResults:\n- [1/2] Task 1 · role-0 · failure:\nfailure evidence\n- [2/2] Task 2 · role-1 · result:\nsecond evidence`);
 	assert.equal(result.failed, true);
 	assert.deepEqual(result.details.entries, [
-		{ id: "call:parallel:0", index: 0, name: "Task 1", role: "role-0", status: "failed", summary: "failure evidence", model: "provider/one", thinkingLevel: "high" },
+		{ id: "call:parallel:0", index: 0, name: "Task 1", role: "role-0", status: "rejected", summary: "failure evidence", model: "provider/one", thinkingLevel: "high" },
 		{ id: "call:parallel:1", index: 1, name: "Task 2", role: "role-1", status: "succeeded", summary: "second evidence" },
 	]);
 });
