@@ -28,7 +28,7 @@ Run `/deps` in a trusted repository to enable preparation. Create a worktree, th
 - Worktree creation returns immediately.
 - The hook validates lockfiles synchronously. Conflicting Node lockfiles, `packageManager` mismatches, and unsupported declarations still fail the worktree command fast.
 - A detached installer runs frozen installs in the background.
-- A Pi session in the worktree shows an editor widget while installing. It auto-dismisses success after five seconds and keeps failures visible, including missing executables.
+- A Pi session in the worktree shows an editor widget while installing without waiting for completion at startup. It auto-dismisses success after five seconds and keeps failures visible, including missing executables.
 
 Node and uv both run when both lockfile types exist.
 
