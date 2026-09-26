@@ -60,7 +60,7 @@ Without push encryption, the JSON request uses Bark's standard parameter names:
 }
 ```
 
-The `body` value is the same text that Pi's `/copy` command selects. Markdown, code blocks, spacing, and line breaks stay unchanged.
+The `body` value is the same text that Pi's `/copy` command selects. `/copyb` trims leading and trailing whitespace from the combined response; markdown, code blocks, internal spacing, and line breaks stay unchanged.
 
 ### Automatic status notifications
 
@@ -103,6 +103,8 @@ Package-owned: `~/.pi/agent/config/pi-bark/config.json`
 | `deviceKey` | Identifies the Bark App installation that receives the push notification. | Non-empty string or `null`. | `null` |
 | `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | `null` |
 | `statusNotifications` | Controls automatic status notifications by CWD. | Global boolean default and absolute-CWD boolean overrides. | Enabled with no overrides. |
+
+Config changes take effect on the next command or status event; Pi does not need to restart. A status notification already queued uses the settings read when its event occurred.
 
 ### Push encryption
 
@@ -184,7 +186,7 @@ Set `encryption` to `null` when push encryption is disabled.
 
 - A missing config stays missing until a command or the key script writes it.
 - `/set-bark` preserves Push Encryption and status notification settings.
-- The server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter.
+- The server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter. Prefer HTTPS: HTTP sends the Device Key and, without push encryption, notification content unencrypted over the network. Push encryption does not protect the Device Key.
 - Config writes are private and atomic.
 - Pi commands never print the Device Key, server URL, or Custom Encryption Key.
 

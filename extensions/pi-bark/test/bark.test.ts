@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
-import barkExtension, { lastAssistantText } from "../extensions/bark.ts";
+import barkExtension from "../extensions/bark.ts";
 import { parseServerUrl } from "../src/config.ts";
 
 type Context = {
@@ -61,21 +61,6 @@ function runKeyGenerator(agentDir: string, ...args: string[]) {
 function waitForImmediate(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
-
-test("lastAssistantText matches /copy text selection and formatting", () => {
-	const older = assistantEntry([{ type: "text", text: "older" }]);
-	const latest = assistantEntry([
-		{ type: "text", text: "  # Result\n\n" },
-		{ type: "text", text: "```ts\nconst x = 1;\n```  " },
-	]);
-	const aborted = assistantEntry([], "aborted");
-
-	assert.equal(lastAssistantText([older, latest, aborted]), "# Result\n\n```ts\nconst x = 1;\n```");
-	assert.equal(
-		lastAssistantText([older, assistantEntry([{ type: "thinking", thinking: "not visible" }])]),
-		"older",
-	);
-});
 
 test("server URLs preserve HTTP(S) paths and reject raw query or fragment delimiters", () => {
 	assert.equal(parseServerUrl("http://push.example.com/bark/"), "http://push.example.com/bark");
@@ -143,9 +128,16 @@ test("/set-bark saves config and /copyb copies then posts the exact text", async
 	});
 	const notices: string[] = [];
 	const text = "# Done\n\n- kept exactly\n- including `format`";
+	const older = assistantEntry([{ type: "text", text: "older" }]);
+	const thinking = assistantEntry([{ type: "thinking", thinking: "not visible" }]);
+	let entries = [
+		older,
+		assistantEntry([{ type: "text", text: "  # Done\n\n" }, { type: "text", text: "- kept exactly\n- including `format`  " }]),
+		assistantEntry([], "aborted"),
+	];
 	const ctx: Context = {
 		cwd: join(agentDir, "project"),
-		sessionManager: { buildContextEntries: () => [assistantEntry([{ type: "text", text }])] },
+		sessionManager: { buildContextEntries: () => entries },
 		ui: { notify: (message) => notices.push(message) },
 	};
 
@@ -173,6 +165,17 @@ test("/set-bark saves config and /copyb copies then posts the exact text", async
 	await assert.rejects(() => commands.get("copyb")!("", ctx), /HTTP 503/);
 	assert.deepEqual(events.slice(-2), [`copy:${text}`, "fetch"]);
 	assert.equal(notices.length, 2);
+
+	responseStatus = 200;
+	entries = [older, thinking];
+	await commands.get("copyb")!("", ctx);
+	assert.deepEqual(events.slice(-2), ["copy:older", "fetch"]);
+	assert.equal(request?.init?.body, JSON.stringify({ device_key: "device-key", body: "older" }));
+
+	entries = [thinking, assistantEntry([], "aborted")];
+	const eventCount = events.length;
+	await assert.rejects(() => commands.get("copyb")!("", ctx), /No agent messages to copy yet/);
+	assert.equal(events.length, eventCount);
 });
 
 test("Bark sends status-only notifications when Pi is blocked or finished", async (t) => {

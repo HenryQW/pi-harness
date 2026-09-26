@@ -19,7 +19,7 @@ type BarkExtensionOptions = {
 	fetch?: typeof globalThis.fetch;
 };
 
-export function lastAssistantText(entries: readonly SessionEntry[]): string | undefined {
+function lastAssistantText(entries: readonly SessionEntry[]): string | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
