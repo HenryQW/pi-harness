@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-clone",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Clone the current Pi conversation path into a new Herdr tab.",
   "keywords": [
     "pi-package",
@@ -17,6 +17,7 @@
   "files": [
     "LICENSE",
     "extensions",
+    "docs/clone-flow.svg",
     "README.md"
   ],
   "scripts": {
