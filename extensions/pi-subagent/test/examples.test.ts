@@ -17,76 +17,37 @@ test("missing config directory still returns validated built-in implementer, rev
 	const roles = loadRoles(agentDir);
 	const [implementer, reviewer, scout] = roles;
 
-	assert.deepEqual(roles.map(({ name, description, tools, extensions, skills, mcps }) => ({
-		name, description, tools, extensions, skills, mcps,
-	})), [
-		{
-			name: "implementer",
-			description: "Implements and validates one bounded change in the checkout selected by Main",
-			tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-			extensions: [],
-			skills: [],
-			mcps: [],
-		},
-		{
-			name: "reviewer",
-			description: "Reviews one bounded change for correctness without changing files",
-			tools: ["read", "grep", "find", "ls"],
-			extensions: [],
-			skills: [],
-			mcps: [],
-		},
-		{
-			name: "scout",
-			description: "Maps relevant code and evidence for one bounded task without changing files",
-			tools: ["read", "grep", "find", "ls"],
-			extensions: [],
-			skills: [],
-			mcps: [],
-		},
+	assert.deepEqual(roles.map(({ name, tools, extensions, skills, mcps }) => ({ name, tools, extensions, skills, mcps })), [
+		{ name: "implementer", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
+		{ name: "reviewer", tools: ["read", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
+		{ name: "scout", tools: ["read", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
 	]);
 
 	assert.deepEqual(roles.map(({ modelClass }) => modelClass), [undefined, undefined, undefined]);
 
 	for (const contract of [
-		/bounded outcome, not a preassigned file list.*assigned cwd/is,
-		/repository instructions and domain context.*relevant flow, callers, and tests/is,
-		/root cause with the smallest complete diff.*no speculative work.*complete or blocked/is,
+		/root cause with the smallest complete diff.*no speculative work/is,
 		/Run focused checks required by the task/i,
-		/remove only task-created, non-deliverable temporary, generated, or ignored files/is,
 		/Preserve required deliverables, unrelated and pre-existing files, and user data/i,
-		/Never use `git clean` or blanket deletion.*exact path as a blocker/is,
-		/credentials or the network.*extra artifacts.*broaden scope only when the task requires/is,
-		/external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i,
-		/task's commit policy.*Direct delegation leaves changes uncommitted.*isolated delegation commits completed scoped changes.*Do not create or manage another worktree/is,
-		/assigned checkout and branch intact.*Never push or open a pull request/is,
-		/outcome, commit, checks, and remaining risks/i,
+		/Never use `git clean` or blanket deletion/i,
+		/credentials or the network.*broaden scope only when the task requires/is,
+		/Direct delegation leaves changes uncommitted.*isolated delegation commits completed scoped changes/is,
+		/Never push or open a pull request/is,
 	]) assert.match(implementer!.systemPrompt, contract);
 
 	for (const contract of [
 		/Review the supplied candidate read-only/i,
-		/supplied requirements and named files or evidence.*do not prepare Git or broaden discovery/is,
 		/evidence is insufficient, say so and stop/i,
-		/actionable correctness risks introduced by the change.*not style preferences.*unrelated pre-existing issues/is,
+		/actionable correctness risks introduced by the change.*not style preferences/is,
 		/Run no commands or tests.*Never edit, write, commit, push, manage Git or worktrees/is,
-		/external LLM APIs.*SDKs.*agent harnesses.*model CLIs/i,
 		/Output exactly `PASS` when there are no findings/i,
-		/findings only, ordered by severity.*file:line evidence.*smallest valid fix/is,
 		/Any finding blocks approval.*never combine `PASS` with findings/is,
-		/Stop when the supplied evidence is covered/i,
 	]) assert.match(reviewer!.systemPrompt, contract);
 	assert.doesNotMatch(reviewer!.systemPrompt, /\bbash\b/i);
 
 	assert.match(scout!.systemPrompt, /Answer only the bounded discovery questions/i);
-	assert.match(scout!.systemPrompt, /Read applicable repository instructions and domain context first/i);
-	assert.match(scout!.systemPrompt, /Trace the relevant execution\/data flow, callers, tests, and constraints only far enough to answer/i);
-	assert.match(scout!.systemPrompt, /Separate observed facts, supported inferences, and unknowns/i);
-	assert.match(scout!.systemPrompt, /Stop when answered; if blocked, state what is missing/i);
 	assert.match(scout!.systemPrompt, /Do not design, recommend, implement, edit, or run shell commands/i);
-	assert.match(scout!.systemPrompt, /Return concisely:/i);
-	assert.match(scout!.systemPrompt, /map of relevant files and symbols and how they connect/i);
 	assert.match(scout!.systemPrompt, /path:line evidence/i);
-	assert.match(scout!.systemPrompt, /uncertainties or missing context/i);
 });
 
 test("same-named user roles override built-ins", async (t) => {

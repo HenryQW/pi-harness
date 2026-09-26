@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
-import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type EphemeralSubagentTimeout, type Role } from "@henryqw/pi-subagent";
+import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
 import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
 import { createCheckoutAdmission, roleCanWrite } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
@@ -18,8 +18,7 @@ const MAX_WIDGET_ITEMS = 8;
 const MAX_WIDGET_LINES = 6;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-type TimeoutPolicy = EphemeralSubagentTimeout;
-type WidgetStatus = "working" | "success" | "failure" | "aborted";
+type WidgetStatus = "working" | "success" | "failure";
 type WidgetItem = {
 	role: string;
 	model: string;
@@ -42,7 +41,6 @@ function statusGlyph(status: WidgetStatus, spinnerIndex: number, theme: Theme): 
 		case "working": return theme.fg("accent", SPINNER_FRAMES[spinnerIndex % SPINNER_FRAMES.length]!);
 		case "success": return theme.fg("success", "✓");
 		case "failure": return theme.fg("error", "✗");
-		case "aborted": return theme.fg("warning", "■");
 	}
 }
 
@@ -51,7 +49,6 @@ function statusLabel(status: WidgetStatus): string {
 		case "working": return "working";
 		case "success": return "complete";
 		case "failure": return "failed";
-		case "aborted": return "stopped";
 	}
 }
 
@@ -87,11 +84,11 @@ function renderWidgetRows(
 	});
 	const hidden = ordered.slice(visible.length);
 	if (hidden.length) {
-		const counts: Record<WidgetStatus, number> = { working: 0, success: 0, failure: 0, aborted: 0 };
+		const counts: Record<WidgetStatus, number> = { working: 0, success: 0, failure: 0 };
 		for (const { status } of hidden) counts[status] += 1;
 		lines.push(truncateToWidth(theme.fg("muted", [
 			`… ${hidden.length} more`,
-			...(["working", "success", "failure", "aborted"] as const).flatMap((status) =>
+			...(["working", "success", "failure"] as const).flatMap((status) =>
 				counts[status] ? [`${counts[status]} ${statusLabel(status)}`] : []),
 		].join(" · ")), width));
 	}
@@ -128,10 +125,7 @@ const roleSummary = (): string => {
 	}
 };
 
-export default function subagentExtension(
-	pi: ExtensionAPI,
-	overrideTimeoutPolicy?: TimeoutPolicy,
-): void {
+export default function subagentExtension(pi: ExtensionAPI): void {
 	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) return;
 	registerModelTask(pi, DELEGATE_TASK);
 	pi.registerMessageRenderer(DIRECT_RESULT_TYPE, (message, { expanded, outputPad }, theme) => {
@@ -142,11 +136,9 @@ export default function subagentExtension(
 		if (!details?.entries) return new Text(content, outputPad, 0);
 		const count = details.entries.length;
 		const subject = count === 1 ? "Direct subagent" : `${count} direct subagents`;
-		const state = details.recovery ? "stopped; recovery needed"
-			: details.outcome === "completed" ? "completed"
-				: details.outcome === "failed" ? "failed" : "stopped";
-		const glyph = details.recovery || details.outcome === "aborted" ? "■" : details.outcome === "completed" ? "✓" : "✗";
-		const color = details.recovery || details.outcome === "aborted" ? "warning" : details.outcome === "completed" ? "success" : "error";
+		const state = details.recovery ? "stopped; recovery needed" : details.outcome;
+		const glyph = details.recovery ? "■" : details.outcome === "completed" ? "✓" : "✗";
+		const color = details.recovery ? "warning" : details.outcome === "completed" ? "success" : "error";
 		const rows = details.entries.map(({ name, role, status, summary }) => {
 			const { glyph, fallback } = presentWorkflowEntryStatus(status);
 			return `${glyph} ${name} · ${role} — ${details.recovery ? fallback : summary || fallback}`;
@@ -175,20 +167,11 @@ export default function subagentExtension(
 			maxCorrections: DEFAULT_EXECUTION_POLICY.maxCorrections,
 		};
 	}
-	const timeoutPolicy: TimeoutPolicy = overrideTimeoutPolicy ?? {
-		idleMs: initialPolicy.childIdleMs,
-		maxMs: initialPolicy.childMaxMs,
-	};
-	const effectiveInitialPolicy: EffectiveExecutionPolicy = {
-		...initialPolicy,
-		childIdleMs: timeoutPolicy.idleMs,
-		childMaxMs: timeoutPolicy.maxMs ?? initialPolicy.childMaxMs,
-	};
 	const executor = createEphemeralSubagentExecutor({
-		maxConcurrency: effectiveInitialPolicy.maxSubagents,
-		maxTurns: effectiveInitialPolicy.maxTurns,
-		maxTokens: effectiveInitialPolicy.maxTokens,
-		timeout: timeoutPolicy,
+		maxConcurrency: initialPolicy.maxSubagents,
+		maxTurns: initialPolicy.maxTurns,
+		maxTokens: initialPolicy.maxTokens,
+		timeout: { idleMs: initialPolicy.childIdleMs, maxMs: initialPolicy.childMaxMs },
 	});
 	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(readSubagentConfig());
 	const canWrite = (input: unknown): boolean => {
@@ -205,7 +188,7 @@ export default function subagentExtension(
 	admission.register(pi, canWrite);
 	const isolatedSurface = registerIsolatedExtension(pi, {
 		executor,
-		policy: effectiveInitialPolicy,
+		policy: initialPolicy,
 		currentPolicy,
 	});
 	let directSequence = 0;

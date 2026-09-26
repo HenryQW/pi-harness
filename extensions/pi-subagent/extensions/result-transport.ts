@@ -3,7 +3,7 @@ import type { WorkflowEntry, WorkflowMode } from "./workflow.ts";
 
 const EVIDENCE_PREVIEW_CODE_POINTS = 256;
 
-export type WorkflowTransportStatus = "pending" | "running" | "succeeded" | "failed" | "rejected" | "skipped";
+export type WorkflowTransportStatus = "pending" | "running" | "succeeded" | "rejected" | "skipped";
 
 type TransportEntryBase = {
 	id: WorkflowEntry["id"];
@@ -17,7 +17,7 @@ type TransportEntryBase = {
 export type WorkflowTransportEntry =
 	| TransportEntryBase & { status: "pending" | "skipped"; assistantOutput?: never; failure?: never }
 	| TransportEntryBase & { status: "running" | "succeeded"; assistantOutput: string; failure?: never }
-	| TransportEntryBase & { status: "failed" | "rejected"; assistantOutput?: never; failure: string };
+	| TransportEntryBase & { status: "rejected"; assistantOutput?: never; failure: string };
 
 export type WorkflowTransportEntryDetails = {
 	id: string;
@@ -37,7 +37,7 @@ export type WorkflowTransportDetails = {
 
 export type BackgroundWorkflowTransportDetails = WorkflowTransportDetails & {
 	taskId: string;
-	outcome: "completed" | "failed" | "aborted";
+	outcome: "completed" | "failed";
 	recovery?: true;
 };
 
@@ -63,7 +63,7 @@ function workflowTitle(mode: WorkflowMode): string {
 function statusCounts(entries: readonly WorkflowTransportEntry[]): string[] {
 	const count = (statuses: WorkflowTransportStatus[]) => entries.filter(({ status }) => statuses.includes(status)).length;
 	return ([
-		[["failed", "rejected"], "failed"],
+		[["rejected"], "failed"],
 		[["succeeded"], "completed"],
 		[["skipped"], "skipped"],
 	] as const).flatMap(([statuses, word]) => {
@@ -84,7 +84,6 @@ const ENTRY_STATUS_PRESENTATION = {
 	pending: { glyph: "○", fallback: "queued" },
 	running: { glyph: "◌", fallback: "working" },
 	succeeded: { glyph: "✓", fallback: "completed" },
-	failed: { glyph: "✗", fallback: "failed" },
 	rejected: { glyph: "✗", fallback: "failed" },
 	skipped: { glyph: "–", fallback: "skipped" },
 } as const satisfies Record<WorkflowTransportEntryDetails["status"], WorkflowEntryStatusPresentation>;
@@ -94,7 +93,7 @@ export function presentWorkflowEntryStatus(status: WorkflowTransportEntryDetails
 }
 
 function sourceFor(entry: WorkflowTransportEntry): string | undefined {
-	if (entry.status === "failed" || entry.status === "rejected") return entry.failure;
+	if (entry.status === "rejected") return entry.failure;
 	if (entry.status === "running" || entry.status === "succeeded") return entry.assistantOutput;
 }
 
@@ -103,7 +102,7 @@ function evidenceFor(entry: WorkflowTransportEntry, position: number, total: num
 	if (source === undefined || !source) return;
 	const [preview, remainder] = splitEvidence(source);
 	return {
-		heading: `- [${position}/${total}] ${entry.name} · ${entry.role} · ${entry.status === "failed" || entry.status === "rejected" ? "failure" : "result"}:`,
+		heading: `- [${position}/${total}] ${entry.name} · ${entry.role} · ${entry.status === "rejected" ? "failure" : "result"}:`,
 		preview,
 		remainder,
 	};
@@ -114,7 +113,7 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 	if (ordered.some(({ status }) => status === "pending" || status === "running")) {
 		throw new TypeError("Final workflow transport requires terminal entry states.");
 	}
-	const failed = ordered.some(({ status }) => status === "failed" || status === "rejected");
+	const failed = ordered.some(({ status }) => status === "rejected");
 	const positioned = ordered.map((entry, index) => ({ entry, position: index + 1 }));
 	const evidence = positioned.flatMap(({ entry, position }) => {
 		const value = evidenceFor(entry, position, ordered.length);

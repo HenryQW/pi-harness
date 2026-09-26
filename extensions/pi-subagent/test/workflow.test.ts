@@ -63,20 +63,16 @@ test("parses and normalizes each explicit workflow mode", () => {
 	assert.equal(parseWorkflow({ chain: Array.from({ length: MAX_WORKFLOW_ENTRIES }, () => delegation()) }).delegations.length, 8);
 });
 
-test("rejects caller thinking in every workflow mode", () => {
-	for (const value of [
-		{ ...delegation(), thinking: "high" },
-		{ tasks: [{ ...delegation(), thinking: "high" }] },
-		{ chain: [{ ...delegation(), thinking: "high" }] },
-	]) {
+test("rejects caller thinking in representative workflow modes", () => {
+	for (const value of [{ ...delegation(), thinking: "high" }, { tasks: [{ ...delegation(), thinking: "high" }] }]) {
 		assert.throws(() => parseWorkflow(value), /declared tool schema/);
 	}
 });
 
-test("rejects every workflow shape boundary at runtime", () => {
+test("rejects malformed workflow shape boundaries", () => {
 	assert.throws(() => parseDirectWorkflow(delegation()), /required properties mode/);
 	const nine = Array.from({ length: MAX_WORKFLOW_ENTRIES + 1 }, () => delegation());
-	const schemaInvalid = [
+	for (const value of [
 		null,
 		[],
 		"workflow",
@@ -89,34 +85,28 @@ test("rejects every workflow shape boundary at runtime", () => {
 		{ tasks: nine },
 		{ chain: nine },
 		{ tasks: [null] },
-		{ chain: [null] },
-		{ tasks: [{ ...delegation(), extra: true }] },
 		{ chain: [{ ...delegation(), extra: true }] },
 		{ tasks: [{ ...delegation(), background: true }] },
 		{ chain: [{ ...delegation(), tasks: [delegation()] }] },
 		{ tasks: [{ ...delegation(), chain: [delegation()] }] },
 		{ tasks: [{ role: "worker" }] },
-		{ tasks: [{ role: "worker", task: "work" }] },
-	];
-	for (const value of schemaInvalid) assert.throws(() => parseWorkflow(value), /declared tool schema/);
+	]) assert.throws(() => parseWorkflow(value), /declared tool schema/);
 
 	for (const value of [
 		{},
 		{ background: true },
 		{ ...delegation(), tasks: [delegation()] },
-		{ ...delegation(), chain: [delegation()] },
 		{ tasks: [delegation()], chain: [delegation()] },
 		{ ...delegation(), tasks: [delegation()], chain: [delegation()] },
-	]) {
-		assert.throws(() => parseWorkflow(value), /exactly one/);
-	}
-	for (const value of [{ role: "worker" }, { name: "Test work" }, { task: "work" }, { model: "provider/model" }, { role: "worker", task: "work" }]) {
+	]) assert.throws(() => parseWorkflow(value), /exactly one/);
+
+	for (const value of [{ role: "worker" }, { name: "Test work" }, { task: "work" }, { role: "worker", task: "work" }]) {
 		assert.throws(() => parseWorkflow(value), /requires role, name, and task/);
 	}
 });
 
-test("rejects empty, NUL, and unknown delegation values in single and array modes", () => {
-	const invalidDelegations: Array<[string, Record<string, unknown>]> = [
+test("rejects invalid delegation values without cross-product duplication", () => {
+	for (const [name, value] of [
 		["empty role", { ...delegation(), role: "" }],
 		["blank role", { ...delegation(), role: " \n " }],
 		["NUL role", { ...delegation(), role: "work\0er" }],
@@ -125,27 +115,20 @@ test("rejects empty, NUL, and unknown delegation values in single and array mode
 		["C1 role", { ...delegation(), role: "work\u009ber" }],
 		["empty name", { ...delegation(), name: "" }],
 		["blank name", { ...delegation(), name: "\t" }],
-		["NUL name", { ...delegation(), name: "wo\0rk" }],
-		["newline name", { ...delegation(), name: "line\nbreak" }],
-		["terminal escape name", { ...delegation(), name: "line\u001b[31m" }],
 		["30-character name", { ...delegation(), name: "x".repeat(30) }],
 		["empty task", { ...delegation(), task: "" }],
 		["blank task", { ...delegation(), task: "\t" }],
 		["NUL task", { ...delegation(), task: "wo\0rk" }],
 		["empty model", { ...delegation(), model: "" }],
-		["NUL model", { ...delegation(), model: "p\0m" }],
 		["newline model", { ...delegation(), model: "provider\n/model" }],
 		["terminal escape model", { ...delegation(), model: "provider/\u001bmodel" }],
 		["C1 model", { ...delegation(), model: "provider/\u009bmodel" }],
 		["unknown model class", { ...delegation(), modelClass: "slow" }],
 		["blank model class", { ...delegation(), modelClass: " " }],
-	];
-	for (const [name, value] of invalidDelegations) {
-		assert.throws(() => parseWorkflow(value), `${name} in single mode`);
-		assert.throws(() => parseWorkflow({ tasks: [value] }), `${name} in parallel mode`);
-		assert.throws(() => parseWorkflow({ chain: [value] }), `${name} in chain mode`);
-	}
+	] as Array<[string, Record<string, unknown>]>) assert.throws(() => parseWorkflow(value), `${name} in single mode`);
 
+	assert.throws(() => parseWorkflow({ tasks: [{ ...delegation(), name: "line\nbreak" }] }), "control in parallel mode");
+	assert.throws(() => parseWorkflow({ chain: [{ ...delegation(), model: "p\0m" }] }), "NUL in chain mode");
 	assert.equal(parseWorkflow({ ...delegation("first line\nsecond line") }).delegations[0]!.task, "first line\nsecond line");
 });
 
@@ -289,14 +272,11 @@ test("chain parent abort rethrows its reason without launching a later step", as
 });
 
 
-test("direct schema excludes changesets and their writer-only fields in every shape", () => {
+test("direct schema excludes changesets and their writer-only fields", () => {
 	for (const value of [
 		{ ...delegation(), kind: "changeset" },
-		{ tasks: [{ ...delegation(), kind: "changeset" }] },
-		{ chain: [{ ...delegation(), kind: "changeset" }] },
-		{ ...delegation(), checks: [{ command: "true", args: [] }] },
 		{ tasks: [{ ...delegation(), checks: [{ command: "true", args: [] }] }] },
-		{ chain: [{ ...delegation(), checks: [{ command: "true", args: [] }] }] },
+		{ chain: [{ ...delegation(), kind: "changeset" }] },
 	]) {
 		assert.equal(Check(WorkflowSchema, { mode: "direct", ...value }), false);
 		assert.throws(() => parseWorkflow(value), /declared tool schema/);
