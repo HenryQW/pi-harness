@@ -334,14 +334,13 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	const runCompaction = (ctx: ExtensionContext, resumeTask = true) => {
+	const runCompaction = (ctx: ExtensionContext) => {
 		compactionAbortExpected = Boolean(ctx.signal && !ctx.signal.aborted);
 		ctx.compact({
 			customInstructions: COMPACTION_INSTRUCTIONS,
 			onComplete: () => {
 				compactionPending = false;
 				compactionAbortExpected = false;
-				if (!resumeTask) return;
 				// Pi may flush queued input during compaction_end. Wait one macrotask
 				// before checking idle, otherwise follow-up can race that flush.
 				setImmediate(() => {
@@ -360,14 +359,14 @@ export default function (pi: ExtensionAPI) {
 		});
 	};
 
-	const compactIfNeeded = (ctx: ExtensionContext, resumeTask = true) => {
+	const compactIfNeeded = (ctx: ExtensionContext) => {
 		if (!active || compactionPending) return;
 
 		const usage = ctx.getContextUsage();
 		if (usage?.percent == null || usage.percent <= autoCompactThreshold) return;
 
 		compactionPending = true;
-		runCompaction(ctx, resumeTask);
+		runCompaction(ctx);
 	};
 
 	// Hide only empty abort produced when ctx.compact() cancels active run.

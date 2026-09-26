@@ -818,15 +818,18 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 
 	try {
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		const handlers = loadExtension();
+		const sent: SentMessage[] = [];
+		const handlers = loadExtension(new Map(), (message, options) => sent.push({ message, options }));
 		const big = "x".repeat(20_000);
 		let compactions = 0;
+		let onComplete: (() => void) | undefined;
 		const notices: string[] = [];
 		const ctx = {
 			cwd: tempRoot,
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 900, contextWindow: 10_000, percent: 90 }),
-			compact: () => { compactions++; },
+			compact: (options: { onComplete: () => void }) => { compactions++; onComplete = options.onComplete; },
+			isIdle: () => true,
 			ui: { notify: (message: string) => notices.push(message) },
 		} as unknown as ExtensionContext;
 
@@ -895,6 +898,10 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 			messages,
 		} as never, ctx), undefined);
 		assert.equal(compactions, 1);
+		onComplete?.();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(sent.length, 1);
+		assert.equal(sent[0]?.options?.triggerTurn, true);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
