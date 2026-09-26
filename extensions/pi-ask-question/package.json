@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-ask-question",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Ask Pi users one interactive question with choices or a custom answer.",
   "keywords": [
     "pi-package",
@@ -17,7 +17,8 @@
     "LICENSE",
     "dist",
     "extensions",
-    "README.md"
+    "README.md",
+    "example.png"
   ],
   "types": "./dist/index.d.ts",
   "exports": {

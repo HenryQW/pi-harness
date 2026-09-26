@@ -1139,9 +1139,11 @@ describe("SQL prefilter + parse semantics + walk safety", () => {
 		assert.ok(recovered.hits.length >= 1, "malformed query must still recover deploy hits");
 	});
 
-	it("prunes /tmp and /private/tmp encoded directories without matching embedded tmp names", () => {
+	it("prunes top-level and nested /tmp and /private/tmp encoded directories without matching embedded tmp names", () => {
 		writeFixture("--tmp-project--", "tmp.jsonl", [sessionHeader(), msg("tmp", "user", "tempwalk exclusion marker")]);
 		writeFixture("--private-tmp-project--", "private.jsonl", [sessionHeader(), msg("private", "user", "tempwalk exclusion marker")]);
+		writeFixture("--users-project--/--tmp-nested--", "nested-tmp.jsonl", [sessionHeader(), msg("nested-tmp", "user", "tempwalk exclusion marker")]);
+		writeFixture("--users-project--/--private-tmp-nested--", "nested-private.jsonl", [sessionHeader(), msg("nested-private", "user", "tempwalk exclusion marker")]);
 		const kept = writeFixture("--users-tmp-project--", "kept.jsonl", [sessionHeader(), msg("kept", "user", "tempwalk exclusion marker")]);
 
 		const result = syncSessions(sessionsDir, dbPath, { cap: 10 });

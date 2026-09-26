@@ -152,6 +152,31 @@ test("registers external skills without duplicating Pi's skill prompt", async ()
 	}
 });
 
+test("requests a skill reload only when discovered skill paths change", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	const cwd = join(root, "workspace");
+	const first = join(root, "first");
+	const second = join(root, "second");
+	try {
+		await mkdir(cwd);
+		for (const dir of [first, second]) {
+			const skill = join(dir, ".pi", "skills", "demo", "SKILL.md");
+			await mkdir(join(skill, ".."), { recursive: true });
+			await writeFile(skill, "---\ndescription: Demo\n---\n");
+		}
+		const { handlers, tools } = loadExtension();
+		const ctx = extensionContext(cwd, () => []);
+		await handlers.get("session_start")!({}, ctx);
+		const add = tools.get("add_directory")!;
+		const initial = await add.execute("first", { path: first }, undefined, undefined, ctx);
+		const shadowed = await add.execute("second", { path: second }, undefined, undefined, ctx);
+		assert.match(initial.content[0].text, /Run \/reload to update external skills/);
+		assert.doesNotMatch(shadowed.content[0].text, /Run \/reload/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("injects external context through a stable named prompt section", async () => {
 	const external = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	try {

@@ -107,7 +107,7 @@ function parseAddArgs(args: string | undefined): ParsedAddArgs {
 function validateStoredPaths(paths: string[], source: DirSource): void {
 	if (
 		paths.some(
-			(path) => typeof path !== "string" || !isAbsolute(path) || path.length === 0 || /\p{C}/u.test(path),
+			(path) => typeof path !== "string" || !isAbsolute(path) || /\p{C}/u.test(path),
 		)
 	) {
 		throw new Error(`Invalid ${source} pi-add-dir configuration: expected absolute paths.`);
@@ -642,8 +642,8 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			}
 			if (context.skills.size > 0) {
 				response.push(`\nDiscovered skills: ${[...context.skills].join(", ")}`);
-				response.push("Run /reload to register skills as /skill:name commands.");
 			}
+			if (result.resourcesChanged) response.push("Run /reload to update external skills.");
 			response.push(`\nYou can now access files at: ${absolutePath}`);
 
 			return {

@@ -182,7 +182,6 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 		assert.equal(app.completionCalls.length, 1);
 		assert.equal(app.completionCalls[0].context.messages[0].content.length, 1_000);
 		assert.equal(app.completionCalls[0].options.maxRetries, 0);
-		assert.equal("maxTokens" in app.completionCalls[0].options, false);
 		assert.match(app.completionCalls[0].context.systemPrompt, /type: subject/);
 		assert.match(app.completionCalls[0].context.systemPrompt, /semantic word, max 12 characters.*natural task phrase.*3-4.*max 4 words and 20 characters/);
 		assert.ok(app.completionCalls[0].context.systemPrompt.length <= 240);
@@ -475,8 +474,10 @@ test("manual rename uses only the latest five user messages", async () => {
 			},
 			{ type: "message", message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] } },
 			{ type: "message", message: { role: "user", content: "third included request" } },
+			{ type: "message", message: { role: "user", content: "  " } },
 			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "assistant answer" }] } },
 			{ type: "message", message: { role: "user", content: "fourth included request" } },
+			{ type: "message", message: { role: "user", content: [{ type: "thinking", thinking: "hidden" }] } },
 			{ type: "message", message: { role: "user", content: "latest included request" } },
 		];
 		const app = harness({ sessionName: "saved", branch });

@@ -1,8 +1,6 @@
 import { tmpdir } from "node:os";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExecResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
-
-type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 
 type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
 type TabEntry = { tab_id?: unknown; workspace_id?: unknown; label?: unknown };
@@ -11,7 +9,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 	const herdr = createHerdrClient<{ cwd: string }>(pi.exec.bind(pi));
 
 	const execOrThrow = async (command: string, args: string[], cwd: string): Promise<string> => {
-		const result = await pi.exec(command, args, { cwd }) as unknown as ExecResult;
+		const result: ExecResult = await pi.exec(command, args, { cwd });
 		if (result.code !== 0 || result.killed) {
 			throw new Error(`${command} ${args[0]} failed: ${result.stderr.trim() || "killed"}`);
 		}
@@ -47,8 +45,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const parentIsBare = mainCheckout !== checkout &&
 				worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
 
-			let siblingTabIds: string[] = [];
-			await withWorktreeLock(checkout, async () => {
+			const siblingTabIds = await withWorktreeLock(checkout, async () => {
 				// With --force, skip the dependents check entirely and let git remove the checkout.
 				let dependentIds: string[] = [];
 				if (option !== "--force") {
@@ -69,7 +66,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 				if (tabsById.get(tabId)?.workspace_id !== workspaceId) {
 					throw new Error(`Herdr tab ${tabId} does not belong to workspace ${workspaceId}.`);
 				}
-				siblingTabIds = validTabs
+				const siblingTabIds = validTabs
 					.filter((tab) => tab.tab_id !== tabId && tab.workspace_id === workspaceId)
 					.map((tab) => tab.tab_id);
 				const blockers = dependentIds.filter((id) => tabsById.get(id)?.workspace_id !== workspaceId);
@@ -84,6 +81,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 				await execOrThrow("git", [
 					"worktree", "remove", ...(option === "--force" ? ["--force"] : []), checkout,
 				], ctx.cwd);
+				return siblingTabIds;
 			});
 			try {
 				await Promise.all(siblingTabIds.map((id) => herdr.run(["tab", "close", id], { cwd: tmpdir() })));

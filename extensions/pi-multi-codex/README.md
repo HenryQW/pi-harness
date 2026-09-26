@@ -61,6 +61,6 @@ The extension maintains a generated, credential-free quota cache at `~/.pi/agent
 
 ## Limits and recovery
 
-The extension reads `auth.json`. It never writes or refreshes credentials.
+The extension reads `auth.json` to identify account slots but does not directly edit credentials. When it asks Pi's auth resolver for a token to check quota, Pi may refresh expired OAuth credentials and update its auth store.
 
 Scoped sessions can switch only to exact scoped aliases.

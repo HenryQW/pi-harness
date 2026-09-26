@@ -30,8 +30,7 @@ import {
 } from "./pr-github.ts";
 import { isRecord, parseSingleOutputLine, runChecked } from "./pr-execution.ts";
 import {
-	discoveryIssueKey,
-	discoveryIssueMessage,
+	discoveryIssueDetails,
 	formatPrFooter,
 	formatPrWidget,
 	projectPrDisplay,
@@ -627,9 +626,9 @@ export default function pullRequestExtension(
 		ctx.ui.setStatus(UI_KEY, footer);
 		reconcileWidget(ctx);
 		if (discovery.kind === "blocked") {
-			const key = discoveryIssueKey(discovery.issue);
+			const { key, message } = discoveryIssueDetails(discovery.issue);
 			if (lastBlockedIssueKey !== key) {
-				ctx.ui.notify(discoveryIssueMessage(discovery.issue), "warning");
+				ctx.ui.notify(message, "warning");
 				lastBlockedIssueKey = key;
 			}
 		} else {

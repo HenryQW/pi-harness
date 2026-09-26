@@ -32,7 +32,7 @@ Added directories give Pi these resources:
 - Skills that Pi loads from `.pi/skills`, `.agents/skills`, and `.claude/skills`.
 - Files in the editor's `@` autocomplete, with absolute paths.
 
-`/dir-add` reloads when it finds skills. `add_directory` reports when a reload is needed and always remains session-local.
+`/dir-add` reloads only when the discovered external skill paths change, not merely because the directory contains skills. `add_directory` stays session-local; when its result asks for `/reload`, run it to update external skills.
 
 ## Config
 
@@ -46,7 +46,7 @@ A missing file uses the default. Invalid config stops loading and is not overwri
 
 ## State and storage
 
-Session directories live in the current session branch. Project directories use the repository's repeatable local Git config key `pi-add-dir.directory`. Local Git config is shared by linked worktrees, cannot be injected by cloning a repository, and remains machine-local. `/dir-add --project` therefore requires a Git repository.
+Session directories live in the current session branch. New session additions reject directories inside or containing the current working directory, or overlapping another active added directory. Restored session entries are not rechecked for overlap when the working directory changes. Project directories use the repository's repeatable local Git config key `pi-add-dir.directory`. Local Git config is shared by linked worktrees, cannot be injected by cloning a repository, and remains machine-local. `/dir-add --project` therefore requires a Git repository.
 
 Persistent scopes are explicit because added directories can inject `AGENTS.md`, `CLAUDE.md`, and skills.
 
@@ -54,4 +54,4 @@ Persistent scopes are explicit because added directories can inject `AGENTS.md`,
 
 Search supports basename and relative-path globs. It skips `.git` and `node_modules`. It uses Node filesystem traversal and returns at most 1,000 results per call.
 
-Missing directories and directories that overlap the current workspace remain configured but are skipped with a warning. Fix or remove them through `/dir-ls`.
+Missing or overlapping **project and global** directories remain configured but are skipped with a warning. Restore a missing directory at its original path or resolve the overlap, then run `/dir-reload` to rescan. To change or discard a configured path, use `/dir-ls` to **remove** it from its scope, then `/dir-add` with the corrected path if needed; `/dir-ls` cannot repair paths in place.

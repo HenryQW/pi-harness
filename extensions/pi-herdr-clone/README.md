@@ -48,7 +48,7 @@ The active path runs from the session root to its current leaf when the command 
 
 ## State and storage
 
-Each clone is a separate Pi session file in Pi's session directory, containing only the active path. A tab clone uses the current working directory; a worktree clone uses the fresh checkout. Pi's session manager chooses the session directory and file name.
+Each clone is a separate Pi session file in Pi's session directory, containing only the active path. A tab clone uses the current working directory; a worktree clone uses the fresh checkout. Pi's session manager chooses the session directory. For a persisted source session, Pi names the clone file; before the source session has been written to disk, the extension creates and names the clone file in that directory.
 
 ## Limits and recovery
 

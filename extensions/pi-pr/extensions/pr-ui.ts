@@ -35,42 +35,43 @@ export type PrTheme = {
 	fg(color: PrStatusColor | "text", text: string): string;
 };
 
-export function discoveryIssueKey(issue: DiscoveryIssue): string {
-	switch (issue.kind) {
-		case "candidate-remotes-ambiguous":
-			return `${issue.kind}:${[...issue.remotes].sort().join(",")}`;
-		case "candidate-prs-ambiguous":
-			return `${issue.kind}:${issue.urls.map((url) => url.href).sort().join(",")}`;
-		case "candidate-oid-mismatch":
-			return `${issue.kind}:${issue.remote}:${issue.urls.map((url) => url.href).sort().join(",")}`;
-		case "published-without-pr":
-		case "link-configuration":
-			return `${issue.kind}:${issue.remote}`;
-		case "detached-head":
-		case "origin-invalid":
-		case "target-invalid":
-			return issue.kind;
-	}
-}
-
-export function discoveryIssueMessage(issue: DiscoveryIssue): string {
+export function discoveryIssueDetails(issue: DiscoveryIssue): { key: string; message: string } {
 	switch (issue.kind) {
 		case "detached-head":
-			return "PR discovery is blocked because HEAD is detached";
-		case "candidate-remotes-ambiguous":
-			return `PR target is ambiguous across remotes: ${[...issue.remotes].sort().join(", ")}`;
-		case "candidate-prs-ambiguous":
-			return `PR target is ambiguous across pull requests: ${issue.urls.map((url) => url.href).sort().join(", ")}`;
+			return { key: issue.kind, message: "PR discovery is blocked because HEAD is detached" };
+		case "candidate-remotes-ambiguous": {
+			const remotes = [...issue.remotes].sort();
+			return {
+				key: `${issue.kind}:${remotes.join(",")}`,
+				message: `PR target is ambiguous across remotes: ${remotes.join(", ")}`,
+			};
+		}
+		case "candidate-prs-ambiguous": {
+			const urls = issue.urls.map((url) => url.href).sort();
+			return {
+				key: `${issue.kind}:${urls.join(",")}`,
+				message: `PR target is ambiguous across pull requests: ${urls.join(", ")}`,
+			};
+		}
 		case "candidate-oid-mismatch":
-			return `PR discovery is blocked because ${issue.remote} has a different pull request head`;
+			return {
+				key: `${issue.kind}:${issue.remote}:${issue.urls.map((url) => url.href).sort().join(",")}`,
+				message: `PR discovery is blocked because ${issue.remote} has a different pull request head`,
+			};
 		case "published-without-pr":
-			return `Branch is published on ${issue.remote}; configure it before creating a pull request`;
+			return {
+				key: `${issue.kind}:${issue.remote}`,
+				message: `Branch is published on ${issue.remote}; configure it before creating a pull request`,
+			};
 		case "link-configuration":
-			return `PR discovery cannot safely link remote ${issue.remote}; simplify the branch push configuration first`;
+			return {
+				key: `${issue.kind}:${issue.remote}`,
+				message: `PR discovery cannot safely link remote ${issue.remote}; simplify the branch push configuration first`,
+			};
 		case "origin-invalid":
-			return "PR creation is blocked because origin is not one validated GitHub destination";
+			return { key: issue.kind, message: "PR creation is blocked because origin is not one validated GitHub destination" };
 		case "target-invalid":
-			return "PR discovery is blocked by an invalid push target";
+			return { key: issue.kind, message: "PR discovery is blocked by an invalid push target" };
 	}
 }
 

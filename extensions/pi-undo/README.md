@@ -10,7 +10,7 @@ pi install npm:@henryqw/pi-undo
 
 ## Use
 
-Run `/undo` with no arguments. It stops active work, waits for it to finish stopping, and returns to your latest user message so you can edit or submit it again. If there is no user message in the session, Pi displays `Nothing to undo.`
+Run `/undo` with no arguments. It stops active work, waits for it to finish stopping, and returns to the latest user prompt on the current branch so you can edit or submit it again. It does not select prompts on other branches. If the current branch has no user message, Pi displays `Nothing to undo.`
 
 ## Limits and recovery
 

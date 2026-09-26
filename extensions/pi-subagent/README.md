@@ -19,17 +19,18 @@ Install `pi-mcp-adapter` only when a Role declares an MCP server allowlist:
 pi install npm:pi-mcp-adapter
 ```
 
+## Works with
+
+| Package | Relationship | Purpose |
+| --- | --- | --- |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides the configured model routes for delegated Roles. |
+| [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | Required | Loads the MCP servers named in a Role's `mcps` allowlist, only for Roles that declare one. |
+
 ## Use
-
-![Main, its coordinator extension, and a Herdr subagent through checked work, worker failure, and coordinator interruption](./docs/worker-lifecycle.svg)
-
-The coordinator is extension code running in Main's Pi process, not another agent. It persists the request, launches the Herdr subagent, checks its committed work, and reports saved results; Main chooses what to stage and promote. If a worker fails, the coordinator reports attention after the wave settles, not necessarily immediately while siblings work. If Main's Pi process stops, no follow-up is guaranteed: restart and run `/subagent recover` in the canonical repository to classify orphaned interruptions and send Main one recovery report. Main then uses `subagent_status` for exact evidence and deliberate next actions. A stale `running` state does not prove a worker is still active; interrupted or ambiguous actions are never replayed automatically.
 
 Ask Main to delegate a bounded task, such as “Have a scout trace sign-in without editing files.” Main uses `delegate_task`; you receive progress and a result or an actionable failure while Main remains available.
 
 Commands are for you; tools and the packaged skill are for Main. You do not need to call agent tools or manage candidate identities yourself.
-
-In the TUI, the compact widget uses one row per visible agent/task: `D` or `I` marks direct or isolated work, and `[S]` or `[I3]` identifies the Role initial (plus the isolated model class: `1` fast, `2` balanced, `3` frontier, `*` fav). Direct rows show the launched model, thinking level, elapsed time, and measured session tokens (`— tok` until usage is available). Isolated rows show the recorded task state and any retained workspace; their status glyphs use the active TUI theme, while the text still names the status without color. Herdr does not currently provide reliable live model, thinking, or token readings for those rows. Attention appears before ordinary work, with a `+N more` summary when direct rows overflow. A ready isolated candidate is **not promoted** to Main. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -42,6 +43,12 @@ In the TUI, the compact widget uses one row per visible agent/task: `D` or `I` m
 | `subagent_integrate` | tool | Advance staged dependents, refresh after clean Main drift, validate, record one correction, promote, reconcile interrupted promotion, clean up proven promotion, or explicitly release rejected/superseded resources. |
 | `subagent_abort` | tool | Abort an isolated request only when no retained candidates or integration worktrees remain; cannot discard them. |
 | `pi-subagent` | skill | Guide Main through delegation, authorization, checks, integration, and recovery. |
+
+![Main, its coordinator extension, and a Herdr subagent through checked work, worker failure, and coordinator interruption](./docs/worker-lifecycle.svg)
+
+The coordinator is extension code running in Main's Pi process, not another agent. It persists the request, launches the Herdr subagent, checks its committed work, and reports saved results; Main chooses what to stage and promote. If a worker fails, the coordinator reports attention after the wave settles, not necessarily immediately while siblings work. If Main's Pi process stops, no follow-up is guaranteed: restart and run `/subagent recover` in the canonical repository to classify orphaned interruptions and send Main one recovery report. Main then uses `subagent_status` for exact evidence and deliberate next actions. A stale `running` state does not prove a worker is still active; interrupted or ambiguous actions are never replayed automatically.
+
+In the TUI, the compact widget uses one row per visible agent/task: `D` or `I` marks direct or isolated work, and `[S]` or `[I3]` identifies the Role initial (plus the isolated model class: `1` fast, `2` balanced, `3` frontier, `*` fav). Direct rows show the launched model, thinking level, elapsed time, and measured session tokens (`— tok` until usage is available). Isolated rows show the recorded task state and any retained workspace; their status glyphs use the active TUI theme, while the text still names the status without color. Herdr does not currently provide reliable live model, thinking, or token readings for those rows. Attention appears before ordinary work, with a `… N more` summary when direct rows overflow. A ready isolated candidate is **not promoted** to Main. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
 
 ### How Main routes delegation
 
@@ -183,7 +190,18 @@ Children disable ambient extension and Skill discovery. Only declared resources 
 
 ## API
 
-The package root exports the Role loader and launch APIs, the FIFO ephemeral executor, child-worktree helpers, exact review and working-change evidence helpers, checked isolated schemas, runtimes, and runner types.
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `loadRoles`, `parseRoleName` | functions | Load and validate built-in and user Roles. |
+| `resolveRoleSkills`, `resolveRoleLaunch`, `resolveConfiguredRoleLaunch` | functions | Resolve effective Pi resources and model routes. |
+| `prepareRoleLaunch`, `finalizeRoleLaunch` | functions | Prepare Role prompts, arguments, and tool policy. |
+| `createEphemeralSubagentExecutor` | function | Run bounded no-session Pi children through a FIFO pool. |
+| `createChildWorktree`, `finalizeChildWorktree` | functions | Create and conservatively finalize child worktrees. |
+| `prepareExactReviewEvidence`, `prepareWorkingChangeEvidence` | functions | Prepare private exact review or working-change evidence. |
+| `ExecuteRequestSchema`, `StageRequestSchema`, `IntegrationActionSchema` | schemas | Validate checked request and integration inputs. |
+| `IsolatedRunner`, `FileRunStore` | classes | Run checked work and persist durable request state. |
+| `RoleLaunchRuntime`, `HerdrHostRuntime`, `CheckedGitRuntime` | classes | Supply launch, host, and Git behavior to the runner. |
+| `ExecutionPolicySnapshot`, `RunState`, `CoordinatorRuntime` | types | Describe persisted policy, state, and runner integration. |
 
 `createEphemeralSubagentExecutor` accepts global concurrency, turn/token, idle, and hard-runtime policy. Queued time consumes no child timeout. A run resolves resources only after receiving its permit and accepts abort, output, token, and activity callbacks. Output and diagnostics are bounded.
 

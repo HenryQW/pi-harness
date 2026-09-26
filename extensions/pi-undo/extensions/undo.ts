@@ -8,9 +8,8 @@ export default function undoExtension(pi: ExtensionAPI): void {
 
 			ctx.abort();
 			await ctx.waitForIdle();
-			const turn = [...ctx.sessionManager.getBranch()]
-				.reverse()
-				.find((entry) => entry.type === "message" && entry.message.role === "user");
+			const turn = ctx.sessionManager.getBranch()
+				.findLast((entry) => entry.type === "message" && entry.message.role === "user");
 			if (!turn) {
 				ctx.ui.notify("Nothing to undo.", "info");
 				return;

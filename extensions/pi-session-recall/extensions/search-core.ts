@@ -315,10 +315,6 @@ function parseSessionFile(filePath: string, maxBytes: number): ParsedFile {
 	return parsed;
 }
 
-function isJunkEncodedDir(relSegments: string[]): boolean {
-	return relSegments.some((seg) => seg.startsWith("--tmp-") || seg.startsWith("--private-tmp-"));
-}
-
 /** Walk result. `complete: false` means the tree could not be fully read
  *  (missing root, readdir/stat failure) — callers must not treat unseen
  *  indexed paths as deleted. */
@@ -329,11 +325,10 @@ interface WalkResult {
 
 function walkJsonlFiles(sessionsDir: string): WalkResult {
 	const files = new Map<string, fs.Stats>();
-	if (!fs.existsSync(sessionsDir)) return { files, complete: false };
-	const stack: { dir: string; rel: string[] }[] = [{ dir: sessionsDir, rel: [] }];
+	const stack = [sessionsDir];
 	let complete = true;
 	while (stack.length > 0) {
-		const { dir, rel } = stack.pop()!;;
+		const dir = stack.pop()!;
 		let entries: fs.Dirent[];
 		try {
 			entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -346,8 +341,8 @@ function walkJsonlFiles(sessionsDir: string): WalkResult {
 			if (ent.isDirectory()) {
 				// Junk dirs are pruned before descent so a large ignored tree never
 				// costs a walk + per-file stats on every sync pass.
-				if (isJunkEncodedDir([...rel, ent.name])) continue;
-				stack.push({ dir: full, rel: [...rel, ent.name] });
+				if (ent.name.startsWith("--tmp-") || ent.name.startsWith("--private-tmp-")) continue;
+				stack.push(full);
 			} else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
 				try {
 					files.set(full, fs.statSync(full));

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-undo",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Rewind Pi conversation context to the latest user prompt.",
   "keywords": [
     "pi-package",
@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/undo.ts test/undo.test.ts",
+    "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/undo.ts test/undo.test.ts",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
