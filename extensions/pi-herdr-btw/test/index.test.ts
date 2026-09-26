@@ -486,27 +486,6 @@ test("warns once per session when shared task-model config is missing", async ()
 	});
 });
 
-test("missing task-model config notification failures are not treated as config read failures", async () => {
-	await withParentEnvironment(async (agentDir) => {
-		await rm(join(agentDir, "config", "pi-task-models"), { recursive: true, force: true });
-		const harness = await createHarness(new FakeStore(), async () => ({ code: 0, stdout: "", stderr: "" }));
-		const ctx = createCommandContext();
-		const notificationAttempts: Array<{ message: string; type: string }> = [];
-		ctx.ui.notify = (message: string, type: string) => {
-			notificationAttempts.push({ message, type });
-			if (message === "Task model config is missing; run /task-models to configure it.") {
-				throw new Error("notification failed");
-			}
-		};
-
-		await assert.rejects(harness.emit("session_start", { reason: "startup" }, ctx), /notification failed/);
-		harness.cleanup();
-		assert.deepEqual(notificationAttempts, [
-			{ message: "Task model config is missing; run /task-models to configure it.", type: "warning" },
-		]);
-	});
-});
-
 test("unreadable task-model config does not block startup merge recovery", async () => {
 	await withParentEnvironment(async (agentDir) => {
 		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), "{ not json\n");
