@@ -168,14 +168,10 @@ test("dedupe preserves order and first occurrence", async () => {
 });
 
 test("consolidation cap: third consecutive failure terminal, reset on success", () => {
-	let terminalSeen = false;
 	const store = new MemoryStore({ directory: "/tmp/pi-memory-unused", target: "memory", limit: LIMIT });
 	assert.deepEqual(store.incrementFailure(), { done: false });
 	assert.deepEqual(store.incrementFailure(), { done: false });
-	const third = store.incrementFailure();
-	assert.deepEqual(third, { done: true });
-	terminalSeen = third.done;
-	assert.ok(terminalSeen);
+	assert.deepEqual(store.incrementFailure(), { done: true });
 	store.resetOnSuccess();
 	assert.deepEqual(store.incrementFailure(), { done: false });
 });

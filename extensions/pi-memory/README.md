@@ -26,7 +26,7 @@ Run `/task-models` and configure the `balanced` profile before adding memory. Op
 
 Run `/remember I prefer concise release notes.` Pi proposes a suitable entry through a configured model task, then reviews the add. An unconflicted preference is saved in `USER.md`; a conflict asks you how to resolve it.
 
-Read `~/.pi/agent/config/pi-memory/memory/USER.md` to confirm the saved entry. Start a new session to use its frozen snapshot.
+Read `~/.pi/agent/config/pi-memory/memory/USER.md` (the default path; `directory` is configurable) to confirm the saved entry. Start a new session to use its frozen snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

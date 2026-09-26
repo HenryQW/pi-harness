@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="memory-architecture-title memory-architecture-desc">
+<svg width="960" height="600" viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="memory-architecture-title memory-architecture-desc">
       <title id="memory-architecture-title">How pi-memory writes reviewed memory</title>
       <desc id="memory-architecture-desc">Architecture showing memory requests passing through preflight validation, live-source review, conflict resolution, and locked atomic storage, while session start creates a frozen prompt snapshot.</desc>
       <defs>
