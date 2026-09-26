@@ -123,7 +123,7 @@ type Fixture = {
 	bare: string;
 	agentDir: string;
 	initial: string;
-	world: { resolved: boolean; body: string; baseOid: string; baseDriftOnRead: string | null; extraBody: string | null; replyBody: string | null; replyCalls: number; loseReplyResponse: boolean; applyReply: boolean; mutationCalls: number; pushCalls: number; checkCalls: number; losePushResponse: boolean; applyPush: boolean; loseMutationResponse: boolean; applyMutation: boolean; loseCheckResponse: boolean };
+	world: { resolved: boolean; body: string; baseOid: string; baseDriftOnRead: string | null; extraBody: string | null; replyBody: string | null; lateThreadComment: string | null; emptyReviewOnReply: boolean; concurrentBodyOnReply: string | null; failFeedbackAfterReply: boolean; replyCalls: number; loseReplyResponse: boolean; applyReply: boolean; mutationCalls: number; pushCalls: number; checkCalls: number; losePushResponse: boolean; applyPush: boolean; loseMutationResponse: boolean; applyMutation: boolean; loseCheckResponse: boolean };
 	exec: Exec;
 	current: () => CurrentPullRequest;
 	workflow: (ids?: string[]) => PullRequestCommentSweep;
@@ -149,13 +149,16 @@ function fixture(): Fixture {
 	const initial = git(root, "rev-parse", "HEAD");
 	git(root, "remote", "add", "origin", bare);
 	git(root, "push", "origin", `${initial}:refs/heads/feature`);
-	const world = { resolved: false, body: "please fix", baseOid: initial, baseDriftOnRead: null as string | null, extraBody: null as string | null, replyBody: null as string | null, replyCalls: 0, loseReplyResponse: false, applyReply: true, mutationCalls: 0, pushCalls: 0, checkCalls: 0, losePushResponse: false, applyPush: true, loseMutationResponse: false, applyMutation: true, loseCheckResponse: false };
+	const world = { resolved: false, body: "please fix", baseOid: initial, baseDriftOnRead: null as string | null, extraBody: null as string | null, replyBody: null as string | null, lateThreadComment: null as string | null, emptyReviewOnReply: false, concurrentBodyOnReply: null as string | null, failFeedbackAfterReply: false, replyCalls: 0, loseReplyResponse: false, applyReply: true, mutationCalls: 0, pushCalls: 0, checkCalls: 0, losePushResponse: false, applyPush: true, loseMutationResponse: false, applyMutation: true, loseCheckResponse: false };
 	const exec: Exec = async (command, args, options) => {
 		if (command === "gh" && args[0] === "api" && options.stdin?.includes("addPullRequestReviewThreadReply")) {
 			world.replyCalls += 1;
 			const body = args.find((arg) => arg.startsWith("body="))?.slice(5);
 			if (!body) throw new Error("missing reply body");
-			if (world.applyReply) world.replyBody = body;
+			if (world.applyReply) {
+				world.replyBody = body;
+				if (world.concurrentBodyOnReply !== null) world.extraBody = world.concurrentBodyOnReply;
+			}
 			if (world.loseReplyResponse) throw new Error("reply response lost");
 			return result(JSON.stringify({ data: { addPullRequestReviewThreadReply: { comment: { id: "thread-1-reply", body } } } }));
 		}
@@ -166,14 +169,20 @@ function fixture(): Fixture {
 			return result(JSON.stringify({ data: { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } } }));
 		}
 		if (command === "gh" && args[0] === "api") {
+			if (world.replyBody && world.failFeedbackAfterReply) {
+				world.failFeedbackAfterReply = false;
+				throw new Error("feedback fetch lost");
+			}
 			if (world.baseDriftOnRead) world.baseOid = world.baseDriftOnRead;
 			return result(JSON.stringify({ data: { repository: { pullRequest: {
 				comments: page([
 					comment("conversation-1", world.body),
 					...(world.extraBody === null ? [] : [comment("conversation-2", world.extraBody)]),
 				]),
-				reviews: page([review("review-1")]),
+				reviews: page([review("review-1"), ...(world.emptyReviewOnReply && world.replyBody !== null
+					? [{ ...review("owner-empty-review", ""), state: "COMMENTED", author: { login: "owner" } }] : [])]),
 				reviewThreads: page([thread("thread-1", world.resolved, [comment("thread-1-comment"),
+					...(world.lateThreadComment === null ? [] : [comment("thread-1-late", world.lateThreadComment)]),
 					...(world.replyBody === null ? [] : [comment("thread-1-reply", world.replyBody)])])]),
 			} } } }));
 		}
@@ -230,15 +239,8 @@ function fixture(): Fixture {
 	return { root, bare, agentDir, initial, world, exec, current, workflow, cleanup: () => rmSync(temporary, { recursive: true, force: true }) };
 }
 
-async function publishApproved(workflow: PullRequestCommentSweep, recorded: SweepStatus): Promise<SweepStatus> {
-	await workflow.confirmApproval(recorded.guard);
+async function publishRecorded(workflow: PullRequestCommentSweep, recorded: SweepStatus): Promise<SweepStatus> {
 	return await workflow.publish(recorded.guard);
-}
-
-async function recordRefreshed(workflow: PullRequestCommentSweep, guard: SweepStatus["guard"], entries: SweepLedgerEntry[]): Promise<SweepStatus> {
-	const refreshed = await workflow.record(guard, entries);
-	await workflow.confirmApproval(refreshed.guard);
-	return refreshed;
 }
 
 function ledger(status: SweepStatus): SweepLedgerEntry[] {
@@ -265,7 +267,6 @@ test("post-publication base drift resumes and freezes the new base before resolu
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	await workflow.confirmApproval(recorded.guard);
 	app.world.baseOid = "b".repeat(40);
 	await assert.rejects(workflow.publish(recorded.guard), /canonical pull request authority changed/);
 	app.world.baseOid = app.initial;
@@ -279,9 +280,9 @@ test("post-publication base drift resumes and freezes the new base before resolu
 	const saved = JSON.parse(readFileSync(await recovery.recoveryPath(), "utf8"));
 	assert.equal(saved.authority.base.oid, app.world.baseOid);
 	assert.equal(saved.feedback.snapshot.pullRequest.base.oid, app.world.baseOid);
-	const refreshed = await recordRefreshed(recovery, pending.guard, ledger(pending));
+	const refreshed = pending;
 	const resolved = await recovery.resolve(refreshed.guard, ["thread-1"]);
-	await recovery.finalize(resolved.guard, resolved.projection!, []);
+	await recovery.finalize(resolved.guard, []);
 	assert.equal(published.publicationHead, app.initial);
 });
 
@@ -291,7 +292,7 @@ test("base movement during refresh preserves the old feedback generation", async
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const path = await workflow.recoveryPath();
 	const before = readFileSync(path, "utf8");
 	app.world.baseOid = "b".repeat(40);
@@ -314,7 +315,7 @@ test("version-one recovery remains resumable without discarding a pending sweep"
 	assert.equal((await workflow.show(resumed.guard, "thread-1-comment")).kind, "thread_comment");
 });
 
-test("version-one recorded sweeps retain owned edits or commits through explicit approval", async (t) => {
+test("version-one recorded sweeps retain owned edits or commits without a new approval", async (t) => {
 	for (const committed of [false, true]) {
 		const app = fixture();
 		t.after(app.cleanup);
@@ -333,9 +334,8 @@ test("version-one recorded sweeps retain owned edits or commits through explicit
 		writeFileSync(path, `${JSON.stringify(saved)}\n`);
 		const resumed = await workflow.resume();
 		assert.equal(resumed.legacyRecovery, true);
-		assert.equal((await workflow.approval(resumed.guard)).approved, false);
-		await workflow.confirmApproval(resumed.guard);
-		if (!committed) {
+		assert.equal(resumed.approved, true);
+				if (!committed) {
 			git(app.root, "add", "file.txt");
 			git(app.root, "commit", "-m", "fix: legacy review");
 		}
@@ -354,9 +354,9 @@ test("a legacy non-actionable projection can resume and acknowledge its open thr
 	const classified = ledger(started).map((entry) => entry.id === "thread-1"
 		? { ...entry, disposition: "non-actionable" as const, note: reason } : entry);
 	const recorded = await workflow.record(started.guard, classified, []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
-	await recordRefreshed(workflow, pending.guard, classified);
+	assert.deepEqual(pending.plan?.ledger, classified);
 	const path = await workflow.recoveryPath();
 	const saved = JSON.parse(readFileSync(path, "utf8"));
 	saved.version = 1;
@@ -364,29 +364,23 @@ test("a legacy non-actionable projection can resume and acknowledge its open thr
 	saved.projection.threads[0].isResolved = false;
 	writeFileSync(path, `${JSON.stringify(saved)}\n`);
 	const resumed = await workflow.resume();
-	await workflow.confirmApproval(resumed.guard);
 	const resolved = await workflow.resolve(resumed.guard, ["thread-1"]);
 	assert.equal(app.world.replyBody, reason);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	await workflow.finalize(resolved.guard, []);
 });
 
-test("approval requires the original clean worktree before and after the prompt", async (t) => {
+test("record refuses pre-plan edits without consuming the guard", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
 	const workflow = app.workflow();
 	const started = await workflow.start();
-	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
-	writeFileSync(join(app.root, "file.txt"), "uncommitted\n");
-	await assert.rejects(workflow.approval(recorded.guard), /clean worktree/);
-	await assert.rejects(workflow.confirmApproval(recorded.guard), /clean worktree/);
+	writeFileSync(join(app.root, "file.txt"), "unscoped edit\n");
+	await assert.rejects(workflow.record(started.guard, ledger(started), ["file.txt"]), /clean worktree/);
 	writeFileSync(join(app.root, "file.txt"), "initial\n");
-	assert.equal((await workflow.approval(recorded.guard)).approved, false);
-	git(app.root, "commit", "--allow-empty", "-m", "unrelated head");
-	await assert.rejects(workflow.confirmApproval(recorded.guard), /local HEAD changed/);
-	assert.equal((await workflow.resume()).approved, false);
+	assert.equal((await workflow.record(started.guard, ledger(started), ["file.txt"])).approved, true);
 });
 
-test("recorded plans remain available after resume with their approval state", async (t) => {
+test("recorded plans remain authorized after resume", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
 	const workflow = app.workflow();
@@ -396,11 +390,7 @@ test("recorded plans remain available after resume with their approval state", a
 	assert.deepEqual(recorded.plan, { ledger: entries, ownedPaths: ["file.txt"] });
 	const resumed = await workflow.resume();
 	assert.deepEqual(resumed.plan, recorded.plan);
-	assert.equal(resumed.approved, false);
-	await workflow.confirmApproval(resumed.guard);
-	const approved = await workflow.resume();
-	assert.deepEqual(approved.plan, recorded.plan);
-	assert.equal(approved.approved, true);
+	assert.equal(resumed.approved, true);
 });
 
 test("runs exact coverage, guarded publication, fresh resolution, checks, and final projection end to end", async (t) => {
@@ -421,9 +411,7 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	assert.equal(shown.body, "please fix");
 	await assert.rejects(workflow.record(started.guard, ledger(started).slice(1), ["file.txt"]), /cover every feedback item exactly once/);
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
-	assert.equal(recorded.approved, false);
-	await assert.rejects(workflow.publish(recorded.guard), /not ready to publish/);
-	await workflow.confirmApproval(recorded.guard);
+	assert.equal(recorded.approved, true);
 	writeFileSync(join(app.root, "file.txt"), "fixed\n");
 	git(app.root, "add", "file.txt");
 	git(app.root, "commit", "-m", "fix: address review");
@@ -433,9 +421,9 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	assert.equal(app.world.pushCalls, 1);
 	assert.notEqual(published.publicationHead, app.initial);
 	const refreshPending = await workflow.refresh(published.guard);
-	assert.equal(refreshPending.phase, "refresh-pending");
-	assert.equal(refreshPending.ledgerComplete, false);
-	const refreshed = await recordRefreshed(workflow, refreshPending.guard, ledger(refreshPending));
+	assert.equal(refreshPending.phase, "refreshed");
+	assert.equal(refreshPending.ledgerComplete, true);
+	const refreshed = refreshPending;
 	assert.equal(refreshed.phase, "refreshed");
 	assert(refreshed.projection);
 	const recoveryPath = await workflow.recoveryPath();
@@ -453,36 +441,36 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	assert.equal(app.world.replyBody, `https://github.com/acme/project/commit/${published.publicationHead}`);
 
 	app.world.body = "late edit";
-	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, [{ command: "git", args: ["diff", "--check"] }]), /declared final projection/);
+	await assert.rejects(workflow.finalize(resolved.guard, [{ command: "git", args: ["diff", "--check"] }]), /declared final projection/);
 	app.world.body = "please fix";
-	assert.deepEqual(await workflow.finalize(resolved.guard, resolved.projection!, [{ command: "git", args: ["diff", "--check"] }]), {
+	assert.deepEqual(await workflow.finalize(resolved.guard, [{ command: "git", args: ["diff", "--check"] }]), {
 		kind: "finalized", pullRequestUrl: "https://github.com/acme/project/pull/42", head: published.publicationHead, checks: 1,
 	});
 	assert.throws(() => readFileSync(recoveryPath, "utf8"), { code: "ENOENT" });
 });
 
-test("freezes and exposes new feedback before accepting an exact fresh ledger", async (t) => {
+test("refresh blocks new feedback while retaining unchanged decisions", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const initialLedger = ledger(started);
 	const recorded = await workflow.record(started.guard, initialLedger, []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 
 	app.world.extraBody = "new feedback after publish";
 	const refreshPending = await workflow.refresh(published.guard);
-	assert.equal(refreshPending.phase, "refresh-pending");
+	assert.equal(refreshPending.phase, "refreshed");
 	assert.equal(refreshPending.guard.generation, published.guard.generation + 1);
-	assert.equal(refreshPending.ledgerComplete, false);
-	assert.equal(refreshPending.projection, null);
+	assert.equal(refreshPending.ledgerComplete, true);
+	assert(refreshPending.projection);
 	assert.deepEqual(refreshPending.feedback.find(({ id }) => id === "conversation-2"), {
 		id: "conversation-2", kind: "conversation_comment",
 	});
 	assert.doesNotMatch(JSON.stringify(refreshPending), /new feedback after publish/);
 
 	const resumed = await workflow.resume();
-	assert.equal(resumed.phase, "refresh-pending");
+	assert.equal(resumed.phase, "refreshed");
 	assert.equal(resumed.guard.generation, refreshPending.guard.generation);
 	assert.equal(resumed.guard.fingerprint, refreshPending.guard.fingerprint);
 	assert.deepEqual(resumed.feedback, refreshPending.feedback);
@@ -493,16 +481,14 @@ test("freezes and exposes new feedback before accepting an exact fresh ledger", 
 	assert.equal(shown.kind, "conversation_comment");
 	if (shown.kind !== "conversation_comment") throw new Error("unexpected feedback kind");
 	assert.equal(shown.body, "new feedback after publish");
-	await assert.rejects(workflow.resolve(resumed.guard, []), /not ready to resolve/);
-	await assert.rejects(workflow.finalize(resumed.guard, resumed.projection!, []), /not ready to finalize/);
+	assert.equal(resumed.plan?.ledger.find(({ id }) => id === "conversation-2")?.disposition, "blocked");
+	assert.equal(resumed.plan?.ledger.find(({ id }) => id === "conversation-1")?.disposition, "addressed");
 	await assert.rejects(workflow.record(published.guard, ledger(resumed)), /stale comment sweep run/);
-	await assert.rejects(workflow.record(refreshPending.guard, ledger(resumed)), /stale comment sweep run/);
-	await assert.rejects(workflow.record(resumed.guard, initialLedger), /cover every feedback item exactly once/);
-	await assert.rejects(workflow.record(resumed.guard, ledger(resumed), []), /cannot change ownedPaths/);
+	await assert.rejects(workflow.record(resumed.guard, ledger(resumed)), /already recorded/);
 
-	const refreshed = await recordRefreshed(workflow, resumed.guard, ledger(resumed));
+	const refreshed = resumed;
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	await workflow.finalize(resolved.guard, []);
 });
 
 test("edited same-ID feedback cannot inherit its pre-refresh disposition", async (t) => {
@@ -512,15 +498,15 @@ test("edited same-ID feedback cannot inherit its pre-refresh disposition", async
 	const started = await workflow.start();
 	const initialLedger = ledger(started);
 	const recorded = await workflow.record(started.guard, initialLedger, []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 
 	app.world.body = "edited feedback after publish";
 	const refreshPending = await workflow.refresh(published.guard);
-	assert.equal(refreshPending.phase, "refresh-pending");
+	assert.equal(refreshPending.phase, "refreshed");
 	assert.deepEqual(refreshPending.feedback, published.feedback);
 	assert.notEqual(refreshPending.guard.fingerprint, published.guard.fingerprint);
-	assert.equal(refreshPending.ledgerComplete, false);
-	assert.equal(refreshPending.projection, null);
+	assert.equal(refreshPending.ledgerComplete, true);
+	assert(refreshPending.projection);
 	assert.doesNotMatch(JSON.stringify(refreshPending), /please fix|edited feedback after publish/);
 	const shown = await workflow.show(refreshPending.guard, "conversation-1");
 	assert.equal(shown.kind, "conversation_comment");
@@ -528,13 +514,11 @@ test("edited same-ID feedback cannot inherit its pre-refresh disposition", async
 	assert.equal(shown.body, "edited feedback after publish");
 	await assert.rejects(workflow.record(published.guard, initialLedger), /stale comment sweep run/);
 
-	const freshLedger = ledger(refreshPending).map((entry) => entry.id === "conversation-1"
-		? { ...entry, disposition: "blocked" as const, note: "reassessed edited feedback" }
-		: entry);
-	const refreshed = await recordRefreshed(workflow, refreshPending.guard, freshLedger);
+	assert.equal(refreshPending.plan?.ledger.find(({ id }) => id === "conversation-1")?.disposition, "blocked");
+	const refreshed = refreshPending;
 	assert.equal(refreshed.phase, "refreshed");
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	await workflow.finalize(resolved.guard, []);
 });
 
 test("blocked child feedback keeps its parent open and prevents resolution", async (t) => {
@@ -542,52 +526,17 @@ test("blocked child feedback keeps its parent open and prevents resolution", asy
 	t.after(app.cleanup);
 	const workflow = app.workflow();
 	const started = await workflow.start();
-	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
-	const pending = await workflow.refresh(published.guard);
-	const classified = ledger(pending).map((entry) => entry.id === "thread-1-comment"
-		? { ...entry, disposition: "blocked" as const, note: "New request after publication" } : entry);
-	const refreshed = await recordRefreshed(workflow, pending.guard, classified);
+	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
+	app.world.lateThreadComment = "New request after publication";
+	const refreshed = await workflow.refresh(published.guard);
+	assert.equal(refreshed.plan?.ledger.find(({ id }) => id === "thread-1-late")?.disposition, "blocked");
 	assert.deepEqual(refreshed.projection?.threads, [{ id: "thread-1", isResolved: false }]);
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /blocked child feedback/);
+	const resolved = await workflow.resolve(refreshed.guard);
+	assert.equal(resolved.phase, "resolved");
 	assert.equal(app.world.replyCalls, 0);
 	assert.equal(app.world.mutationCalls, 0);
-	await workflow.finalize(refreshed.guard, refreshed.projection!, []);
-});
-
-test("refreshed decisions cannot resolve or finalize before renewed approval", async (t) => {
-	const app = fixture();
-	t.after(app.cleanup);
-	const workflow = app.workflow();
-	const started = await workflow.start();
-	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
-	const pending = await workflow.refresh(published.guard);
-	const refreshed = await workflow.record(pending.guard, ledger(pending));
-	assert.equal(refreshed.approved, false);
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /not ready to resolve/);
-	await assert.rejects(workflow.finalize(refreshed.guard, refreshed.projection!, []), /not ready to finalize/);
-	assert.equal(app.world.replyCalls, 0);
-	await workflow.confirmApproval(refreshed.guard);
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
-});
-
-test("older refreshed recovery cannot reuse its original approval", async (t) => {
-	const app = fixture();
-	t.after(app.cleanup);
-	const workflow = app.workflow();
-	const started = await workflow.start();
-	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
-	const pending = await workflow.refresh(published.guard);
-	await workflow.record(pending.guard, ledger(pending));
-	const path = await workflow.recoveryPath();
-	const saved = JSON.parse(readFileSync(path, "utf8"));
-	delete saved.approvalGeneration;
-	saved.approved = true;
-	writeFileSync(path, `${JSON.stringify(saved)}\n`);
-	const resumed = await workflow.resume();
-	assert.equal(resumed.approved, false);
-	await assert.rejects(workflow.resolve(resumed.guard, ["thread-1"]), /not ready to resolve/);
-	assert.equal(app.world.replyCalls, 0);
+	await workflow.finalize(resolved.guard, []);
 });
 
 test("version-one projection with a blocked child is normalized before resume", async (t) => {
@@ -595,11 +544,9 @@ test("version-one projection with a blocked child is normalized before resume", 
 	t.after(app.cleanup);
 	const workflow = app.workflow();
 	const started = await workflow.start();
-	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
-	const pending = await workflow.refresh(published.guard);
-	const classified = ledger(pending).map((entry) => entry.id === "thread-1-comment"
-		? { ...entry, disposition: "blocked" as const, note: "New feedback" } : entry);
-	await workflow.record(pending.guard, classified);
+	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
+	app.world.lateThreadComment = "New feedback";
+	await workflow.refresh(published.guard);
 	const path = await workflow.recoveryPath();
 	const saved = JSON.parse(readFileSync(path, "utf8"));
 	saved.version = 1;
@@ -608,7 +555,6 @@ test("version-one projection with a blocked child is normalized before resume", 
 	writeFileSync(path, `${JSON.stringify(saved)}\n`);
 	const resumed = await workflow.resume();
 	assert.deepEqual(resumed.projection?.threads, [{ id: "thread-1", isResolved: false }]);
-	await workflow.confirmApproval(resumed.guard);
 	await assert.rejects(workflow.resolve(resumed.guard, ["thread-1"]), /blocked child feedback/);
 	assert.equal(app.world.replyCalls, 0);
 });
@@ -619,9 +565,9 @@ test("near-limit feedback refuses acknowledgement before any mutation", async (t
 	app.world.body = "x".repeat(FEEDBACK_SNAPSHOT_MAX_BYTES - 8192);
 	const workflow = app.workflow();
 	const started = await workflow.start();
-	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
+	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const refreshed = pending;
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /insufficient feedback capacity/);
 	assert.equal(app.world.replyCalls, 0);
 	assert.equal(app.world.mutationCalls, 0);
@@ -633,8 +579,7 @@ test("committed rename ownership includes the source and destination", async (t)
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), ["renamed.txt"]);
-	await workflow.confirmApproval(recorded.guard);
-	git(app.root, "config", "diff.renames", "true");
+		git(app.root, "config", "diff.renames", "true");
 	git(app.root, "mv", "file.txt", "renamed.txt");
 	git(app.root, "commit", "-m", "fix: rename reviewed file");
 
@@ -696,7 +641,6 @@ test("resume reconciles a lost push response, rotates the run, and never replays
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
-	await workflow.confirmApproval(recorded.guard);
 	writeFileSync(join(app.root, "file.txt"), "fixed\n");
 	git(app.root, "add", "file.txt");
 	git(app.root, "commit", "-m", "fix: address review");
@@ -722,7 +666,6 @@ test("resume permits a new push only after proving a lost push was not applied",
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
-	await workflow.confirmApproval(recorded.guard);
 	writeFileSync(join(app.root, "file.txt"), "fixed\n");
 	git(app.root, "add", "file.txt");
 	git(app.root, "commit", "-m", "fix: address review");
@@ -741,10 +684,10 @@ test("resume reconciles a lost thread response without replaying the mutation", 
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	assert.equal(app.world.pushCalls, 0);
 	const refreshPending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, refreshPending.guard, ledger(refreshPending));
+	const refreshed = refreshPending;
 	app.world.loseMutationResponse = true;
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /mutation response lost/);
 	assert.equal(app.world.mutationCalls, 1);
@@ -764,9 +707,9 @@ test("resume permits retry only after proving a lost thread mutation was not app
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const refreshPending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, refreshPending.guard, ledger(refreshPending));
+	const refreshed = refreshPending;
 	app.world.applyMutation = false;
 	app.world.loseMutationResponse = true;
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /mutation response lost/);
@@ -789,14 +732,69 @@ test("non-actionable threads receive the approved reason before resolution", asy
 	const classified = ledger(started).map((entry) => entry.id === "thread-1"
 		? { ...entry, disposition: "non-actionable" as const, note: reason } : entry);
 	const recorded = await workflow.record(started.guard, classified, []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, classified);
+	const refreshed = pending;
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
 	assert.equal(app.world.replyBody, reason);
 	assert.equal(app.world.replyCalls, 1);
 	assert.equal(app.world.mutationCalls, 1);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	await workflow.finalize(resolved.guard, []);
+});
+
+test("returned reply ID tolerates an empty owner review and unrelated new feedback", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const published = await workflow.publish((await workflow.record(started.guard, ledger(started), [])).guard);
+	const refreshed = await workflow.refresh(published.guard);
+	app.world.emptyReviewOnReply = true;
+	app.world.concurrentBodyOnReply = "new request while replying";
+	const resolved = await workflow.resolve(refreshed.guard);
+	assert.equal(resolved.phase, "resolved");
+	assert.equal(resolved.plan?.ledger.find(({ id }) => id === "owner-empty-review")?.disposition, "non-actionable");
+	assert.equal(resolved.plan?.ledger.find(({ id }) => id === "conversation-2")?.disposition, "blocked");
+	assert.equal(app.world.replyCalls, 1);
+	assert.equal(app.world.mutationCalls, 1);
+	await workflow.finalize(resolved.guard, []);
+});
+
+test("a saved reply ID reconciles a lost verification fetch without reposting", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const published = await workflow.publish((await workflow.record(started.guard, ledger(started), [])).guard);
+	const refreshed = await workflow.refresh(published.guard);
+	app.world.emptyReviewOnReply = true;
+	app.world.failFeedbackAfterReply = true;
+	await assert.rejects(workflow.resolve(refreshed.guard), /feedback fetch lost/);
+	const saved = JSON.parse(readFileSync(await workflow.recoveryPath(), "utf8"));
+	assert.equal(saved.attempts.resolutions[0].replyId, "thread-1-reply");
+	const resumed = await workflow.resume();
+	assert.deepEqual(resumed.attempts.resolutions.map(({ step, state }) => [step, state]), [["reply", "applied"]]);
+	const resolved = await workflow.resolve(resumed.guard);
+	assert.equal(resolved.phase, "resolved");
+	assert.equal(app.world.replyCalls, 1);
+	assert.equal(app.world.mutationCalls, 1);
+	await workflow.finalize(resolved.guard, []);
+});
+
+test("refresh retains a verified reply and never reposts it to a reopened thread", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const published = await workflow.publish((await workflow.record(started.guard, ledger(started), [])).guard);
+	const first = await workflow.refresh(published.guard);
+	const resolved = await workflow.resolve(first.guard);
+	app.world.resolved = false;
+	const refreshed = await workflow.refresh(resolved.guard);
+	const again = await workflow.resolve(refreshed.guard);
+	assert.equal(again.phase, "resolved");
+	assert.equal(app.world.replyCalls, 1);
+	assert.equal(app.world.mutationCalls, 2);
 });
 
 test("a lost reply with a matching new comment remains ambiguous and is never replayed", async (t) => {
@@ -805,9 +803,9 @@ test("a lost reply with a matching new comment remains ambiguous and is never re
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const refreshed = pending;
 	app.world.loseReplyResponse = true;
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
 	assert.equal(app.world.replyCalls, 1);
@@ -825,9 +823,9 @@ test("another actor's identical reply cannot satisfy a lost mutation", async (t)
 	t.after(app.cleanup);
 	const workflow = app.workflow();
 	const started = await workflow.start();
-	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
+	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const refreshed = pending;
 	app.world.applyReply = false;
 	app.world.loseReplyResponse = true;
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
@@ -842,9 +840,9 @@ test("a lost reply may be retried only after recovery proves it was not posted",
 	t.after(app.cleanup);
 	const workflow = app.workflow();
 	const started = await workflow.start();
-	const published = await publishApproved(workflow, await workflow.record(started.guard, ledger(started), []));
+	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const refreshed = pending;
 	app.world.applyReply = false;
 	app.world.loseReplyResponse = true;
 	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
@@ -865,17 +863,17 @@ test("a blocked finalization requires resume before checks can run again", async
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const refreshPending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, refreshPending.guard, ledger(refreshPending));
+	const refreshed = refreshPending;
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
 	const failedCheck = [{ command: process.execPath, args: ["-e", "process.exit(7)"] }];
-	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, failedCheck), /exit code 7/);
-	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, failedCheck), /unreconciled finalization attempt/);
+	await assert.rejects(workflow.finalize(resolved.guard, failedCheck), /exit code 7/);
+	await assert.rejects(workflow.finalize(resolved.guard, failedCheck), /unreconciled finalization attempt/);
 	await assert.rejects(workflow.refresh(resolved.guard), /unreconciled finalization attempt/);
 	const resumed = await workflow.resume();
 	assert.equal(resumed.attempts.finalize, "none");
-	assert.deepEqual(await workflow.finalize(resumed.guard, resumed.projection!, [{ command: process.execPath, args: ["-e", ""] }]), {
+	assert.deepEqual(await workflow.finalize(resumed.guard, [{ command: process.execPath, args: ["-e", ""] }]), {
 		kind: "finalized", pullRequestUrl: "https://github.com/acme/project/pull/42", head: published.publicationHead, checks: 1,
 	});
 });
@@ -886,16 +884,16 @@ test("an unknown finalization result remains terminal after resume", async (t) =
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const refreshPending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, refreshPending.guard, ledger(refreshPending));
+	const refreshed = refreshPending;
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
 	app.world.loseCheckResponse = true;
 	const checks = [{ command: "sweep-lost-check", args: [] }];
-	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, checks), /check response lost/);
+	await assert.rejects(workflow.finalize(resolved.guard, checks), /check response lost/);
 	const resumed = await workflow.resume();
 	assert.equal(resumed.attempts.finalize, "unknown");
-	await assert.rejects(workflow.finalize(resumed.guard, resumed.projection!, checks), /unreconciled finalization attempt/);
+	await assert.rejects(workflow.finalize(resumed.guard, checks), /unreconciled finalization attempt/);
 	await assert.rejects(workflow.refresh(resumed.guard), /unreconciled finalization attempt/);
 	assert.equal(app.world.checkCalls, 1);
 });
@@ -953,18 +951,18 @@ test("failed feedback marker write retains finalization recovery for retry", asy
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const refreshed = pending;
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
 	const recovery = await workflow.recoveryPath();
 	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
 	mkdirSync(dirname(folder), { recursive: true });
 	writeFileSync(folder, "blocks marker directory");
-	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, []));
+	await assert.rejects(workflow.finalize(resolved.guard, []));
 	assert.equal(readFileSync(recovery, "utf8").includes('"phase":"resolved"'), true);
 	rmSync(folder);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	await workflow.finalize(resolved.guard, []);
 	assert.equal(await needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec: app.exec,
 		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), false);
 });
@@ -977,13 +975,12 @@ test("blocked standalone feedback remains attention-worthy after finalization", 
 		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) };
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
-	const pending = await workflow.refresh(published.guard);
-	const classified = ledger(pending).map((entry) => entry.id === "conversation-1"
-		? { ...entry, disposition: "blocked" as const, note: "Follow-up required" } : entry);
-	const refreshed = await recordRefreshed(workflow, pending.guard, classified);
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	const published = await publishRecorded(workflow, recorded);
+	app.world.extraBody = "Follow-up required";
+	const refreshed = await workflow.refresh(published.guard);
+	assert.equal(refreshed.plan?.ledger.find(({ id }) => id === "conversation-2")?.disposition, "blocked");
+	const resolved = await workflow.resolve(refreshed.guard);
+	await workflow.finalize(resolved.guard, []);
 	assert.equal(await needsFeedbackAttention(app.current(), options), true);
 });
 
@@ -993,16 +990,16 @@ test("finalization preserves a malformed existing feedback marker and its recove
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const refreshed = pending;
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
 	const recovery = await workflow.recoveryPath();
 	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
 	mkdirSync(folder, { recursive: true });
 	const marker = join(folder, `${createHash("sha256").update(realpathSync(app.root)).digest("hex")}.json`);
 	writeFileSync(marker, "{ malformed");
-	await assert.rejects(workflow.finalize(resolved.guard, resolved.projection!, []), /marker is preserved/);
+	await assert.rejects(workflow.finalize(resolved.guard, []), /marker is preserved/);
 	assert.equal(readFileSync(marker, "utf8"), "{ malformed");
 	assert.equal(readFileSync(recovery, "utf8").includes('"phase":"resolved"'), true);
 });
@@ -1016,11 +1013,11 @@ test("finalized sweep records standalone feedback attention and new comments ret
 	assert.equal(await needsFeedbackAttention(app.current(), options), true);
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
-	const published = await publishApproved(workflow, recorded);
+	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
-	const refreshed = await recordRefreshed(workflow, pending.guard, ledger(pending));
+	const refreshed = pending;
 	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
-	await workflow.finalize(resolved.guard, resolved.projection!, []);
+	await workflow.finalize(resolved.guard, []);
 	assert.equal(await needsFeedbackAttention(app.current(), options), false);
 	app.world.extraBody = "please check the other file";
 	assert.equal(await needsFeedbackAttention(app.current(), options), true);

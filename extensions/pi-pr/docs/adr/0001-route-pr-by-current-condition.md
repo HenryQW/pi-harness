@@ -1,5 +1,7 @@
 # Route `/pr` by current condition
 
+Single-route and link/merge confirmation clauses below are superseded by [ADR 0003](0003-one-invocation-authorizes-guarded-pr-work.md); conflict-only routing is governed by ADR 0002.
+
 ## Decision
 
 `/pr` is one argument-free PR workflow router. It is not a browser opener, workflow menu, or family of action commands. Each invocation reads fresh remote and local state, derives one `PR next step`, runs at most one route, and stops. The footer and widget use the same priority for presentation, but fresh command state is authoritative. Direct merging happens only after final confirmation and a fresh readiness check.

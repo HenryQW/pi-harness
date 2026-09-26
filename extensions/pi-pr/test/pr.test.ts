@@ -346,7 +346,7 @@ test("registers sequential tools with closed action schemas", () => {
 		["pi_pr_update_branch", ["rebase", "continue", "publish"]],
 		["pi_pr_create", ["prepare", "inspect", "commit", "verify", "push", "publish"]],
 		["pi_pr_publish_work", ["inspect", "commit", "validate", "publish"]],
-		["pi_pr_sweep", ["start", "resume", "show", "record", "approve", "publish", "refresh", "resolve", "finalize"]],
+		["pi_pr_sweep", ["start", "resume", "show", "record", "publish", "refresh", "resolve", "finalize"]],
 		["pi_pr_fix_ci", ["collect", "publish"]],
 	]);
 
@@ -366,9 +366,13 @@ test("registers sequential tools with closed action schemas", () => {
 	const refresh = sweepAlternatives.find(({ properties }) => properties.action.const === "refresh")!;
 	assert.ok(!record.required?.includes("ownedPaths"));
 	assert.deepEqual(Object.keys(refresh.properties).sort(), ["action", "guard", "runId"]);
+	const resolve = sweepAlternatives.find(({ properties }) => properties.action.const === "resolve")!;
+	const finalize = sweepAlternatives.find(({ properties }) => properties.action.const === "finalize")!;
+	assert.deepEqual(Object.keys(resolve.properties).sort(), ["action", "guard", "runId"]);
+	assert.deepEqual(Object.keys(finalize.properties).sort(), ["action", "checks", "guard", "runId"]);
 });
 
-test("one /pr continues after create, conflict rebase, CI repair and approved feedback until external CI", async () => {
+test("one /pr continues after create, conflict rebase, CI repair and feedback without approval until external CI", async () => {
 	let stage = 0;
 	let run = 0;
 	const ids = [1, 2, 3, 4].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
@@ -994,48 +998,34 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 	}
 });
 
-test("feedback approval confirms the recorded plan inline without another /pr", async () => {
+test("feedback record, resolution, and finalization require no UI confirmation", async () => {
 	const calls: string[] = [];
-	let legacy = false;
+	const guard = { epoch: 1, runId: "sweep", generation: 1, fingerprint: "a".repeat(64) };
 	const app = harness({
 		async load() { return currentPullRequest({ conditions: { unresolvedThreads: 1 } }); },
 		useDefaultCommandHandler: true,
 		newRunId: () => routeRunId,
 		async canonicalWorktree() { return "/canonical/repo"; },
-		createCommentSweep() {
-			return {
-				async recoveryLaunchAction() { return "start" as const; },
-				async approval() { calls.push("guard"); return { phase: "recorded", legacyRecovery: legacy, plan: {
-					ledger: [{ kind: "thread", id: "thread-1", disposition: "addressed", note: "Fix the parser" }],
-					ownedPaths: ["file.txt"],
-				} }; },
-				async confirmApproval() { calls.push("approved"); },
-			} as never;
-		},
+		createCommentSweep() { return {
+			async recoveryLaunchAction() { return "start" as const; },
+			async record() { calls.push("record"); return { phase: "recorded", guard }; },
+			async resolve() { calls.push("resolve"); return { phase: "resolved", guard }; },
+			async finalize() { calls.push("finalize"); return { kind: "finalized", head: "a".repeat(40) }; },
+		} as never; },
 	});
 	const base = app.context();
-	const ctx = { ...base, ui: { ...base.ui, async confirm(title: string, summary: string) {
-		calls.push(`${title}: ${summary}`);
-		return true;
-	} } } as ExtensionContext;
+	const ctx = { ...base, ui: { ...base.ui, async confirm() { throw new Error("unexpected approval prompt"); } } } as ExtensionContext;
 	try {
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
-		const result = await app.callTool("pi_pr_sweep", {
-			runId: routeRunId, action: "approve", guard: { epoch: 1, runId: "sweep", generation: 1, fingerprint: "a".repeat(64) },
-			summary: "Fix the parser; leave obsolete feedback closed.",
-		}, ctx);
-		assert.deepEqual(result.details, { approved: true });
-		assert.deepEqual(calls, ["guard", "Apply PR feedback fixes?: Fix the parser; leave obsolete feedback closed.\n\nSaved plan:\nthread:thread-1 — addressed: Fix the parser\n\nOwned paths:\nfile.txt", "approved"]);
-		legacy = true;
-		await app.callTool("pi_pr_sweep", {
-			runId: routeRunId, action: "approve", guard: { epoch: 1, runId: "sweep", generation: 1, fingerprint: "a".repeat(64) },
-			summary: "Continue the saved plan.",
-		}, ctx);
-		assert.match(calls.at(-2)!, /Version-one recovery may already contain owned edits or commits/);
-	} finally {
-		await app.shutdown(ctx);
-	}
+		for (const action of ["record", "resolve", "finalize"] as const) {
+			await app.callTool("pi_pr_sweep", { runId: routeRunId, action, guard,
+				...(action === "record" ? { ledger: [], ownedPaths: [] } : {}),
+				...(action === "finalize" ? { checks: [] } : {}),
+			}, ctx);
+		}
+		assert.deepEqual(calls, ["record", "resolve", "finalize"]);
+	} finally { await app.shutdown(ctx); }
 });
 
 test("fresh automatic feedback sweeps rotate route IDs and resume package recovery after settlement", async () => {

@@ -45,7 +45,7 @@ An open, non-draft pull request with a clean worktree and no unpublished or dive
 _Avoid_: No failures, no comments, approved PR
 
 **PR next step**:
-The single highest-priority user-authorized workflow derived from the current lifecycle and conditions. One `/pr` invocation follows completed helper steps through fresh rediscovery, stopping for external input, ambiguity, approval refusal, a repeated route, or merge. A direct merge is allowed only after final confirmation.
+The single highest-priority user-authorized workflow derived from the current lifecycle and conditions. One `/pr` invocation authorizes guarded steps through fresh rediscovery, stopping for external input, ambiguity, failed checks, an uncertain mutation, a repeated route, or merge. Direct merge needs fresh readiness, not a second confirmation.
 _Avoid_: Automatic remediation, PR action, workflow chain
 
 **PR helper run**:
@@ -61,7 +61,7 @@ A transient one-line `Checking pull request…` status replaces the next-step wi
 _Avoid_: Model working indicator, modal, routing result
 
 **PR workflow routing**:
-`/pr` is flagless. A fresh discovery chooses creation on a validated unpublished branch with committed or ordinary pending work, links one inferred target only after confirmation, or routes a configured open PR. A dirty tree or ahead local HEAD selects scoped local publication first. Confirmed conflicts select a pinned-base rebase only for a clean, equal head; a behind base alone does not authorize rebase. Failed GitHub Actions CI, review changes, and unresolved threads select their guarded workflows. Before waiting or merge, `/pr` compares a complete fresh feedback snapshot against the last finalized sweep marker so new standalone comments and review bodies select triage automatically. Merged, closed, and draft PRs are no-action. The helper run is bound to the session and canonical worktree; one `/pr` continues after a completed helper action. After each published mutation the invocation reads fresh GitHub mergeability, feedback, and CI. Direct merge requires final confirmation and fresh readiness.
+`/pr` is flagless. A fresh discovery chooses creation on a validated unpublished branch with committed or ordinary pending work, links one exact inferred target and rediscovers the same configured PR before continuing, or routes a configured open PR. A dirty tree or ahead local HEAD selects scoped local publication first. Confirmed conflicts select a pinned-base rebase only for a clean, equal head; a behind base alone does not authorize rebase. Failed GitHub Actions CI, review changes, and unresolved threads select their guarded workflows. Before waiting or merge, `/pr` compares a complete fresh feedback snapshot against the last finalized sweep marker so new standalone comments and review bodies select triage automatically. Merged, closed, and draft PRs are no-action. The helper run is bound to the session and canonical worktree; one `/pr` continues after a completed helper action. After each published mutation the invocation reads fresh GitHub mergeability, feedback, and CI. Direct merge requires fresh readiness and an exact expected head.
 _Avoid_: User-facing `/pr` flags, stale mergeability, unsolicited conflict resolution
 
 **PR presentation refresh**:
@@ -69,7 +69,7 @@ The footer and widget load once at session start and refresh after local commits
 _Avoid_: Periodic presentation polling, polling-driven workflow, cached command state
 
 **PR creation workflow**:
-Preparation chooses one `branch.<branch>.gh-merge-base` or the validated `origin` default branch and pins its OID. The package helper inspects pending work and commits only explicitly selected paths; ambiguous or unrelated work requires an ownership decision. Clean verification pins local HEAD without merging or rebasing merely because base advanced. Relevant validation precedes the exact-OID, exact-lease push. Creation/publishing preserves existing post-push retry and upstream recovery boundaries.
+Preparation chooses one `branch.<branch>.gh-merge-base` or the validated `origin` default branch and pins its OID. The package helper inspects pending work and commits only explicitly selected paths; ambiguous or unrelated work stops the route for an ownership decision. Clean verification pins local HEAD without merging or rebasing merely because base advanced. Relevant validation precedes the exact-OID, exact-lease push. Creation/publishing preserves existing post-push retry and upstream recovery boundaries.
 _Avoid_: Creation-time merge, user-facing base flags, shell-driven Git mutation
 
 **PR conflict rebase workflow**:
@@ -77,11 +77,11 @@ Only a confirmed conflict routes to the package branch helper with clean equal l
 _Avoid_: Rebase on BEHIND alone, automatic stashing, unleased force push
 
 **PR feedback sweep workflow**:
-Fresh routing finds new/edited standalone feedback as well as changes-requested reviews and unresolved threads. A marker written only after successful finalization records the last complete assessed generation; malformed markers are preserved and block attention lookup. Existing canonical-worktree sweep recovery retains version-one semantics and post-publication base OID drift recovery: refresh alone rebinds the base after confirming repository, ref, and exact published head. Approval precedes edits for new sweeps. Before resolution the package refreshes, exposes all items for reassessment, records a complete replacement ledger and requires renewed user approval bound to that feedback generation. Legacy refreshed recovery without this binding cannot reuse the original approval. Uncertain mutations are never replayed.
-_Avoid_: Silent loss of standalone comments, automatic comment edits, recovery deletion on malformed data
+Fresh routing finds new/edited standalone feedback as well as changes-requested reviews and unresolved threads. A marker written only after successful finalization records the last complete assessed generation; malformed markers are preserved and block attention lookup. Existing canonical-worktree sweep recovery retains version-one semantics and post-publication base OID drift recovery: refresh alone rebinds the base after confirming repository, ref, and exact published head. A clean original HEAD and an exact owned-path ledger precede edits for new sweeps. After publication, refresh retains unchanged decisions, blocks new or edited actionable feedback for a later fix cycle, and binds a saved projection to the latest complete generation. The helper selects eligible threads, verifies replies by returned ID, and never replays uncertain mutations without proof.
+_Avoid_: Silent loss of standalone comments, unscoped comment edits, recovery deletion on malformed data
 
 **PR local publication workflow**:
-For a configured open PR with dirty or ahead local work, the package-owned helper freezes identity, lease, HEAD, and exact status. The model selects intended paths and a commit message; the helper rejects unrelated staged paths, commits only reviewed paths, validates clean work and descendant HEAD, and pushes an exact captured OID with a frozen lease once. Unrelated or ambiguous work requires a user decision.
+For a configured open PR with dirty or ahead local work, the package-owned helper freezes identity, lease, HEAD, and exact status. The model selects intended paths and a commit message; the helper rejects unrelated staged paths, commits only reviewed paths, validates clean work and descendant HEAD, and pushes an exact captured OID with a frozen lease once. Unrelated or ambiguous work stops the route for a user decision.
 _Avoid_: Stash, reset, mutable symbolic push, replaying an uncertain push
 
 **PR CI-fix workflow**:
@@ -89,5 +89,5 @@ When a diagnosable GitHub Actions job has failed, `/pr` dispatches the package-o
 _Avoid_: CI watcher, automatic retry, rerun loop
 
 **PR merge workflow**:
-When the current pull request is merge-ready, `/pr` asks for final yes-or-no confirmation, revalidates readiness, and squash-merges directly. It allows a clean local HEAD equal to or behind the PR head. An in-progress merge, rebase, cherry-pick, revert, or sequencer operation is not clean, even when status is empty. The readiness check fetches the exact PR head OID from the validated push URL without shared fetch state. GitHub remains responsible for rejecting a squash merge that repository policy does not allow. The workflow does not enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees.
-_Avoid_: Merge skill, unconfirmed merge, auto-merge, branch cleanup, worktree completion
+When the current pull request is merge-ready, `/pr` revalidates readiness and squash-merges directly without another approval dialog. It allows a clean local HEAD equal to or behind the PR head. An in-progress merge, rebase, cherry-pick, revert, or sequencer operation is not clean, even when status is empty. The readiness check fetches the exact PR head OID from the validated push URL without shared fetch state. GitHub remains responsible for rejecting a squash merge that repository policy does not allow. The workflow does not enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees.
+_Avoid_: Merge skill, unchecked merge, auto-merge, branch cleanup, worktree completion

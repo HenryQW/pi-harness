@@ -3,6 +3,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
 	loadCurrentPullRequest as discoverCurrentPullRequest,
+	type CurrentPullRequest,
 	type CurrentPullRequestDiscovery,
 } from "../extensions/pr-github.ts";
 import { createPrCommandHandler } from "../extensions/pr-command.ts";
@@ -70,7 +71,6 @@ type HarnessOptions = {
 	states: Array<PullRequestSpec | null>;
 	commands?: CommandSpec[];
 	idle?: boolean;
-	confirmed?: boolean;
 	status?: string;
 	statuses?: string[];
 	ancestry?: "behind" | "ahead" | "diverged";
@@ -273,7 +273,7 @@ function harness(options: HarnessOptions) {
 			async confirm(title: string, message: string) {
 				events.push("confirm");
 				confirmations.push({ title, message });
-				return options.confirmed ?? true;
+				return true;
 			},
 			notify(message: string, type?: string) {
 				events.push("notify");
@@ -355,7 +355,7 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 	},
 ];
 
-test("signals route resolution before dispatch, notification, confirmation, or mutation", async () => {
+test("signals route resolution before dispatch, notification, or mutation", async () => {
 	const create = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
 	await create.handler("", create.context, () => create.events.push("route"));
 	assert.deepEqual(create.events, ["load", "route", "reserve", "send"]);
@@ -366,7 +366,7 @@ test("signals route resolution before dispatch, notification, confirmation, or m
 
 	const merge = harness({ states: [{}, {}] });
 	await merge.handler("", merge.context, () => merge.events.push("route"));
-	assert.deepEqual(merge.events, ["load", "route", "confirm", "load", "merge"]);
+	assert.deepEqual(merge.events, ["load", "route", "load", "merge"]);
 });
 
 test("routes one package workflow without opening a browser or chaining", async () => {
@@ -405,25 +405,46 @@ test("dispatches creation for dirty-only zero-ahead work", async () => {
 	assert.equal(app.reservations.length, 1);
 });
 
-test("names and confirms an inferred target before linking it", async () => {
+test("links one inferred target and continues to a guarded merge without confirmation", async () => {
 	const state: PullRequestSpec = {};
 	const app = harness({ states: [state, state], pushReference: "", remoteNames: ["fork"] });
-	let linked = false;
+	let linked: CurrentPullRequest | undefined;
 	const handler = createPrCommandHandler(app.pi, {
 		needsFeedbackAttention: async () => false,
+		async loadCurrentPullRequest(...args) {
+			return linked ? { kind: "current" as const, pullRequest: linked } : await discoverCurrentPullRequest(...args);
+		},
 		async linkInferredPullRequest(_pi, _context, current) {
-			linked = true;
-			return { ...current, target: { ...current.target, provenance: "configured" } };
+			linked = { ...current, target: { ...current.target, provenance: "configured" } };
+			return linked;
 		},
 	});
 
-	assert.equal(await handler("", app.context), "link-branch");
-	assert.equal(linked, true);
-	assert.deepEqual(app.confirmations, [{
-		title: "Link pull request branch to fork/feature/pr?",
-		message: "Set fork/feature/pr as the push target for this branch.",
-	}]);
+	assert.equal(await handler("", app.context), "merge");
+	assert(linked);
+	assert.deepEqual(app.confirmations, []);
+	assert.equal(mutationCalls(app.calls).length, 1);
 	assert.equal(app.messages.length, 0);
+});
+
+test("a linked branch does not continue when the fresh PR head changes", async () => {
+	const app = harness({ states: [{}, {}], pushReference: "", remoteNames: ["fork"] });
+	let linked: CurrentPullRequest | undefined;
+	const handler = createPrCommandHandler(app.pi, {
+		async loadCurrentPullRequest(...args) {
+			return linked ? { kind: "current" as const, pullRequest: {
+				...linked, head: { ...linked.head, oid: "f".repeat(40) },
+			} } : await discoverCurrentPullRequest(...args);
+		},
+		async linkInferredPullRequest(_pi, _context, current) {
+			linked = { ...current, target: { ...current.target, provenance: "configured" } };
+			return linked;
+		},
+	});
+	await assert.rejects(handler("", app.context), /configured pull request context changed/);
+	assert(linked);
+	assert.equal(mutationCalls(app.calls).length, 0);
+	assert.deepEqual(app.confirmations, []);
 });
 
 test("returns silently outside a Git worktree", async () => {
@@ -575,15 +596,6 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 	}
 });
 
-test("stops before refetching or mutating when merge confirmation is declined", async () => {
-	const app = harness({ states: [{}], confirmed: false });
-	assert.equal(await app.handler("", app.context), "none");
-
-	assert.equal(app.confirmations.length, 1);
-	assert.deepEqual(app.events, ["load", "confirm"]);
-	assert.equal(mutationCalls(app.calls).length, 0);
-});
-
 test("cancels a confirmed merge when post-inspection authority is absent, different, or no longer ready", async () => {
 	const cases: Array<{
 		name: string;
@@ -641,8 +653,8 @@ test("cancels a confirmed merge when post-inspection authority is absent, differ
 		const app = harness({ states: candidate.states, statuses: candidate.statuses, unresolvedThreads: candidate.unresolvedThreads });
 		await assert.rejects(app.handler("", app.context), candidate.error, candidate.name);
 
-		assert.equal(app.confirmations.length, 1, candidate.name);
-		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
+		assert.equal(app.confirmations.length, 0, candidate.name);
+		assert.deepEqual(app.events, ["load", "load"], candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 	}
 });
@@ -654,7 +666,7 @@ test("cancels a confirmed merge when local HEAD changes during readiness", async
 	});
 
 	await assert.rejects(app.handler("", app.context), /Final local merge safety check failed: HEAD changed/);
-	assert.deepEqual(app.events, ["load", "confirm", "load"]);
+	assert.deepEqual(app.events, ["load", "load"]);
 	assert.equal(app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch").length, 2);
 	assert.equal(mutationCalls(app.calls).length, 0);
 });
@@ -675,7 +687,7 @@ test("cancels a confirmed merge when the confirmed head or base context changes"
 		});
 		await assert.rejects(app.handler("", app.context), /confirmed pull request context changed/, candidate.name);
 
-		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
+		assert.deepEqual(app.events, ["load", "load"], candidate.name);
 		assert.equal(app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch").length, 2, candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 	}
@@ -690,7 +702,7 @@ test("cancels when the base retargets or advances during final readiness evaluat
 		const app = harness({ states: [{}, candidate.finalState], baseRefTargets: candidate.baseRefTargets });
 		await assert.rejects(app.handler("", app.context), /confirmed pull request context changed/, candidate.name);
 
-		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
+		assert.deepEqual(app.events, ["load", "load"], candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 		const finalFetch = app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true);
 		const readiness = app.calls.map(({ command, args }) =>
@@ -707,7 +719,7 @@ test("cancels a confirmed merge when standalone feedback arrives during confirma
 	assert.equal(mutationCalls(app.calls).length, 0);
 });
 
-test("merges unchanged confirmed context with the atomic expected head", async () => {
+test("merges unchanged fresh context with the atomic expected head", async () => {
 	const host = "github.example.test";
 	const app = harness({
 		states: [
@@ -717,11 +729,8 @@ test("merges unchanged confirmed context with the atomic expected head", async (
 	});
 	assert.equal(await app.handler("", app.context), "merge");
 
-	assert.deepEqual(app.confirmations, [{
-		title: "Merge PR #42?",
-		message: "Method: squash.",
-	}]);
-	assert.deepEqual(app.events, ["load", "confirm", "load", "merge"]);
+	assert.deepEqual(app.confirmations, []);
+	assert.deepEqual(app.events, ["load", "load", "merge"]);
 	const fetches = app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch");
 	assert.equal(fetches.length, 2);
 	assert.ok(fetches.every(({ args }) => args[4] === `git@${host}:acme/project.git`));

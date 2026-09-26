@@ -508,7 +508,7 @@ export async function replyToPullRequestThread(
 	threadIdInput: string,
 	bodyInput: string,
 	options: FeedbackClientOptions,
-): Promise<void> {
+): Promise<string> {
 	const authority = parseAuthority(authorityInput);
 	const threadId = requiredText(threadIdInput, "review thread ID");
 	const body = requiredText(bodyInput, "review thread reply");
@@ -518,6 +518,7 @@ export async function replyToPullRequestThread(
 		typeof data.addPullRequestReviewThreadReply.comment.id !== "string") {
 		throw new Error(`GitHub did not confirm reply to ${threadId}`);
 	}
+	return requiredText(data.addPullRequestReviewThreadReply.comment.id, "review reply ID");
 }
 
 export async function resolvePullRequestThread(

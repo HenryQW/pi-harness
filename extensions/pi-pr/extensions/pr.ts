@@ -72,20 +72,6 @@ const SweepLedgerEntry = Type.Object({
 	note: Type.String({ maxLength: 2_048 }),
 }, CLOSED);
 const SweepLedger = Type.Array(SweepLedgerEntry, { maxItems: 1_000 });
-const SweepProjection = Type.Object({
-	generation: Type.Integer({ minimum: 1 }),
-	contentFingerprint: Type.String({ minLength: 64, maxLength: 64 }),
-	items: Type.Array(Type.Object({
-		id: Type.String({ minLength: 1, maxLength: 1_024 }),
-		kind: Type.Union([
-			Type.Literal("conversation_comment"), Type.Literal("review"), Type.Literal("thread"), Type.Literal("thread_comment"),
-		]),
-	}, CLOSED), { maxItems: 1_000 }),
-	threads: Type.Array(Type.Object({
-		id: Type.String({ minLength: 1, maxLength: 1_024 }),
-		isResolved: Type.Boolean(),
-	}, CLOSED), { maxItems: 1_000 }),
-}, CLOSED);
 const SweepChecks = Type.Array(Type.Object({
 	command: Type.String({ minLength: 1, maxLength: 1_024 }),
 	args: Type.Array(Type.String({ maxLength: 4_096 }), { maxItems: 256 }),
@@ -120,22 +106,10 @@ const SweepParameters = Type.Union([
 		ledger: SweepLedger,
 		ownedPaths: Type.Optional(OwnedPaths),
 	}, CLOSED),
-	Type.Object({ runId: RouteRunId, action: Type.Literal("approve"), guard: SweepGuard, summary: Type.String({ minLength: 1, maxLength: 4_096 }) }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("refresh"), guard: SweepGuard }, CLOSED),
-	Type.Object({
-		runId: RouteRunId,
-		action: Type.Literal("resolve"),
-		guard: SweepGuard,
-		threadIds: Type.Array(Type.String({ minLength: 1, maxLength: 1_024 }), { maxItems: 1_000 }),
-	}, CLOSED),
-	Type.Object({
-		runId: RouteRunId,
-		action: Type.Literal("finalize"),
-		guard: SweepGuard,
-		projection: SweepProjection,
-		checks: SweepChecks,
-	}, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("resolve"), guard: SweepGuard }, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("finalize"), guard: SweepGuard, checks: SweepChecks }, CLOSED),
 ]);
 const WorkParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("inspect") }, CLOSED),
@@ -150,7 +124,7 @@ const FixCiParameters = Type.Union([
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "inspect" | "commit" | "verify" | "push" | "publish">;
-type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "approval" | "confirmApproval" | "publish" | "refresh" | "resolve" | "finalize">;
+type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
 
 type WorkflowContextBase = {
@@ -543,25 +517,11 @@ export default function pullRequestExtension(
 					case "resume": return await selected.workflow.resume();
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
-					case "approve": {
-						const recorded = await selected.workflow.approval(params.guard);
-						if (!recorded.plan) throw new Error("Comment sweep approval has no recorded plan");
-						const plan = recorded.plan.ledger.map(({ kind, id, disposition, note }) =>
-							`${kind}:${id} — ${disposition}: ${note}`).join("\n");
-						const paths = recorded.plan.ownedPaths.join("\n") || "(none)";
-						const legacyWarning = recorded.legacyRecovery
-							? "Version-one recovery may already contain owned edits or commits; approval cannot precede that existing work.\n\n"
-							: "";
-						const approved = await ctx.ui.confirm("Apply PR feedback fixes?",
-							`${legacyWarning}${params.summary}\n\nSaved plan:\n${plan}\n\nOwned paths:\n${paths}`);
-						if (approved) await selected.workflow.confirmApproval(params.guard);
-						return { approved };
-					}
 					case "publish": return await selected.workflow.publish(params.guard);
 					case "refresh": return await selected.workflow.refresh(params.guard);
-					case "resolve": return await selected.workflow.resolve(params.guard, params.threadIds);
+					case "resolve": return await selected.workflow.resolve(params.guard);
 					case "finalize": {
-						const result = await selected.workflow.finalize(params.guard, params.projection, params.checks);
+						const result = await selected.workflow.finalize(params.guard, params.checks);
 						selected.completed = true;
 						return result;
 					}

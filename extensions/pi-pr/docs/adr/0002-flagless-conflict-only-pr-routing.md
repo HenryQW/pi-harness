@@ -1,5 +1,7 @@
 # Flagless, conflict-only PR routing
 
+Link, feedback, and merge confirmation clauses below are superseded by [ADR 0003](0003-one-invocation-authorizes-guarded-pr-work.md).
+
 ## Decision
 
 `/pr` accepts no flags or instructions. Validated branch configuration or the `origin` default selects a creation base. The command routes each guarded next step from fresh discovery and continues after a completed terminal helper action within the same invocation. On an open PR, intended dirty or ahead local work is scoped, committed, validated and published before other conditions. A base reported BEHIND does not trigger a rebase; a confirmed merge conflict does. Conflict rebases use the exact pinned base OID and one remote-OID force-with-lease push. Ambiguous conflict intent remains with the user.

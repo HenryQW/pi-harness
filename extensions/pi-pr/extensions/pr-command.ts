@@ -170,13 +170,7 @@ async function mergePullRequest(
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
 	needsFeedback: typeof needsFeedbackAttention,
-): Promise<boolean> {
-	const confirmed = await ctx.ui.confirm(
-		`Merge PR #${current.number}?`,
-		"Method: squash.",
-	);
-	if (!confirmed) return false;
-
+): Promise<void> {
 	await executeGitHubMerge({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
@@ -206,7 +200,6 @@ async function mergePullRequest(
 			}
 		},
 	});
-	return true;
 }
 
 async function linkPullRequest(
@@ -215,21 +208,14 @@ async function linkPullRequest(
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
 	link: typeof linkInferredPullRequest,
-): Promise<void> {
-	const targetName = `${current.target.remote}/${current.target.ref}`;
-	const confirmed = await ctx.ui.confirm(
-		`Link pull request branch to ${targetName}?`,
-		`Set ${targetName} as the push target for this branch.`,
-	);
-	if (!confirmed) return;
-
+): Promise<CurrentPullRequest> {
 	const discovery = await load(pi, ctx);
 	if (
 		discovery.kind !== "current" ||
 		discovery.pullRequest.target.provenance !== "inferred" ||
 		!samePullRequestSnapshot(current, discovery.pullRequest)
 	) throw new Error("Link branch cancelled: inferred pull request context changed");
-	await link(pi, ctx, discovery.pullRequest);
+	return await link(pi, ctx, discovery.pullRequest);
 }
 
 export function createPrCommandHandler(
@@ -246,13 +232,21 @@ export function createPrCommandHandler(
 	});
 	const markPromptQueued = dependencies.markWorkflowPromptQueued ?? (() => {});
 	const release = dependencies.releaseWorkflow ?? (() => {});
-	return async (args, ctx, onRouteResolved) => {
+	const handle = async (
+		args: string, ctx: ExtensionContext,
+		onRouteResolved?: PrCommandInvocation | ((nextStep: NextStep) => void),
+		linkedAuthority?: CurrentPullRequest,
+	): Promise<NextStep> => {
 		const commandInvocation = onRouteResolved && "assertCurrent" in onRouteResolved
 			? onRouteResolved as PrCommandInvocation
 			: undefined;
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 		const discovery = await load(pi, ctx);
 		commandInvocation?.assertCurrent();
+		if (linkedAuthority && (discovery.kind !== "current" || discovery.pullRequest.target.provenance !== "configured" ||
+			!isSameConfirmedMerge(linkedAuthority, discovery.pullRequest))) {
+			throw new Error("Link branch continuation cancelled: configured pull request context changed");
+		}
 		let nextStep = deriveNextStep(discovery);
 		if (discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
@@ -287,12 +281,14 @@ export function createPrCommandHandler(
 		}
 		if (nextStep === "link-branch") {
 			if (discovery.kind !== "current") throw new Error("/pr link failed: pull request is unavailable");
-			await linkPullRequest(pi, ctx, discovery.pullRequest, load, link);
-			return nextStep;
+			const linked = await linkPullRequest(pi, ctx, discovery.pullRequest, load, link);
+			if (linked.target.provenance !== "configured") throw new Error("Link branch failed: target was not configured");
+			return await handle("", ctx, onRouteResolved, linked);
 		}
 		if (nextStep === "merge") {
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
-			return await mergePullRequest(pi, ctx, discovery.pullRequest, load, needsFeedback) ? "merge" : "none";
+			await mergePullRequest(pi, ctx, discovery.pullRequest, load, needsFeedback);
+			return "merge";
 		}
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
@@ -314,4 +310,5 @@ export function createPrCommandHandler(
 		);
 		return nextStep;
 	};
+	return handle;
 }
