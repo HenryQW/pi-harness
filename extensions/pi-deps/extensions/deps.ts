@@ -157,8 +157,8 @@ async function watchDependencyInstallation(
 }
 
 export default function depsExtension(pi: ExtensionAPI): void {
-	pi.on("session_start", async (_event, ctx) => {
-		await watchDependencyInstallation(pi.exec.bind(pi), ctx).catch(() => {});
+	pi.on("session_start", (_event, ctx) => {
+		void watchDependencyInstallation(pi.exec.bind(pi), ctx).catch(() => {});
 	});
 	pi.registerCommand("deps", {
 		description: "Toggle dependency preparation for future Git worktrees",
