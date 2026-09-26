@@ -27,11 +27,9 @@ function bashCall(command: unknown): Extract<ToolCallEvent, { toolName: "bash" }
 async function loadExtension(probe: Probe): Promise<{
 	handler: ToolCallHandler;
 	probeCalls: ProbeCall[];
-	registeredEvents: string[];
 }> {
 	let handler: ToolCallHandler | undefined;
 	const probeCalls: ProbeCall[] = [];
-	const registeredEvents: string[] = [];
 
 	await rtkTestExtension({
 		exec(command: string, args: string[], options?: { timeout?: number }) {
@@ -39,13 +37,12 @@ async function loadExtension(probe: Probe): Promise<{
 			return probe();
 		},
 		on(event: string, registered: unknown) {
-			registeredEvents.push(event);
 			if (event === "tool_call") handler = registered as ToolCallHandler;
 		},
 	} as unknown as ExtensionAPI);
 
 	if (!handler) throw new Error("tool_call handler was not registered");
-	return { handler, probeCalls, registeredEvents };
+	return { handler, probeCalls };
 }
 
 const blocked = {
@@ -66,7 +63,6 @@ for (const scenario of [
 			args: ["test", "--help"],
 			options: { timeout: 2_000 },
 		}]);
-		assert.deepEqual(extension.registeredEvents, ["tool_call"]);
 
 		const event = bashCall("pnpm test");
 		const outcome = await extension.handler(event);

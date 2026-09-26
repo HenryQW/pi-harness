@@ -44,7 +44,7 @@ A semantic branch is a Git-safe branch name made from a task type and the displa
 
 ### Model route
 
-The task `pi-herdr-rename/rename` defaults to the `fast` profile. The shared [`pi-task-models` config](https://pi.henry.wang/extensions/pi-task-models#config) at `~/.pi/agent/config/pi-task-models/config.json` can explicitly override that assignment.
+The task `pi-herdr-rename/rename` uses `fast` only when it has no explicit assignment. To use another configured profile, assign the task to that profile in `/task-models`; the shared [`pi-task-models` config](https://pi.henry.wang/extensions/pi-task-models#config) stores the assignment under `tasks` at `~/.pi/agent/config/pi-task-models/config.json`.
 
 The extension tries the assigned profile's primary route, then its fallback, while honoring the configured thinking level. It never substitutes the current session model.
 

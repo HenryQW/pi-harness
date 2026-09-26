@@ -32,6 +32,7 @@ The prompt is created at `~/.pi/agent/prompts/<name>.md`, then Pi reloads its re
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/promptor [analyze|dismiss|save [name]|automatic <on\|off>]` | command | For users in the interactive TUI: start or show analysis, dismiss a pending candidate, save a reviewed prompt, or control automatic analysis. |
+| `pi-prompt-creator/draft` | task | For users configuring `/task-models`: choose the child model and thinking level for drafting. |
 | Analysis status widget and candidate message | ui | Show analysis progress, readiness, or failure; a displayed candidate is marked as untrusted. |
 
 ## Flow
@@ -91,7 +92,7 @@ Package-owned: `~/.pi/agent/config/pi-prompt-creator/config.json`
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
 | `automatic` | Runs automatic analysis after enough user inputs. | Boolean. | `true` |
-| `inputThreshold` | Sets the number of non-empty user inputs before automatic analysis. | Positive integer. | `3` |
+| `inputThreshold` | Sets the number of non-empty user inputs before automatic analysis. | Positive safe integer (`1`–`9007199254740991`). | `3` |
 
 Edit either field, then run `/reload` to apply the change. Omitted fields use their defaults.
 
@@ -121,7 +122,7 @@ Candidate and Final Prompt Draft Markdown must be non-empty and at most 16 KiB.
 
 Candidate and saved Markdown reject NUL and other terminal controls. Ordinary tabs and line feeds are allowed.
 
-No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`.
+No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`. Failed analysis is not retried automatically; run `/promptor` or `/promptor analyze` to start again.
 
 The failure widget clears after the next non-empty user input. Analysis has a two-minute idle timeout and five-minute hard timeout.
 

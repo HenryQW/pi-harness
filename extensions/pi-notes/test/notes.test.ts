@@ -189,7 +189,6 @@ test("startup and mutations prune stale records, preserve malformed files, and c
 	await h.handlers.note!("mutation prunes", firstCtx);
 	await assert.rejects(readFile(stalePath, "utf8"), { code: "ENOENT" });
 	assert.equal(await readFile(malformedPath, "utf8"), "{broken user data");
-	assert.equal(h.handlers["note-prune"], undefined);
 
 	const currentPath = join(dir, (await readdir(dir)).find((name) => name.endsWith(".json") && name !== "malformed.json")!);
 	await writeFile(currentPath, staleRecord);

@@ -46,17 +46,21 @@ type SlotIdentity = {
 type SlotAuthResolver = (slot: number) => Promise<string | undefined>;
 type QuotaRefresh = { session: AbortController; resolveSlotAuth: SlotAuthResolver };
 
-type UsageSnapshot = {
-	slot: number;
-	accountHash: string;
-	tier?: string;
-	checkedAt: number;
-	fetchedAt?: number;
-	remaining?: number;
-	reset?: number;
+type SnapshotBase = { slot: number; accountHash: string; tier?: string; checkedAt: number };
+type MeasuredSnapshot = SnapshotBase & {
+	fetchedAt: number;
+	remaining: number;
+	reset: number;
 	fiveHourReset?: number;
-	limitedUntil?: number | null;
+	limitedUntil: number | null;
 };
+type UsageSnapshot = MeasuredSnapshot | (SnapshotBase & {
+	fetchedAt?: never;
+	remaining?: never;
+	reset?: never;
+	fiveHourReset?: never;
+	limitedUntil?: never;
+});
 
 type UsageLock = {
 	slot: number;
@@ -182,30 +186,27 @@ function validTier(value: unknown): value is string {
 
 function readSnapshot(value: unknown): UsageSnapshot | undefined {
 	if (!isRecord(value) || !validSlot(value.slot) || !validHash(value.accountHash) || !validTime(value.checkedAt)) return undefined;
-	const successful = value.fetchedAt !== undefined || value.remaining !== undefined || value.reset !== undefined;
-	if (successful && (
-		!validTime(value.fetchedAt) ||
-		typeof value.remaining !== "number" ||
-		!Number.isFinite(value.remaining) ||
-		!validTime(value.reset) ||
-		(value.fiveHourReset !== undefined && !validTime(value.fiveHourReset)) ||
-		(value.limitedUntil !== null && !validTime(value.limitedUntil))
-	)) return undefined;
-	if (!successful && (value.fiveHourReset !== undefined || value.limitedUntil !== undefined)) return undefined;
-	return {
+	const base = {
 		slot: value.slot,
 		accountHash: value.accountHash,
 		...(validTier(value.tier) ? { tier: value.tier } : {}),
 		checkedAt: value.checkedAt,
-		...(successful
-			? {
-				fetchedAt: value.fetchedAt as number,
-				remaining: Math.max(0, Math.min(100, value.remaining as number)),
-				reset: value.reset as number,
-				...(validTime(value.fiveHourReset) ? { fiveHourReset: value.fiveHourReset } : {}),
-				limitedUntil: value.limitedUntil as number | null,
-			}
-			: {}),
+	};
+	const successful = value.fetchedAt !== undefined || value.remaining !== undefined || value.reset !== undefined;
+	if (!successful) {
+		if (value.fiveHourReset !== undefined || value.limitedUntil !== undefined) return undefined;
+		return base;
+	}
+	if (!validTime(value.fetchedAt) || typeof value.remaining !== "number" || !Number.isFinite(value.remaining) ||
+		!validTime(value.reset) || (value.fiveHourReset !== undefined && !validTime(value.fiveHourReset)) ||
+		(value.limitedUntil !== null && !validTime(value.limitedUntil))) return undefined;
+	return {
+		...base,
+		fetchedAt: value.fetchedAt,
+		remaining: Math.max(0, Math.min(100, value.remaining)),
+		reset: value.reset,
+		...(validTime(value.fiveHourReset) ? { fiveHourReset: value.fiveHourReset } : {}),
+		limitedUntil: value.limitedUntil,
 	};
 }
 
@@ -299,12 +300,14 @@ async function withCacheMutex<T>(operation: (signal: AbortSignal) => Promise<T>,
 	throw new Error("Cache mutex acquisition ended unexpectedly.");
 }
 
-function isFresh(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, now: number): boolean {
+function isMeasured(snapshot: UsageSnapshot | undefined): snapshot is MeasuredSnapshot {
+	return snapshot?.fetchedAt !== undefined;
+}
+
+function isFresh(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, now: number): snapshot is MeasuredSnapshot {
 	return Boolean(
-		snapshot &&
+		isMeasured(snapshot) &&
 		snapshot.accountHash === identity.accountHash &&
-		validTime(snapshot.fetchedAt) &&
-		validTime(snapshot.reset) &&
 		snapshot.fetchedAt <= now &&
 		snapshot.reset > now &&
 		now - snapshot.fetchedAt < REFRESH_MS,
@@ -312,14 +315,14 @@ function isFresh(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, no
 }
 
 function isFiveHourLimited(snapshot: UsageSnapshot, now: number): boolean {
-	return validTime(snapshot.limitedUntil) && snapshot.limitedUntil > now;
+	return isMeasured(snapshot) && snapshot.limitedUntil !== null && snapshot.limitedUntil > now;
 }
 
-function displayedReset(snapshot: UsageSnapshot, now: number): { label: "5h" | "7d"; time: number } {
-	if (["free", "go", "plus"].includes(snapshot.tier ?? "") && validTime(snapshot.fiveHourReset) && snapshot.fiveHourReset > now) {
+function displayedReset(snapshot: MeasuredSnapshot, now: number): { label: "5h" | "7d"; time: number } {
+	if (["free", "go", "plus"].includes(snapshot.tier ?? "") && snapshot.fiveHourReset !== undefined && snapshot.fiveHourReset > now) {
 		return { label: "5h", time: snapshot.fiveHourReset };
 	}
-	return { label: "7d", time: snapshot.reset! };
+	return { label: "7d", time: snapshot.reset };
 }
 
 function checkedRecently(snapshot: UsageSnapshot | undefined, identity: SlotIdentity, now: number): boolean {
@@ -328,7 +331,7 @@ function checkedRecently(snapshot: UsageSnapshot | undefined, identity: SlotIden
 		snapshot.accountHash === identity.accountHash &&
 		snapshot.checkedAt <= now &&
 		now - snapshot.checkedAt < REFRESH_MS &&
-		(!validTime(snapshot.fetchedAt) || (validTime(snapshot.reset) && snapshot.reset > now)),
+		(!isMeasured(snapshot) || snapshot.reset > now),
 	);
 }
 
@@ -491,7 +494,7 @@ class CodexQuotaStatus {
 				? lock.heartbeatAt + LOCK_STALE_MS + 1
 				: undefined;
 			const snapshotDue = isFresh(snapshot, identity, now)
-				? Math.min(snapshot!.fetchedAt! + REFRESH_MS, snapshot!.reset!) + 1
+				? Math.min(snapshot.fetchedAt + REFRESH_MS, snapshot.reset) + 1
 				: checkedRecently(snapshot, identity, now)
 					? snapshot!.checkedAt + REFRESH_MS + 1
 					: now;
@@ -614,7 +617,7 @@ class CodexQuotaStatus {
 					limitedUntil: outcome.limitedUntil && outcome.limitedUntil > checkedAt ? outcome.limitedUntil : null,
 				});
 			} else {
-				state.slots.set(slot, previous?.accountHash === identity.accountHash && (!validTime(previous.reset) || previous.reset > checkedAt)
+				state.slots.set(slot, previous?.accountHash === identity.accountHash && (!isMeasured(previous) || previous.reset > checkedAt)
 					? { ...previous, checkedAt }
 					: { slot, accountHash: identity.accountHash, checkedAt });
 			}
@@ -685,7 +688,7 @@ class CodexQuotaStatus {
 			.map(([slot, credential]) => {
 				const identity = identityFor(credential);
 				const snapshot = state.slots.get(slot);
-				if (!identity || !snapshot || snapshot.accountHash !== identity.accountHash || !validTime(snapshot.fetchedAt) || typeof snapshot.remaining !== "number" || !validTime(snapshot.reset)) {
+				if (!identity || !isMeasured(snapshot) || snapshot.accountHash !== identity.accountHash) {
 					return `Codex slot ${slot}: unavailable`;
 				}
 				const tier = snapshot.tier ? ` (${snapshot.tier})` : "";
@@ -871,7 +874,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 				if ((slot !== 1 && !registered.has(slot)) || !allowsModel(ctx, model, slot)) return [];
 				const identity = identityFor(credential);
 				const snapshot = state.slots.get(slot);
-				if (!identity || !isFresh(snapshot, identity, now) || typeof snapshot?.remaining !== "number" || isFiveHourLimited(snapshot, now)) return [];
+				if (!identity || !isFresh(snapshot, identity, now) || isFiveHourLimited(snapshot, now)) return [];
 				return [{ slot, remaining: snapshot.remaining }];
 			});
 	};
@@ -895,7 +898,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 				const identity = identityFor(credential);
 				const snapshot = state.slots.get(slot);
 				if (identity && snapshot?.accountHash === identity.accountHash && isFiveHourLimited(snapshot, now)) return [];
-				const remaining = identity && isFresh(snapshot, identity, now) ? snapshot?.remaining : undefined;
+				const remaining = identity && isFresh(snapshot, identity, now) ? snapshot.remaining : undefined;
 				return [{ slot, remaining }];
 			})
 			.sort((left, right) => (right.remaining ?? -1) - (left.remaining ?? -1) || left.slot - right.slot)
@@ -909,7 +912,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		const identity = currentIdentity(slot);
 		const snapshot = quota.snapshot(slot);
 		const prefix = `Codex #${slot}`;
-		if (!identity || !snapshot || snapshot.accountHash !== identity.accountHash || !validTime(snapshot.fetchedAt) || typeof snapshot.remaining !== "number" || !validTime(snapshot.reset)) {
+		if (!identity || !isMeasured(snapshot) || snapshot.accountHash !== identity.accountHash) {
 			return `${prefix} · unavailable`;
 		}
 		const now = Date.now();

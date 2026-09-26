@@ -144,11 +144,10 @@ function parseConfig(value: unknown): TaskModelsConfig {
 			throw new Error("profiles must be an object.");
 		}
 		for (const [name, profile] of Object.entries(record.profiles as Record<string, unknown>)) {
-			if (!(PROFILE_NAMES as readonly string[]).includes(name)) throw new Error(`Unknown profile: ${name}.`);
+			if (!isProfileName(name)) throw new Error(`Unknown profile: ${name}.`);
 			if (!isTaskProfile(profile)) throw new Error(`${name} profile is invalid.`);
-			const profileName = name as ProfileName;
-			if (profileName === "fav" && profile.fallback) throw new Error("fav profile has no fallback.");
-			profiles[profileName] = {
+			if (name === "fav" && profile.fallback) throw new Error("fav profile has no fallback.");
+			profiles[name] = {
 				primary: normalizeRoute(profile.primary),
 				...(profile.fallback ? { fallback: normalizeRoute(profile.fallback) } : {}),
 			};
@@ -331,17 +330,16 @@ export async function executeTaskRoutes<T>(
 	{ signal, shouldFallback }: { signal?: AbortSignal; shouldFallback: (error: unknown) => boolean },
 ): Promise<T> {
 	if (!routes.length) throw new Error("Task route list must not be empty.");
-	let finalError: unknown;
-	for (const [index, route] of routes.entries()) {
+	for (const route of routes.slice(0, -1)) {
 		signal?.throwIfAborted();
 		try {
 			return await attempt(route);
 		} catch (error) {
-			if (signal?.aborted || index === routes.length - 1 || !shouldFallback(error)) throw error;
-			finalError = error;
+			if (signal?.aborted || !shouldFallback(error)) throw error;
 		}
 	}
-	throw finalError;
+	signal?.throwIfAborted();
+	return attempt(routes[routes.length - 1]);
 }
 
 export function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[] {

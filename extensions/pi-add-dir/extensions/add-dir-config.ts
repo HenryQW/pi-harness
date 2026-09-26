@@ -19,7 +19,6 @@ function parseConfig(value: unknown): AddDirConfig {
 			(directory) =>
 				typeof directory !== "string" ||
 				!isAbsolute(directory) ||
-				directory.length === 0 ||
 				/\p{C}/u.test(directory),
 		)
 	) {

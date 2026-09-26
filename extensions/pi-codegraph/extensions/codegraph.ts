@@ -74,7 +74,6 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 			}
 		}
 		let attempted = false;
-		let succeeded = false;
 		try {
 			if (await hasIndex(root)) {
 				indexed = true;
@@ -91,7 +90,6 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 			if (result.code !== 0 || result.killed || !(await hasIndex(root))) {
 				throw new Error(`CodeGraph init failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${(result.stderr || result.stdout).trim().slice(-2000)}`);
 			}
-			succeeded = true;
 			indexed = true;
 			if (ctx.hasUI) {
 				ctx.ui.setWidget(WIDGET_KEY, ["pi-codegraph: index ready"]);
@@ -104,7 +102,7 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 			throw error;
 		} finally {
 			// A failed or interrupted init stays locked; never accept its partial DB on reload.
-			if (!attempted || succeeded) await rmdir(lock);
+			if (!attempted || indexed) await rmdir(lock);
 		}
 	} finally {
 		ctx.ui.setStatus("pi-codegraph", indexed ? "pi-codegraph: indexed" : "pi-codegraph: missing");

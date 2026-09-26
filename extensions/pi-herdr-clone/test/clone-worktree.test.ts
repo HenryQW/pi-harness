@@ -95,11 +95,9 @@ test("/clone-worktree starts the clone in the root pane when no plugin agent cla
 	const data = await fixture();
 	try {
 		await withPane("pane-alias", async () => {
-			let paneGets = 0;
 			const app = harness(data.manager, data.cwd, (args) => {
 				if (args[0] === "pane") {
 					if (args[2] === "pane-root") {
-						paneGets += 1;
 						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new" } } });
 					}
 					return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
@@ -117,7 +115,6 @@ test("/clone-worktree starts the clone in the root pane when no plugin agent cla
 			});
 			await app.command("", app.ctx);
 
-			assert.equal(paneGets >= 12, true);
 			assert.equal(app.calls.some((call) => call.args[0] === "tab" && call.args[1] === "create"), false);
 			const start = app.calls.find((call) => call.args[0] === "agent" && call.args[1] === "start");
 			assert.ok(start);

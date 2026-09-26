@@ -253,6 +253,49 @@ test("does not route from or rewrite a legacy snapshot lacking five-hour observa
 	});
 });
 
+test("check-only snapshots stay unavailable and unranked while stale measurements remain visible", async () => {
+	await withApp({ 1: 80, 2: 95, 3: 70 }, [], async ({ agentDir, handlers, commands, ctx, setModels, notices, statuses }) => {
+		const cache = usagePath(agentDir);
+		const state = JSON.parse(await readFile(cache, "utf8"));
+		const checked = state.slots.find((snapshot: { slot: number }) => snapshot.slot === 2);
+		delete checked.fetchedAt;
+		delete checked.remaining;
+		delete checked.reset;
+		delete checked.limitedUntil;
+		state.slots.find((snapshot: { slot: number }) => snapshot.slot === 3).fetchedAt -= 6 * 60_000;
+		await writeFile(cache, JSON.stringify(state));
+
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		assert.equal(statuses.at(-1), "<success>Codex #1 · 80% · 7d 1h</success>");
+		await commands.get("codex-status")?.("", ctx);
+		assert.match(notices.at(-1) ?? "", /Codex slot 2: unavailable/);
+		assert.match(notices.at(-1) ?? "", /Codex slot 3: 70%.*\(stale\)/);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		assert.equal(setModels.length, 0);
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+		assert.equal(setModels.at(-1)?.provider, "openai-codex-2");
+		assert.equal(statuses.at(-1), "Codex #2 · unavailable");
+	});
+});
+
+test("partial measured cache is not routed or overwritten", async () => {
+	await withApp({ 1: 40, 2: 95 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+		const cache = usagePath(agentDir);
+		const state = JSON.parse(await readFile(cache, "utf8"));
+		delete state.slots[1].reset;
+		const malformed = JSON.stringify(state);
+		await writeFile(cache, malformed);
+
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(setModels.length, 0);
+		assert.equal(await readFile(cache, "utf8"), malformed);
+	});
+});
+
 test("revalidates cached candidate at agent boundary", async () => {
 	await withApp({ 1: 40, 2: 90 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);

@@ -10,6 +10,8 @@ Keep up to four persistent reminders for each worktree visible above the Pi edit
 pi install npm:@henryqw/pi-notes
 ```
 
+Requires Node.js 22.19.0 or newer.
+
 ## Use
 
 Run `/note Verify the migration rollback.` from inside a Git worktree. The reminder appears above the editor immediately and returns in later sessions for that worktree.
@@ -21,7 +23,7 @@ Run `/note Verify the migration rollback.` from inside a Git worktree. The remin
 | `/note-clear` | command | Clear all notes for the current worktree. |
 | Notes widget | ui | Show the current worktree's notes. |
 
-Each Git worktree has separate notes. The widget numbers notes above the editor and shows at most two lines per note. When there are no notes, no widget is shown.
+Each Git worktree has separate notes. In the TUI, the widget numbers notes above the editor and shows at most two lines per note. In non-TUI modes, notes are plain text without the two-line cap. When there are no notes, no widget is shown.
 
 ## State and storage
 

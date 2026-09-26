@@ -53,9 +53,7 @@ export function configuredOpenUri(path: string): string | undefined {
 export default function openInExtension(pi: ExtensionAPI): void {
 	const configStore = createOpenInConfigStore();
 
-	// ponytail: static description so it never goes stale after /set-open-in
-	// (handler re-reads config per invocation); per-token whitespace splitting,
-	// tokens with spaces not supported.
+	// Reload config on each call; split the command on whitespace (no quoted tokens).
 	pi.registerCommand("open", {
 		description: "Open the current path with the configured command",
 		handler: async (_args, ctx) => {
