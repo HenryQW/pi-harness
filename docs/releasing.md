@@ -27,9 +27,7 @@ For a `0.x` package, use patch for compatible fixes and minor for features or br
 
 Do not raise a peer dependency's minimum merely to match the version used for development or validation. If the package remains compatible with the old minimum, widen the range to include the new tested version while preserving that minimum. If the package requires a newer peer contract and drops previously supported hosts, that is a breaking change for packages at `1.x` or later.
 
-```bash
-pnpm --filter ./<root>/<package> version patch --no-git-tag-version
-```
+On a clean working tree, use `pnpm --filter ./<root>/<package> version patch --no-git-tag-version` (replace `patch` with the chosen release level). This command refuses a dirty tree; when editing published files, update the version in that package's `package.json` directly instead of stashing or committing unfinished work to run it.
 
 Use `extensions` as the root for Pi extensions and `packages` for support libraries. Regenerate `pnpm-lock.yaml` after manifest edits, commit it when it changes, and do not create release tags.
 
