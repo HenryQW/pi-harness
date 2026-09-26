@@ -18,6 +18,8 @@ Keep trivial, mechanically verifiable work in Main. Choose the user-requested mo
 
 Roles describe responsibility and capabilities; they do not select isolation. Bash, MCP tools, unknown tools, and arbitrary extensions are potentially writing. The checkout coordinator reduces races among Pi-owned calls but is not an OS sandbox and cannot control external processes.
 
+After delegation acknowledges a handle or durable request, do other work or end the turn; do not `sleep`, block on a Herdr CLI wait, or repeatedly poll for progress. Pi queues verified direct results and checked isolated candidates as follow-ups, which Main receives after its current turn. Use `subagent_status` for exact isolated evidence when a follow-up arrives or delivery was missed; Herdr lifecycle badges and screen output are not proof of completion.
+
 # Direct requests
 
 Use one compact `role`/`name`/`task` packet, `tasks` for independent packets, or `chain` for dependent packets. Only text tasks are accepted; a write-capable Role, `kind: changeset`, checks, and judgment require isolated mode. The tool returns a handle after launching Herdr tabs in the current workspace. Main receives the verified result as a follow-up after the workflow finishes, without interrupting an active turn. If observation stops, open `/subagent` to inspect exact recorded tabs and session files on this session branch; recorded does not prove still running.
