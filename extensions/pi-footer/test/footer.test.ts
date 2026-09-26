@@ -142,8 +142,15 @@ test("renders family status on the first line and external statuses beside runti
 	const narrow = stripTerminalSequences(footer.render(30)[2]!);
 	assert.match(narrow, /◷ 0s$/);
 
-	extensionStatuses = new Map([["pi-rewind", "↩ rewind"]]);
-	assert.match(stripTerminalSequences(footer.render(100)[2]!).trim(), /^↩ rewind +◷ 0s$/);
+	extensionStatuses = new Map([
+		["pi-rewind", "↩ rewind"],
+		["pi-multi-codex", "  \r\n  "],
+		["pi-pr", "  "],
+		["hidden", "\n"],
+	]);
+	const withoutFamilyStatus = footer.render(100);
+	assert.equal(stripTerminalSequences(withoutFamilyStatus[0]!), "repo · clear-field-f8d2");
+	assert.match(stripTerminalSequences(withoutFamilyStatus[2]!), /^↩ rewind +◷ 0s$/);
 
 	const openInConfig = join(agentDir, "config", "pi-open-in", "config.json");
 	await mkdir(join(agentDir, "config", "pi-open-in"), { recursive: true });
