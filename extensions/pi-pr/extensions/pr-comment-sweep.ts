@@ -3,6 +3,7 @@ import { realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
+import { markFeedbackHandled } from "./pr-feedback-attention.ts";
 import {
 	extensionConfigDir,
 	readTextFileBounded,
@@ -17,7 +18,9 @@ import {
 	parseFeedbackSnapshot,
 	showFeedbackItem,
 	resolvePullRequestThread,
+	replyToPullRequestThread,
 	FEEDBACK_MAX_RECORDS,
+	FEEDBACK_SNAPSHOT_MAX_BYTES,
 	type FeedbackItem,
 	type FeedbackKind,
 	type FeedbackSnapshot,
@@ -46,9 +49,10 @@ import {
 
 export const SWEEP_RECOVERY_MAX_BYTES = 1024 * 1024;
 
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
 const STATE_FILE = "state.json";
 const LEDGER_NOTE_MAX_BYTES = 2 * 1024;
+const REPLY_METADATA_RESERVE_BYTES = 8 * 1024;
 const CHECK_MAX_COUNT = 32;
 const CHECK_ARGUMENTS_MAX_BYTES = 32 * 1024;
 const ATTEMPT_STATES = new Set<AttemptState>(["none", "attempting", "applied", "blocked", "unknown"]);
@@ -83,10 +87,13 @@ export type SweepStatus = {
 	feedbackCount: number;
 	feedback: Array<{ id: string; kind: FeedbackKind }>;
 	ledgerComplete: boolean;
+	plan: { ledger: SweepLedgerEntry[]; ownedPaths: string[] } | null;
+	approved: boolean;
+	legacyRecovery: boolean;
 	projection: SweepFinalProjection | null;
 	attempts: {
 		push: AttemptState;
-		resolutions: Array<{ threadId: string; state: AttemptState }>;
+		resolutions: Array<{ threadId: string; step: "reply" | "resolve"; state: AttemptState }>;
 		finalize: AttemptState;
 	};
 };
@@ -96,12 +103,15 @@ type SweepAuthority = ReturnType<typeof authorityFromCurrent>;
 type ResolutionAttempt = {
 	generation: number;
 	threadId: string;
+	step: "reply" | "resolve";
+	body: string | null;
+	replyId: string | null;
 	state: AttemptState;
 	beforeFingerprint: string;
 	afterFingerprint: string | null;
 };
 type SweepState = {
-	version: 1;
+	version: 1 | 2;
 	workflow: "pi-pr-comment-sweep";
 	worktree: { id: string; root: string };
 	epoch: number;
@@ -116,6 +126,8 @@ type SweepState = {
 		snapshot: FeedbackSnapshot;
 	};
 	ledger: SweepLedgerEntry[] | null;
+	approved: boolean;
+	approvalGeneration: number | null;
 	ownedPaths: string[];
 	publicationHead: string | null;
 	projection: SweepFinalProjection | null;
@@ -216,10 +228,10 @@ function parseAuthority(value: unknown): SweepAuthority {
 	};
 }
 
-function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHead: string): boolean {
+function sameLinkage(expected: SweepAuthority, current: SweepAuthority, remoteHead: string, allowBaseDrift = false): boolean {
 	return expected.id === current.id && expected.number === current.number && expected.url === current.url &&
 		expected.host === current.host && expected.base.repository === current.base.repository &&
-		expected.base.ref === current.base.ref && expected.base.oid === current.base.oid &&
+		expected.base.ref === current.base.ref && (allowBaseDrift || expected.base.oid === current.base.oid) &&
 		expected.head.repository === current.head.repository && expected.head.ref === current.head.ref &&
 		expected.headFetchSource === current.headFetchSource && expected.target.branch === current.target.branch &&
 		expected.target.remote === current.target.remote && expected.target.ref === current.target.ref &&
@@ -235,7 +247,8 @@ function recoveryMatchesRouteAuthority(state: SweepState, suppliedAuthority: Swe
 		(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
 		state.publicationHead
 	) permittedHeads.add(state.publicationHead);
-	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head));
+	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head,
+		state.attempts.push.state === "applied"));
 }
 
 function feedbackMatchesAuthority(snapshot: FeedbackSnapshot, authority: SweepAuthority, head: string): boolean {
@@ -303,7 +316,7 @@ function parseChecks(value: unknown): SweepCheck[] {
 	return checks;
 }
 
-function buildProjection(generation: number, snapshot: FeedbackSnapshot, ledger: SweepLedgerEntry[]): SweepFinalProjection {
+function buildProjection(generation: number, snapshot: FeedbackSnapshot, ledger: SweepLedgerEntry[], resolveNonActionable = true, legacyChildren = false): SweepFinalProjection {
 	const dispositions = new Map(ledger.map((entry) => [entry.id, entry]));
 	return {
 		generation,
@@ -312,7 +325,11 @@ function buildProjection(generation: number, snapshot: FeedbackSnapshot, ledger:
 			left.id.localeCompare(right.id) || left.kind.localeCompare(right.kind)),
 		threads: snapshot.reviewThreads.map((thread) => ({
 			id: thread.id,
-			isResolved: thread.isResolved || dispositions.get(thread.id)?.disposition === "addressed",
+			isResolved: thread.isResolved || (
+				(legacyChildren || !thread.comments.some((comment) => dispositions.get(comment.id)?.disposition === "blocked")) &&
+				(dispositions.get(thread.id)?.disposition === "addressed" ||
+					(resolveNonActionable && dispositions.get(thread.id)?.disposition === "non-actionable"))
+			),
 		})).sort((left, right) => left.id.localeCompare(right.id)),
 	};
 }
@@ -352,12 +369,25 @@ function projectionMatches(snapshot: FeedbackSnapshot, projection: SweepFinalPro
 	return isDeepStrictEqual(items, projection.items) && isDeepStrictEqual(threads, projection.threads);
 }
 
-function resolutionAttempt(value: unknown, index: number): ResolutionAttempt {
+function resolutionAttempt(value: unknown, index: number, version: number): ResolutionAttempt {
 	if (!isRecord(value)) throw new Error(`resolution attempt ${index + 1} is invalid`);
-	exactKeys(value, ["generation", "threadId", "state", "beforeFingerprint", "afterFingerprint"], `resolution attempt ${index + 1}`);
+	const legacy = version === 1 && !("step" in value);
+	exactKeys(value, legacy
+		? ["generation", "threadId", "state", "beforeFingerprint", "afterFingerprint"]
+		: ["generation", "threadId", "step", "body", ...("replyId" in value ? ["replyId"] : []), "state", "beforeFingerprint", "afterFingerprint"], `resolution attempt ${index + 1}`);
+	const step = legacy ? "resolve" : value.step;
+	const body = legacy ? null : value.body;
+	if (step !== "reply" && step !== "resolve") throw new Error(`resolution attempt ${index + 1} step is invalid`);
+	if (step === "reply" ? typeof body !== "string" || !body : body !== null) {
+		throw new Error(`resolution attempt ${index + 1} body is invalid`);
+	}
+	if (step !== "reply" && value.replyId != null) throw new Error(`resolution attempt ${index + 1} reply ID is invalid`);
 	return {
 		generation: integer(value.generation, `resolution attempt ${index + 1} generation`),
 		threadId: requiredText(value.threadId, `resolution attempt ${index + 1} thread ID`),
+		step,
+		body: body as string | null,
+		replyId: value.replyId === undefined || value.replyId === null ? null : requiredText(value.replyId, `resolution attempt ${index + 1} reply ID`),
 		state: attemptState(value.state, `resolution attempt ${index + 1} state`),
 		beforeFingerprint: sha256(requiredText(value.beforeFingerprint, `resolution attempt ${index + 1} before fingerprint`), `resolution attempt ${index + 1} before fingerprint`),
 		afterFingerprint: value.afterFingerprint === null
@@ -373,9 +403,10 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 	}
 	exactKeys(value, [
 		"version", "workflow", "worktree", "epoch", "runId", "phase", "authority", "original", "feedback",
-		"ledger", "ownedPaths", "publicationHead", "projection", "attempts",
+		"ledger", ...(value.version === 1 && !("approved" in value) ? [] : ["approved"]),
+		...("approvalGeneration" in value ? ["approvalGeneration"] : []), "ownedPaths", "publicationHead", "projection", "attempts",
 	], "sweep recovery state");
-	if (value.version !== STATE_VERSION || value.workflow !== "pi-pr-comment-sweep") throw new Error("unsupported sweep recovery state version");
+	if ((value.version !== 1 && value.version !== STATE_VERSION) || value.workflow !== "pi-pr-comment-sweep") throw new Error("unsupported sweep recovery state version");
 	if (!(["triage", "recorded", "published", "refresh-pending", "refreshed", "resolving", "resolved"] as unknown[]).includes(value.phase)) {
 		throw new Error("sweep recovery phase is invalid");
 	}
@@ -404,6 +435,13 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		throw new Error("sweep feedback fingerprints do not match the complete snapshot");
 	}
 	const ledger = value.ledger === null ? null : exactLedger(value.ledger, snapshot);
+	const approved = value.version === 1 && !("approved" in value) ? false : value.approved;
+	if (typeof approved !== "boolean") throw new Error("sweep approval is invalid");
+	const approvalGeneration = value.approvalGeneration === undefined || value.approvalGeneration === null
+		? null : integer(value.approvalGeneration, "sweep approval generation");
+	// Old recovery could mark a refreshed ledger approved using only the original plan's approval.
+	const freshApproved = ["refreshed", "resolving", "resolved"].includes(value.phase as string)
+		? approved && approvalGeneration === feedback.generation : approved;
 	const ownedPaths = parseOwnedPaths(value.ownedPaths);
 	const publicationHead = value.publicationHead === null ? null : requiredOid(value.publicationHead, "publication head");
 	const projection = value.projection === null ? null : parseProjection(value.projection);
@@ -419,8 +457,8 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 	if (!Array.isArray(value.attempts.resolutions) || value.attempts.resolutions.length > FEEDBACK_MAX_RECORDS) {
 		throw new Error("resolution attempts are invalid");
 	}
-	const resolutions = value.attempts.resolutions.map(resolutionAttempt);
-	if (new Set(resolutions.map(({ generation, threadId }) => `${generation}\0${threadId}`)).size !== resolutions.length) {
+	const resolutions = value.attempts.resolutions.map((attempt, index) => resolutionAttempt(attempt, index, value.version as number));
+	if (new Set(resolutions.map(({ generation, threadId, step }) => `${generation}\0${threadId}\0${step}`)).size !== resolutions.length) {
 		throw new Error("resolution attempts contain duplicate thread IDs");
 	}
 	exactKeys(value.attempts.finalize, ["state", "checks"], "finalize attempt");
@@ -429,7 +467,7 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		checks: parseChecks(value.attempts.finalize.checks),
 	};
 	const state: SweepState = {
-		version: 1,
+		version: value.version as 1 | 2,
 		workflow: "pi-pr-comment-sweep",
 		worktree: { id, root },
 		epoch: integer(value.epoch, "sweep epoch"),
@@ -439,6 +477,8 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		original,
 		feedback,
 		ledger,
+		approved: freshApproved,
+		approvalGeneration,
 		ownedPaths,
 		publicationHead,
 		projection,
@@ -461,7 +501,8 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		throw new Error("push attempt head does not match publication head");
 	}
 	if (hasFinalProjection !== (projection !== null)) throw new Error("sweep phase and final projection are inconsistent");
-	if (projection && (!ledger || !isDeepStrictEqual(projection, buildProjection(feedback.generation, snapshot, ledger)))) {
+	if (projection && (!ledger || (!isDeepStrictEqual(projection, buildProjection(feedback.generation, snapshot, ledger)) &&
+		!(value.version === 1 && isDeepStrictEqual(projection, buildProjection(feedback.generation, snapshot, ledger, false, true)))))) {
 		throw new Error("final projection does not match feedback and ledger coverage");
 	}
 	return state;
@@ -494,13 +535,47 @@ function status(state: SweepState): SweepStatus {
 		feedbackCount: feedback.length,
 		feedback,
 		ledgerComplete: state.ledger !== null,
+		plan: state.ledger ? { ledger: structuredClone(state.ledger), ownedPaths: [...state.ownedPaths] } : null,
+		approved: state.approved,
+		legacyRecovery: state.version === 1,
 		projection: state.projection ? structuredClone(state.projection) : null,
 		attempts: {
 			push: state.attempts.push.state,
-			resolutions: state.attempts.resolutions.map(({ threadId, state }) => ({ threadId, state })),
+			resolutions: state.attempts.resolutions.map(({ threadId, step, state }) => ({ threadId, step, state })),
 			finalize: state.attempts.finalize.state,
 		},
 	};
+}
+
+function addedReply(before: FeedbackSnapshot, after: FeedbackSnapshot, threadId: string, body: string, replyId: string): boolean {
+	const previous = before.reviewThreads.find((thread) => thread.id === threadId);
+	const current = after.reviewThreads.find((thread) => thread.id === threadId);
+	const reply = current?.comments.find(({ id }) => id === replyId);
+	return !!previous && !!reply && reply.body === body && !feedbackEntries(before).some(({ id }) => id === replyId);
+}
+
+function carryLedger(before: FeedbackSnapshot, after: FeedbackSnapshot, ledger: SweepLedgerEntry[], replyId?: string): SweepLedgerEntry[] {
+	const prior = new Map(feedbackEntries(before).map((entry) => [entry.id, entry]));
+	const decisions = new Map(ledger.map((entry) => [entry.id, entry]));
+	return exactLedger(feedbackEntries(after).map((entry) => {
+		const old = prior.get(entry.id);
+		const decision = decisions.get(entry.id);
+		if (old && decision && old.kind === entry.kind) {
+			if (entry.kind !== "thread" && isDeepStrictEqual(old.node, entry.node)) return decision;
+			if (entry.kind === "thread") {
+				const { comments: _a, isResolved: _b, ...previous } = old.node as FeedbackSnapshot["reviewThreads"][number];
+				const { comments: _c, isResolved: _d, ...current } = entry.node as FeedbackSnapshot["reviewThreads"][number];
+				if (isDeepStrictEqual(previous, current)) return decision;
+			}
+		}
+		const emptyReview = !old && entry.kind === "review" && "state" in entry.node &&
+			entry.node.state !== "CHANGES_REQUESTED" && !entry.node.body;
+		return { id: entry.id, kind: entry.kind,
+			disposition: entry.id === replyId || emptyReview ? "non-actionable" as const : "blocked" as const,
+			note: entry.id === replyId ? "Sweep acknowledgement" : emptyReview ? "Empty review body" :
+				"Feedback changed after publication; revisit in the next fix cycle",
+		};
+	}), after);
 }
 
 function onlyResolutionChanged(before: FeedbackSnapshot, after: FeedbackSnapshot, threadId: string): boolean {
@@ -609,11 +684,11 @@ export class PullRequestCommentSweep {
 		await writePrivateTextFileAtomically(location.path, contents, { signal: this.signal });
 	}
 
-	private async currentAuthority(expected: SweepAuthority, remoteHead: string): Promise<CurrentPullRequest> {
+	private async currentAuthority(expected: SweepAuthority, remoteHead: string, allowBaseDrift = false): Promise<CurrentPullRequest> {
 		const discovery = await this.load(this.pi(), this.context());
 		if (discovery.kind !== "current") throw new Error("Comment sweep cancelled: current pull request authority is unavailable");
 		const current = authorityFromCurrent(discovery.pullRequest);
-		if (!sameLinkage(expected, current, remoteHead)) throw new Error("Comment sweep cancelled: canonical pull request authority changed");
+		if (!sameLinkage(expected, current, remoteHead, allowBaseDrift)) throw new Error("Comment sweep cancelled: canonical pull request authority changed");
 		const remote = await readRemoteOid(this.exec, this.options(), expected.target.fetchSource, expected.target.ref);
 		if (remote !== remoteHead) throw new Error("Comment sweep cancelled: remote lease changed");
 		return discovery.pullRequest;
@@ -668,6 +743,14 @@ export class PullRequestCommentSweep {
 		return snapshot;
 	}
 
+	private applyReply(state: SweepState, after: FeedbackSnapshot, threadId: string, replyId: string): void {
+		const parent = state.ledger?.find((entry) => entry.id === threadId);
+		if (!parent || !state.ledger || !state.projection) throw new Error("Reply has no recorded thread disposition");
+		state.ledger = carryLedger(state.feedback.snapshot, after, state.ledger, replyId);
+		this.setFeedback(state, after);
+		state.projection = buildProjection(state.feedback.generation, after, state.ledger);
+	}
+
 	private setFeedback(state: SweepState, snapshot: FeedbackSnapshot, generation = state.feedback.generation): void {
 		state.feedback = {
 			generation,
@@ -694,7 +777,7 @@ export class PullRequestCommentSweep {
 				throw new Error("Comment sweep authority changed during feedback fetch");
 			}
 			const state: SweepState = {
-				version: 1,
+				version: 2,
 				workflow: "pi-pr-comment-sweep",
 				worktree: { id: location.id, root: location.root },
 				epoch: 1,
@@ -709,6 +792,8 @@ export class PullRequestCommentSweep {
 					snapshot,
 				},
 				ledger: null,
+				approved: false,
+				approvalGeneration: null,
 				ownedPaths: [],
 				publicationHead: null,
 				projection: null,
@@ -744,7 +829,7 @@ export class PullRequestCommentSweep {
 			: state.original.lease;
 		remote = await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref);
 		if (remote !== expectedRemote) throw new Error("Comment sweep remote authority cannot be reconciled");
-		await this.currentAuthority(state.authority, expectedRemote);
+		await this.currentAuthority(state.authority, expectedRemote, state.attempts.push.state === "applied");
 
 		const pending = state.attempts.resolutions.filter(({ state: attempt }) => attempt === "attempting" || attempt === "unknown");
 		if (pending.length > 1) throw new Error("Multiple unresolved mutation attempts cannot be reconciled");
@@ -755,15 +840,23 @@ export class PullRequestCommentSweep {
 			}
 			const current = await this.collect(state.authority, state.publicationHead);
 			const thread = current.reviewThreads.find(({ id }) => id === attempt.threadId);
-			if (!thread || feedbackContentFingerprint(current) !== state.feedback.contentFingerprint) {
+			if (!thread || (attempt.step === "resolve" && feedbackContentFingerprint(current) !== state.feedback.contentFingerprint)) {
 				throw new Error("Resolution attempt feedback generation changed during recovery");
 			}
-			if (thread.isResolved && onlyResolutionChanged(state.feedback.snapshot, current, attempt.threadId)) {
+			if (attempt.step === "reply" && attempt.replyId &&
+				addedReply(state.feedback.snapshot, current, attempt.threadId, attempt.body!, attempt.replyId)) {
+				this.applyReply(state, current, attempt.threadId, attempt.replyId);
+				attempt.state = "applied";
+				attempt.afterFingerprint = state.feedback.fingerprint;
+			} else if (feedbackFingerprint(current) === state.feedback.fingerprint) {
+				attempt.state = "blocked";
+			} else if (attempt.step === "reply") {
+				// Without the returned ID an identical comment cannot prove this attempt succeeded.
+				throw new Error("Reply attempt outcome is ambiguous; recovery is preserved without replaying the reply");
+			} else if (thread.isResolved && onlyResolutionChanged(state.feedback.snapshot, current, attempt.threadId)) {
 				attempt.state = "applied";
 				attempt.afterFingerprint = feedbackFingerprint(current);
 				this.setFeedback(state, current);
-			} else if (!thread.isResolved && feedbackFingerprint(current) === state.feedback.fingerprint) {
-				attempt.state = "blocked";
 			} else {
 				throw new Error("Resolution attempt outcome is not exactly reconcilable");
 			}
@@ -780,6 +873,10 @@ export class PullRequestCommentSweep {
 			if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
 				throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
 			}
+			if (state.version === 1 && state.projection && state.ledger) {
+				// Version-one projections could resolve a parent despite a blocked child.
+				state.projection = buildProjection(state.feedback.generation, state.feedback.snapshot, state.ledger);
+			}
 			await this.reconcile(state);
 			state.attempts.resolutions = state.attempts.resolutions.filter(({ state: attempt }) => attempt !== "blocked");
 			if (state.attempts.push.state === "blocked") {
@@ -788,9 +885,14 @@ export class PullRequestCommentSweep {
 			}
 			if (state.attempts.finalize.state === "blocked") state.attempts.finalize = { state: "none", checks: [] };
 			const published = state.attempts.push.state === "applied";
+			if (published) state.version = 2;
 			const expectedRemote = published ? state.publicationHead! : state.original.lease;
-			await this.currentAuthority(state.authority, expectedRemote);
+			await this.currentAuthority(state.authority, expectedRemote, published);
 			await this.requireOwnedLocalState(state, published ? expectedRemote : undefined);
+			if (state.ledger) {
+				state.approved = true;
+				state.approvalGeneration = state.feedback.generation;
+			}
 			state.epoch += 1;
 			state.runId = safeRunId(this.newRunId());
 			await this.save(location, state);
@@ -814,12 +916,20 @@ export class PullRequestCommentSweep {
 			requireGuard(state, guard);
 			if (state.phase === "triage" && state.ledger === null) {
 				if (ownedPathsInput === undefined) throw new Error("Initial comment sweep ledger requires ownedPaths");
+				await this.requireCleanPublication(state, state.original.head);
+				await this.currentAuthority(state.authority, state.original.lease);
 				state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
+				state.approved = true;
+				state.approvalGeneration = state.feedback.generation;
 				state.ownedPaths = parseOwnedPaths(ownedPathsInput);
 				state.phase = "recorded";
 			} else if (state.phase === "refresh-pending" && state.ledger === null) {
 				if (ownedPathsInput !== undefined) throw new Error("Refreshed comment sweep ledger cannot change ownedPaths");
+				await this.requireCleanPublication(state, state.publicationHead!);
+				await this.currentAuthority(state.authority, state.publicationHead!);
 				state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
+				state.approved = true;
+				state.approvalGeneration = state.feedback.generation;
 				state.projection = buildProjection(state.feedback.generation, state.feedback.snapshot, state.ledger);
 				state.phase = "refreshed";
 			} else {
@@ -835,7 +945,7 @@ export class PullRequestCommentSweep {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (state.phase !== "recorded" || !state.ledger || state.attempts.push.state !== "none") {
+			if (state.phase !== "recorded" || !state.ledger || state.attempts.push.state !== "none" || !state.approved) {
 				throw new Error("Comment sweep is not ready to publish");
 			}
 			const head = await this.requireOwnedLocalState(state);
@@ -845,6 +955,7 @@ export class PullRequestCommentSweep {
 				state.publicationHead = head;
 				state.attempts.push = { state: "applied", head };
 				state.phase = "published";
+				state.version = 2;
 				await this.save(location, state);
 				return status(state);
 			}
@@ -870,6 +981,7 @@ export class PullRequestCommentSweep {
 				await this.currentAuthority(state.authority, head);
 				state.attempts.push.state = "applied";
 				state.phase = "published";
+				state.version = 2;
 				await this.save(location, state);
 				return status(state);
 			} catch (error) {
@@ -895,44 +1007,89 @@ export class PullRequestCommentSweep {
 				throw new Error("Comment sweep has an unreconciled finalization attempt; use resume");
 			}
 			await this.requireCleanPublication(state, state.publicationHead);
-			await this.currentAuthority(state.authority, state.publicationHead);
-			const snapshot = await this.collect(state.authority, state.publicationHead);
-			await this.currentAuthority(state.authority, state.publicationHead);
+			const current = await this.currentAuthority(state.authority, state.publicationHead, true);
+			const authority = { ...state.authority, base: { ...state.authority.base, oid: current.base.oid } };
+			const snapshot = await this.collect(authority, state.publicationHead);
+			await this.currentAuthority(authority, state.publicationHead);
 			await this.requireCleanPublication(state, state.publicationHead);
+			const ledger = state.ledger ? carryLedger(state.feedback.snapshot, snapshot, state.ledger) : null;
+			state.authority = authority;
 			this.setFeedback(state, snapshot, state.feedback.generation + 1);
-			state.ledger = null;
-			state.projection = null;
-			state.attempts.resolutions = [];
+			state.ledger = ledger;
+			state.approved = ledger !== null;
+			state.approvalGeneration = ledger ? state.feedback.generation : null;
+			state.projection = ledger ? buildProjection(state.feedback.generation, snapshot, ledger) : null;
 			state.attempts.finalize = { state: "none", checks: [] };
-			state.phase = "refresh-pending";
+			state.phase = ledger ? "refreshed" : "refresh-pending";
 			await this.save(location, state);
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	async resolve(guard: SweepRunGuard, threadIdsInput: string[]): Promise<SweepStatus> {
+	async resolve(guard: SweepRunGuard, threadIdsInput?: string[]): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (!["refreshed", "resolving"].includes(state.phase) || !state.publicationHead || !state.ledger || !state.projection) {
+			if (!["refreshed", "resolving", "resolved"].includes(state.phase) || !state.publicationHead || !state.ledger || !state.projection || !state.approved) {
 				throw new Error("Comment sweep is not ready to resolve threads");
 			}
 			if (state.attempts.resolutions.some(({ state: attempt }) => attempt !== "applied")) {
 				throw new Error("Comment sweep has an unreconciled thread mutation; use resume");
 			}
-			if (!Array.isArray(threadIdsInput) || threadIdsInput.length > FEEDBACK_MAX_RECORDS) throw new Error("threadIds must be a bounded array");
-			const threadIds = threadIdsInput.map((id, index) => requiredText(id, `thread ID ${index + 1}`));
-			if (new Set(threadIds).size !== threadIds.length) throw new Error("threadIds contain duplicates");
+			if (threadIdsInput !== undefined && (!Array.isArray(threadIdsInput) || threadIdsInput.length > FEEDBACK_MAX_RECORDS)) {
+				throw new Error("threadIds must be a bounded array");
+			}
 			const ledger = new Map(state.ledger.map((entry) => [entry.id, entry]));
+			const threadIds = (threadIdsInput ?? state.feedback.snapshot.reviewThreads.filter((thread) =>
+				!thread.isResolved && ["addressed", "non-actionable"].includes(ledger.get(thread.id)?.disposition ?? "blocked") &&
+				!thread.comments.some((comment) => ledger.get(comment.id)?.disposition === "blocked")
+			).map(({ id }) => id)).map((id, index) => requiredText(id, `thread ID ${index + 1}`));
+			if (new Set(threadIds).size !== threadIds.length) throw new Error("threadIds contain duplicates");
 			for (const threadId of threadIds) {
 				const thread = state.feedback.snapshot.reviewThreads.find(({ id }) => id === threadId);
-				if (!thread || thread.isResolved || ledger.get(threadId)?.kind !== "thread" || ledger.get(threadId)?.disposition !== "addressed") {
-					throw new Error(`Only addressed unresolved review thread IDs may be resolved: ${threadId}`);
+				const disposition = ledger.get(threadId)?.disposition;
+				if (!thread || thread.isResolved || ledger.get(threadId)?.kind !== "thread" ||
+					(disposition !== "addressed" && disposition !== "non-actionable")) {
+					throw new Error(`Only addressed or non-actionable unresolved review thread IDs may be resolved: ${threadId}`);
 				}
-				if (state.attempts.resolutions.some((attempt) => attempt.generation === state.feedback.generation && attempt.threadId === threadId)) {
-					throw new Error(`Review thread mutation was already attempted: ${threadId}`);
+				if (state.attempts.resolutions.some((attempt) => attempt.generation === state.feedback.generation && attempt.threadId === threadId && attempt.step === "resolve")) {
+					throw new Error(`Review thread resolution was already attempted: ${threadId}`);
 				}
+				if (disposition === "non-actionable" && !ledger.get(threadId)!.note.trim()) {
+					throw new Error(`Non-actionable review thread needs a reason: ${threadId}`);
+				}
+				if (thread.comments.some((comment) => ledger.get(comment.id)?.disposition === "blocked")) {
+					throw new Error(`Review thread has blocked child feedback: ${threadId}`);
+				}
+			}
+			const hasReply = (threadId: string) => state.attempts.resolutions.some((attempt) =>
+				attempt.threadId === threadId && attempt.step === "reply" && attempt.state === "applied" &&
+				(attempt.generation === state.feedback.generation || !!state.feedback.snapshot.reviewThreads.find(({ id }) => id === threadId)
+					?.comments.some(({ id }) => id === attempt.replyId)));
+			for (const threadId of threadIds) {
+				const oldReplies = state.attempts.resolutions.filter((attempt) =>
+					attempt.threadId === threadId && attempt.step === "reply" && attempt.state === "applied");
+				if (oldReplies.some((attempt) => !attempt.replyId && attempt.generation !== state.feedback.generation)) {
+					throw new Error(`Prior reply has no verified ID after refresh: ${threadId}`);
+				}
+				if (oldReplies.some((attempt) => attempt.replyId && !state.feedback.snapshot.reviewThreads.find(({ id }) => id === threadId)
+					?.comments.some(({ id }) => id === attempt.replyId))) {
+					throw new Error(`Verified reply is missing from fresh feedback: ${threadId}`);
+				}
+			}
+			const replyBodies = new Map(threadIds.filter((threadId) => !hasReply(threadId)).map((threadId) => {
+				const entry = ledger.get(threadId)!;
+				return [threadId, entry.disposition === "addressed"
+					? `${new URL(state.authority.url).origin}/${state.authority.base.repository}/commit/${state.publicationHead}`
+					: entry.note.trim()] as const;
+			}));
+			const reserveBytes = [...replyBodies.values()].reduce((total, body) =>
+				total + REPLY_METADATA_RESERVE_BYTES + 2 * Buffer.byteLength(body, "utf8"), 0);
+			if (feedbackEntries(state.feedback.snapshot).length + replyBodies.size > FEEDBACK_MAX_RECORDS ||
+				Buffer.byteLength(JSON.stringify(state.feedback.snapshot), "utf8") + reserveBytes > FEEDBACK_SNAPSHOT_MAX_BYTES ||
+				Buffer.byteLength(JSON.stringify(state), "utf8") + 2 * reserveBytes > SWEEP_RECOVERY_MAX_BYTES) {
+				throw new Error("Comment sweep has insufficient feedback capacity for review thread replies");
 			}
 			for (const threadId of threadIds) {
 				await this.requireCleanPublication(state, state.publicationHead);
@@ -945,12 +1102,48 @@ export class PullRequestCommentSweep {
 				await this.requireCleanPublication(state, state.publicationHead);
 				const thread = before.reviewThreads.find(({ id }) => id === threadId);
 				if (!thread || thread.isResolved) throw new Error(`Review thread is no longer unresolved: ${threadId}`);
+				if (thread.comments.some((comment) => state.ledger!.find(({ id }) => id === comment.id)?.disposition === "blocked")) continue;
+				const replied = hasReply(threadId);
+				if (!replied) {
+					const body = replyBodies.get(threadId)!;
+					const replyAttempt: ResolutionAttempt = {
+						generation: state.feedback.generation, threadId, step: "reply", body, replyId: null,
+						state: "attempting", beforeFingerprint: state.feedback.fingerprint, afterFingerprint: null,
+					};
+					state.attempts.resolutions.push(replyAttempt);
+					state.phase = "resolving";
+					await this.save(location, state);
+					let afterReply: FeedbackSnapshot;
+					let replyId: string;
+					try {
+						replyId = await replyToPullRequestThread(state.feedback.snapshot.pullRequest, threadId, body, {
+							exec: this.exec, cwd: this.cwd, signal: this.signal, pause: this.pause,
+						});
+						replyAttempt.replyId = replyId;
+						await this.save(location, state);
+						afterReply = await this.collect(state.authority, state.publicationHead);
+						await this.currentAuthority(state.authority, state.publicationHead);
+						await this.requireCleanPublication(state, state.publicationHead);
+						if (!addedReply(before, afterReply, threadId, body, replyId)) {
+							throw new Error(`Thread reply did not produce the verified reply ID: ${threadId}`);
+						}
+					} catch (error) {
+						replyAttempt.state = "unknown";
+						await this.save(location, state);
+						throw error;
+					}
+					this.applyReply(state, afterReply, threadId, replyId);
+					replyAttempt.state = "applied";
+					replyAttempt.afterFingerprint = state.feedback.fingerprint;
+					await this.save(location, state);
+				}
+				const currentThread = state.feedback.snapshot.reviewThreads.find(({ id }) => id === threadId)!;
+				if (currentThread.isResolved || currentThread.comments.some((comment) =>
+					state.ledger!.find(({ id }) => id === comment.id)?.disposition === "blocked")) continue;
+				const beforeResolution = state.feedback.snapshot;
 				const attempt: ResolutionAttempt = {
-					generation: state.feedback.generation,
-					threadId,
-					state: "attempting",
-					beforeFingerprint: state.feedback.fingerprint,
-					afterFingerprint: null,
+					generation: state.feedback.generation, threadId, step: "resolve", body: null, replyId: null,
+					state: "attempting", beforeFingerprint: state.feedback.fingerprint, afterFingerprint: null,
 				};
 				state.attempts.resolutions.push(attempt);
 				state.phase = "resolving";
@@ -963,7 +1156,7 @@ export class PullRequestCommentSweep {
 					after = await this.collect(state.authority, state.publicationHead);
 					await this.currentAuthority(state.authority, state.publicationHead);
 					await this.requireCleanPublication(state, state.publicationHead);
-					if (!onlyResolutionChanged(before, after, threadId)) {
+					if (!onlyResolutionChanged(beforeResolution, after, threadId)) {
 						throw new Error(`Thread resolution did not produce the exact verified transition: ${threadId}`);
 					}
 				} catch (error) {
@@ -996,18 +1189,15 @@ export class PullRequestCommentSweep {
 
 	async finalize(
 		guard: SweepRunGuard,
-		projectionInput: SweepFinalProjection,
 		checksInput: SweepCheck[],
 	): Promise<{ kind: "finalized"; pullRequestUrl: string; head: string; checks: number }> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			requireGuard(state, guard);
-			if (!["refreshed", "resolving", "resolved"].includes(state.phase) || !state.projection || !state.publicationHead) {
+			if (!["refreshed", "resolving", "resolved"].includes(state.phase) || !state.projection || !state.publicationHead || !state.approved) {
 				throw new Error("Comment sweep is not ready to finalize");
 			}
-			const projection = parseProjection(projectionInput);
-			if (!isDeepStrictEqual(projection, state.projection)) throw new Error("Final projection does not match the declared refreshed projection");
 			const checks = parseChecks(checksInput);
 			if (state.attempts.resolutions.some(({ state: attempt }) => attempt !== "applied")) {
 				throw new Error("Comment sweep has unresolved or unknown mutation attempts");
@@ -1047,6 +1237,8 @@ export class PullRequestCommentSweep {
 			}
 			await this.freshProjection(state);
 			await this.save(location, state);
+			await markFeedbackHandled(state.feedback.snapshot, { cwd: this.cwd, agentDir: this.agentDir, signal: this.signal, exec: this.exec,
+				blockedIds: state.ledger!.filter(({ disposition }) => disposition === "blocked").map(({ id }) => id) });
 			await rm(location.path);
 			return { kind: "finalized", pullRequestUrl: state.authority.url, head: state.publicationHead, checks: checks.length };
 		}, { agentDir: this.agentDir, signal: this.signal });

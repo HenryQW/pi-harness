@@ -20,19 +20,20 @@ import {
 	type PullRequestTarget,
 } from "./pr-routing.ts";
 import {
-	assertOnlyDeclaredStatusChanged,
 	extensionExecApi,
 	inspectWorktree,
+	inspectWorktreeState,
+	parseNulPaths,
+	parseStatusSnapshot,
+	validateResolvedConflictPaths,
 	isAncestor,
 	isRecord,
-	parseNulPaths,
 	parseSingleOutputLine,
 	readHead,
 	readRemoteOid,
 	requiredOid,
 	requiredText,
 	runChecked,
-	validateResolvedConflictPaths,
 	withWorktreeLock,
 } from "./pr-execution.ts";
 
@@ -51,7 +52,7 @@ type CreateBaseAuthority = {
 	fetchSource: string;
 };
 
-type CreatePhase = "unprepared" | "prepared" | "conflict-awaiting-user" | "verified" | "pushed" | "published" | "blocked";
+type CreatePhase = "unprepared" | "prepared" | "verified" | "pushed" | "published" | "blocked";
 
 type CrossRepositoryCreateAuthority = {
 	baseRepositoryId: string;
@@ -63,14 +64,14 @@ type CreatePullRequestState = {
 	phase: CreatePhase;
 	base?: CreateBaseAuthority;
 	createAuthority?: CrossRepositoryCreateAuthority;
+	pending?: { head: string; status: string };
 	publicationHead?: string;
-	conflict?: { paths: string[]; statusBaseline: string; originalHead: string };
+	verifiedHead?: string;
 };
 
 type CreatePullRequestResult =
 	| { kind: "prepared"; base: CreateBaseAuthority; mergeBase: string }
 	| { kind: "verified"; head: string; fastForward: boolean }
-	| { kind: "conflict"; paths: string[] }
 	| { kind: "pushed"; head: string }
 	| { kind: "published"; url: string };
 
@@ -170,7 +171,6 @@ export class PullRequestCreator {
 	private readonly agentDir?: string;
 	private readonly exec: Exec;
 	private readonly load: Load;
-	private explicitBase?: string;
 
 	constructor(options: CreatePullRequestOptions) {
 		if (options.target.remoteOid !== null) requiredOid(options.target.remoteOid, "remote OID");
@@ -196,7 +196,7 @@ export class PullRequestCreator {
 	}
 
 	private async freshNone() {
-		const discovery = await this.load(this.pi(), this.context(), undefined, undefined, this.explicitBase);
+		const discovery = await this.load(this.pi(), this.context());
 		if (discovery.kind !== "none" || !sameTarget(this.target, discovery.creationTarget)) {
 			throw new Error("PR creation cancelled: fresh complete discovery is no longer none");
 		}
@@ -232,18 +232,16 @@ export class PullRequestCreator {
 		return await readHead(this.exec, this.options());
 	}
 
-	async prepare(explicitBase?: string): Promise<CreatePullRequestResult> {
+	async prepare(): Promise<CreatePullRequestResult> {
 		if (this.state.phase !== "unprepared") {
 			throw new Error("PR creation prepare action was already consumed");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			this.explicitBase = explicitBase;
 			await this.freshNone();
 			const preflight = await preflightPullRequestCreation(
 				this.pi(),
 				this.context(),
 				this.target,
-				this.explicitBase,
 			);
 			if (preflight.worktree === "operation") {
 				throw new Error("PR creation cannot prepare while a Git operation is in progress");
@@ -277,83 +275,57 @@ export class PullRequestCreator {
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	private async verifyMerge(originalHead: string): Promise<{ head: string; fastForward: boolean }> {
-		const base = this.state.base!;
-		const head = await readHead(this.exec, this.options());
-		const commits = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-list", "--parents", "-n", "1", head], this.options())).stdout, "merge parents")
-			.split(" ").map((value, index) => requiredOid(value, index ? "merge parent" : "merged HEAD"));
-		if (commits[0] !== head) throw new Error("PR creation merge verification returned a different HEAD");
-		let fastForward = false;
-		if (head === base.oid && commits.length >= 2 && await isAncestor(this.exec, this.options(), originalHead, head)) fastForward = true;
-		else if (commits.length !== 3 || commits[1] !== originalHead || commits[2] !== base.oid) {
-			throw new Error("PR creation did not produce the exact configured fast-forward or two-parent merge");
-		}
-		await this.requireCleanHead();
-		this.state.phase = "verified";
-		delete this.state.conflict;
-		return { head, fastForward };
-	}
-
-	private async captureConflict(originalHead: string): Promise<string[]> {
-		const base = this.state.base!;
-		const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.options())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
-		if (mergeHead !== base.oid) throw new Error("Failed merge did not retain the frozen base");
-		const paths = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.options())).stdout, "Unmerged paths");
-		if (!paths.length) throw new Error("git merge failed without bounded unmerged paths");
-		const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options());
-		this.state.phase = "conflict-awaiting-user";
-		this.state.conflict = { paths, statusBaseline: status.stdout, originalHead };
-		return paths;
-	}
-
-	async merge(): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "prepared" || !this.state.base) {
-			throw new Error("PR creation is not prepared for merge");
-		}
+	async inspect(): Promise<{ paths: string[]; head: string }> {
+		if (this.state.phase !== "prepared") throw new Error("PR creation must be prepared before inspecting pending work");
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshNone();
-			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
-			const originalHead = await this.requireCleanHead();
-			if (await isAncestor(this.exec, this.options(), this.state.base!.oid, originalHead)) {
-				this.state.phase = "verified";
-				return { kind: "verified", head: originalHead, fastForward: false };
-			}
-			this.state.phase = "blocked";
-			const result = await this.exec("git", ["merge", "--no-edit", this.state.base!.oid], this.options());
-			if (result.killed) throw new Error("git merge was killed; its outcome is unknown");
-			if (result.code === 0) {
-				const verified = await this.verifyMerge(originalHead);
-				return { kind: "verified", ...verified };
-			}
-			try {
-				const paths = await this.captureConflict(originalHead);
-				return { kind: "conflict", paths };
-			} catch (error) {
-				throw new Error(`git merge failed: ${result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`}; ${error instanceof Error ? error.message : String(error)}`);
-			}
+			if (await inspectWorktreeState(this.exec, this.options()) === "operation") throw new Error("Git operation in progress");
+			const head = await readHead(this.exec, this.options());
+			const status = (await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options())).stdout;
+			const paths = [...parseStatusSnapshot(status).keys()];
+			parseNulPaths(paths.map((path) => `${path}\0`).join(""), "Pending paths");
+			this.state.pending = { head, status };
+			return { paths, head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	async continue(pathsInput: readonly string[]): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "conflict-awaiting-user" || !this.state.conflict || !this.state.base) {
-			throw new Error("PR creation has no conflict awaiting continuation");
+	async commit(pathsInput: string[], message: string): Promise<{ head: string }> {
+		if (this.state.phase !== "prepared" || !this.state.pending) throw new Error("PR creation has no inspected pending work");
+		const paths = validateResolvedConflictPaths(pathsInput, []);
+		if (!paths.length || paths.some((path) => !parseStatusSnapshot(this.state.pending!.status).has(path))) {
+			throw new Error("Commit paths must be reviewed pending paths");
 		}
-		const paths = validateResolvedConflictPaths(pathsInput, this.state.conflict.paths);
+		requiredText(message, "commit message");
+		return await withWorktreeLock(this.cwd, async () => {
+			await this.freshNone();
+			if (await readHead(this.exec, this.options()) !== this.state.pending!.head ||
+				await inspectWorktreeState(this.exec, this.options()) === "operation" ||
+				(await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options())).stdout !== this.state.pending!.status) {
+				throw new Error("Pending work changed after inspection");
+			}
+			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--no-renames", "--name-only", "-z"], this.options())).stdout, "Staged paths");
+			if (staged.some((path) => !paths.includes(path))) throw new Error("Unrelated staged changes require an ownership decision");
+			this.state.pending = undefined; // Commit outcome may be uncertain; never replay it.
+			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.options());
+			await runChecked(this.exec, "git", ["commit", "-m", message], this.options());
+			return { head: await readHead(this.exec, this.options()) };
+		}, { agentDir: this.agentDir, signal: this.signal });
+	}
+
+	async verify(): Promise<CreatePullRequestResult> {
+		if (this.state.phase !== "prepared" || !this.state.base) {
+			throw new Error("PR creation is not prepared for verification");
+		}
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
-			if (await readHead(this.exec, this.options()) !== this.state.conflict!.originalHead) throw new Error("PR creation merge HEAD changed");
-			const mergeHead = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--verify", "MERGE_HEAD^{commit}"], this.options())).stdout, "MERGE_HEAD"), "MERGE_HEAD");
-			if (mergeHead !== this.state.base!.oid) throw new Error("PR creation merge context changed");
-			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options());
-			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
-			this.state.phase = "blocked";
-			await runChecked(this.exec, "git", ["add", "--", ...paths], this.options());
-			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.options())).stdout, "Unmerged paths");
-			if (unmerged.length) throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
-			await runChecked(this.exec, "git", ["-c", "core.editor=true", "merge", "--continue"], this.options());
-			const verified = await this.verifyMerge(this.state.conflict!.originalHead);
-			return { kind: "verified", ...verified };
+			const head = await this.requireCleanHead();
+			if (!isPullRequestCreationEligible((await this.freshNone()).branch) || await readHead(this.exec, this.options()) !== head) {
+				throw new Error("PR creation changed during verification or no longer has a committed change");
+			}
+			this.state.verifiedHead = head;
+			this.state.phase = "verified";
+			return { kind: "verified", head, fastForward: false };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
@@ -374,16 +346,14 @@ export class PullRequestCreator {
 	}
 
 	async push(): Promise<CreatePullRequestResult> {
-		if (this.state.phase !== "verified" || !this.state.base) {
+		if (this.state.phase !== "verified" || !this.state.base || !this.state.verifiedHead) {
 			throw new Error("PR creation is not ready to push");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			const head = await this.requireCleanHead();
-			if (!(await isAncestor(this.exec, this.options(), this.state.base!.oid, head))) {
-				throw new Error("PR creation HEAD does not contain the frozen base");
-			}
+			if (head !== this.state.verifiedHead) throw new Error("PR creation verified HEAD changed");
 			const original = this.target.remoteOid;
 			if (original !== null && !(await isAncestor(this.exec, this.options(), original, head))) {
 				throw new Error("PR creation push would not fast-forward the frozen remote OID");
@@ -423,7 +393,7 @@ export class PullRequestCreator {
 			}
 			return;
 		}
-		const discovery = await this.load(this.pi(), this.context(), undefined, undefined, this.explicitBase);
+		const discovery = await this.load(this.pi(), this.context());
 		if (discovery.kind === "none") {
 			if (!sameTarget(this.target, discovery.creationTarget, head)) throw new Error("Published target authority changed");
 			return;

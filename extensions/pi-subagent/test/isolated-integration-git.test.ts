@@ -57,6 +57,20 @@ test("integration worktrees are owned by the primary repository when Main is a l
 	git(root, "worktree", "remove", "--force", linked);
 });
 
+test("integration allocation from a linked Main worktree retains primary-repository ownership", async (t) => {
+	const primary = await repo(t);
+	const main = await mkdtemp(join(tmpdir(), "linked-main-"));
+	t.after(async () => await rm(main, { recursive: true, force: true }));
+	await rm(main, { recursive: true });
+	git(primary, "worktree", "add", "-qb", "feature", main);
+	const base = await new CheckedGitRuntime().inspectMain({ root: main }, { signal });
+	const integration = await allocate(new IntegrationGit(), main, base, "linked-integration");
+	assert.equal(integration.repoRoot, git(primary, "rev-parse", "--show-toplevel"));
+	assert.deepEqual(await new IntegrationGit().inspectCombined(main, integration, base, [], signal), {
+		...base, branch: `refs/heads/${integration.branch}`,
+	});
+});
+
 test("same-file isolated candidates merge in Main-ordered integration checkout; Main moves only after exact combined-tip gates", async (t) => {
 	const root = await repo(t);
 	const runtime = new IntegrationGit();

@@ -1,8 +1,9 @@
 import type {
 	ExtensionAPI,
-	ExtensionCommandContext,
+	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { executeGitHubMerge } from "./pr-merge.ts";
+import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	linkInferredPullRequest,
 	loadCurrentPullRequest,
@@ -11,35 +12,34 @@ import {
 } from "./pr-github.ts";
 import {
 	deriveNextStep,
-	deriveRouteDecision,
-	type FeedbackRouteBlocker,
 	type NextStep,
 	type PullRequestTarget,
-	type RouteIntent,
 } from "./pr-routing.ts";
 
-type WorkflowNextStep = Extract<NextStep, "create" | "update-branch" | "sweep" | "fix-ci">;
+type WorkflowNextStep = Extract<NextStep, "create" | "publish-work" | "update-branch" | "sweep" | "fix-ci">;
 
 const WORKFLOWS: Record<WorkflowNextStep, string> = {
 	create: "skill:pi-pr-create",
+	"publish-work": "skill:pi-pr-publish-work",
 	"update-branch": "skill:pi-pr-update-branch",
 	sweep: "skill:pi-pr-comment-sweep",
 	"fix-ci": "skill:pi-pr-fix-ci",
 };
 type WorkflowReservation =
-	| { route: "create"; target: PullRequestTarget; base?: string }
+	| { route: "create"; target: PullRequestTarget }
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
-type WorkflowLaunchAction = "prepare" | "merge" | "start" | "resume" | "collect";
+type WorkflowLaunchAction = "prepare" | "inspect" | "rebase" | "start" | "resume" | "collect";
 type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	sessionGeneration: number;
 	assertCurrent(): void;
+	completedRoutes?: ReadonlySet<string>;
 };
 export type PrCommandHandler = (
 	args: string,
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	onRouteResolved?: PrCommandInvocation | ((nextStep: NextStep) => void),
 ) => Promise<NextStep>;
 
@@ -52,67 +52,27 @@ export type WorkflowPromptIdentity = Readonly<{
 
 export type PrCommandDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
+	needsFeedbackAttention?: typeof needsFeedbackAttention;
 	linkInferredPullRequest?: typeof linkInferredPullRequest;
+	inspectSweepRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
+	inspectBranchRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
 	reserveWorkflow?: (
 		reservation: WorkflowReservation,
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		invocation?: PrCommandInvocation,
 	) => Promise<WorkflowReservationResult>;
 	markWorkflowPromptQueued?: (identity: WorkflowPromptIdentity, queued: boolean) => void;
 	releaseWorkflow?: (runId: string, invocation?: PrCommandInvocation) => void;
 };
 
-type ParsedPrArguments = {
-	base?: string;
-	intent: RouteIntent;
-	instructions: string;
-};
-
-function parsePrArguments(args: string): ParsedPrArguments {
-	const leading = args.trimStart();
-	const trimmed = leading.trim();
-	if (leading.startsWith("--feedback=")) throw new Error("/pr feedback syntax is --feedback");
-	if (/^--feedback(?:\s|$)/.test(leading)) {
-		if (trimmed !== "--feedback") throw new Error("/pr --feedback cannot be combined with other options or instructions");
-		return { intent: "feedback", instructions: "" };
-	}
-	if (/(?:^|\s)--feedback(?=\s|=|$)/.test(leading)) {
-		throw new Error("/pr --feedback cannot be combined with other options or instructions");
-	}
-	if (leading.startsWith("--base=")) throw new Error("/pr base syntax is --base <branch>");
-	if (/^--base(?:\s|$)/.test(leading)) {
-		const value = /^--base\s+(\S+)/.exec(leading);
-		if (!value) throw new Error("/pr --base requires a branch");
-		const instructions = leading.slice(value[0].length).trim();
-		if (instructions.startsWith("--")) throw new Error(`Unknown /pr option: ${instructions.split(/\s+/, 1)[0]}`);
-		return { base: value[1]!, intent: "automatic", instructions };
-	}
-	if (leading.startsWith("--")) throw new Error(`Unknown /pr option: ${leading.split(/\s+/, 1)[0]}`);
-	return { intent: "automatic", instructions: args.trim() };
-}
-
-function feedbackBlockerMessage(blocker: FeedbackRouteBlocker): string {
-	switch (blocker.kind) {
-		case "discovery-blocked": return "/pr --feedback is blocked because pull request discovery is unsafe";
-		case "pull-request-unavailable": return "/pr --feedback requires a current pull request";
-		case "pull-request-not-open": return "/pr --feedback requires an open pull request";
-		case "target-not-configured": return "/pr --feedback requires a configured pull request target; run /pr to link the branch first";
-		case "worktree-dirty": return "/pr --feedback is blocked by a dirty worktree";
-		case "head-not-equal": return `/pr --feedback is blocked by local HEAD ${blocker.relation}`;
-	}
-}
-
 function workflowReservation(
 	nextStep: WorkflowNextStep,
 	discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
-	base: string | undefined,
-	instructions: string,
 ): WorkflowReservation {
 	if (nextStep === "create") {
 		if (discovery.kind !== "none") throw new Error("/pr create failed: creation target is unavailable");
-		return { route: "create", target: discovery.creationTarget, ...(base === undefined ? {} : { base }) };
+		return { route: "create", target: discovery.creationTarget };
 	}
-	if (instructions) throw new Error("The current /pr helper route does not accept instructions");
 	if (discovery.kind !== "current") throw new Error(`/pr ${nextStep} failed: pull request is unavailable`);
 	return { route: nextStep, pullRequest: discovery.pullRequest };
 }
@@ -130,14 +90,13 @@ function packageWorkflowCommand(pi: PrCommandPi, route: WorkflowNextStep) {
 
 async function dispatchWorkflow(
 	pi: PrCommandPi,
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	route: WorkflowNextStep,
 	reservation: WorkflowReservation,
 	invocation: PrCommandInvocation | undefined,
 	reserve: NonNullable<PrCommandDependencies["reserveWorkflow"]>,
 	markPromptQueued: NonNullable<PrCommandDependencies["markWorkflowPromptQueued"]>,
 	release: NonNullable<PrCommandDependencies["releaseWorkflow"]>,
-	instructions: string,
 ): Promise<void> {
 	const workflow = packageWorkflowCommand(pi, route);
 	let runId: string | undefined;
@@ -152,7 +111,7 @@ async function dispatchWorkflow(
 			? { deliverAs: "followUp" as const, expandPromptTemplates: true }
 			: { expandPromptTemplates: true };
 		invocation?.assertCurrent();
-		pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}${instructions ? ` ${instructions}` : ""}`, options);
+		pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}`, options);
 	} catch (error) {
 		if (runId !== undefined) release(runId, invocation);
 		throw error;
@@ -169,7 +128,7 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	if (pullRequest.conditions.ci === "failure-blocked") {
 		return { message: `PR #${pullRequest.number} has a failed CI check that cannot run the CI fix workflow`, type: "warning" };
 	}
-	const mutatingWorkflowSelected = pullRequest.conditions.baseUpdateRequired || pullRequest.conditions.conflict ||
+	const mutatingWorkflowSelected = pullRequest.conditions.conflict ||
 		pullRequest.conditions.changesRequested || pullRequest.conditions.unresolvedThreads > 0 ||
 		pullRequest.conditions.ci === "failure";
 	if (mutatingWorkflowSelected && pullRequest.local.worktree === "dirty") {
@@ -207,16 +166,11 @@ function isSameConfirmedMerge(current: CurrentPullRequest, fresh: CurrentPullReq
 
 async function mergePullRequest(
 	pi: PrCommandPi,
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
-): Promise<boolean> {
-	const confirmed = await ctx.ui.confirm(
-		`Merge PR #${current.number}?`,
-		"Method: squash.",
-	);
-	if (!confirmed) return false;
-
+	needsFeedback: typeof needsFeedbackAttention,
+): Promise<void> {
 	await executeGitHubMerge({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
@@ -241,32 +195,27 @@ async function mergePullRequest(
 			if (deriveNextStep(discovery) !== "merge") {
 				throw new Error(`PR #${fresh.number} merge cancelled: pull request is no longer merge-ready`);
 			}
+			if (await needsFeedback(fresh, { cwd: ctx.cwd, signal: ctx.signal, load })) {
+				throw new Error(`PR #${fresh.number} merge cancelled: new feedback needs review`);
+			}
 		},
 	});
-	return true;
 }
 
 async function linkPullRequest(
 	pi: PrCommandPi,
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
 	link: typeof linkInferredPullRequest,
-): Promise<void> {
-	const targetName = `${current.target.remote}/${current.target.ref}`;
-	const confirmed = await ctx.ui.confirm(
-		`Link pull request branch to ${targetName}?`,
-		`Set ${targetName} as the push target for this branch.`,
-	);
-	if (!confirmed) return;
-
+): Promise<CurrentPullRequest> {
 	const discovery = await load(pi, ctx);
 	if (
 		discovery.kind !== "current" ||
 		discovery.pullRequest.target.provenance !== "inferred" ||
 		!samePullRequestSnapshot(current, discovery.pullRequest)
 	) throw new Error("Link branch cancelled: inferred pull request context changed");
-	await link(pi, ctx, discovery.pullRequest);
+	return await link(pi, ctx, discovery.pullRequest);
 }
 
 export function createPrCommandHandler(
@@ -274,32 +223,51 @@ export function createPrCommandHandler(
 	dependencies: PrCommandDependencies = {},
 ): PrCommandHandler {
 	const load = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
+	const needsFeedback = dependencies.needsFeedbackAttention ?? needsFeedbackAttention;
 	const link = dependencies.linkInferredPullRequest ?? linkInferredPullRequest;
+	const inspectSweepRecovery = dependencies.inspectSweepRecovery ?? (async () => false);
+	const inspectBranchRecovery = dependencies.inspectBranchRecovery ?? (async () => false);
 	const reserve = dependencies.reserveWorkflow ?? (async () => {
 		throw new Error("/pr workflow tools are unavailable");
 	});
 	const markPromptQueued = dependencies.markWorkflowPromptQueued ?? (() => {});
 	const release = dependencies.releaseWorkflow ?? (() => {});
-	return async (args, ctx, onRouteResolved) => {
+	const handle = async (
+		args: string, ctx: ExtensionContext,
+		onRouteResolved?: PrCommandInvocation | ((nextStep: NextStep) => void),
+		linkedAuthority?: CurrentPullRequest,
+	): Promise<NextStep> => {
 		const commandInvocation = onRouteResolved && "assertCurrent" in onRouteResolved
 			? onRouteResolved as PrCommandInvocation
 			: undefined;
-		const { base, intent, instructions } = parsePrArguments(args);
-		const discovery = await load(pi, ctx, undefined, undefined, base);
+		if (args.trim()) throw new Error("/pr does not accept arguments");
+		const discovery = await load(pi, ctx);
 		commandInvocation?.assertCurrent();
-		const decision = deriveRouteDecision(discovery, intent);
-		if (decision.kind === "feedback-blocked") {
-			onRouteResolved?.("blocked");
-			throw new Error(feedbackBlockerMessage(decision.blocker));
+		if (linkedAuthority && (discovery.kind !== "current" || discovery.pullRequest.target.provenance !== "configured" ||
+			!isSameConfirmedMerge(linkedAuthority, discovery.pullRequest))) {
+			throw new Error("Link branch continuation cancelled: configured pull request context changed");
 		}
-		const nextStep = decision.nextStep;
+		let nextStep = deriveNextStep(discovery);
+		if (discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
+			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
+			await inspectBranchRecovery(discovery.pullRequest, ctx)) {
+			nextStep = "update-branch";
+			commandInvocation?.assertCurrent();
+		}
+		if (nextStep !== "update-branch" && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
+			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
+			await inspectSweepRecovery(discovery.pullRequest, ctx)) {
+			nextStep = "sweep";
+			commandInvocation?.assertCurrent();
+		}
+		if (discovery.kind === "current" && (nextStep === "merge" || nextStep === "none") &&
+			discovery.pullRequest.lifecycle === "open" && !discovery.pullRequest.conditions.draft &&
+			discovery.pullRequest.target.provenance === "configured" &&
+			discovery.pullRequest.local.worktree === "clean" && discovery.pullRequest.local.head === "equal") {
+			if (await needsFeedback(discovery.pullRequest, { cwd: ctx.cwd, signal: ctx.signal, load })) nextStep = "sweep";
+			commandInvocation?.assertCurrent();
+		}
 		onRouteResolved?.(nextStep);
-		if (base !== undefined && nextStep !== "create") {
-			throw new Error("/pr --base is accepted only for pull request creation");
-		}
-		if (instructions && !(nextStep in WORKFLOWS)) {
-			throw new Error("The current /pr route does not accept instructions");
-		}
 		if (discovery.kind === "inactive") return nextStep;
 		if (discovery.kind === "blocked") {
 			return nextStep;
@@ -313,17 +281,23 @@ export function createPrCommandHandler(
 		}
 		if (nextStep === "link-branch") {
 			if (discovery.kind !== "current") throw new Error("/pr link failed: pull request is unavailable");
-			await linkPullRequest(pi, ctx, discovery.pullRequest, load, link);
-			return nextStep;
+			const linked = await linkPullRequest(pi, ctx, discovery.pullRequest, load, link);
+			if (linked.target.provenance !== "configured") throw new Error("Link branch failed: target was not configured");
+			return await handle("", ctx, onRouteResolved, linked);
 		}
 		if (nextStep === "merge") {
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
-			return await mergePullRequest(pi, ctx, discovery.pullRequest, load) ? "merge" : "none";
+			await mergePullRequest(pi, ctx, discovery.pullRequest, load, needsFeedback);
+			return "merge";
 		}
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
 		const route = nextStep as WorkflowNextStep;
-		const reservation = workflowReservation(route, discovery, base, instructions);
+		if (commandInvocation?.completedRoutes?.has(route)) {
+			ctx.ui.notify(`PR ${route} already ran; inspect fresh state before retrying`, "warning");
+			return "none";
+		}
+		const reservation = workflowReservation(route, discovery);
 		await dispatchWorkflow(
 			pi,
 			ctx,
@@ -333,8 +307,8 @@ export function createPrCommandHandler(
 			reserve,
 			markPromptQueued,
 			release,
-			route === "create" ? instructions : "",
 		);
 		return nextStep;
 	};
+	return handle;
 }

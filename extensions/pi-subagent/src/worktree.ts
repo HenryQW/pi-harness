@@ -212,7 +212,7 @@ async function inspectDirty(run: GitRunner, cwd: string, includeIgnored = true):
 	return { dirty: false };
 }
 
-/** Proves a worktree has no tracked, untracked, ignored, index-hidden, or nested submodule work. */
+/** Proves a worktree has no tracked, untracked, index-hidden, or nested submodule work; cleanup also checks ignored files. */
 export async function inspectWorktreeDirty(cwd: string, run: GitRunner = runGit, includeIgnored = true): Promise<WorktreeDirtyInspection> {
 	const root = await inspectDirty(run, cwd, includeIgnored);
 	if (root.dirty || root.failure) return root;
@@ -252,7 +252,7 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 	const countFailure = counted.code !== 0
 		? `rev-list exit ${counted.code}: ${counted.stderr.trim().slice(0, 200)}`
 		: Number.isNaN(commits) ? "rev-list produced non-numeric output" : undefined;
-	const inspection = checkoutExists ? await inspectDirty(run, info.path) : undefined;
+	const inspection = checkoutExists ? await inspectDirty(run, info.path, true) : undefined;
 	const measurements = {
 		...(countFailure === undefined ? { commits } : {}),
 		...(inspection?.failure === undefined && inspection !== undefined ? { dirty: inspection.dirty } : {}),

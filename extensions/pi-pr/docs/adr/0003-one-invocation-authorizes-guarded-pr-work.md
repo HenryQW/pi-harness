@@ -1,0 +1,5 @@
+# One `/pr` invocation authorizes guarded PR work
+
+A flagless `/pr` authorizes routine creation, linking, scoped fixes, CI repair, publication, feedback resolution, and squash merge without separate approval dialogs. Requiring approval again after a feedback refresh repeated decisions and impeded completion; a single invocation now records a scoped ledger, retains unchanged decisions through refresh, and blocks new or edited actionable feedback for the next fix cycle. Linking one unambiguous PR continues only after fresh discovery confirms the same configured PR. Fresh authority, clean/owned-path validation, exact remote leases, saved feedback projections, and no replay of uncertain mutations remain mandatory. Ambiguous ownership or semantic conflicts, failed checks, or unprovable mutation outcomes stop with preserved recovery rather than assuming consent.
+
+This replaces the link, feedback, and merge confirmation clauses in ADRs 0001 and 0002; conflict-only rebase and one feedback/CI fix cycle per invocation remain in force.

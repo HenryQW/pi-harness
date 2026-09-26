@@ -93,6 +93,8 @@ function footerStatus(input: PrDisplayInput): Pick<PrFooter, "text" | "color"> {
 
 function widgetText(input: PrDisplayInput, nextStep: NextStep): string | undefined {
 	switch (nextStep) {
+		case "publish-work":
+			return "Run /pr to publish local work";
 		case "update-branch":
 			return input.conditions.conflict
 				? "Run /pr to resolve merge conflict"

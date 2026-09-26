@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { EXECUTION_BUDGET_ENV } from "../src/ephemeral.ts";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import {
 	HerdrHostRuntime,
@@ -138,6 +139,7 @@ function runtime(
 		delay?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 		now?: () => number;
 		inspectInFlightTaskCandidate?: (input: TaskCandidateInput, operation: OperationContext) => Promise<InFlightTaskCandidateInspection>;
+		executionBudget?: () => { maxTurns: number; maxMs: null; maxTokens?: number };
 	} = {},
 ): HerdrHostRuntime {
 	return new HerdrHostRuntime({
@@ -154,6 +156,7 @@ function runtime(
 		env: { HERDR_ENV: "1", HERDR_PANE_ID: "pane-current" },
 		leaseDirectory: paths.leases,
 		lsofCommand: "lsof-test",
+		executionBudget: timing.executionBudget,
 	});
 }
 
@@ -871,6 +874,7 @@ test("agent allocation accepts the task's explicit Role and rejects launch misma
 		error?: RegExp;
 	}> = [
 		{ name: "matching non-implementer Role", launchRole: roleTask.role },
+		{ name: "trusted execution budget", launchRole: roleTask.role, env: { [EXECUTION_BUDGET_ENV]: "budget" } },
 		{ name: "mismatched Role", launchRole: "implementer", error: /wrong Role/ },
 		{ name: "caller Role environment", launchRole: roleTask.role, env: { CALLER_SECRET: "forbidden" }, error: /must not receive caller Role environment variables/ },
 	];
@@ -879,7 +883,9 @@ test("agent allocation accepts the task's explicit Role and rejects launch misma
 		await t.test(candidate.name, async (t) => {
 			const fixture = await paths(t);
 			const script = new ScriptedProcess();
-			const host = runtime(fixture, script);
+			const host = runtime(fixture, script, undefined, {
+				executionBudget: candidate.name === "trusted execution budget" ? () => ({ maxTurns: 10, maxMs: null }) : undefined,
+			});
 			const { attempt, leasePath } = await fullAttempt(fixture, host, script);
 			attempt.allocations.pop();
 			const intent = await plannedIntent(host, attempt, "agent", fixture, script);
@@ -1043,7 +1049,7 @@ test("worker-tab ownership rejects workspace-root aliases, multipane tabs, and m
 test("worker tab waits for a stable host pane layout before create", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
-	const host = runtime(fixture, script);
+	const host = runtime(fixture, script, undefined, { executionBudget: () => ({ maxTurns: 10, maxMs: null, maxTokens: 2000 }) });
 	const attempt = baseAttempt(fixture);
 	script.push(repositoryIdentityStep(fixture));
 	const workspaceDetails = await host.planHostAllocation({ requestId: REQUEST_ID, goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
@@ -1058,7 +1064,9 @@ test("worker tab waits for a stable host pane layout before create", async (t) =
 			command: "herdr",
 			args: [
 				"tab", "create", "--workspace", WORKSPACE_ID, "--cwd", fixture.worktree,
-				"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${intent.leasePath}`, "--no-focus",
+				"--label", WORKER_LABEL, "--env", `PI_SUBAGENT_PROCESS_LEASE=${intent.leasePath}`,
+				"--env", `${EXECUTION_BUDGET_ENV}={"maxTurns":10,"maxMs":null,"maxTokens":2000,"startedAt":1000}`,
+				"--no-focus",
 			],
 			result: success({
 				type: "tab_created",
@@ -1681,13 +1689,12 @@ test("initial and correction prompts include the exact request goal", async (t) 
 	script.done();
 });
 
-test("normal prompt treats transient compaction idle and dirty Git state as in flight until changed-clean", async (t) => {
+test("normal prompt waits through transient compaction idle and working until committed", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const delays: number[] = [];
 	const inspections: InFlightTaskCandidateInspection[] = [
 		{ candidate: baseIdentity(), clean: true, valid: true },
-		{ candidate: { ...changedIdentity(), index: oid("c") }, clean: false, valid: true },
 		{ candidate: changedIdentity(), clean: true, valid: true },
 	];
 	const host = runtime(fixture, script, async () => changedIdentity(), {
@@ -1718,6 +1725,33 @@ test("normal prompt treats transient compaction idle and dirty Git state as in f
 	assert.equal(inspections.length, 0);
 	assert.deepEqual(delays, [250]);
 	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+	script.done();
+});
+
+test("candidate inspection waits for the worker to finish Git writes", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	let working = true;
+	let inspections = 0;
+	const host = runtime(fixture, script, async () => changedIdentity(), {
+		delay: async () => {},
+		inspectInFlightTaskCandidate: async () => {
+			inspections += 1;
+			if (working) throw new Error("index.lock belongs to the active worker");
+			return { candidate: changedIdentity(), clean: true, valid: true };
+		},
+	});
+	const { attempt } = await fullAttempt(fixture, host, script);
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => { working = false; }, result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "done", stderr: "" } },
+	);
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	assert.equal(result.outcome, "candidate");
+	assert.equal(inspections, 1);
 	script.done();
 });
 
@@ -1879,7 +1913,7 @@ test("delivered stall treats working dirty state as transient and exact blocked 
 	);
 	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 	assert.equal(result.outcome, "blocked");
-	assert.equal(inspections, 1);
+	assert.equal(inspections, 0);
 	assert.deepEqual(delays, [250]);
 	assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
 	script.done();

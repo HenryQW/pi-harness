@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Exec, ExecResult } from "@henryqw/pi-process";
+import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
-import { PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
+import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
 
 const oldHead = "a".repeat(40);
 const base = "b".repeat(40);
 const merged = "c".repeat(40);
-const zero = "0".repeat(40);
 const cwd = process.cwd();
 const OPERATION_PATHS = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-no-operation-${index}`).join("\n") + "\n";
 
@@ -34,7 +34,7 @@ function pullRequest(overrides: Partial<CurrentPullRequest> = {}): CurrentPullRe
 		approved: true,
 		lifecycle: "open",
 		conditions: {
-			draft: false, baseUpdateRequired: true, conflict: false, changesRequested: false,
+			draft: false, baseUpdateRequired: false, conflict: true, changesRequested: false,
 			unresolvedThreads: 0, ci: "success", review: "ready", policy: "pending",
 		},
 		local: { worktree: "clean", head: "equal" },
@@ -82,7 +82,7 @@ test("fetches only the frozen base OID and skips merge when it is already an anc
 	};
 	const app = updater(exec);
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	assert.deepEqual(await app.workflow.merge(), { kind: "verified", head: oldHead, fastForward: false });
+	assert.deepEqual(await app.workflow.rebase(), { kind: "verified", head: oldHead, fastForward: false });
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "fetch"), [
 		"git", ["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "git@github.com:acme/project.git", base],
 	]);
@@ -105,39 +105,8 @@ test("rechecks frozen authority after fetch before launching merge", async (t) =
 	const moved = pullRequest({ base: { repository: "acme/project", ref: "main", oid: "d".repeat(40) } });
 	const app = updater(exec, [pullRequest(), moved]);
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	await assert.rejects(app.workflow.merge(), /frozen pull request authority changed/);
+	await assert.rejects(app.workflow.rebase(), /frozen pull request authority changed/);
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "merge"), false);
-});
-
-test("captures a conflict baseline and rejects an outside-set delta before staging", async (t) => {
-	const staged = `1 M. N... 100644 100644 100644 ${zero} ${oldHead} generated.lock\0`;
-	const unresolved = `u UU N... 100644 100644 100644 100644 ${zero} ${oldHead} ${base} source.ts\0`;
-	let statusReads = 0;
-	const calls: Array<[string, string[]]> = [];
-	const exec: Exec = async (command, args) => {
-		calls.push([command, [...args]]);
-		const inspection = cleanInspection(command, args);
-		if (inspection) return inspection;
-		const text = args.join(" ");
-		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${oldHead}\n`);
-		if (command === "git" && text === "status --porcelain=v2 -z --untracked-files=all") {
-			statusReads += 1;
-			return result(statusReads === 1 ? staged + unresolved : unresolved);
-		}
-		if (command === "gh" && args[0] === "config") return result("ssh\n");
-		if (command === "git" && (args[0] === "fetch" || args[0] === "cat-file")) return result();
-		if (command === "git" && args[0] === "merge-base") return result("", 1);
-		if (command === "git" && args[0] === "merge") return result("", 1, "conflict");
-		if (command === "git" && text === "rev-parse --verify MERGE_HEAD^{commit}") return result(`${base}\n`);
-		if (command === "git" && args[0] === "diff") return result("source.ts\0");
-		throw new Error(`Unexpected ${command} ${text}`);
-	};
-	const app = updater(exec);
-	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	assert.deepEqual(await app.workflow.merge(), { kind: "conflict", paths: ["source.ts"] });
-	await assert.rejects(app.workflow.continue(["source.ts"]), /changed outside declared conflict paths: generated\.lock/);
-	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "add"), false);
 });
 
 test("publishes one exact-OID refspec with the original lease and never replays a lost response", async (t) => {
@@ -151,6 +120,10 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 		if (command === "git" && args[0] === "rev-parse") return result(`${merged}\n`);
 		if (command === "git" && args[0] === "status") return result();
 		if (command === "git" && args[0] === "merge-base") return result();
+		if (command === "git" && args[0] === "ls-remote") {
+			if (pushes) throw new Error("remote unavailable after push");
+			return result(`${oldHead}\trefs/heads/feature\n`);
+		}
 		if (command === "git" && args[0] === "push") {
 			pushes += 1;
 			throw new Error("response lost");
@@ -161,7 +134,7 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 	app.workflow.state.phase = "verified";
 	app.workflow.state.verifiedHead = merged;
-	await assert.rejects(app.workflow.publish(), /response lost/);
+	await assert.rejects(app.workflow.publish(), /outcome is unknown; do not retry/);
 	assert.equal(app.workflow.state.phase, "blocked");
 	await assert.rejects(app.workflow.publish(), /not ready to publish/);
 	assert.equal(pushes, 1);
@@ -171,7 +144,7 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 	]]);
 });
 
-test("does not push when HEAD or target authority changes after final ancestry checks", async (t) => {
+test("does not push when HEAD or target authority changes after final base checks", async (t) => {
 	for (const race of ["HEAD", "authority"] as const) {
 		let localHead = merged;
 		let ancestryChecks = 0;
@@ -184,9 +157,10 @@ test("does not push when HEAD or target authority changes after final ancestry c
 			if (command === "git" && args[0] === "branch") return result("feature\n");
 			if (command === "git" && args[0] === "rev-parse") return result(`${localHead}\n`);
 			if (command === "git" && args[0] === "status") return result();
+			if (command === "git" && args[0] === "ls-remote") return result(`${oldHead}\trefs/heads/feature\n`);
 			if (command === "git" && args[0] === "merge-base") {
 				ancestryChecks += 1;
-				if (ancestryChecks === 2) {
+				if (ancestryChecks === 1) {
 					if (race === "HEAD") localHead = "d".repeat(40);
 					else {
 						const changed = pullRequest();
@@ -206,4 +180,149 @@ test("does not push when HEAD or target authority changes after final ancestry c
 		await assert.rejects(app.workflow.publish(), race === "HEAD" ? /local HEAD changed/ : /frozen pull request authority changed/);
 		assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false, race);
 	}
+});
+
+test("refuses to rebase a merge-containing PR branch before changing HEAD", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-merge-history-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const worktree = join(directory, "worktree");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+	execFileSync("git", ["init", "--initial-branch=main", worktree]);
+	git("config", "user.name", "Rebase Test");
+	git("config", "user.email", "rebase@example.test");
+	writeFileSync(join(worktree, "file.txt"), "original\n");
+	git("add", "file.txt");
+	git("commit", "-m", "initial");
+	git("switch", "-c", "feature");
+	writeFileSync(join(worktree, "file.txt"), "feature\n");
+	git("commit", "-am", "feature");
+	git("switch", "-c", "topic");
+	writeFileSync(join(worktree, "topic.txt"), "topic\n");
+	git("add", "topic.txt");
+	git("commit", "-m", "topic");
+	git("switch", "feature");
+	git("merge", "--no-ff", "topic", "-m", "merge topic");
+	const featureHead = git("rev-parse", "HEAD");
+	git("switch", "main");
+	writeFileSync(join(worktree, "base.txt"), "base\n");
+	git("add", "base.txt");
+	git("commit", "-m", "base");
+	const baseHead = git("rev-parse", "HEAD");
+	git("switch", "feature");
+	const authority = pullRequest({
+		base: { repository: "acme/project", ref: "main", oid: baseHead },
+		head: { repository: "acme/fork", ref: "feature", oid: featureHead },
+	});
+	let rebases = 0;
+	const exec: Exec = async (command, args, options) => {
+		if (command === "gh") return result("ssh\n");
+		if (command === "git" && args[0] === "fetch") return result();
+		if (command === "git" && args.includes("rebase")) rebases++;
+		return await spawnBounded(command, args, options);
+	};
+	const workflow = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+	await assert.rejects(workflow.rebase(), /merge commits/);
+	assert.equal(rebases, 0);
+	assert.equal(git("rev-parse", "HEAD"), featureHead);
+});
+
+test("confirmed conflict rebases only onto the pinned base and publishes the rewritten head once", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-rebase-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const worktree = join(directory, "worktree");
+	const remote = join(directory, "remote.git");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+	execFileSync("git", ["init", "--bare", remote]);
+	execFileSync("git", ["init", "--initial-branch=main", worktree]);
+	git("config", "user.name", "Rebase Test");
+	git("config", "user.email", "rebase@example.test");
+	writeFileSync(join(worktree, "file.txt"), "original\n");
+	git("add", "file.txt");
+	git("commit", "-m", "initial");
+	git("branch", "feature");
+	writeFileSync(join(worktree, "file.txt"), "base change\n");
+	git("commit", "-am", "base change");
+	const baseHead = git("rev-parse", "HEAD");
+	git("switch", "feature");
+	writeFileSync(join(worktree, "file.txt"), "feature change\n");
+	git("commit", "-am", "feature change");
+	const featureHead = git("rev-parse", "HEAD");
+	git("remote", "add", "origin", remote);
+	git("push", "origin", `${featureHead}:refs/heads/feature`);
+	const authority = pullRequest({
+		base: { repository: "acme/project", ref: "main", oid: baseHead },
+		head: { repository: "acme/fork", ref: "feature", oid: featureHead },
+		headFetchSource: remote,
+		target: { ...pullRequest().target, fetchSource: remote, remoteOid: featureHead },
+	});
+	let pushes = 0;
+	let rebases = 0;
+	const exec: Exec = async (command, args, options) => {
+		if (command === "git" && args.includes("rebase")) {
+			rebases += 1;
+			if (args.includes("--onto")) {
+				const recoveryDir = join(directory, "agent", "config", "pi-pr", "update-branch");
+				const record = JSON.parse(readFileSync(join(recoveryDir, readdirSync(recoveryDir)[0]!), "utf8"));
+				assert.equal(record.phase, "pending");
+			}
+		}
+		if (command === "gh" && args.join(" ") === "config get git_protocol --host github.com") return result("ssh\n");
+		if (command === "git" && args[0] === "fetch" && args.includes("git@github.com:acme/project.git")) {
+			args = args.map((value) => value === "git@github.com:acme/project.git" ? remote : value);
+		}
+		if (command === "git" && args[0] === "push") pushes += 1;
+		return await spawnBounded(command, args, options);
+	};
+	const workflow = new PullRequestBranchUpdater({
+		cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }),
+	});
+	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"] });
+	assert.equal(pushes, 0);
+	await assert.rejects(inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }),
+		/unverified; recover manually/);
+	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
+	const verified = await workflow.continue(["file.txt"]);
+	assert.equal(verified.kind, "verified");
+	assert.equal(git("merge-base", "--is-ancestor", baseHead, git("rev-parse", "HEAD")), "");
+	assert.equal(git("status", "--porcelain"), "");
+	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
+	const resumed = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+	assert.equal(await resumed.recoveryLaunchAction(), "rebase");
+	assert.deepEqual(await resumed.rebase(), verified);
+	assert.equal(rebases, 2); // Only the original rebase and its conflict continuation ran Git.
+	assert.deepEqual(await resumed.publish(), { kind: "published", head: git("rev-parse", "HEAD") });
+	assert.equal(pushes, 1);
+	assert.equal(git("ls-remote", remote, "refs/heads/feature").split("\t")[0], git("rev-parse", "HEAD"));
+	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), false);
+	await assert.rejects(resumed.publish(), /not ready to publish/);
+
+	// Simulate a lost response after the remote moved but before the published marker was saved.
+	const recoveryDir = join(directory, "agent", "config", "pi-pr", "update-branch");
+	const recoveryFile = join(recoveryDir, readdirSync(recoveryDir)[0]!);
+	const saved = JSON.parse(readFileSync(recoveryFile, "utf8"));
+	writeFileSync(recoveryFile, `${JSON.stringify({ ...saved, phase: "verified" })}\n`);
+	const unexpectedRemote = pullRequest({ ...authority, head: { ...authority.head, oid: "f".repeat(40) },
+		target: { ...authority.target, remoteOid: "f".repeat(40) } });
+	await assert.rejects(inspectVerifiedRebaseRecovery(unexpectedRemote, { cwd: worktree, agentDir: join(directory, "agent") }),
+		/recovery authority changed/);
+	const publishedAuthority = pullRequest({ ...authority,
+		head: { ...authority.head, oid: verified.head },
+		target: { ...authority.target, remoteOid: verified.head },
+		conditions: { ...authority.conditions, conflict: false },
+	});
+	assert.equal(await inspectVerifiedRebaseRecovery(publishedAuthority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
+	const reconciled = new PullRequestBranchUpdater({ cwd: worktree, authority: publishedAuthority, exec,
+		agentDir: join(directory, "agent"),
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: publishedAuthority }) });
+	assert.equal(await reconciled.recoveryLaunchAction(), "rebase");
+	await reconciled.rebase();
+	assert.deepEqual(await reconciled.publish(), { kind: "published", head: verified.head });
+	assert.equal(pushes, 1);
+	writeFileSync(recoveryFile, "{malformed\n");
+	await assert.rejects(inspectVerifiedRebaseRecovery(publishedAuthority, { cwd: worktree, agentDir: join(directory, "agent") }),
+		/Invalid branch update recovery is preserved/);
+	assert.equal(readFileSync(recoveryFile, "utf8"), "{malformed\n");
 });

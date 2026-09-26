@@ -55,12 +55,14 @@ async function sharedHistory(base: string, tip: string, cwd: string, signal: Abo
 /** Check helper-derived names even after a safely removed checkout is no longer present. */
 async function ownershipMetadata(root: string, info: WorktreeInfo, signal: AbortSignal): Promise<void> {
 	const canonical = await realpath(root);
-	const first = (await requireGit(["worktree", "list", "--porcelain", "-z"], root, signal)).split("\0")[0]!;
-	const primary = first.startsWith("worktree ") ? await realpath(first.slice("worktree ".length)) : "";
+	const listed = await requireGit(["worktree", "list", "--porcelain", "-z"], root, signal);
+	const primary = listed.split("\0", 1)[0];
+	if (!primary?.startsWith("worktree ")) throw new Error("Primary Git worktree is unavailable.");
+	const repoRoot = await realpath(primary.slice("worktree ".length));
 	if (await realpath(await requireGit(["rev-parse", "--show-toplevel"], root, signal)) !== canonical
-		|| info.repoRoot !== primary || info.cwd !== info.path
+		|| info.repoRoot !== repoRoot || info.cwd !== info.path
 		|| !/^pi-subagent\/subagent-[0-9a-f]{24}$/.test(info.branch)
-		|| info.path !== join(primary, ".worktrees", basename(info.branch))) {
+		|| info.path !== join(repoRoot, ".worktrees", basename(info.branch))) {
 		throw new Error("Git worktree is not an exact owned checkout of Main.");
 	}
 }
