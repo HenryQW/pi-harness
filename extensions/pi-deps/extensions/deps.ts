@@ -13,19 +13,15 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-async function existingHook(path: string): Promise<string | undefined> {
-	try {
-		return await readFile(path, "utf8");
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-		throw error;
-	}
-}
-
 async function toggleDependencyHook(commonGitDir: string): Promise<{ enabled: boolean; path: string }> {
 	const source = await readFile(hookSourcePath, "utf8");
 	const path = join(commonGitDir, "hooks", "post-checkout");
-	const existing = await existingHook(path);
+	let existing: string | undefined;
+	try {
+		existing = await readFile(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 
 	if (existing !== undefined) {
 		if (!existing.includes(managedHookMarker)) {
