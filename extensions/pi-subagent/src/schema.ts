@@ -777,10 +777,10 @@ function validateTextTaskState(taskState: TextTaskState): void {
 		? taskState.attempts.length ? "superseded" : undefined
 		: taskState.status === "running"
 			? "running"
-			: taskState.status === "completed"
-				? "completed"
-				: "failed";
-	if (latest?.status !== expectedLatestStatus) {
+			: "completed";
+	if (taskState.status === "needs_attention"
+		? latest && !["failed", "superseded"].includes(latest.status)
+		: latest?.status !== expectedLatestStatus) {
 		throw new Error(`Text task ${taskState.taskId} status ${taskState.status} has an incompatible latest attempt.`);
 	}
 	if ((taskState.failure !== undefined) !== (taskState.status === "needs_attention")) {
@@ -789,8 +789,8 @@ function validateTextTaskState(taskState: TextTaskState): void {
 	if (taskState.failure !== undefined) {
 		requireRuntimeTextByteLength(taskState.failure, `Text task ${taskState.taskId} failure`);
 	}
-	if (taskState.status === "needs_attention" && latest?.failure !== taskState.failure) {
-		throw new Error(`Text task ${taskState.taskId} needs-attention failure must exactly match its latest attempt failure.`);
+	if (taskState.status === "needs_attention" && latest?.status === "failed" && latest.failure === undefined) {
+		throw new Error(`Text task ${taskState.taskId} lacks its latest execution failure.`);
 	}
 }
 

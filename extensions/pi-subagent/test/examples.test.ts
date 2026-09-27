@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadRoles, parseRoleName, type RoleName } from "../src/index.ts";
+import { parseExecuteRequest } from "../src/schema.ts";
+
+test("README isolated request passes production graph admission", async () => {
+	const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+	const examples = [...readme.matchAll(/```json\n([\s\S]*?)```/g)].map((match) => JSON.parse(match[1]!));
+	const isolated = examples.filter((example) => example.mode === "isolated");
+	assert.ok(isolated.length > 0);
+	for (const example of isolated) assert.doesNotThrow(() => parseExecuteRequest(example));
+});
 
 
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {

@@ -869,6 +869,72 @@ test("abort during agent startup waits for durable ownership and terminates that
 	assertParsed(aborted.state);
 });
 
+test("abort cleans unchanged no-candidate allocations and safely retries retained cleanup", async (t) => {
+	for (const mode of ["clean", "untracked", "ignored", "committed", "interrupted", "termination"] as const) {
+		await t.test(mode, async (t) => {
+			class ReleaseGit extends IntegrationGit {
+				interrupted = false;
+				override async release(...args: Parameters<IntegrationGit["release"]>): ReturnType<IntegrationGit["release"]> {
+					const result = await super.release(...args);
+					if (mode === "interrupted" && args[3] === "worktree" && result.outcome === "ready" && !this.interrupted) {
+						this.interrupted = true;
+						throw new Error("Interrupted after checkout removal, before receipt.");
+					}
+					return result;
+				}
+			}
+			const { root, runtime, runner } = await harness(t, { integrationGit: new ReleaseGit() });
+			const checked = new CheckedGitRuntime();
+			runtime.main = await checked.inspectMain({ root }, { signal: new AbortController().signal });
+			runtime.allocateWorktree = checked.allocateWorktree.bind(checked);
+			runtime.inspectTaskCandidate = checked.inspectTaskCandidate.bind(checked);
+			runtime.workerResults.push({ outcome: "blocked", diagnostic: "No commit." }, { outcome: "blocked", diagnostic: "No commit." });
+			const id = `abort-no-candidate-${mode}`;
+			const stopped = await runner.execute(request(id, [changesetTask("change")]), root);
+			assert.deepEqual(stopped.state.integration.candidates, []);
+			const attempt = changesetState(stopped.state, "change").attempts[0]!;
+			const worker = attempt.allocations.find((item) => item.kind === "worktree")!.worktree!;
+			const extra = join(worker.path, "scratch.txt");
+			if (["untracked", "ignored", "committed"].includes(mode)) await writeFile(extra, "preserve\n");
+			if (mode === "ignored") {
+				const exclude = join(root, ".git", "info", "exclude");
+				await writeFile(exclude, `${await readFile(exclude, "utf8")}\nscratch.txt\n`);
+			}
+			if (mode === "committed") {
+				execFileSync("git", ["add", "scratch.txt"], { cwd: worker.path });
+				execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "retained work"], { cwd: worker.path });
+			}
+			if (mode === "termination") runtime.terminationResults.push({ outcome: "unknown", failure: "lease inspection interrupted" });
+			let aborted = await runner.abort(id, root);
+			assert.equal(aborted.state.status, "aborted");
+			if (mode !== "clean") {
+				assert.match(aborted.text, /retry subagent_abort/);
+				assert.ok(changesetState(aborted.state, "change").attempts[0]!.cleanup.some((step) => step.status !== "completed"));
+				assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted · retained");
+				assert.equal((await runner.recoverRepository(root)).requests[0]!.state.status, "aborted");
+			}
+			if (["untracked", "ignored", "committed"].includes(mode)) {
+				assert.equal(await readFile(extra, "utf8"), "preserve\n");
+				if (mode === "committed") return; // Unique work must never be deleted by abort.
+				await rm(extra);
+			}
+			if (mode === "termination") {
+				assert.deepEqual(runtime.cleanupCalls, []);
+				await runner.abort(id, root); // Active/unknown reconciliation never replays termination.
+				assert.equal(runtime.terminationCalls.length, 1);
+				runtime.terminationReconciliations.push({ outcome: "terminated" });
+			}
+			aborted = await runner.abort(id, root);
+			assert.ok(changesetState(aborted.state, "change").attempts[0]!.cleanup.every((step) => step.status === "completed"));
+			assert.doesNotMatch(execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: root, encoding: "utf8" }), new RegExp(worker.branch));
+			const refs = execFileSync("git", ["for-each-ref", "--format=%(refname)"], { cwd: root, encoding: "utf8" });
+			assert.ok(!refs.includes(`refs/heads/${worker.branch}`));
+			assert.equal(runtime.terminationCalls.length, 1);
+			assertParsed(aborted.state);
+		});
+	}
+});
+
 test("a productive lease admits read-only status and abort during a paused worker but blocks execute and resume", async (t) => {
 	let releaseWorker!: () => void;
 	const workerPaused = new Promise<void>((resolve) => { releaseWorker = resolve; });
@@ -1536,6 +1602,104 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		assertParsed(corrected.state);
 	});
 
+});
+
+test("failed judgment cannot advertise or persist verification readiness, including legacy recovery", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	runtime.reviewVerdicts.push("Finding: incorrect candidate.", "Finding: still incorrect.");
+	const first = await runner.execute(request("failed-review-verify", [changesetTask("change", {
+		judgment: { role: "reviewer", modelClass: "fast", criterion: "Candidate must be correct." },
+	})]), root);
+	const failed = await runner.resume(first.continuation!, root);
+	assert.equal(failed.state.correctionCount, 1);
+	assert.equal(failed.continuation, undefined);
+	const before = (await runner.status("failed-review-verify", root)).state.tasks[0];
+	await assert.rejects(runner.resume({ id: "failed-review-verify", action: "verify", taskId: "change" }, root), /judgment/);
+	const after = await runner.status("failed-review-verify", root);
+	assert.deepEqual(after.state.tasks[0], before);
+	assert.deepEqual(after.state.integration.candidates, []);
+
+	// Reproduce a v5 record saved by the former verify path, then recover without replay.
+	const handle = await store.load(root, "failed-review-verify");
+	const task = changesetState(handle.state, "change");
+	const attempt = task.attempts[0]!;
+	attempt.readiness = { candidate: attempt.candidate!, base: attempt.candidateBase!, at: 2_000 };
+	task.status = "ready_to_integrate";
+	delete task.failure;
+	await handle.save();
+	assert.equal((await runner.status("failed-review-verify", root)).state.tasks[0]!.status, "ready_to_integrate");
+	const recovered = (await runner.recoverRepository(root)).requests[0]!;
+	assert.equal(recovered.state.tasks[0]!.status, "needs_attention");
+	assert.equal(changesetState(recovered.state, "change").attempts[0]!.readiness, undefined);
+	assert.equal(recovered.continuation, undefined);
+	assert.equal(runtime.workerCalls.length, 2);
+	assertParsed(recovered.state);
+});
+
+test("verification preserves readiness and its candidate together across an interrupted save", async (t) => {
+	const { root, runner, store } = await harness(t, { createStore: (agentDir) => new RecordingStore(agentDir) });
+	await runner.execute(request("verify-atomic", [changesetTask("change", {
+		judgment: { role: "reviewer", modelClass: "fast", criterion: "Candidate is correct." },
+	})]), root);
+	const handle = await store.load(root, "verify-atomic");
+	handle.state.integration.candidates = [];
+	const task = changesetState(handle.state, "change");
+	task.status = "needs_attention";
+	task.failure = "Interrupted before candidate retention.";
+	delete task.attempts[0]!.readiness;
+	await handle.save();
+	const recording = store as RecordingStore;
+	recording.snapshots.length = 0;
+	recording.beforeSave = (state) => {
+		if (state.tasks[0]!.status !== "ready_to_integrate") return;
+		recording.beforeSave = undefined;
+		throw new Error("Interrupted readiness save.");
+	};
+	await assert.rejects(runner.resume({ id: "verify-atomic", action: "verify", taskId: "change" }, root), /Interrupted readiness save/);
+	const result = (await runner.recoverRepository(root)).requests[0]!;
+	assert.equal(result.state.integration.candidates.length, 1);
+	assert.ok(recording.snapshots.every((state) => state.tasks[0]!.status !== "ready_to_integrate"
+		|| state.integration.candidates.length === 1));
+	for (const snapshot of recording.snapshots) assertParsed(snapshot);
+});
+
+test("pre-dispatch text failures preserve both execution attempts and prior diagnostics", async (t) => {
+	let calls = 0;
+	const { root, runtime, runner, store } = await harness(t, { executor: { run: async () => {
+		calls += 1;
+		if (calls === 1) throw new Error("first actual child failed");
+		return { outcome: "success", exitCode: 0, output: "second child succeeded", outputTruncated: false, stderr: "" };
+	} } });
+	runtime.main = await new CheckedGitRuntime().inspectMain({ root }, { signal: new AbortController().signal });
+	runtime.inspectMainFailures.push(new Error("inspection unavailable"));
+	let result = await runner.execute(request("text-dispatch-budget", [textTask("research")]), root);
+	for (const status of ["pending", "running"] as const) {
+		const handle = await store.load(root, "text-dispatch-budget");
+		handle.state.status = status;
+		handle.state.tasks[0]!.status = "pending";
+		delete handle.state.tasks[0]!.failure;
+		await handle.save();
+		result = (await runner.recoverRepository(root)).requests[0]!;
+		assert.equal(result.state.tasks[0]!.attempts.length, 0);
+		assert.equal(calls, 0);
+	}
+	for (let inspection = 0; inspection < 2; inspection += 1) {
+		assert.equal(result.state.tasks[0]!.attempts.length, 0);
+		assert.equal(calls, 0);
+		assert.equal(result.continuation?.action, "retry");
+		runtime.inspectMainFailures.push(new Error("inspection still unavailable"));
+		result = await runner.resume(result.continuation!, root);
+	}
+	result = await runner.resume(result.continuation!, root);
+	assert.equal(calls, 1);
+	const history = structuredClone(result.state.tasks[0]!.attempts);
+	runtime.inspectMainFailures.push(new Error("inspection before second child failed"));
+	result = await runner.resume(result.continuation!, root);
+	assert.deepEqual(result.state.tasks[0]!.attempts, history);
+	result = await runner.resume(result.continuation!, root);
+	assert.equal(calls, 2);
+	assert.equal(result.state.status, "completed");
+	assert.deepEqual(textState(result.state, "research").attempts.map((attempt) => attempt.status), ["failed", "completed"]);
 });
 
 test("text dispatch uses the injected executor and persists a valid running intent and atomic completion", async (t) => {
