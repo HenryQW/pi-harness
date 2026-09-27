@@ -29,9 +29,9 @@ pi-harness · clear-field-f8d2 [+2 ~3 ?1 ↑2] · PR #123 · approved    Codex #
 ✓ CG · ●  🐴 ponytail: ⚡ FULL                                           ◷ 12m 34s
 ```
 
-- The first line shows the repository, branch, Git state, and `pi-pr` pull request status. Linked-worktree branches drop the generated `worktree/` prefix.
+- The first line shows the repository, branch, Git state, and `pi-pr` pull request status beside the checkout identity. The `pi-multi-codex` quota status, when non-empty, occupies the right side. Linked-worktree branches drop the generated `worktree/` prefix.
 - The second line shows cumulative input tokens, output tokens, latest cache-hit rate, and tokens per second for the most recent assistant response. It also shows estimated cost and context usage. Totals include reported tool usage and finished `pi-subagent` background workflows. The active model and thinking level are right-aligned.
-- The third line shows a compact CodeGraph badge first when loaded: `✓ CG` indexed, `● CG` in use, `◐ CG` checking or indexing, `○ CG` missing, `! CG` setup problem, or `? CG` unknown state. Its icon uses the active theme's state color; `CG` remains plain so the badge is readable without color. When pi-codegraph is not loaded, no badge appears. A middle dot separates statuses from different extensions; cumulative agent-work time stays on the right, beneath the active model.
+- The third line shows a compact CodeGraph badge first when loaded: `✓ CG` indexed, `● CG` in use, `◐ CG` checking or indexing, `○ CG` missing, `! CG` setup problem, or `? CG` unknown state. Its icon uses the active theme's state color; `CG` remains plain so the badge is readable without color. When pi-codegraph is not loaded, no badge appears. A middle dot separates the CodeGraph badge from other extension statuses; cumulative agent-work time stays on the right, beneath the active model.
 
 Git badges appear only when action is needed:
 
@@ -56,9 +56,9 @@ Unavailable values render as `—` without a misleading percent sign.
 
 `ultra` renders as a rainbow when the active Pi runtime supplies that thinking level. Unsupported levels never appear.
 
-Non-empty statuses from `@henryqw` extensions, currently Codex quota, occupy the right side of the first line.
+Only the non-empty `pi-multi-codex` quota status occupies the right side of the first line. The `pi-pr` pull-request status stays beside checkout identity, and CodeGraph appears separately on the third line.
 
-Statuses from other extensions, including Ponytail and `pi-rewind`, share the left side. They are sorted by key; colors, links, glyphs, and interior spacing are preserved. Leading and trailing whitespace is trimmed, line breaks become spaces, and long statuses may be clipped to fit the footer. Scripted `mcpScript` calls are not visible as individual tool calls, so they do not trigger the `● CG` badge.
+Statuses from other extensions, including Ponytail and `pi-rewind`, share the left side of the third line. They are sorted by key; colors, links, glyphs, and interior spacing are preserved. Leading and trailing whitespace is trimmed, line breaks become spaces, and long statuses may be clipped to fit the footer. Scripted `mcpScript` calls are not visible as individual tool calls, so they do not trigger the `● CG` badge.
 
 ## Limits and recovery
 
