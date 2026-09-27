@@ -659,7 +659,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_abort",
 		label: "Subagent abort",
-		description: "Abort one unfinished isolated request; retained candidates and integration checkouts must be explicitly rejected and released first. Terminate only exact owned workers.",
+		description: "Abort an isolated request; reject and release retained candidates and integration checkouts first. Terminate only exact owned workers. Repeat abort to reconcile cleanup of unchanged no-candidate allocations; preserve dirty or committed work.",
 		parameters: IdOnlySchema,
 		prepareArguments: parseIdOnly,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {

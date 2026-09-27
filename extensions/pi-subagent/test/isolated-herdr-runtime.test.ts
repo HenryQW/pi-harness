@@ -2484,6 +2484,51 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 	assert.equal(blockedScript.calls.length, 1);
 });
 
+test("cleanup proves an absent agent before removing its exact idle pane and host resources", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+	(attempt.allocations.at(-1) as AgentAllocationIntent).status = "absent";
+	await privateLease(leasePath);
+	const paneSteps = startablePaneSteps(fixture);
+	script.push(
+		repositoryIdentityStep(fixture),
+		{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
+		paneSteps[0]!,
+		...startablePaneSteps(fixture),
+		ttyInventory(),
+		lsof(leasePath),
+		lsof(leasePath),
+		{ command: "herdr", args: ["pane", "close", WORKER_PANE_ID], result: success({ type: "ok" }) },
+		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
+		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: success({ type: "tab_info", tab: tabInfo() }) },
+		{ command: "herdr", args: ["tab", "close", WORKER_TAB_ID], result: success({ type: "ok" }) },
+		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: failure("tab_not_found") },
+		lsof(leasePath),
+		lsof(leasePath),
+		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: failure("tab_not_found") },
+	);
+	assert.deepEqual(await host.cleanupHost({ requestId: REQUEST_ID, kind: "worker_tab", task, attempt }, context()), { outcome: "completed" });
+	attempt.cleanup[0]!.status = "completed";
+
+	script.push(
+		{ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: [] }) },
+		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+		repositoryIdentityStep(fixture),
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
+		{ command: "herdr", args: ["workspace", "close", WORKSPACE_ID], result: success({ type: "ok" }) },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
+	);
+	assert.deepEqual(await host.cleanupHost({ requestId: REQUEST_ID, kind: "workspace", task, attempt }, context()), { outcome: "completed" });
+	assert.ok(script.calls.some(({ args }) => args[0] === "pane" && args[1] === "close"));
+	assert.ok(script.calls.some(({ args }) => args[0] === "workspace" && args[1] === "close"));
+	script.done();
+});
+
 test("lease cleanup preserves artifacts on schema-valid persisted identity drift", async (t) => {
 	const cases: Array<{
 		name: string;

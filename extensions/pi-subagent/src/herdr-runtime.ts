@@ -759,12 +759,48 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 	}
 
+	private async proveAbsentAgentForCleanup(
+		allocation: AgentAllocationIntent,
+		attempt: TaskAttempt,
+		context: OperationContext,
+	): Promise<boolean> {
+		requireIntentIdentity(allocation, attempt);
+		assertAgentIntent(allocation, attempt);
+		this.assertLeasePath(allocation.leasePath, attempt.correlationToken);
+		await this.assertPrivateLeaseDirectories(allocation.leasePath, true);
+		await this.assertPrivateLease(allocation.leasePath, true);
+		const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
+			name: typeof agent.name === "string" ? agent.name : undefined,
+			paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
+			tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
+		}));
+		if (agents.some((agent) => agent.name === allocation.agentName
+			|| agent.paneId === allocation.paneId || agent.tabId === allocation.tabId)) {
+			throw new Error("The exact absent-agent allocation now has a matching Herdr agent.");
+		}
+		const paneIsAbsent = await this.paneAbsent(allocation.paneId, allocation.worktreeCwd, context);
+		if (!paneIsAbsent) await this.assertStartableAgentPane(allocation, context, { requireExclusiveTty: true });
+		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, undefined, true)).length) {
+			throw new Error("The absent-agent process lease still has holders.");
+		}
+		await this.delay(50, context.signal);
+		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, undefined, true)).length) {
+			throw new Error("The absent-agent process lease did not remain empty for two consecutive scans.");
+		}
+		return paneIsAbsent;
+	}
+
 	async cleanupHost(
 		input: { requestId: ExecuteRequest["id"]; kind: HostCleanupKind; task: TaskRequest; attempt: TaskAttempt },
 		context: OperationContext,
 	): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }> {
-		if (input.attempt.termination?.status !== "terminated") {
-			return { outcome: "blocked", failure: "Host cleanup requires exact recorded worker termination." };
+		const terminationProven = input.attempt.termination?.status === "terminated";
+		const agentIntents = input.attempt.allocations.filter((intent): intent is AgentAllocationIntent => intent.kind === "agent");
+		const latestAgent = agentIntents.at(-1);
+		const neverOwned = !input.attempt.termination && latestAgent?.status === "absent"
+			&& agentIntents.every((intent) => intent.status === "absent");
+		if (!terminationProven && !neverOwned) {
+			return { outcome: "blocked", failure: "Host cleanup requires exact worker termination or a definitive absent-agent allocation." };
 		}
 		try {
 			if (input.kind === "worker_tab") {
@@ -781,8 +817,17 @@ export class HerdrHostRuntime implements HostRuntime {
 				const workspaceId = exactString(workspace.workspaceId, "saved workspace ID");
 				if (tabId === allocation.workspaceRootTabId) throw new Error("Saved worker tab aliases the workspace root tab.");
 				const paneId = exactString(allocation.paneId, "saved worker pane ID");
-				if (!await this.paneAbsent(paneId, allocation.worktreeCwd, context)) {
-					return { outcome: "blocked", failure: "The exact saved worker pane still exists after termination." };
+				const paneIsAbsent = neverOwned
+					? await this.proveAbsentAgentForCleanup(latestAgent!, input.attempt, context)
+					: await this.paneAbsent(paneId, allocation.worktreeCwd, context);
+				if (!paneIsAbsent) {
+					if (!neverOwned) return { outcome: "blocked", failure: "The exact saved worker pane still exists after termination." };
+					const closed = await this.herdr.exec(["pane", "close", paneId], this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+					if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["pane", "close"], closed)) };
+					requireOkResponse(closed.stdout, "Herdr pane close response");
+					if (!await this.paneAbsent(paneId, allocation.worktreeCwd, context)) {
+						return { outcome: "blocked", failure: "The exact unstarted worker pane still exists after close." };
+					}
 				}
 				const workspaceIsAbsent = await this.workspaceAbsent(workspaceId, workspace, context);
 				const tab = await this.getTab(tabId, allocation.worktreeCwd, context);
@@ -803,6 +848,9 @@ export class HerdrHostRuntime implements HostRuntime {
 
 			const workerCleanup = input.attempt.cleanup.find((step) => step.kind === "worker_tab");
 			if (workerCleanup?.status !== "completed") return { outcome: "blocked", failure: "Workspace cleanup must follow worker-tab reconciliation." };
+			if (neverOwned && !await this.proveAbsentAgentForCleanup(latestAgent!, input.attempt, context)) {
+				return { outcome: "blocked", failure: "The exact unstarted worker pane remains after worker-tab cleanup." };
+			}
 			const allocation = ownedIntent(input.attempt, "workspace");
 			requireIntentIdentity(allocation, input.attempt);
 			assertWorkspaceIntent(allocation, input.attempt);

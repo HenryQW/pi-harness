@@ -101,7 +101,7 @@ test("text attention fails a running latest attempt despite pending task state",
 	});
 });
 
-test("text attention appends a failure despite running task state without a running latest attempt", () => {
+test("text attention preserves execution history when no attempt is running", () => {
 	const failure = "Task execution stopped.";
 	const task: TextTaskState = {
 		taskId: "research",
@@ -116,10 +116,7 @@ test("text attention appends a failure despite running task state without a runn
 		taskId: "research",
 		kind: "text",
 		status: "needs_attention",
-		attempts: [
-			{ number: 1, status: "failed", failure: "Earlier attempt stopped." },
-			{ number: 2, status: "failed", failure },
-		],
+		attempts: [{ number: 1, status: "failed", failure: "Earlier attempt stopped." }],
 		failure,
 	});
 });
