@@ -2991,7 +2991,11 @@ export class IsolatedRunner {
 				if (task.kind !== "changeset" || task.status !== "ready_to_integrate"
 					|| state.integration.candidates.some((candidate) => candidate.taskId === task.taskId)) continue;
 				const attempt = latestAttempt(task);
-				if (hasPassingPreliminaryEvidence(changesetTaskRequest(state, task.taskId), attempt)) continue;
+				if (hasPassingPreliminaryEvidence(changesetTaskRequest(state, task.taskId), attempt)) {
+					this.attention(task, "Candidate readiness was saved before retention; verify to reconstruct the candidate from exact passing evidence.");
+					changed = true;
+					continue;
+				}
 				delete attempt.readiness;
 				this.attention(task, "Readiness lacked passing preliminary checks, judgment or live ownership; retained work requires attention.");
 				changed = true;
@@ -3158,10 +3162,13 @@ export class IsolatedRunner {
 				continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
 			} else if (attention?.kind === "changeset" && !attention.attempts.at(-1)?.termination) {
 				const attempt = attention.attempts.at(-1);
-				if (attempt && this.correctionAllowed(state, changesetTaskRequest(state, attention.taskId), attempt)) {
+				const hasEvidence = Boolean(attempt && !state.integration.candidates.length
+					&& hasPassingPreliminaryEvidence(changesetTaskRequest(state, attention.taskId), attempt));
+				if (attempt?.readiness && hasEvidence) {
+					continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
+				} else if (attempt && this.correctionAllowed(state, changesetTaskRequest(state, attention.taskId), attempt)) {
 					continuation = { id: state.request.id, action: "retry", taskId: attention.taskId };
-				} else if (attempt && !state.integration.candidates.length
-					&& hasPassingPreliminaryEvidence(changesetTaskRequest(state, attention.taskId), attempt)) {
+				} else if (hasEvidence) {
 					continuation = { id: state.request.id, action: "verify", taskId: attention.taskId };
 				}
 			}

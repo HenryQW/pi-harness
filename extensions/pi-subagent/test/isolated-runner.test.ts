@@ -1636,6 +1636,31 @@ test("failed judgment cannot advertise or persist verification readiness, includ
 	assertParsed(recovered.state);
 });
 
+test("recovery exposes verify for passing legacy readiness without a retained candidate", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	await runner.execute(request("legacy-ready-verify", [changesetTask("change", {
+		judgment: { role: "reviewer", modelClass: "fast", criterion: "Candidate is correct." },
+	})]), root);
+	const handle = await store.load(root, "legacy-ready-verify");
+	const task = changesetState(handle.state, "change");
+	const readiness = structuredClone(task.attempts[0]!.readiness);
+	assert.ok(readiness);
+	handle.state.integration.candidates = [];
+	task.status = "ready_to_integrate";
+	delete task.failure;
+	await handle.save();
+
+	const recovered = (await runner.recoverRepository(root)).requests[0]!;
+	assert.equal(recovered.state.tasks[0]!.status, "needs_attention");
+	assert.deepEqual(recovered.continuation, { id: "legacy-ready-verify", action: "verify", taskId: "change" });
+	assert.deepEqual(changesetState(recovered.state, "change").attempts[0]!.readiness, readiness);
+	const verified = await runner.resume(recovered.continuation!, root);
+	assert.equal(verified.state.integration.candidates.length, 1);
+	assert.equal(verified.state.tasks[0]!.status, "ready_to_integrate");
+	assert.equal(runtime.workerCalls.length, 1);
+	assertParsed(verified.state);
+});
+
 test("verification preserves readiness and its candidate together across an interrupted save", async (t) => {
 	const { root, runner, store } = await harness(t, { createStore: (agentDir) => new RecordingStore(agentDir) });
 	await runner.execute(request("verify-atomic", [changesetTask("change", {
