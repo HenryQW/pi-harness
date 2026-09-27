@@ -60,8 +60,6 @@ Only the non-empty `pi-multi-codex` quota status occupies the right side of the 
 
 Statuses from other extensions, including Ponytail and `pi-rewind`, share the left side of the third line. They are sorted by key; colors, links, glyphs, and interior spacing are preserved. Leading and trailing whitespace is trimmed, line breaks become spaces, and long statuses may be clipped to fit the footer. Scripted `mcpScript` calls are not visible as individual tool calls, so they do not trigger the `● CG` badge.
 
-Separately, the `pi-deps` worktree widget watches a running install for up to ten minutes. At timeout it consumes the running status; reopening Pi does not restore that consumed status. If the installer later writes its outcome, a later TUI session can show that new outcome.
-
 ## Limits and recovery
 
 When the configured executable is `code` and Pi reports hyperlink support, the accent-colored checkout name links to the current path. The link opens a new window for `code -n` or `code --new-window`. A missing config silently uses `code`. Other executables and terminals with hyperlinks disabled render plain text.
