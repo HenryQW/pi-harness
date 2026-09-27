@@ -309,6 +309,7 @@ test("version-one recovery remains resumable without discarding a pending sweep"
 	const path = await workflow.recoveryPath();
 	const saved = JSON.parse(readFileSync(path, "utf8"));
 	saved.version = 1;
+	delete saved.attempts.commit;
 	writeFileSync(path, `${JSON.stringify(saved)}\n`);
 	const resumed = await workflow.resume();
 	assert.equal(resumed.phase, "triage");
@@ -393,6 +394,90 @@ test("recorded plans remain authorized after resume", async (t) => {
 	assert.equal(resumed.approved, true);
 });
 
+test("sweep commits reject stale guards, changed authority, and unrelated pending work", async (t) => {
+	for (const staged of [false, true]) {
+		const app = fixture();
+		t.after(app.cleanup);
+		const workflow = app.workflow();
+		const started = await workflow.start();
+		await assert.rejects(workflow.commit(started.guard, "fix: review"), /not ready to commit/);
+		const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
+		writeFileSync(join(app.root, "file.txt"), "fixed\n");
+		await assert.rejects(workflow.commit({ ...recorded.guard, epoch: 99 }, "fix: review"), /stale comment sweep/);
+		app.world.baseOid = "b".repeat(40);
+		await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /authority changed/);
+		app.world.baseOid = app.initial;
+		writeFileSync(join(app.root, "unrelated.txt"), "keep\n");
+		if (staged) git(app.root, "add", "unrelated.txt");
+		const before = git(app.root, "status", "--porcelain");
+		await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /outside owned paths/);
+		assert.equal(git(app.root, "status", "--porcelain"), before);
+		assert.equal(git(app.root, "rev-parse", "HEAD"), app.initial);
+	}
+});
+
+test("sweep commits stage literal added and deleted paths without requiring unused owned paths", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const literal = ":(glob)*.txt";
+	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt", literal, "unused.txt"]);
+	await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /no pending changes/);
+	rmSync(join(app.root, "file.txt"));
+	writeFileSync(join(app.root, literal), "new\n");
+	const committed = await workflow.commit(recorded.guard, "fix: review");
+	assert.equal(git(app.root, "ls-tree", "--name-only", committed.head), literal);
+	assert.equal(git(app.root, "status", "--porcelain"), "");
+	await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /no pending changes/);
+	const published = await workflow.publish(recorded.guard);
+	await assert.rejects(workflow.commit(published.guard, "fix: review"), /not ready to commit/);
+});
+
+test("interrupted sweep commits reconcile exact parent and tree without replaying uncertain outcomes", async (t) => {
+	for (const outcome of ["applied", "not-applied", "different-tree"] as const) {
+		const app = fixture();
+		t.after(app.cleanup);
+		let commits = 0;
+		const workflow = new PullRequestCommentSweep({
+			cwd: app.root, authority: app.current(), agentDir: app.agentDir,
+			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: app.current() }),
+			exec: async (command, args, options) => {
+				if (command === "git" && args[0] === "commit") {
+					commits += 1;
+					if (outcome === "different-tree") {
+						writeFileSync(join(app.root, "file.txt"), "unexpected hook edit\n");
+						git(app.root, "add", "file.txt");
+					}
+					if (outcome !== "not-applied") await app.exec(command, args, options);
+					throw new Error("commit response lost");
+				}
+				return await app.exec(command, args, options);
+			},
+		});
+		const started = await workflow.start();
+		const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
+		writeFileSync(join(app.root, "file.txt"), "fixed\n");
+		await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /commit response lost/);
+		await assert.rejects(workflow.commit(recorded.guard, "fix: retry"), /unreconciled commit/);
+		await assert.rejects(workflow.publish(recorded.guard), /unreconciled commit/);
+		const recovery = app.workflow();
+		if (outcome === "different-tree") {
+			const path = await workflow.recoveryPath();
+			const saved = readFileSync(path, "utf8");
+			await assert.rejects(recovery.resume(), /saved parent and tree/);
+			assert.equal(readFileSync(path, "utf8"), saved);
+		} else {
+			const resumed = await recovery.resume();
+			assert.equal(resumed.attempts.commit, outcome === "applied" ? "applied" : "none");
+			if (outcome === "not-applied") await recovery.commit(resumed.guard, "fix: review");
+			await recovery.publish(resumed.guard);
+			assert.equal(git(app.root, "rev-list", "--count", `${app.initial}..HEAD`), "1");
+		}
+		assert.equal(commits, 1);
+	}
+});
+
 test("runs exact coverage, guarded publication, fresh resolution, checks, and final projection end to end", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
@@ -413,8 +498,10 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
 	assert.equal(recorded.approved, true);
 	writeFileSync(join(app.root, "file.txt"), "fixed\n");
-	git(app.root, "add", "file.txt");
-	git(app.root, "commit", "-m", "fix: address review");
+	await assert.rejects(workflow.publish(recorded.guard), /clean worktree/);
+	const committed = await workflow.commit(recorded.guard, "fix: address review");
+	assert.equal(committed.head, git(app.root, "rev-parse", "HEAD"));
+	assert.equal(git(app.root, "status", "--porcelain"), "");
 	const published = await workflow.publish(recorded.guard);
 	assert.equal(published.approved, true);
 	assert.equal(published.phase, "published");

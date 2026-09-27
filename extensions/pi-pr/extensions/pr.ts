@@ -105,6 +105,7 @@ const SweepParameters = Type.Union([
 		ledger: SweepLedger,
 		ownedPaths: Type.Optional(OwnedPaths),
 	}, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("commit"), guard: SweepGuard, message: Type.String({ minLength: 1, maxLength: 256 }) }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("refresh"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("resolve"), guard: SweepGuard }, CLOSED),
@@ -123,7 +124,7 @@ const FixCiParameters = Type.Union([
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "inspect" | "commit" | "verify" | "push" | "publish">;
-type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "publish" | "refresh" | "resolve" | "finalize">;
+type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "commit" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
 
 type WorkflowContextBase = {
@@ -516,6 +517,7 @@ export default function pullRequestExtension(
 					case "resume": return await selected.workflow.resume();
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
+					case "commit": return await selected.workflow.commit(params.guard, params.message);
 					case "publish": return await selected.workflow.publish(params.guard);
 					case "refresh": return await selected.workflow.refresh(params.guard);
 					case "resolve": return await selected.workflow.resolve(params.guard);
