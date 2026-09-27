@@ -101,10 +101,7 @@ function joinBudgetParts(parts: string[]): string {
 
 export default function roleTools(pi: ExtensionAPI): void {
 	const processLease = process.env[PI_SUBAGENT_PROCESS_LEASE];
-	if (processLease !== undefined) {
-		validateProcessLease(processLease);
-		process.umask(0o077); // Pi creates the private worker session on its first persisted assistant turn.
-	}
+	if (processLease !== undefined) validateProcessLease(processLease);
 	pi.registerFlag(ROLE_TOOL_POLICY_FLAG, {
 		description: "Internal Pi Subagent Role tool policy",
 		type: "string",

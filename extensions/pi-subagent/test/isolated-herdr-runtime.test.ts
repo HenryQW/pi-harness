@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, open, realpath, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -840,6 +842,12 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 					"agent", "start", AGENT_NAME, "--kind", "pi", "--pane", WORKER_PANE_ID, "--",
 					...launch.args.filter((arg) => arg !== "--no-session"), "--session", `${tabDetails.leasePath}.session.jsonl`,
 				]);
+				const sessionPath = `${tabDetails.leasePath}.session.jsonl`;
+				assert.equal(statSync(sessionPath).mode & 0o777, 0o600);
+				const session = SessionManager.open(sessionPath, fixture.worktree);
+				session.appendMessage({ role: "user", content: "session persistence probe", timestamp: Date.now() });
+				assert.equal(session.getSessionFile(), sessionPath);
+				assert.equal(statSync(sessionPath).mode & 0o777, 0o600);
 				assert.ok(args.includes("--pi-subagent-role-mcps"));
 				assert.ok(!args.includes("Role prompt must stay private"));
 			},
@@ -1885,6 +1893,7 @@ test("a replaced worker session FIFO fails closed without blocking the productiv
 	const { attempt } = await fullAttempt(fixture, host, script);
 	const lease = attempt.allocations.find((item): item is AgentAllocationIntent => item.kind === "agent")!.leasePath;
 	await privateLease(lease);
+	await rm(`${lease}.session.jsonl`, { force: true });
 	execFileSync("mkfifo", [`${lease}.session.jsonl`]);
 	script.push(
 		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
@@ -1894,6 +1903,47 @@ test("a replaced worker session FIFO fails closed without blocking the productiv
 	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
 	assert.equal(result.outcome, "unknown");
 	assert.match(result.diagnostic, /not private, regular, or bounded/);
+	script.done();
+});
+
+test("session growth after stat is rejected with bounded descriptor reads", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script, async () => baseIdentity(), {
+		inspectInFlightTaskCandidate: async () => ({ candidate: baseIdentity(), clean: true, valid: true }),
+	});
+	const { attempt } = await fullAttempt(fixture, host, script);
+	const lease = attempt.allocations.find((item): item is AgentAllocationIntent => item.kind === "agent")!.leasePath;
+	await privateLease(lease);
+	const path = `${lease}.session.jsonl`;
+	await writeFile(path, "", { mode: 0o600 });
+	const probe = await open(path, "r");
+	const prototype = Object.getPrototypeOf(probe);
+	const inode = (await probe.stat()).ino;
+	await probe.close();
+	const originalStat = prototype.stat;
+	const originalRead = prototype.read;
+	let consumed = 0;
+	const limit = 16 * 1024 * 1024;
+	t.mock.method(prototype, "stat", async function (this: any, ...args: any[]) {
+		const info = await originalStat.apply(this, args);
+		if (info.ino === inode) await truncate(path, limit * 2);
+		return info;
+	});
+	t.mock.method(prototype, "read", async function (this: any, buffer: Buffer, offset: number, length: number, position: number | null) {
+		const result = await originalRead.call(this, buffer, offset, Math.min(length, 32 * 1024), position);
+		consumed += result.bytesRead;
+		return result;
+	});
+	script.push(
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		{ command: "herdr", args: () => {}, result: failure("agent_prompt_stalled") },
+		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
+	);
+	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+	assert.equal(result.outcome, "unknown");
+	assert.match(result.diagnostic, /exceeds the 16 MiB limit/);
+	assert.equal(consumed, limit + 1, "short reads and growth must not exceed the I/O budget");
 	script.done();
 });
 
