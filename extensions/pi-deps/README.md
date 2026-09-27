@@ -28,7 +28,7 @@ Run `/deps` in a trusted repository to enable preparation. Create a worktree thr
 - Worktree creation returns without waiting for dependency installation when the hook runs.
 - The hook validates lockfiles synchronously. Conflicting Node lockfiles, `packageManager` mismatches, and unsupported declarations still fail the worktree command fast.
 - A detached installer runs frozen installs in the background.
-- A Pi TUI session in the worktree shows a widget while installing without waiting for completion at startup. It auto-dismisses success after five seconds and keeps failures visible, including missing executables. RPC, JSON, and print sessions do not show or consume this status.
+- A Pi TUI session in the worktree watches for install progress without waiting for completion at startup. It auto-dismisses success after five seconds and reports failures, including missing executables, that it observes during its ten-minute wait. RPC, JSON, and print sessions do not show or consume this status.
 
 Node and uv both run when both lockfile types exist.
 
@@ -48,6 +48,7 @@ Dependency installation may execute repository-controlled build and install scri
 - Already-present `node_modules` skips Node installs; `.pnp.cjs` skips Yarn installs only; `.venv` skips uv installs.
 - Worktrees created with `git worktree add --no-checkout` never run `post-checkout`, so they are not prepared. `git worktree add --detach` with a checkout does run the hook.
 - Installs finish after creation returns. A consumer may use a worktree before dependencies are ready.
+- If status is still `running` after ten minutes, the TUI watcher removes it and stops watching; its widget may continue showing `installing` even after the installer exits. Check the adjacent `<worktree gitdir>/pi-deps/install.log` for installer command output and any `pi-deps:` failure message; the log remains available when the status file is removed. Reopening Pi does not restore a status already removed by the watcher.
 
 The root lockfile selects the manager and command below. A matching `packageManager` declaration selects the same command regardless of its declared version; versions are not checked against the installed executable. Explicit `yarn@1.x` declarations fail fast because Yarn Classic is unsupported. With only `yarn.lock` and no `packageManager`, the hook assumes modern Yarn and runs `--immutable`; if the executable is Yarn Classic, installation fails in the background.
 

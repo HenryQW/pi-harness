@@ -52,6 +52,6 @@ Persistent scopes are explicit because added directories can inject `AGENTS.md`,
 
 ## Limits and recovery
 
-Search supports basename and relative-path globs. It skips `.git` and `node_modules`. It uses Node filesystem traversal and returns at most 1,000 results per call.
+Search supports basename and relative-path globs. It skips `.git` and `node_modules` and does not follow symbolic links. It uses Node filesystem traversal and returns at most 1,000 results per call.
 
 Missing or overlapping **project and global** directories remain configured but are skipped with a warning. Restore a missing directory at its original path or resolve the overlap, then run `/dir-reload` to rescan. To change or discard a configured path, use `/dir-ls` to **remove** it from its scope, then `/dir-add` with the corrected path if needed; `/dir-ls` cannot repair paths in place.
