@@ -4,7 +4,7 @@ import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
 import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
-import { createCheckoutAdmission, roleCanWrite } from "./admission.ts";
+import { createCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { registerSubagentCommand, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
@@ -218,7 +218,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const snapshot = notices.join("\n");
 			if (Buffer.byteLength(snapshot, "utf8") > 32_000) throw new Error("Status exceeds the 32 KiB inspection limit; use subagent_status for exact evidence.");
 			const role = loadRoles().find((candidate) => candidate.name === "scout");
-			if (!role || roleCanWrite(role)) throw new Error("Status inspection requires a configured read-only scout Role.");
+			if (!role || !roleIsReadOnlyScout(role)) throw new Error("Status inspection requires a configured read-only scout Role without extensions or MCP servers.");
 			const prepared = prepareRoleLaunch(pi, ctx, { role, task: DELEGATE_TASK, modelClass: "fast" });
 			const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
 			const controller = new AbortController();

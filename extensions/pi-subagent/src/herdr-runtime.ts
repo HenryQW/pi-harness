@@ -921,7 +921,8 @@ export class HerdrHostRuntime implements HostRuntime {
 			const args = launch.args.filter((arg) => arg !== "--no-session");
 			if (args.length !== launch.args.length - 1) throw new Error("Role launch must contain exactly one --no-session option.");
 			const sessionFile = this.workerSessionFile(allocation.leasePath, allocation.token);
-			if (await this.sessionFileExists(sessionFile)) throw new Error("Worker session file already exists before agent launch.");
+			// Pi initializes an existing empty session in place, retaining its private mode.
+			await (await open(sessionFile, "wx", 0o600)).close();
 			const response = await startPiAgent(this.herdr, {
 				name: allocation.agentName,
 				pane: allocation.paneId,
@@ -1257,7 +1258,17 @@ export class HerdrHostRuntime implements HostRuntime {
 			const uid = process.getuid?.();
 			if (!info.isFile() || (info.mode & 0o077) !== 0 || (uid !== undefined && info.uid !== uid)
 				|| info.size > SESSION_LIMIT) throw new Error("Worker session file is not private, regular, or bounded.");
-			return await file.readFile({ encoding: "utf8" });
+			const chunks: Buffer[] = [];
+			let bytes = 0;
+			while (bytes <= SESSION_LIMIT) {
+				const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, SESSION_LIMIT + 1 - bytes));
+				const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
+				if (!bytesRead) break;
+				chunks.push(chunk.subarray(0, bytesRead));
+				bytes += bytesRead;
+			}
+			if (bytes > SESSION_LIMIT) throw new Error("Worker session file exceeds the 16 MiB limit.");
+			return Buffer.concat(chunks, bytes).toString("utf8");
 		} finally { await file.close(); }
 	}
 

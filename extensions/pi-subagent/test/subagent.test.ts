@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
-import { roleCanWrite } from "../extensions/admission.ts";
+import { roleCanWrite, roleIsReadOnlyScout } from "../extensions/admission.ts";
 import roleTools from "../extensions/role-tools.ts";
 import subagentExtension from "../extensions/subagent.ts";
 
@@ -32,6 +32,10 @@ test("direct admission trusts configured extensions and MCP servers but rejects 
 	};
 	assert.equal(roleCanWrite(role), false);
 	assert.equal(roleCanWrite({ ...role, tools: ["read", "bash"] }), true);
+	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [] }), true);
+	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: ["docs"] }), false);
+	assert.equal(roleIsReadOnlyScout({ ...role, mcps: [] }), false);
+	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [], tools: ["bash"] }), false);
 });
 
 function loadRoleTools(processLease: string | undefined): { events: string[]; toolCall?: ToolCallHandler; childUmask: number } {
@@ -82,8 +86,12 @@ for (const entry of readdirSync("/dev/fd")) {
 }
 throw new Error("process lease descriptor was not inherited");
 `);
-	const extension = loadRoleTools(lease);
-	assert.equal(extension.childUmask, 0o077);
+	const parentUmask = process.umask(0o022);
+	let extension: ReturnType<typeof loadRoleTools>;
+	try {
+		extension = loadRoleTools(lease);
+		assert.equal(extension.childUmask, 0o022, "worker tools must preserve ordinary file creation permissions");
+	} finally { process.umask(parentUmask); }
 	assert.equal(extension.events.filter((event) => event === "tool_call").length, 1);
 	assert.ok(extension.toolCall);
 	const bash = {
