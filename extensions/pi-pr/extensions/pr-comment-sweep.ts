@@ -589,8 +589,10 @@ function carryLedger(before: FeedbackSnapshot, after: FeedbackSnapshot, ledger: 
 		if (old && decision && old.kind === entry.kind) {
 			if (entry.kind !== "thread" && isDeepStrictEqual(old.node, entry.node)) return decision;
 			if (entry.kind === "thread") {
-				const { comments: _a, isResolved: _b, ...previous } = old.node as FeedbackSnapshot["reviewThreads"][number];
-				const { comments: _c, isResolved: _d, ...current } = entry.node as FeedbackSnapshot["reviewThreads"][number];
+				// A fixing push can move or obsolete the current anchor without changing the review.
+				// Original anchors remain identity; child comment content is checked separately.
+				const { comments: _a, isResolved: _b, isOutdated: _c, line: _d, startLine: _e, ...previous } = old.node as FeedbackSnapshot["reviewThreads"][number];
+				const { comments: _f, isResolved: _g, isOutdated: _h, line: _i, startLine: _j, ...current } = entry.node as FeedbackSnapshot["reviewThreads"][number];
 				if (isDeepStrictEqual(previous, current)) return decision;
 			}
 		}
@@ -1197,7 +1199,7 @@ export class PullRequestCommentSweep {
 			const replyBodies = new Map(threadIds.filter((threadId) => !hasReply(threadId)).map((threadId) => {
 				const entry = ledger.get(threadId)!;
 				return [threadId, entry.disposition === "addressed"
-					? `${new URL(state.authority.url).origin}/${state.authority.base.repository}/commit/${state.publicationHead}`
+					? state.publicationHead!
 					: entry.note.trim()] as const;
 			}));
 			const reserveBytes = [...replyBodies.values()].reduce((total, body) =>
