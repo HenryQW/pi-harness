@@ -42,7 +42,7 @@ export const DirectWorkflowSchema = Type.Object({
 	chain: Type.Optional(Type.Array(DelegationSchema, { minItems: 1, maxItems: MAX_WORKFLOW_ENTRIES })),
 }, { additionalProperties: false, description: "Direct mode: exactly one compact single, tasks, or chain workflow" });
 
-export const DelegateTaskSchema = Type.Union([DirectWorkflowSchema, ExecuteRequestSchema]);
+export const DelegateTaskSchema = Type.Union([DirectWorkflowSchema, ExecuteRequestSchema], { type: "object" });
 export const WorkflowSchema = DirectWorkflowSchema;
 
 export type Delegation = Static<typeof DelegationSchema> & { kind: "text" };

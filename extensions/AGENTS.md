@@ -4,6 +4,10 @@
 
 Use `@henryqw/pi-config-store`. By default, an extension has one active config writer: reload after an external edit before writing again. `store.save(value)` serializes whole-file replacement but does not merge stale fields. When multiple writers are supported or concurrent field changes must survive, use `store.update(mutator)` to read and modify the latest valid config under the lock.
 
+## Tool parameter schemas
+
+Every registered tool's parameter schema must serialize with `type: "object"` at the root; some OpenAI-compatible providers reject the entire request otherwise. For a union of object variants, use `Type.Union([...], { type: "object" })`, not a wrapper or mutation. Preserve each variant's validation constraints and leave nested unions unchanged. Test the object root on registered tools and verify union validation still rejects invalid inputs.
+
 ## Message-style widgets
 
 - Give each widget one purpose and concise, width-safe copy. For persistent actions, prefer one line prefixed with a semantic status icon and a space; avoid decorative icons or redundant state.

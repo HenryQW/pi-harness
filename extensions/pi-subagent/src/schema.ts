@@ -78,7 +78,7 @@ export const ResumeRequestSchema = Type.Union([
 	Type.Object({ id: IdSchema, action: Type.Literal("retry"), taskId: IdSchema }, { additionalProperties: false }),
 	Type.Object({ id: IdSchema, action: Type.Literal("verify"), taskId: IdSchema }, { additionalProperties: false }),
 	Type.Object({ id: IdSchema, action: Type.Literal("finalize") }, { additionalProperties: false }),
-]);
+], { type: "object" });
 
 export type IdOnly = Static<typeof IdOnlySchema>;
 export type CheckCommand = Static<typeof CheckCommandSchema>;
@@ -243,7 +243,7 @@ export const IntegrationActionSchema = Type.Union([
 		taskId: Type.Optional(IdSchema),
 		attempt: Type.Optional(Type.Integer({ minimum: 1, maximum: 2 })),
 	}, { additionalProperties: false }),
-]);
+], { type: "object" });
 export type IntegrationAction = Static<typeof IntegrationActionSchema>;
 export function parseIntegrationAction(value: unknown): IntegrationAction {
 	if (!Check(IntegrationActionSchema, value)) throw schemaValidationError("subagent_integrate requires an exact generation and tip", Errors(IntegrationActionSchema, value));

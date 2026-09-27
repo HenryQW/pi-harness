@@ -353,6 +353,8 @@ test("registers sequential tools with closed action schemas", () => {
 	assert.deepEqual(app.tools.map(({ name }) => name), [...expected.keys()]);
 	for (const tool of app.tools) {
 		assert.equal(tool.executionMode, "sequential", tool.name);
+		// Strict OpenAI-compatible endpoints reject a parameters root without type "object".
+		assert.equal((tool.parameters as unknown as { type?: string }).type, "object", tool.name);
 		const alternatives = (tool.parameters as unknown as {
 			anyOf: Array<{ additionalProperties?: boolean; properties: { action: { const: string } }; required?: string[] }>;
 		}).anyOf;

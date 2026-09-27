@@ -76,11 +76,12 @@ const SweepChecks = Type.Array(Type.Object({
 	args: Type.Array(Type.String({ maxLength: 4_096 }), { maxItems: 256 }),
 }, CLOSED), { maxItems: 32 });
 
+// OpenAI-compatible endpoints require an object root even when every union variant is an object.
 const UpdateBranchParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("rebase") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("continue"), resolvedPaths: ResolvedPaths }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
-]);
+], { type: "object" });
 const CreateParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("prepare") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("inspect") }, CLOSED),
@@ -93,7 +94,7 @@ const CreateParameters = Type.Union([
 		title: Type.String({ minLength: 1, maxLength: 256 }),
 		body: Type.String({ maxLength: 65_536 }),
 	}, CLOSED),
-]);
+], { type: "object" });
 const SweepParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("start") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("resume") }, CLOSED),
@@ -110,17 +111,17 @@ const SweepParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("refresh"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("resolve"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("finalize"), guard: SweepGuard, checks: SweepChecks }, CLOSED),
-]);
+], { type: "object" });
 const WorkParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("inspect") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("commit"), ownedPaths: OwnedPaths, message: Type.String({ minLength: 1, maxLength: 256 }) }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("validate"), checks: SweepChecks }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
-]);
+], { type: "object" });
 const FixCiParameters = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("collect") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
-]);
+], { type: "object" });
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "inspect" | "commit" | "verify" | "push" | "publish">;

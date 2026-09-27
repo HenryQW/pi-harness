@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { Compile } from "typebox/compile";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import { roleCanWrite, roleIsReadOnlyScout } from "../extensions/admission.ts";
@@ -298,6 +299,30 @@ function harness(options: {
 		commands,
 	};
 }
+
+test("registered tools have object roots and preserve closed union validation", async () => {
+	await environment(async () => {
+		const app = harness();
+		for (const tool of app.tools.values()) {
+			assert.equal((tool.parameters as { type?: string }).type, "object", tool.name);
+		}
+		const tip = { branch: "refs/heads/main", head: "a".repeat(40), index: "a".repeat(40), tree: "a".repeat(40) };
+		const inputs = [
+			["delegate_task", { mode: "direct", role: "worker", name: "Inspect", task: "Inspect the patch." }, "mode"],
+			["subagent_resume", { id: "request-one", action: "retry", taskId: "task-one" }, "action"],
+			["subagent_integrate", { id: "request-one", action: "validate", generation: 1, expectedTip: tip }, "action"],
+		] as const;
+		for (const [name, input, discriminant] of inputs) {
+			const validator = Compile(JSON.parse(JSON.stringify(app.tools.get(name)!.parameters)));
+			assert.ok(validator.Check(input), name);
+			assert.equal(validator.Check({ ...input, extra: true }), false, name);
+			assert.equal(validator.Check({ ...input, [discriminant]: "unknown" }), false, name);
+			const missingDiscriminant: Record<string, unknown> = { ...input };
+			delete missingDiscriminant[discriminant];
+			assert.equal(validator.Check(missingDiscriminant), false, name);
+		}
+	});
+});
 
 async function recoverDirect(app: ReturnType<typeof harness>): Promise<void> {
 	let shown = false;
