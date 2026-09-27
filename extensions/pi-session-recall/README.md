@@ -100,6 +100,7 @@ Search makes no model calls.
 
 ### Query and index
 
+- Discovery trims the query, then truncates it to 512 characters before matching; text beyond that cap is ignored.
 - Prefer distinctive identifiers, package names, issue numbers, or uncommon terms. Use quoted phrases only when exact wording is known.
 - The FTS5 trigram index uses AND for multiple words by default. Use `OR` for breadth, quoted phrases for exact matches, and `NOT` to exclude. Wildcards help only stems at least three characters long.
 - Only user and assistant text is indexed. Thinking blocks and tool output are not searchable.

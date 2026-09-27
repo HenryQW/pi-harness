@@ -3,7 +3,7 @@
 ## Language
 
 **Footer identity**:
-Concise repository and branch label identifying current checkout. Actionable local Git state follows the branch in brackets and stays hidden when clean and synchronized. It shows active operations, conflicts, staged, unstaged, and untracked path counts, upstream divergence, and detached HEAD. A non-empty `pi-pr` status follows, while non-empty statuses from `@henryqw` extensions occupy the right side. Generated `worktree/` branch prefix is display noise. When the open command executable is `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI. The `-n` and `--new-window` flags make that link open a new window; otherwise unsupported executables render as plain text.
+Concise repository and branch label identifying current checkout. Actionable local Git state follows the branch in brackets and stays hidden when clean and synchronized. It shows active operations, conflicts, staged, unstaged, and untracked path counts, upstream divergence, and detached HEAD. A non-empty `pi-pr` pull-request status follows checkout identity; CodeGraph appears separately on the third line. Generated `worktree/` branch prefix is display noise. When the open command executable is `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI. The `-n` and `--new-window` flags make that link open a new window; otherwise unsupported executables render as plain text.
 _Avoid_: Working-directory path, worktree path, clean badge, remote fetch
 
 **Usage line**:
@@ -15,7 +15,7 @@ Cumulative duration Pi spends processing agent runs, counted from `agent_start` 
 _Avoid_: Session age, response duration, session time
 
 **Family status**:
-Right side of the first footer line, reserved for non-empty statuses from `@henryqw` extensions. `pi-pr` remains beside footer identity instead.
+Right side of the first footer line, reserved only for the non-empty `pi-multi-codex` quota status. `pi-pr` remains beside checkout identity, and CodeGraph is shown separately on the third line.
 _Avoid_: External extension status, plugin summary, rewritten status
 
 **External status line**:
