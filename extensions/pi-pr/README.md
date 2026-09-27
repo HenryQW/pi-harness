@@ -75,7 +75,7 @@ After creating a PR, the extension prefixes the Herdr workspace name with `#<num
 
 The Pi session stores the configured PR URL, number, host, head identity, and target identity, but not mutable CI or review state. Discovery revalidates this identity against GitHub; no repository cache is created.
 
-In-progress feedback sweeps keep private recovery under `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`; branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect in-progress decisions and remote mutation attempts. A fresh `/pr` resumes only matching, verified recovery. If a record is malformed or mismatched, it remains unchanged and routing stops; do not delete it or replay an uncertain mutation to force continuation.
+In-progress feedback sweeps keep private recovery under `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`; branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect in-progress decisions and remote mutation attempts. A fresh `/pr` resumes only matching, verified recovery. If you manually committed and pushed a recorded sweep's fixes, `/pr` can recognize that publication when the clean local HEAD equals the live PR head, descends from the original commit, changes only recorded owned paths, and has no uncertain mutation. It preserves the ledger and refreshes feedback before replying or resolving; it does not push again. Other mismatched or malformed records remain unchanged and block routing; do not delete them or replay an uncertain mutation to force continuation.
 
 ## Limits and recovery
 

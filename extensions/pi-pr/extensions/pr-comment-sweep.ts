@@ -671,10 +671,25 @@ export class PullRequestCommentSweep {
 		const location = await this.location();
 		const state = await this.loadIfPresent(location);
 		if (!state) return "start";
-		if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
+		if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority) && !await this.isScopedExternalPublication(state)) {
 			throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match freshly discovered route authority`);
 		}
 		return "resume";
+	}
+
+	/** Observe a scoped publication without claiming or replaying any external mutation. */
+	private async isScopedExternalPublication(state: SweepState): Promise<boolean> {
+		const authority = this.suppliedAuthority;
+		if (!authority || state.phase !== "recorded" || !state.ledger || !state.approved
+			|| state.publicationHead !== null || state.attempts.push.state !== "none"
+			|| state.attempts.commit && state.attempts.commit.state !== "applied"
+			|| state.attempts.resolutions.length || state.attempts.finalize.state !== "none"
+			|| authority.head.oid === state.original.head
+			|| !sameLinkage(state.authority, authority, authority.head.oid, true)) return false;
+		await this.currentAuthority(state.authority, authority.head.oid, true);
+		await this.requireCleanPublication(state, authority.head.oid);
+		await this.currentAuthority(state.authority, authority.head.oid, true);
+		return true;
 	}
 
 	private async loadState(location: Awaited<ReturnType<PullRequestCommentSweep["location"]>>): Promise<SweepState> {
@@ -916,7 +931,12 @@ export class PullRequestCommentSweep {
 			const location = await this.location();
 			const state = await this.loadState(location);
 			if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
-				throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
+				if (!await this.isScopedExternalPublication(state)) {
+					throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
+				}
+				state.publicationHead = this.suppliedAuthority.head.oid;
+				state.attempts.push = { state: "applied", head: state.publicationHead };
+				state.phase = "published";
 			}
 			if (state.version === 1 && state.projection && state.ledger) {
 				// Version-one projections could resolve a parent despite a blocked child.
