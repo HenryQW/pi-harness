@@ -346,7 +346,7 @@ test("registers sequential tools with closed action schemas", () => {
 		["pi_pr_update_branch", ["rebase", "continue", "publish"]],
 		["pi_pr_create", ["prepare", "inspect", "commit", "verify", "push", "publish"]],
 		["pi_pr_publish_work", ["inspect", "commit", "validate", "publish"]],
-		["pi_pr_sweep", ["start", "resume", "show", "record", "publish", "refresh", "resolve", "finalize"]],
+		["pi_pr_sweep", ["start", "resume", "show", "record", "commit", "publish", "refresh", "resolve", "finalize"]],
 		["pi_pr_fix_ci", ["collect", "publish"]],
 	]);
 
@@ -998,7 +998,7 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 	}
 });
 
-test("feedback record, resolution, and finalization require no UI confirmation", async () => {
+test("feedback record, commit, resolution, and finalization require no UI confirmation", async () => {
 	const calls: string[] = [];
 	const guard = { epoch: 1, runId: "sweep", generation: 1, fingerprint: "a".repeat(64) };
 	const app = harness({
@@ -1009,6 +1009,12 @@ test("feedback record, resolution, and finalization require no UI confirmation",
 		createCommentSweep() { return {
 			async recoveryLaunchAction() { return "start" as const; },
 			async record() { calls.push("record"); return { phase: "recorded", guard }; },
+			async commit(receivedGuard: unknown, message: string) {
+				assert.deepEqual(receivedGuard, guard);
+				assert.equal(message, "fix: address review");
+				calls.push("commit");
+				return { head: "b".repeat(40) };
+			},
 			async resolve() { calls.push("resolve"); return { phase: "resolved", guard }; },
 			async finalize() { calls.push("finalize"); return { kind: "finalized", head: "a".repeat(40) }; },
 		} as never; },
@@ -1018,13 +1024,14 @@ test("feedback record, resolution, and finalization require no UI confirmation",
 	try {
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
-		for (const action of ["record", "resolve", "finalize"] as const) {
+		for (const action of ["record", "commit", "resolve", "finalize"] as const) {
 			await app.callTool("pi_pr_sweep", { runId: routeRunId, action, guard,
 				...(action === "record" ? { ledger: [], ownedPaths: [] } : {}),
+				...(action === "commit" ? { message: "fix: address review" } : {}),
 				...(action === "finalize" ? { checks: [] } : {}),
 			}, ctx);
 		}
-		assert.deepEqual(calls, ["record", "resolve", "finalize"]);
+		assert.deepEqual(calls, ["record", "commit", "resolve", "finalize"]);
 	} finally { await app.shutdown(ctx); }
 });
 
