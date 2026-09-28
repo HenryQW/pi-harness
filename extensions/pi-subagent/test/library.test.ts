@@ -16,6 +16,7 @@ import {
 	resolveRolePackageResources,
 	ROLE_MCP_POLICY_FLAG,
 	ROLE_TOOL_POLICY_FLAG,
+	roleMcpAllowlistFromArgv,
 	selectRoleMcpConfig,
 	type Role,
 } from "../src/index.ts";
@@ -472,7 +473,8 @@ test("Role MCP allowlists load the adapter wrapper without allowing ambient serv
 
 	const policyFlag = `--${ROLE_MCP_POLICY_FLAG}`;
 	assert.equal(launch.args.filter((arg) => arg === policyFlag).length, 1);
-	assert.deepEqual(parseRoleMcpAllowlist(launch.args[launch.args.indexOf(policyFlag) + 1]), ["docs", "browser"]);
+	assert.deepEqual(roleMcpAllowlistFromArgv(launch.args), ["docs", "browser"]);
+	assert.throws(() => roleMcpAllowlistFromArgv(["pi", "--no-extensions"]), /must appear exactly once/);
 	assert.deepEqual(launch.env, {});
 	assert.match(valuesAfter(launch.args, "--extension").at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
 	const noMcpLaunch = createRoleLaunch(pi, { isProjectTrusted: () => true }, {
@@ -608,6 +610,15 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		tools: ["submit", "read"],
 		env: { CALLER_ID: "run-1" },
 	});
+	const retiredRole = { ...role, isolation: "worktree" };
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: retiredRole, task, agentDir }),
+		/Role isolation is retired.*mode "isolated"/,
+	);
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: retiredRole, route: { model, thinkingLevel: "high" } }),
+		/Role isolation is retired.*mode "isolated"/,
+	);
 	assert.deepEqual(preparedDirectRoute.args, prepared.args);
 	assert.deepEqual(preparedDirectRoute.tools, prepared.tools);
 	assert.equal(preparedDirectRoute.args.includes("--append-system-prompt"), false);

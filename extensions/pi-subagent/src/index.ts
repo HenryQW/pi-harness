@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
-import { selectRoleMcpConfig } from "./mcp-role.ts";
+import { parseRoleMcpAllowlist, selectRoleMcpConfig } from "./mcp-role.ts";
 import {
 	loadTaskModelsConfig,
 	modelReference,
@@ -69,6 +69,14 @@ const ROLE_MCP_EXTENSION = fileURLToPath(new URL("../extensions/role-mcp.ts", im
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
+
+/** Read child MCP policy before Pi binds registered extension flag values. */
+export function roleMcpAllowlistFromArgv(args: readonly string[]): string[] {
+	const flag = `--${ROLE_MCP_POLICY_FLAG}`;
+	const indexes = args.flatMap((arg, index) => arg === flag ? [index] : []);
+	if (indexes.length !== 1) throw new Error(`${flag} must appear exactly once.`);
+	return parseRoleMcpAllowlist(args[indexes[0]! + 1]);
+}
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
@@ -462,6 +470,7 @@ export function prepareRoleLaunch(
 	input: ResolveRoleLaunchInput | CreateRoleLaunchInput,
 ): PreparedRoleLaunch {
 	const role = parseRoleName(input.role.name);
+	rejectRetiredRoleIsolation((input.role as Role & { isolation?: unknown }).isolation, `Role ${role}`);
 	const prepared = "route" in input
 		? prepareRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role))
 		: prepareResolvedRoleLaunch(pi, ctx, input);
