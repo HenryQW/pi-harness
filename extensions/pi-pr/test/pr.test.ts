@@ -306,7 +306,7 @@ function harness(options: {
 			await handler(beforeAgentStart, "before_agent_start")({ prompt } as never, callbackContext(ctx));
 		},
 		async beforeSettle(ctx: ExtensionContext, outcome = "completed"): Promise<void> {
-			await handler(agentBeforeSettle, "agent_before_settle")({ outcome, context: { canContinue: true } } as never, callbackContext(ctx));
+			await handler(agentBeforeSettle, "agent_before_settle")({ outcome, context: { canContinue: false } } as never, callbackContext(ctx));
 		},
 		async settle(ctx: ExtensionContext): Promise<void> {
 			await handler(agentSettled, "agent_settled")({} as never, callbackContext(ctx));
@@ -374,7 +374,7 @@ test("registers sequential tools with closed action schemas", () => {
 	assert.deepEqual(Object.keys(finalize.properties).sort(), ["action", "checks", "guard", "runId"]);
 });
 
-test("one /pr continues after create, conflict rebase, CI repair and feedback without approval until external CI", async () => {
+test("one /pr continues from a final answer through queued workflows without before_agent_start until external CI", async () => {
 	let stage = 0;
 	let run = 0;
 	const ids = [1, 2, 3, 4].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
@@ -388,6 +388,7 @@ test("one /pr continues after create, conflict rebase, CI repair and feedback wi
 			return pr;
 		},
 		useDefaultCommandHandler: true,
+		isIdle: () => stage === 0,
 		newRunId: () => ids[run++]!,
 		async canonicalWorktree() { return "/canonical/repo"; },
 		createPullRequestCreator() { return {
@@ -436,6 +437,8 @@ test("a completed helper does not repeat its route when fresh evidence is unchan
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		await app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "publish" }, ctx);
+		for (const outcome of ["aborted", "error"]) await app.beforeSettle(ctx, outcome);
+		assert.equal(app.notifications.length, 0, "unsuccessful outcomes must not rediscover or continue");
 		await app.beforeSettle(ctx);
 		assert.equal(app.messages.length, 1);
 		assert.match(app.notifications.at(-1)!.message, /already ran/);

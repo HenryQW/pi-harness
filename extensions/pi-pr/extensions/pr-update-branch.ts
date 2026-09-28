@@ -257,7 +257,7 @@ export class PullRequestBranchUpdater {
 			if (mergeCommits) throw new Error("Branch update cannot rebase a branch with merge commits; preserve its resolutions manually");
 			await this.freshAuthority(this.authority.head.oid, true);
 			await this.writeRecovery("pending", null);
-			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.backend=merge", "rebase", "--no-autostash", "--onto", this.authority.base.oid, mergeBase], this.execOptions());
+			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.backend=merge", "-c", "rebase.updateRefs=false", "rebase", "--no-autostash", "--onto", this.authority.base.oid, mergeBase], this.execOptions());
 			if (result.killed) throw new Error("git rebase was killed; its outcome is unknown");
 			if (result.code === 0) return await this.verifyRebase();
 			try {
@@ -289,7 +289,7 @@ export class PullRequestBranchUpdater {
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
 			if (unmerged.length) throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
-			const result = await this.exec("git", ["-c", "core.editor=true", "rebase", "--continue"], this.execOptions());
+			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.updateRefs=false", "rebase", "--continue"], this.execOptions());
 			if (result.killed) throw new Error("git rebase continuation was killed; its outcome is unknown");
 			if (result.code === 0) return await this.verifyRebase();
 			return await this.captureConflict();

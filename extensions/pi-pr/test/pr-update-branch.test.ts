@@ -237,6 +237,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	execFileSync("git", ["init", "--initial-branch=main", worktree]);
 	git("config", "user.name", "Rebase Test");
 	git("config", "user.email", "rebase@example.test");
+	git("config", "rebase.updateRefs", "true");
 	writeFileSync(join(worktree, "file.txt"), "original\n");
 	git("add", "file.txt");
 	git("commit", "-m", "initial");
@@ -248,6 +249,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	writeFileSync(join(worktree, "file.txt"), "feature change\n");
 	git("commit", "-am", "feature change");
 	const featureHead = git("rev-parse", "HEAD");
+	git("branch", "unrelated-backup");
 	git("remote", "add", "origin", remote);
 	git("push", "origin", `${featureHead}:refs/heads/feature`);
 	const authority = pullRequest({
@@ -285,6 +287,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
 	const verified = await workflow.continue(["file.txt"]);
 	assert.equal(verified.kind, "verified");
+	assert.equal(git("rev-parse", "unrelated-backup"), featureHead);
 	assert.equal(git("merge-base", "--is-ancestor", baseHead, git("rev-parse", "HEAD")), "");
 	assert.equal(git("status", "--porcelain"), "");
 	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
