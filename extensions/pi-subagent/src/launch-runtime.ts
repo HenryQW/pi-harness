@@ -7,8 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { EXECUTION_BUDGET_FLAG, resolveConfiguredRoleLaunch } from "./index.ts";
-import type { EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
+import { resolveConfiguredRoleLaunch } from "./index.ts";
 import { registerModelTask } from "@henryqw/pi-task-models";
 import type {
 	CoordinatorRuntime,
@@ -47,7 +46,6 @@ export interface LaunchRuntimeOptions {
 	resolveRoot(cwd: string, context: OperationContext): Promise<string>;
 	preflightHost?(input: { request: ExecuteRequest; cwd: string; root: string }, context: OperationContext): Promise<void>;
 	inspectMainBase(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
-	executionBudget?: () => Omit<EphemeralSubagentExecutionBudget, "startedAt">;
 	now?: () => number;
 	randomToken?: () => string;
 }
@@ -185,20 +183,13 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		if (prepared.missingSkills.length) {
 			throw new Error(`Role ${role} requires missing Skills: ${prepared.missingSkills.join(", ")}.`);
 		}
-		const executionBudget = this.options.executionBudget?.();
 		return Object.freeze({
 			launch: Object.freeze({
 				role: prepared.role,
 				modelClass,
 				model: `${prepared.model.provider}/${prepared.model.id}`,
 				thinkingLevel: prepared.thinkingLevel,
-				args: Object.freeze([
-					...prepared.args,
-					...(executionBudget === undefined ? [] : [
-						`--${EXECUTION_BUDGET_FLAG}`,
-						JSON.stringify({ ...executionBudget, startedAt: this.now() } satisfies EphemeralSubagentExecutionBudget),
-					]),
-				]),
+				args: Object.freeze([...prepared.args]),
 				env: Object.freeze({ ...prepared.env }),
 				tools: Object.freeze([...prepared.tools]),
 			}),

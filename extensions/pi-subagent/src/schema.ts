@@ -91,14 +91,7 @@ export type ExecuteRequest = Omit<ExecuteRequestInput, "finalChecks"> & {
 	finalChecks: CheckCommand[];
 };
 
-export interface ExecutionPolicySnapshot {
-	maxSubagents: number;
-	maxTurns: number;
-	maxTokens?: number;
-	childIdleMs: number;
-	childMaxMs: number;
-	maxCorrections: number;
-}
+export type ExecutionPolicySnapshot = Static<typeof ExecutionPolicySnapshotSchema>;
 export type ResumeRequest = Static<typeof ResumeRequestSchema>;
 
 export type WorkspaceIdentity = Static<typeof WorkspaceSchema>;

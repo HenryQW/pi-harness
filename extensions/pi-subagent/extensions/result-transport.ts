@@ -5,30 +5,20 @@ const EVIDENCE_PREVIEW_CODE_POINTS = 256;
 
 export type WorkflowTransportStatus = "pending" | "running" | "succeeded" | "rejected" | "skipped";
 
-type TransportEntryBase = {
+/** `assistantOutput` is read for running/succeeded entries and `failure` for rejected ones. */
+export type WorkflowTransportEntry = {
 	id: WorkflowEntry["id"];
 	index: WorkflowEntry["index"];
 	name: WorkflowEntry["delegation"]["name"];
 	role: WorkflowEntry["delegation"]["role"];
 	model?: string;
 	thinkingLevel?: string;
-};
-
-export type WorkflowTransportEntry =
-	| TransportEntryBase & { status: "pending" | "skipped"; assistantOutput?: never; failure?: never }
-	| TransportEntryBase & { status: "running" | "succeeded"; assistantOutput: string; failure?: never }
-	| TransportEntryBase & { status: "rejected"; assistantOutput?: never; failure: string };
-
-export type WorkflowTransportEntryDetails = {
-	id: string;
-	index: number;
-	name: string;
-	role: string;
 	status: WorkflowTransportStatus;
-	summary?: string;
-	model?: string;
-	thinkingLevel?: string;
+	assistantOutput?: string;
+	failure?: string;
 };
+
+export type WorkflowTransportEntryDetails = Omit<WorkflowTransportEntry, "assistantOutput" | "failure"> & { summary?: string };
 
 export type WorkflowTransportDetails = {
 	mode: WorkflowMode;
@@ -61,15 +51,12 @@ function workflowTitle(mode: WorkflowMode): string {
 }
 
 function statusCounts(entries: readonly WorkflowTransportEntry[]): string[] {
-	const count = (statuses: WorkflowTransportStatus[]) => entries.filter(({ status }) => statuses.includes(status)).length;
-	return ([
-		[["rejected"], "failed"],
-		[["succeeded"], "completed"],
-		[["skipped"], "skipped"],
-	] as const).flatMap(([statuses, word]) => {
-		const total = count([...statuses]);
-		return total ? [`${total} ${word}`] : [];
-	});
+	const count = (status: WorkflowTransportStatus) => entries.filter((entry) => entry.status === status).length;
+	return [
+		...(count("rejected") ? [`${count("rejected")} failed`] : []),
+		...(count("succeeded") ? [`${count("succeeded")} completed`] : []),
+		...(count("skipped") ? [`${count("skipped")} skipped`] : []),
+	];
 }
 
 export function displaySummary(text: string): string {
@@ -80,17 +67,13 @@ export function displaySummary(text: string): string {
 
 export type WorkflowEntryStatusPresentation = { glyph: string; fallback: string };
 
-const ENTRY_STATUS_PRESENTATION = {
+export const ENTRY_STATUS_PRESENTATION = {
 	pending: { glyph: "○", fallback: "queued" },
 	running: { glyph: "◌", fallback: "working" },
 	succeeded: { glyph: "✓", fallback: "completed" },
 	rejected: { glyph: "✗", fallback: "failed" },
 	skipped: { glyph: "–", fallback: "skipped" },
-} as const satisfies Record<WorkflowTransportEntryDetails["status"], WorkflowEntryStatusPresentation>;
-
-export function presentWorkflowEntryStatus(status: WorkflowTransportEntryDetails["status"]): WorkflowEntryStatusPresentation {
-	return ENTRY_STATUS_PRESENTATION[status];
-}
+} as const satisfies Record<WorkflowTransportStatus, WorkflowEntryStatusPresentation>;
 
 function sourceFor(entry: WorkflowTransportEntry): string | undefined {
 	if (entry.status === "rejected") return entry.failure;
@@ -122,7 +105,7 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 	const lines = [
 		[`${workflowTitle(mode)} ${failed ? "failed" : "completed"}`, ...statusCounts(ordered)].join(" · "),
 		...positioned.map(({ entry, position }) => {
-			const { glyph, fallback } = presentWorkflowEntryStatus(entry.status);
+			const { glyph, fallback } = ENTRY_STATUS_PRESENTATION[entry.status];
 			const summary = displaySummary(sourceFor(entry) ?? "") || fallback;
 			return `${glyph} [${position}/${ordered.length}] ${entry.name} · ${entry.role} — ${summary}`;
 		}),

@@ -14,10 +14,6 @@ export function roleIsReadOnlyScout(role: Role): boolean {
 	return !roleCanWrite(role) && role.extensions.length === 0 && !role.mcps?.length;
 }
 
-export interface CheckoutAdmission {
-	register(pi: ExtensionAPI, directCanWrite: (input: unknown) => boolean): void;
-}
-
 async function checkoutKey(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string> {
 	const cwd = await realpath(ctx.cwd);
 	const result = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5_000 });
@@ -32,7 +28,7 @@ async function checkoutKey(pi: ExtensionAPI, ctx: ExtensionContext): Promise<str
  * not an OS sandbox: external processes and trusted extension lifecycle code
  * remain outside interception.
  */
-export function createCheckoutAdmission(): CheckoutAdmission {
+export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (input: unknown) => boolean): void {
 	const ownerByCheckout = new Map<string, string>();
 	const checkoutByCall = new Map<string, string>();
 	const release = (toolCallId: string) => {
@@ -41,30 +37,26 @@ export function createCheckoutAdmission(): CheckoutAdmission {
 		checkoutByCall.delete(toolCallId);
 		if (ownerByCheckout.get(key) === toolCallId) ownerByCheckout.delete(key);
 	};
-	return {
-		register(pi, directCanWrite) {
-			pi.on("tool_call", async (event, ctx) => {
-				const potentiallyWriting = event.toolName === "delegate_task"
-					? directCanWrite(event.input)
-					: !READ_ONLY_TOOLS.has(event.toolName);
-				if (!potentiallyWriting) return;
-				const key = await checkoutKey(pi, ctx);
-				const owner = ownerByCheckout.get(key);
-				if (owner && owner !== event.toolCallId) {
-					return {
-						block: true,
-						reason: `Checkout ${key} already has an admitted Pi writer (${owner}); retry after it settles.`,
-					};
-				}
-				ownerByCheckout.set(key, event.toolCallId);
-				checkoutByCall.set(event.toolCallId, key);
-			});
-			pi.on("tool_result", (event) => release(event.toolCallId));
-			pi.on("tool_execution_end", (event) => release(event.toolCallId));
-			pi.on("session_shutdown", () => {
-				ownerByCheckout.clear();
-				checkoutByCall.clear();
-			});
-		},
-	};
+	pi.on("tool_call", async (event, ctx) => {
+		const potentiallyWriting = event.toolName === "delegate_task"
+			? directCanWrite(event.input)
+			: !READ_ONLY_TOOLS.has(event.toolName);
+		if (!potentiallyWriting) return;
+		const key = await checkoutKey(pi, ctx);
+		const owner = ownerByCheckout.get(key);
+		if (owner && owner !== event.toolCallId) {
+			return {
+				block: true,
+				reason: `Checkout ${key} already has an admitted Pi writer (${owner}); retry after it settles.`,
+			};
+		}
+		ownerByCheckout.set(key, event.toolCallId);
+		checkoutByCall.set(event.toolCallId, key);
+	});
+	pi.on("tool_result", (event) => release(event.toolCallId));
+	pi.on("tool_execution_end", (event) => release(event.toolCallId));
+	pi.on("session_shutdown", () => {
+		ownerByCheckout.clear();
+		checkoutByCall.clear();
+	});
 }

@@ -199,7 +199,7 @@ Children disable ambient extension and Skill discovery. Only declared resources 
 | `prepareRoleLaunch`, `finalizeRoleLaunch` | functions | Prepare Role prompts, arguments, and tool policy. |
 | `createEphemeralSubagentExecutor` | function | Run bounded no-session Pi children through a FIFO pool. |
 | `createChildWorktree`, `finalizeChildWorktree` | functions | Create and conservatively finalize child worktrees. |
-| `prepareExactReviewEvidence`, `prepareWorkingChangeEvidence` | functions | Prepare private exact review or working-change evidence. |
+| `prepareExactReviewEvidence` | function | Prepare private exact base-to-tip review evidence. |
 | `ExecuteRequestSchema`, `StageRequestSchema`, `IntegrationActionSchema` | schemas | Validate checked request and integration inputs. |
 | `IsolatedRunner`, `FileRunStore` | classes | Run checked work and persist durable request state. |
 | `RoleLaunchRuntime`, `HerdrHostRuntime`, `CheckedGitRuntime` | classes | Supply launch, host, and Git behavior to the runner. |

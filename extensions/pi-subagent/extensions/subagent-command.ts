@@ -45,8 +45,8 @@ const errorText = (error: unknown): string => clean(error instanceof Error ? err
 const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
 
-type Pick<T> = { label: string; value: T };
-async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Pick<T>[]): Promise<T | undefined> {
+type Choice<T> = { label: string; value: T };
+async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[]): Promise<T | undefined> {
 	// Numeric suffixes are UI-only. Never parse display text into an identity.
 	const labels = items.map((item, index) => `${clean(item.label, 145)} [${index + 1}]`);
 	const selected = await ctx.ui.select(title, labels);
@@ -100,7 +100,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct branch recovery remains available; check the canonical Git checkout/configuration.`, "warning");
 				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${JSON.stringify(id)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "close" };
-				const selections: Pick<Selection>[] = [
+				const selections: Choice<Selection>[] = [
 					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${task.name} · ${task.status} · ${task.id}`, value: { kind: "direct" as const, task } })),
 					...(inventory?.requests ?? []).filter((request) => history || !completed(request.status) || /retained/i.test(request.status)).map((request) => ({ label: `Isolated · ${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
 					{ label: "Refresh", value: { kind: "refresh" as const } },
@@ -108,7 +108,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					{ label: "Close", value: { kind: "close" as const } },
 				];
 				const taskChoices = selections.splice(0, selections.length - 3);
-				const rank = ({ value }: Pick<Selection>) => value.kind === "direct" ? priority(value.task.status)
+				const rank = ({ value }: Choice<Selection>) => value.kind === "direct" ? priority(value.task.status)
 					: value.kind === "isolated" ? priority(value.request.status) : 3;
 				taskChoices.sort((a, b) => rank(a) - rank(b));
 				selections.unshift(...taskChoices);
@@ -129,7 +129,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					if (!valid()) return;
 					type Action = "inspect" | "send" | "edit" | "back";
 					const eligible = request.tasks.filter((task) => task.kind === "changeset" && adapter.canFollowup(root, request.id, task.id));
-					const actions: Pick<Action>[] = [
+					const actions: Choice<Action>[] = [
 						{ label: "Inspect status and recovery", value: "inspect" },
 						...(eligible.length ? [{ label: "Send follow-up instructions", value: "send" as const }, { label: "Edit queued instructions (withdraw ALL pending; Cancel leaves withdrawn)", value: "edit" as const }] : []),
 						{ label: "Back / refresh", value: "back" },
