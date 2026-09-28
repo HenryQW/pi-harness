@@ -1098,94 +1098,6 @@ test("does not treat an in-progress Git operation as pending creation work", asy
 	assert.deepEqual(discovery.branch, { ahead: 0, worktree: "operation", relation: "distinct-ref" });
 });
 
-test("prioritizes a current pull request before an explicit creation preflight", async () => {
-	const app = harness();
-	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
-
-	assert.equal(discovery.kind, "current");
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === "check-ref-format --branch release"
-	), false);
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
-	), false);
-	assert.equal(app.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
-});
-
-test("uses an explicit creation branch for discovery ahead routing", async () => {
-	const app = harness({
-		pushResult: result("\n"),
-		remote: "origin",
-		remoteNames: ["origin"],
-		pushUrl: "git@github.com:acme/project.git",
-		remoteHead: null,
-		creationAhead: "2",
-	});
-
-	const discovery = await discoverCurrentPullRequest(app.pi, app.context, undefined, undefined, "release");
-	assert.deepEqual(discovery.kind === "none" ? discovery.branch : undefined, {
-		ahead: 2,
-		worktree: "clean",
-		relation: "distinct-ref",
-	});
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === "check-ref-format --branch release"
-	), true);
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
-	), false);
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "gh" && args[0] === "repo" && args[1] === "view" && args[4] === "defaultBranchRef"
-	), false);
-	assert.deepEqual(app.calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
-		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
-		"git@github.com:acme/project.git", "+refs/heads/release:refs/remotes/origin/release",
-	]);
-});
-
-test("preflights an explicit creation base from captured OIDs", async () => {
-	const baseOid = "e".repeat(40);
-	const mergeBase = "f".repeat(40);
-	const app = harness({
-		remote: "origin",
-		pushUrl: "git@github.com:acme/project.git",
-		creationBaseOid: baseOid,
-		creationMergeBase: mergeBase,
-		creationAhead: "2",
-	});
-	const preflight = await preflightPullRequestCreation(app.pi, app.context, creationTarget(), "release");
-
-	assert.deepEqual(preflight, {
-		head: LOCAL_HEAD,
-		base: {
-			host: "github.com",
-			repository: "acme/project",
-			fetchSource: "git@github.com:acme/project.git",
-			ref: "release",
-			oid: baseOid,
-			mergeBase,
-		},
-		ahead: 2,
-		worktree: "clean",
-	});
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === "config --get-all branch.feature/local.gh-merge-base"
-	), false);
-	assert.equal(app.calls.some(({ command, args }) =>
-		command === "gh" && args.join(" ") === "repo view github.com/acme/project --json defaultBranchRef"
-	), false);
-	assert.deepEqual(app.calls.find(({ command, args }) => command === "git" && args.includes("--"))?.args, [
-		"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "--",
-		"git@github.com:acme/project.git", "+refs/heads/release:refs/remotes/origin/release",
-	]);
-	assert.ok(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === `merge-base ${LOCAL_HEAD} ${baseOid}`
-	));
-	assert.ok(app.calls.some(({ command, args }) =>
-		command === "git" && args.join(" ") === `rev-list --count ${mergeBase}..${LOCAL_HEAD}`
-	));
-});
-
 test("rediscovers an unpublished branch before link configuration or creation preflight", async () => {
 	const options: HarnessOptions = {
 		pushResult: result("\n"),
@@ -1284,7 +1196,7 @@ test("accepts an absent creation base config only as empty exit 1", async () => 
 		refCheckResult: result("rewritten\n"),
 	});
 	await assert.rejects(
-		preflightPullRequestCreation(invalidRef.pi, invalidRef.context, creationTarget(), "release"),
+		preflightPullRequestCreation(invalidRef.pi, invalidRef.context, creationTarget()),
 		/Validate creation base failed: ref changed/,
 	);
 	assert.equal(invalidRef.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
@@ -1298,7 +1210,7 @@ test("rejects noncanonical creation ahead counts", async () => {
 			creationAhead: ahead,
 		});
 		await assert.rejects(
-			preflightPullRequestCreation(app.pi, app.context, creationTarget(), "release"),
+			preflightPullRequestCreation(app.pi, app.context, creationTarget()),
 			/Count creation commits failed: invalid ahead count/,
 			ahead,
 		);
@@ -1312,7 +1224,7 @@ test("guards creation branch and repository relation before qualified base fetch
 		branchResult: result("other\n"),
 	});
 	await assert.rejects(
-		preflightPullRequestCreation(branchChanged.pi, branchChanged.context, creationTarget(), "release"),
+		preflightPullRequestCreation(branchChanged.pi, branchChanged.context, creationTarget()),
 		/Read creation branch failed: branch changed/,
 	);
 	assert.equal(branchChanged.calls.some(({ command, args }) => command === "git" && args[0] === "config"), false);
@@ -1320,14 +1232,14 @@ test("guards creation branch and repository relation before qualified base fetch
 
 	const hostMismatch = harness({ remote: "origin", pushUrl: "git@github.com:acme/project.git" });
 	await assert.rejects(
-		preflightPullRequestCreation(hostMismatch.pi, hostMismatch.context, creationTarget({ host: "ghe.example" }), "release"),
+		preflightPullRequestCreation(hostMismatch.pi, hostMismatch.context, creationTarget({ host: "ghe.example" })),
 		/base and head hosts do not match/,
 	);
 	assert.equal(hostMismatch.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
 
 	const sameRef = harness({ remote: "origin", pushUrl: "git@github.com:acme/project.git" });
 	await assert.rejects(
-		preflightPullRequestCreation(sameRef.pi, sameRef.context, creationTarget({ ref: "main" }), "main"),
+		preflightPullRequestCreation(sameRef.pi, sameRef.context, creationTarget({ ref: "main" })),
 		/head and base refs match/,
 	);
 	assert.equal(sameRef.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
@@ -1354,7 +1266,7 @@ test("guards creation branch and repository relation before qualified base fetch
 			remote: "fork",
 			repository: "acme/fork",
 			fetchSource: "git@github.com:acme/fork.git",
-		}), "release"),
+		})),
 		/base and head are unrelated/,
 	);
 	assert.equal(unrelated.calls.some(({ command, args }) => command === "git" && args.includes("--")), false);
@@ -1375,7 +1287,7 @@ test("guards creation branch and repository relation before qualified base fetch
 		remote: "fork",
 		repository: "acme/fork",
 		fetchSource: "git@github.com:acme/fork.git",
-	}), "release");
+	}));
 	const lineageReads = related.calls.flatMap(({ command, args }, index) =>
 		command === "gh" && args[0] === "api" && args.at(-1)?.startsWith("repos/") ? [index] : []
 	);

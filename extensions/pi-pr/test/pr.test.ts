@@ -23,7 +23,6 @@ type Loader = (
 	context: PullRequestLoadContext,
 	inspectedLocal?: unknown,
 	observation?: unknown,
-	explicitCreationBase?: string,
 ) => Promise<CurrentPullRequest | CurrentPullRequestDiscovery | null>;
 type EventHandler = (event: unknown, context: ExtensionContext) => Promise<void> | void;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -208,8 +207,8 @@ function harness(options: {
 	};
 
 	const extensionDependencies: ExtensionDependencies = {
-		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation, explicitCreationBase) => {
-			const loaded = await options.load(pi, context, inspectedLocal, observation, explicitCreationBase);
+		loadCurrentPullRequest: async (pi, context, inspectedLocal, observation) => {
+			const loaded = await options.load(pi, context, inspectedLocal, observation);
 			if (loaded && "kind" in loaded) return loaded;
 			if (loaded) return { kind: "current", pullRequest: loaded };
 			return noPullRequest();
@@ -922,10 +921,8 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 			fetchTracking: "none", setUpstream: "none", pullRequest: "none",
 		},
 	};
-	const receivedBases: Array<string | undefined> = [];
 	const create = harness({
-		async load(_pi, _context, _inspectedLocal, _observation, explicitCreationBase) {
-			receivedBases.push(explicitCreationBase);
+		async load() {
 			return noPullRequest(1);
 		},
 		useDefaultCommandHandler: true,
@@ -949,7 +946,6 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 		await create.command().handler("", createContext as ExtensionCommandContext);
 		await create.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, createContext);
 		assert.deepEqual(createCalls, [["prepare", undefined]]);
-		assert.deepEqual(receivedBases, [undefined, undefined]);
 		assert.deepEqual(create.messages, [`/skill:pi-pr-create runId=${routeRunId} action=prepare`]);
 	} finally {
 		await create.shutdown(createContext);

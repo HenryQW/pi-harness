@@ -499,7 +499,6 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 	];
 	for (const candidate of cases) {
 		const calls: Array<[string, string[]]> = [];
-		const bases: Array<string | undefined> = [];
 		const creationTarget = target(true);
 		const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
 		t.after(() => rmSync(agentDir, { recursive: true, force: true }));
@@ -533,8 +532,7 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 			target: creationTarget,
 			agentDir,
 			exec,
-			async loadCurrentPullRequest(...args) {
-				bases.push(args[4]);
+			async loadCurrentPullRequest() {
 				return none(creationTarget, { ahead: 1, worktree: "clean", relation: "distinct-ref" });
 			},
 		});
@@ -548,7 +546,6 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 			},
 			mergeBase,
 		}, candidate.name);
-		assert.deepEqual(bases, [undefined, undefined], candidate.name);
 		assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "merge-base")?.[1], [
 			"merge-base", head, base,
 		], candidate.name);

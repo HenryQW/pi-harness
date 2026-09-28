@@ -108,13 +108,9 @@ type CiEvidence = {
 	failures: CiFailureEvidence[];
 };
 
-type CiPushAttempt = "before-launch" | "applied" | "not-applied" | "unknown";
 type CiFixPhase = "ready" | "collecting" | "collected" | "published" | "blocked";
 
-type CiFixState = {
-	phase: CiFixPhase;
-	pushAttempt: CiPushAttempt;
-};
+type CiFixState = { phase: CiFixPhase };
 
 export type PullRequestCiFixOptions = {
 	cwd: string;
@@ -293,7 +289,7 @@ function errorMessage(error: unknown): string {
 }
 
 export class PullRequestCiFixer {
-	readonly state: CiFixState = { phase: "ready", pushAttempt: "before-launch" };
+	readonly state: CiFixState = { phase: "ready" };
 
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
@@ -301,20 +297,16 @@ export class PullRequestCiFixer {
 	private readonly agentDir?: string;
 	private readonly exec: Exec;
 	private readonly load: Load;
-	private collectConsumed = false;
-	private publishConsumed = false;
 	private collectedFingerprint?: string;
 
 	constructor(options: PullRequestCiFixOptions) {
-		if (!options.authority || options.authority.target.provenance !== "configured") {
+		if (options.authority.target.provenance !== "configured") {
 			throw new TypeError("CI repair requires a configured failed pull request with a clean equal local HEAD");
 		}
-		const head = requiredOid(options.authority.head.oid, "pull request head OID");
-		const remote = options.authority.target.remoteOid === null
-			? null
-			: requiredOid(options.authority.target.remoteOid, "remote OID");
-		if (remote !== head) throw new TypeError("CI repair requires the pull request head to match the configured remote OID");
-		this.cwd = requiredText(options.cwd, "cwd");
+		if (options.authority.target.remoteOid !== options.authority.head.oid) {
+			throw new TypeError("CI repair requires the pull request head to match the configured remote OID");
+		}
+		this.cwd = options.cwd;
 		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
@@ -331,7 +323,7 @@ export class PullRequestCiFixer {
 	}
 
 	private context(): PullRequestLoadContext {
-		return { cwd: this.cwd, signal: this.signal ?? new AbortController().signal };
+		return { cwd: this.cwd, signal: this.signal };
 	}
 
 	private async freshAuthority(requireOriginalLocal: boolean): Promise<CurrentPullRequest> {
@@ -619,8 +611,7 @@ export class PullRequestCiFixer {
 	}
 
 	async collect(): Promise<CiEvidence> {
-		if (this.collectConsumed || this.state.phase !== "ready") throw new Error("CI evidence collect action was already consumed");
-		this.collectConsumed = true;
+		if (this.state.phase !== "ready") throw new Error("CI evidence collect action was already consumed");
 		this.state.phase = "collecting";
 		try {
 			const before = await this.readSnapshot(true);
@@ -699,7 +690,6 @@ export class PullRequestCiFixer {
 		if (repairHead === original || !(await isAncestor(this.exec, this.options(), original, repairHead))) {
 			throw new Error("CI repair HEAD must be a new descendant of the frozen pull request head");
 		}
-		if (await readHead(this.exec, this.options()) !== repairHead) throw new Error("CI repair HEAD changed before push");
 		return repairHead;
 	}
 
@@ -714,8 +704,7 @@ export class PullRequestCiFixer {
 	}
 
 	async publish(): Promise<CiPublishResult> {
-		if (this.publishConsumed || this.state.phase !== "collected") throw new Error("CI repair publish action is unavailable or was already consumed");
-		this.publishConsumed = true;
+		if (this.state.phase !== "collected") throw new Error("CI repair publish action is unavailable or was already consumed");
 		try {
 			return await withWorktreeLock(this.cwd, async () => {
 				const repairHead = await this.validatePublishAuthority();
@@ -741,19 +730,15 @@ export class PullRequestCiFixer {
 						this.authority.target.ref,
 					);
 				} catch (error) {
-					this.state.pushAttempt = "unknown";
 					throw new Error(`CI repair push outcome is unknown: ${errorMessage(error)}`);
 				}
 				if (postcondition === repairHead) {
-					this.state.pushAttempt = "applied";
 					this.state.phase = "published";
 					return { kind: "published", head: repairHead, attempt: "applied" };
 				}
 				if (postcondition === original) {
-					this.state.pushAttempt = "not-applied";
 					throw new Error(`CI repair push was not applied${pushError ? `: ${errorMessage(pushError)}` : ""}`);
 				}
-				this.state.pushAttempt = "unknown";
 				throw new Error("CI repair push outcome is unknown: remote target has an unexpected OID");
 			}, { agentDir: this.agentDir, signal: this.signal });
 		} catch (error) {

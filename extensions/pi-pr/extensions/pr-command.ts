@@ -25,6 +25,7 @@ const WORKFLOWS: Record<WorkflowNextStep, string> = {
 	sweep: "skill:pi-pr-comment-sweep",
 	"fix-ci": "skill:pi-pr-fix-ci",
 };
+export const WORKFLOW_ROUTES: ReadonlySet<string> = new Set(Object.keys(WORKFLOWS));
 type WorkflowReservation =
 	| { route: "create"; target: PullRequestTarget }
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };

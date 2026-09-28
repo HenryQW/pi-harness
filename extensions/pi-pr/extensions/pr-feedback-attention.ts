@@ -45,8 +45,7 @@ export async function needsFeedbackAttention(
 	const { cwd, agentDir, signal } = options;
 	const exec = options.exec ?? spawnBounded;
 	const snapshot = await collectPullRequestFeedback(feedbackAuthorityFromCurrent(current), { exec, cwd, signal });
-	const discovery = await (options.load ?? loadCurrentPullRequest)(extensionExecApi(exec, cwd, signal),
-		{ cwd, signal: signal ?? new AbortController().signal });
+	const discovery = await (options.load ?? loadCurrentPullRequest)(extensionExecApi(exec, cwd, signal), { cwd, signal });
 	if (discovery.kind !== "current" || !samePullRequestSnapshot(current, discovery.pullRequest) ||
 		current.base.oid !== discovery.pullRequest.base.oid) {
 		throw new Error("Feedback discovery cancelled: pull request authority changed");

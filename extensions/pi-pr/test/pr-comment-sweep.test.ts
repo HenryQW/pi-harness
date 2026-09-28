@@ -281,7 +281,7 @@ test("post-publication base drift resumes and freezes the new base before resolu
 	assert.equal(saved.authority.base.oid, app.world.baseOid);
 	assert.equal(saved.feedback.snapshot.pullRequest.base.oid, app.world.baseOid);
 	const refreshed = pending;
-	const resolved = await recovery.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await recovery.resolve(refreshed.guard);
 	await recovery.finalize(resolved.guard, []);
 	assert.equal(published.publicationHead, app.initial);
 });
@@ -365,7 +365,7 @@ test("a legacy non-actionable projection can resume and acknowledge its open thr
 	saved.projection.threads[0].isResolved = false;
 	writeFileSync(path, `${JSON.stringify(saved)}\n`);
 	const resumed = await workflow.resume();
-	const resolved = await workflow.resolve(resumed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(resumed.guard);
 	assert.equal(app.world.replyBody, reason);
 	await workflow.finalize(resolved.guard, []);
 });
@@ -522,7 +522,7 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	await assert.rejects(workflow.resume(), /final projection does not match feedback and ledger coverage/);
 	assert.equal(readFileSync(recoveryPath, "utf8"), tamperedText);
 	writeFileSync(recoveryPath, validRecovery);
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	assert.equal(resolved.phase, "resolved");
 	assert.equal(app.world.mutationCalls, 1);
 	assert.equal(app.world.replyBody, published.publicationHead);
@@ -600,7 +600,7 @@ test("refresh blocks new feedback while retaining unchanged decisions", async (t
 	await assert.rejects(workflow.record(resumed.guard, ledger(resumed)), /already recorded/);
 
 	const refreshed = resumed;
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	await workflow.finalize(resolved.guard, []);
 });
 
@@ -630,7 +630,7 @@ test("edited same-ID feedback cannot inherit its pre-refresh disposition", async
 	assert.equal(refreshPending.plan?.ledger.find(({ id }) => id === "conversation-1")?.disposition, "blocked");
 	const refreshed = refreshPending;
 	assert.equal(refreshed.phase, "refreshed");
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	await workflow.finalize(resolved.guard, []);
 });
 
@@ -644,7 +644,6 @@ test("blocked child feedback keeps its parent open and prevents resolution", asy
 	const refreshed = await workflow.refresh(published.guard);
 	assert.equal(refreshed.plan?.ledger.find(({ id }) => id === "thread-1-late")?.disposition, "blocked");
 	assert.deepEqual(refreshed.projection?.threads, [{ id: "thread-1", isResolved: false }]);
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /blocked child feedback/);
 	const resolved = await workflow.resolve(refreshed.guard);
 	assert.equal(resolved.phase, "resolved");
 	assert.equal(app.world.replyCalls, 0);
@@ -668,8 +667,9 @@ test("version-one projection with a blocked child is normalized before resume", 
 	writeFileSync(path, `${JSON.stringify(saved)}\n`);
 	const resumed = await workflow.resume();
 	assert.deepEqual(resumed.projection?.threads, [{ id: "thread-1", isResolved: false }]);
-	await assert.rejects(workflow.resolve(resumed.guard, ["thread-1"]), /blocked child feedback/);
+	await workflow.resolve(resumed.guard);
 	assert.equal(app.world.replyCalls, 0);
+	assert.equal(app.world.mutationCalls, 0);
 });
 
 test("near-limit feedback refuses acknowledgement before any mutation", async (t) => {
@@ -681,7 +681,7 @@ test("near-limit feedback refuses acknowledgement before any mutation", async (t
 	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
 	const pending = await workflow.refresh(published.guard);
 	const refreshed = pending;
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /insufficient feedback capacity/);
+	await assert.rejects(workflow.resolve(refreshed.guard), /insufficient feedback capacity/);
 	assert.equal(app.world.replyCalls, 0);
 	assert.equal(app.world.mutationCalls, 0);
 });
@@ -874,15 +874,15 @@ test("resume reconciles a lost thread response without replaying the mutation", 
 	const refreshPending = await workflow.refresh(published.guard);
 	const refreshed = refreshPending;
 	app.world.loseMutationResponse = true;
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /mutation response lost/);
+	await assert.rejects(workflow.resolve(refreshed.guard), /mutation response lost/);
 	assert.equal(app.world.mutationCalls, 1);
-	await assert.rejects(workflow.resolve(refreshed.guard, []), /stale comment sweep run/);
+	await assert.rejects(workflow.resolve(refreshed.guard), /stale comment sweep run/);
 	await assert.rejects(workflow.refresh(refreshed.guard), /stale comment sweep run/);
 	assert.equal(app.world.mutationCalls, 1);
 	const resumed = await workflow.resume();
 	assert.equal(resumed.phase, "resolved");
 	assert.deepEqual(resumed.attempts.resolutions.map(({ step, state }) => [step, state]), [["reply", "applied"], ["resolve", "applied"]]);
-	await assert.rejects(workflow.resolve(resumed.guard, ["thread-1"]), /not ready to resolve|Only addressed or non-actionable unresolved/);
+	assert.equal((await workflow.resolve(resumed.guard)).phase, "resolved");
 	assert.equal(app.world.mutationCalls, 1);
 });
 
@@ -897,13 +897,13 @@ test("resume permits retry only after proving a lost thread mutation was not app
 	const refreshed = refreshPending;
 	app.world.applyMutation = false;
 	app.world.loseMutationResponse = true;
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /mutation response lost/);
+	await assert.rejects(workflow.resolve(refreshed.guard), /mutation response lost/);
 	await assert.rejects(workflow.refresh(refreshed.guard), /stale comment sweep run/);
 	const resumed = await workflow.resume();
 	assert.deepEqual(resumed.attempts.resolutions.map(({ step }) => step), ["reply"]);
 	app.world.applyMutation = true;
 	app.world.loseMutationResponse = false;
-	const resolved = await workflow.resolve(resumed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(resumed.guard);
 	assert.equal(resolved.phase, "resolved");
 	assert.equal(app.world.mutationCalls, 2);
 });
@@ -920,7 +920,7 @@ test("non-actionable threads receive the approved reason before resolution", asy
 	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
 	const refreshed = pending;
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	assert.equal(app.world.replyBody, reason);
 	assert.equal(app.world.replyCalls, 1);
 	assert.equal(app.world.mutationCalls, 1);
@@ -992,7 +992,7 @@ test("a lost reply with a matching new comment remains ambiguous and is never re
 	const pending = await workflow.refresh(published.guard);
 	const refreshed = pending;
 	app.world.loseReplyResponse = true;
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
+	await assert.rejects(workflow.resolve(refreshed.guard), /reply response lost/);
 	assert.equal(app.world.replyCalls, 1);
 	assert.equal(app.world.mutationCalls, 0);
 	const recoveryPath = await workflow.recoveryPath();
@@ -1013,7 +1013,7 @@ test("another actor's identical reply cannot satisfy a lost mutation", async (t)
 	const refreshed = pending;
 	app.world.applyReply = false;
 	app.world.loseReplyResponse = true;
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
+	await assert.rejects(workflow.resolve(refreshed.guard), /reply response lost/);
 	app.world.replyBody = published.publicationHead;
 	await assert.rejects(workflow.resume(), /Reply attempt outcome is ambiguous/);
 	assert.equal(app.world.replyCalls, 1);
@@ -1030,13 +1030,13 @@ test("a lost reply may be retried only after recovery proves it was not posted",
 	const refreshed = pending;
 	app.world.applyReply = false;
 	app.world.loseReplyResponse = true;
-	await assert.rejects(workflow.resolve(refreshed.guard, ["thread-1"]), /reply response lost/);
+	await assert.rejects(workflow.resolve(refreshed.guard), /reply response lost/);
 	assert.equal(app.world.mutationCalls, 0);
 	const resumed = await workflow.resume();
 	assert.deepEqual(resumed.attempts.resolutions, []);
 	app.world.applyReply = true;
 	app.world.loseReplyResponse = false;
-	const resolved = await workflow.resolve(resumed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(resumed.guard);
 	assert.equal(resolved.phase, "resolved");
 	assert.equal(app.world.replyCalls, 2);
 	assert.equal(app.world.mutationCalls, 1);
@@ -1051,7 +1051,7 @@ test("a blocked finalization requires resume before checks can run again", async
 	const published = await publishRecorded(workflow, recorded);
 	const refreshPending = await workflow.refresh(published.guard);
 	const refreshed = refreshPending;
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	const failedCheck = [{ command: process.execPath, args: ["-e", "process.exit(7)"] }];
 	await assert.rejects(workflow.finalize(resolved.guard, failedCheck), /exit code 7/);
 	await assert.rejects(workflow.finalize(resolved.guard, failedCheck), /unreconciled finalization attempt/);
@@ -1072,7 +1072,7 @@ test("an unknown finalization result remains terminal after resume", async (t) =
 	const published = await publishRecorded(workflow, recorded);
 	const refreshPending = await workflow.refresh(published.guard);
 	const refreshed = refreshPending;
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	app.world.loseCheckResponse = true;
 	const checks = [{ command: "sweep-lost-check", args: [] }];
 	await assert.rejects(workflow.finalize(resolved.guard, checks), /check response lost/);
@@ -1139,7 +1139,7 @@ test("failed feedback marker write retains finalization recovery for retry", asy
 	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
 	const refreshed = pending;
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	const recovery = await workflow.recoveryPath();
 	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
 	mkdirSync(dirname(folder), { recursive: true });
@@ -1178,7 +1178,7 @@ test("finalization preserves a malformed existing feedback marker and its recove
 	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
 	const refreshed = pending;
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	const recovery = await workflow.recoveryPath();
 	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
 	mkdirSync(folder, { recursive: true });
@@ -1201,7 +1201,7 @@ test("finalized sweep records standalone feedback attention and new comments ret
 	const published = await publishRecorded(workflow, recorded);
 	const pending = await workflow.refresh(published.guard);
 	const refreshed = pending;
-	const resolved = await workflow.resolve(refreshed.guard, ["thread-1"]);
+	const resolved = await workflow.resolve(refreshed.guard);
 	await workflow.finalize(resolved.guard, []);
 	assert.equal(await needsFeedbackAttention(app.current(), options), false);
 	app.world.extraBody = "please check the other file";

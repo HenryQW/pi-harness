@@ -1,6 +1,6 @@
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { extensionExecApi, inspectWorktree, inspectWorktreeState, isAncestor, parseNulPaths, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validateResolvedConflictPaths, withWorktreeLock } from "./pr-execution.ts";
+import { extensionExecApi, inspectWorktree, inspectWorktreeState, isAncestor, parseNulPaths, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 type Check = { command: string; args: string[] };
 type Options = { cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
@@ -33,12 +33,11 @@ export class PullRequestWorkPublisher {
 
 	private async authorityCheck(): Promise<void> {
 		const { cwd, signal } = this.options;
-		const discovery = await this.load(extensionExecApi(this.exec, cwd, signal), { cwd, signal: signal ?? new AbortController().signal });
+		const discovery = await this.load(extensionExecApi(this.exec, cwd, signal), { cwd, signal });
 		if (discovery.kind !== "current" || !samePullRequestSnapshot(this.authority, discovery.pullRequest)) {
 			throw new Error("Local publication cancelled: PR identity or remote head changed");
 		}
-		const remote = await readValidatedRemoteAuthority(extensionExecApi(this.exec, cwd, signal),
-			{ cwd, signal: signal ?? new AbortController().signal }, this.authority.target.remote);
+		const remote = await readValidatedRemoteAuthority(extensionExecApi(this.exec, cwd, signal), { cwd, signal }, this.authority.target.remote);
 		if (remote.fetchSource !== this.authority.target.fetchSource || remote.host !== this.authority.target.host ||
 			remote.repository.toLowerCase() !== this.authority.target.repository.toLowerCase()) {
 			throw new Error("Local publication cancelled: push destination changed");
@@ -60,8 +59,7 @@ export class PullRequestWorkPublisher {
 				throw new Error("Local HEAD is not a descendant of the published PR head");
 			}
 			const status = (await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions())).stdout;
-			const paths = [...parseStatusSnapshot(status).keys()];
-			parseNulPaths(paths.map((path) => `${path}\0`).join(""), "Pending paths");
+			const paths = validatePaths([...parseStatusSnapshot(status).keys()], "Pending paths");
 			this.initialHead = head;
 			this.status = status;
 			return { paths, head };
@@ -70,7 +68,7 @@ export class PullRequestWorkPublisher {
 
 	async commit(pathsInput: string[], message: string): Promise<{ head: string }> {
 		if (!this.initialHead || this.status === undefined || this.consumed) throw new Error("Pending changes must be inspected first");
-		const paths = validateResolvedConflictPaths(pathsInput, []);
+		const paths = validatePaths(pathsInput, "Commit paths");
 		if (!paths.length || paths.some((path) => !parseStatusSnapshot(this.status!).has(path))) {
 			throw new Error("Commit paths must be reviewed pending paths");
 		}
@@ -94,10 +92,6 @@ export class PullRequestWorkPublisher {
 
 	async validate(checks: Check[]): Promise<{ head: string; checks: number }> {
 		if (!this.initialHead || this.validatedHead) throw new Error("Local publication validation is unavailable");
-		if (!Array.isArray(checks) || checks.length > 32 || checks.some(({ command, args }) =>
-			typeof command !== "string" || !command || !Array.isArray(args) || args.some((arg) => typeof arg !== "string"))) {
-			throw new Error("Invalid validation commands");
-		}
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
 			if (await inspectWorktree(this.exec, this.execOptions()) !== "clean") throw new Error("Unrelated pending changes remain; ask about ownership before publishing");

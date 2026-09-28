@@ -14,6 +14,7 @@ import { PullRequestCommentSweep, type PullRequestCommentSweepOptions } from "./
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	createPrCommandHandler,
+	WORKFLOW_ROUTES,
 	type PrCommandDependencies,
 	type PrCommandInvocation,
 	type WorkflowPromptIdentity,
@@ -48,7 +49,6 @@ const OBSERVATION_ENTRY = "pi-pr-observation";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
 const GIT_COMMIT = /(?:^|[;&|]\s*|\n\s*)git\s+commit(?=\s|$|[;&|])/;
 const GIT_PUSH = /(?:^|[;&|]\s*|\n\s*)git\s+push(?=\s|$|[;&|])/;
-const WORKFLOW_ROUTES = new Set(["create", "publish-work", "update-branch", "sweep", "fix-ci"]);
 const DELEGATED_TOOLS = new Set(["delegate_task"]);
 const CLOSED = { additionalProperties: false } as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -247,15 +247,9 @@ export default function pullRequestExtension(
 	const newRunId = dependencies.newRunId ?? randomUUID;
 	let context: ExtensionContext | undefined;
 	let observation: PullRequestObservation | undefined;
-	const load: typeof loadCurrentPullRequest = async (
-		api,
-		loadContext,
-		inspectedLocal,
-		_observed,
-		explicitCreationBase,
-	) => {
+	const load: typeof loadCurrentPullRequest = async (api, loadContext, inspectedLocal) => {
 		const generation = sessionGeneration;
-		const discovery = await discover(api, loadContext, inspectedLocal, observation, explicitCreationBase);
+		const discovery = await discover(api, loadContext, inspectedLocal, observation);
 		if (generation !== sessionGeneration) return discovery;
 		if (discovery.kind === "current") {
 			const current = pullRequestObservation(discovery.pullRequest);
@@ -302,7 +296,6 @@ export default function pullRequestExtension(
 		invocation.assertCurrent();
 		if (workflowContext) throw new Error(`PR workflow ${workflowContext.runId} is still active`);
 		const runId = newRunId();
-		if (!UUID.test(runId)) throw new Error("PR workflow runId generator returned an invalid UUID");
 		const common: WorkflowContextBase = {
 			runId,
 			sessionGeneration: invocation.sessionGeneration,
@@ -624,9 +617,6 @@ export default function pullRequestExtension(
 		}
 		const display = projectPrDisplay(discovery);
 		const footer = formatPrFooter(display, ctx.ui.theme);
-		if ((discovery.kind === "current" || discovery.kind === "blocked") && footer === undefined) {
-			throw new Error("Pull request display is missing a footer");
-		}
 		displayedWidget = display.widget === undefined ? undefined : display;
 		ctx.ui.setStatus(UI_KEY, footer);
 		reconcileWidget(ctx);
@@ -674,25 +664,15 @@ export default function pullRequestExtension(
 		const category = error instanceof GitHubRateLimitError ? "quota" : "generic";
 		if (!ctx || reportedRefreshFailure === category || reportedRefreshFailure === "quota") return;
 		reportedRefreshFailure = category;
-		try {
-			ctx.ui.notify(
-				error instanceof GitHubRateLimitError
-					? error.message
-					: "PR status refresh failed: status unavailable",
-				"error",
-			);
-		} catch {
-			console.error("PR status refresh failed and could not be reported");
-		}
+		ctx.ui.notify(
+			error instanceof GitHubRateLimitError ? error.message : "PR status refresh failed: status unavailable",
+			"error",
+		);
 	};
 
 	const reportHerdrRenameFailure = (ctx: ExtensionContext, error: unknown): void => {
-		try {
-			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`Herdr workspace rename failed: ${message.slice(0, 500)}`, "warning");
-		} catch (reportError) {
-			console.error("Herdr workspace rename failed and could not be reported", error, reportError);
-		}
+		const message = error instanceof Error ? error.message : String(error);
+		ctx.ui.notify(`Herdr workspace rename failed: ${message.slice(0, 500)}`, "warning");
 	};
 
 	const refresh = async (): Promise<void> => {

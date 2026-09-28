@@ -116,7 +116,7 @@ export type PullRequestObservation = {
 	target: { repository: string; branch: string; remote: string; ref: string };
 };
 
-export type PullRequestLoadContext = Pick<ExtensionContext, "cwd" | "signal">;
+export type PullRequestLoadContext = { cwd: string; signal?: AbortSignal };
 
 type PullRequestCreationPreflight = {
 	head: string;
@@ -764,17 +764,20 @@ function parseSearchPage(output: string, pushTarget: Pick<PushTarget, "repositor
 	};
 }
 
-function matchingSearchPullRequests(candidates: PullRequestCandidate[], pushTarget: PushTarget): PullRequestCandidate[] {
-	return candidates.filter((candidate) =>
-		candidate.url.hostname.toLowerCase() === pushTarget.repository.host &&
-		candidate.headRepository !== null &&
-		normalizeRepository(candidate.headRepository) === pushTarget.repository.normalizedName &&
-		candidate.headRef === pushTarget.ref
-	);
+function matchesPushTarget(
+	url: URL,
+	headRepository: string | null,
+	headRef: string,
+	pushTarget: Pick<PushTarget, "repository" | "ref">,
+): boolean {
+	return url.hostname.toLowerCase() === pushTarget.repository.host && headRepository !== null &&
+		normalizeRepository(headRepository) === pushTarget.repository.normalizedName && headRef === pushTarget.ref;
 }
 
 function selectSearchPullRequest(candidates: PullRequestCandidate[], pushTarget: PushTarget): SearchSelection {
-	const matching = matchingSearchPullRequests(candidates, pushTarget);
+	const matching = candidates.filter((candidate) =>
+		matchesPushTarget(candidate.url, candidate.headRepository, candidate.headRef, pushTarget)
+	);
 	const open = matching.filter((candidate) => candidate.lifecycle === "open");
 	if (open.length > 1) return { kind: "ambiguous", urls: open.map(({ url }) => url) };
 	if (open.length === 1) {
@@ -828,33 +831,6 @@ function parsePullRequestPublication(output: string, expectedUrl: URL): PullRequ
 		title: text(value.title, "Read pull request publication", "title"),
 		body: typeof value.body === "string" ? value.body : fail("Read pull request publication", "invalid body"),
 	};
-}
-
-function selectPullRequest(
-	candidates: ListedPullRequest[],
-	pushTarget: PushTarget,
-): ListedPullRequest | null {
-	const matching = candidates.filter((candidate) =>
-		candidate.url.hostname.toLowerCase() === pushTarget.repository.host &&
-		normalizeRepository(candidate.head.repository) === pushTarget.repository.normalizedName &&
-		candidate.head.ref === pushTarget.ref,
-	);
-	const open = matching.filter((candidate) => candidate.lifecycle === "open");
-	if (open.length > 1) fail("Find pull requests", "multiple open pull requests match current push target");
-	if (open.length === 1) {
-		if (pushTarget.remoteHeadOid === null) fail("Find pull requests", "remote push ref is absent for open pull request");
-		if (open[0].head.oid !== pushTarget.remoteHeadOid) {
-			fail("Find pull requests", "open pull request head does not match remote push ref");
-		}
-		return open[0];
-	}
-	if (pushTarget.remoteHeadOid === null) return null;
-
-	const historical = matching.filter((candidate) =>
-		candidate.lifecycle !== "open" && candidate.head.oid === pushTarget.remoteHeadOid
-	);
-	if (historical.length > 1) fail("Find pull requests", "multiple historical pull requests match remote push ref");
-	return historical[0] ?? null;
 }
 
 function ciStatus(checks: CheckState[]): CiStatus {
@@ -958,27 +934,6 @@ function parseBaseRefAuthority(
 	return oid(repository.ref.target.oid, "Read base ref", "target OID");
 }
 
-function parseBaseRefOid(output: string, candidate: ListedPullRequest): string {
-	return parseBaseRefAuthority(output, candidate.base);
-}
-
-function validatedCreationTarget(target: PullRequestTarget): PullRequestTarget {
-	if (!isRecord(target)) fail("Read creation target", "invalid target");
-	if (target.provenance !== "configured" && target.provenance !== "inferred") {
-		fail("Read creation target", "invalid provenance");
-	}
-	return {
-		provenance: target.provenance,
-		branch: text(target.branch, "Read creation target", "branch"),
-		remote: text(target.remote, "Read creation target", "remote"),
-		ref: text(target.ref, "Read creation target", "ref"),
-		repository: repositoryName(target.repository, "Read creation target", "repository"),
-		host: text(target.host, "Read creation target", "host").toLowerCase(),
-		fetchSource: text(target.fetchSource, "Read creation target", "fetch source"),
-		remoteOid: target.remoteOid === null ? null : oid(target.remoteOid, "Read creation target", "remote OID"),
-	};
-}
-
 function sameCreationTarget(left: PullRequestTarget, right: PullRequestTarget): boolean {
 	return left.provenance === right.provenance && left.branch === right.branch &&
 		left.remote === right.remote && left.ref === right.ref &&
@@ -1006,20 +961,19 @@ async function captureCreationIdentity(
 	context: PullRequestLoadContext,
 	target: PullRequestTarget,
 ): Promise<CreationIdentity> {
-	const validatedTarget = validatedCreationTarget(target);
 	const branch = singleLine(
 		(await execute(pi, context, "Read creation branch", "git", ["branch", "--show-current"])).stdout,
 		"Read creation branch",
 		"branch",
 	);
-	if (branch !== validatedTarget.branch) fail("Read creation branch", "branch changed");
+	if (branch !== target.branch) fail("Read creation branch", "branch changed");
 	await validateCreationRef(pi, context, branch);
 	const head = oid(singleLine(
 		(await execute(pi, context, "Read creation HEAD", "git", ["rev-parse", "--verify", "HEAD^{commit}"])).stdout,
 		"Read creation HEAD",
 		"OID",
 	), "Read creation HEAD", "OID");
-	return { target: validatedTarget, head };
+	return { target, head };
 }
 
 async function readConfiguredCreationBaseRef(
@@ -1139,20 +1093,12 @@ async function inspectCreationWorktree(
 async function preflightCreation(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	target: PullRequestTarget,
-	explicitBaseRef: string | undefined,
 	identity: CreationIdentity,
 ): Promise<CreationPreflightResult> {
-	const validatedTarget = validatedCreationTarget(target);
-	if (!sameCreationTarget(identity.target, validatedTarget)) {
-		fail("Read creation target", "target changed");
-	}
 	const origin = await readRemoteAuthority(pi, context, "origin", true);
 	if (!origin) fail("Read creation repository", "origin is unavailable");
-	const configuredBaseRef = explicitBaseRef === undefined
-		? await readConfiguredCreationBaseRef(pi, context, identity.target.branch)
-		: await validateCreationRef(pi, context, explicitBaseRef);
-	const baseRef = configuredBaseRef ?? await readDefaultCreationBaseRef(pi, context, origin);
+	const baseRef = await readConfiguredCreationBaseRef(pi, context, identity.target.branch) ??
+		await readDefaultCreationBaseRef(pi, context, origin);
 	const relation = await inspectCreationRepositoryRelation(pi, context, identity.target, origin, baseRef);
 	const worktree = await inspectCreationWorktree(pi, context);
 	if (relation === "same-ref") return { kind: relation, worktree };
@@ -1196,10 +1142,9 @@ export async function preflightPullRequestCreation(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: PullRequestTarget,
-	explicitBaseRef?: string,
 ): Promise<PullRequestCreationPreflight> {
 	const identity = await captureCreationIdentity(pi, context, target);
-	const result = await preflightCreation(pi, context, target, explicitBaseRef, identity);
+	const result = await preflightCreation(pi, context, identity);
 	if (result.kind === "same-ref") fail("Read creation repository", "head and base refs match");
 	return result.preflight;
 }
@@ -1208,11 +1153,10 @@ async function creationDiscovery(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	target: PullRequestTarget,
-	explicitBaseRef: string | undefined,
 	identity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const captured = identity ?? await captureCreationIdentity(pi, context, target);
-	const result = await preflightCreation(pi, context, target, explicitBaseRef, captured);
+	const result = await preflightCreation(pi, context, captured);
 	return {
 		kind: "none",
 		creationTarget: target,
@@ -1569,7 +1513,7 @@ async function readBaseRefOid(
 		"-F",
 		`qualifiedName=refs/heads/${candidate.base.ref}`,
 	]);
-	return parseBaseRefOid(result.stdout, candidate);
+	return parseBaseRefAuthority(result.stdout, candidate.base);
 }
 
 export async function readPullRequestBaseRefOid(
@@ -1730,14 +1674,11 @@ export async function findExactHeadPullRequests(
 	const host = text(target.host, "Find pull requests", "host").toLowerCase();
 	const repository = repositoryName(target.repository, "Find pull requests", "head repository");
 	const ref = text(target.ref, "Find pull requests", "head ref");
-	const candidates = await enumerateSearchPullRequests(pi, context, {
-		repository: { host, nameWithOwner: repository, normalizedName: normalizeRepository(repository) },
-		ref,
-	});
+	const pushTarget = { repository: { host, nameWithOwner: repository, normalizedName: normalizeRepository(repository) }, ref };
+	const candidates = await enumerateSearchPullRequests(pi, context, pushTarget);
 	if (candidates === null) return fail("Find pull requests", "published head ref is unavailable");
 	return candidates.filter((candidate) =>
-		candidate.lifecycle === "open" && candidate.headRepository !== null &&
-		normalizeRepository(candidate.headRepository) === normalizeRepository(repository) && candidate.headRef === ref
+		candidate.lifecycle === "open" && matchesPushTarget(candidate.url, candidate.headRepository, candidate.headRef, pushTarget)
 	);
 }
 
@@ -1774,9 +1715,8 @@ export async function loadCurrentPullRequest(
 	context: PullRequestLoadContext,
 	inspectedLocal?: LocalMergeSafety,
 	observed?: unknown,
-	explicitCreationBase?: string,
 ): Promise<CurrentPullRequestDiscovery> {
-	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase);
+	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed);
 }
 
 async function loadCurrentPullRequestInternal(
@@ -1784,7 +1724,6 @@ async function loadCurrentPullRequestInternal(
 	context: PullRequestLoadContext,
 	inspectedLocal: LocalMergeSafety | undefined,
 	observed: unknown,
-	explicitCreationBase: string | undefined,
 	creationIdentity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
@@ -1809,15 +1748,13 @@ async function loadCurrentPullRequestInternal(
 			const target = publicTarget(inferred.target);
 			if (creationIdentity === undefined) {
 				const captured = await captureCreationIdentity(pi, context, target);
-				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, explicitCreationBase, captured);
+				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, captured);
 			}
-			if (!sameCreationTarget(creationIdentity.target, validatedCreationTarget(target))) {
-				fail("Read creation target", "target changed");
-			}
+			if (!sameCreationTarget(creationIdentity.target, target)) fail("Read creation target", "target changed");
 			if (!canLinkTarget(await readLinkConfiguration(pi, context, inferred.target), inferred.target)) {
 				return { kind: "blocked", issue: { kind: "link-configuration", remote: inferred.target.remote } };
 			}
-			return await creationDiscovery(pi, context, target, explicitCreationBase, creationIdentity);
+			return await creationDiscovery(pi, context, target, creationIdentity);
 		}
 		pushTarget = inferred.target;
 	} else {
@@ -1860,64 +1797,32 @@ async function loadCurrentPullRequestInternal(
 	if (search.kind === "target-invalid") {
 		return { kind: "blocked", issue: { kind: "target-invalid" } };
 	}
-	const candidates = search.kind === "candidate" && search.pullRequest !== null ? [search.pullRequest] : [];
-	let candidate: ListedPullRequest | null;
+	// The loaded view may differ from the search candidate; it must still match the push target exactly.
+	const loaded = search.kind === "candidate" ? search.pullRequest : null;
+	const matches = loaded !== null && matchesPushTarget(loaded.url, loaded.head.repository, loaded.head.ref, pushTarget);
+	const oidMismatch = (url: URL): CurrentPullRequestDiscovery => ({
+		kind: "blocked",
+		issue: { kind: "candidate-oid-mismatch", remote: pushTarget.remote, urls: [url] },
+	});
+	let candidate: ListedPullRequest;
 	if (pushTarget.provenance === "inferred") {
-		const matching = candidates.filter((item) =>
-			item.lifecycle === "open" &&
-			item.url.hostname.toLowerCase() === pushTarget.repository.host &&
-			normalizeRepository(item.head.repository) === pushTarget.repository.normalizedName &&
-			item.head.ref === pushTarget.ref
-		);
-		if (matching.length > 1) {
-			return {
-				kind: "blocked",
-				issue: { kind: "candidate-prs-ambiguous", urls: matching.map(({ url }) => url).sort((a, b) => a.href.localeCompare(b.href)) },
-			};
-		}
-		if (matching.length === 0) {
+		if (!matches || loaded.lifecycle !== "open") {
 			return { kind: "blocked", issue: { kind: "published-without-pr", remote: pushTarget.remote } };
 		}
-		candidate = matching[0];
-		if (candidate.head.oid !== pushTarget.remoteHeadOid) {
-			return {
-				kind: "blocked",
-				issue: { kind: "candidate-oid-mismatch", remote: pushTarget.remote, urls: [candidate.url] },
-			};
-		}
+		if (loaded.head.oid !== pushTarget.remoteHeadOid) return oidMismatch(loaded.url);
 		if (!canLinkTarget(await readLinkConfiguration(pi, context, pushTarget), pushTarget)) {
 			return { kind: "blocked", issue: { kind: "link-configuration", remote: pushTarget.remote } };
 		}
+		candidate = loaded;
+	} else if (matches && loaded.lifecycle === "open") {
+		if (pushTarget.remoteHeadOid === null) return { kind: "blocked", issue: { kind: "target-invalid" } };
+		if (loaded.head.oid !== pushTarget.remoteHeadOid) return oidMismatch(loaded.url);
+		candidate = loaded;
+	} else if (matches && loaded.head.oid === pushTarget.remoteHeadOid) {
+		candidate = loaded;
 	} else {
-		try {
-			candidate = selectPullRequest(candidates, pushTarget);
-		} catch (error) {
-			if (!(error instanceof PullRequestLoadError)) throw error;
-			const matching = candidates.filter((item) =>
-				normalizeRepository(item.head.repository) === pushTarget.repository.normalizedName && item.head.ref === pushTarget.ref
-			);
-			const urls = matching.map(({ url }) => url).sort((a, b) => a.href.localeCompare(b.href));
-			if (error.message.includes("multiple ")) {
-				return {
-					kind: "blocked",
-					issue: { kind: "candidate-prs-ambiguous", urls },
-				};
-			}
-			if (error.message.includes("does not match remote push ref")) {
-				return {
-					kind: "blocked",
-					issue: { kind: "candidate-oid-mismatch", remote: pushTarget.remote, urls },
-				};
-			}
-			if (error.message.includes("remote push ref is absent")) {
-				return { kind: "blocked", issue: { kind: "target-invalid" } };
-			}
-			throw error;
-		}
-		if (candidate === null) {
-			if (creationIdentity !== undefined) fail("Read creation target", "target changed");
-			return await creationDiscovery(pi, context, publicTarget(pushTarget), explicitCreationBase);
-		}
+		if (creationIdentity !== undefined) fail("Read creation target", "target changed");
+		return await creationDiscovery(pi, context, publicTarget(pushTarget));
 	}
 
 	return {

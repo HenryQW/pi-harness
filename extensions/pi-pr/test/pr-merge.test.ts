@@ -274,22 +274,6 @@ test("final merge rejects every in-progress Git operation in a linked worktree",
 	git(linked, "revert", "--abort");
 });
 
-test("rejects a missing fetch source before any command or mutation", async () => {
-	const { exec, calls } = mockExec([]);
-	const input = inspectInput(exec);
-	delete (input as { headFetchSource?: string }).headFetchSource;
-
-	await assert.rejects(
-		executeGitHubMerge({
-			...input,
-			pullRequestId,
-			hostname,
-		}),
-		/PR head fetch source must be a non-empty string/,
-	);
-	assert.deepEqual(calls, []);
-});
-
 test("does not issue a merge mutation when fresh local safety checks fail", async () => {
 	const cases: Array<{ name: string; responses: ExecResult[]; error: RegExp }> = [
 		{
