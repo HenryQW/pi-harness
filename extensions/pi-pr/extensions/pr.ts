@@ -432,6 +432,8 @@ export default function pullRequestExtension(
 			selected.controller.signal.throwIfAborted();
 			if (worktree !== selected.worktree) throw new Error("PR workflow worktree is wrong or stale");
 			selected.usedSinceSettlement = true;
+			// Drained follow-ups need not emit before_agent_start; this run has been consumed.
+			selected.queuedPrompt = undefined;
 			return toolResult(await action(selected as Extract<WorkflowContext, { route: Route }>));
 		} finally {
 			signal?.removeEventListener("abort", abortRun);
@@ -783,7 +785,8 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
-		if (event.outcome !== "completed" || !event.context.canContinue || !selected?.completed ||
+		// Pi evaluates continuation again after this handler queues the next workflow.
+		if (event.outcome !== "completed" || !selected?.completed ||
 			selected.queuedPrompt || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
 		if (invocation === undefined) return;
