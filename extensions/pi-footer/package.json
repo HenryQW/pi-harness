@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-footer",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "description": "Show concise repository, branch, and usage details in the Pi footer.",
   "keywords": [
     "pi-package",
