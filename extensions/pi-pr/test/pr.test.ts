@@ -339,7 +339,7 @@ function harness(options: {
 	};
 }
 
-test("registers sequential tools with closed action schemas", () => {
+test("registers sequential tools with flat object roots and strict actions", async () => {
 	const app = harness({ async load() { return { kind: "inactive" }; } });
 	const expected = new Map([
 		["pi_pr_update_branch", ["rebase", "continue", "publish"]],
@@ -352,25 +352,31 @@ test("registers sequential tools with closed action schemas", () => {
 	assert.deepEqual(app.tools.map(({ name }) => name), [...expected.keys()]);
 	for (const tool of app.tools) {
 		assert.equal(tool.executionMode, "sequential", tool.name);
-		// Strict OpenAI-compatible endpoints reject a parameters root without type "object".
-		assert.equal((tool.parameters as unknown as { type?: string }).type, "object", tool.name);
-		const alternatives = (tool.parameters as unknown as {
-			anyOf: Array<{ additionalProperties?: boolean; properties: { action: { const: string } }; required?: string[] }>;
-		}).anyOf;
-		assert.deepEqual(alternatives.map(({ properties }) => properties.action.const), expected.get(tool.name), tool.name);
-		assert.ok(alternatives.every(({ additionalProperties }) => additionalProperties === false), tool.name);
+		// Strict OpenAI-compatible endpoints reject a root without type "object"; Claude Code drops a root union.
+		const schema = tool.parameters as unknown as {
+			type?: string;
+			anyOf?: unknown;
+			additionalProperties?: boolean;
+			required?: string[];
+			properties: { action: { anyOf: Array<{ const: string }> } };
+		};
+		assert.equal(schema.type, "object", tool.name);
+		assert.equal(schema.anyOf, undefined, tool.name);
+		assert.equal(schema.additionalProperties, false, tool.name);
+		assert.deepEqual(schema.required, ["runId", "action"], tool.name);
+		assert.deepEqual(schema.properties.action.anyOf.map(({ const: value }) => value), expected.get(tool.name), tool.name);
 	}
-	const sweepAlternatives = (app.tools.find(({ name }) => name === "pi_pr_sweep")!.parameters as unknown as {
-		anyOf: Array<{ properties: Record<string, unknown> & { action: { const: string } }; required?: string[] }>;
-	}).anyOf;
-	const record = sweepAlternatives.find(({ properties }) => properties.action.const === "record")!;
-	const refresh = sweepAlternatives.find(({ properties }) => properties.action.const === "refresh")!;
-	assert.ok(!record.required?.includes("ownedPaths"));
-	assert.deepEqual(Object.keys(refresh.properties).sort(), ["action", "guard", "runId"]);
-	const resolve = sweepAlternatives.find(({ properties }) => properties.action.const === "resolve")!;
-	const finalize = sweepAlternatives.find(({ properties }) => properties.action.const === "finalize")!;
-	assert.deepEqual(Object.keys(resolve.properties).sort(), ["action", "guard", "runId"]);
-	assert.deepEqual(Object.keys(finalize.properties).sort(), ["action", "checks", "guard", "runId"]);
+	// Flat parameters cannot express action-dependent requirements; reject invalid combinations at execution.
+	const ctx = app.context();
+	const guard = { epoch: 1, runId: "run", generation: 1, fingerprint: "a".repeat(64) };
+	for (const [name, args] of [
+		["pi_pr_sweep", { runId: routeRunId, action: "refresh", guard, checks: [] }],
+		["pi_pr_create", { runId: routeRunId, action: "commit", ownedPaths: [] }],
+		["pi_pr_update_branch", { runId: routeRunId, action: "rebase", extra: true }],
+		["pi_pr_fix_ci", { runId: routeRunId, action: "unknown" }],
+	] as const) {
+		await assert.rejects(app.callTool(name, args, ctx), /do not match one action/, name);
+	}
 });
 
 test("one /pr continues from a final answer through queued workflows without before_agent_start until external CI", async () => {
@@ -411,9 +417,13 @@ test("one /pr continues from a final answer through queued workflows without bef
 	try {
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
-		for (const [tool, action] of [["pi_pr_create", "publish"], ["pi_pr_update_branch", "publish"],
-			["pi_pr_fix_ci", "publish"], ["pi_pr_sweep", "finalize"]] as const) {
-			await app.callTool(tool, { runId: ids[stage], action, title: "fix", body: "Summary", guard: {}, projection: {}, checks: [] }, ctx);
+		for (const [tool, args] of [
+			["pi_pr_create", { action: "publish", title: "fix", body: "Summary" }],
+			["pi_pr_update_branch", { action: "publish" }],
+			["pi_pr_fix_ci", { action: "publish" }],
+			["pi_pr_sweep", { action: "finalize", guard: { epoch: 1, runId: "run", generation: 1, fingerprint: "a".repeat(64) }, checks: [] }],
+		] as const) {
+			await app.callTool(tool, { runId: ids[stage], ...args }, ctx);
 			await app.beforeSettle(ctx);
 		}
 		assert.equal(stage, 4);

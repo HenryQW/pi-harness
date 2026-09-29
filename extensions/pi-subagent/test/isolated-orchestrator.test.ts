@@ -18,9 +18,9 @@ import type { OperationContext, RunResponse } from "../src/runner.ts";
 import {
 	ExecuteRequestSchema,
 	IdOnlySchema,
-	ResumeRequestSchema,
+	ResumeRequestParameters,
 	StageRequestSchema,
-	IntegrationActionSchema,
+	IntegrationActionParameters,
 	parseIntegrationAction,
 	parseStageRequest,
 	parseExecuteRequest,
@@ -635,12 +635,12 @@ test("registers six strict tools without constructing runtime components", () =>
 	assert.equal(execute!.prepareArguments, parseExecuteRequest);
 	assert.equal(status!.parameters, IdOnlySchema);
 	assert.equal(status!.prepareArguments, parseIdOnly);
-	assert.equal(resume!.parameters, ResumeRequestSchema);
+	assert.equal(resume!.parameters, ResumeRequestParameters);
 	assert.equal(resume!.prepareArguments, parseResumeRequest);
 	assert.equal(stage!.parameters, StageRequestSchema);
 	assert.equal(stage!.prepareArguments, parseStageRequest);
 	assert.throws(() => stage!.prepareArguments({ id: "request-one", action: "stage", taskId: "unit-one" }), /exact candidate and generation/);
-	assert.equal(integrate!.parameters, IntegrationActionSchema);
+	assert.equal(integrate!.parameters, IntegrationActionParameters);
 	assert.equal(integrate!.prepareArguments, parseIntegrationAction);
 	assert.throws(() => integrate!.prepareArguments({ id: "request-one", action: "promote" }), /exact generation and tip/);
 	assert.equal(abort!.parameters, IdOnlySchema);

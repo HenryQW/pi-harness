@@ -78,7 +78,17 @@ export const ResumeRequestSchema = Type.Union([
 	Type.Object({ id: IdSchema, action: Type.Literal("retry"), taskId: IdSchema }, { additionalProperties: false }),
 	Type.Object({ id: IdSchema, action: Type.Literal("verify"), taskId: IdSchema }, { additionalProperties: false }),
 	Type.Object({ id: IdSchema, action: Type.Literal("finalize") }, { additionalProperties: false }),
-], { type: "object" });
+]);
+// Tool parameters need a plain object root; the action union remains the validation boundary.
+export const ResumeRequestParameters = Type.Object({
+	id: IdSchema,
+	action: Type.Union([
+		ResumeRequestSchema.anyOf[0].properties.action,
+		ResumeRequestSchema.anyOf[1].properties.action,
+		ResumeRequestSchema.anyOf[2].properties.action,
+	]),
+	taskId: Type.Optional(IdSchema),
+}, { additionalProperties: false });
 
 export type IdOnly = Static<typeof IdOnlySchema>;
 export type CheckCommand = Static<typeof CheckCommandSchema>;
@@ -236,7 +246,21 @@ export const IntegrationActionSchema = Type.Union([
 		taskId: Type.Optional(IdSchema),
 		attempt: Type.Optional(Type.Integer({ minimum: 1, maximum: 2 })),
 	}, { additionalProperties: false }),
-], { type: "object" });
+]);
+export const IntegrationActionParameters = Type.Object({
+	id: IntegrationActionSchema.anyOf[0].properties.id,
+	generation: IntegrationActionSchema.anyOf[0].properties.generation,
+	action: Type.Union([
+		IntegrationActionSchema.anyOf[0].properties.action,
+		IntegrationActionSchema.anyOf[1].properties.action,
+		IntegrationActionSchema.anyOf[2].properties.action,
+	]),
+	expectedTip: IntegrationActionSchema.anyOf[0].properties.expectedTip,
+	expectedMain: Type.Optional(IntegrationActionSchema.anyOf[0].properties.expectedMain),
+	newMain: Type.Optional(IntegrationActionSchema.anyOf[0].properties.newMain),
+	taskId: IntegrationActionSchema.anyOf[2].properties.taskId,
+	attempt: IntegrationActionSchema.anyOf[2].properties.attempt,
+}, { additionalProperties: false });
 export type IntegrationAction = Static<typeof IntegrationActionSchema>;
 export function parseIntegrationAction(value: unknown): IntegrationAction {
 	if (!Check(IntegrationActionSchema, value)) throw schemaValidationError("subagent_integrate requires an exact generation and tip", Errors(IntegrationActionSchema, value));

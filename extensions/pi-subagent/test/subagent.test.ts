@@ -304,7 +304,11 @@ test("registered tools have object roots and preserve closed union validation", 
 	await environment(async () => {
 		const app = harness();
 		for (const tool of app.tools.values()) {
-			assert.equal((tool.parameters as { type?: string }).type, "object", tool.name);
+			const schema = tool.parameters as { type?: string; properties?: unknown; anyOf?: unknown; oneOf?: unknown };
+			assert.equal(schema.type, "object", tool.name);
+			assert.ok(schema.properties, tool.name);
+			assert.equal(schema.anyOf, undefined, tool.name);
+			assert.equal(schema.oneOf, undefined, tool.name);
 		}
 		const tip = { branch: "refs/heads/main", head: "a".repeat(40), index: "a".repeat(40), tree: "a".repeat(40) };
 		const inputs = [
@@ -321,6 +325,14 @@ test("registered tools have object roots and preserve closed union validation", 
 			delete missingDiscriminant[discriminant];
 			assert.equal(validator.Check(missingDiscriminant), false, name);
 		}
+		const isolated = { mode: "isolated", id: "request-one", goal: "Inspect the change", tasks: [{
+			id: "task-one", kind: "text", role: "scout", modelClass: "fast", requirements: "Inspect",
+			deliverable: "Report", dependsOn: [], contextFrom: [],
+		}] };
+		assert.ok(Compile(JSON.parse(JSON.stringify(app.tools.get("delegate_task")!.parameters))).Check(isolated));
+		assert.throws(() => app.tools.get("subagent_resume")!.prepareArguments!({ id: "request-one", action: "retry" }), /one strict action/);
+		assert.throws(() => app.tools.get("subagent_integrate")!.prepareArguments!({ id: "request-one", action: "refresh", generation: 1, expectedTip: tip }), /exact generation and tip/);
+		assert.throws(() => app.tools.get("delegate_task")!.prepareArguments!({ mode: "isolated", id: "request-one" }), /strict task schema/);
 	});
 });
 

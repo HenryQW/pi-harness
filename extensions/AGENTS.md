@@ -6,7 +6,7 @@ Use `@henryqw/pi-config-store`. By default, an extension has one active config w
 
 ## Tool parameter schemas
 
-Every registered tool's parameter schema must serialize with `type: "object"` at the root; some OpenAI-compatible providers reject the entire request otherwise. For a union of object variants, use `Type.Union([...], { type: "object" })`, not a wrapper or mutation. Preserve each variant's validation constraints and leave nested unions unchanged. Test the object root on registered tools and verify union validation still rejects invalid inputs.
+Every registered tool's parameter schema must serialize as a plain object root with `type: "object"` and `properties`, without root `anyOf`/`oneOf`. Some OpenAI-compatible providers reject a root without `type`, while the Claude bridge may omit root unions. For variant actions, expose a flat object schema and validate the strict union at the tool boundary; nested unions remain valid. Test both the registered root and rejection of invalid variants.
 
 ## Message-style widgets
 

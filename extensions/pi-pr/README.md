@@ -40,7 +40,7 @@ Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the
 | Footer | ui | Linked PR number and plain-language status. |
 | Widget | ui | Action hint or transient routing status. |
 
-`/pr` accepts no flags, prose, or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree.
+`/pr` accepts no flags, prose, or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
 
 ## Flow
 
