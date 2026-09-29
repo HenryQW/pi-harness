@@ -76,7 +76,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - Recognized Pi JSON events renew idle timeout; raw bytes do not. Child maximum runtime always terminates ephemeral children.
 - Output, stderr, protocol events, callback draining, and inherited descendant streams are bounded.
 - Low-level worktree finalization returns explicit `pruned`, `retained`, or `recovery` evidence and never force-deletes uncertain work.
-- Exact review and working-change helpers produce bounded private evidence; callers must preserve identity guards and verdict validation.
+- Exact review helpers produce bounded private evidence; callers must preserve identity guards and verdict validation.
 
 ## Owned storage
 

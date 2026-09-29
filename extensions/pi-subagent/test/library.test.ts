@@ -7,7 +7,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import childToolPolicy from "../extensions/role-tools.ts";
 import {
 	createRoleLaunch,
-	EXECUTION_BUDGET_FLAG,
 	EXECUTION_BUDGET_ENV,
 	finalizeRoleLaunch,
 	parseRoleMcpAllowlist,
@@ -16,8 +15,8 @@ import {
 	resolveRoleLaunch,
 	resolveRolePackageResources,
 	ROLE_MCP_POLICY_FLAG,
-	roleMcpFlagValue,
 	ROLE_TOOL_POLICY_FLAG,
+	roleMcpAllowlistFromArgv,
 	selectRoleMcpConfig,
 	type Role,
 } from "../src/index.ts";
@@ -40,7 +39,7 @@ test("child role policy keeps selected built-ins and activates loaded extension 
 	let sessionStart: (() => void) | undefined;
 	let activeTools = ["read", "bash", "edit", "write", "extension_tool"];
 	const pi = {
-		registerFlag(name: string) { assert.ok([ROLE_TOOL_POLICY_FLAG, EXECUTION_BUDGET_FLAG].includes(name)); },
+		registerFlag(name: string) { assert.equal(name, ROLE_TOOL_POLICY_FLAG); },
 		getFlag(name: string) {
 			return name === ROLE_TOOL_POLICY_FLAG ? JSON.stringify(["read"]) : undefined;
 		},
@@ -473,9 +472,9 @@ test("Role MCP allowlists load the adapter wrapper without allowing ambient serv
 	});
 
 	const policyFlag = `--${ROLE_MCP_POLICY_FLAG}`;
-	assert.deepEqual(parseRoleMcpAllowlist(roleMcpFlagValue(launch.args, policyFlag)), ["docs", "browser"]);
-	assert.throws(() => roleMcpFlagValue([policyFlag], policyFlag), /requires a value/);
-	assert.throws(() => roleMcpFlagValue([policyFlag, "[]", policyFlag, "[]"], policyFlag), /at most once/);
+	assert.equal(launch.args.filter((arg) => arg === policyFlag).length, 1);
+	assert.deepEqual(roleMcpAllowlistFromArgv(launch.args), ["docs", "browser"]);
+	assert.throws(() => roleMcpAllowlistFromArgv(["pi", "--no-extensions"]), /must appear exactly once/);
 	assert.deepEqual(launch.env, {});
 	assert.match(valuesAfter(launch.args, "--extension").at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
 	const noMcpLaunch = createRoleLaunch(pi, { isProjectTrusted: () => true }, {
@@ -611,6 +610,15 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		tools: ["submit", "read"],
 		env: { CALLER_ID: "run-1" },
 	});
+	const retiredRole = { ...role, isolation: "worktree" };
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: retiredRole, task, agentDir }),
+		/Role isolation is retired.*mode "isolated"/,
+	);
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: retiredRole, route: { model, thinkingLevel: "high" } }),
+		/Role isolation is retired.*mode "isolated"/,
+	);
 	assert.deepEqual(preparedDirectRoute.args, prepared.args);
 	assert.deepEqual(preparedDirectRoute.tools, prepared.tools);
 	assert.equal(preparedDirectRoute.args.includes("--append-system-prompt"), false);
@@ -619,10 +627,6 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.deepEqual(finalized, launch);
 	assert.deepEqual(finalizeRoleLaunch(preparedDirectRoute), launch);
 	assert.equal(finalized.args.filter((arg) => arg === "--append-system-prompt").length, 1);
-	assert.throws(
-		() => finalizeRoleLaunch({ ...prepared, args: finalized.args }),
-		/already contains --append-system-prompt/,
-	);
 	assert.throws(
 		() => prepareRoleLaunch(pi, ctx, { role: { ...role, name: "bad\0" }, task, agentDir }),
 		/Role: name/,

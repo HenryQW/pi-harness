@@ -329,7 +329,7 @@ interface RuntimeScope {
 class ProductiveScope implements RuntimeScope {
 	readonly signal: AbortSignal;
 
-	constructor(_timeoutMs: number, _now: () => number, outerSignal?: AbortSignal) {
+	constructor(outerSignal?: AbortSignal) {
 		this.signal = outerSignal ?? new AbortController().signal;
 	}
 
@@ -421,11 +421,6 @@ class FollowupControl {
 		if (queued) return queued;
 		this.sealed = true;
 		return undefined;
-	}
-
-	invalidate(): void {
-		this.sealed = true;
-		this.queue.length = 0;
 	}
 
 	close(): void {
@@ -985,7 +980,7 @@ export class IsolatedRunner {
 	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		const request = parseExecuteRequest(value);
 		const policy = Object.freeze({ ...this.currentPolicy() });
-		const scope = new ProductiveScope(policy.childMaxMs, () => this.coordinatorRuntime.now(), outerSignal);
+		const scope = new ProductiveScope(outerSignal);
 		const canonicalCwd = realpathSync.native(cwd);
 		const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd }, context));
 		const root = realpathSync.native(prepared.root);
@@ -1067,8 +1062,7 @@ export class IsolatedRunner {
 				return loaded;
 			}, { productiveRunLease: lifecycle.lease });
 			const state = handle.state;
-			const current = this.currentPolicy();
-			const scope: RuntimeScope = new ProductiveScope(Math.min(state.policy.childMaxMs, current.childMaxMs), () => this.coordinatorRuntime.now(), outerSignal);
+			const scope: RuntimeScope = new ProductiveScope(outerSignal);
 			try {
 				if (request.action === "finalize") return await this.finalize(handle, scope);
 				const task = taskState(state, request.taskId);
@@ -1093,7 +1087,6 @@ export class IsolatedRunner {
 				if (error instanceof DurableRunStopped) return this.response(handle.state);
 				throw error;
 			} finally {
-				if (scope instanceof DeadlineScope) scope.close();
 				this.closeRequestControls(root, request.id);
 				if (!lifecycle.stopped) {
 					delete state.recovery;
@@ -1130,8 +1123,7 @@ export class IsolatedRunner {
 				const expected = generation && generation.status !== "superseded"
 					? generation.combinedTip ?? generation.stages.at(-1)?.tip ?? generation.integrationBase : state.main;
 				if (!sameIdentity(action.expectedTip, expected)) throw new Error("Rejection recovery has a stale integration tip.");
-				const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
-					() => this.coordinatorRuntime.now(), outerSignal);
+				const scope = new ProductiveScope(outerSignal);
 				const termination = attempt.termination;
 				const result = await scope.call((context) => this.hostRuntime.reconcileWorkerTermination({
 					task: changesetTaskRequest(state, task.taskId), attempt, workerId: termination.workerId,
@@ -1150,8 +1142,7 @@ export class IsolatedRunner {
 				|| !sameIdentity(attempt!.readiness!.candidate, action.candidate)) {
 				throw new Error("Stage action refers to a stale or unowned candidate.");
 			}
-			const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
-				() => this.coordinatorRuntime.now(), outerSignal);
+			const scope = new ProductiveScope(outerSignal);
 			const generations = state.integration.generations;
 			let generation = generations.at(-1);
 			const nextNumber = generation?.status === "superseded" ? generation.number + 1 : generation?.number ?? 1;
@@ -1394,8 +1385,7 @@ export class IsolatedRunner {
 			const request = parseExecuteRequest(state.request);
 			const generation = state.integration.generations.at(-1);
 			if (action.action === "release") {
-				const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
-					() => this.coordinatorRuntime.now(), outerSignal);
+				const scope = new ProductiveScope(outerSignal);
 				if (action.taskId !== undefined || action.attempt !== undefined) {
 					if (!action.taskId || !action.attempt || action.generation !== (generation?.number ?? 1)) {
 						throw new Error("Candidate release requires the latest generation and exact task attempt.");
@@ -1444,8 +1434,7 @@ export class IsolatedRunner {
 				if (state.integration.generations.filter((item) => item.worktree && !item.cleanup?.every((step) => step.status === "completed")).length >= MAX_RETAINED_INTEGRATION_GENERATIONS) {
 					throw new Error("Retained integration worktree limit is exhausted.");
 				}
-				const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
-					() => this.coordinatorRuntime.now(), outerSignal);
+				const scope = new ProductiveScope(outerSignal);
 				const actualMain = await scope.call((context) => this.gitRuntime.inspectMain({ root }, context));
 				if (!isCleanCommitted(action.newMain) || !sameIdentity(actualMain, action.newMain)) {
 					throw new Error("Refresh requires the exact new clean Main identity.");
@@ -1523,8 +1512,7 @@ export class IsolatedRunner {
 				|| !generation.combinedTip || !sameIdentity(generation.combinedTip, action.expectedTip)
 				|| (terminal(state) && !(state.status === "completed" && action.action === "cleanup"))
 				|| (state.status !== "needs_attention" && !(state.status === "completed" && action.action === "cleanup"))) throw new Error("Integration action has a stale generation or combined tip.");
-			const scope = new ProductiveScope(Math.min(state.policy.childMaxMs, this.currentPolicy().childMaxMs),
-				() => this.coordinatorRuntime.now(), outerSignal);
+			const scope = new ProductiveScope(outerSignal);
 			const receipts = this.stageReceipts(generation);
 			if (action.action === "advance") {
 				if (generation.status !== "staging" || generation.stages.some((stage) => stage.status !== "staged")
@@ -1872,7 +1860,7 @@ export class IsolatedRunner {
 				throw new Error("Retained candidates and integration worktrees must be explicitly rejected and released before abort.");
 			}
 			const activeControls = this.activeControls(root, id);
-			for (const { control } of activeControls) control.invalidate();
+			for (const { control } of activeControls) control.close();
 			if (!activeControls.length
 				&& !lifecycle.productiveRunLeaseActive
 				&& this.recoverInterrupted(state)) {

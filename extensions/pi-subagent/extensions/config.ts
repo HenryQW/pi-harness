@@ -1,5 +1,6 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, extensionConfigPath } from "@henryqw/pi-config-store";
+import type { ExecutionPolicySnapshot } from "../dist/schema.js";
 
 export interface SubagentTimeoutConfig {
 	/** Minutes a child may stay idle before it is asked to stop. */
@@ -23,14 +24,7 @@ export interface LoadedSubagentConfig {
 	error?: string;
 }
 
-export interface EffectiveExecutionPolicy {
-	maxSubagents: number;
-	maxTurns: number;
-	maxTokens?: number;
-	childIdleMs: number;
-	childMaxMs: number;
-	maxCorrections: number;
-}
+export type EffectiveExecutionPolicy = ExecutionPolicySnapshot;
 
 type ParsedSubagentConfig = Omit<LoadedSubagentConfig, "source">;
 

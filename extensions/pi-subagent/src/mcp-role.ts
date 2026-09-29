@@ -20,15 +20,6 @@ export function parseRoleMcpAllowlist(value: unknown): string[] {
 	return names;
 }
 
-export function roleMcpFlagValue(args: readonly string[], flag: string): string | undefined {
-	const indexes = args.flatMap((arg, index) => arg === flag ? [index] : []);
-	if (indexes.length > 1) throw new Error(`${flag} must appear at most once.`);
-	if (!indexes.length) return;
-	const value = args[indexes[0]! + 1];
-	if (value === undefined) throw new Error(`${flag} requires a value.`);
-	return value;
-}
-
 export function selectRoleMcpConfig(config: RoleMcpConfig, allowlist: readonly string[]): RoleMcpConfig {
 	const missing = allowlist.filter((name) => !Object.hasOwn(config.mcpServers, name));
 	if (missing.length) throw new Error(`Role MCP servers are not configured: ${missing.join(", ")}.`);

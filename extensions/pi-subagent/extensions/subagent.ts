@@ -3,12 +3,12 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
-import { DEFAULT_EXECUTION_POLICY, DEFAULT_TIMEOUT_CONFIG, readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
-import { createCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "./admission.ts";
+import { readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
+import { registerCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { registerSubagentCommand, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
-import { formatWorkflowResult, presentWorkflowEntryStatus, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
+import { ENTRY_STATUS_PRESENTATION, formatWorkflowResult, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskSchema, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
 import { createDirectHerdr, type DirectHandle, type DirectTab } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
@@ -140,7 +140,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		const glyph = details.recovery ? "■" : details.outcome === "completed" ? "✓" : "✗";
 		const color = details.recovery ? "warning" : details.outcome === "completed" ? "success" : "error";
 		const rows = details.entries.map(({ name, role, status, summary }) => {
-			const { glyph, fallback } = presentWorkflowEntryStatus(status);
+			const { glyph, fallback } = ENTRY_STATUS_PRESENTATION[status];
 			return `${glyph} ${name} · ${role} — ${details.recovery ? fallback : summary || fallback}`;
 		});
 		const raw = content.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
@@ -159,13 +159,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	try {
 		initialPolicy = resolveExecutionPolicy(loadedConfig);
 	} catch {
-		initialPolicy = {
-			maxSubagents: DEFAULT_EXECUTION_POLICY.maxSubagents,
-			maxTurns: DEFAULT_EXECUTION_POLICY.maxTurns,
-			childIdleMs: DEFAULT_TIMEOUT_CONFIG.idleMinutes * 60_000,
-			childMaxMs: DEFAULT_TIMEOUT_CONFIG.maxMinutes * 60_000,
-			maxCorrections: DEFAULT_EXECUTION_POLICY.maxCorrections,
-		};
+		initialPolicy = resolveExecutionPolicy({ source: "missing", config: {} });
 	}
 	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: initialPolicy.maxSubagents,
@@ -179,13 +173,15 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const parsed = parseDelegateTask(input);
 			if (parsed.mode === "isolated") return true;
 			const roles = new Map(loadRoles().map((role) => [role.name, role]));
-			return parsed.workflow.delegations.some((delegation) => roleCanWrite(roles.get(delegation.role) ?? { name: delegation.role } as Role));
+			return parsed.workflow.delegations.some((delegation) => {
+				const role = roles.get(delegation.role);
+				return !role || roleCanWrite(role);
+			});
 		} catch {
 			return true;
 		}
 	};
-	const admission = createCheckoutAdmission();
-	admission.register(pi, canWrite);
+	registerCheckoutAdmission(pi, canWrite);
 	const isolatedSurface = registerIsolatedExtension(pi, {
 		executor,
 		policy: initialPolicy,
@@ -513,9 +509,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				const prepared = entry.delegation.model === undefined ? route : prepareRoleLaunch(pi, context, {
 					role, route: replaceRouteModel(context, entry.delegation.model, route),
 				});
-				const base = states.get(entry.id)!;
-				states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
-				model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
+				states.set(entry.id, { ...states.get(entry.id)!, model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
 				startWidgetItem(entry.id, taskId, role.name, prepared.model.id, prepared.thinkingLevel, entry.delegation.name, ctx);
 				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
 					promptArgIndex: prepared.promptArgIndex }, activeSignal);
@@ -578,17 +572,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 								const tokens = await handle.usageTokens();
 								if (tokens !== undefined && widgetItems.has(entry.id)) widgetItems.get(entry.id)!.tokens = tokens;
 							} catch { /* Optional telemetry. */ }
-							const base = states.get(entry.id)!;
-							states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
-								...(base.model ? { model: base.model } : {}), ...(base.thinkingLevel ? { thinkingLevel: base.thinkingLevel } : {}),
-								status: "succeeded", assistantOutput: answer });
+							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer });
 							finishWidgetItem(entry.id, "success");
 							return answer;
 						} catch (error) {
-							const base = states.get(entry.id)!;
-							states.set(entry.id, { id: base.id, index: base.index, name: base.name, role: base.role,
-								...(base.model ? { model: base.model } : {}), ...(base.thinkingLevel ? { thinkingLevel: base.thinkingLevel } : {}),
-								status: "rejected", failure: `${tabByEntry.has(entry.id) ? `recover from Herdr tab ${tabByEntry.get(entry.id)!.tabId}, agent ${tabByEntry.get(entry.id)!.name}, session ${tabByEntry.get(entry.id)!.sessionFile}: ` : ""}${capOutput(error instanceof Error ? error.message : String(error))}` });
+							const { assistantOutput: _partial, ...base } = states.get(entry.id)!;
+							states.set(entry.id, { ...base, status: "rejected", failure: `${tabByEntry.has(entry.id) ? `recover from Herdr tab ${tabByEntry.get(entry.id)!.tabId}, agent ${tabByEntry.get(entry.id)!.name}, session ${tabByEntry.get(entry.id)!.sessionFile}: ` : ""}${capOutput(error instanceof Error ? error.message : String(error))}` });
 							finishWidgetItem(entry.id, "failure");
 							throw error;
 						} finally { release(); }

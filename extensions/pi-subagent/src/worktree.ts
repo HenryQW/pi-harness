@@ -292,8 +292,3 @@ export async function finalizeChildWorktree(info: WorktreeInfo, run: GitRunner =
 	}
 	return { outcome: "pruned", path: info.path, branch: info.branch };
 }
-
-/** Context block telling the child to work inside its isolated worktree. */
-export function worktreeContextNote(info: WorktreeInfo): string {
-	return `\n\n[WORKTREE ISOLATION] Work only in ${info.path} on ${info.branch}; do not use main checkout. Commit changes to this branch for parent review.`;
-}

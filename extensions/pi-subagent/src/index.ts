@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
-import { selectRoleMcpConfig } from "./mcp-role.ts";
+import { parseRoleMcpAllowlist, selectRoleMcpConfig } from "./mcp-role.ts";
 import {
 	loadTaskModelsConfig,
 	modelReference,
@@ -27,7 +27,7 @@ import {
 } from "@henryqw/pi-task-models";
 
 export { DISPLAY_TEXT_CONTRACT, hasDisplayControlCharacters } from "./display-text.ts";
-export { parseRoleMcpAllowlist, roleMcpFlagValue, selectRoleMcpConfig, type RoleMcpConfig } from "./mcp-role.ts";
+export { parseRoleMcpAllowlist, selectRoleMcpConfig, type RoleMcpConfig } from "./mcp-role.ts";
 export {
 	addUsage,
 	capEphemeralSubagentOutput,
@@ -51,7 +51,6 @@ export {
 	inspectIndexFlags,
 	inspectWorktreeDirty,
 	WorktreeSetupError,
-	worktreeContextNote,
 	type WorktreeDirtyInspection,
 	type WorktreeInfo,
 	type WorktreePayload,
@@ -63,17 +62,6 @@ export {
 	type PreparedReviewEvidence,
 	type PrepareExactReviewEvidenceInput,
 } from "./review-evidence.ts";
-export {
-	captureWorkingCheckoutBaseline,
-	captureWorkingCheckoutState,
-	prepareWorkingChangeEvidence,
-	sameWorkingCheckoutState,
-	sameWorkingSnapshot,
-	type PreparedWorkingChangeEvidence,
-	type WorkingCheckoutBaseline,
-	type WorkingCheckoutState,
-	type WorkingSnapshotIdentity,
-} from "./working-evidence.ts";
 
 const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
@@ -81,8 +69,15 @@ const ROLE_MCP_EXTENSION = fileURLToPath(new URL("../extensions/role-mcp.ts", im
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
+
+/** Read child MCP policy before Pi binds registered extension flag values. */
+export function roleMcpAllowlistFromArgv(args: readonly string[]): string[] {
+	const flag = `--${ROLE_MCP_POLICY_FLAG}`;
+	const indexes = args.flatMap((arg, index) => arg === flag ? [index] : []);
+	if (indexes.length !== 1) throw new Error(`${flag} must appear exactly once.`);
+	return parseRoleMcpAllowlist(args[indexes[0]! + 1]);
+}
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-export const EXECUTION_BUDGET_FLAG = "pi-subagent-execution-budget";
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
 	"ask_question",
@@ -91,7 +86,6 @@ export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"subagent_stage",
 	"subagent_abort",
 ] as const;
-export const CHILD_EXCLUDED_TOOLS = CHILD_EXCLUDED_TOOL_NAMES.join(",");
 const SYSTEM_PROMPT_FLAG = "--append-system-prompt";
 const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";
 
@@ -382,14 +376,15 @@ export function createRoleLaunch(
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
 	input: CreateRoleLaunchInput,
 ): ResolvedRoleLaunch {
-	return createRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role));
+	return finalizeRoleLaunch(prepareRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role)));
 }
 
-function createRoleLaunchFromSkills(
+/** Build the prompt-free argv and tool policy; the Role prompt stays separate until `finalizeRoleLaunch`. */
+function prepareRoleLaunchFromSkills(
 	ctx: Pick<ExtensionContext, "isProjectTrusted">,
 	input: CreateRoleLaunchInput,
 	skills: ResolvedRoleSkills,
-): ResolvedRoleLaunch {
+): PreparedRoleLaunch {
 	const role = input.role;
 	const mcps = mcpList(role.mcps, `Role ${role.name}`);
 	const tools = roleToolPolicy(role, input.tools);
@@ -409,7 +404,7 @@ function createRoleLaunchFromSkills(
 		if (typeof value !== "string" || value.includes("\0")) throw new Error(`Invalid launch environment value: ${key}`);
 		return [key, value];
 	}));
-	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOLS];
+	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOL_NAMES.join(",")];
 	if (mcps.length) args.push(`--${ROLE_MCP_POLICY_FLAG}`, JSON.stringify(mcps));
 	for (const extension of new Set(extensions)) args.push("--extension", extension);
 	for (const skill of skills.paths) args.push("--skill", skill);
@@ -417,14 +412,32 @@ function createRoleLaunchFromSkills(
 	args.push("--model", modelReference(input.route.model));
 	if (input.route.thinkingLevel) args.push("--thinking", input.route.thinkingLevel);
 	args.push(ctx.isProjectTrusted() ? "--approve" : "--no-approve");
-	args.push(SYSTEM_PROMPT_FLAG, `${CHILD_IDENTITY_POLICY}\n\n${cleanText(role.systemPrompt, "system prompt", `Role ${role.name}`)}`);
 	return {
 		env,
 		args,
 		model: input.route.model,
 		thinkingLevel: input.route.thinkingLevel,
 		missingSkills: skills.missing,
+		role: role.name,
+		tools: Object.freeze(tools),
+		systemPrompt: `${CHILD_IDENTITY_POLICY}\n\n${cleanText(role.systemPrompt, "system prompt", `Role ${role.name}`)}`,
+		promptArgIndex: args.length,
 	};
+}
+
+function prepareResolvedRoleLaunch(
+	pi: Pick<ExtensionAPI, "getCommands">,
+	ctx: ExtensionContext,
+	input: ResolveRoleLaunchInput,
+): PreparedRoleLaunch {
+	const { task, modelClass, agentDir, ...launchInput } = input;
+	const selectedClass = modelClass ?? input.role.modelClass;
+	return prepareRoleLaunchFromSkills(ctx, {
+		...launchInput,
+		route: selectedClass === undefined
+			? resolveConfiguredTaskRoute(ctx, task, agentDir)
+			: resolveTaskRoute(ctx, selectedClass, agentDir),
+	}, resolveRoleSkills(pi, input.role));
 }
 
 export function resolveRoleLaunch(
@@ -432,45 +445,7 @@ export function resolveRoleLaunch(
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput,
 ): ResolvedRoleLaunch {
-	const { task, modelClass, agentDir, ...launchInput } = input;
-	const selectedClass = modelClass ?? input.role.modelClass;
-	return createRoleLaunch(pi, ctx, {
-		...launchInput,
-		route: selectedClass === undefined
-			? resolveConfiguredTaskRoute(ctx, task, agentDir)
-			: resolveTaskRoute(ctx, selectedClass, agentDir),
-	});
-}
-
-function stripRoleSystemPrompt(rawArgs: readonly string[]): {
-	args: string[];
-	systemPrompt: string;
-	promptArgIndex: number;
-} {
-	const indexes = rawArgs.flatMap((arg, index) => arg === SYSTEM_PROMPT_FLAG ? [index] : []);
-	if (indexes.length !== 1) throw new Error(`Role launch must contain exactly one ${SYSTEM_PROMPT_FLAG} pair.`);
-	const promptArgIndex = indexes[0]!;
-	const systemPrompt = rawArgs[promptArgIndex + 1];
-	if (typeof systemPrompt !== "string" || !systemPrompt.includes("\n") || !systemPrompt.trim() || systemPrompt.includes("\0")) {
-		throw new Error(`Role ${SYSTEM_PROMPT_FLAG} value must be the exact multiline Role prompt.`);
-	}
-	const args = [...rawArgs.slice(0, promptArgIndex), ...rawArgs.slice(promptArgIndex + 2)];
-	if (args.includes(SYSTEM_PROMPT_FLAG) || args.includes(systemPrompt)) {
-		throw new Error("Sanitized Role argv must contain no prompt flag or raw Role prompt.");
-	}
-	return { args, systemPrompt, promptArgIndex };
-}
-
-function prepareResolvedRoleLaunch(
-	roleDefinition: Role,
-	launch: ResolvedRoleLaunch,
-	additionalTools: readonly string[] = [],
-): PreparedRoleLaunch {
-	const role = parseRoleName(roleDefinition.name);
-	rejectRetiredRoleIsolation((roleDefinition as Role & { isolation?: unknown }).isolation, `Role ${role}`);
-	const tools = Object.freeze(roleToolPolicy(roleDefinition, additionalTools));
-	const { args, systemPrompt, promptArgIndex } = stripRoleSystemPrompt(launch.args);
-	return { ...launch, args, role, tools, systemPrompt, promptArgIndex };
+	return finalizeRoleLaunch(prepareResolvedRoleLaunch(pi, ctx, input));
 }
 
 function assertNoMissingRoleSkills(role: Role, launch: ResolvedRoleLaunch): void {
@@ -494,11 +469,13 @@ export function prepareRoleLaunch(
 	ctx: ExtensionContext,
 	input: ResolveRoleLaunchInput | CreateRoleLaunchInput,
 ): PreparedRoleLaunch {
-	const launch = "route" in input
-		? createRoleLaunch(pi, ctx, input)
-		: resolveRoleLaunch(pi, ctx, input);
-	assertNoMissingRoleSkills(input.role, launch);
-	return prepareResolvedRoleLaunch(input.role, launch, input.tools);
+	const role = parseRoleName(input.role.name);
+	rejectRetiredRoleIsolation((input.role as Role & { isolation?: unknown }).isolation, `Role ${role}`);
+	const prepared = "route" in input
+		? prepareRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role))
+		: prepareResolvedRoleLaunch(pi, ctx, input);
+	assertNoMissingRoleSkills(input.role, prepared);
+	return { ...prepared, role };
 }
 
 /** Resolve and prepare a configured Role with its package-owned resources. */
@@ -523,36 +500,23 @@ export async function resolveConfiguredRoleLaunch(
 		...namedSkills,
 		paths: [...new Set([...namedSkills.paths, ...resources.skills])],
 	};
-	const launch = createRoleLaunchFromSkills(ctx, {
+	const prepared = prepareRoleLaunchFromSkills(ctx, {
 		role: effectiveRole,
 		route: resolveTaskRoute(ctx, input.modelClass),
 	}, skills);
-	assertNoMissingRoleSkills(effectiveRole, launch);
-	const additions = [
+	assertNoMissingRoleSkills(effectiveRole, prepared);
+	const args = [
+		...prepared.args,
 		"--no-prompt-templates",
 		"--no-themes",
 		...resources.prompts.flatMap((path) => ["--prompt-template", path]),
 		...resources.themes.flatMap((path) => ["--theme", path]),
 	];
-	const promptArgIndex = launch.args.indexOf(SYSTEM_PROMPT_FLAG);
-	if (promptArgIndex < 0) throw new Error(`Resolved Role launch has no ${SYSTEM_PROMPT_FLAG}.`);
-	const args = [...launch.args];
-	args.splice(promptArgIndex, 0, ...additions);
-	return prepareResolvedRoleLaunch(effectiveRole, { ...launch, args });
+	return { ...prepared, args, promptArgIndex: args.length };
 }
 
-/** Restore the system prompt pair after a caller has prepared its launch argv. */
+/** Insert the system prompt pair after a caller has prepared its launch argv. */
 export function finalizeRoleLaunch(prepared: PreparedRoleLaunch): ResolvedRoleLaunch {
-	if (prepared.args.includes(SYSTEM_PROMPT_FLAG)) {
-		throw new Error(`Prepared Role launch already contains ${SYSTEM_PROMPT_FLAG}.`);
-	}
-	if (!Number.isSafeInteger(prepared.promptArgIndex)
-		|| prepared.promptArgIndex < 0 || prepared.promptArgIndex > prepared.args.length) {
-		throw new Error("Prepared Role launch has an invalid system prompt insertion index.");
-	}
-	if (typeof prepared.systemPrompt !== "string" || !prepared.systemPrompt.trim() || prepared.systemPrompt.includes("\0")) {
-		throw new Error("Prepared Role launch has an invalid system prompt.");
-	}
 	const args = [...prepared.args];
 	args.splice(prepared.promptArgIndex, 0, SYSTEM_PROMPT_FLAG, prepared.systemPrompt);
 	return {
