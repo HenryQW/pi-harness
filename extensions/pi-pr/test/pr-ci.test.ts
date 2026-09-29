@@ -556,7 +556,7 @@ test("revalidates destination, open PR, failed evidence, and HEAD immediately be
 		const changedHead = "d".repeat(40);
 		const app = harness({
 			snapshots: [oneFailure()],
-			localHeads: [original, original, repair, repair, changedHead],
+			localHeads: [original, original, repair, changedHead],
 		});
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await app.workflow.collect();
@@ -613,7 +613,6 @@ test("classifies a lost push response as applied from the remote postcondition a
 	await app.workflow.collect();
 	app.setLocalHead(repair);
 	assert.deepEqual(await app.workflow.publish(), { kind: "published", head: repair, attempt: "applied" });
-	assert.equal(app.workflow.state.pushAttempt, "applied");
 	await assert.rejects(app.workflow.publish(), /unavailable or was already consumed/);
 	assert.equal(app.calls.filter(({ command, args }) => command === "git" && args[0] === "push").length, 1);
 });

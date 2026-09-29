@@ -43,6 +43,7 @@ import {
 	requiredOid,
 	requiredText,
 	runChecked,
+	validatePaths,
 	withWorktreeLock,
 	type AttemptState,
 } from "./pr-execution.ts";
@@ -190,20 +191,12 @@ function authorityFromCurrent(pullRequest: CurrentPullRequest) {
 	if (pullRequest.lifecycle !== "open" || pullRequest.target.provenance !== "configured") {
 		throw new Error("Comment sweep requires a configured open pull request");
 	}
-	const feedback = feedbackAuthorityFromCurrent(pullRequest);
-	const remoteOid = requiredOid(pullRequest.target.remoteOid, "remote lease OID");
+	const { branch, remote, ref, repository, host, fetchSource, remoteOid } = pullRequest.target;
+	if (remoteOid === null) throw new Error("Comment sweep requires a published remote lease");
 	return {
-		...feedback,
-		headFetchSource: requiredText(pullRequest.headFetchSource, "head fetch source"),
-		target: {
-			branch: requiredText(pullRequest.target.branch, "target branch"),
-			remote: requiredText(pullRequest.target.remote, "target remote"),
-			ref: requiredText(pullRequest.target.ref, "target ref"),
-			repository: requiredText(pullRequest.target.repository, "target repository"),
-			host: requiredText(pullRequest.target.host, "target host").toLowerCase(),
-			fetchSource: requiredText(pullRequest.target.fetchSource, "target fetch source"),
-			remoteOid,
-		},
+		...feedbackAuthorityFromCurrent(pullRequest),
+		headFetchSource: pullRequest.headFetchSource,
+		target: { branch, remote, ref, repository, host, fetchSource, remoteOid },
 	};
 }
 
@@ -270,8 +263,7 @@ function feedbackMatchesAuthority(snapshot: FeedbackSnapshot, authority: SweepAu
 
 function parseOwnedPaths(value: unknown): string[] {
 	if (!Array.isArray(value) || value.some((path) => typeof path !== "string")) throw new Error("ownedPaths must be an array of paths");
-	const encoded = value.length ? `${value.join("\0")}\0` : "";
-	return parseNulPaths(encoded, "Sweep owned paths");
+	return validatePaths(value as string[], "Sweep owned paths");
 }
 
 function parseLedgerEntry(value: unknown, label: string): SweepLedgerEntry {
@@ -635,7 +627,7 @@ export class PullRequestCommentSweep {
 	private readonly pause?: (milliseconds: number) => Promise<void>;
 
 	constructor(options: PullRequestCommentSweepOptions) {
-		this.cwd = requiredText(options.cwd, "cwd");
+		this.cwd = options.cwd;
 		this.suppliedAuthority = options.authority ? authorityFromCurrent(options.authority) : undefined;
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
@@ -654,7 +646,7 @@ export class PullRequestCommentSweep {
 	}
 
 	private context(): PullRequestLoadContext {
-		return { cwd: this.cwd, signal: this.signal ?? new AbortController().signal };
+		return { cwd: this.cwd, signal: this.signal };
 	}
 
 	private async location(): Promise<{ root: string; id: string; path: string }> {
@@ -1011,7 +1003,6 @@ export class PullRequestCommentSweep {
 
 	async commit(guard: SweepRunGuard, message: string): Promise<{ head: string }> {
 		requiredText(message, "commit message");
-		if (message.length > 256) throw new Error("commit message exceeds 256 characters");
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);
@@ -1144,7 +1135,7 @@ export class PullRequestCommentSweep {
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	async resolve(guard: SweepRunGuard, threadIdsInput?: string[]): Promise<SweepStatus> {
+	async resolve(guard: SweepRunGuard): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);
@@ -1155,30 +1146,18 @@ export class PullRequestCommentSweep {
 			if (state.attempts.resolutions.some(({ state: attempt }) => attempt !== "applied")) {
 				throw new Error("Comment sweep has an unreconciled thread mutation; use resume");
 			}
-			if (threadIdsInput !== undefined && (!Array.isArray(threadIdsInput) || threadIdsInput.length > FEEDBACK_MAX_RECORDS)) {
-				throw new Error("threadIds must be a bounded array");
-			}
 			const ledger = new Map(state.ledger.map((entry) => [entry.id, entry]));
-			const threadIds = (threadIdsInput ?? state.feedback.snapshot.reviewThreads.filter((thread) =>
+			const threadIds = state.feedback.snapshot.reviewThreads.filter((thread) =>
 				!thread.isResolved && ["addressed", "non-actionable"].includes(ledger.get(thread.id)?.disposition ?? "blocked") &&
 				!thread.comments.some((comment) => ledger.get(comment.id)?.disposition === "blocked")
-			).map(({ id }) => id)).map((id, index) => requiredText(id, `thread ID ${index + 1}`));
-			if (new Set(threadIds).size !== threadIds.length) throw new Error("threadIds contain duplicates");
+			).map(({ id }) => id);
 			for (const threadId of threadIds) {
-				const thread = state.feedback.snapshot.reviewThreads.find(({ id }) => id === threadId);
-				const disposition = ledger.get(threadId)?.disposition;
-				if (!thread || thread.isResolved || ledger.get(threadId)?.kind !== "thread" ||
-					(disposition !== "addressed" && disposition !== "non-actionable")) {
-					throw new Error(`Only addressed or non-actionable unresolved review thread IDs may be resolved: ${threadId}`);
-				}
 				if (state.attempts.resolutions.some((attempt) => attempt.generation === state.feedback.generation && attempt.threadId === threadId && attempt.step === "resolve")) {
 					throw new Error(`Review thread resolution was already attempted: ${threadId}`);
 				}
-				if (disposition === "non-actionable" && !ledger.get(threadId)!.note.trim()) {
+				const entry = ledger.get(threadId)!;
+				if (entry.disposition === "non-actionable" && !entry.note.trim()) {
 					throw new Error(`Non-actionable review thread needs a reason: ${threadId}`);
-				}
-				if (thread.comments.some((comment) => ledger.get(comment.id)?.disposition === "blocked")) {
-					throw new Error(`Review thread has blocked child feedback: ${threadId}`);
 				}
 			}
 			const hasReply = (threadId: string) => state.attempts.resolutions.some((attempt) =>

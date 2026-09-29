@@ -9,7 +9,7 @@ import { registerIsolatedExtension } from "./isolated.ts";
 import { registerSubagentCommand, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { ENTRY_STATUS_PRESENTATION, formatWorkflowResult, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
-import { DelegateTaskSchema, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
+import { DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
 import { createDirectHerdr, type DirectHandle, type DirectTab } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
@@ -460,7 +460,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			"Isolation uses typed tasks and dependencies. Keep tightly coupled changes with one owner; do not split by file count. Failures, ambiguity, limits, and conflicts retain work and never waive checks or identity guards.",
 			`For delegate_task, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
 		],
-		parameters: DelegateTaskSchema,
+		parameters: DelegateTaskParameters,
 		prepareArguments(args) {
 			try {
 				const parsed = parseDelegateTask(args);

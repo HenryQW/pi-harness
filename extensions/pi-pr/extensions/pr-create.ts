@@ -25,13 +25,12 @@ import {
 	inspectWorktreeState,
 	parseNulPaths,
 	parseStatusSnapshot,
-	validateResolvedConflictPaths,
+	validatePaths,
 	isAncestor,
 	isRecord,
 	parseSingleOutputLine,
 	readHead,
 	readRemoteOid,
-	requiredOid,
 	requiredText,
 	runChecked,
 	withWorktreeLock,
@@ -173,7 +172,6 @@ export class PullRequestCreator {
 	private readonly load: Load;
 
 	constructor(options: CreatePullRequestOptions) {
-		if (options.target.remoteOid !== null) requiredOid(options.target.remoteOid, "remote OID");
 		this.cwd = options.cwd;
 		this.target = { ...options.target };
 		this.noTarget = options.target.provenance === "inferred" && options.target.remoteOid === null;
@@ -192,7 +190,7 @@ export class PullRequestCreator {
 	}
 
 	private context(): PullRequestLoadContext {
-		return { cwd: this.cwd, signal: this.signal ?? new AbortController().signal };
+		return { cwd: this.cwd, signal: this.signal };
 	}
 
 	private async freshNone() {
@@ -282,8 +280,7 @@ export class PullRequestCreator {
 			if (await inspectWorktreeState(this.exec, this.options()) === "operation") throw new Error("Git operation in progress");
 			const head = await readHead(this.exec, this.options());
 			const status = (await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options())).stdout;
-			const paths = [...parseStatusSnapshot(status).keys()];
-			parseNulPaths(paths.map((path) => `${path}\0`).join(""), "Pending paths");
+			const paths = validatePaths([...parseStatusSnapshot(status).keys()], "Pending paths");
 			this.state.pending = { head, status };
 			return { paths, head };
 		}, { agentDir: this.agentDir, signal: this.signal });
@@ -291,7 +288,7 @@ export class PullRequestCreator {
 
 	async commit(pathsInput: string[], message: string): Promise<{ head: string }> {
 		if (this.state.phase !== "prepared" || !this.state.pending) throw new Error("PR creation has no inspected pending work");
-		const paths = validateResolvedConflictPaths(pathsInput, []);
+		const paths = validatePaths(pathsInput, "Commit paths");
 		if (!paths.length || paths.some((path) => !parseStatusSnapshot(this.state.pending!.status).has(path))) {
 			throw new Error("Commit paths must be reviewed pending paths");
 		}

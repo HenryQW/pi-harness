@@ -17,9 +17,9 @@ import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../dist/launch-run
 import { IsolatedRunner, type OperationContext, type RunResponse } from "../dist/runner.js";
 import {
 	IdOnlySchema,
-	ResumeRequestSchema,
+	ResumeRequestParameters,
 	StageRequestSchema,
-	IntegrationActionSchema,
+	IntegrationActionParameters,
 	parseIntegrationAction,
 	parseStageRequest,
 	parseExecuteRequest,
@@ -614,7 +614,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		name: "subagent_resume",
 		label: "Subagent resume",
 		description: "Resume one unfinished isolated request without resetting its recorded policy or correction count.",
-		parameters: ResumeRequestSchema,
+		parameters: ResumeRequestParameters,
 		prepareArguments: parseResumeRequest,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
@@ -641,7 +641,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		name: "subagent_integrate",
 		label: "Subagent integrate",
 		description: "Main advances staged dependents, refreshes after clean Main drift, validates, corrects, promotes, reconciles an interrupted promotion, cleans up promoted resources, or explicitly releases rejected/superseded owned resources. Never replays an uncertain mutation.",
-		parameters: IntegrationActionSchema,
+		parameters: IntegrationActionParameters,
 		prepareArguments: parseIntegrationAction,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;

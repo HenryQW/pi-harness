@@ -12,7 +12,7 @@ import {
 	inspectWorktreeState,
 	parseSingleOutputLine,
 	parseStatusSnapshot,
-	validateResolvedConflictPaths,
+	validatePaths,
 	withWorktreeLock,
 } from "../extensions/pr-execution.ts";
 
@@ -47,23 +47,20 @@ test("parses only one nonempty CRLF-normalized output line", () => {
 	}
 });
 
-test("validates resolved conflict paths with shared safety limits", () => {
-	assert.deepEqual(validateResolvedConflictPaths(["src/file.ts"], ["src/file.ts"]), ["src/file.ts"]);
-	for (const { paths, expected, message } of [
-		{ paths: null as unknown as readonly string[], expected: [], message: "resolvedPaths must be an array" },
-		{ paths: ["src/file.ts"], expected: ["missing.ts"], message: "Resolved paths must include every original conflict path" },
-		{ paths: ["../outside.ts"], expected: [], message: "Resolved conflict paths returned an unsafe path" },
-		{ paths: ["src/file.ts", "src/file.ts"], expected: [], message: "Resolved conflict paths returned duplicate paths" },
-		{ paths: Array.from({ length: 129 }, (_, index) => `src/${index}.ts`), expected: [], message: "Resolved conflict paths returned more than 128 paths" },
-		{ paths: ["x".repeat(1_025)], expected: [], message: "Resolved conflict paths returned an overlong path" },
+test("validates repository paths with shared safety limits", () => {
+	assert.deepEqual(validatePaths(["src/file.ts"], "Resolved conflict paths"), ["src/file.ts"]);
+	for (const { paths, message } of [
+		{ paths: ["../outside.ts"], message: "Resolved conflict paths returned an unsafe path" },
+		{ paths: ["src/file.ts", "src/file.ts"], message: "Resolved conflict paths returned duplicate paths" },
+		{ paths: Array.from({ length: 129 }, (_, index) => `src/${index}.ts`), message: "Resolved conflict paths returned more than 128 paths" },
+		{ paths: ["x".repeat(1_025)], message: "Resolved conflict paths returned an overlong path" },
 		{
 			paths: Array.from({ length: 33 }, (_, index) => `${index.toString().padStart(2, "0")}${"x".repeat(1_022)}`),
-			expected: [],
 			message: "Resolved conflict paths returned too much path data",
 		},
 	]) {
 		assert.throws(
-			() => validateResolvedConflictPaths(paths, expected),
+			() => validatePaths(paths, "Resolved conflict paths"),
 			(error: unknown) => error instanceof Error && error.message === message,
 			message,
 		);

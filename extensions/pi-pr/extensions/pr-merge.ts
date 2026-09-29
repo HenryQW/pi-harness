@@ -3,8 +3,6 @@ import {
 	inspectWorktree,
 	isRecord,
 	readHead,
-	requiredOid,
-	requiredText,
 	runChecked,
 } from "./pr-execution.ts";
 import type { LocalMergeSafety } from "./pr-routing.ts";
@@ -33,17 +31,8 @@ type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
 	revalidateReadiness: (local: InspectedLocalMergeSafety) => Promise<void>;
 };
 
-function validateInspectionInput(input: InspectLocalMergeSafetyInput): void {
-	requiredText(input.cwd, "cwd");
-	requiredOid(input.expectedHead, "expected PR head");
-	requiredText(input.headFetchSource, "PR head fetch source");
-	if (typeof input.exec !== "function") throw new TypeError("exec must be a function");
-}
-
 /** Inspect local state without changing branches, the index, or the worktree. */
 export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInput): Promise<InspectedLocalMergeSafety> {
-	validateInspectionInput(input);
-
 	const worktree = await inspectWorktree(input.exec, { cwd: input.cwd });
 	await runChecked(input.exec, "git", [
 		"fetch",
@@ -75,17 +64,6 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 		[0, 1],
 	);
 	return { worktree, head: expectedAncestor.code === 0 ? "ahead" : "diverged", headOid };
-}
-
-function validateExecuteInput(input: ExecuteGitHubMergeInput): void {
-	validateInspectionInput(input);
-	requiredText(input.pullRequestId, "pullRequestId");
-	requiredText(input.hostname, "hostname");
-	if (!isRecord(input.expectedBase)) throw new TypeError("expectedBase must be an object");
-	requiredText(input.expectedBase.repository, "expected base repository");
-	requiredText(input.expectedBase.ref, "expected base ref");
-	requiredText(input.expectedBase.oid, "expected base OID");
-	if (typeof input.revalidateReadiness !== "function") throw new TypeError("revalidateReadiness must be a function");
 }
 
 function parseGraphQLResponse(output: string, action: string): Record<string, unknown> {
@@ -124,7 +102,6 @@ function parseMergeResponse(output: string, expectedId: string): void {
 }
 
 export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promise<void> {
-	validateExecuteInput(input);
 	const local = await inspectLocalMergeSafety(input);
 	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);

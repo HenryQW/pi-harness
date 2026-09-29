@@ -111,12 +111,9 @@ export async function withWorktreeLock<T>(
 	options: { agentDir?: string; signal?: AbortSignal } = {},
 ): Promise<T> {
 	options.signal?.throwIfAborted();
-	const rootResult = await runChecked(spawnBounded, "git", ["rev-parse", "--show-toplevel"], {
-		cwd: requiredText(cwd, "cwd"),
-		signal: options.signal,
-	});
+	const rootResult = await runChecked(spawnBounded, "git", ["rev-parse", "--show-toplevel"], { cwd, signal: options.signal });
 	const root = parseSingleOutputLine(rootResult.stdout, "Git worktree root resolution");
-	const canonical = requiredText(await realpath(root), "canonical Git worktree root");
+	const canonical = await realpath(root);
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", options.agentDir));
 	const lockDirectory = join(lockNamespace, "worktree-locks");
 	const identity = createHash("sha256").update(canonical).digest("hex");
@@ -147,7 +144,11 @@ export async function withWorktreeLock<T>(
 export function parseNulPaths(output: string, label: string): string[] {
 	if (output === "") return [];
 	if (!output.endsWith("\0")) throw new Error(`${label} returned malformed paths`);
-	const paths = output.slice(0, -1).split("\0");
+	return validatePaths(output.slice(0, -1).split("\0"), label);
+}
+
+/** Reject unsafe, oversized, or duplicate repository-relative paths. */
+export function validatePaths(paths: readonly string[], label: string): string[] {
 	let bytes = 0;
 	if (paths.length > MAX_CONFLICT_PATHS) throw new Error(`${label} returned more than ${MAX_CONFLICT_PATHS} paths`);
 	for (const path of paths) {
@@ -160,16 +161,7 @@ export function parseNulPaths(output: string, label: string): string[] {
 	}
 	if (bytes > MAX_CONFLICT_PATHS_BYTES) throw new Error(`${label} returned too much path data`);
 	if (new Set(paths).size !== paths.length) throw new Error(`${label} returned duplicate paths`);
-	return paths;
-}
-
-export function validateResolvedConflictPaths(paths: readonly string[], expected: readonly string[]): string[] {
-	if (!Array.isArray(paths)) throw new TypeError("resolvedPaths must be an array");
-	const parsed = parseNulPaths(`${paths.join("\0")}${paths.length ? "\0" : ""}`, "Resolved conflict paths");
-	if (expected.some((path) => !parsed.includes(path))) {
-		throw new Error("Resolved paths must include every original conflict path");
-	}
-	return parsed;
+	return [...paths];
 }
 
 function statusPath(record: string): { path: string; rename: boolean } {

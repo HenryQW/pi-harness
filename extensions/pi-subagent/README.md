@@ -30,7 +30,7 @@ pi install npm:pi-mcp-adapter
 
 Ask Main to delegate a bounded task, such as “Have a scout trace sign-in without editing files.” Main uses `delegate_task`; you receive progress and a result or an actionable failure while Main remains available.
 
-Commands are for you; tools and the packaged skill are for Main. You do not need to call agent tools or manage candidate identities yourself.
+Commands are for you; tools and the packaged skill are for Main. You do not need to call agent tools or manage candidate identities yourself. Delegation and continuation tools use plain-object parameter schemas so providers that omit root-union tools can expose them; each mode and action still requires its exact arguments.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
