@@ -304,9 +304,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		}
 
 		let tps: number | undefined;
+		// Start at the first streamed update: providers emit message_start at different points before the first token.
 		let assistantStartedAt: number | undefined;
-		pi.on("message_start", async (event) => {
-			if (event.message.role === "assistant") assistantStartedAt = performance.now();
+		pi.on("message_update", async (event) => {
+			if (event.message.role === "assistant") assistantStartedAt ??= performance.now();
 		});
 		pi.on("message_end", async (event) => {
 			if (event.message.role !== "assistant") return;

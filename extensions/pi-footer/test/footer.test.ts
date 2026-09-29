@@ -356,13 +356,19 @@ test("shows TPS and active session time", async () => {
 	globalThis.performance = { now: () => now } as unknown as typeof performance;
 	try {
 		const assistantMessage = { role: "assistant", usage: { output: 100 } };
-		await handlers.get("message_start")!({ message: assistantMessage });
-		now = 2_000;
+		now = 5_000;
+		await handlers.get("message_update")!({ message: assistantMessage });
+		now = 6_000;
+		await handlers.get("message_update")!({ message: assistantMessage });
+		now = 7_000;
 		await handlers.get("message_end")!({ message: assistantMessage });
 		assert.match(footer.render(100)[1]!, /⚡ 50\.0 t\/s/);
 
+		await handlers.get("message_end")!({ message: { role: "assistant", usage: { output: 10 } } });
+		assert.match(footer.render(100)[1]!, /⚡ — /);
+
 		await handlers.get("agent_start")!({ message: { role: "assistant" } }, { isIdle: () => false } as unknown as ExtensionContext);
-		now = 3_725_000;
+		now = 3_730_000;
 		assert.equal(footer.render(100)[2]!.trim(), "◷ 1h 2m 3s");
 		const idleCtx = { isIdle: () => true } as unknown as ExtensionContext;
 		await handlers.get("agent_settled")!({ message: { role: "assistant" } }, idleCtx);
@@ -370,7 +376,7 @@ test("shows TPS and active session time", async () => {
 		assert.equal(footer.render(100)[2]!.trim(), "◷ 1h 2m 3s");
 
 		const zeroOutput = { role: "assistant", usage: { output: 0 } };
-		await handlers.get("message_start")!({ message: zeroOutput });
+		await handlers.get("message_update")!({ message: zeroOutput });
 		now = 4_002_000;
 		await handlers.get("message_end")!({ message: zeroOutput });
 		assert.match(footer.render(100)[1]!, /⚡ 0\.0 t\/s/);
