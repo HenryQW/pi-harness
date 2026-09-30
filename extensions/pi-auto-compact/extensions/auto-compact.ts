@@ -27,6 +27,7 @@ import {
 } from "@henryqw/pi-task-models";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
+type StreamFn = NonNullable<Parameters<typeof compact>[7]>;
 
 /** Native boundaries maintain completed turns; the pre-request guard handles fresh oversized input. */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 70;
@@ -171,15 +172,21 @@ function fileOperations(messages: AgentMessage[], previous?: CompactionEntry) {
 	if (Array.isArray(details?.modifiedFiles)) {
 		for (const path of details.modifiedFiles) if (typeof path === "string") edited.add(path);
 	}
+	const record = (name: string, path: unknown) => {
+		if (typeof path !== "string" || !path) return;
+		if (name === "read") read.add(path);
+		else if (name === "write") written.add(path);
+		else if (name === "edit") edited.add(path);
+	};
 	for (const message of messages) {
+		// Tools called from other tools (codemode scripts) are recorded on the calling tool's result.
+		if (message.role === "toolResult") {
+			for (const call of message.nestedCalls?.calls ?? []) record(call.name, call.arguments?.path);
+			continue;
+		}
 		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
 		for (const part of message.content) {
-			if (part.type !== "toolCall") continue;
-			const path = part.arguments?.path;
-			if (typeof path !== "string" || !path) continue;
-			if (part.name === "read") read.add(path);
-			else if (part.name === "write") written.add(path);
-			else if (part.name === "edit") edited.add(path);
+			if (part.type === "toolCall") record(part.name, part.arguments?.path);
 		}
 	}
 	return { read, written, edited };
@@ -227,7 +234,8 @@ export default function (pi: ExtensionAPI) {
 		const leaf = ctx.sessionManager.getLeafId();
 		if (failedBoundary?.session === session && failedBoundary.leaf === leaf) return;
 		if (event.entries.some((entry) => entry.type === "compaction")) return;
-		const window = ctx.model.contextWindow;
+		// A virtual model declares no window; Pi reports the limits of the physical model that answered last.
+		const window = ctx.getContextUsage()?.contextWindow;
 		if (!window) return;
 		const projected = event.context.contextEntries.map((entry) => ({ ...entry, messages: [...entry.messages] }));
 		const pendingTokens = estimateTotalTokens(event.context.pendingMessages);
@@ -299,12 +307,12 @@ export default function (pi: ExtensionAPI) {
 		const signal = ctx.signal;
 		try {
 			const routes = configuredTaskRoutes(ctx);
-			const summarize = async (model: NonNullable<ExtensionContext["model"]>, thinking: ExtensionContext["thinkingLevel"]) => {
+			const summarize = async (model: NonNullable<ExtensionContext["model"]>, thinking: ExtensionContext["thinkingLevel"], streamFn?: StreamFn) => {
 				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 				if (!auth.ok) throw new Error("Compaction model authentication failed.");
 				return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
 					auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
-					signal, thinking, undefined, auth.env);
+					signal, thinking, streamFn, auth.env);
 			};
 			let result: Awaited<ReturnType<typeof compact>> | undefined;
 			if (routes.length) {
@@ -317,7 +325,10 @@ export default function (pi: ExtensionAPI) {
 					if (!signal?.aborted) ctx.ui.notify("Configured task model routes failed; using current session model.", "error");
 				}
 			}
-			if (!result && !signal?.aborted) result = await summarize(ctx.model, ctx.thinkingLevel);
+			// The session model may be virtual; the registry routes it to a physical model.
+			if (!result && !signal?.aborted) {
+				result = await summarize(ctx.model, ctx.thinkingLevel, (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options));
+			}
 			if (signal?.aborted || ctx.sessionManager.getSessionId() !== session || ctx.sessionManager.getLeafId() !== leaf) return;
 			if (!result?.summary.trim()) throw new Error("Compaction returned an empty summary.");
 			return { entries: [...event.entries, ...edits, {
