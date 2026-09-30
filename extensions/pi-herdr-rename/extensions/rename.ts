@@ -22,6 +22,9 @@ const MAX_CONTEXT_MESSAGES = 5;
 const DISPLAY_MAX_WORDS = 4;
 const DISPLAY_MAX_CHARS = 20;
 const SEMANTIC_TYPE_MAX_CHARS = 12;
+const TITLE_SHAPE = `{"kind":"<one lowercase English word, at most ${SEMANTIC_TYPE_MAX_CHARS} letters>","subject":"<2 or 3 lowercase English words, letters and digits only, single spaces, at most ${DISPLAY_MAX_CHARS} characters>"}`;
+const TITLE_PROMPT = `You label a coding session with one short English title. Reply with one JSON object and nothing else: ${TITLE_SHAPE}. Use English even when the user writes in another language. Example reply: {"kind":"fix","subject":"login crash"}`;
+const TITLE_REPAIR_PROMPT = `Your previous reply was rejected. Reply only with one JSON object shaped ${TITLE_SHAPE}, where kind is one lowercase English word of at most ${SEMANTIC_TYPE_MAX_CHARS} letters and subject is 2 or 3 lowercase English words of letters and digits with single spaces, at most ${DISPLAY_MAX_CHARS} characters.`;
 export const RENAME_TASK = {
 	id: "pi-herdr-rename/rename",
 	label: "Conversation rename",
@@ -63,14 +66,33 @@ function isDisplayTitle(value: unknown): value is string {
 	return validSubject(subject) && value === subject[0].toUpperCase() + subject.slice(1);
 }
 
-function parseGeneratedTitle(title: string): GeneratedTitle | undefined {
-	const match = /^([a-z][a-z0-9-]*): (.+)$/.exec(title);
-	if (!match || match[1].length > SEMANTIC_TYPE_MAX_CHARS || !validSubject(match[2])) return undefined;
-	const subject = match[2];
+function shapedTitle(kind: string, subject: string): GeneratedTitle | undefined {
+	const normalizedKind = kind.trim().toLowerCase();
+	const normalizedSubject = subject.trim().toLowerCase().replace(/\s+/g, " ");
+	if (!/^[a-z][a-z0-9-]*$/.test(normalizedKind) || normalizedKind.length > SEMANTIC_TYPE_MAX_CHARS) return undefined;
+	if (!validSubject(normalizedSubject)) return undefined;
 	return {
-		display: subject[0].toUpperCase() + subject.slice(1),
-		branch: `${match[1]}/${subject.replaceAll(" ", "-")}`,
+		display: normalizedSubject[0].toUpperCase() + normalizedSubject.slice(1),
+		branch: `${normalizedKind}/${normalizedSubject.replaceAll(" ", "-")}`,
 	};
+}
+
+function parseGeneratedTitle(response: string): GeneratedTitle | undefined {
+	for (const candidate of response.match(/\{[^{}]*\}/gs) ?? []) {
+		let value: unknown;
+		try {
+			value = JSON.parse(candidate);
+		} catch {
+			continue;
+		}
+		if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+		const { kind, subject } = value as { kind?: unknown; subject?: unknown };
+		if (typeof kind !== "string" || typeof subject !== "string") continue;
+		const parsed = shapedTitle(kind, subject);
+		if (parsed) return parsed;
+	}
+	const legacy = /^([a-z][a-z0-9-]*): (.+)$/.exec(response.trim().toLowerCase().replace(/\s+/g, " "));
+	return legacy ? shapedTitle(legacy[1], legacy[2]) : undefined;
 }
 
 function savedTitle(ctx: ExtensionContext): GeneratedTitle | undefined {
@@ -151,14 +173,11 @@ function recentUserMessages(ctx: ExtensionContext, fallback?: string): string | 
 }
 
 async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<GeneratedTitle> {
-	const completionContext = {
-		systemPrompt: `Return only type: subject for latest user intent. Type: lowercase semantic word, max ${SEMANTIC_TYPE_MAX_CHARS} characters. Subject: natural task phrase, preferably 3-4 lowercase alphanumeric words, max ${DISPLAY_MAX_WORDS} words and ${DISPLAY_MAX_CHARS} characters. No other punctuation.`,
-		messages: [{ role: "user" as const, content: text.slice(0, MAX_CONTEXT_CHARS), timestamp: Date.now() }],
-	};
-	const complete = async (route: ResolvedTaskRoute) => {
+	const prompt = text.slice(0, MAX_CONTEXT_CHARS);
+	const complete = async (route: ResolvedTaskRoute, messages: Array<{ role: "user"; content: string; timestamp: number }>) => {
 		let response;
 		try {
-			response = await ctx.modelRegistry.streamSimple(route.model, completionContext, {
+			response = await ctx.modelRegistry.streamSimple(route.model, { systemPrompt: TITLE_PROMPT, messages }, {
 				signal,
 				maxRetries: 0,
 				...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }),
@@ -175,17 +194,27 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 	return executeTaskRoutes(
 		configuredRenameRoutes(ctx),
 		async (route) => {
-			const response = await complete(route);
+			const firstMessages = [{ role: "user" as const, content: prompt, timestamp: Date.now() }];
+			const response = await complete(route, firstMessages);
 			const title = response.content
 				.filter((part) => part.type === "text")
 				.map((part) => part.text)
-				.join(" ")
-				.trim()
-				.toLowerCase()
-				.replace(/\s+/g, " ");
+				.join(" ");
 			const generated = parseGeneratedTitle(title);
-			if (!generated) throw new RenameModelError("Rename task model returned an invalid title.");
-			return generated;
+			if (generated) return generated;
+
+			signal.throwIfAborted();
+			const repaired = await complete(route, [
+				...firstMessages,
+				{ role: "user", content: `${JSON.stringify(title.trim().slice(0, MAX_MESSAGE_CHARS))} ${TITLE_REPAIR_PROMPT}`, timestamp: Date.now() },
+			]);
+			const repairedTitle = repaired.content
+				.filter((part) => part.type === "text")
+				.map((part) => part.text)
+				.join(" ");
+			const repairedGenerated = parseGeneratedTitle(repairedTitle);
+			if (!repairedGenerated) throw new RenameModelError("Rename task model returned an invalid title.");
+			return repairedGenerated;
 		},
 		{
 			signal,
