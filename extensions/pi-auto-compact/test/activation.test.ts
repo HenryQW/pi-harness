@@ -572,10 +572,12 @@ test("boundary trims an older exact read, commits branch-relative edit, and does
 		const resultId = sm.appendMessage({ role: "toolResult", toolCallId: "new", toolName: "read",
 			content, isError: false, timestamp: 4 });
 		const initialTokens = sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
-		const model = { id: "model", name: "Model", provider: "test", contextWindow: Math.ceil(initialTokens * 2.5) };
+		// A virtual model declares no window of its own; Pi reports the physical model's limits through getContextUsage.
+		const contextWindow = Math.ceil(initialTokens * 2.5);
+		const model = { id: "model", name: "Model", provider: "test", api: "pi-virtual", contextWindow: 0 };
 		const notices: string[] = [];
 		const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
-			getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
+			getContextUsage: () => ({ tokens: null, contextWindow, percent: null }),
 			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => { throw new Error("no summary expected"); } },
 			ui: { notify: (message: string) => notices.push(message) }, signal: new AbortController().signal,
 		} as unknown as ExtensionContext;
