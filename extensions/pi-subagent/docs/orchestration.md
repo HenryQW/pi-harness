@@ -139,7 +139,7 @@ Every child launch:
 5. excludes Main-only delegation/recovery tools and `ask_question`; and
 6. prepends the delegated-subagent identity contract.
 
-An empty `tools` list adds no base tools, though selected extension tools can still activate. Omitted or empty `mcps` denies MCP access. Loading `pi-mcp-adapter` directly is rejected because it bypasses the allowlist.
+An empty `tools` list adds no base tools, though selected extension tools can still activate. Children run with `--no-extensions`, so a Role must list the extension that registers its route model's provider; `builtin:<name>` entries load Pi built-in extensions. `mcps` names servers from the global `~/.pi/agent/mcp.json` in Pi's native format, and their tools load in the child with direct exposure. Omitted or empty `mcps` denies MCP access. Loading `pi-mcp-adapter` directly is rejected because it bypasses the allowlist.
 
 Isolated Herdr Role launches receive the same turn, token, and child-runtime budget metadata as ephemeral launches. Retained workers therefore keep one non-refilling session budget across follow-ups rather than receiving a new request budget.
 
