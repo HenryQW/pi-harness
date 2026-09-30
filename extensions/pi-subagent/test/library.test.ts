@@ -510,6 +510,9 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		[{ args: ["x"] }, /MCP server "docs" needs either/],
 		[{ command: "docs", url: "https://docs.test" }, /MCP server "docs" needs either/],
 		[{ type: "sse", url: "https://docs.test" }, /MCP server "docs" needs either/],
+		[{ command: "node", args: 42 }, /MCP server "docs" field "args" must be an array of strings\./],
+		[{ command: "node", env: { KEY: 1 } }, /field "env" must be an object of strings\./],
+		[{ url: "https://docs.test", timeout: 0 }, /field "timeout" must be a positive number\./],
 	] as const) {
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs } }));
 		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), message);
@@ -662,13 +665,28 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		() => prepareRoleLaunch(pi, ctx, { role: retiredRole, route: { model, thinkingLevel: "high" } }),
 		/Role isolation is retired.*mode "isolated"/,
 	);
-	// Direct launches validate the MCP allowlist against mcp.json in Main before spawning.
+	// Direct launches validate the MCP allowlist in Main against the mcp.json the child reads.
+	const childHome = { PI_CODING_AGENT_DIR: agentDir };
 	assert.throws(
-		() => prepareRoleLaunch(pi, ctx, { role: { ...role, mcps: ["docs"] }, task, agentDir }),
+		() => prepareRoleLaunch(pi, ctx, { role: { ...role, mcps: ["docs"] }, task, agentDir, env: childHome }),
 		/Role MCP servers are not configured: docs\./,
 	);
 	await writeFile(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { docs: { url: "https://docs.test" } } }));
-	assert.equal(valueAfter(prepareRoleLaunch(pi, ctx, { role: { ...role, mcps: ["docs"] }, task, agentDir }).args, `--${ROLE_MCP_POLICY_FLAG}`), "[\"docs\"]");
+	assert.equal(valueAfter(prepareRoleLaunch(pi, ctx, { role: { ...role, mcps: ["docs"] }, task, agentDir, env: childHome }).args, `--${ROLE_MCP_POLICY_FLAG}`), "[\"docs\"]");
+	// Route resolution may use another home; without an override the child reads the default one.
+	const defaultHome = await mkdtemp(join(tmpdir(), "pi-subagent-default-home-"));
+	const previousHome = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = defaultHome;
+	try {
+		assert.throws(
+			() => prepareRoleLaunch(pi, ctx, { role: { ...role, mcps: ["docs"] }, task, agentDir }),
+			/Role MCP servers are not configured: docs\./,
+		);
+	} finally {
+		if (previousHome === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousHome;
+		await rm(defaultHome, { recursive: true, force: true });
+	}
 	assert.deepEqual(preparedDirectRoute.args, prepared.args);
 	assert.deepEqual(preparedDirectRoute.tools, prepared.tools);
 	assert.equal(preparedDirectRoute.args.includes("--append-system-prompt"), false);

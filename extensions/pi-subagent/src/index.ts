@@ -491,7 +491,8 @@ export function prepareRoleLaunch(
 		? prepareRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role))
 		: prepareResolvedRoleLaunch(pi, ctx, input);
 	assertNoMissingRoleSkills(input.role, prepared);
-	if (input.role.mcps?.length) loadRoleMcpConfig(("agentDir" in input ? input.agentDir : undefined) ?? getAgentDir(), input.role.mcps);
+	// Validate the mcp.json the child reads: its environment inherits Main's, with launch overrides on top.
+	if (input.role.mcps?.length) loadRoleMcpConfig(prepared.env.PI_CODING_AGENT_DIR ?? getAgentDir(), input.role.mcps);
 	return { ...prepared, role };
 }
 

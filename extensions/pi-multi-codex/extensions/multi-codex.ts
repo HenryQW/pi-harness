@@ -1015,7 +1015,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		const model = ctx.model;
 		const failedSlot = slotForProvider(event.message.provider);
 		if (
-			!model
+			!isManagedModel(model)
 			|| !failedSlot
 			|| request.provider !== event.message.provider
 			|| model.provider !== event.message.provider

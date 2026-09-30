@@ -23,6 +23,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const isStringRecord = (value: unknown) => isRecord(value) && Object.values(value).every((item) => typeof item === "string");
+
+/** Documented optional fields of an `mcpServers` entry and their shapes (see Pi's docs/mcp.md). */
+const FIELD_CHECKS: Record<string, [(value: unknown) => boolean, string]> = {
+	args: [(value) => Array.isArray(value) && value.every((item) => typeof item === "string"), "an array of strings"],
+	env: [isStringRecord, "an object of strings"],
+	headers: [isStringRecord, "an object of strings"],
+	cwd: [(value) => typeof value === "string", "a string"],
+	timeout: [(value) => typeof value === "number" && Number.isFinite(value) && value > 0, "a positive number"],
+	enabled: [(value) => typeof value === "boolean", "a boolean"],
+	oauth: [isRecord, "an object"],
+};
+
 /**
  * Select the Role's allowlisted servers from the global `mcp.json` in Pi's native `mcpServers`
  * shape; the project `.pi/mcp.json` is ignored. A `--no-extensions` child has no codemode tool, so
@@ -52,6 +65,9 @@ export function loadRoleMcpConfig(agentDir: string, allowlist: readonly string[]
 		const http = typeof value.url === "string" && value.url.trim() !== "" && (value.type === undefined || value.type === "http" || value.type === "streamable-http");
 		if (stdio === http) {
 			throw new Error(`${path}: MCP server "${name}" needs either a "command" (stdio) or a "url" (http or streamable-http).`);
+		}
+		for (const [field, [valid, shape]] of Object.entries(FIELD_CHECKS)) {
+			if (value[field] !== undefined && !valid(value[field])) throw new Error(`${path}: MCP server "${name}" field "${field}" must be ${shape}.`);
 		}
 		const { toolExposure: _toolExposure, ...config } = value;
 		return { name, config: { ...config, exposure: "direct" } as McpServerConfig, source: path, scope: "global" as const };

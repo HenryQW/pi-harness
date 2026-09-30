@@ -477,6 +477,19 @@ test("switches on final HTTP 429 and stops after every eligible slot was tried",
 	});
 });
 
+test("a virtual model with the physical Codex id is not failed over on HTTP 429", async () => {
+	await withApp({ 1: 80, 2: 60 }, [], async ({ handlers, ctx, selectModel, setModels }) => {
+		await selectModel({ ...model(), api: "pi-virtual" });
+		setModels.length = 0;
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		const result = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+		assert.equal(result, undefined);
+		assert.equal(setModels.length, 0);
+	});
+});
+
 test("does not switch when an internal 429 retry finishes successfully", async () => {
 	await withApp({ 1: 80, 2: 60 }, [], async ({ handlers, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
