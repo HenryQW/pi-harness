@@ -45,6 +45,7 @@ type CapturedMessage = {
 type CapturedTool = {
 	description: string;
 	executionMode?: "sequential" | "parallel";
+	exposure?: string;
 	parameters?: { properties?: { operations?: { maxItems?: number } } };
 	execute(
 		toolCallId: string,
@@ -678,6 +679,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		assert.match(memoryTool.description, /complete serialized mutation must not exceed 1,000,000 UTF-8 bytes/);
 		assert.match(memoryTool.description, /conflicts ask the user/);
 		assert.equal(memoryTool.executionMode, "sequential");
+		assert.equal(memoryTool.exposure, "model-only");
 		assert.equal(memoryTool.parameters?.properties?.operations?.maxItems, MAX_BATCH_OPERATIONS);
 
 		const injected = promptEvent();

@@ -41,7 +41,7 @@ type SourceContext = {
 	checkout: string | undefined;
 	repoRoot: string | undefined;
 	isLinkedWorktree: boolean;
-	/** False while Pi has not flushed the session yet (no assistant entry on disk). */
+	/** False while Pi has not flushed the session yet (no conversation message on disk). */
 	persisted: boolean;
 };
 
@@ -64,8 +64,9 @@ async function resolveSource(
 	try {
 		if (!(await stat(sessionFile)).isFile()) throw new Error(`Persisted Pi session path is not a file: ${sessionFile}`);
 	} catch (error) {
-		// Pi defers all session-file writes until the first assistant message
-		// completes, so a fresh session mid-first-turn has no file on disk.
+		// Pi defers all session-file writes until the first conversation message
+		// (user message since 0.99, first assistant reply before), so a fresh
+		// session can have live entries but no file on disk.
 		if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
 		persisted = false;
 	}

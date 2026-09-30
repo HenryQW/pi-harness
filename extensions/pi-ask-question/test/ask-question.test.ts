@@ -6,6 +6,7 @@ import { askQuestion } from "../src/index.ts";
 
 type Details = { answer: string | null; selectedIndex?: number };
 type RegisteredTool = {
+	exposure?: string;
 	execute(
 		toolCallId: string,
 		params: { question: string; options: Array<{ label: string; description?: string }> },
@@ -26,6 +27,10 @@ function loadTool(events: Pick<ExtensionAPI["events"], "emit"> = { emit() {} }):
 	assert.ok(tool);
 	return tool;
 }
+
+test("stays a direct model tool because it asks the user", () => {
+	assert.equal(loadTool().exposure, "model-only");
+});
 
 test("returns the selected source option when display labels would otherwise collide", async () => {
 	const ctx = {

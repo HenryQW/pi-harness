@@ -954,6 +954,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		label: "Memory",
 		description: `${MEMORY_DESCRIPTION}\n\nTo see current live entries, read MEMORY.md in the configured memory directory with the read tool.`,
 		promptSnippet: "Save durable facts to persistent memory",
+		exposure: "model-only",
 		parameters: Type.Object({
 			action: Type.Optional(StringEnum(["add", "replace", "remove"] as const, {
 				description: "Single change to perform. Omit when using operations.",
@@ -972,7 +973,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		}),
 		executionMode: "sequential",
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx, expectedGeneration?: number) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext, expectedGeneration?: number) {
 			const args = params as MemoryMutation;
 			if (state.initError) throw new Error(`Memory extension failed to initialize and is disabled: ${state.initError}`);
 			if (!state.config || !state.stores) throw new Error("Memory extension is not initialized.");
@@ -1083,6 +1084,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				signal?.throwIfAborted();
 				return write(resolved);
 			});
+		},
+
+		renderCall(_args, theme) {
+			return new Text(theme.fg("toolTitle", theme.bold("memory")), 0, 0);
 		},
 
 		renderResult(result, _options, theme, _context) {
