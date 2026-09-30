@@ -575,6 +575,7 @@ test("boundary trims an older exact read, commits branch-relative edit, and does
 		const model = { id: "model", name: "Model", provider: "test", contextWindow: Math.ceil(initialTokens * 2.5) };
 		const notices: string[] = [];
 		const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
+			getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
 			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => { throw new Error("no summary expected"); } },
 			ui: { notify: (message: string) => notices.push(message) }, signal: new AbortController().signal,
 		} as unknown as ExtensionContext;
@@ -647,6 +648,7 @@ test("ineligible reads stay intact and branch changes discard pending boundary d
 			const model = { contextWindow: 3_000 };
 			const notices: string[] = [];
 			const ctx = { cwd: tempRoot, model, sessionManager: sm, isProjectTrusted: () => true,
+				getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
 				modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => {
 					if (scenario === "switched branch") sm.branch(oldId);
 					throw new Error("no model");
@@ -680,22 +682,7 @@ test("completed final boundary persists routed summary, usage, and read tracking
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-checkpoint-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	let requestBody = "";
-	const server = createServer(async (request, response) => {
-		for await (const chunk of request) requestBody += chunk;
-		response.writeHead(200, { "content-type": "text/event-stream" });
-		response.write(`data: ${JSON.stringify({ id: "summary", model: "model", choices: [
-			{ delta: { content: "A valid summary" }, finish_reason: null },
-		] })}\n\n`);
-		response.write(`data: ${JSON.stringify({ id: "summary", model: "model", choices: [
-			{ delta: {}, finish_reason: "stop" },
-		], usage: { prompt_tokens: 21, completion_tokens: 3, total_tokens: 24 } })}\n\n`);
-		response.end("data: [DONE]\n\n");
-	});
 	try {
-		await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
-		const address = server.address();
-		assert.ok(address && typeof address !== "string");
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
 			compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 100 },
 		}));
@@ -710,8 +697,12 @@ test("completed final boundary persists routed summary, usage, and read tracking
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 			stopReason: "toolUse", timestamp: 2 });
+		// Calls made through ctx.executeTool are recorded on the calling tool's result; oversized arguments are omitted.
 		sm.appendMessage({ role: "toolResult", toolCallId: "read-1", toolName: "read", isError: false,
-			content: [{ type: "text", text: "file contents ".repeat(900) }], timestamp: 3 });
+			content: [{ type: "text", text: "file contents ".repeat(900) }], timestamp: 3, nestedCalls: { complete: false, calls: [
+				{ id: "nested-1", name: "edit", arguments: { path: "src/nested.ts" }, status: "ok" },
+				{ id: "nested-2", name: "read", argumentsBytes: 40, status: "ok" },
+			] } });
 		const keptUserId = sm.appendMessage({ role: "user", content: "Now finish", timestamp: 4 });
 		const final = { role: "assistant" as const, content: [{ type: "text" as const, text: "Done" }],
 			api: "openai-completions" as const, provider: "fake", model: "model",
@@ -719,12 +710,23 @@ test("completed final boundary persists routed summary, usage, and read tracking
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 			stopReason: "stop" as const, timestamp: 5 };
 		sm.appendMessage(final);
-		const model = { id: "model", name: "Model", api: "openai-completions", provider: "fake",
-			baseUrl: `http://127.0.0.1:${address.port}/v1`, reasoning: false, input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 6_000, maxTokens: 600 };
+		const model = { id: "model", name: "Model", api: "openai-completions", provider: "fake", reasoning: false,
+			input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 6_000, maxTokens: 600 };
 		const handlers = loadExtension();
+		let requestBody = "";
+		const streamed: unknown[] = [];
 		const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
-			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }) },
+			getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
+			// The session model goes through the registry, which routes virtual models.
+			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
+				streamSimple: (requested: unknown, context: unknown) => {
+					streamed.push(requested);
+					requestBody = JSON.stringify(context);
+					return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "A valid summary" }],
+						api: "openai-completions", provider: "fake", model: "model", stopReason: "stop", timestamp: 6,
+						usage: { input: 21, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 24,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }) };
+				} },
 			ui: { notify() {} }, signal: new AbortController().signal,
 		} as unknown as ExtensionContext;
 		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
@@ -741,15 +743,15 @@ test("completed final boundary persists routed summary, usage, and read tracking
 		assert.equal(checkpoint.firstKeptEntryId, keptUserId);
 		assert.match(checkpoint.summary, /A valid summary/);
 		assert.deepEqual(checkpoint.details.readFiles, ["prior.ts", "src/file.ts"]);
-		assert.deepEqual(checkpoint.details.modifiedFiles, ["modified.ts"]);
+		assert.deepEqual(checkpoint.details.modifiedFiles, ["modified.ts", "src/nested.ts"]);
 		assert.equal(checkpoint.usage.totalTokens, 24);
+		assert.deepEqual(streamed, [model]);
 		assert.match(requestBody, /Earlier decisions/);
 		assert.match(requestBody, /src\/file.ts/);
 		sm.appendCompaction(checkpoint.summary, checkpoint.firstKeptEntryId, 1, checkpoint.details, true,
 			checkpoint.usage as never);
 		assert.equal(sm.buildSessionProjection().messages.some((message) => message.role === "toolResult"), false);
 	} finally {
-		server.close();
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(tempRoot, { recursive: true, force: true });

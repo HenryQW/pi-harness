@@ -80,7 +80,7 @@ type Config = { autoSwitchOn429: boolean };
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const CODEX_ALIAS_PATTERN = /^openai-codex-([2-9]|[1-9]\d+)$/;
-const NO_ACCOUNTS_MESSAGE = "No Codex OAuth accounts found. Run /login and select OpenAI Codex.";
+const NO_ACCOUNTS_MESSAGE = "No Codex OAuth accounts found. Run /login and select OpenAI Codex (legacy).";
 const AGENT_STARTED_ENTRY = "pi-multi-codex:agent-started";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const REFRESH_MS = 5 * 60_000;
@@ -818,8 +818,9 @@ function providerForSlot(slot: number): string {
 	return slot === 1 ? NATIVE_PROVIDER_ID : `${NATIVE_PROVIDER_ID}-${slot}`;
 }
 
-function isManagedProvider(provider: string | undefined): boolean {
-	return provider !== undefined && slotForProvider(provider) !== undefined;
+/** A physical Codex model on a slot provider. Virtual models listed under `openai-codex` route elsewhere and are not slots. */
+function isManagedModel(model: Model<any> | undefined): model is CodexModel {
+	return model?.api === "openai-codex-responses" && slotForProvider(model.provider) !== undefined;
 }
 
 function sessionHasAgentWork(ctx: ExtensionContext): boolean {
@@ -907,8 +908,8 @@ export default function multiCodex(pi: ExtensionAPI): void {
 
 	const footerText = (ctx: ExtensionContext): string | undefined => {
 		const model = ctx.model;
-		const slot = slotForProvider(model?.provider ?? "");
-		if (!model || !slot) return undefined;
+		const slot = isManagedModel(model) ? slotForProvider(model.provider) : undefined;
+		if (!slot) return undefined;
 		const identity = currentIdentity(slot);
 		const snapshot = quota.snapshot(slot);
 		const prefix = `Codex #${slot}`;
@@ -941,7 +942,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	};
 
 	const updatePendingCandidate = (ctx: ExtensionContext): void => {
-		if (!ctx.model || !isManagedProvider(ctx.model.provider)) return;
+		if (!isManagedModel(ctx.model)) return;
 		const slot = selectFreshSlot(ctx, ctx.model);
 		automaticCandidate = slot ? { ...ctx.model, provider: providerForSlot(slot) } : ctx.model;
 	};
@@ -970,7 +971,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 				ctx.ui.notify("Pi Multi Codex config is invalid. Automatic 429 switching is disabled; the file was left unchanged.", "warning");
 			}
 		}
-		automaticOpen = isManagedProvider(ctx.model?.provider) && !sessionHasAgentWork(ctx);
+		automaticOpen = isManagedModel(ctx.model) && !sessionHasAgentWork(ctx);
 		automaticCandidate = ctx.model;
 		// Cache-only ranking happens before background refresh starts.
 		updatePendingCandidate(ctx);
@@ -983,7 +984,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		triedSlots.clear();
 		providerRequest = undefined;
 		const model = ctx.model;
-		const slot = slotForProvider(model?.provider ?? "");
+		const slot = isManagedModel(model) ? slotForProvider(model.provider) : undefined;
 		const identity = slot ? currentIdentity(slot) : undefined;
 		const snapshot = slot ? quota.snapshot(slot) : undefined;
 		if (!automaticOpen && (preserveModelChoice || !identity || snapshot?.accountHash !== identity.accountHash || !isFiveHourLimited(snapshot, Date.now()))) return;
@@ -991,7 +992,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		// Close before await: no timer, refresh, queued turn, or provider event can route later.
 		automaticOpen = false;
 		const candidate = automaticCandidate;
-		if (!model || !candidate || !isManagedProvider(model.provider) || candidate.id !== model.id || candidate.provider === model.provider) return;
+		if (!isManagedModel(model) || !candidate || candidate.id !== model.id || candidate.provider === model.provider) return;
 		await setModelAutomatically(candidate);
 		updateFooter(ctx);
 	});
@@ -1069,7 +1070,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const slots = syncSlots();
 			if (!slots.has(1)) {
-				ctx.ui.notify("Run /login and select OpenAI Codex for slot 1 first.", "warning");
+				ctx.ui.notify("Run /login and select OpenAI Codex (legacy) for slot 1 first.", "warning");
 				return;
 			}
 
@@ -1093,7 +1094,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		description: "switch current Codex model to another authenticated slot",
 		handler: async (_args, ctx) => {
 			const model = ctx.model;
-			if (!model || !isManagedProvider(model.provider)) {
+			if (!isManagedModel(model)) {
 				ctx.ui.notify("Select an OpenAI Codex model before switching slots.", "warning");
 				return;
 			}
@@ -1108,7 +1109,7 @@ export default function multiCodex(pi: ExtensionAPI): void {
 				ctx.ui.notify(
 					scopedModels.length > 0
 						? "No authenticated Codex slot matches this session's model scope. Restart Pi or update scoped models."
-						: "No authenticated Codex slots found. Run /login and select OpenAI Codex.",
+						: "No authenticated Codex slots found. Run /login and select OpenAI Codex (legacy).",
 					"warning",
 				);
 				return;

@@ -47,6 +47,7 @@ function setupFooter(
 		async start(ctx: object): Promise<FooterFactory> {
 			let footerFactory: FooterFactory | undefined;
 			const context = Object.assign(ctx, {
+				sessionManager: { getLeafId: () => null, getBranch: () => [], ...(ctx as { sessionManager?: object }).sessionManager },
 				ui: {
 					setFooter(factory: FooterFactory) {
 						footerFactory = factory;
@@ -204,6 +205,44 @@ test("renders family status on the first line and external statuses beside runti
 	submoduleFooter.dispose();
 });
 
+test("shows the routed physical model under a virtual selection", async () => {
+	const { start } = setupFooter();
+	const response = (model: string, stopReason: string, thinkingLevel?: string) => ({
+		type: "message",
+		message: { role: "assistant", provider: "anthropic", model, stopReason, thinkingLevel, usage: usage(0, 0, 0, 0) },
+	});
+	const haiku = response("claude-haiku-4-5", "stop", "medium");
+	const entries = [haiku, response("claude-sonnet-4-5", "stop"), response("claude-opus-4-5", "error")];
+	let branch = entries;
+	let leaf = "failed";
+	let model = { id: "auto", api: "pi-virtual" };
+	const factory = await start({
+		mode: "tui",
+		cwd: "/repo",
+		get model() { return model; },
+		thinkingLevel: "high",
+		sessionManager: { getEntries: () => entries, getBranch: () => branch, getLeafId: () => leaf },
+		getContextUsage: () => undefined,
+	});
+	const footer = factory(
+		{ requestRender() {} },
+		{ fg: (_color, text) => text },
+		{ getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
+	);
+	const modelText = () => stripTerminalSequences(footer.render(100)[1]!).replace(/^.* {2}/, "");
+	// The failed response is skipped; the routed level is omitted when the response has none.
+	assert.equal(modelText(), "auto • high → claude-sonnet-4-5");
+	// Same entries and leaf: cached.
+	branch = [haiku];
+	assert.equal(modelText(), "auto • high → claude-sonnet-4-5");
+	// Tree navigation changes the leaf and refreshes the routed model.
+	leaf = "haiku";
+	assert.match(footer.render(100)[1]!, /→ claude-haiku-4-5 • \x1b\[38;5;118mmedium\x1b\[39m$/);
+	model = { id: "claude-sonnet-4-5", api: "anthropic-messages" };
+	assert.equal(modelText(), "claude-sonnet-4-5 • high");
+	footer.dispose();
+});
+
 test("shows installed CodeGraph first and marks active calls without showing an absent install", async () => {
 	const { handlers, start } = setupFooter();
 	const factory = await start({
@@ -243,9 +282,7 @@ test("shows installed CodeGraph first and marks active calls without showing an 
 	assert.match(third(), /^● CG · /);
 	await handlers.get("tool_execution_end")!({ toolCallId: "cg-1", toolName: "codegraph_explore" });
 	assert.match(third(), /^✓ CG · ↩ rewind +◷ 0s$/);
-	await handlers.get("tool_execution_start")!({ toolCallId: "cg-2", toolName: "mcp", args: { server: "henryqw_pi-codegraph__codegraph", tool: "codegraph_search" } });
-	assert.match(third(), /^● CG · /);
-	assert.ok(renders >= 3);
+	assert.equal(renders, 2);
 	await handlers.get("session_shutdown")!(undefined);
 	footer.dispose();
 });

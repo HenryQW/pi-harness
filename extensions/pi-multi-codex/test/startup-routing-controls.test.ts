@@ -381,6 +381,18 @@ test("does not reopen automatic routing after session reload", async () => {
 	});
 });
 
+test("a virtual model listed under openai-codex is not a slot", async () => {
+	await withApp({ 1: 40, 2: 70 }, [], async ({ handlers, commands, ctx, selectModel, setModels, statuses, notices }) => {
+		await selectModel({ ...model(), id: "auto", api: "pi-virtual" });
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		await commands.get("codex-switch")?.("", ctx);
+		assert.equal(setModels.length, 0);
+		assert.equal(statuses.at(-1), undefined);
+		assert.match(notices.at(-1) ?? "", /Select an OpenAI Codex model/);
+	});
+});
+
 test("manual switch uses native selector and keeps active model id", async () => {
 	await withApp({ 1: 75, 2: 20 }, [], async ({ handlers, commands, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);

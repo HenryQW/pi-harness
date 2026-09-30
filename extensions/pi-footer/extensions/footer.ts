@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
 
@@ -15,6 +15,8 @@ const THINKING_COLORS = {
 const HENRY_STATUS_KEY = "pi-multi-codex";
 const AGENT_TIME_ENTRY = "pi-footer:agent-work";
 const SUBAGENT_BACKGROUND_RESULT = "subagent-background-result";
+/** Pi's VIRTUAL_MODEL_API: catalog entries that route each request to a physical model. */
+const VIRTUAL_MODEL_API = "pi-virtual";
 
 type CountedUsage = { input: number; output: number; cost: { total: number } };
 type GitSummary = { badges: string; detachedOid?: string };
@@ -167,11 +169,15 @@ function rainbow(text: string): string {
 	return [...text].map((character, index) => color(character, colors[index % colors.length]!)).join("");
 }
 
-function isCodegraphCall(toolName: string, args: unknown): boolean {
-	if (toolName === "codegraph_explore") return true;
-	if (toolName !== "mcp" || !args || typeof args !== "object") return false;
-	const { tool, server } = args as { tool?: unknown; server?: unknown };
-	return server === "henryqw_pi-codegraph__codegraph" && typeof tool === "string" && tool.startsWith("codegraph_");
+/** Physical model and thinking level of the latest successful response on the branch; failed and aborted requests are skipped. */
+function latestResponse(ctx: ExtensionContext): { model: string; thinkingLevel?: string } | undefined {
+	const branch = ctx.sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		const { stopReason, model, thinkingLevel } = entry.message;
+		if (stopReason !== "error" && stopReason !== "aborted") return { model, thinkingLevel };
+	}
 }
 
 function codegraphBadge(status: string, inUse: boolean, theme: Theme): string {
@@ -196,7 +202,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	let refreshGitStatus: (() => Promise<void>) | undefined;
 	const activeCodegraphCalls = new Set<string>();
 	pi.on("tool_execution_start", (event) => {
-		if (!isCodegraphCall(event.toolName, event.args)) return;
+		if (event.toolName !== "codegraph_explore") return;
 		activeCodegraphCalls.add(event.toolCallId);
 		requestRuntimeRender?.();
 	});
@@ -317,8 +323,9 @@ export default function footerExtension(pi: ExtensionAPI): void {
 			tps = seconds > 0 ? output / seconds : undefined;
 		});
 
-		// ponytail: keyed on length + last entry (sessions are append-only); revisit if entries ever mutate in place.
+		// ponytail: keyed on length + last entry (sessions are append-only) + leaf (tree navigation); revisit if entries ever mutate in place.
 		let usageKey: string | undefined;
+		let routed: ReturnType<typeof latestResponse>;
 		let input = 0;
 		let output = 0;
 		let cost = 0;
@@ -366,10 +373,11 @@ export default function footerExtension(pi: ExtensionAPI): void {
 				invalidate() { },
 				render(width: number): string[] {
 					const entries = ctx.sessionManager.getEntries();
-					const key = `${entries.length}:${entries.at(-1)?.type}`;
+					const key = `${entries.length}:${entries.at(-1)?.type}:${ctx.sessionManager.getLeafId()}`;
 					if (key !== usageKey) {
 						usageKey = key;
 						computeUsage();
+						routed = latestResponse(ctx);
 					}
 
 					const reportedBranch = data.getGitBranch()?.replace(/^worktree\//, "");
@@ -388,8 +396,6 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						if (!text) continue;
 						(key === HENRY_STATUS_KEY ? henryStatuses : externalStatuses).push(text);
 					}
-					const thinking = String(ctx.thinkingLevel ?? "off");
-					const thinkingColor = THINKING_COLORS[thinking as keyof typeof THINKING_COLORS];
 					const ellipsis = theme.fg("dim", "…");
 					const usage = theme.fg("dim", [
 						`↑ ${formatTokens(input)}`,
@@ -399,10 +405,15 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					`$ ${cost.toFixed(3)}`,
 						`◔ ${context == null ? "—" : `${context.toFixed(1)}%`}`,
 					].join(" · "));
-					const thinkingText = thinking === "ultra"
-						? rainbow(thinking)
-						: thinkingColor === undefined ? theme.fg("dim", thinking) : color(thinking, thinkingColor);
-					const model = theme.fg("dim", `${ctx.model?.id ?? "no-model"} • `) + thinkingText;
+					const thinkingText = (level: string) => {
+						const thinkingColor = THINKING_COLORS[level as keyof typeof THINKING_COLORS];
+						return level === "ultra" ? rainbow(level) : thinkingColor === undefined ? theme.fg("dim", level) : color(level, thinkingColor);
+					};
+					const selected = theme.fg("dim", `${ctx.model?.id ?? "no-model"} • `) + thinkingText(String(ctx.thinkingLevel ?? "off"));
+					// Under a virtual selection, show where the latest request went, as Pi's own footer does.
+					const model = ctx.model?.api === VIRTUAL_MODEL_API && routed
+						? selected + theme.fg("dim", ` → ${routed.model}`) + (routed.thinkingLevel ? theme.fg("dim", " • ") + thinkingText(routed.thinkingLevel) : "")
+						: selected;
 					const elapsed = activeMilliseconds + (activeStartedAt === undefined ? 0 : performance.now() - activeStartedAt);
 					const runtime = theme.fg("dim", `◷ ${formatDuration(elapsed)}`);
 					const identity = branch ? theme.fg("dim", `${repo} · `) : "";
