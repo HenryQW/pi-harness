@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
-import { parseRoleMcpAllowlist, selectRoleMcpConfig } from "./mcp-role.ts";
+import { loadRoleMcpConfig, parseRoleMcpAllowlist } from "./mcp-role.ts";
 import {
 	loadTaskModelsConfig,
 	modelReference,
@@ -27,7 +27,7 @@ import {
 } from "@henryqw/pi-task-models";
 
 export { DISPLAY_TEXT_CONTRACT, hasDisplayControlCharacters } from "./display-text.ts";
-export { parseRoleMcpAllowlist, selectRoleMcpConfig, type RoleMcpConfig } from "./mcp-role.ts";
+export { loadRoleMcpConfig, parseRoleMcpAllowlist } from "./mcp-role.ts";
 export {
 	addUsage,
 	capEphemeralSubagentOutput,
@@ -178,12 +178,22 @@ const stringList = (value: unknown, field: string, source: string): string[] => 
 	return value.map((item) => item.trim());
 };
 
+// Pi 0.99 built-in extensions (`builtin:<name>`, see Pi's settings docs); Pi exports no list of them.
+const BUILTIN_EXTENSION_NAMES = ["mcp", "codemode", "tool-search", "llama.cpp"] as const;
+const BUILTIN_EXTENSION_PREFIX = "builtin:";
+
 function validateExtension(extension: string, source: string): string {
 	const value = cleanText(extension, "extension", source);
+	if (value.startsWith(BUILTIN_EXTENSION_PREFIX)) {
+		if (!(BUILTIN_EXTENSION_NAMES as readonly string[]).includes(value.slice(BUILTIN_EXTENSION_PREFIX.length))) {
+			throw new Error(`${source}: unknown built-in extension ${value}; use ${BUILTIN_EXTENSION_NAMES.map((name) => `${BUILTIN_EXTENSION_PREFIX}${name}`).join(", ")}.`);
+		}
+		return value;
+	}
 	const packageSource = /^(?:npm|git|github|https?|ssh):/.test(value);
 	const userPath = isAbsolute(value) || value.startsWith("~/") || value.startsWith("~\\") || value.startsWith("file://");
 	if (!packageSource && !userPath) {
-		throw new Error(`${source}: extensions entries must be absolute paths or package sources.`);
+		throw new Error(`${source}: extensions entries must be absolute paths, package sources, or builtin:<name>.`);
 	}
 	return value;
 }
@@ -360,7 +370,9 @@ export async function resolveRolePackageResources(
 	const resolved = await packageManager(ctx).resolveExtensionSources([...sources]);
 	const resourceGroups = [resolved.extensions, resolved.skills, resolved.prompts, resolved.themes]
 		.map((resources) => resources.filter((resource) => resource.enabled));
-	const resolvedSources = new Set(resourceGroups.flat().map((resource) => resource.metadata.source));
+	// Built-in extensions resolve to their `builtin:<name>` path with the bare source `builtin`.
+	const resolvedSources = new Set(resourceGroups.flat()
+		.map((resource) => resource.metadata.source === "builtin" ? resource.path : resource.metadata.source));
 	const missing = sources.filter((source) => !resolvedSources.has(source));
 	if (missing.length) throw new Error(`Role extension sources resolved no resources: ${missing.join(", ")}.`);
 	return {
@@ -475,6 +487,7 @@ export function prepareRoleLaunch(
 		? prepareRoleLaunchFromSkills(ctx, input, resolveRoleSkills(pi, input.role))
 		: prepareResolvedRoleLaunch(pi, ctx, input);
 	assertNoMissingRoleSkills(input.role, prepared);
+	if (input.role.mcps?.length) loadRoleMcpConfig(("agentDir" in input ? input.agentDir : undefined) ?? getAgentDir(), input.role.mcps);
 	return { ...prepared, role };
 }
 
@@ -489,10 +502,7 @@ export async function resolveConfiguredRoleLaunch(
 	const matches = loadRoles().filter((role) => role.name === roleName);
 	if (matches.length !== 1) throw new Error(`Required configured Role ${roleName} is missing or ambiguous.`);
 	const role = matches[0]!;
-	if (role.mcps?.length) {
-		const { loadMcpConfig } = await import("pi-mcp-adapter/config");
-		selectRoleMcpConfig(loadMcpConfig(join(getAgentDir(), "mcp.json"), ctx.cwd), role.mcps);
-	}
+	if (role.mcps?.length) loadRoleMcpConfig(getAgentDir(), role.mcps);
 	const resources = await resolveRolePackageResources(role, ctx);
 	const effectiveRole: Role = { ...role, extensions: resources.extensions };
 	const namedSkills = resolveRoleSkills(pi, effectiveRole);

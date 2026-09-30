@@ -9,6 +9,7 @@ import {
 	createRoleLaunch,
 	EXECUTION_BUDGET_ENV,
 	finalizeRoleLaunch,
+	loadRoleMcpConfig,
 	parseRoleMcpAllowlist,
 	prepareRoleLaunch,
 	resolveConfiguredRoleLaunch,
@@ -17,7 +18,6 @@ import {
 	ROLE_MCP_POLICY_FLAG,
 	ROLE_TOOL_POLICY_FLAG,
 	roleMcpAllowlistFromArgv,
-	selectRoleMcpConfig,
 	type Role,
 } from "../src/index.ts";
 
@@ -455,7 +455,9 @@ test("empty Role tools activate only trusted extension tools and caller addition
 	assert.deepEqual(activeTools, ["caller_protocol", "role_extension", "caller_extension"]);
 });
 
-test("Role MCP allowlists load the adapter wrapper without allowing ambient servers", () => {
+test("Role MCP allowlists load the native MCP extension with direct exposure only", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-mcp-"));
+	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	const role: Role = {
 		name: "worker",
 		description: "Uses selected MCP servers",
@@ -483,23 +485,47 @@ test("Role MCP allowlists load the adapter wrapper without allowing ambient serv
 	});
 	assert.equal(noMcpLaunch.args.includes(policyFlag), false);
 	assert.ok(valuesAfter(noMcpLaunch.args, "--extension").every((extension) => !/[\\/]role-mcp\.ts$/.test(extension)));
-	assert.deepEqual(selectRoleMcpConfig({
-		mcpServers: { other: { url: "https://other.test" }, docs: { url: "https://docs.test" }, browser: { command: "browser" } },
-		settings: { directTools: true, agentPluginPaths: ["./plugins"], hostConfigDiscovery: "on" },
-	}, role.mcps!), {
-		mcpServers: { docs: { url: "https://docs.test" }, browser: { command: "browser" } },
-		settings: { directTools: true },
+	const mcpPath = join(agentDir, "mcp.json");
+	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), /Role MCP servers are not configured: docs\./);
+	await writeFile(mcpPath, JSON.stringify({
+		autoEnableCodemode: true,
+		mcpServers: {
+			other: { url: "https://other.test" },
+			docs: { url: "https://docs.test", exposure: "codemode", toolExposure: { search: "hidden" } },
+			browser: { command: "browser", args: ["--headless"], enabled: false },
+		},
+	}));
+	assert.deepEqual(loadRoleMcpConfig(agentDir, role.mcps!), {
+		servers: [
+			{ name: "docs", config: { url: "https://docs.test", exposure: "direct" }, source: mcpPath, scope: "global" },
+			{ name: "browser", config: { command: "browser", args: ["--headless"], enabled: false, exposure: "direct" }, source: mcpPath, scope: "global" },
+		],
+		autoEnableCodemode: false,
+		errors: [],
 	});
-	assert.throws(
-		() => selectRoleMcpConfig({ mcpServers: { docs: {} } }, ["missing"]),
-		/Role MCP servers are not configured: missing/,
-	);
+	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs", "missing"]), /Role MCP servers are not configured: missing\./);
+	await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: [] } }));
+	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), /mcp\.json: MCP server "docs" must be an object\./);
+	await writeFile(mcpPath, "{");
+	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), /mcp\.json: /);
 	assert.throws(
 		() => createRoleLaunch(pi, { isProjectTrusted: () => true }, {
 			role: { ...role, extensions: ["npm:pi-mcp-adapter"] },
 			route: { model, thinkingLevel: "high" },
 		}),
 		/must select MCP servers with mcps/,
+	);
+	const builtinLaunch = createRoleLaunch(pi, { isProjectTrusted: () => true }, {
+		role: { ...role, mcps: [], extensions: ["builtin:codemode", "builtin:mcp"] },
+		route: { model, thinkingLevel: "high" },
+	});
+	assert.deepEqual(valuesAfter(builtinLaunch.args, "--extension").slice(0, 2), ["builtin:codemode", "builtin:mcp"]);
+	assert.throws(
+		() => createRoleLaunch(pi, { isProjectTrusted: () => true }, {
+			role: { ...role, extensions: ["builtin:nope"] },
+			route: { model, thinkingLevel: "high" },
+		}),
+		/Role worker: unknown built-in extension builtin:nope; use builtin:mcp, builtin:codemode, builtin:tool-search, builtin:llama\.cpp\./,
 	);
 	assert.throws(() => parseRoleMcpAllowlist("[\"docs\",\"docs\"]"), /duplicate MCP server names/);
 });
@@ -619,6 +645,13 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		() => prepareRoleLaunch(pi, ctx, { role: retiredRole, route: { model, thinkingLevel: "high" } }),
 		/Role isolation is retired.*mode "isolated"/,
 	);
+	// Direct launches validate the MCP allowlist against mcp.json in Main before spawning.
+	assert.throws(
+		() => prepareRoleLaunch(pi, ctx, { role: { ...role, mcps: ["docs"] }, task, agentDir }),
+		/Role MCP servers are not configured: docs\./,
+	);
+	await writeFile(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { docs: { url: "https://docs.test" } } }));
+	assert.equal(valueAfter(prepareRoleLaunch(pi, ctx, { role: { ...role, mcps: ["docs"] }, task, agentDir }).args, `--${ROLE_MCP_POLICY_FLAG}`), "[\"docs\"]");
 	assert.deepEqual(preparedDirectRoute.args, prepared.args);
 	assert.deepEqual(preparedDirectRoute.tools, prepared.tools);
 	assert.equal(preparedDirectRoute.args.includes("--append-system-prompt"), false);
@@ -696,6 +729,9 @@ test("Role package resources resolve enabled paths; configured launches require 
 	});
 	assert.deepEqual(await resolveRolePackageResources(role, ctx), {
 		extensions: [extension], skills: [skill], prompts: [prompt], themes: [theme],
+	});
+	assert.deepEqual(await resolveRolePackageResources({ ...role, extensions: ["builtin:mcp", "npm:@example/role"] }, ctx), {
+		extensions: [extension, "builtin:mcp"], skills: [skill], prompts: [prompt], themes: [theme],
 	});
 
 	await Promise.all([

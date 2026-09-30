@@ -13,18 +13,11 @@ pi install npm:@henryqw/pi-subagent
 
 Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use.
 
-Install `pi-mcp-adapter` only when a Role declares an MCP server allowlist:
-
-```bash
-pi install npm:pi-mcp-adapter
-```
-
 ## Works with
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides the configured model routes for delegated Roles. |
-| [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) | Required | Loads the MCP servers named in a Role's `mcps` allowlist, only for Roles that declare one. |
 
 ## Use
 
@@ -181,14 +174,14 @@ Role Markdown lives in `~/.pi/agent/config/pi-subagent/` and requires frontmatte
 | `name`, `description` | Required non-empty text without terminal control characters |
 | `modelClass` | Optional `fast`, `balanced`, `frontier`, or `fav` default |
 | `tools` | Required array of base tool names; `[]` selects none |
-| `extensions` | Required array of trusted absolute paths or supported package sources |
+| `extensions` | Required array of trusted absolute paths, supported package sources, or Pi built-in extensions such as `builtin:codemode` |
 | `skills` | Required array of effective Pi Skill names |
-| `mcps` | Optional exact MCP server names; omitted or `[]` denies MCP access |
+| `mcps` | Optional exact server names from `~/.pi/agent/mcp.json` in Pi's native `mcpServers` format; omitted or `[]` denies MCP access |
 | body | Required system instructions |
 
 Roles describe responsibility and capabilities. They do not choose isolation; each request does. A same-named user Role overrides a built-in Role. The package ships `implementer`, `reviewer`, and `scout`.
 
-Children disable ambient extension and Skill discovery. Only declared resources and required internal policy adapters load. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. Main-only delegation and recovery tools plus `ask_question` are excluded from children.
+Children run with `--no-extensions`, so a Role must list the extension that registers its route model's provider, and only declared resources plus required internal policy adapters load. `builtin:<name>` entries load Pi built-in extensions (`builtin:mcp`, `builtin:codemode`, `builtin:tool-search`, `builtin:llama.cpp`) explicitly. The servers named in `mcps` come from the global `~/.pi/agent/mcp.json` only; their tools load in the child with direct exposure and are declared to the model as `mcp__<server>__<tool>` once the server connects. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. Main-only delegation and recovery tools plus `ask_question` are excluded from children.
 
 ## API
 
