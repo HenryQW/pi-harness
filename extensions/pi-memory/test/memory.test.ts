@@ -45,6 +45,7 @@ type CapturedMessage = {
 type CapturedTool = {
 	description: string;
 	executionMode?: "sequential" | "parallel";
+	exposure?: string;
 	parameters?: { properties?: { operations?: { maxItems?: number } } };
 	execute(
 		toolCallId: string,
@@ -53,6 +54,7 @@ type CapturedTool = {
 		onUpdate?: undefined,
 		ctx?: ExtensionContext,
 	): Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
+	renderCall(args: Record<string, unknown>, theme: { fg(color: string, text: string): string; bold(text: string): string }): { render(width: number): string[] };
 	renderResult(
 		result: unknown,
 		options: { expanded: boolean },
@@ -678,6 +680,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		assert.match(memoryTool.description, /complete serialized mutation must not exceed 1,000,000 UTF-8 bytes/);
 		assert.match(memoryTool.description, /conflicts ask the user/);
 		assert.equal(memoryTool.executionMode, "sequential");
+		assert.equal(memoryTool.exposure, "model-only");
 		assert.equal(memoryTool.parameters?.properties?.operations?.maxItems, MAX_BATCH_OPERATIONS);
 
 		const injected = promptEvent();
@@ -702,6 +705,9 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 			{ args: { action: "add", content: "new live fact" } },
 		);
 		assert.deepEqual(rendered.render(200).map((line) => line.trimEnd()), ["✓ Entry added.", "  new live fact"]);
+		// The call header shows only the tool name; arguments stay out of the transcript header.
+		const header = memoryTool.renderCall({ action: "add", content: "new live fact" }, { fg: (_color, text) => text, bold: (text) => text });
+		assert.deepEqual(header.render(200).map((line) => line.trimEnd()), ["memory"]);
 		assert.match(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), /new live fact/);
 		const stillFrozen = promptEvent();
 		await before(stillFrozen);

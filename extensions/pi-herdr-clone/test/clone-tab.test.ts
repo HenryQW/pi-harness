@@ -241,10 +241,10 @@ test("launch-attempt failures retain recovery artifacts while focus failure repo
 test("/clone-tab clones an un-persisted session from live state", async () => {
 	const data = await fixture();
 	try {
-		// Simulate a fresh session whose first turn is still running: Pi defers
-		// all writes until the first assistant entry, so the file never hit disk.
+		// Simulate a fresh session with only setup entries: Pi defers all writes
+		// until the first conversation message, so the file never hit disk.
 		const running = SessionManager.create(data.cwd, data.sessionDir);
-		running.appendMessage({ role: "user", content: "in-flight turn", timestamp: 9 });
+		running.appendModelChange("test-provider", "live-model");
 		await assert.rejects(stat(running.getSessionFile()!));
 
 		await withPane("pane-live", async () => {
@@ -265,8 +265,7 @@ test("/clone-tab clones an un-persisted session from live state", async () => {
 			const clone = SessionManager.open(cloneFileArg!);
 			assert.equal(clone.getHeader()?.cwd, data.cwd);
 			assert.equal(
-				clone.getEntries().some((entry) =>
-					entry.type === "message" && entry.message.role === "user" && entry.message.content === "in-flight turn"),
+				clone.getEntries().some((entry) => entry.type === "model_change" && entry.modelId === "live-model"),
 				true,
 			);
 			assert.notEqual(cloneFileArg, running.getSessionFile());

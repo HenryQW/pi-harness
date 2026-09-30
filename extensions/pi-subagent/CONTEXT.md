@@ -62,7 +62,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 ### Resource and launch policy
 
 - Ambient child extensions and Skills stay disabled. Only Role/caller resources plus required internal adapters load.
-- Every Role requires `tools`, `extensions`, and `skills` arrays. Omitted or empty `mcps` denies MCP access. Direct `pi-mcp-adapter` loading is rejected because it bypasses the allowlist.
+- Every Role requires `tools`, `extensions`, and `skills` arrays. `extensions` may name Pi built-in extensions as `builtin:<name>`. `mcps` names servers from the global `~/.pi/agent/mcp.json`; their tools load in the child with direct exposure. Omitted or empty `mcps` denies MCP access. Direct `pi-mcp-adapter` loading is rejected because it bypasses the allowlist.
 - Selected extensions are trusted executable bundles, not a sandbox. All tools and lifecycle behavior they register load together.
 - Role Skill names resolve through Main's effective Pi registry. Missing Roles, Skills, tools, MCP servers, routes, models, or thinking levels fail before the first productive turn.
 - Route precedence is call model class, then Role default, then registered Model Task assignment/default. A direct model replaces only the route model and must support its thinking level.
