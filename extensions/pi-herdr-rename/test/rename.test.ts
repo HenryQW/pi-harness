@@ -182,9 +182,9 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 		assert.equal(app.completionCalls.length, 1);
 		assert.equal(app.completionCalls[0].context.messages[0].content.length, 1_000);
 		assert.equal(app.completionCalls[0].options.maxRetries, 0);
-		assert.match(app.completionCalls[0].context.systemPrompt, /type: subject/);
-		assert.match(app.completionCalls[0].context.systemPrompt, /semantic word, max 12 characters.*natural task phrase.*3-4.*max 4 words and 20 characters/);
-		assert.ok(app.completionCalls[0].context.systemPrompt.length <= 240);
+		assert.match(app.completionCalls[0].context.systemPrompt, /one JSON object/);
+		assert.match(app.completionCalls[0].context.systemPrompt, /one lowercase English word, at most 12 letters/);
+		assert.match(app.completionCalls[0].context.systemPrompt, /2 or 3 lowercase English words.*at most 20 characters/);
 
 		resolveCompletion(response("  Refactor:\nUpdate Task Logic  "));
 		await eventually(() => app.names.length === 1);
@@ -573,9 +573,9 @@ test("rename defaults to fast and uses its fallback after an invalid title", asy
 		assert.equal(app.commands.has("rename-model"), false);
 		await app.commands.get("rename")?.("", app.ctx);
 
-		assert.deepEqual(app.completionCalls.map((call) => call.model), [primary, fallback]);
-		assert.deepEqual(app.completionCalls.map((call) => call.options.maxRetries), [0, 0]);
-		assert.deepEqual(app.completionCalls.map((call) => call.options.reasoning), ["low", "low"]);
+		assert.deepEqual(app.completionCalls.map((call) => call.model), [primary, primary, fallback]);
+		assert.deepEqual(app.completionCalls.map((call) => call.options.maxRetries), [0, 0, 0]);
+		assert.deepEqual(app.completionCalls.map((call) => call.options.reasoning), ["low", "low", "low"]);
 		assert.deepEqual(app.names, ["Fallback title"]);
 		assert.doesNotMatch(app.notifications.join("\n"), /invalid title/);
 	});
@@ -615,26 +615,98 @@ test("shutdown aborts automatic generation and invalid titles make no change", a
 
 test("display title limits apply to subject without counting semantic type", async () => {
 	await withAgentDir(async () => {
-		const titles = [
+		const rejected = [
 			"extraordinary: update task logic",
 			"feat: one two three four five",
 			"fix: abcdefghijklmnopqrstu",
-			"refactor: update task logic",
 		];
+		let calls = 0;
 		const app = harness({
 			sessionName: "saved",
 			branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
-			complete: async () => response(titles.shift() ?? ""),
+			complete: async () => {
+				const index = Math.floor(calls / 2);
+				calls++;
+				return index < rejected.length ? response(rejected[index]) : response("refactor: update task logic");
+			},
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
 
-		await app.commands.get("rename")?.("", app.ctx);
-		await app.commands.get("rename")?.("", app.ctx);
-		await app.commands.get("rename")?.("", app.ctx);
+		for (let attempt = 0; attempt < 4; attempt++) await app.commands.get("rename")?.("", app.ctx);
+
+		assert.match(app.completionCalls[0].context.systemPrompt, /at most 20 characters/);
+		assert.equal(app.notifications.filter((message) => message.includes("invalid title")).length, 3);
+		assert.equal(app.completionCalls.length, 7);
+		assert.deepEqual(app.names, ["Update task logic"]);
+		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Update task logic", branch: "refactor/update-task-logic" } }]);
+	});
+});
+
+test("a rejected first reply is retried once with the rejection before the route falls back", async () => {
+	await withAgentDir(async () => {
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
+			complete: async (call) => call.context.messages.length === 1
+				? response("type: debug subject: sentry not recording")
+				: response('{"kind":"debug","subject":"sentry recording"}'),
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
 		await app.commands.get("rename")?.("", app.ctx);
 
-		assert.match(app.completionCalls[0].context.systemPrompt, /max 4 words and 20 characters/);
-		assert.equal(app.notifications.filter((message) => message.includes("invalid title")).length, 3);
+		assert.equal(app.completionCalls.length, 2);
+		const repair = app.completionCalls[1].context.messages;
+		assert.equal(repair.length, 2);
+		assert.match(repair[1].content, /Your previous reply was rejected/);
+		assert.match(repair[1].content, /sentry not recording/);
+		assert.doesNotMatch(app.notifications.join("\n"), /invalid title/);
+		assert.deepEqual(app.names, ["Sentry recording"]);
+		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Sentry recording", branch: "debug/sentry-recording" } }]);
+	});
+});
+
+test("a JSON reply is accepted with wrapping text and normalized casing", async () => {
+	await withAgentDir(async () => {
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
+			complete: async () => response('Sure: {"kind":"Fix","subject":"Login Crash"} done'),
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		await app.commands.get("rename")?.("", app.ctx);
+
+		assert.equal(app.completionCalls.length, 1);
+		assert.deepEqual(app.names, ["Login crash"]);
+		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Login crash", branch: "fix/login-crash" } }]);
+	});
+});
+
+test("a malformed candidate is skipped for a later well-formed object", async () => {
+	await withAgentDir(async () => {
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
+			complete: async () => response('Consider {"kind":"fix"} then\n{"kind":"debug","subject":"sentry recording"}.\n'),
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		await app.commands.get("rename")?.("", app.ctx);
+
+		assert.equal(app.completionCalls.length, 1);
+		assert.deepEqual(app.names, ["Sentry recording"]);
+	});
+});
+
+test("a legacy colon reply still parses when the route answers in the old shape", async () => {
+	await withAgentDir(async () => {
+		const app = harness({
+			sessionName: "saved",
+			branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
+			complete: async () => response("  Refactor:\nUpdate Task Logic  "),
+		});
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		await app.commands.get("rename")?.("", app.ctx);
+
+		assert.equal(app.completionCalls.length, 1);
 		assert.deepEqual(app.names, ["Update task logic"]);
 		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Update task logic", branch: "refactor/update-task-logic" } }]);
 	});

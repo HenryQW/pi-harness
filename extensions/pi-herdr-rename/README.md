@@ -35,7 +35,7 @@ In a new, untitled session, the first real user prompt generates a title in the 
 
 ### Title and branch rules
 
-A semantic branch is a Git-safe branch name made from a task type and the display-title words. Model classification stays internal. For example, `refactor: update task logic` displays as `Update task logic` and maps to `refactor/update-task-logic`.
+A semantic branch is a Git-safe branch name made from a task kind and the display-title words. The model replies with one JSON object holding `kind` and `subject`; that classification stays internal. For example, `{"kind":"refactor","subject":"update task logic"}` displays as `Update task logic` and maps to `refactor/update-task-logic`. A reply that does not fit the shape is sent back once with the rejection before the route gives up on it, so a valid title still comes from the first route.
 
 - In a linked worktree, a detached checkout or Herdr `worktree/...` branch is renamed. An existing non-generated branch stays.
 - A linked worktree's generated workspace label, such as `worktree-brave-meadow-4aa8`, becomes the display title automatically. A manual `/rename` can also replace a custom workspace name.
@@ -46,7 +46,7 @@ A semantic branch is a Git-safe branch name made from a task type and the displa
 
 The task `pi-herdr-rename/rename` uses `fast` only when it has no explicit assignment. To use another configured profile, assign the task to that profile in `/task-models`; the shared [`pi-task-models` config](https://pi.henry.wang/extensions/pi-task-models#config) stores the assignment under `tasks` at `~/.pi/agent/config/pi-task-models/config.json`.
 
-The extension tries the assigned profile's primary route, then its fallback, while honoring the configured thinking level. It never substitutes the current session model.
+The extension tries the assigned profile's primary route, then its fallback, while honoring the configured thinking level. Within one route a reply that fails the title shape is retried once with the rejected text; only a second failure moves on to the fallback. It never substitutes the current session model.
 
 ## State and storage
 
@@ -54,7 +54,7 @@ The Pi session stores each generated display title and semantic branch in a `pi-
 
 ## Limits and recovery
 
-Display titles are natural task phrases, preferably three or four words, and always at most four words and 20 characters.
+Display titles are natural task phrases, preferably two or three words, and always at most four words and 20 characters. Models that answer in another language still produce English titles.
 
 A missing shared task-model config warns once at session start. Run `/task-models` to configure rename routing. No viable route leaves titles unchanged. `/rename` warns if the session has no user text to rename.
 

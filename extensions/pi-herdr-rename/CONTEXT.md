@@ -9,7 +9,7 @@ Model-generated natural task phrase, sentence-cased and limited to four words an
 _Avoid_: semantic title, session rename, terminal name
 
 **Semantic branch**:
-Git-safe branch combining task type with display-title words: `Update task logic` classified as `refactor` becomes `refactor/update-task-logic`. It replaces a detached checkout or Herdr-generated `worktree/...` branch; an existing non-generated branch wins.
+Git-safe branch combining task kind with display-title words: the reply `{"kind":"refactor","subject":"update task logic"}` becomes `refactor/update-task-logic`. It replaces a detached checkout or Herdr-generated `worktree/...` branch; an existing non-generated branch wins.
 _Avoid_: display title, raw generated branch, arbitrary Git mutation
 
 **Generated worktree label**:
