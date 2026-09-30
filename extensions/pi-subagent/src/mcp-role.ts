@@ -47,6 +47,12 @@ export function loadRoleMcpConfig(agentDir: string, allowlist: readonly string[]
 	const servers = allowlist.map((name) => {
 		const value = configured[name];
 		if (!isRecord(value)) throw new Error(`${path}: MCP server "${name}" must be an object.`);
+		if (value.enabled === false) throw new Error(`${path}: Role MCP server "${name}" is disabled.`);
+		const stdio = typeof value.command === "string" && value.command.trim() !== "" && (value.type === undefined || value.type === "stdio");
+		const http = typeof value.url === "string" && value.url.trim() !== "" && (value.type === undefined || value.type === "http" || value.type === "streamable-http");
+		if (stdio === http) {
+			throw new Error(`${path}: MCP server "${name}" needs either a "command" (stdio) or a "url" (http or streamable-http).`);
+		}
 		const { toolExposure: _toolExposure, ...config } = value;
 		return { name, config: { ...config, exposure: "direct" } as McpServerConfig, source: path, scope: "global" as const };
 	});

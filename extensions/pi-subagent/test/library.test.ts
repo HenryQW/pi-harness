@@ -492,18 +492,28 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		mcpServers: {
 			other: { url: "https://other.test" },
 			docs: { url: "https://docs.test", exposure: "codemode", toolExposure: { search: "hidden" } },
-			browser: { command: "browser", args: ["--headless"], enabled: false },
+			browser: { command: "browser", args: ["--headless"] },
 		},
 	}));
 	assert.deepEqual(loadRoleMcpConfig(agentDir, role.mcps!), {
 		servers: [
 			{ name: "docs", config: { url: "https://docs.test", exposure: "direct" }, source: mcpPath, scope: "global" },
-			{ name: "browser", config: { command: "browser", args: ["--headless"], enabled: false, exposure: "direct" }, source: mcpPath, scope: "global" },
+			{ name: "browser", config: { command: "browser", args: ["--headless"], exposure: "direct" }, source: mcpPath, scope: "global" },
 		],
 		autoEnableCodemode: false,
 		errors: [],
 	});
 	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs", "missing"]), /Role MCP servers are not configured: missing\./);
+	for (const [docs, message] of [
+		[{ url: "https://docs.test", enabled: false }, /Role MCP server "docs" is disabled\./],
+		[{ url: 42 }, /MCP server "docs" needs either a "command" \(stdio\) or a "url"/],
+		[{ args: ["x"] }, /MCP server "docs" needs either/],
+		[{ command: "docs", url: "https://docs.test" }, /MCP server "docs" needs either/],
+		[{ type: "sse", url: "https://docs.test" }, /MCP server "docs" needs either/],
+	] as const) {
+		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs } }));
+		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), message);
+	}
 	await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: [] } }));
 	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), /mcp\.json: MCP server "docs" must be an object\./);
 	await writeFile(mcpPath, "{");

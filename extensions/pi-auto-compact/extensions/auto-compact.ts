@@ -29,6 +29,11 @@ import {
 type AgentMessage = Parameters<typeof estimateTokens>[0];
 type StreamFn = NonNullable<Parameters<typeof compact>[7]>;
 
+/** Task routes and the session model may be virtual; the registry routes them to a physical model. */
+function registryStream(ctx: ExtensionContext): StreamFn {
+	return (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options);
+}
+
 /** Native boundaries maintain completed turns; the pre-request guard handles fresh oversized input. */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 70;
 const MIN_COMPACT_THRESHOLD_PERCENT = 25;
@@ -307,12 +312,12 @@ export default function (pi: ExtensionAPI) {
 		const signal = ctx.signal;
 		try {
 			const routes = configuredTaskRoutes(ctx);
-			const summarize = async (model: NonNullable<ExtensionContext["model"]>, thinking: ExtensionContext["thinkingLevel"], streamFn?: StreamFn) => {
+			const summarize = async (model: NonNullable<ExtensionContext["model"]>, thinking: ExtensionContext["thinkingLevel"]) => {
 				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 				if (!auth.ok) throw new Error("Compaction model authentication failed.");
 				return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
 					auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
-					signal, thinking, streamFn, auth.env);
+					signal, thinking, registryStream(ctx), auth.env);
 			};
 			let result: Awaited<ReturnType<typeof compact>> | undefined;
 			if (routes.length) {
@@ -325,10 +330,7 @@ export default function (pi: ExtensionAPI) {
 					if (!signal?.aborted) ctx.ui.notify("Configured task model routes failed; using current session model.", "error");
 				}
 			}
-			// The session model may be virtual; the registry routes it to a physical model.
-			if (!result && !signal?.aborted) {
-				result = await summarize(ctx.model, ctx.thinkingLevel, (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options));
-			}
+			if (!result && !signal?.aborted) result = await summarize(ctx.model, ctx.thinkingLevel);
 			if (signal?.aborted || ctx.sessionManager.getSessionId() !== session || ctx.sessionManager.getLeafId() !== leaf) return;
 			if (!result?.summary.trim()) throw new Error("Compaction returned an empty summary.");
 			return { entries: [...event.entries, ...edits, {
@@ -532,7 +534,7 @@ export default function (pi: ExtensionAPI) {
 							event.customInstructions,
 							event.signal,
 							route.thinkingLevel,
-							undefined,
+							registryStream(ctx),
 							auth.env,
 						),
 					};

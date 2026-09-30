@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -390,28 +389,8 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-thinking-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	let requestBody = "";
-	const server = createServer(async (request, response) => {
-		for await (const chunk of request) requestBody += chunk;
-		response.writeHead(200, { "content-type": "text/event-stream" });
-		response.write(`data: ${JSON.stringify({
-			id: "response",
-			model: "model",
-			choices: [{ delta: { content: "summary" }, finish_reason: null }],
-		})}\n\n`);
-		response.write(`data: ${JSON.stringify({
-			id: "response",
-			model: "model",
-			choices: [{ delta: {}, finish_reason: "stop" }],
-			usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
-		})}\n\n`);
-		response.end("data: [DONE]\n\n");
-	});
-
+	const streamed: Array<{ provider: string; reasoning: unknown }> = [];
 	try {
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address();
-		assert.ok(address && typeof address !== "string");
 		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
 		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
@@ -432,7 +411,6 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 			name: "Model",
 			api: "openai-completions",
 			provider: "provider",
-			baseUrl: `http://127.0.0.1:${address.port}/v1`,
 			reasoning: true,
 			input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -459,6 +437,14 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 					return candidate.provider === "primary"
 						? { ok: false, error: "missing" }
 						: { ok: true, apiKey: "test-key" };
+				},
+				// Configured routes go through the registry, which routes virtual models to a physical one.
+				streamSimple: (requested: { provider: string }, _context: unknown, options: { reasoning?: unknown }) => {
+					streamed.push({ provider: requested.provider, reasoning: options.reasoning });
+					return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "summary" }],
+						api: "openai-completions", provider: requested.provider, model: "model", stopReason: "stop", timestamp: 1,
+						usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }) };
 				},
 			},
 			ui: { notify() {} },
@@ -487,9 +473,8 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 
 		assert.equal(result?.compaction?.summary, "summary");
 		assert.deepEqual(authModels, ["primary", "provider"]);
-		assert.equal(JSON.parse(requestBody).reasoning_effort, "high");
+		assert.deepEqual(streamed, [{ provider: "provider", reasoning: "max" }]);
 	} finally {
-		server.close();
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(tempRoot, { recursive: true, force: true });
