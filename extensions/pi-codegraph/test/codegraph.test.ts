@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { promisify } from "node:util";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import codegraphExtension from "../extensions/codegraph.ts";
 
 const exec = promisify(execFile);
@@ -29,22 +29,24 @@ async function index(root: string) {
 }
 
 function harness(cwd: string, options: {
-	adapter?: boolean;
 	hasUI?: boolean;
 	version?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
 	init?: () => Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>;
+	explore?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
 	onStatus?: (text: string | undefined) => void;
 } = {}) {
 	let start!: (event: unknown, ctx: ExtensionContext) => Promise<void>;
 	const notices: { message: string; level: string }[] = [];
-	const calls: { command: string; args: string[]; cwd: string }[] = [];
+	const calls: { command: string; args: string[]; cwd: string; timeout?: number }[] = [];
+	let tool!: ToolDefinition;
 	const pi = {
 		on: (name: string, handler: typeof start) => { assert.equal(name, "session_start"); start = handler; },
-		getAllTools: () => options.adapter === false ? [] : [{ name: "mcp" }],
-		exec: async (command: string, args: string[], opts: { cwd: string }) => {
-			calls.push({ command, args, cwd: opts.cwd });
+		registerTool: (definition: ToolDefinition) => { tool = definition; },
+		exec: async (command: string, args: string[], opts: { cwd: string; timeout?: number }) => {
+			calls.push({ command, args, cwd: opts.cwd, ...(args[0] === "explore" && { timeout: opts.timeout }) });
 			if (command === "codegraph") {
 				if (args[0] === "--version") return options.version ?? { code: 0, stdout: "1.6.0", stderr: "", killed: false };
+				if (args[0] === "explore") return options.explore ?? { code: 0, stdout: "explored", stderr: "", killed: false };
 				if (options.init) return options.init();
 				await index(opts.cwd);
 				return { code: 0, stdout: "", stderr: "", killed: false };
@@ -69,7 +71,8 @@ function harness(cwd: string, options: {
 		},
 	} as unknown as ExtensionContext;
 	codegraphExtension(pi);
-	return { start: () => start({}, ctx), notices, calls, widgets, statuses };
+	const explore = (params: Record<string, unknown>) => tool.execute("call", params, undefined, undefined, ctx as never);
+	return { start: () => start({}, ctx), explore, tool, notices, calls, widgets, statuses };
 }
 
 test("initializes an opted-in linked worktree at its root once, including nested launches", async (t) => {
@@ -107,26 +110,23 @@ test("does not index non-Git directories, unopted repositories, or existing inde
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
-test("warns with install commands for either or both unavailable prerequisites without creating a lock", async (t) => {
+test("warns with the install command when the CLI is unavailable without creating a lock", async (t) => {
 	const { worktree, lock } = await fixture(t);
-	// Even an existing index still needs a working CLI for MCP calls.
+	// Even an existing index still needs a working CLI for codegraph_explore.
 	await index(worktree);
-	for (const [adapter, codegraph] of [[false, true], [true, false], [false, false]]) {
-		const options = { adapter, version: { code: codegraph ? 0 : 1, stdout: "", stderr: "", killed: false } };
-		const run = harness(worktree, options);
-		await run.start();
-		assert.deepEqual(run.calls, [{ command: "codegraph", args: ["--version"], cwd: worktree }]);
-		assert.equal(run.notices[0]!.level, "warning");
-		assert.equal(run.statuses.at(-1), "pi-codegraph: prerequisites missing");
-		assert.equal(run.notices[0]!.message.includes("pi install npm:pi-mcp-adapter"), !adapter);
-		assert.equal(run.notices[0]!.message.includes("npm install -g @colbymchenry/codegraph"), !codegraph);
-		await assert.rejects(rmdir(lock), { code: "ENOENT" });
-		const headless = harness(worktree, { ...options, hasUI: false });
-		const warn = t.mock.method(console, "warn", () => {});
-		await headless.start();
-		assert.deepEqual(warn.mock.calls[0]!.arguments, [run.notices[0]!.message]);
-		warn.mock.restore();
-	}
+	const options = { version: { code: 1, stdout: "", stderr: "", killed: false } };
+	const run = harness(worktree, options);
+	await run.start();
+	assert.deepEqual(run.calls, [{ command: "codegraph", args: ["--version"], cwd: worktree }]);
+	assert.equal(run.notices[0]!.level, "warning");
+	assert.equal(run.statuses.at(-1), "pi-codegraph: prerequisites missing");
+	assert.ok(run.notices[0]!.message.includes("npm install -g @colbymchenry/codegraph"));
+	await assert.rejects(rmdir(lock), { code: "ENOENT" });
+	const headless = harness(worktree, { ...options, hasUI: false });
+	const warn = t.mock.method(console, "warn", () => {});
+	await headless.start();
+	assert.deepEqual(warn.mock.calls[0]!.arguments, [run.notices[0]!.message]);
+	warn.mock.restore();
 	const timeout = harness(worktree, { version: { code: 0, stdout: "", stderr: "", killed: true } });
 	await timeout.start();
 	assert.match(timeout.notices[0]!.message, /timed out or killed/);
@@ -212,4 +212,24 @@ test("rejects an alternate CODEGRAPH_DIR instead of indexing a different directo
 	await run.start();
 	assert.match(run.notices[0]!.message, /requires the default CODEGRAPH_DIR/);
 	assert.equal(run.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
+});
+
+test("codegraph_explore passes the query, file cap, and project path to the CLI", async () => {
+	const run = harness("/session");
+	assert.equal(run.tool.name, "codegraph_explore");
+	assert.deepEqual(await run.explore({ query: "how does init work" }), { content: [{ type: "text", text: "explored" }], details: undefined });
+	await run.explore({ query: "initialize", maxFiles: 3, projectPath: "/project/src" });
+	assert.deepEqual(run.calls, [
+		{ command: "codegraph", args: ["explore", "--path", "/session", "--max-files", "12", "how does init work"], cwd: "/session", timeout: 120_000 },
+		{ command: "codegraph", args: ["explore", "--path", "/project/src", "--max-files", "3", "initialize"], cwd: "/project/src", timeout: 120_000 },
+	]);
+});
+
+test("codegraph_explore surfaces the CLI stderr tail on failure", async () => {
+	const run = harness("/session", { explore: { code: 1, stdout: "", stderr: `${"x".repeat(3000)}CodeGraph not initialized\n`, killed: false } });
+	await assert.rejects(run.explore({ query: "q" }), (error: Error) => {
+		assert.match(error.message, /^codegraph explore failed \(exit 1\): x+CodeGraph not initialized$/);
+		assert.ok(error.message.length < 2100);
+		return true;
+	});
 });

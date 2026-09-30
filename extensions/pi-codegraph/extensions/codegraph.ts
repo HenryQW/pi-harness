@@ -2,9 +2,11 @@ import { mkdir, rmdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 
 const LOCK_WAIT_MS = 5 * 60_000;
 const INIT_TIMEOUT_MS = 10 * 60_000;
+const EXPLORE_TIMEOUT_MS = 120_000;
 const WIDGET_KEY = "pi-codegraph";
 const SUCCESS_TTL_MS = 5000;
 
@@ -26,17 +28,10 @@ async function git(pi: ExtensionAPI, cwd: string, args: string[]): Promise<strin
 }
 
 async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-	const prerequisites: string[] = [];
-	if (!pi.getAllTools().some((tool) => tool.name === "mcp")) {
-		prerequisites.push("Install and enable pi-mcp-adapter >=2.36.0: pi install npm:pi-mcp-adapter");
-	}
 	const version = await pi.exec("codegraph", ["--version"], { cwd: ctx.cwd, timeout: 10_000 });
 	if (version.code !== 0 || version.killed) {
 		const detail = version.killed ? "timed out or killed" : version.stderr.trim().slice(-1000) || `exit ${version.code}`;
-		prerequisites.push(`codegraph --version failed (${detail}). Install CodeGraph: npm install -g @colbymchenry/codegraph. If already installed, check that codegraph runs on Pi's PATH.`);
-	}
-	if (prerequisites.length) {
-		const message = `pi-codegraph: setup skipped.\n${prerequisites.join("\n")}\nThen restart Pi or /reload.`;
+		const message = `pi-codegraph: setup skipped.\ncodegraph --version failed (${detail}). Install CodeGraph: npm install -g @colbymchenry/codegraph. If already installed, check that codegraph runs on Pi's PATH.\nThen restart Pi or /reload.`;
 		ctx.ui.setStatus("pi-codegraph", "pi-codegraph: prerequisites missing");
 		if (ctx.hasUI) ctx.ui.notify(message, "warning");
 		else console.warn(message);
@@ -110,6 +105,25 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void
 }
 
 export default function codegraphExtension(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: "codegraph_explore",
+		label: "CodeGraph explore",
+		description: "Primary code exploration tool. Call it first for how-does-X-work, architecture, bug, or where-is-X questions, and before editing. Returns the verbatim source of the relevant symbols grouped by file, plus the call path among them, in one capped call. Treat the shown source as already read.",
+		parameters: Type.Object({
+			query: Type.String({ description: "Symbol names, file names, short code terms, or a natural-language question." }),
+			maxFiles: Type.Optional(Type.Number({ description: "Maximum files to include (default 12)." })),
+			projectPath: Type.Optional(Type.String({ description: "Absolute path to the project or any directory inside it. Defaults to the session cwd." })),
+		}),
+		annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+		async execute(_toolCallId, { query, maxFiles, projectPath }, signal, _onUpdate, ctx) {
+			const path = projectPath ?? ctx.cwd;
+			const result = await pi.exec("codegraph", ["explore", "--path", path, "--max-files", String(maxFiles ?? 12), query], { cwd: path, signal, timeout: EXPLORE_TIMEOUT_MS });
+			if (result.code !== 0 || result.killed) {
+				throw new Error(`codegraph explore failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${result.stderr.trim().slice(-2000)}`);
+			}
+			return { content: [{ type: "text", text: result.stdout }], details: undefined };
+		},
+	});
 	pi.on("session_start", async (_event, ctx) => {
 		try {
 			await initialize(pi, ctx);
