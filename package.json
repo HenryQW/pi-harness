@@ -35,8 +35,7 @@
       "./extensions/pi-memory/extensions/memory.ts",
       "./extensions/pi-undo/extensions/undo.ts",
       "./extensions/pi-rtk-test/extensions/rtk-test.ts"
-    ],
-    "mcp": "./extensions/pi-codegraph/mcp.json"
+    ]
   },
   "scripts": {
     "build": "pnpm --filter @henryqw/pi-config-store --filter @henryqw/pi-herdr --filter @henryqw/pi-process --filter @henryqw/pi-task-models --filter @henryqw/pi-subagent --filter @henryqw/pi-ask-question run build",

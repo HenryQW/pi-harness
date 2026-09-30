@@ -21,14 +21,14 @@ pi install npm:@henryqw/pi-multi-codex
 
 ## Use
 
-Run `/login` and authenticate `OpenAI Codex` for slot 1 first. Run `/codex-add`, then run `/login` and select the new `OpenAI Codex #<n>` provider. Restart Pi or update model scope, then run `/codex-status`. The status lists the new slot with cached quota when available, or `unavailable` until the first successful snapshot.
+Run `/login` and authenticate `OpenAI Codex (legacy)` for slot 1 first. Run `/codex-add`, then run `/login` and select the new `OpenAI Codex #<n>` provider. Restart Pi or update model scope, then run `/codex-status`. The status lists the new slot with cached quota when available, or `unavailable` until the first successful snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/codex-add` | command | For people: create the next numbered slot, then authenticate that slot. |
 | `/codex-status` | command | For people: show shared quota snapshots and five-hour blocks; never waits on network. |
 | `/codex-switch` | command | For people: select an authenticated, scope-allowed slot for the current Codex model. |
-| Pi model selector (`OpenAI Codex`, `OpenAI Codex #<n>`) | ui | Choose an authenticated account slot. |
+| Pi model selector (`OpenAI Codex (legacy)`, `OpenAI Codex #<n>`) | ui | Choose an authenticated account slot. |
 | Pi status `pi-multi-codex` | ui | Report the active slot's fresh quota, five-hour limit countdown, or stale/unavailable state; `@henryqw/pi-footer` displays it in the footer. |
 
 The footer and `/codex-status` show the five-hour reset countdown for Free, Go, and Plus tiers. They show the seven-day reset countdown for Pro Lite and other tiers. A numbered slot is one Codex account position in Pi.
@@ -41,6 +41,7 @@ The footer and `/codex-status` show the five-hour reset countdown for Free, Go, 
 - After HTTP 429, failover can use authenticated, registered, scope-allowed, untried slots with stale or missing quota.
 - Failover skips known active five-hour blocks. It ranks fresh known quota first, then unranked slots by slot number.
 - Routing preserves the model ID.
+- Only physical Codex models are slots. A virtual model listed under `openai-codex`, such as `openai-codex/auto`, is never routed to a slot and shows no quota status.
 - During one agent run, each eligible slot is tried at most once after HTTP 429 responses.
 - Automatic retry stops when no untried eligible slot remains.
 - The footer shows the active slot's fresh quota or five-hour block.

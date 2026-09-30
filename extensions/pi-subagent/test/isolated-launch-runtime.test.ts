@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -23,7 +22,6 @@ const MAIN: WorkspaceIdentity = {
 	index: "2".repeat(40),
 	tree: "2".repeat(40),
 };
-const EMPTY_MCP_CONFIG_MODULE = `data:text/javascript,${encodeURIComponent("export const loadMcpConfig = () => ({ mcpServers: {} });")}`;
 
 type RoleFixture = {
 	name: string;
@@ -300,12 +298,6 @@ test("Pi Subagent rejects missing or ambiguous Role, Skill, and MCP configuratio
 	});
 
 	await t.test("missing MCP", async (t) => {
-		registerHooks({
-			resolve(specifier, context, nextResolve) {
-				if (specifier === "pi-mcp-adapter/config") return { url: EMPTY_MCP_CONFIG_MODULE, shortCircuit: true };
-				return nextResolve(specifier, context);
-			},
-		});
 		const fixture = await harness(t);
 		await fixture.setRole("mcp.md", { name: "mcp role", mcps: ["codegraph"] });
 		await assert.rejects(

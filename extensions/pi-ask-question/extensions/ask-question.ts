@@ -29,6 +29,7 @@ export default function askQuestionExtension(pi: ExtensionAPI): void {
 		],
 		parameters: AskQuestionParams,
 		executionMode: "sequential",
+		exposure: "model-only",
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const interactive = ctx.mode === "tui";

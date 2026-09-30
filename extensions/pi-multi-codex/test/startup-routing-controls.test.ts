@@ -381,6 +381,18 @@ test("does not reopen automatic routing after session reload", async () => {
 	});
 });
 
+test("a virtual model listed under openai-codex is not a slot", async () => {
+	await withApp({ 1: 40, 2: 70 }, [], async ({ handlers, commands, ctx, selectModel, setModels, statuses, notices }) => {
+		await selectModel({ ...model(), id: "auto", api: "pi-virtual" });
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		await handlers.get("before_agent_start")?.({ type: "before_agent_start" }, ctx);
+		await commands.get("codex-switch")?.("", ctx);
+		assert.equal(setModels.length, 0);
+		assert.equal(statuses.at(-1), undefined);
+		assert.match(notices.at(-1) ?? "", /Select an OpenAI Codex model/);
+	});
+});
+
 test("manual switch uses native selector and keeps active model id", async () => {
 	await withApp({ 1: 75, 2: 20 }, [], async ({ handlers, commands, ctx, setModels }) => {
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
@@ -462,6 +474,19 @@ test("switches on final HTTP 429 and stops after every eligible slot was tried",
 		const exhausted = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex-2") }, ctx) as any;
 		assert.equal(setModels.length, 1);
 		assert.match(exhausted.message.errorMessage, /quota exceeded.*all eligible account slots.*failover stopped/i);
+	});
+});
+
+test("a virtual model with the physical Codex id is not failed over on HTTP 429", async () => {
+	await withApp({ 1: 80, 2: 60 }, [], async ({ handlers, ctx, selectModel, setModels }) => {
+		await selectModel({ ...model(), api: "pi-virtual" });
+		setModels.length = 0;
+		handlers.get("session_start")?.({ type: "session_start" }, ctx);
+		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+		const result = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+		assert.equal(result, undefined);
+		assert.equal(setModels.length, 0);
 	});
 });
 

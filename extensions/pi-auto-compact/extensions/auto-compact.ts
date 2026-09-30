@@ -27,6 +27,12 @@ import {
 } from "@henryqw/pi-task-models";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
+type StreamFn = NonNullable<Parameters<typeof compact>[7]>;
+
+/** Task routes and the session model may be virtual; the registry routes them to a physical model. */
+function registryStream(ctx: ExtensionContext): StreamFn {
+	return (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options);
+}
 
 /** Native boundaries maintain completed turns; the pre-request guard handles fresh oversized input. */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 70;
@@ -171,15 +177,21 @@ function fileOperations(messages: AgentMessage[], previous?: CompactionEntry) {
 	if (Array.isArray(details?.modifiedFiles)) {
 		for (const path of details.modifiedFiles) if (typeof path === "string") edited.add(path);
 	}
+	const record = (name: string, path: unknown) => {
+		if (typeof path !== "string" || !path) return;
+		if (name === "read") read.add(path);
+		else if (name === "write") written.add(path);
+		else if (name === "edit") edited.add(path);
+	};
 	for (const message of messages) {
+		// Tools called from other tools (codemode scripts) are recorded on the calling tool's result.
+		if (message.role === "toolResult") {
+			for (const call of message.nestedCalls?.calls ?? []) record(call.name, call.arguments?.path);
+			continue;
+		}
 		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
 		for (const part of message.content) {
-			if (part.type !== "toolCall") continue;
-			const path = part.arguments?.path;
-			if (typeof path !== "string" || !path) continue;
-			if (part.name === "read") read.add(path);
-			else if (part.name === "write") written.add(path);
-			else if (part.name === "edit") edited.add(path);
+			if (part.type === "toolCall") record(part.name, part.arguments?.path);
 		}
 	}
 	return { read, written, edited };
@@ -227,7 +239,8 @@ export default function (pi: ExtensionAPI) {
 		const leaf = ctx.sessionManager.getLeafId();
 		if (failedBoundary?.session === session && failedBoundary.leaf === leaf) return;
 		if (event.entries.some((entry) => entry.type === "compaction")) return;
-		const window = ctx.model.contextWindow;
+		// A virtual model declares no window; Pi reports the limits of the physical model that answered last.
+		const window = ctx.getContextUsage()?.contextWindow;
 		if (!window) return;
 		const projected = event.context.contextEntries.map((entry) => ({ ...entry, messages: [...entry.messages] }));
 		const pendingTokens = estimateTotalTokens(event.context.pendingMessages);
@@ -304,7 +317,7 @@ export default function (pi: ExtensionAPI) {
 				if (!auth.ok) throw new Error("Compaction model authentication failed.");
 				return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
 					auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
-					signal, thinking, undefined, auth.env);
+					signal, thinking, registryStream(ctx), auth.env);
 			};
 			let result: Awaited<ReturnType<typeof compact>> | undefined;
 			if (routes.length) {
@@ -521,7 +534,7 @@ export default function (pi: ExtensionAPI) {
 							event.customInstructions,
 							event.signal,
 							route.thinkingLevel,
-							undefined,
+							registryStream(ctx),
 							auth.env,
 						),
 					};

@@ -251,6 +251,37 @@ test("includes added directories in @ file autocomplete", async () => {
 	});
 });
 
+test("includes added directories in @ file autocomplete after an opening wrapper", async () => {
+	const external = join(tmpdir(), "external");
+	const current: AutocompleteProvider = {
+		async getSuggestions(lines, cursorLine, cursorCol) {
+			const prefix = (lines[cursorLine] ?? "").slice(0, cursorCol).match(/@.*$/)?.[0] ?? "";
+			return prefix === `@${join(external, "name")}`
+				? { prefix, items: [{ value: `@${join(external, "name.ts")}`, label: "name.ts" }] }
+				: null;
+		},
+		applyCompletion(lines, cursorLine, cursorCol) {
+			return { lines, cursorLine, cursorCol };
+		},
+	};
+	const provider = createExternalAutocompleteProvider(current, () => [
+		{ absolutePath: external, label: "external" },
+	]);
+
+	const suggestions = await provider.getSuggestions(["see (@name"], 0, 10, {
+		signal: new AbortController().signal,
+	});
+
+	assert.deepEqual(suggestions, {
+		prefix: "@name",
+		items: [{
+			value: `@${join(external, "name.ts")}`,
+			label: "name.ts",
+			description: `external: @${join(external, "name.ts")}`,
+		}],
+	});
+});
+
 test("finds files recursively while skipping dependency and Git trees", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	try {

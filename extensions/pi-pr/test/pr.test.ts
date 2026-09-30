@@ -6,6 +6,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
@@ -326,7 +327,7 @@ function harness(options: {
 				params as never,
 				signal,
 				undefined,
-				callbackContext(ctx),
+				callbackContext(ctx) as ExtensionToolContext,
 			);
 		},
 		command(): Command {
