@@ -155,7 +155,7 @@ function contextSummary(dirCtx: DirContext): string {
 }
 
 function extractAtToken(textBeforeCursor: string): string | undefined {
-	return textBeforeCursor.match(/(?:^|[ \t])(@(?:"[^"]*|[^\s"]*))$/)?.[1];
+	return textBeforeCursor.match(/(?:^|[ \t])[([{<`]*(@(?:"[^"]*|[^\s"]*))$/)?.[1];
 }
 
 export function createExternalAutocompleteProvider(
