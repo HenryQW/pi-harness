@@ -26,7 +26,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.88.0"
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.100.0"
   },
   "dependencies": {
     "@henryqw/pi-herdr": "^0.4.0"
@@ -48,6 +48,6 @@
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.0"
+    "@earendil-works/pi-coding-agent": "0.99.1"
   }
 }
