@@ -516,16 +516,23 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		/must select MCP servers with mcps/,
 	);
 	const builtinLaunch = createRoleLaunch(pi, { isProjectTrusted: () => true }, {
-		role: { ...role, mcps: [], extensions: ["builtin:codemode", "builtin:mcp"] },
+		role: { ...role, mcps: [], extensions: ["builtin:codemode", "builtin:tool-search"] },
 		route: { model, thinkingLevel: "high" },
 	});
-	assert.deepEqual(valuesAfter(builtinLaunch.args, "--extension").slice(0, 2), ["builtin:codemode", "builtin:mcp"]);
+	assert.deepEqual(valuesAfter(builtinLaunch.args, "--extension").slice(0, 2), ["builtin:codemode", "builtin:tool-search"]);
+	assert.throws(
+		() => createRoleLaunch(pi, { isProjectTrusted: () => true }, {
+			role: { ...role, mcps: [], extensions: ["builtin:mcp"] },
+			route: { model, thinkingLevel: "high" },
+		}),
+		/Role worker must select MCP servers with mcps instead of loading builtin:mcp directly\./,
+	);
 	assert.throws(
 		() => createRoleLaunch(pi, { isProjectTrusted: () => true }, {
 			role: { ...role, extensions: ["builtin:nope"] },
 			route: { model, thinkingLevel: "high" },
 		}),
-		/Role worker: unknown built-in extension builtin:nope; use builtin:mcp, builtin:codemode, builtin:tool-search, builtin:llama\.cpp\./,
+		/Role worker: unknown built-in extension builtin:nope; use builtin:codemode, builtin:tool-search, builtin:llama\.cpp\./,
 	);
 	assert.throws(() => parseRoleMcpAllowlist("[\"docs\",\"docs\"]"), /duplicate MCP server names/);
 });
@@ -730,8 +737,8 @@ test("Role package resources resolve enabled paths; configured launches require 
 	assert.deepEqual(await resolveRolePackageResources(role, ctx), {
 		extensions: [extension], skills: [skill], prompts: [prompt], themes: [theme],
 	});
-	assert.deepEqual(await resolveRolePackageResources({ ...role, extensions: ["builtin:mcp", "npm:@example/role"] }, ctx), {
-		extensions: [extension, "builtin:mcp"], skills: [skill], prompts: [prompt], themes: [theme],
+	assert.deepEqual(await resolveRolePackageResources({ ...role, extensions: ["builtin:codemode", "npm:@example/role"] }, ctx), {
+		extensions: [extension, "builtin:codemode"], skills: [skill], prompts: [prompt], themes: [theme],
 	});
 
 	await Promise.all([

@@ -179,12 +179,16 @@ const stringList = (value: unknown, field: string, source: string): string[] => 
 };
 
 // Pi 0.99 built-in extensions (`builtin:<name>`, see Pi's settings docs); Pi exports no list of them.
-const BUILTIN_EXTENSION_NAMES = ["mcp", "codemode", "tool-search", "llama.cpp"] as const;
+// `builtin:mcp` is excluded: it connects every server in mcp.json and would bypass the Role `mcps` allowlist.
+const BUILTIN_EXTENSION_NAMES = ["codemode", "tool-search", "llama.cpp"] as const;
 const BUILTIN_EXTENSION_PREFIX = "builtin:";
 
 function validateExtension(extension: string, source: string): string {
 	const value = cleanText(extension, "extension", source);
 	if (value.startsWith(BUILTIN_EXTENSION_PREFIX)) {
+		if (value === `${BUILTIN_EXTENSION_PREFIX}mcp`) {
+			throw new Error(`${source} must select MCP servers with mcps instead of loading builtin:mcp directly.`);
+		}
 		if (!(BUILTIN_EXTENSION_NAMES as readonly string[]).includes(value.slice(BUILTIN_EXTENSION_PREFIX.length))) {
 			throw new Error(`${source}: unknown built-in extension ${value}; use ${BUILTIN_EXTENSION_NAMES.map((name) => `${BUILTIN_EXTENSION_PREFIX}${name}`).join(", ")}.`);
 		}
