@@ -310,16 +310,20 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		}
 
 		let tps: number | undefined;
-		// Start at the first streamed update: providers emit message_start at different points before the first token.
+		// Measure first to last streamed update: providers emit message_start before the first token,
+		// and some (Claude bridge) emit message_end only after post-stream teardown.
 		let assistantStartedAt: number | undefined;
+		let assistantLastUpdateAt: number | undefined;
 		pi.on("message_update", async (event) => {
-			if (event.message.role === "assistant") assistantStartedAt ??= performance.now();
+			if (event.message.role !== "assistant") return;
+			assistantLastUpdateAt = performance.now();
+			assistantStartedAt ??= assistantLastUpdateAt;
 		});
 		pi.on("message_end", async (event) => {
 			if (event.message.role !== "assistant") return;
 			const output = event.message.usage?.output ?? 0;
-			const seconds = assistantStartedAt === undefined ? 0 : (performance.now() - assistantStartedAt) / 1000;
-			assistantStartedAt = undefined;
+			const seconds = assistantStartedAt === undefined ? 0 : (assistantLastUpdateAt! - assistantStartedAt) / 1000;
+			assistantStartedAt = assistantLastUpdateAt = undefined;
 			tps = seconds > 0 ? output / seconds : undefined;
 		});
 

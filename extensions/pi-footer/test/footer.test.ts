@@ -397,13 +397,21 @@ test("shows TPS and active session time", async () => {
 		await handlers.get("message_update")!({ message: assistantMessage });
 		now = 6_000;
 		await handlers.get("message_update")!({ message: assistantMessage });
-		now = 7_000;
+		// Teardown after the last update (Claude bridge) must not count.
+		now = 9_000;
 		await handlers.get("message_end")!({ message: assistantMessage });
-		assert.match(footer.render(100)[1]!, /⚡ 50\.0 t\/s/);
+		assert.match(footer.render(100)[1]!, /⚡ 100\.0 t\/s/);
+
+		// A message delivered in one update has no measurable rate.
+		await handlers.get("message_update")!({ message: assistantMessage });
+		now = 10_000;
+		await handlers.get("message_end")!({ message: assistantMessage });
+		assert.match(footer.render(100)[1]!, /⚡ — /);
 
 		await handlers.get("message_end")!({ message: { role: "assistant", usage: { output: 10 } } });
 		assert.match(footer.render(100)[1]!, /⚡ — /);
 
+		now = 7_000;
 		await handlers.get("agent_start")!({ message: { role: "assistant" } }, { isIdle: () => false } as unknown as ExtensionContext);
 		now = 3_730_000;
 		assert.equal(footer.render(100)[2]!.trim(), "◷ 1h 2m 3s");
@@ -415,6 +423,7 @@ test("shows TPS and active session time", async () => {
 		const zeroOutput = { role: "assistant", usage: { output: 0 } };
 		await handlers.get("message_update")!({ message: zeroOutput });
 		now = 4_002_000;
+		await handlers.get("message_update")!({ message: zeroOutput });
 		await handlers.get("message_end")!({ message: zeroOutput });
 		assert.match(footer.render(100)[1]!, /⚡ 0\.0 t\/s/);
 	} finally {
