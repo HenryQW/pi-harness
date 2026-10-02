@@ -42,6 +42,8 @@ Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the
 
 `/pr` accepts no flags, prose, or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
 
+The `pi_pr_*` tools are model-only and run one action at a time. Codemode scripts and other tools cannot call them, so a script cannot batch guarded actions or filter the result the model needs for its next safety decision. With `codemode.mode` set to `only`, Pi hides other tools behind `codemode` but keeps these declared, so `/pr` workflows still work.
+
 ## Flow
 
 ![Flowchart showing /pr reading fresh GitHub and local state and choosing the next safe route](./docs/pr-routing.svg)
