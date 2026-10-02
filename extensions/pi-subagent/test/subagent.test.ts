@@ -8,7 +8,7 @@ import test from "node:test";
 import { Compile } from "typebox/compile";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
-import { roleCanWrite, roleIsReadOnlyScout } from "../extensions/admission.ts";
+import { registerCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "../extensions/admission.ts";
 import roleTools from "../extensions/role-tools.ts";
 import subagentExtension from "../extensions/subagent.ts";
 
@@ -16,6 +16,7 @@ type Tool = {
 	name: string;
 	description: string;
 	parameters: unknown;
+	exposure?: string;
 	promptGuidelines?: string[];
 	prepareArguments?: (args: unknown) => any;
 	renderShell?: "default" | "self";
@@ -33,10 +34,52 @@ test("direct admission trusts configured extensions and MCP servers but rejects 
 	};
 	assert.equal(roleCanWrite(role), false);
 	assert.equal(roleCanWrite({ ...role, tools: ["read", "bash"] }), true);
+	// Scripts can only call the Role's active tools, so `codemode` adds no write capability.
+	assert.equal(roleCanWrite({ ...role, tools: ["read", "codemode"], extensions: ["builtin:codemode"] }), false);
+	assert.equal(roleCanWrite({ ...role, tools: ["codemode", "edit"], extensions: ["builtin:codemode"] }), true);
+	assert.equal(roleIsReadOnlyScout({ ...role, tools: ["read", "codemode"], extensions: ["builtin:codemode"], mcps: [] }), false);
 	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [] }), true);
 	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: ["docs"] }), false);
 	assert.equal(roleIsReadOnlyScout({ ...role, mcps: [] }), false);
 	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [], tools: ["bash"] }), false);
+});
+
+test("checkout admission attributes nested calls to their model-issued root and keeps independent writers out", async (t) => {
+	const checkout = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-admission-")));
+	t.after(() => rm(checkout, { recursive: true, force: true }));
+	const handlers = new Map<string, (...args: any[]) => any>();
+	registerCheckoutAdmission({
+		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
+		exec: async () => ({ stdout: `${checkout}\n`, stderr: "", code: 0, killed: false }),
+	} as unknown as ExtensionAPI, () => true);
+	const ctx = { cwd: checkout } as ExtensionContext;
+	const call = (toolCallId: string, toolName: string, parentToolCallId?: string) =>
+		handlers.get("tool_call")!({ type: "tool_call", toolCallId, toolName, input: {}, ...(parentToolCallId === undefined ? {} : { parentToolCallId }) }, ctx);
+	const blockedBy = (owner: string) => ({ block: true, reason: `Checkout ${checkout} already has an admitted Pi writer (${owner}); retry after it settles.` });
+	// A script that only reads holds nothing, so an independent writer is admitted beside it.
+	assert.equal(await call("script-1", "codemode"), undefined);
+	assert.equal(await call("script-1/1", "grep", "script-1"), undefined);
+	assert.equal(await call("edit-1", "edit"), undefined);
+	assert.deepEqual(await call("script-1/2", "bash", "script-1"), blockedBy("edit-1"));
+	handlers.get("tool_result")!({ type: "tool_result", toolCallId: "edit-1", toolName: "edit" });
+	// The first nested write makes the script's root the writer; deeper and later nested calls pass.
+	assert.equal(await call("script-1/3", "bash", "script-1"), undefined);
+	assert.equal(await call("script-1/3/1", "write", "script-1/3"), undefined);
+	assert.equal(await call("script-1/4", "edit", "script-1"), undefined);
+	assert.equal(await call("script-1/5", "read", "script-1"), undefined);
+	// Independent roots, including another script's nested writes, wait; their reads do not.
+	assert.deepEqual(await call("edit-2", "edit"), blockedBy("script-1"));
+	assert.deepEqual(await call("delegate-1", "delegate_task"), blockedBy("script-1"));
+	assert.equal(await call("script-2", "codemode"), undefined);
+	assert.deepEqual(await call("script-2/1", "bash", "script-2"), blockedBy("script-1"));
+	assert.equal(await call("script-2/2", "read", "script-2"), undefined);
+	// Nested completions and failures do not release the root; the root's own end does.
+	handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "script-1/3", toolName: "bash", parentToolCallId: "script-1", isError: true });
+	handlers.get("tool_result")!({ type: "tool_result", toolCallId: "script-1/4", toolName: "edit", parentToolCallId: "script-1" });
+	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));
+	handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "script-1", toolName: "codemode", isError: true });
+	assert.equal(await call("edit-3", "edit"), undefined);
+	assert.deepEqual(await call("script-2/3", "bash", "script-2"), blockedBy("edit-3"));
 });
 
 function loadRoleTools(processLease: string | undefined): { events: string[]; toolCall?: ToolCallHandler; childUmask: number } {
@@ -330,6 +373,7 @@ test("registered tools have object roots and preserve closed union validation", 
 			deliverable: "Report", dependsOn: [], contextFrom: [],
 		}] };
 		assert.ok(Compile(JSON.parse(JSON.stringify(app.tools.get("delegate_task")!.parameters))).Check(isolated));
+		assert.equal(app.tools.get("delegate_task")!.exposure, "model-only");
 		assert.throws(() => app.tools.get("subagent_resume")!.prepareArguments!({ id: "request-one", action: "retry" }), /one strict action/);
 		assert.throws(() => app.tools.get("subagent_integrate")!.prepareArguments!({ id: "request-one", action: "refresh", generation: 1, expectedTip: tip }), /exact generation and tip/);
 		assert.throws(() => app.tools.get("delegate_task")!.prepareArguments!({ mode: "isolated", id: "request-one" }), /strict task schema/);

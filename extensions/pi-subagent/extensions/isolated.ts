@@ -1,3 +1,4 @@
+import type { JsonValue } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { EphemeralSubagentExecutor } from "../dist/ephemeral.js";
@@ -26,6 +27,7 @@ import {
 	parseIdOnly,
 	parseResumeRequest,
 	sameIdentity,
+	StatusOutputSchema,
 	type CheckBatchEvidence,
 	type ModelClass,
 	type ReviewEvidence,
@@ -598,16 +600,22 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		return toolResult({ text: `Pi Subagent ${id}: durable request accepted; productive work continues. Use subagent_status to inspect progress.`, state }, ctx, workspaceRowsByRequest);
 	};
 
+	// Status stays callable from codemode scripts and hands them the same bounded public projection
+	// the model reads; every mutating tool below is model-only because its guarded transitions need
+	// Main's visible reasoning.
 	pi.registerTool({
 		name: "subagent_status",
 		label: "Subagent status",
 		description: "Read one durable isolated request without reconciling or changing resources.",
 		parameters: IdOnlySchema,
 		prepareArguments: parseIdOnly,
+		outputSchema: StatusOutputSchema,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			return toolResult(await getComponents().runner.status(params.id, root, signal), ctx, workspaceRowsByRequest);
+			const result = toolResult(await getComponents().runner.status(params.id, root, signal), ctx, workspaceRowsByRequest);
+			// The projection is plain JSON; its conditional fields are typed optional rather than absent.
+			return { ...result, structuredContent: result.details as JsonValue };
 		},
 	});
 	pi.registerTool({
@@ -616,6 +624,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		description: "Resume one unfinished isolated request without resetting its recorded policy or correction count.",
 		parameters: ResumeRequestParameters,
 		prepareArguments: parseResumeRequest,
+		exposure: "model-only",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
@@ -631,6 +640,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		description: "Main stages/resolves an exact candidate, or rejects/revises one. Rejection of a staged candidate freezes the old generation; explicitly restage chosen candidates in a new generation. Never writes Main.",
 		parameters: StageRequestSchema,
 		prepareArguments: parseStageRequest,
+		exposure: "model-only",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
@@ -643,6 +653,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		description: "Main advances staged dependents, refreshes after clean Main drift, validates, corrects, promotes, reconciles an interrupted promotion, cleans up promoted resources, or explicitly releases rejected/superseded owned resources. Never replays an uncertain mutation.",
 		parameters: IntegrationActionParameters,
 		prepareArguments: parseIntegrationAction,
+		exposure: "model-only",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
@@ -661,6 +672,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		description: "Abort an isolated request; reject and release retained candidates and integration checkouts first. Terminate only exact owned workers. Repeat abort to reconcile cleanup of unchanged no-candidate allocations; preserve dirty or committed work.",
 		parameters: IdOnlySchema,
 		prepareArguments: parseIdOnly,
+		exposure: "model-only",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);

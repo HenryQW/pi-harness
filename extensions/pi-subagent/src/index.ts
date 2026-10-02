@@ -70,14 +70,48 @@ const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts"
 export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 
-/** Read child MCP policy before Pi binds registered extension flag values. */
-export function roleMcpAllowlistFromArgv(args: readonly string[]): string[] {
-	const flag = `--${ROLE_MCP_POLICY_FLAG}`;
+export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
+const CODEMODE_TOOL = "codemode";
+
+/** The value after a flag that must appear exactly once in a child's argv. */
+function flagValueFromArgv(args: readonly string[], flag: string): unknown {
 	const indexes = args.flatMap((arg, index) => arg === flag ? [index] : []);
 	if (indexes.length !== 1) throw new Error(`${flag} must appear exactly once.`);
-	return parseRoleMcpAllowlist(args[indexes[0]! + 1]);
+	return args[indexes[0]! + 1];
 }
-export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
+
+/** Read child MCP policy before Pi binds registered extension flag values. */
+export function roleMcpAllowlistFromArgv(args: readonly string[]): string[] {
+	return parseRoleMcpAllowlist(flagValueFromArgv(args, `--${ROLE_MCP_POLICY_FLAG}`));
+}
+
+/** Parse the Role tool policy flag value: JSON tool names. */
+export function parseRoleToolPolicy(value: unknown): string[] {
+	if (typeof value !== "string") throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
+	}
+	if (!Array.isArray(parsed) || parsed.some((name) => typeof name !== "string" || !name.trim() || name.includes("\0"))) {
+		throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
+	}
+	return [...new Set(parsed.map((name) => name.trim()))];
+}
+
+/** Read child tool policy before Pi binds registered extension flag values. */
+export function roleToolPolicyFromArgv(args: readonly string[]): string[] {
+	return parseRoleToolPolicy(flagValueFromArgv(args, `--${ROLE_TOOL_POLICY_FLAG}`));
+}
+
+/**
+ * Whether a tool policy activates `codemode` in the child, so scripts can reach tools with
+ * `codemode` or `deferred` exposure. Loading `builtin:codemode` alone registers the tool inactive.
+ */
+export function roleActivatesCodemode(tools: readonly string[]): boolean {
+	return tools.includes(CODEMODE_TOOL);
+}
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
 	"ask_question",
@@ -492,7 +526,9 @@ export function prepareRoleLaunch(
 		: prepareResolvedRoleLaunch(pi, ctx, input);
 	assertNoMissingRoleSkills(input.role, prepared);
 	// Validate the mcp.json the child reads: its environment inherits Main's, with launch overrides on top.
-	if (input.role.mcps?.length) loadRoleMcpConfig(prepared.env.PI_CODING_AGENT_DIR ?? getAgentDir(), input.role.mcps);
+	if (input.role.mcps?.length) {
+		loadRoleMcpConfig(prepared.env.PI_CODING_AGENT_DIR ?? getAgentDir(), input.role.mcps, { codemode: roleActivatesCodemode(prepared.tools) });
+	}
 	return { ...prepared, role };
 }
 
@@ -507,7 +543,7 @@ export async function resolveConfiguredRoleLaunch(
 	const matches = loadRoles().filter((role) => role.name === roleName);
 	if (matches.length !== 1) throw new Error(`Required configured Role ${roleName} is missing or ambiguous.`);
 	const role = matches[0]!;
-	if (role.mcps?.length) loadRoleMcpConfig(getAgentDir(), role.mcps);
+	if (role.mcps?.length) loadRoleMcpConfig(getAgentDir(), role.mcps, { codemode: roleActivatesCodemode(role.tools) });
 	const resources = await resolveRolePackageResources(role, ctx);
 	const effectiveRole: Role = { ...role, extensions: resources.extensions };
 	const namedSkills = resolveRoleSkills(pi, effectiveRole);

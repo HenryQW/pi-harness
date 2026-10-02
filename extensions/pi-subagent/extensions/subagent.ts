@@ -461,6 +461,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			`For delegate_task, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
 		],
 		parameters: DelegateTaskParameters,
+		// Delegation needs Main's visible reasoning; codemode scripts cannot start it.
+		exposure: "model-only",
 		prepareArguments(args) {
 			try {
 				const parsed = parseDelegateTask(args);
