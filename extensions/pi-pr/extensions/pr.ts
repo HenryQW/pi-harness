@@ -828,11 +828,15 @@ export default function pullRequestExtension(
 				return;
 			}
 		} catch (error) {
-			if (generation === sessionGeneration) ctx.ui.notify(`PR continuation stopped: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			if (generation === sessionGeneration) {
+				activeInvocations.delete(invocation);
+				ctx.ui.notify(`PR continuation stopped: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			}
 		} finally {
 			if (generation === sessionGeneration && (!workflowContext || completedRoutes.has(workflowContext.route))) {
 				clearWorkflow(workflowContext);
-				activeInvocations.delete(invocation);
+				// Settlement refreshes successful continuations; failed discovery must not retry immediately.
+				if (activeInvocations.has(invocation)) activeInvocations.set(invocation, "workflow");
 				reconcileWidget(ctx);
 			}
 		}
