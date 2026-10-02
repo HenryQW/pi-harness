@@ -7,12 +7,15 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import { Value } from "typebox/value";
 import { buildContextInjection, collectSkillPaths, findFiles, resolveDir, scanDirContext } from "../extensions/add-dir-helpers.ts";
 import { createAddDirConfigStore } from "../extensions/add-dir-config.ts";
 import addDirExtension, { createExternalAutocompleteProvider } from "../extensions/add-dir.ts";
 
 interface RegisteredTool {
 	name: string;
+	exposure?: string;
+	outputSchema?: unknown;
 	execute: (...args: any[]) => Promise<any>;
 }
 
@@ -132,6 +135,90 @@ function interactiveContext(
 		reload: options.reload ?? (async () => {}),
 	} as unknown as ExtensionContext;
 }
+
+/** One workspace plus one added external directory holding `src/a.ts` and `src/b.ts`. */
+async function externalFixture(root: string): Promise<{ external: string; tools: Map<string, RegisteredTool>; ctx: ExtensionContext }> {
+	const cwd = join(root, "workspace");
+	const external = join(root, "external");
+	await mkdir(cwd);
+	await mkdir(join(external, "src"), { recursive: true });
+	for (const name of ["a.ts", "b.ts"]) await writeFile(join(external, "src", name), "");
+	const { handlers, tools } = loadExtension();
+	const ctx = extensionContext(cwd, () => []);
+	await handlers.get("session_start")!({}, ctx);
+	await tools.get("add_directory")!.execute("add", { path: external }, undefined, undefined, ctx);
+	return { external: resolveDir(external, cwd), tools, ctx };
+}
+
+test("search_external_files returns structured grouped results that match its output schema", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-structured-"));
+	try {
+		const { external, tools, ctx } = await externalFixture(root);
+		const search = tools.get("search_external_files")!;
+		const full = await search.execute("full", { pattern: "*.ts" }, undefined, undefined, ctx);
+		assert.equal(Value.Check(search.outputSchema as any, full.structuredContent), true);
+		assert.deepEqual(
+			{ ...full.structuredContent, directories: full.structuredContent.directories.map((dir: { files: string[] }) => ({ ...dir, files: [...dir.files].sort() })) },
+			{
+				pattern: "*.ts",
+				maxResults: 50,
+				searchedDirectories: 1,
+				totalFound: 2,
+				truncated: false,
+				directories: [{ path: external, label: "external", files: [join(external, "src", "a.ts"), join(external, "src", "b.ts")] }],
+			},
+		);
+		assert.match(full.content[0].text, /^Found 2 file\(s\) matching "\*\.ts":/);
+
+		const capped = await search.execute("capped", { pattern: "*.ts", maxResults: 1 }, undefined, undefined, ctx);
+		assert.equal(Value.Check(search.outputSchema as any, capped.structuredContent), true);
+		assert.equal(capped.structuredContent.totalFound, 1);
+		assert.equal(capped.structuredContent.truncated, true, "hitting the cap means more matches may exist");
+
+		const none = await search.execute("none", { pattern: "*.md" }, undefined, undefined, ctx);
+		assert.equal(Value.Check(search.outputSchema as any, none.structuredContent), true);
+		assert.deepEqual(none.structuredContent, { pattern: "*.md", maxResults: 50, searchedDirectories: 1, totalFound: 0, truncated: false, directories: [] });
+		assert.match(none.content[0].text, /^No files matching/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("codemode scripts receive structured search results while add_directory stays model-only", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-codemode-"));
+	try {
+		const { tools, ctx } = await externalFixture(root);
+		assert.equal(tools.get("add_directory")!.exposure, "model-only", "instruction loading must not be a nested script call");
+		const search = tools.get("search_external_files")!;
+		// The installed codemode sandbox, with nested calls routed as Pi's agent loop does.
+		const { executeCodemode } = await import(new URL("./extensions/codemode/execute.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+		let calls = 0;
+		const toolContext = {
+			tools: [search],
+			sessionManager: { getBranch: () => [] },
+			async executeTool(name: string, args: unknown, options: { signal?: AbortSignal }) {
+				const id = `codemode/${++calls}`;
+				try {
+					return { toolCall: { id, name, arguments: args }, result: await search.execute(id, args, options.signal, undefined, ctx), isError: false };
+				} catch (error) {
+					const text = error instanceof Error ? error.message : String(error);
+					return { toolCall: { id, name, arguments: args }, result: { content: [{ type: "text", text }], details: {} }, isError: true };
+				}
+			},
+		};
+		const result = await executeCodemode("codemode", {
+			code: `
+				const found = await tools.search_external_files({ pattern: "*.ts", maxResults: 1 });
+				return { total: found.totalFound, truncated: found.truncated, labels: found.directories.map((dir) => dir.label) };
+			`,
+		}, undefined, undefined, toolContext);
+		const output = result.content.map((part: { text?: string }) => part.text ?? "").join("");
+		assert.notEqual(result.isError, true, output);
+		assert.deepEqual(JSON.parse(output.slice(output.indexOf("Output:\n") + 8)), { total: 1, truncated: true, labels: ["external"] });
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test("registers external skills without duplicating Pi's skill prompt", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));

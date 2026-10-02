@@ -66,6 +66,20 @@ const SearchExternalFilesParams = Type.Object({
 	),
 });
 
+// Programmatic result of search_external_files. Codemode scripts receive it;
+// the model receives the text listing.
+const SearchExternalFilesOutput = Type.Object({
+	pattern: Type.String(),
+	maxResults: Type.Integer({ description: "Result cap applied to this call." }),
+	searchedDirectories: Type.Integer({ description: "Active external directories searched, in order." }),
+	totalFound: Type.Integer(),
+	truncated: Type.Boolean({ description: "True when the cap stopped the search; later directories or files may hold more matches." }),
+	directories: Type.Array(
+		Type.Object({ path: Type.String(), label: Type.String(), files: Type.Array(Type.String()) }),
+		{ description: "Directories with at least one match, with absolute file paths." },
+	),
+});
+
 interface AddDirectoryDetails {
 	directory: string;
 	hasAgentsMd: boolean;
@@ -625,6 +639,10 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			"After adding, you can read/edit/write files in the external directory using absolute paths.",
 		],
 		parameters: AddDirectoryParams,
+		// Loading another directory's instructions must stay a model-visible call,
+		// never a nested call a codemode script can issue and filter.
+		exposure: "model-only",
+		annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const inputPath = params.path.trim();
@@ -693,6 +711,8 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			"Returns matching file paths with their parent directory labels.",
 		],
 		parameters: SearchExternalFilesParams,
+		outputSchema: SearchExternalFilesOutput,
+		annotations: { readOnlyHint: true, openWorldHint: false },
 
 		async execute(_toolCallId, params, signal) {
 			if (addedDirs.length === 0) {
@@ -701,7 +721,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 			const pattern = params.pattern.trim();
 			const limit = params.maxResults ?? DEFAULT_MAX_RESULTS;
-			const results: Array<{ dir: string; label: string; files: string[] }> = [];
+			const directories: Array<{ path: string; label: string; files: string[] }> = [];
 			let totalFound = 0;
 
 			for (const dir of addedDirs) {
@@ -711,12 +731,20 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 				const files = await findFiles(dir.absolutePath, pattern, remaining, signal);
 				if (files.length > 0) {
-					results.push({ dir: dir.absolutePath, label: dir.label, files });
+					directories.push({ path: dir.absolutePath, label: dir.label, files });
 					totalFound += files.length;
 				}
 			}
 
 			signal?.throwIfAborted();
+			const structuredContent = {
+				pattern,
+				maxResults: limit,
+				searchedDirectories: addedDirs.length,
+				totalFound,
+				truncated: totalFound >= limit,
+				directories,
+			};
 			if (totalFound === 0) {
 				return {
 					content: [
@@ -726,19 +754,21 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 						},
 					],
 					details: { totalFound: 0, pattern, dirCount: 0 } satisfies SearchDetails,
+					structuredContent,
 				};
 			}
 
 			const lines = [`Found ${totalFound} file(s) matching "${pattern}":\n`];
-			for (const result of results) {
-				lines.push(`📂 ${result.label} (${result.dir}):`);
-				for (const file of result.files) lines.push(`  ${file}`);
+			for (const directory of directories) {
+				lines.push(`📂 ${directory.label} (${directory.path}):`);
+				for (const file of directory.files) lines.push(`  ${file}`);
 				lines.push("");
 			}
 
 			return {
 				content: [{ type: "text", text: lines.join("\n") }],
-				details: { totalFound, pattern, dirCount: results.length } satisfies SearchDetails,
+				details: { totalFound, pattern, dirCount: directories.length } satisfies SearchDetails,
+				structuredContent,
 			};
 		},
 
