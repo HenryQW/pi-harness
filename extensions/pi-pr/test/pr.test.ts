@@ -434,6 +434,47 @@ test("one /pr continues from a final answer through queued workflows without bef
 	} finally { await app.shutdown(ctx); }
 });
 
+for (const quotaExhausted of [false, true]) test(quotaExhausted
+	? "creation continuation does not retry an exhausted GitHub quota at settlement"
+	: "creation continuation refreshes the footer when it stops for CI", async () => {
+	let published = false;
+	let idle = true;
+	let loads = 0;
+	const app = harness({
+		async load() {
+			loads += 1;
+			if (published && quotaExhausted) throw new GitHubRateLimitError();
+			return published ? currentPullRequest({ conditions: { ci: "running" } }) : noPullRequest(1);
+		},
+		useDefaultCommandHandler: true,
+		isIdle: () => idle,
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createPullRequestCreator() { return {
+			state: { phase: "unprepared" },
+			async publish() { published = true; return { kind: "published", url: "https://github.com/acme/project/pull/42" }; },
+		} as never; },
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		idle = false;
+		await app.callTool("pi_pr_create", { runId: routeRunId, action: "publish", title: "fix", body: "Summary" }, ctx);
+		await app.beforeSettle(ctx);
+		assert.equal(app.statuses.at(-1), undefined, "presentation waits until the agent settles");
+		const loadsBeforeSettlement = loads;
+		idle = true;
+		await app.settle(ctx);
+		if (quotaExhausted) {
+			assert.match(app.notifications.at(-1)!.message, /rate limit exhausted/);
+			assert.equal(loads, loadsBeforeSettlement, "settlement must not immediately retry failed discovery");
+		} else {
+			assert.match(plain(String(app.statuses.at(-1))), /PR #42.*CI running/);
+		}
+	} finally { await app.shutdown(ctx); }
+});
+
 test("a completed helper does not repeat its route when fresh evidence is unchanged", async () => {
 	const pr = currentPullRequest({ conditions: { ci: "failure" } });
 	const app = harness({
