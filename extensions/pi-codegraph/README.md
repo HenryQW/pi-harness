@@ -16,7 +16,7 @@ Requires only the `codegraph` executable on Pi's `PATH`. No MCP server or MCP co
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph) | Required | Builds the indexes and answers `codegraph explore` queries. |
-| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows a compact CodeGraph index badge and tool activity when loaded. |
+| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows quiet CodeGraph setup progress and direct tool activity when loaded. |
 
 ## Use
 
@@ -31,18 +31,20 @@ Then launch `pi` in a linked worktree. When the primary checkout has an index, p
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `codegraph_explore` | tool | Lets agents explore the indexed code. It returns the source of the relevant symbols grouped by file, plus the call path between them. |
-| CodeGraph setup status | ui | Shows users setup progress and errors, and confirms a new worktree index is ready. |
+| CodeGraph setup status | ui | Shows a dim footer spinner and elapsed time during setup. Clears silently when done; setup errors remain visible with recovery instructions. |
 
 `codegraph_explore` takes a `query`, an optional `maxFiles` (default 12), and an optional `projectPath` (defaults to Pi's working directory). It runs `codegraph explore --path <projectPath> --max-files <maxFiles> <query>` and returns the output as-is. If the command exits with an error or runs longer than 120 seconds, the tool call fails and shows the end of CodeGraph's error output.
 
 ## Flow
 
 - A missing worktree index is built only when the primary checkout already has `.codegraph/codegraph.db`.
-- Initialization happens when Pi launches, not when Git creates the worktree.
+- Initialization happens when Pi launches, not when Git creates the worktree. In TUI mode it runs in the background so the footer and later startup handlers can load.
 - Each linked worktree keeps its own `.codegraph`; databases are never copied or shared between branches.
 - Non-Git directories and repositories without a primary index are not initialized.
-- The extension reports `checking index…` and `indexing…` during setup, `indexed` when a database file exists, `missing` when no index was built, `prerequisites missing` when setup was skipped, and `setup failed` on an error. `indexed` does not guarantee database health.
-- If `pi-footer` is also loaded, it places a compact `CG` badge first on its third line: `✓ CG` indexed, `○ CG` missing, `◐ CG` checking or indexing, `! CG` setup problem, or `? CG` unknown state. It temporarily shows `● CG` only during `codegraph_explore` calls.
+- Setup shows a dim footer status such as `⠋ codegraph · indexing 8s`, or `waiting for index` when another session holds the initialization lock. Only TUI mode animates the spinner. Progress disappears when setup finishes; there is no success message or idle index badge.
+- Missing prerequisites and setup failures remain visible with a theme-colored `!` icon, meaningful text, and an actionable notification.
+- Creating, resuming, or forking a session waits for in-flight worktree initialization instead of interrupting it. Repeated startup events reuse that initialization. Quitting or reloading Pi cancels the initializer and every Git probe; interrupted initialization keeps the lock for explicit recovery.
+- If `pi-footer` is also loaded, it preserves the setup status on its third line and temporarily shows `● CG` during direct `codegraph_explore` calls.
 
 ## State and storage
 

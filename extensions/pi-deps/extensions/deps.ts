@@ -3,8 +3,7 @@ import { randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type ExtensionAPI, type ExtensionUIContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, truncateToWidth, type TUI } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 
 const hookSourcePath = fileURLToPath(new URL("../hooks/post-checkout.mjs", import.meta.url));
 const managedHookMarker = "pi-deps-managed-hook";
@@ -61,9 +60,8 @@ async function toggleDependencyHook(commonGitDir: string): Promise<{ enabled: bo
 	return { enabled: true, path };
 }
 
-const widgetKey = "pi-deps";
+const statusKey = "pi-deps";
 const pollMs = 500;
-const successTtlMs = 5000;
 const waitTimeoutMs = 10 * 60_000;
 const spinnerIntervalMs = 100;
 const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -82,7 +80,7 @@ interface InstallStatus {
 interface InstallWatchContext {
 	cwd: string;
 	mode?: string;
-	ui: Pick<ExtensionUIContext, "setWidget">;
+	ui: Pick<ExtensionUIContext, "setStatus" | "setWidget" | "theme">;
 }
 
 // Watches the status file written by the background installer spawned by the post-checkout hook.
@@ -90,6 +88,7 @@ interface InstallWatchContext {
 async function watchDependencyInstallation(
 	exec: ExtensionAPI["exec"],
 	ctx: InstallWatchContext,
+	signal: AbortSignal,
 ): Promise<void> {
 	if (ctx.mode && ctx.mode !== "tui") return;
 	const git = await exec("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: ctx.cwd });
@@ -107,54 +106,50 @@ async function watchDependencyInstallation(
 
 	let status = await readStatus();
 	if (!status) return;
-	if (status.state === "running") {
-		const startedAt = Date.now();
-		let timer: ReturnType<typeof setInterval> | undefined;
-		ctx.ui.setWidget(widgetKey, (tui: TUI, theme: Theme): Component & { dispose?(): void } => {
-			timer ??= setInterval(() => tui.requestRender(), spinnerIntervalMs);
+	signal.throwIfAborted();
+	const startedAt = Date.now();
+	const update = () => {
+		const frame = spinnerFrames[Math.floor(Date.now() / spinnerIntervalMs) % spinnerFrames.length]!;
+		ctx.ui.setStatus(statusKey, ctx.ui.theme.fg("dim", `${frame} deps · installing ${formatElapsed(startedAt)}`));
+	};
+	let timer: ReturnType<typeof setInterval> | undefined;
+	try {
+		if (status.state === "running") {
+			update();
+			timer = setInterval(update, spinnerIntervalMs);
 			timer.unref();
-			return {
-				invalidate() {},
-				dispose() {
-					if (timer) clearInterval(timer);
-					timer = undefined;
-				},
-				render: (width: number) => {
-					const frame = spinnerFrames[Math.floor(Date.now() / spinnerIntervalMs) % spinnerFrames.length]!;
-					return [
-						truncateToWidth(
-							`${theme.fg("accent", frame)} pi-deps: installing dependencies… ${theme.fg("dim", formatElapsed(startedAt))}`,
-							width,
-						),
-					];
-				},
-			};
-		});
-	}
-	const deadline = Date.now() + waitTimeoutMs;
-	while (status.state === "running" && Date.now() < deadline) {
-		await delay(pollMs);
-		status = await readStatus();
-		if (!status) {
-			ctx.ui.setWidget(widgetKey, undefined);
-			return;
 		}
-	}
-	await rm(statusPath, { force: true }); // consume so later sessions do not replay a stale outcome
-	if (status.state === "ok") {
-		ctx.ui.setWidget(widgetKey, ["pi-deps: dependencies installed"]);
-		setTimeout(() => ctx.ui.setWidget(widgetKey, undefined), successTtlMs);
-	} else if (status.state === "error") {
-		ctx.ui.setWidget(widgetKey, [
-			`pi-deps: install failed: ${status.message ?? "unknown error"}`,
-			`pi-deps: log: ${join(stateDir, "install.log")}`,
-		]);
+		const deadline = startedAt + waitTimeoutMs;
+		while (status.state === "running" && Date.now() < deadline) {
+			await delay(pollMs, undefined, { signal });
+			status = await readStatus();
+			if (!status) return;
+		}
+		signal.throwIfAborted();
+		await rm(statusPath, { force: true }); // consume so later sessions do not replay a stale outcome
+		if (status.state === "error" || status.state === "running") {
+			ctx.ui.setWidget(statusKey, [
+				status.state === "error"
+					? `pi-deps: install failed: ${status.message ?? "unknown error"}`
+					: "pi-deps: stopped waiting for dependency installation after ten minutes; check the log.",
+				`pi-deps: log: ${join(stateDir, "install.log")}`,
+			]);
+		}
+	} finally {
+		if (timer) clearInterval(timer);
+		ctx.ui.setStatus(statusKey, undefined);
 	}
 }
 
 export default function depsExtension(pi: ExtensionAPI): void {
+	let watcher: AbortController | undefined;
+	pi.on("session_shutdown", () => watcher?.abort());
 	pi.on("session_start", (_event, ctx) => {
-		void watchDependencyInstallation(pi.exec.bind(pi), ctx).catch(() => {});
+		watcher?.abort();
+		const controller = watcher = new AbortController();
+		void watchDependencyInstallation(pi.exec.bind(pi), ctx, controller.signal).catch((error) => {
+			if (!controller.signal.aborted) ctx.ui.notify(`pi-deps: ${errorMessage(error)}`, "error");
+		});
 	});
 	pi.registerCommand("deps", {
 		description: "Toggle dependency preparation for future Git worktrees",
