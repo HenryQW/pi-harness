@@ -265,6 +265,10 @@ test("preserves muted preparation statuses, clears completed work, and marks dir
 	statuses.set("pi-deps", "\x1b[2m⠙ deps · installing 12s\x1b[22m");
 	assert.match(third(), /^⠋ codegraph · indexing 8s · ⠙ deps · installing 12s · ↩ rewind +◷ 0s$/);
 	assert.match(footer.render(100)[2]!, /\x1b\[2m⠋ codegraph · indexing 8s\x1b\[22m/);
+	const failure = "\x1b[31m!\x1b[39m pi-codegraph: setup failed";
+	statuses.set("pi-codegraph", failure);
+	assert.ok(footer.render(100)[2]!.startsWith(failure));
+	assert.match(third(), /^! pi-codegraph: setup failed · /);
 	statuses.delete("pi-codegraph");
 	statuses.delete("pi-deps");
 	assert.match(third(), /^↩ rewind +◷ 0s$/);

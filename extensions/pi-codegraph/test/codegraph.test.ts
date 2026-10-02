@@ -33,7 +33,8 @@ function harness(cwd: string, options: {
 	hasUI?: boolean;
 	mode?: "tui" | "rpc";
 	version?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
-	init?: () => Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>;
+	init?: (signal?: AbortSignal) => Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>;
+	gitProbe?: (args: string[], signal?: AbortSignal) => Promise<Awaited<ReturnType<ExtensionAPI["exec"]>> | undefined>;
 	explore?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
 	onStatus?: (text: string | undefined) => void;
 } = {}) {
@@ -48,17 +49,21 @@ function harness(cwd: string, options: {
 			else if (name === "session_shutdown") shutdown = handler;
 		},
 		registerTool: (definition: ToolDefinition) => { tool = definition; },
-		exec: async (command: string, args: string[], opts: { cwd: string; timeout?: number }) => {
+		exec: async (command: string, args: string[], opts: { cwd: string; timeout?: number; signal?: AbortSignal }) => {
 			calls.push({ command, args, cwd: opts.cwd, ...(args[0] === "explore" && { timeout: opts.timeout }) });
 			if (command === "codegraph") {
 				if (args[0] === "--version") return options.version ?? { code: 0, stdout: "1.6.0", stderr: "", killed: false };
 				if (args[0] === "explore") return options.explore ?? { code: 0, stdout: "explored", stderr: "", killed: false };
-				if (options.init) return options.init();
+				if (options.init) return options.init(opts.signal);
 				await index(opts.cwd);
 				return { code: 0, stdout: "", stderr: "", killed: false };
 			}
+			if (command === "git" && options.gitProbe) {
+				const result = await options.gitProbe(args, opts.signal);
+				if (result) return result;
+			}
 			try {
-				const result = await exec(command, args, { cwd: opts.cwd });
+				const result = await exec(command, args, { cwd: opts.cwd, signal: opts.signal });
 				return { ...result, code: 0, killed: false };
 			} catch (error) {
 				return error;
@@ -80,7 +85,7 @@ function harness(cwd: string, options: {
 	} as unknown as ExtensionContext;
 	codegraphExtension(pi);
 	const explore = (params: Record<string, unknown>) => tool.execute("call", params, undefined, undefined, ctx as never);
-	return { start: () => start({}, ctx), shutdown: () => shutdown({}, ctx), explore, tool, notices, calls, widgets, statuses };
+	return { start: () => start({}, ctx), shutdown: (reason = "quit") => shutdown({ reason }, ctx), explore, tool, notices, calls, widgets, statuses };
 }
 
 test("initializes an opted-in linked worktree at its root once, including nested launches", async (t) => {
@@ -100,21 +105,23 @@ test("initializes an opted-in linked worktree at its root once, including nested
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
-test("TUI indexing does not block footer startup and silently stops its dim animation", async (t) => {
-	const { primary, worktree } = await fixture(t);
+test("TUI indexing survives session replacement and silently stops its dim animation", async (t) => {
+	const { primary, worktree, lock } = await fixture(t);
 	await index(primary);
 	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
 	const entered = Promise.withResolvers<void>();
 	const release = Promise.withResolvers<void>();
 	const cleared = Promise.withResolvers<void>();
 	let indexing = false;
+	let initSignal: AbortSignal | undefined;
 	const run = harness(worktree, {
 		mode: "tui",
 		onStatus: (text) => {
 			if (text?.includes("indexing")) indexing = true;
 			else if (indexing && text === undefined) cleared.resolve();
 		},
-		init: async () => {
+		init: async (signal) => {
+			initSignal = signal;
 			entered.resolve();
 			await release.promise;
 			await index(worktree);
@@ -129,8 +136,17 @@ test("TUI indexing does not block footer startup and silently stops its dim anim
 	assert.equal(run.statuses.at(-1), "<dim>⠙ codegraph · indexing 0s</dim>");
 	t.mock.timers.tick(1100);
 	assert.match(run.statuses.at(-1)!, /indexing 1s/);
+	assert.equal(run.start(), undefined); // Repeated starts reuse this initializer.
+	let replaced = false;
+	const replacement = Promise.resolve(run.shutdown("new")).then(() => { replaced = true; });
+	await setImmediate();
+	assert.equal(replaced, false);
+	assert.equal(initSignal?.aborted, false);
+	assert.equal(run.calls.filter(({ args }) => args[0] === "init").length, 1);
 	release.resolve();
+	await replacement;
 	await cleared.promise;
+	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 	await setImmediate();
 	const count = run.statuses.length;
 	t.mock.timers.tick(1000);
@@ -160,6 +176,29 @@ test("shutdown stops a waiting TUI spinner without removing another initializer'
 	await rmdir(lock);
 });
 
+test("shutdown cancels every Git probe without starting more setup work", async (t) => {
+	const { primary, worktree, lock } = await fixture(t);
+	await index(primary);
+	for (const probe of ["--show-toplevel", "--absolute-git-dir", "list"]) {
+		const entered = Promise.withResolvers<void>();
+		const run = harness(worktree, { mode: "tui", gitProbe: async (args, signal) => {
+			if (!args.includes(probe)) return;
+			assert.ok(signal);
+			entered.resolve();
+			return new Promise((resolve) => signal.addEventListener("abort", () => {
+				resolve({ code: 0, stdout: "", stderr: "", killed: true });
+			}, { once: true }));
+		} });
+		run.start();
+		await entered.promise;
+		const count = run.calls.length;
+		await run.shutdown();
+		assert.equal(run.calls.length, count);
+		assert.deepEqual(run.notices, []);
+		await assert.rejects(rmdir(lock), { code: "ENOENT" });
+	}
+});
+
 test("does not index non-Git directories, unopted repositories, or existing indexes", async (t) => {
 	const { base, primary, worktree, lock } = await fixture(t);
 	for (const cwd of [base, primary, worktree]) {
@@ -187,7 +226,7 @@ test("warns with the install command when the CLI is unavailable without creatin
 	await run.start();
 	assert.deepEqual(run.calls, [{ command: "codegraph", args: ["--version"], cwd: worktree }]);
 	assert.equal(run.notices[0]!.level, "warning");
-	assert.equal(run.statuses.at(-1), "pi-codegraph: prerequisites missing");
+	assert.equal(run.statuses.at(-1), "<warning>!</warning> pi-codegraph: prerequisites missing");
 	assert.ok(run.notices[0]!.message.includes("npm install -g @colbymchenry/codegraph"));
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 	const headless = harness(worktree, { ...options, hasUI: false });
@@ -240,7 +279,7 @@ test("failed init preserves its lock, reports recovery, and a later launch rejec
 	assert.match(failed.notices[0]!.message, /index worker failed/);
 	assert.ok(failed.notices[0]!.message.includes(lock));
 	assert.equal(failed.notices[0]!.level, "error");
-	assert.equal(failed.statuses.at(-1), "pi-codegraph: setup failed");
+	assert.equal(failed.statuses.at(-1), "<error>!</error> pi-codegraph: setup failed");
 	t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
 	const waiting = Promise.withResolvers<void>();
 	const retry = harness(worktree, { onStatus: (text) => {

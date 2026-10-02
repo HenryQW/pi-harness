@@ -42,7 +42,8 @@ Then launch `pi` in a linked worktree. When the primary checkout has an index, p
 - Each linked worktree keeps its own `.codegraph`; databases are never copied or shared between branches.
 - Non-Git directories and repositories without a primary index are not initialized.
 - Setup shows a dim footer status such as `⠋ codegraph · indexing 8s`, or `waiting for index` when another session holds the initialization lock. Only TUI mode animates the spinner. Progress disappears when setup finishes; there is no success message or idle index badge.
-- Missing prerequisites and setup failures remain visible with an actionable notification. Closing Pi stops progress and cancels its initializer; interrupted initialization keeps the lock for explicit recovery.
+- Missing prerequisites and setup failures remain visible with a theme-colored `!` icon, meaningful text, and an actionable notification.
+- Creating, resuming, or forking a session waits for in-flight worktree initialization instead of interrupting it. Repeated startup events reuse that initialization. Quitting or reloading Pi cancels the initializer and every Git probe; interrupted initialization keeps the lock for explicit recovery.
 - If `pi-footer` is also loaded, it preserves the setup status on its third line and temporarily shows `● CG` during direct `codegraph_explore` calls.
 
 ## State and storage

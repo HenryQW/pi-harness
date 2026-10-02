@@ -42,8 +42,9 @@ async function hasIndex(root: string): Promise<boolean> {
 	}
 }
 
-async function git(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string> {
-	const result = await pi.exec("git", args, { cwd, timeout: 10_000 });
+async function git(pi: ExtensionAPI, cwd: string, args: string[], signal: AbortSignal): Promise<string> {
+	const result = await pi.exec("git", args, { cwd, timeout: 10_000, signal });
+	signal.throwIfAborted();
 	if (result.code !== 0 || result.killed) {
 		throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || `exit ${result.code}`}`);
 	}
@@ -57,12 +58,13 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 	if (version.code !== 0 || version.killed) {
 		const detail = version.killed ? "timed out or killed" : version.stderr.trim().slice(-1000) || `exit ${version.code}`;
 		const message = `pi-codegraph: setup skipped.\ncodegraph --version failed (${detail}). Install CodeGraph: npm install -g @colbymchenry/codegraph. If already installed, check that codegraph runs on Pi's PATH.\nThen restart Pi or /reload.`;
-		ctx.ui.setStatus("pi-codegraph", "pi-codegraph: prerequisites missing");
+		ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("warning", "!")} pi-codegraph: prerequisites missing`);
 		if (ctx.hasUI) ctx.ui.notify(message, "warning");
 		else console.warn(message);
 		return;
 	}
-	const rootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd, timeout: 10_000 });
+	const rootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd, timeout: 10_000, signal });
+	signal.throwIfAborted();
 	if (rootResult.code !== 0 || rootResult.killed) {
 		if (!rootResult.killed && rootResult.stderr.includes("not a git repository")) return;
 		throw new Error(`Cannot locate Git worktree: ${rootResult.stderr.trim() || `exit ${rootResult.code}`}`);
@@ -72,7 +74,7 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 	if (process.env.CODEGRAPH_DIR && process.env.CODEGRAPH_DIR !== ".codegraph") {
 		throw new Error("pi-codegraph requires the default CODEGRAPH_DIR (.codegraph). Unset CODEGRAPH_DIR before launching Pi.");
 	}
-	const gitDir = await git(pi, root, ["rev-parse", "--absolute-git-dir"]);
+	const gitDir = await git(pi, root, ["rev-parse", "--absolute-git-dir"], signal);
 	if (!gitDir) throw new Error("Git returned an empty metadata directory.");
 	const lock = join(gitDir, "pi-codegraph-init.lock");
 	// Check the lock before the database: an in-progress/failed init can leave a partial DB.
@@ -103,7 +105,7 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 				indexed = true;
 				return;
 			}
-			const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"]);
+			const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"], signal);
 			const first = worktrees.split("\0", 1)[0];
 			if (!first?.startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
 			const primary = first.slice("worktree ".length);
@@ -112,6 +114,7 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 			stopProgress = showProgress(ctx, "indexing", signal);
 			attempted = true;
 			const result = await pi.exec("codegraph", ["init", "--yes", root], { cwd: root, timeout: INIT_TIMEOUT_MS, signal });
+			signal.throwIfAborted();
 			if (result.code !== 0 || result.killed || !(await hasIndex(root))) {
 				throw new Error(`CodeGraph init failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${(result.stderr || result.stdout).trim().slice(-2000)}`);
 			}
@@ -133,7 +136,12 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 
 export default function codegraphExtension(pi: ExtensionAPI): void {
 	let initializer: AbortController | undefined;
-	pi.on("session_shutdown", () => initializer?.abort());
+	let setup: Promise<void> | undefined;
+	pi.on("session_shutdown", (event) => {
+		// Session replacement waits for worktree-scoped indexing instead of abandoning its lock.
+		if (event.reason !== "new" && event.reason !== "resume" && event.reason !== "fork") initializer?.abort();
+		return setup;
+	});
 	pi.registerTool({
 		name: "codegraph_explore",
 		label: "CodeGraph explore",
@@ -154,14 +162,17 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 		},
 	});
 	pi.on("session_start", (_event, ctx) => {
-		initializer?.abort();
+		if (setup) return ctx.mode === "tui" ? undefined : setup;
 		const controller = initializer = new AbortController();
-		const setup = initialize(pi, ctx, controller.signal).catch((error) => {
+		setup = initialize(pi, ctx, controller.signal).catch((error) => {
 			if (controller.signal.aborted) return;
 			const message = `pi-codegraph: ${error instanceof Error ? error.message : String(error)}`;
-			ctx.ui.setStatus(STATUS_KEY, "pi-codegraph: setup failed");
+			ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("error", "!")} pi-codegraph: setup failed`);
 			if (ctx.hasUI) ctx.ui.notify(message, "error");
 			else throw new Error(message, { cause: error });
+		}).finally(() => {
+			setup = undefined;
+			initializer = undefined;
 		});
 		if (ctx.mode !== "tui") return setup;
 	});
