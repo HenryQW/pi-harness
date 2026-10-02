@@ -48,9 +48,13 @@ test("checkout admission attributes nested calls to their model-issued root and 
 	const checkout = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-admission-")));
 	t.after(() => rm(checkout, { recursive: true, force: true }));
 	const handlers = new Map<string, (...args: any[]) => any>();
+	let lookup = async () => {};
 	registerCheckoutAdmission({
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
-		exec: async () => ({ stdout: `${checkout}\n`, stderr: "", code: 0, killed: false }),
+		exec: async () => {
+			await lookup();
+			return { stdout: `${checkout}\n`, stderr: "", code: 0, killed: false };
+		},
 	} as unknown as ExtensionAPI, () => true);
 	const ctx = { cwd: checkout } as ExtensionContext;
 	const call = (toolCallId: string, toolName: string, parentToolCallId?: string) =>
@@ -80,6 +84,25 @@ test("checkout admission attributes nested calls to their model-issued root and 
 	handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "script-1", toolName: "codemode", isError: true });
 	assert.equal(await call("edit-3", "edit"), undefined);
 	assert.deepEqual(await call("script-2/3", "bash", "script-2"), blockedBy("edit-3"));
+	handlers.get("tool_result")!({ toolCallId: "edit-3" });
+	// A script can finish before an unawaited nested write completes its admission lookup.
+	let entered!: () => void;
+	let resume!: () => void;
+	const started = new Promise<void>((resolve) => { entered = resolve; });
+	const paused = new Promise<void>((resolve) => { resume = resolve; });
+	lookup = async () => { entered(); await paused; };
+	await call("script-3", "codemode");
+	const lateWrite = call("script-3/1", "write", "script-3");
+	await started;
+	handlers.get("tool_result")!({ toolCallId: "script-3" });
+	resume();
+	assert.deepEqual(await lateWrite, {
+		block: true,
+		reason: "Parent call script-3 already settled; script-3/1 is not admitted.",
+	});
+	handlers.get("tool_execution_end")!({ toolCallId: "script-3/1", parentToolCallId: "script-3" });
+	lookup = async () => {};
+	assert.equal(await call("edit-4", "edit"), undefined);
 });
 
 function loadRoleTools(processLease: string | undefined): { events: string[]; toolCall?: ToolCallHandler; childUmask: number } {

@@ -54,6 +54,10 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 			: !READ_ONLY_TOOLS.has(event.toolName);
 		if (!potentiallyWriting) return;
 		const key = await checkoutKey(pi, ctx);
+		// A codemode result can settle while an unawaited nested call is still resolving its checkout.
+		if (root !== event.toolCallId && !rootByCall.has(root)) {
+			return { block: true, reason: `Parent call ${root} already settled; ${event.toolCallId} is not admitted.` };
+		}
 		const owner = ownerByCheckout.get(key);
 		if (owner && owner !== root) {
 			return {
