@@ -30,13 +30,22 @@ after(() => {
 
 // --- stub pi + helpers ---
 
+interface ToolResult {
+	content: { type: string; text: string }[];
+	details: unknown;
+	structuredContent?: unknown;
+}
+
 interface CapturedTool {
 	name: string;
 	description: string;
 	parameters: unknown;
+	outputSchema: unknown;
+	exposure?: string;
+	annotations?: Record<string, boolean>;
 	promptSnippet?: string;
 	promptGuidelines?: string[];
-	execute: (...args: unknown[]) => Promise<{ content: { type: string; text: string }[]; details: unknown }>;
+	execute: (...args: unknown[]) => Promise<ToolResult>;
 	renderResult: (
 		result: { content: { type: string; text: string }[]; details: unknown },
 		options: { expanded: boolean },
@@ -75,6 +84,40 @@ function makePi(commands: object[] = []): {
 			return captured.sessionStart;
 		},
 	};
+}
+
+/** Parse the model-facing text and prove the programmatic result is the same
+ *  value and matches the declared output schema. */
+function structured(tool: CapturedTool, result: ToolResult): any {
+	const parsed = JSON.parse(result.content[0]!.text);
+	assert.deepEqual(result.structuredContent, parsed, "structuredContent must equal the text result");
+	assert.equal(Value.Check(tool.outputSchema as any, result.structuredContent), true, `structuredContent violates outputSchema: ${JSON.stringify([...Value.Errors(tool.outputSchema as any, result.structuredContent)].slice(0, 3))}`);
+	return parsed;
+}
+
+/** Run one script in the installed codemode sandbox against `tool`, routing
+ *  nested calls the way Pi's agent loop does: thrown errors become `isError`
+ *  results. Returns the script's returned value. */
+async function runCodemodeScript(tool: CapturedTool, code: string, ctx: object): Promise<any> {
+	const { executeCodemode } = await import(new URL("./extensions/codemode/execute.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+	let calls = 0;
+	const toolContext = {
+		tools: [tool],
+		sessionManager: { getBranch: () => [] },
+		async executeTool(name: string, args: unknown, options: { signal?: AbortSignal }) {
+			const id = `codemode/${++calls}`;
+			try {
+				return { toolCall: { id, name, arguments: args }, result: await tool.execute(id, args, options.signal, undefined, ctx), isError: false };
+			} catch (error) {
+				const text = error instanceof Error ? error.message : String(error);
+				return { toolCall: { id, name, arguments: args }, result: { content: [{ type: "text", text }], details: {} }, isError: true };
+			}
+		},
+	};
+	const result = await executeCodemode("codemode", { code }, undefined, undefined, toolContext);
+	const output = result.content.map((part: { text?: string }) => part.text ?? "").join("");
+	assert.notEqual(result.isError, true, output);
+	return JSON.parse(output.slice(output.indexOf("Output:\n") + "Output:\n".length));
 }
 
 function writeSession(relName: string, lines: object[]): string {
@@ -178,6 +221,8 @@ describe("session_search entry point", () => {
 
 		const tool = (pi as any).tool as CapturedTool;
 		assert.equal(tool.name, "session_search");
+		assert.equal(tool.exposure, undefined, "search stays direct: declared and callable while active");
+		assert.deepEqual(tool.annotations, { readOnlyHint: true, openWorldHint: false });
 		assert.equal(tool.promptSnippet, "Search past Pi sessions for prior decisions and context");
 		assert.deepEqual(tool.promptGuidelines, [
 			"Use session_search only when the user explicitly asks about past Pi sessions, historical decisions, or repeated work not available in the current conversation. Do not use it for current-session continuation or ordinary repository inspection.",
@@ -209,7 +254,7 @@ describe("session_search entry point", () => {
 		const ctx = { sessionManager: {} };
 
 		const browse = await tool.execute("t1", {}, undefined, undefined, ctx);
-		const browseResult = JSON.parse(browse.content[0].text);
+		const browseResult = structured(tool, browse);
 		assert.equal(browseResult.mode, "browse");
 		assert.equal(browseResult.sessions.length, 2);
 		assert.ok(browseResult.sessions[0].path.startsWith(agentDir));
@@ -219,7 +264,7 @@ describe("session_search entry point", () => {
 		// Discovery returns only indexed metadata and snippets. Its path and
 		// matchMessageId identify the follow-up scroll target.
 		const disc = await tool.execute("t2", { query: "auth refactor" }, undefined, undefined, ctx);
-		const discResult = JSON.parse(disc.content[0].text);
+		const discResult = structured(tool, disc);
 		assert.equal(discResult.mode, "discovery");
 		assert.ok(discResult.results.length >= 1);
 		const top = discResult.results[0];
@@ -230,7 +275,7 @@ describe("session_search entry point", () => {
 
 		// Read mode via sessionId.
 		const read = await tool.execute("t3", { sessionId: s1 }, undefined, undefined, ctx);
-		const readResult = JSON.parse(read.content[0].text);
+		const readResult = structured(tool, read);
 		assert.equal(readResult.mode, "read");
 		assert.equal(readResult.totalMessages, 4);
 
@@ -242,7 +287,7 @@ describe("session_search entry point", () => {
 			undefined,
 			ctx,
 		);
-		const scrollResult = JSON.parse(scroll.content[0].text);
+		const scrollResult = structured(tool, scroll);
 		assert.equal(scrollResult.mode, "scroll");
 		assert.equal(scrollResult.messages.at(-1).entryId, "e04"); // window extends past the anchor
 		assert.equal(scrollResult.messages.find((m: { entryId: string }) => m.entryId === "e03").anchor, true);
@@ -312,7 +357,7 @@ describe("session_search entry point", () => {
 		]);
 		const res = await tool.execute("tr", { sessionId: s }, undefined, undefined, { sessionManager: {} });
 		assert.ok(res.content[0].text.length <= 50_000, "serialized READ must respect the 50k budget");
-		const parsed = JSON.parse(res.content[0].text); // valid JSON
+		const parsed = structured(tool, res); // valid JSON, and the bounded shape matches the schema
 		assert.equal(parsed.mode, "read");
 		assert.equal(parsed.totalMessages, 8);
 		assert.equal(parsed.branchTip, "e08", "branch tip survives character truncation");
@@ -334,7 +379,7 @@ describe("session_search entry point", () => {
 		]);
 		const scroll = await tool.execute("ts", { sessionId: sBig, aroundMessageId: "e03", window: 5 }, undefined, undefined, { sessionManager: {} });
 		assert.ok(scroll.content[0].text.length <= 50_000, "serialized SCROLL must respect the 50k budget");
-		const scrollParsed = JSON.parse(scroll.content[0].text);
+		const scrollParsed = structured(tool, scroll);
 		assert.equal(scrollParsed.mode, "scroll");
 		assert.equal(scrollParsed.branchTip, "e06", "branch tip exposed as scroll cursor");
 		assert.equal(scrollParsed.contentTruncated, true);
@@ -372,16 +417,38 @@ describe("session_search entry point", () => {
 		assert.equal(parsed.messages[0].timestamp.length, 128);
 	});
 
-	it("errors return success:false instead of throwing", async () => {
+	it("errors are failed tool results, not success-shaped JSON", async () => {
 		const mod = await import(`../extensions/session-recall.ts?bust=${Date.now()}`);
 		const pi = makePi();
 		mod.default(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
-		const res = await tool.execute("t5", { sessionId: "/nonexistent/file.jsonl" }, undefined, undefined, {
-			sessionManager: {},
+		const ctx = { sessionManager: {} };
+		await assert.rejects(tool.execute("t5", { sessionId: "/nonexistent/file.jsonl" }, undefined, undefined, ctx), /session file not found/);
+		await assert.rejects(tool.execute("t5b", { scope: "all" }, undefined, undefined, ctx), /requires operation/);
+	});
+
+	it("codemode scripts receive the structured result and reject on failure", async () => {
+		clearRecallState();
+		const pi = makePi();
+		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-codemode`);
+		register(pi as never);
+		const tool = (pi as any).tool as CapturedTool;
+		const session = writeSimpleSession("codemode/session.jsonl", {
+			id: "codemode", cwd: "/tmp", timestamp: "2026-02-03T00:00:00.000Z", text: "codemode structured marker",
 		});
-		const parsed = JSON.parse(res.content[0].text);
-		assert.equal(parsed.success, false);
+		const value = await runCodemodeScript(tool, `
+			const browse = await tools.session_search({});
+			const hits = await tools.session_search({ query: "codemode structured marker" });
+			let rejected = null;
+			try { await tools.session_search({ sessionId: "/nonexistent/file.jsonl" }); } catch (error) { rejected = error.message; }
+			return { browseMode: browse.mode, paths: browse.sessions.map((s) => s.path), hitPath: hits.results[0]?.path, rejected };
+		`, { sessionManager: {} });
+		assert.deepEqual(value, {
+			browseMode: "browse",
+			paths: [session],
+			hitPath: session,
+			rejected: "session file not found: /nonexistent/file.jsonl",
+		});
 	});
 
 	it("rejects sessionId outside the sessions directory (bhGOq)", async () => {
@@ -396,10 +463,11 @@ describe("session_search entry point", () => {
 			JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "t", message: { role: "user", content: [{ type: "text", text: "secret contents" }] } }),
 		].join("\n"));
 		for (const attempt of [outside, path.join(agentDir, "../..", "etc", "hosts")]) {
-			const res = await tool.execute("t6", { sessionId: attempt }, undefined, undefined, { sessionManager: {} });
-			const parsed = JSON.parse(res.content[0].text);
-			assert.equal(parsed.success, false, `should refuse ${attempt}`);
-			assert.ok(/sessions directory|not found/.test(parsed.message), `refusal message for ${attempt}: ${parsed.message}`);
+			await assert.rejects(
+				tool.execute("t6", { sessionId: attempt }, undefined, undefined, { sessionManager: {} }),
+				/sessions directory|not found/,
+				`should refuse ${attempt}`,
+			);
 		}
 	});
 
@@ -659,7 +727,7 @@ describe("session_search entry point", () => {
 			const first = await tool.execute("prepare", { operation: "prepare-pattern-miner", scope: "repository", limit: 5 }, undefined, undefined, context);
 			const second = await tool.execute("prepare-again", { operation: "prepare-pattern-miner", scope: "repository", limit: 5 }, undefined, undefined, context);
 			assert.equal(first.content[0].text, second.content[0].text, "repeated preparation must serialize identically");
-			const prepared = JSON.parse(first.content[0].text);
+			const prepared = structured(tool, first);
 
 			assert.deepEqual(prepared.scope, { kind: "repository", gitRoot: fs.realpathSync(root), requestedLimit: 5, sampledCount: 5 });
 			assert.deepEqual(prepared.sync, { walkComplete: true, backlogRemaining: 0, complete: true });
@@ -705,17 +773,17 @@ describe("session_search entry point", () => {
 			const call = new AbortController();
 			call.abort();
 			const context = new AbortController();
-			const response = await (pi as any).tool.execute(
-				"prepare-cancel",
-				{ operation: "prepare-pattern-miner", scope: "repository" },
-				call.signal,
-				undefined,
-				{ cwd: root, signal: context.signal, sessionManager: { getSessionFile: () => undefined } },
+			await assert.rejects(
+				(pi as any).tool.execute(
+					"prepare-cancel",
+					{ operation: "prepare-pattern-miner", scope: "repository" },
+					call.signal,
+					undefined,
+					{ cwd: root, signal: context.signal, sessionManager: { getSessionFile: () => undefined } },
+				),
+				/Repository inventory cancelled/,
 			);
-			const result = JSON.parse(response.content[0].text);
 			assert.equal(context.signal.aborted, false, "context signal remains live");
-			assert.equal(result.success, false);
-			assert.match(result.error, /Repository inventory cancelled/);
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
@@ -734,16 +802,17 @@ describe("session_search entry point", () => {
 			const tool = (pi as any).tool as CapturedTool;
 			const context = { cwd, sessionManager: { getSessionFile: () => undefined } };
 
-			const global = JSON.parse((await tool.execute("all", { operation: "prepare-pattern-miner", scope: "all" }, undefined, undefined, context)).content[0].text);
+			const global = structured(tool, await tool.execute("all", { operation: "prepare-pattern-miner", scope: "all" }, undefined, undefined, context));
 			assert.equal(global.mode, "prepare-pattern-miner");
 			assert.deepEqual(global.scope, { kind: "all", gitRoot: null, requestedLimit: 10, sampledCount: 1 });
 			assert.equal(global.inventory.available, false);
 			assert.equal(global.inventory.reason, "not-a-git-repository");
 			assert.equal(global.sessions.length, 1);
 
-			const repository = JSON.parse((await tool.execute("repository", { operation: "prepare-pattern-miner", scope: "repository" }, undefined, undefined, context)).content[0].text);
-			assert.equal(repository.success, false);
-			assert.match(repository.error, /requires a Git repository/);
+			await assert.rejects(
+				tool.execute("repository", { operation: "prepare-pattern-miner", scope: "repository" }, undefined, undefined, context),
+				/requires a Git repository/,
+			);
 
 			const conflicts = [
 				{ query: "x" },
@@ -753,13 +822,13 @@ describe("session_search entry point", () => {
 				{ window: 2 },
 			];
 			for (const conflict of conflicts) {
-				const parsed = JSON.parse((await tool.execute("invalid", { operation: "prepare-pattern-miner", scope: "all", ...conflict }, undefined, undefined, context)).content[0].text);
-				assert.equal(parsed.success, false);
-				assert.match(parsed.error, /does not accept/);
+				await assert.rejects(
+					tool.execute("invalid", { operation: "prepare-pattern-miner", scope: "all", ...conflict }, undefined, undefined, context),
+					/does not accept/,
+				);
 			}
 			for (const params of [{ scope: "all" }, { operation: "prepare-pattern-miner" }]) {
-				const parsed = JSON.parse((await tool.execute("invalid-shape", params, undefined, undefined, context)).content[0].text);
-				assert.equal(parsed.success, false);
+				await assert.rejects(tool.execute("invalid-shape", params, undefined, undefined, context));
 			}
 		} finally {
 			fs.rmSync(cwd, { recursive: true, force: true });
@@ -942,7 +1011,7 @@ describe("session_search entry point", () => {
 					cwd: root,
 					sessionManager: { getSessionFile: () => undefined },
 				});
-				prepared = JSON.parse(response.content[0].text);
+				prepared = structured(tool, response);
 			} finally {
 				fs.openSync = realOpenSync;
 			}

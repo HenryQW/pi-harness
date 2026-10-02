@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { getPreparationRows, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
@@ -268,13 +268,130 @@ interface ToolParams {
 	limit?: number;
 }
 
+// Output schema: one variant per mode, discriminated by `mode`. Codemode scripts
+// receive this structured value; the model receives the identical JSON text.
+const Nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
+const WindowMessageSchema = Type.Object({
+	entryId: Type.String(),
+	role: Type.String(),
+	content: Type.String(),
+	timestamp: Type.String(),
+	anchor: Type.Optional(Type.Boolean()),
+});
+const SyncWarningSchema = Type.Union([
+	Type.Object({ kind: Type.Literal("incomplete-walk") }),
+	Type.Object({ kind: Type.Literal("sync-failed"), error: Type.String() }),
+]);
+/** Character-level trimming to the 50,000-character result budget. */
+const contentTruncated = Type.Optional(Type.Boolean());
+const OUTPUT_SCHEMA = Type.Union([
+	Type.Object({
+		mode: Type.Literal("browse"),
+		sessions: Type.Array(Type.Object({
+			path: Type.String(),
+			cwd: Type.String(),
+			name: Type.Optional(Type.String()),
+			startedAt: Type.Optional(Type.String()),
+			preview: Type.Optional(Type.String()),
+		})),
+		syncWarning: Type.Optional(SyncWarningSchema),
+		contentTruncated,
+	}),
+	Type.Object({
+		mode: Type.Literal("discovery"),
+		query: Type.String(),
+		results: Type.Array(Type.Object({
+			path: Type.String(),
+			snippet: Type.String(),
+			rank: Type.Number(),
+			matchMessageId: Type.String(),
+			role: Type.String(),
+			timestamp: Type.String(),
+			cwd: Type.Optional(Type.String()),
+			name: Type.Optional(Type.String()),
+			startedAt: Type.Optional(Type.String()),
+		})),
+		backlogRemaining: Type.Number(),
+		syncWarning: Type.Optional(SyncWarningSchema),
+		contentTruncated,
+	}),
+	Type.Object({
+		mode: Type.Literal("read"),
+		sessionId: Type.String(),
+		messages: Type.Array(WindowMessageSchema),
+		totalMessages: Type.Number(),
+		truncated: Type.Boolean(),
+		branchTip: Nullable(Type.String()),
+		contentTruncated,
+	}),
+	Type.Object({
+		mode: Type.Literal("scroll"),
+		sessionId: Type.String(),
+		branchTip: Type.String(),
+		messagesBefore: Type.Number(),
+		messagesAfter: Type.Number(),
+		messages: Type.Array(WindowMessageSchema),
+		contentTruncated,
+	}),
+	Type.Object({
+		mode: Type.Literal("prepare-pattern-miner"),
+		scope: Type.Object({
+			kind: StringEnum(["repository", "all"] as const),
+			gitRoot: Nullable(Type.String()),
+			requestedLimit: Type.Number(),
+			sampledCount: Type.Number(),
+		}),
+		sync: Type.Object({ walkComplete: Type.Boolean(), backlogRemaining: Type.Number(), complete: Type.Boolean() }),
+		sessions: Type.Array(Type.Object({
+			path: Type.String(),
+			cwd: Type.String(),
+			name: Nullable(Type.String()),
+			startedAt: Nullable(Type.String()),
+			lineageId: Type.String(),
+			branchTip: Nullable(Type.String()),
+			totalMessages: Nullable(Type.Number()),
+			truncated: Type.Boolean(),
+			contentTruncated: Type.Boolean(),
+			messages: Type.Array(WindowMessageSchema),
+			error: Type.Optional(Type.Object({
+				kind: StringEnum(["missing", "oversized", "unreadable"] as const),
+				message: Type.String(),
+			})),
+		})),
+		inventory: Type.Object({
+			available: Type.Boolean(),
+			reason: Type.Optional(StringEnum(["not-a-git-repository", "inventory-failed"] as const)),
+			provenance: Type.Optional(Type.Object({
+				packageScripts: Type.Literal("git-index"),
+				executableScripts: Type.Literal("git-index"),
+				agentInstructions: Type.Literal("git-index"),
+				skills: Type.Literal("pi-effective-registry"),
+			})),
+			worktreeVerified: Type.Literal(false),
+			packageScripts: Type.Array(Type.Object({ path: Type.String(), name: Type.String(), command: Type.String() })),
+			executableScripts: Type.Array(Type.String()),
+			skills: Type.Array(Type.Object({ name: Type.String(), description: Type.String(), sourcePath: Type.String() })),
+			agentInstructions: Type.Array(Type.String()),
+			truncated: Type.Boolean(),
+			omittedCounts: Type.Object({
+				packageScripts: Type.Number(),
+				executableScripts: Type.Number(),
+				skills: Type.Number(),
+				agentInstructions: Type.Number(),
+			}),
+		}),
+		contentTruncated: Type.Boolean(),
+	}),
+]);
+
 const DESCRIPTION = `Search past Pi sessions locally with FTS5; returns indexed metadata and snippets.
 
 - \`operation: "prepare-pattern-miner"\` + \`scope\`: prepare one bounded corpus and repository inventory.
 - \`query\`: discover matches. Prefer distinctive identifiers or uncommon terms; multi-word queries are AND. Use \`OR\`/\`NOT\` for Boolean queries and quotes only when exact wording is known.
 - \`sessionId\` + \`aroundMessageId\`: scroll ±\`window\`; retain \`branchTip\` across forks.
 - \`sessionId\` alone: read; no args: browse recent sessions.
-- Discovery returns metadata and snippets. Use a result's \`path\` and \`matchMessageId\` for a follow-up scroll.`;
+- Discovery returns metadata and snippets. Use a result's \`path\` and \`matchMessageId\` for a follow-up scroll.
+- Invalid arguments, refused or missing session files, and failed preparation are tool errors.`;
 
 export default function (pi: ExtensionAPI): void {
 	// Best-effort sync at startup, deferred so the synchronous walk + SQLite
@@ -307,6 +424,8 @@ export default function (pi: ExtensionAPI): void {
 			window: Type.Optional(Type.Number({ description: "Scroll window radius, [1,20], default 5." })),
 			limit: Type.Optional(Type.Number({ description: "Max results, [1,10]. Defaults to 10 for preparation and 3 otherwise." })),
 		}, { additionalProperties: false }),
+		outputSchema: OUTPUT_SCHEMA,
+		annotations: { readOnlyHint: true, openWorldHint: false },
 		renderResult(result, { expanded }, theme) {
 			const output = result.content.find((part) => part.type === "text")?.text ?? "";
 			const styledOutput = theme.fg("toolOutput", output);
@@ -322,164 +441,163 @@ export default function (pi: ExtensionAPI): void {
 				invalidate() {},
 			};
 		},
+		// Failures throw: Pi marks the result as an error for the model, and
+		// codemode scripts reject instead of receiving a success-shaped value.
 		async execute(_toolCallId, rawParams: ToolParams, signal, _onUpdate, ctx) {
-			try {
-				if (rawParams.operation !== undefined && rawParams.operation !== "prepare-pattern-miner") {
-					throw new Error("Unsupported session_search operation.");
+			if (rawParams.operation !== undefined && rawParams.operation !== "prepare-pattern-miner") {
+				throw new Error("Unsupported session_search operation.");
+			}
+			if (rawParams.scope !== undefined && rawParams.operation === undefined) {
+				throw new Error("scope requires operation: prepare-pattern-miner.");
+			}
+			if (rawParams.operation === "prepare-pattern-miner") {
+				const incompatible = (["query", "sessionId", "aroundMessageId", "branchTip", "window"] as const)
+					.filter((key) => rawParams[key] !== undefined);
+				if (incompatible.length > 0) {
+					throw new Error(`prepare-pattern-miner does not accept: ${incompatible.join(", ")}.`);
 				}
-				if (rawParams.scope !== undefined && rawParams.operation === undefined) {
-					throw new Error("scope requires operation: prepare-pattern-miner.");
+				if (rawParams.scope !== "repository" && rawParams.scope !== "all") {
+					throw new Error("prepare-pattern-miner requires scope: repository or all.");
 				}
-				if (rawParams.operation === "prepare-pattern-miner") {
-					const incompatible = (["query", "sessionId", "aroundMessageId", "branchTip", "window"] as const)
-						.filter((key) => rawParams[key] !== undefined);
-					if (incompatible.length > 0) {
-						throw new Error(`prepare-pattern-miner does not accept: ${incompatible.join(", ")}.`);
-					}
-					if (rawParams.scope !== "repository" && rawParams.scope !== "all") {
-						throw new Error("prepare-pattern-miner requires scope: repository or all.");
-					}
-					const limit = clamp(rawParams.limit, 1, 10, 10);
-					const inventory = await inventoryRepository(
-						pi,
-						{ cwd: ctx.cwd, signal },
-						rawParams.scope === "repository" ? "required" : "optional",
-					);
-					const sync = syncSessions(sessionsDir(), dbPath());
-					const currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
-					const rows = getPreparationRows(dbPath(), {
-						limit,
-						...(rawParams.scope === "repository" ? { repositoryRoot: inventory.gitRoot! } : {}),
-						currentSessionPath,
-					});
-					return textResult(buildPreparationResult(rawParams.scope, limit, inventory.gitRoot, sync, rows, inventory));
-				}
-
-				// LLMs sometimes send numeric ids/queries despite the string schema.
-				const params: ToolParams = {
-					query: rawParams.query != null ? String(rawParams.query) : undefined,
-					sessionId: rawParams.sessionId != null ? String(rawParams.sessionId) : undefined,
-					aroundMessageId: rawParams.aroundMessageId != null ? String(rawParams.aroundMessageId) : undefined,
-					branchTip: rawParams.branchTip != null ? String(rawParams.branchTip) : undefined,
-					window: rawParams.window,
-					limit: rawParams.limit,
-				};
-				let sessionId = params.sessionId?.trim() || undefined;
-				const anchor = params.aroundMessageId?.trim() || undefined;
-				if (sessionId) {
-					// Trust boundary: canonical target must live under the real
-					// sessions dir (realpath defeats symlink escapes).
-					try {
-						const resolved = realpathSync(sessionId);
-						const root = realpathSync(sessionsDir());
-						if (!resolved.startsWith(root + sep) || !resolved.endsWith(".jsonl")) {
-							return textResult({ success: false, message: "sessionId must be a .jsonl file under the Pi sessions directory" });
-						}
-						// Rebind to the validated canonical path so downstream reads cannot
-						// be redirected by a symlink swapped in after validation (TOCTOU).
-						sessionId = resolved;
-					} catch {
-						return textResult({ success: false, message: `session file not found: ${sessionId}` });
-					}
-				}
-
-				// --- SCROLL ---
-				if (sessionId && anchor) {
-					const w = clamp(params.window, 1, 20, 5);
-					const branchTip = params.branchTip?.trim() || undefined;
-					const win = getWindow(sessionId, anchor, w, branchTip ? { branchTip } : undefined);
-					const base = { mode: "scroll", sessionId, branchTip: win.branchTip, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
-					let result: Record<string, unknown> = { ...base, messages: win.messages };
-					if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && win.messages.length > 0) {
-						result = boundContent(
-							(cap) => ({ ...base, messages: cap === null ? [] : truncateContent(win.messages, cap), contentTruncated: true }),
-							Math.max(...win.messages.map((m) => m.content.length), 0),
-							OUTPUT_CHAR_BUDGET,
-						);
-					}
-					return textResult(result);
-				}
-
-				// --- READ ---
-				if (sessionId) {
-					const r = readSession(sessionId);
-					let result: Record<string, unknown> = { mode: "read", sessionId, ...r };
-					if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && r.messages.length > 0) {
-						// contentTruncated is character-level truncation, distinct from
-						// the message-count `truncated`.
-						result = boundContent(
-							(cap) => ({
-								mode: "read",
-								sessionId,
-								branchTip: r.branchTip,
-								totalMessages: r.totalMessages,
-								truncated: r.truncated,
-								messages: cap === null ? [] : truncateContent(r.messages, cap),
-								contentTruncated: true,
-							}),
-							Math.max(...r.messages.map((m) => m.content.length), 0),
-							OUTPUT_CHAR_BUDGET,
-						);
-					}
-					return textResult(result);
-				}
-
-				// Lazy sync: drains any backlog the capped startup pass left. A partial
-				// or failed sync degrades to a warning; the stale index stays usable.
-				let syncWarning: { kind: "incomplete-walk" } | { kind: "sync-failed"; error: string } | undefined;
-				try {
-					const sync = syncSessions(sessionsDir(), dbPath());
-					if (!sync.walkComplete) syncWarning = { kind: "incomplete-walk" };
-				} catch (error) {
-					syncWarning = { kind: "sync-failed", error: (error instanceof Error ? error.message : String(error)).slice(0, 512) };
-				}
-
-				// --- BROWSE ---
-				if (!params.query?.trim()) {
-					const rows = getSessionRows(dbPath(), clamp(params.limit, 1, 10, 3));
-					return textResult({ mode: "browse", sessions: rows, ...(syncWarning ? { syncWarning } : {}) });
-				}
-
-				// --- DISCOVERY ---
-				const limit = clamp(params.limit, 1, 10, 3);
-
-				// Exclude the whole current file when the session manager provides it.
-				// A missing or failing manager leaves discovery usable without exclusion.
-				let currentSessionPath: string | undefined;
-				try {
-					currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
-				} catch {
-					// Guard unavailable → continue without exclusion.
-				}
-
-				const { hits, backlogRemaining } = searchIndex(dbPath(), params.query, {
+				const limit = clamp(rawParams.limit, 1, 10, 10);
+				const inventory = await inventoryRepository(
+					pi,
+					{ cwd: ctx.cwd, signal },
+					rawParams.scope === "repository" ? "required" : "optional",
+				);
+				const sync = syncSessions(sessionsDir(), dbPath());
+				const currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
+				const rows = getPreparationRows(dbPath(), {
 					limit,
+					...(rawParams.scope === "repository" ? { repositoryRoot: inventory.gitRoot! } : {}),
 					currentSessionPath,
 				});
-
-				const resultQuery = params.query!.trim().slice(0, MAX_QUERY_CHARS);
-				const results = hits.map((hit) => ({
-					path: hit.path,
-					snippet: hit.snippet,
-					rank: hit.rank,
-					matchMessageId: hit.entryId,
-					role: hit.role,
-					timestamp: hit.timestamp,
-					cwd: hit.cwd,
-					name: hit.name,
-					startedAt: hit.startedAt,
-				}));
-				return textResult({
-					mode: "discovery",
-					query: resultQuery,
-					results,
-					backlogRemaining,
-					...(syncWarning ? { syncWarning } : {}),
-				});
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				return textResult({ success: false, error: message });
+				return textResult(buildPreparationResult(rawParams.scope, limit, inventory.gitRoot, sync, rows, inventory));
 			}
+
+			// LLMs sometimes send numeric ids/queries despite the string schema.
+			const params: ToolParams = {
+				query: rawParams.query != null ? String(rawParams.query) : undefined,
+				sessionId: rawParams.sessionId != null ? String(rawParams.sessionId) : undefined,
+				aroundMessageId: rawParams.aroundMessageId != null ? String(rawParams.aroundMessageId) : undefined,
+				branchTip: rawParams.branchTip != null ? String(rawParams.branchTip) : undefined,
+				window: rawParams.window,
+				limit: rawParams.limit,
+			};
+			let sessionId = params.sessionId?.trim() || undefined;
+			const anchor = params.aroundMessageId?.trim() || undefined;
+			if (sessionId) {
+				// Trust boundary: canonical target must live under the real
+				// sessions dir (realpath defeats symlink escapes).
+				let resolved: string;
+				let root: string;
+				try {
+					resolved = realpathSync(sessionId);
+					root = realpathSync(sessionsDir());
+				} catch {
+					throw new Error(`session file not found: ${sessionId}`);
+				}
+				if (!resolved.startsWith(root + sep) || !resolved.endsWith(".jsonl")) {
+					throw new Error("sessionId must be a .jsonl file under the Pi sessions directory");
+				}
+				// Rebind to the validated canonical path so downstream reads cannot
+				// be redirected by a symlink swapped in after validation (TOCTOU).
+				sessionId = resolved;
+			}
+
+			// --- SCROLL ---
+			if (sessionId && anchor) {
+				const w = clamp(params.window, 1, 20, 5);
+				const branchTip = params.branchTip?.trim() || undefined;
+				const win = getWindow(sessionId, anchor, w, branchTip ? { branchTip } : undefined);
+				const base = { mode: "scroll", sessionId, branchTip: win.branchTip, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
+				let result: Record<string, unknown> = { ...base, messages: win.messages };
+				if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && win.messages.length > 0) {
+					result = boundContent(
+						(cap) => ({ ...base, messages: cap === null ? [] : truncateContent(win.messages, cap), contentTruncated: true }),
+						Math.max(...win.messages.map((m) => m.content.length), 0),
+						OUTPUT_CHAR_BUDGET,
+					);
+				}
+				return textResult(result);
+			}
+
+			// --- READ ---
+			if (sessionId) {
+				const r = readSession(sessionId);
+				let result: Record<string, unknown> = { mode: "read", sessionId, ...r };
+				if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && r.messages.length > 0) {
+					// contentTruncated is character-level truncation, distinct from
+					// the message-count `truncated`.
+					result = boundContent(
+						(cap) => ({
+							mode: "read",
+							sessionId,
+							branchTip: r.branchTip,
+							totalMessages: r.totalMessages,
+							truncated: r.truncated,
+							messages: cap === null ? [] : truncateContent(r.messages, cap),
+							contentTruncated: true,
+						}),
+						Math.max(...r.messages.map((m) => m.content.length), 0),
+						OUTPUT_CHAR_BUDGET,
+					);
+				}
+				return textResult(result);
+			}
+
+			// Lazy sync: drains any backlog the capped startup pass left. A partial
+			// or failed sync degrades to a warning; the stale index stays usable.
+			let syncWarning: { kind: "incomplete-walk" } | { kind: "sync-failed"; error: string } | undefined;
+			try {
+				const sync = syncSessions(sessionsDir(), dbPath());
+				if (!sync.walkComplete) syncWarning = { kind: "incomplete-walk" };
+			} catch (error) {
+				syncWarning = { kind: "sync-failed", error: (error instanceof Error ? error.message : String(error)).slice(0, 512) };
+			}
+
+			// --- BROWSE ---
+			if (!params.query?.trim()) {
+				const rows = getSessionRows(dbPath(), clamp(params.limit, 1, 10, 3));
+				return textResult({ mode: "browse", sessions: rows, ...(syncWarning ? { syncWarning } : {}) });
+			}
+
+			// --- DISCOVERY ---
+			const limit = clamp(params.limit, 1, 10, 3);
+
+			// Exclude the whole current file when the session manager provides it.
+			// A missing or failing manager leaves discovery usable without exclusion.
+			let currentSessionPath: string | undefined;
+			try {
+				currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
+			} catch {
+				// Guard unavailable → continue without exclusion.
+			}
+
+			const { hits, backlogRemaining } = searchIndex(dbPath(), params.query, {
+				limit,
+				currentSessionPath,
+			});
+
+			const resultQuery = params.query!.trim().slice(0, MAX_QUERY_CHARS);
+			const results = hits.map((hit) => ({
+				path: hit.path,
+				snippet: hit.snippet,
+				rank: hit.rank,
+				matchMessageId: hit.entryId,
+				role: hit.role,
+				timestamp: hit.timestamp,
+				cwd: hit.cwd,
+				name: hit.name,
+				startedAt: hit.startedAt,
+			}));
+			return textResult({
+				mode: "discovery",
+				query: resultQuery,
+				results,
+				backlogRemaining,
+				...(syncWarning ? { syncWarning } : {}),
+			});
 		},
 	});
 }
@@ -498,17 +616,15 @@ function textResult(result: unknown) {
 			const array = ["results", "sessions", "messages"]
 				.map((key) => copy[key])
 				.find((value): value is unknown[] => Array.isArray(value) && value.length > 0);
-			if (!array) {
-				bounded = { success: false, error: "session_search result metadata exceeds output budget" };
-				text = JSON.stringify(bounded);
-				break;
-			}
+			if (!array) throw new Error("session_search result metadata exceeds output budget");
 			array.pop();
 			text = JSON.stringify(bounded);
 		}
 	}
+	// structuredContent is the parsed text, so scripts and the model see one value.
 	return {
 		content: [{ type: "text" as const, text }],
 		details: bounded,
+		structuredContent: JSON.parse(text),
 	};
 }
