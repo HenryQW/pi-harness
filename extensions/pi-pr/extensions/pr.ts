@@ -465,6 +465,7 @@ export default function pullRequestExtension(
 		description: "Run one guarded action for the /pr branch-update route.",
 		parameters: flatRoot(UpdateBranchActions),
 		executionMode: "sequential",
+		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(UpdateBranchActions, raw);
 			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, async (selected) => {
@@ -487,6 +488,7 @@ export default function pullRequestExtension(
 		description: "Run one guarded action for the /pr creation route.",
 		parameters: flatRoot(CreateActions),
 		executionMode: "sequential",
+		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(CreateActions, raw);
 			return executeWorkflowAction(params.runId, "create", ctx, signal, async (selected) => {
@@ -512,6 +514,7 @@ export default function pullRequestExtension(
 		description: "Inspect, commit, validate, and publish only reviewed local work for the /pr route.",
 		parameters: flatRoot(WorkActions),
 		executionMode: "sequential",
+		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(WorkActions, raw);
 			return executeWorkflowAction(params.runId, "publish-work", ctx, signal, async (selected) => {
@@ -535,6 +538,7 @@ export default function pullRequestExtension(
 		description: "Run one guarded action for the /pr feedback route.",
 		parameters: flatRoot(SweepActions),
 		executionMode: "sequential",
+		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(SweepActions, raw);
 			return executeWorkflowAction(params.runId, "sweep", ctx, signal, async (selected) => {
@@ -563,6 +567,7 @@ export default function pullRequestExtension(
 		description: "Run one guarded action for the /pr failed-CI route.",
 		parameters: flatRoot(FixCiActions),
 		executionMode: "sequential",
+		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(FixCiActions, raw);
 			return executeWorkflowAction(params.runId, "fix-ci", ctx, signal, async (selected) => {

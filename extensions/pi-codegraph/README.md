@@ -35,6 +35,8 @@ Then launch `pi` in a linked worktree. When the primary checkout has an index, p
 
 `codegraph_explore` takes a `query`, an optional `maxFiles` (default 12), and an optional `projectPath` (defaults to Pi's working directory). It runs `codegraph explore --path <projectPath> --max-files <maxFiles> <query>` and returns the output as-is. If the command exits with an error or runs longer than 120 seconds, the tool call fails and shows the end of CodeGraph's error output.
 
+The tool works the same with Pi's `codemode`, including `codemode.mode` set to `only`. Scripts call `tools.codegraph_explore({ query })` and receive CodeGraph's text output as a string, because the tool declares no `outputSchema`. Scripts can split, search, or slice that text before printing a summary. Only what the script prints reaches the model, so print the whole string when the complete source is needed.
+
 ## Flow
 
 - A missing worktree index is built only when the primary checkout already has `.codegraph/codegraph.db`.

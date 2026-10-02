@@ -340,7 +340,7 @@ function harness(options: {
 	};
 }
 
-test("registers sequential tools with flat object roots and strict actions", async () => {
+test("registers sequential model-only tools with flat object roots and strict actions", async () => {
 	const app = harness({ async load() { return { kind: "inactive" }; } });
 	const expected = new Map([
 		["pi_pr_update_branch", ["rebase", "continue", "publish"]],
@@ -353,6 +353,8 @@ test("registers sequential tools with flat object roots and strict actions", asy
 	assert.deepEqual(app.tools.map(({ name }) => name), [...expected.keys()]);
 	for (const tool of app.tools) {
 		assert.equal(tool.executionMode, "sequential", tool.name);
+		// Codemode scripts must not batch guarded actions or filter their results; `only` mode keeps model-only tools declared.
+		assert.equal(tool.exposure, "model-only", tool.name);
 		// Strict OpenAI-compatible endpoints reject a root without type "object"; Claude Code drops a root union.
 		const schema = tool.parameters as unknown as {
 			type?: string;
