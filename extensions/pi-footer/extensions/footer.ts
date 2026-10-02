@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
 
@@ -177,19 +177,6 @@ function latestResponse(ctx: ExtensionContext): { model: string; thinkingLevel?:
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		const { stopReason, model, thinkingLevel } = entry.message;
 		if (stopReason !== "error" && stopReason !== "aborted") return { model, thinkingLevel };
-	}
-}
-
-function codegraphBadge(status: string, inUse: boolean, theme: Theme): string {
-	if (inUse) return `${theme.fg("accent", "●")} CG`;
-	switch (status) {
-		case "pi-codegraph: indexed": return `${theme.fg("success", "✓")} CG`;
-		case "pi-codegraph: missing": return `${theme.fg("dim", "○")} CG`;
-		case "pi-codegraph: checking index…":
-		case "pi-codegraph: indexing…": return `${theme.fg("warning", "◐")} CG`;
-		case "pi-codegraph: prerequisites missing":
-		case "pi-codegraph: setup failed": return `${theme.fg("error", "!")} CG`;
-		default: return `${theme.fg("warning", "?")} CG`;
 	}
 }
 
@@ -390,8 +377,9 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const openUri = configuredOpenUri(ctx.cwd);
 					const extensionStatuses = data.getExtensionStatuses();
 					const prStatus = sanitizeStatus(extensionStatuses.get("pi-pr") ?? "");
-					const codegraphStatus = extensionStatuses.get("pi-codegraph");
-					const codegraph = codegraphStatus === undefined ? "" : codegraphBadge(codegraphStatus, activeCodegraphCalls.size > 0, theme);
+					const codegraph = activeCodegraphCalls.size > 0
+						? `${theme.fg("accent", "●")} CG`
+						: sanitizeStatus(extensionStatuses.get("pi-codegraph") ?? "");
 					const henryStatuses: string[] = [];
 					const externalStatuses: string[] = [];
 					for (const [key, value] of [...extensionStatuses].sort(([a], [b]) => a.localeCompare(b))) {

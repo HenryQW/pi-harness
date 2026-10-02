@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { promisify } from "node:util";
+import { setImmediate } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import codegraphExtension from "../extensions/codegraph.ts";
 
@@ -30,17 +31,22 @@ async function index(root: string) {
 
 function harness(cwd: string, options: {
 	hasUI?: boolean;
+	mode?: "tui" | "rpc";
 	version?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
 	init?: () => Promise<{ code: number; stdout: string; stderr: string; killed: boolean }>;
 	explore?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
 	onStatus?: (text: string | undefined) => void;
 } = {}) {
-	let start!: (event: unknown, ctx: ExtensionContext) => Promise<void>;
+	let start!: (event: unknown, ctx: ExtensionContext) => Promise<void> | void;
+	let shutdown!: typeof start;
 	const notices: { message: string; level: string }[] = [];
 	const calls: { command: string; args: string[]; cwd: string; timeout?: number }[] = [];
 	let tool!: ToolDefinition;
 	const pi = {
-		on: (name: string, handler: typeof start) => { assert.equal(name, "session_start"); start = handler; },
+		on: (name: string, handler: typeof start) => {
+			if (name === "session_start") start = handler;
+			else if (name === "session_shutdown") shutdown = handler;
+		},
 		registerTool: (definition: ToolDefinition) => { tool = definition; },
 		exec: async (command: string, args: string[], opts: { cwd: string; timeout?: number }) => {
 			calls.push({ command, args, cwd: opts.cwd, ...(args[0] === "explore" && { timeout: opts.timeout }) });
@@ -63,8 +69,10 @@ function harness(cwd: string, options: {
 	const statuses: (string | undefined)[] = [];
 	const ctx = {
 		cwd,
+		mode: options.mode ?? "rpc",
 		hasUI: options.hasUI ?? true,
 		ui: {
+			theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
 			notify: (message: string, level: string) => notices.push({ message, level }),
 			setWidget: (_key: string, content: string | string[] | undefined) => widgets.push({ key: _key, content }),
 			setStatus: (_key: string, text: string | undefined) => { statuses.push(text); options.onStatus?.(text); },
@@ -72,7 +80,7 @@ function harness(cwd: string, options: {
 	} as unknown as ExtensionContext;
 	codegraphExtension(pi);
 	const explore = (params: Record<string, unknown>) => tool.execute("call", params, undefined, undefined, ctx as never);
-	return { start: () => start({}, ctx), explore, tool, notices, calls, widgets, statuses };
+	return { start: () => start({}, ctx), shutdown: () => shutdown({}, ctx), explore, tool, notices, calls, widgets, statuses };
 }
 
 test("initializes an opted-in linked worktree at its root once, including nested launches", async (t) => {
@@ -86,10 +94,70 @@ test("initializes an opted-in linked worktree at its root once, including nested
 	assert.deepEqual(run.calls.filter(({ command, args }) => command === "codegraph" && args[0] === "init"), [
 		{ command: "codegraph", args: ["init", "--yes", worktree], cwd: worktree },
 	]);
-	assert.deepEqual(run.widgets, [{ key: "pi-codegraph", content: ["pi-codegraph: index ready"] }]);
-	assert.ok(run.statuses.includes("pi-codegraph: indexing…"));
-	assert.equal(run.statuses.at(-1), "pi-codegraph: indexed");
+	assert.deepEqual(run.widgets, []);
+	assert.ok(run.statuses.some((text) => text?.includes("codegraph · indexing")));
+	assert.equal(run.statuses.at(-1), undefined);
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
+});
+
+test("TUI indexing does not block footer startup and silently stops its dim animation", async (t) => {
+	const { primary, worktree } = await fixture(t);
+	await index(primary);
+	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const cleared = Promise.withResolvers<void>();
+	let indexing = false;
+	const run = harness(worktree, {
+		mode: "tui",
+		onStatus: (text) => {
+			if (text?.includes("indexing")) indexing = true;
+			else if (indexing && text === undefined) cleared.resolve();
+		},
+		init: async () => {
+			entered.resolve();
+			await release.promise;
+			await index(worktree);
+			return { code: 0, stdout: "", stderr: "", killed: false };
+		},
+	});
+	t.after(() => run.shutdown());
+	assert.equal(run.start(), undefined);
+	await entered.promise;
+	assert.equal(run.statuses.at(-1), "<dim>⠋ codegraph · indexing 0s</dim>");
+	t.mock.timers.tick(100);
+	assert.equal(run.statuses.at(-1), "<dim>⠙ codegraph · indexing 0s</dim>");
+	t.mock.timers.tick(1100);
+	assert.match(run.statuses.at(-1)!, /indexing 1s/);
+	release.resolve();
+	await cleared.promise;
+	await setImmediate();
+	const count = run.statuses.length;
+	t.mock.timers.tick(1000);
+	assert.equal(run.statuses.length, count);
+	assert.deepEqual(run.widgets, []);
+	assert.deepEqual(run.notices, []);
+});
+
+test("shutdown stops a waiting TUI spinner without removing another initializer's lock", async (t) => {
+	const { primary, worktree, lock } = await fixture(t);
+	await index(primary);
+	await mkdir(lock);
+	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
+	const waiting = Promise.withResolvers<void>();
+	const run = harness(worktree, { mode: "tui", onStatus: (text) => {
+		if (text?.includes("waiting for index")) waiting.resolve();
+	} });
+	run.start();
+	await waiting.promise;
+	await run.shutdown();
+	await setImmediate();
+	assert.equal(run.statuses.at(-1), undefined);
+	const count = run.statuses.length;
+	t.mock.timers.tick(1000);
+	assert.equal(run.statuses.length, count);
+	assert.deepEqual(run.notices, []);
+	await rmdir(lock);
 });
 
 test("does not index non-Git directories, unopted repositories, or existing indexes", async (t) => {
@@ -99,14 +167,14 @@ test("does not index non-Git directories, unopted repositories, or existing inde
 		await run.start();
 		assert.equal(run.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 		assert.deepEqual(run.notices, []);
-		assert.equal(run.statuses.at(-1), "pi-codegraph: missing");
+		assert.equal(run.statuses.at(-1), undefined);
 	}
 	await index(worktree);
 	const existing = harness(worktree);
 	await existing.start();
 	assert.equal(existing.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 	assert.deepEqual(existing.notices, []);
-	assert.equal(existing.statuses.at(-1), "pi-codegraph: indexed");
+	assert.equal(existing.statuses.at(-1), undefined);
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
@@ -148,7 +216,7 @@ test("serializes simultaneous sessions and does not accept an in-progress partia
 		return { code: 0, stdout: "", stderr: "", killed: false };
 	} });
 	const second = harness(worktree, { onStatus: (text) => {
-		if (text === "pi-codegraph: indexing…") waiting.resolve();
+		if (text?.includes("waiting for index")) waiting.resolve();
 	} });
 	const firstRun = first.start();
 	await entered.promise;
@@ -176,7 +244,7 @@ test("failed init preserves its lock, reports recovery, and a later launch rejec
 	t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
 	const waiting = Promise.withResolvers<void>();
 	const retry = harness(worktree, { onStatus: (text) => {
-		if (text === "pi-codegraph: indexing…") waiting.resolve();
+		if (text?.includes("waiting for index")) waiting.resolve();
 	} });
 	const retryRun = retry.start();
 	await waiting.promise;

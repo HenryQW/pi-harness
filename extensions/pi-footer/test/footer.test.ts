@@ -243,7 +243,7 @@ test("shows the routed physical model under a virtual selection", async () => {
 	footer.dispose();
 });
 
-test("shows installed CodeGraph first and marks active calls without showing an absent install", async () => {
+test("preserves muted preparation statuses, clears completed work, and marks direct CodeGraph calls", async () => {
 	const { handlers, start } = setupFooter();
 	const factory = await start({
 		mode: "tui", cwd: "/repo", sessionManager: { getEntries: () => [] }, getContextUsage: () => undefined,
@@ -260,20 +260,14 @@ test("shows installed CodeGraph first and marks active calls without showing an 
 		colors.length = 0;
 		return stripTerminalSequences(footer.render(100)[2]!);
 	};
-	const expectBadge = (status: string, glyph: string, color: string) => {
-		statuses.set("pi-codegraph", status);
-		assert.ok(third().startsWith(`${glyph} CG · ↩ rewind `));
-		assert.deepEqual(colors.filter(([, text]) => "●✓○◐!?".includes(text)), [[color, glyph]]);
-		assert.ok(colors.every(([, text]) => !text.includes("CG")));
-	};
 	assert.match(third(), /^↩ rewind +◷ 0s$/);
-	expectBadge("pi-codegraph: missing", "○", "dim");
-	expectBadge("pi-codegraph: checking index…", "◐", "warning");
-	expectBadge("pi-codegraph: indexing…", "◐", "warning");
-	expectBadge("pi-codegraph: prerequisites missing", "!", "error");
-	expectBadge("pi-codegraph: setup failed", "!", "error");
-	expectBadge("pi-codegraph: unknown", "?", "warning");
-	expectBadge("pi-codegraph: indexed", "✓", "success");
+	statuses.set("pi-codegraph", "\x1b[2m⠋ codegraph · indexing 8s\x1b[22m");
+	statuses.set("pi-deps", "\x1b[2m⠙ deps · installing 12s\x1b[22m");
+	assert.match(third(), /^⠋ codegraph · indexing 8s · ⠙ deps · installing 12s · ↩ rewind +◷ 0s$/);
+	assert.match(footer.render(100)[2]!, /\x1b\[2m⠋ codegraph · indexing 8s\x1b\[22m/);
+	statuses.delete("pi-codegraph");
+	statuses.delete("pi-deps");
+	assert.match(third(), /^↩ rewind +◷ 0s$/);
 	await handlers.get("tool_execution_start")!({ toolCallId: "cg-1", toolName: "codegraph_explore", args: {} });
 	await handlers.get("tool_execution_start")!({ toolCallId: "other", toolName: "mcp", args: { server: "other", tool: "codegraph_explore" } });
 	assert.match(third(), /^● CG · ↩ rewind +◷ 0s$/);
@@ -281,7 +275,7 @@ test("shows installed CodeGraph first and marks active calls without showing an 
 	await handlers.get("tool_execution_end")!({ toolCallId: "other", toolName: "mcp" });
 	assert.match(third(), /^● CG · /);
 	await handlers.get("tool_execution_end")!({ toolCallId: "cg-1", toolName: "codegraph_explore" });
-	assert.match(third(), /^✓ CG · ↩ rewind +◷ 0s$/);
+	assert.match(third(), /^↩ rewind +◷ 0s$/);
 	assert.equal(renders, 2);
 	await handlers.get("session_shutdown")!(undefined);
 	footer.dispose();
