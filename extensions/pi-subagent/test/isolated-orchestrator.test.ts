@@ -857,7 +857,11 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 	assert.equal(harness.sent.length, 0);
 	await assert.rejects(executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx), /already active/);
 	turn.abort(); // The tool's turn no longer owns the productive run.
-	executeDone.resolve(response("execute", true));
+	// Real runners save running and terminal states after the durable acknowledgement.
+	const terminal = structuredClone(PRIVATE_STATE);
+	save({ ...terminal, status: "running", tasks: terminal.tasks.map((task) => ({ ...task, status: "working", failure: undefined })) } as RunState);
+	save(terminal);
+	executeDone.resolve(response("execute", true, terminal));
 	await new Promise(setImmediate);
 	assert.equal(harness.sent.length, 1);
 	assert.deepEqual(harness.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
@@ -868,6 +872,54 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 	resumeDone.resolve(response("resume", true));
 	await new Promise(setImmediate);
 	assert.equal(harness.sent.length, 2);
+});
+
+test("completed text follows up once with bounded output and retained cleanup evidence", async () => {
+	const done = deferred<RunResponse>();
+	let save!: (state: RunState) => void;
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async execute() {
+			const pending = structuredClone(PRIVATE_STATE);
+			pending.status = "pending";
+			pending.updatedAt = pending.createdAt;
+			pending.tasks = [{ taskId: "review", kind: "text", status: "pending", attempts: [] }];
+			save(pending);
+			return await done.promise;
+		} } as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	const terminal = structuredClone(PRIVATE_STATE);
+	terminal.status = "completed";
+	terminal.accepted = true;
+	terminal.tasks = [{ taskId: "review", kind: "text", status: "completed", attempts: [{ number: 1, status: "completed",
+		output: { text: `PASS ${"界".repeat(1_000)}UNEXPOSED_OUTPUT_TAIL` },
+		cleanup: { outcome: "retained", path: "/retained/review", branch: "pi-subagent/review", commits: 0, dirty: true },
+	}] }];
+	save({ ...terminal, status: "running" });
+	save(terminal);
+	save(terminal);
+	done.resolve(response("execute", false, terminal));
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 1);
+	assert.deepEqual(harness.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+	assert.match(harness.sent[0]!.message.content, /completed.*PASS/s);
+	assert.match(harness.sent[0]!.message.content, /retained.*\/retained\/review/s);
+	assert.doesNotMatch(JSON.stringify(harness.sent[0]), /UNEXPOSED_OUTPUT_TAIL|PRIVATE|SECRET_TOKEN/);
+});
+
+test("delivery exceptions are traceable and never replayed", async (t) => {
+	const errors = t.mock.method(console, "error", () => {});
+	const harness = createHarness();
+	const send = t.mock.method(harness.pi, "sendMessage", () => { throw new Error("SECRET_TOKEN raw prompt"); });
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT));
+	await new Promise(setImmediate);
+	assert.equal(send.mock.callCount(), 1);
+	assert.equal(errors.mock.callCount(), 1);
+	assert.match(errors.mock.calls[0]!.arguments[0], /terminal delivery failed \(sendMessage threw\).*No delivery replayed/);
+	assert.doesNotMatch(errors.mock.calls[0]!.arguments[0], /SECRET_TOKEN|raw prompt/);
 });
 
 test("a ready worker sends Main a stageable follow-up before the wave finishes", async () => {
@@ -981,6 +1033,8 @@ test("preflight errors reject before acknowledgement; post-save failures report 
 			pending.tasks[0]!.status = "pending";
 			pending.tasks[0]!.attempts = [];
 			save(pending);
+			save({ ...structuredClone(PRIVATE_STATE), status: "running", tasks: [{ ...PRIVATE_STATE.tasks[0]!, status: "working", failure: undefined }] } as RunState);
+			save(structuredClone(PRIVATE_STATE));
 			throw new Error("worker launch failed");
 		} } as never,
 	});
@@ -990,7 +1044,8 @@ test("preflight errors reject before acknowledgement; post-save failures report 
 	assert.match(failedRun.sent[0]!.message.content, /worker launch failed.*subagent_status/);
 });
 
-test("session replacement and shutdown abort old work and suppress stale isolated delivery", async () => {
+test("session replacement and shutdown abort old work and suppress stale isolated delivery", async (t) => {
+	const warnings = t.mock.method(console, "warn", () => {});
 	const done = deferred<RunResponse>();
 	let runSignal: AbortSignal | undefined;
 	let save!: (state: RunState) => void;
@@ -1016,6 +1071,9 @@ test("session replacement and shutdown abort old work and suppress stale isolate
 	done.resolve(response("execute", true));
 	await new Promise(setImmediate);
 	assert.equal(harness.sent.length, 0);
+	assert.equal(warnings.mock.callCount(), 1);
+	assert.match(warnings.mock.calls[0]!.arguments[0], /request-one: terminal delivery suppressed \(session generation changed\); durable request retained/);
+	assert.doesNotMatch(warnings.mock.calls[0]!.arguments[0], /PRIVATE|SECRET_TOKEN|origin|other/);
 });
 
 test("resume saved before session replacement cannot acknowledge or paint the new session", async () => {
@@ -1164,7 +1222,7 @@ test("text recovery exposes only bounded text attempt evidence", async () => {
 	const attemptFailure = `${"界".repeat(1_000)}UNEXPOSED_ATTEMPT_TAIL`;
 	const textAttempt = { number: 2, status: "failed", failure: attemptFailure };
 	for (const field of [
-		"allocations", "preliminaryChecks", "preliminaryReview", "cleanup", "output",
+		"allocations", "preliminaryChecks", "preliminaryReview", "output",
 	]) {
 		Object.defineProperty(textAttempt, field, {
 			enumerable: true,

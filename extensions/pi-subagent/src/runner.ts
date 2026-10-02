@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import type { EphemeralSubagentExecutor } from "./ephemeral.ts";
-import { createChildWorktree, finalizeChildWorktree, type WorktreeInfo } from "./worktree.ts";
+import { createChildWorktree, finalizeChildWorktree, inspectWorktreeDirty, type WorktreeInfo } from "./worktree.ts";
+import { runGit } from "./git-process.ts";
 import { IntegrationGit, type StageReceipt } from "./integration-git.ts";
 import {
 	checkBatchPasses,
@@ -841,7 +842,9 @@ export class IsolatedRunner {
 		const { states: entries, invalidIds } = await this.store.list(root);
 		return { invalidIds, states: entries.map(({ state }) => state), requests: entries.map(({ state }) => ({
 			id: state.request.id, name: state.request.goal,
-			status: ["completed", "aborted"].includes(state.status) && (state.tasks.some((task) => task.kind === "changeset" && task.attempts.some((attempt) => attempt.cleanup.some((step) => step.status !== "completed")))
+			status: ["completed", "aborted"].includes(state.status) && (state.tasks.some((task) => task.kind === "changeset"
+				? task.attempts.some((attempt) => attempt.cleanup.some((step) => step.status !== "completed"))
+				: task.attempts.some((attempt) => attempt.cleanup && attempt.cleanup.outcome !== "pruned"))
 				|| state.integration.generations.some((generation) => generation.cleanup?.some((step) => step.status !== "completed")
 					|| (generation.worktree && generation.cleanup?.every((step) => step.status === "completed") !== true)))
 				? `${state.status} · retained` : state.status,
@@ -2273,6 +2276,7 @@ export class IsolatedRunner {
 		const attempt = task.attempts.at(-1);
 		if (!attempt || attempt.status !== "running") throw new Error(`Text task ${task.taskId} has no running attempt.`);
 		const prompt = buildTextTaskPrompt(state.request.goal, request, resolveTextTaskContexts(state, request));
+		let checkoutFailure: string | undefined;
 		const result = await this.callProductive(handle, scope, async (context) => {
 			const wave = state.waves.at(-1);
 			if (!wave?.taskIds.includes(task.taskId)) throw new Error("Text task lacks a recorded launch wave.");
@@ -2312,11 +2316,18 @@ export class IsolatedRunner {
 						prepare: async () => ({ launch, task: prompt, cwd: isolated.cwd }),
 					});
 				});
+				// Read-only evidence excludes ignored artifacts; deletion safety still includes them.
+				const inspection = await inspectWorktreeDirty(isolated.path, runGit, false);
+				const head = await runGit(["rev-parse", "--verify", "HEAD"], isolated.path);
+				const branch = await runGit(["symbolic-ref", "--quiet", "HEAD"], isolated.path);
+				checkoutFailure = inspection.failure ? `read-only checkout inspection failed: ${inspection.failure}`
+					: inspection.dirty ? "read-only contract violated: tracked or untracked changes remain"
+					: head.code !== 0 || branch.code !== 0 ? "read-only checkout identity could not be proved"
+					: head.stdout.trim() !== isolated.baseCommit || branch.stdout.trim() !== `refs/heads/${isolated.branch}`
+						? "read-only contract violated: checkout HEAD or branch changed" : undefined;
 			} finally {
-				const cleanup = await finalizeChildWorktree(isolated);
-				if (cleanup.outcome !== "pruned") {
-					throw new Error(`Isolated text task changed its checkout; work was retained at ${cleanup.path} on ${cleanup.branch}.`);
-				}
+				// Retention is evidence, not proof of source edits, and must not mask an answer or executor error.
+				attempt.cleanup = await finalizeChildWorktree(isolated);
 			}
 			return result!;
 		});
@@ -2329,15 +2340,26 @@ export class IsolatedRunner {
 		if (Buffer.byteLength(output, "utf8") > MAX_PERSISTED_RUNTIME_TEXT_BYTES) {
 			throw new Error(`Text task executor output exceeds ${MAX_PERSISTED_RUNTIME_TEXT_BYTES} UTF-8 bytes.`);
 		}
-		const actualMain = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectMainBase({ root: state.root }, context));
-		if (!sameIdentity(actualMain, state.main)) throw new Error("Main drifted during text task execution.");
-		const wave = state.waves.at(-1)!;
-		if (wave.base.head !== state.main.head) {
-			const generation = state.integration.generations.at(-1);
-			if (!generation?.worktree || generation.status === "superseded" || !sameIdentity(generation.combinedTip!, wave.base)) {
-				throw new Error("Staged dependency snapshot was superseded during text task execution.");
+		try {
+			if (checkoutFailure) throw new Error(`Isolated text task ${checkoutFailure}; inspect ${attempt.cleanup!.path} on ${attempt.cleanup!.branch}.`);
+			if (attempt.cleanup?.outcome === "recovery") throw new Error(`Isolated text task cleanup requires recovery: ${attempt.cleanup.note}`);
+			const actualMain = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectMainBase({ root: state.root }, context));
+			if (!sameIdentity(actualMain, state.main)) throw new Error("Main drifted during text task execution.");
+			const wave = state.waves.at(-1)!;
+			if (wave.base.head !== state.main.head) {
+				const generation = state.integration.generations.at(-1);
+				if (!generation?.worktree || generation.status === "superseded" || !sameIdentity(generation.combinedTip!, wave.base)) {
+					throw new Error("Staged dependency snapshot was superseded during text task execution.");
+				}
+				await this.requireExactIntegration(handle, generation, this.stageReceipts(generation), scope, true);
 			}
-			await this.requireExactIntegration(handle, generation, this.stageReceipts(generation), scope, true);
+		} catch (error) {
+			this.rethrowStopped(error);
+			// Retain the completed answer without admitting it as dependency context.
+			attempt.status = "completed";
+			attempt.output = { text: output };
+			this.attention(task, `Task dispatch was interrupted: ${errorText(error)}`);
+			throw error;
 		}
 		attempt.status = "completed";
 		attempt.failure = undefined;

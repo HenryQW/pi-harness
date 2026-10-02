@@ -283,16 +283,24 @@ function publicState(state: RunState, preferredTaskId?: string) {
 		status: state.status,
 		accepted: state.accepted,
 		main: state.main,
-		tasks: state.tasks.map((task) => ({
-			taskId: task.taskId, status: task.status,
-			...(task.kind === "changeset" && state.integration.candidates.length ? { attempts: task.attempts.map((attempt) => ({
-				number: attempt.number, superseded: attempt.superseded === true,
-				workerId: attempt.allocations.flatMap((item) => item.kind === "agent" && item.status === "owned" ? [item.agentName] : [])[0],
-				termination: attempt.termination?.status,
-				worktree: attempt.allocations.flatMap((item) => item.kind === "worktree" && item.status === "owned" && item.worktree ? [item.worktree.path] : [])[0],
-				cleanup: attempt.cleanup.filter((step) => step.status !== "completed"),
-			})) } : {}),
-		})),
+		tasks: state.tasks.map((task) => {
+			const textAttempt = task.kind === "text" ? task.attempts.at(-1) : undefined;
+			return {
+				taskId: task.taskId, status: task.status,
+				...(task.status === "completed" && textAttempt?.output ? { output: boundedPublicText(textAttempt.output.text) } : {}),
+				...(textAttempt?.cleanup ? { cleanup: {
+					...textAttempt.cleanup,
+					...(textAttempt.cleanup.outcome === "recovery" ? { note: boundedPublicText(textAttempt.cleanup.note) } : {}),
+				} } : {}),
+				...(task.kind === "changeset" && state.integration.candidates.length ? { attempts: task.attempts.map((attempt) => ({
+					number: attempt.number, superseded: attempt.superseded === true,
+					workerId: attempt.allocations.flatMap((item) => item.kind === "agent" && item.status === "owned" ? [item.agentName] : [])[0],
+					termination: attempt.termination?.status,
+					worktree: attempt.allocations.flatMap((item) => item.kind === "worktree" && item.status === "owned" && item.worktree ? [item.worktree.path] : [])[0],
+					cleanup: attempt.cleanup.filter((step) => step.status !== "completed"),
+				})) } : {}),
+			};
+		}),
 		final: { status: state.final.status },
 		integration: {
 			...(state.integration.refresh ? { refresh: state.integration.refresh } : {}),
@@ -501,9 +509,12 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		const sessionId = ctx.sessionManager?.getSessionId();
 		const key = `${root}\0${id}`;
 		if (jobOwners.has(key)) throw new Error(`Pi Subagent request ${id} is already active in this session runtime.`);
-		const canDeliver = () => !sessionClosed && sessionEpoch === epoch
-			&& ctx.sessionManager?.getSessionId() === sessionId
-			&& latestCtx?.sessionManager?.getSessionId() === sessionId;
+		const deliverySuppression = () => sessionClosed ? "session closed"
+			: sessionEpoch !== epoch ? "session generation changed"
+			: ctx.sessionManager?.getSessionId() !== sessionId ? "launching session changed"
+			: latestCtx?.sessionManager?.getSessionId() !== sessionId ? "current session changed"
+			: undefined;
+		const canDeliver = () => deliverySuppression() === undefined;
 		const controller = new AbortController();
 		activeJobs.add(controller);
 		jobOwners.set(key, canDeliver);
@@ -519,6 +530,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		if (signal?.aborted) abortBeforeAck();
 		else signal?.addEventListener("abort", abortBeforeAck, { once: true });
 		let latestState: RunState | undefined;
+		let durableAcknowledged = false;
 		let accept!: (state: RunState) => void;
 		let reject!: (error: unknown) => void;
 		const durable = new Promise<RunState>((resolve, fail) => { accept = resolve; reject = fail; });
@@ -527,14 +539,19 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			if (state.root !== root || state.request.id !== id) return;
 			latestState = state;
 			if (!acknowledged(state)) return;
+			durableAcknowledged = true;
 			for (const candidate of state.integration.candidates) notified.add(`${candidate.taskId}\0${candidate.attempt}\0${candidate.tip.head}`);
 			stateListeners.delete(listener);
 			removeTurnAbort();
 			accept(state);
 		};
 		stateListeners.add(listener);
-		const deliver = (text: string, response?: RunResponse) => {
-			if (!canDeliver()) return;
+		const deliver = (kind: "candidate" | "attention" | "terminal", text: string, response?: RunResponse) => {
+			const suppression = deliverySuppression();
+			if (suppression) {
+				console.warn(`Pi Subagent ${id}: ${kind} delivery suppressed (${suppression}); durable request retained.`);
+				return;
+			}
 			const state = response?.state ?? latestState;
 			try {
 				const details = state ? {
@@ -549,13 +566,14 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 					details,
 				}, { triggerTurn: true, deliverAs: "followUp" });
 			} catch {
-				console.error(`Pi Subagent ${id} result delivery failed; use subagent_status to recover.`);
+				console.error(`Pi Subagent ${id}: ${kind} delivery failed (sendMessage threw); use subagent_status to recover. No delivery replayed.`);
 				if (ctx.hasUI) ctx.ui.notify(`Pi Subagent ${id} result delivery failed; use subagent_status to recover.`, "error");
 			}
 		};
 		candidateListener = (state) => {
-			if (state.root !== root || state.request.id !== id || state.status !== "running" || !canDeliver()) return;
+			if (state.root !== root || state.request.id !== id) return;
 			latestState = state;
+			if (state.status !== "running") return;
 			for (const task of state.tasks) {
 				if (task.status !== "needs_attention") {
 					attentionNotified.delete(task.taskId);
@@ -563,13 +581,13 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				}
 				if (attentionNotified.has(task.taskId)) continue;
 				attentionNotified.add(task.taskId);
-				deliver(`Pi Subagent ${id}: ${task.taskId} needs attention. Inspect subagent_status for the saved worker evidence; do not replay an uncertain prompt.`);
+				deliver("attention", `Pi Subagent ${id}: ${task.taskId} needs attention. Inspect subagent_status for the saved worker evidence; do not replay an uncertain prompt.`);
 			}
 			for (const candidate of state.integration.candidates) {
 				const identity = `${candidate.taskId}\0${candidate.attempt}\0${candidate.tip.head}`;
 				if (candidate.decision || notified.has(identity)) continue;
 				notified.add(identity);
-				deliver(`Pi Subagent ${id}: ${candidate.taskId} ready to integrate. Inspect the exact candidate with subagent_status and stage it now; other workers may still be running.`);
+				deliver("candidate", `Pi Subagent ${id}: ${candidate.taskId} ready to integrate. Inspect the exact candidate with subagent_status and stage it now; other workers may still be running.`);
 			}
 		};
 		stateListeners.add(candidateListener);
@@ -578,21 +596,21 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				finish();
 				stateListeners.delete(listener);
 				removeTurnAbort();
-				if (!latestState || !acknowledged(latestState)) {
+				if (!durableAcknowledged) {
 					reject(new Error(`Pi Subagent ${id} finished without a durable acknowledgement.`));
 					return;
 				}
-				deliver(`${response.text}\n\nState: ${JSON.stringify(publicState(response.state))}`, response);
+				deliver("terminal", `${response.text}\n\nState: ${JSON.stringify(publicState(response.state))}`, response);
 			},
 			(error: unknown) => {
 				finish();
 				stateListeners.delete(listener);
 				removeTurnAbort();
-				if (!latestState || !acknowledged(latestState)) {
+				if (!durableAcknowledged) {
 					reject(error);
 					return;
 				}
-				deliver(`Pi Subagent ${id} stopped: ${boundedPublicText(error instanceof Error ? error.message : String(error))}. Use subagent_status to inspect the durable request and subagent_resume or subagent_abort for recovery.`);
+				deliver("terminal", `Pi Subagent ${id} stopped: ${boundedPublicText(error instanceof Error ? error.message : String(error))}. Use subagent_status to inspect the durable request and subagent_resume or subagent_abort for recovery.`);
 			},
 		);
 		const state = await durable;

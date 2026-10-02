@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -169,6 +169,69 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 	assert.equal(task.attempts.at(-1)!.status, "failed");
 	assert.equal(task.attempts.at(-1)!.failure, task.failure);
 	assert.deepEqual((await store.load(root, request.id)).state.tasks[0], task);
+});
+
+for (const change of ["ignored", "tracked", "committed", "executor-failure"]) test(`text result and cleanup evidence survive retained artifacts: ${change}`, async (t) => {
+	const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-text-retained-")));
+	t.after(async () => await rm(directory, { recursive: true, force: true }));
+	const root = join(directory, "workspace");
+	await initializeRepository(root);
+	await writeFile(join(root, ".gitignore"), ".codegraph/\nnode_modules/\ndist/\n");
+	execFileSync("git", ["add", ".gitignore"], { cwd: root });
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "ignore generated artifacts"], { cwd: root });
+	const store = new FileRunStore(join(directory, "agent"));
+	let checkout = "";
+	const runner = new IsolatedRunner({
+		now: () => 1,
+		randomToken: () => "token-0000000000000001",
+		preflight: async () => ({ root, main: mainIdentity(root) }),
+		acquireLaunch: acquireTextLaunch,
+	} as unknown as CoordinatorRuntime, {} as HostRuntime, {
+		inspectMain: async () => mainIdentity(root),
+		inspectMainBase: async () => mainIdentity(root),
+		runChecks: async () => ({ results: [], identityAfter: mainIdentity(root) }),
+	} as unknown as GitRuntime & TaskCandidateInspector, store, {
+		run: async (options) => {
+			checkout = (await options.prepare()).cwd;
+			for (const path of [".codegraph", "node_modules", "dist"]) {
+				await mkdir(join(checkout, path));
+				await writeFile(join(checkout, path, "artifact"), "automatic artifact\n");
+			}
+			if (change === "executor-failure") throw new Error("Original executor failure.");
+			if (change !== "ignored") await writeFile(join(checkout, "README.md"), "changed source\n");
+			if (change === "committed") {
+				execFileSync("git", ["add", "README.md"], { cwd: checkout });
+				execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "source change"], { cwd: checkout });
+			}
+			return { outcome: "success", exitCode: 0, output: "Complete reviewer verdict.", outputTruncated: false, stderr: "" };
+		},
+	});
+	const request: ExecuteRequest = {
+		id: "text-retained", goal: "Preserve the completed review.", mode: "isolated",
+		tasks: [{ id: "review", kind: "text", role: "researcher", modelClass: "fast", requirements: "Review read-only.", deliverable: "Verdict.", dependsOn: [], contextFrom: [] }],
+		finalChecks: [],
+	};
+	const result = await runner.execute(request, root);
+	const task = result.state.tasks[0]!;
+	if (task.kind !== "text") throw new Error("Expected text task.");
+	assert.equal(task.attempts[0]!.output?.text, change === "executor-failure" ? undefined : "Complete reviewer verdict.");
+	assert.equal(task.status, change === "ignored" ? "completed" : "needs_attention");
+	if (change === "tracked") assert.match(task.failure!, /read-only.*tracked or untracked/i);
+	if (change === "committed") assert.match(task.failure!, /read-only.*HEAD or branch changed/i);
+	if (change === "executor-failure") assert.match(task.failure!, /Original executor failure/);
+	assert.deepEqual(task.attempts[0]!.cleanup, {
+		outcome: "retained", path: checkout,
+		branch: execFileSync("git", ["branch", "--show-current"], { cwd: checkout, encoding: "utf8" }).trim(),
+		commits: change === "committed" ? 1 : 0, dirty: true,
+	});
+	assert.deepEqual((await store.load(root, request.id)).state.tasks[0], JSON.parse(JSON.stringify(task)));
+	if (change === "ignored") assert.equal((await runner.listRequests(root)).requests[0]!.status, "completed · retained");
+	if (change === "tracked" || change === "committed") {
+		assert.equal(result.continuation, undefined); // A completed answer must not be replayed.
+		await assert.rejects(runner.resume({ id: request.id, action: "retry", taskId: "review" }, root), /retry requires an unstarted, failed or superseded/);
+	}
+	assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: checkout, encoding: "utf8" }).trim(), change === "tracked" ? "M README.md" : "");
+	assert.match(execFileSync("git", ["status", "--porcelain", "--ignored"], { cwd: checkout, encoding: "utf8" }), /!! .codegraph\//);
 });
 
 test("text retry saves its second attempt atomically before executor launch", async (t) => {
