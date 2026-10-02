@@ -64,7 +64,7 @@ Statuses from other extensions, including Ponytail and `pi-rewind`, share the le
 
 When the configured executable is `code` and Pi reports hyperlink support, the accent-colored checkout name links to the current path. The link opens a new window for `code -n` or `code --new-window`. A missing config silently uses `code`. Other executables and terminals with hyperlinks disabled render plain text.
 
-Use Pi fullscreen TUI so Pi handles the custom URI:
+Pi handles the custom URI in its fullscreen TUI, which is the default since Pi 1.0. Then use normal primary click. On older supported Pi versions (before 1.0), enable it:
 
 ```json
 {
@@ -72,6 +72,6 @@ Use Pi fullscreen TUI so Pi handles the custom URI:
 }
 ```
 
-Set this through `/settings`, or launch with `--tui-mode fullscreen`. Then use normal primary click. Regular TUI delegates OSC 8 activation to the terminal.
+Set this through `/settings`, or launch with `--tui-mode fullscreen`. Regular TUI (`"tuiMode": "regular"` or `--tui-mode regular`) delegates OSC 8 activation to the terminal, so the link works only where the terminal opens custom URI schemes.
 
 Ghostty uses `Cmd+click` but may not open custom URI schemes.

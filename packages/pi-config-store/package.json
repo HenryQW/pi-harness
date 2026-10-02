@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-config-store",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Safe JSON configuration storage for Pi extensions.",
   "keywords": [
     "pi-package",
@@ -36,11 +36,11 @@
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.99.1",
+    "@earendil-works/pi-coding-agent": "1.0.0",
     "@types/proper-lockfile": "^4.1.4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.100.0"
+    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.100.0 || ^1.0.0"
   },
   "repository": {
     "type": "git",
