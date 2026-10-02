@@ -513,10 +513,27 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		[{ command: "node", args: 42 }, /MCP server "docs" field "args" must be an array of strings\./],
 		[{ command: "node", env: { KEY: 1 } }, /field "env" must be an object of strings\./],
 		[{ url: "https://docs.test", timeout: 0 }, /field "timeout" must be a positive number\./],
+		[{ url: "docs.test" }, /field "url" must be an http or https URL\./],
+		[{ url: "https://docs.test", description: 42 }, /field "description" must be a string\./],
+		[{ url: "http://docs.test/mcp", auth: { provider: "radius" } }, /field "auth" requires "url" to use https, or http on localhost, 127\.0\.0\.1, or \[::1\]\./],
+		[{ url: "https://docs.test", oauth: { clientName: " " } }, /field "oauth\.clientName" must be a non-empty string\./],
+		[{ url: "https://docs.test", oauth: { authServerMetadataUrl: "http://idp.test/.well-known/openid-configuration" } }, /field "oauth\.authServerMetadataUrl" must be an https URL/],
+		[{ url: "https://docs.test", oauth: { callbackUrl: "https://docs.test/callback" } }, /field "oauth\.callbackUrl" must be an http URL on localhost/],
 	] as const) {
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs } }));
 		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), message);
 	}
+	// Valid provider auth over https and loopback, and new OAuth fields, are copied for Pi's native transport.
+	const secure = { url: "https://docs.test/mcp", description: "Product docs", auth: { provider: "radius" } };
+	const loopback = { url: "http://[::1]:8080/mcp", auth: { provider: "radius" } };
+	const oauth = { url: "https://mcp.example.test/mcp", oauth: { clientName: "Claude Code", authServerMetadataUrl: "https://idp.test/.well-known/openid-configuration" } };
+	await writeFile(mcpPath, JSON.stringify({ mcpServers: { secure, loopback, oauth, "dev-docs": secure, dev_docs: secure, "dev docs": secure } }));
+	assert.deepEqual(
+		loadRoleMcpConfig(agentDir, ["secure", "loopback", "oauth"]).servers.map((server) => server.config),
+		[{ ...secure, exposure: "direct" }, { ...loopback, exposure: "direct" }, { ...oauth, exposure: "direct" }],
+	);
+	assert.throws(() => loadRoleMcpConfig(agentDir, ["dev-docs", "dev_docs"]), /Role MCP server "dev_docs" conflicts with "dev-docs"/);
+	assert.throws(() => loadRoleMcpConfig(agentDir, ["dev docs"]), /MCP server "dev docs" has an invalid name/);
 	await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: [] } }));
 	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), /mcp\.json: MCP server "docs" must be an object\./);
 	await writeFile(mcpPath, "{");
