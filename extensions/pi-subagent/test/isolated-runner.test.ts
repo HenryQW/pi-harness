@@ -1837,11 +1837,12 @@ test("an interrupted text task remains failed until its explicit retry", async (
 	const failed = textState(stopped.state, "research");
 	assert.equal(stopped.state.status, "needs_attention");
 	assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "research" });
-	assert.deepEqual(failed.attempts, [{
+	assert.deepEqual(failed.attempts.map(({ cleanup, ...attempt }) => attempt), [{
 		number: 1,
 		status: "failed",
 		failure: "Task dispatch was interrupted: executor interrupted",
 	}]);
+	assert.equal(failed.attempts[0]!.cleanup?.outcome, "pruned");
 	assert.equal(calls, 1);
 
 	const retried = await runner.resume({ id: definition.id, action: "retry", taskId: "research" }, root);

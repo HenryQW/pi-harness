@@ -370,6 +370,17 @@ const TextTaskAttemptSchema = Type.Object({
 	status: Type.Union([Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed"), Type.Literal("superseded")]),
 	failure: OptionalRuntimeTextSchema,
 	output: Type.Optional(TextTaskOutputSchema),
+	cleanup: Type.Optional(Type.Union([
+		Type.Object({ outcome: Type.Literal("pruned"), path: RuntimeTextSchema, branch: RuntimeTextSchema }, { additionalProperties: false }),
+		Type.Object({
+			outcome: Type.Literal("retained"), path: RuntimeTextSchema, branch: RuntimeTextSchema,
+			commits: Type.Integer({ minimum: 0 }), dirty: Type.Boolean(),
+		}, { additionalProperties: false }),
+		Type.Object({
+			outcome: Type.Literal("recovery"), path: RuntimeTextSchema, branch: RuntimeTextSchema, note: RuntimeTextSchema,
+			commits: Type.Optional(Type.Integer({ minimum: 0 })), dirty: Type.Optional(Type.Boolean()),
+		}, { additionalProperties: false }),
+	])),
 }, { additionalProperties: false });
 
 const TextTaskStateSchema = Type.Object({
@@ -796,7 +807,7 @@ function validateTextTaskState(taskState: TextTaskState): void {
 			? "running"
 			: "completed";
 	if (taskState.status === "needs_attention"
-		? latest && !["failed", "superseded"].includes(latest.status)
+		? latest && !["failed", "superseded", "completed"].includes(latest.status)
 		: latest?.status !== expectedLatestStatus) {
 		throw new Error(`Text task ${taskState.taskId} status ${taskState.status} has an incompatible latest attempt.`);
 	}
