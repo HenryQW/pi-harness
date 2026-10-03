@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import {
+	calculateContextTokens,
 	compact,
 	estimateTokens,
 	findCutPoint,
@@ -100,6 +101,28 @@ function estimateMessageTokens(message: AgentMessage): number {
 
 function estimateTotalTokens(messages: AgentMessage[]): number {
 	return messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
+}
+
+/**
+ * Measure request size as Pi does: the newest valid provider usage plus estimates for later messages.
+ * Character estimates count replayed thinking that providers may not bill as prompt tokens.
+ * Usage older than a preceding message, such as a compaction summary, no longer describes this context.
+ */
+function contextTokens(messages: AgentMessage[]): number {
+	let latestPrefix = Number.NEGATIVE_INFINITY;
+	let usage: { tokens: number; index: number } | undefined;
+	messages.forEach((message, index) => {
+		// Context hooks may supply assistant messages without usage.
+		if (message.role === "assistant" && message.usage && message.timestamp >= latestPrefix &&
+			message.stopReason !== "aborted" && message.stopReason !== "error") {
+			const tokens = calculateContextTokens(message.usage);
+			if (tokens > 0) usage = { tokens, index };
+		}
+		latestPrefix = Math.max(latestPrefix, message.timestamp);
+	});
+	return usage
+		? usage.tokens + estimateTotalTokens(messages.slice(usage.index + 1))
+		: estimateTotalTokens(messages);
 }
 
 /**
@@ -244,7 +267,7 @@ export default function (pi: ExtensionAPI) {
 		if (!window) return;
 		const projected = event.context.contextEntries.map((entry) => ({ ...entry, messages: [...entry.messages] }));
 		const pendingTokens = estimateTotalTokens(event.context.pendingMessages);
-		let tokens = estimateTotalTokens(event.context.contextMessages) + pendingTokens;
+		let tokens = contextTokens(event.context.contextMessages) + pendingTokens;
 		const threshold = window * autoCompactThreshold / 100;
 		if (tokens <= threshold) return;
 
@@ -413,7 +436,7 @@ export default function (pi: ExtensionAPI) {
 			failedBoundary.leaf === ctx.sessionManager.getLeafId())) return;
 
 		const contextWindow = ctx.getContextUsage()?.contextWindow ?? ctx.model?.contextWindow ?? 0;
-		const estimatedTokens = estimateTotalTokens(event.messages);
+		const estimatedTokens = contextTokens(event.messages);
 		if (contextWindow <= 0 || estimatedTokens <= contextWindow * autoCompactThreshold / 100) return;
 
 		const truncated = keepRecent(

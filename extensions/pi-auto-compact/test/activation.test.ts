@@ -838,6 +838,7 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		} as never, ctx), undefined, "an oversized fresh input cannot be dropped");
 		assert.match(notices.at(-1) ?? "", /cannot safely reduce this first request/);
 
+		// Assistant messages without usage fall back to character estimates.
 		const leadingSystem = {
 			role: "system",
 			content: "s".repeat(600),
@@ -891,6 +892,39 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(sent.length, 1);
 		assert.equal(sent[0]?.options?.triggerTurn, true);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
+test("thresholds use provider usage instead of replayed thinking estimates", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-usage-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+	try {
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+		const handlers = loadExtension();
+		const ctx = { cwd: tempRoot, isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: null, contextWindow: 10_000, percent: null }),
+			compact() {}, ui: { notify() {} },
+		} as unknown as ExtensionContext;
+		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+		const usage = { input: 400, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 500,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		// The thinking block alone estimates above the 70% threshold; the provider measured 500 tokens.
+		const messages = [
+			{ role: "user", content: "start", timestamp: 2 },
+			{ role: "assistant", content: [{ type: "thinking", thinking: "t".repeat(40_000) }, { type: "text", text: "ok" }],
+				api: "openai-completions", provider: "fake", model: "model", usage, stopReason: "stop", timestamp: 3 },
+			{ role: "user", content: "next", timestamp: 4 },
+		];
+		const guard = (list: unknown[]) => handlers.get("context_with_system")?.(
+			{ type: "context_with_system", messages: list } as never, ctx) as { messages?: unknown[] } | undefined;
+		assert.equal(guard(messages), undefined);
+		// A newer preceding message, such as a compaction summary, makes that usage stale.
+		assert.ok(guard([{ role: "user", content: "summary", timestamp: 5 }, ...messages])?.messages);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
