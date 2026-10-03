@@ -44,35 +44,6 @@ Repeat these steps for `balanced`, `frontier`, or `fav` when a consumer needs th
 
 Select an active task to override its declared profile. Choosing that task's declared default removes the override.
 
-## Presets
-
-Run `/task-models preset` and choose a name from the list to apply a saved setup. All four profiles (`fast`, `balanced`, `frontier`, and `fav`) are optional: omitted profiles keep their current values. Each included profile replaces its complete routes, including thinking levels and optional fallbacks, in one atomic config update. Task assignments stay unchanged. Cancelling the picker writes nothing.
-
-Create `~/.pi/agent/config/pi-task-models/presets.json` yourself. The command reads this file but never creates or changes it; there is no preset-saving UI. The file maps preset names to any subset of the four profiles, using the same route format as the active config:
-
-```json
-{
-  "my-setup": {
-    "fast": {
-      "primary": { "model": "<provider>/<fast-model>", "thinkingLevel": "low" }
-    },
-    "balanced": {
-      "primary": { "model": "<provider>/<balanced-model>", "thinkingLevel": "high" },
-      "fallback": { "model": "<provider>/<fallback-model>", "thinkingLevel": "medium" }
-    }
-  },
-  "favorite-only": {
-    "fav": {
-      "primary": { "model": "<provider>/<favorite-model>", "thinkingLevel": "high" }
-    }
-  }
-}
-```
-
-Replace every placeholder with an exact reference from `/task-models`; add more named objects for more setups. For an included profile, omit `fallback` for no fallback; `fav` never accepts a fallback. Omit the whole profile to leave its existing routes unchanged. Preset names must be non-empty, have no surrounding whitespace, and contain no control characters. Names appear alphabetically in the picker.
-
-A missing, empty, or invalid preset file leaves the active config unchanged. The file must be valid UTF-8 JSON and no larger than 64 KiB; any invalid preset prevents the picker from opening. Read and save failures are reported without overwriting malformed files. Applying a preset can create a missing active config, but cannot overwrite an invalid one. Switching stores routes without checking current authentication, model availability, or thinking support; the usual scope and route-resolution rules still apply when a task runs.
-
 ## Flow
 
 Consumers register declarations at extension load. When `/task-models` opens, the shared control plane asks active extensions for declarations. Extension load order does not matter.
@@ -128,6 +99,35 @@ Pi's model registry, including session-scoped models, is the source of available
 Task defaults live only in consumer declarations. Existing explicit assignments, including one equal to a declaration's default, remain valid.
 
 Model references use canonical `provider/model`. Numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
+
+### Presets
+
+Run `/task-models preset` and choose a name from the list to apply a saved setup. All four profiles (`fast`, `balanced`, `frontier`, and `fav`) are optional: omitted profiles keep their current values. Each included profile replaces its complete routes, including thinking levels and optional fallbacks, in one atomic config update. Task assignments stay unchanged. Cancelling the picker writes nothing.
+
+Create `~/.pi/agent/config/pi-task-models/presets.json` yourself. The command reads this file but never creates or changes it; there is no preset-saving UI. The file maps preset names to any subset of the four profiles, using the same route format as the active config:
+
+```json
+{
+  "my-setup": {
+    "fast": {
+      "primary": { "model": "<provider>/<fast-model>", "thinkingLevel": "low" }
+    },
+    "balanced": {
+      "primary": { "model": "<provider>/<balanced-model>", "thinkingLevel": "high" },
+      "fallback": { "model": "<provider>/<fallback-model>", "thinkingLevel": "medium" }
+    }
+  },
+  "favorite-only": {
+    "fav": {
+      "primary": { "model": "<provider>/<favorite-model>", "thinkingLevel": "high" }
+    }
+  }
+}
+```
+
+Replace every placeholder with an exact reference from `/task-models`; add more named objects for more setups. For an included profile, omit `fallback` for no fallback; `fav` never accepts a fallback. Omit the whole profile to leave its existing routes unchanged. Preset names must be non-empty, have no surrounding whitespace, and contain no control characters. Names appear alphabetically in the picker.
+
+A missing, empty, or invalid preset file leaves the active config unchanged. The file must be valid UTF-8 JSON and no larger than 64 KiB; any invalid preset prevents the picker from opening. Read and save failures are reported without overwriting malformed files. Applying a preset can create a missing active config, but cannot overwrite an invalid one. Switching stores routes without checking current authentication, model availability, or thinking support; the usual scope and route-resolution rules still apply when a task runs.
 
 ## API
 
