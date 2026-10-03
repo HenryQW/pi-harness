@@ -12,6 +12,7 @@ An Architecture Decision Record (ADR) records one current architecture choice. T
 - [006 — pi-memory Global Store Threat Model](006-pi-memory-global-store-threat-model.md)
 - [017 — Consumer-Owned Task-Model Routing](017-consumer-owned-task-model-routing.md)
 - [019 — Unified pi-subagent orchestration](019-pi-subagent-orchestration.md)
+- [020 — pi-cron In-Session Scheduler](020-pi-cron-in-session-scheduler.md)
 
 ## Package architecture
 

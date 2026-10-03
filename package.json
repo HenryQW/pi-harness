@@ -34,7 +34,8 @@
       "./extensions/pi-subagent/extensions/subagent.ts",
       "./extensions/pi-memory/extensions/memory.ts",
       "./extensions/pi-undo/extensions/undo.ts",
-      "./extensions/pi-rtk-test/extensions/rtk-test.ts"
+      "./extensions/pi-rtk-test/extensions/rtk-test.ts",
+      "./extensions/pi-cron/extensions/cron.ts"
     ]
   },
   "scripts": {
