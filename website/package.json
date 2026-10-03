@@ -8,10 +8,12 @@
     "generate:installer": "node scripts/generate-installer.mjs",
     "check:installer": "node scripts/generate-installer.mjs --check",
     "build": "pnpm run generate:installer && blume build",
-    "test": "node --test extension-catalog.test.ts repository-markdown.test.ts scripts/installer.test.mjs",
+    "test": "node --test extension-catalog.test.ts repository-markdown.test.ts readme-contract.test.ts scripts/installer.test.mjs",
     "validate": "pnpm run check:installer && pnpm test && blume validate --strict"
   },
   "devDependencies": {
-    "blume": "2.1.0"
+    "blume": "2.1.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-to-string": "^4.0.0"
   }
 }

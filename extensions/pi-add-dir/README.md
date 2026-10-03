@@ -34,7 +34,7 @@ Added directories give Pi these resources:
 
 `/dir-add` reloads only when the discovered external skill paths change, not merely because the directory contains skills. `add_directory` stays session-local; when its result asks for `/reload`, run it to update external skills.
 
-## Programmatic use
+### Programmatic use
 
 `search_external_files` declares an output schema. Programmatic callers such as Pi `codemode` scripts receive `{ pattern, maxResults, searchedDirectories, totalFound, truncated, directories }`. `directories` lists each directory with at least one match, with its label and absolute file paths. `searchedDirectories` counts only directories actually searched, including those with no matches; directories skipped after reaching the cap are not counted. `truncated` is true when the result cap stopped the search, so later directories or files may hold more matches. The model receives the same matches as text. Calling the tool with no added directories is a tool error, and scripts reject with the message.
 
