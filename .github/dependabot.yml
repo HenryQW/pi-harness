@@ -1,10 +1,8 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directories:
-      - /
-      - /extensions/*
-      - /packages/*
+    # pnpm workspaces share the root lockfile; discover packages from the root.
+    directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
