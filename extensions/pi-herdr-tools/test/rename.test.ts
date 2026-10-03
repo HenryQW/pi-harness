@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { withWorktreeLock } from "@henryqw/pi-herdr";
-import herdrRenameExtension from "../extensions/rename.ts";
+import herdrRenameExtension from "../internal/rename.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 type Command = (args: string, ctx: ExtensionContext) => Promise<void>;

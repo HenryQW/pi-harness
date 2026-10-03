@@ -7,7 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import herdrCloneExtension from "../extensions/clone-tab.ts";
+import herdrCloneExtension from "../internal/clone-tab.ts";
 
 export type ExecResult = { stdout: string; stderr: string; code: number; killed: boolean };
 type ExecCall = { command: string; args: string[]; options: { cwd: string } };

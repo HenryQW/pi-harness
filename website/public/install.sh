@@ -25,9 +25,7 @@ EXTENSIONS='
 @henryqw/pi-cron
 @henryqw/pi-deps
 @henryqw/pi-footer
-@henryqw/pi-herdr-btw
-@henryqw/pi-herdr-clone
-@henryqw/pi-herdr-rename
+@henryqw/pi-herdr-tools
 @henryqw/pi-memory
 @henryqw/pi-multi-codex
 @henryqw/pi-notes
@@ -440,7 +438,7 @@ remove_retired_package_sources() {
   for extension in $selected_extensions; do
     case "$extension" in
       "$SUBAGENT_PACKAGE") retired_sources="$retired_sources $RETIRED_PACKAGE_SOURCES" ;;
-      "@henryqw/pi-herdr-clone") retired_sources="$retired_sources npm:@henryqw/pi-herdr-done" ;;
+      "@henryqw/pi-herdr-tools") retired_sources="$retired_sources npm:@henryqw/pi-herdr-btw npm:@henryqw/pi-herdr-clone npm:@henryqw/pi-herdr-rename npm:@henryqw/pi-herdr-done" ;;
       "@henryqw/pi-footer") retired_sources="$retired_sources npm:@henryqw/pi-open-in" ;;
     esac
   done

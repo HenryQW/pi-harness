@@ -9,9 +9,7 @@
 | `pi-cron` | [`extensions/pi-cron/CONTEXT.md`](extensions/pi-cron/CONTEXT.md) | Scheduled job prompts run in fresh bounded Pi sessions |
 | `pi-deps` | [`extensions/pi-deps/CONTEXT.md`](extensions/pi-deps/CONTEXT.md) | Opt-in dependency preparation for new Git worktrees |
 | `pi-herdr` | [`packages/pi-herdr/CONTEXT.md`](packages/pi-herdr/CONTEXT.md) | Shared Herdr CLI execution for Pi packages |
-| `pi-herdr-btw` | [`extensions/pi-herdr-btw/CONTEXT.md`](extensions/pi-herdr-btw/CONTEXT.md) | Pi side threads opened and merged through Herdr |
-| `pi-herdr-clone` | [`extensions/pi-herdr-clone/CONTEXT.md`](extensions/pi-herdr-clone/CONTEXT.md) | Active-path Pi session clones and safe linked-worktree completion in Herdr |
-| `pi-herdr-rename` | [`extensions/pi-herdr-rename/CONTEXT.md`](extensions/pi-herdr-rename/CONTEXT.md) | Model-generated Pi and Herdr conversation titles |
+| `pi-herdr-tools` | [`extensions/pi-herdr-tools/CONTEXT.md`](extensions/pi-herdr-tools/CONTEXT.md) | Conversation clones, side-thread merges, titles, and safe linked-worktree completion in Herdr |
 | `pi-task-models` | [`extensions/pi-task-models/CONTEXT.md`](extensions/pi-task-models/CONTEXT.md) | Shared task profiles and consumer-owned task routing |
 | `pi-multi-codex` | [`extensions/pi-multi-codex/CONTEXT.md`](extensions/pi-multi-codex/CONTEXT.md) | Multiple ChatGPT Codex subscription accounts |
 | `pi-memory` | [`extensions/pi-memory/CONTEXT.md`](extensions/pi-memory/CONTEXT.md) | Auto-managed cross-session markdown memory scratch with size caps and session snapshots |

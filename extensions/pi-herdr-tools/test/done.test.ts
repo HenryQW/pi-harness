@@ -8,7 +8,7 @@ import type {
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { withWorktreeLock } from "@henryqw/pi-herdr";
-import herdrDoneExtension from "../extensions/done.ts";
+import herdrDoneExtension from "../internal/done.ts";
 
 type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };

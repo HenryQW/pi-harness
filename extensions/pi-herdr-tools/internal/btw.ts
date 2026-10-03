@@ -21,8 +21,8 @@ import {
 	DEFAULT_CONFIG,
 	formatConfig,
 	type BtwConfig,
-} from "../internal/config.ts";
-import { ContextStore } from "../internal/context-store.ts";
+} from "./config.ts";
+import { ContextStore } from "./context-store.ts";
 import {
 	buildAgentStartArgs,
 	buildContextDocument,
@@ -41,7 +41,7 @@ import {
 	safeErrorText,
 	type BtwPayload,
 	type HerdrLaunchOptions,
-} from "../internal/core.ts";
+} from "./core.ts";
 import {
 	buildMergeTranscript,
 	isPromptWithinBounds,
@@ -50,8 +50,8 @@ import {
 	MERGE_PROTOCOL_VERSION,
 	MergeCoordinator,
 	type MergeRequest,
-} from "../internal/merge.ts";
-import { HELP_TEXT, parseBtwCommand } from "../internal/router.ts";
+} from "./merge.ts";
+import { HELP_TEXT, parseBtwCommand } from "./router.ts";
 
 export const BTW_TASK = {
 	id: "pi-herdr-btw/btw",

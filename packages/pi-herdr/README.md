@@ -21,7 +21,7 @@ const herdr = createHerdrClient(pi.exec.bind(pi));
 const response = await herdr.json(["agent", "list"], { cwd: ctx.cwd });
 ```
 
-For a ready-to-use Pi workflow, see [`@henryqw/pi-herdr-clone`](https://pi.henry.wang/extensions/pi-herdr-clone).
+For a ready-to-use Pi workflow, see [`@henryqw/pi-herdr-tools`](https://pi.henry.wang/extensions/pi-herdr-tools).
 
 ## API
 

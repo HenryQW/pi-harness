@@ -15,7 +15,7 @@ import {
 	registerBtwExtension,
 	type ConfigStorePort,
 	type ContextStorePort,
-} from "../extensions/btw.ts";
+} from "../internal/btw.ts";
 import { fixturePayload } from "./fixtures.ts";
 
 type Command = {

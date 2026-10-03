@@ -13,7 +13,7 @@ See [the doc](https://pi.henry.wang).
 curl -fsSL https://pi.henry.wang/install.sh | sh
 ```
 
-The installer shows installed Pi and Herdr versions. It asks before updating either tool. After selected replacement packages install successfully, it removes their retired npm sources: `pi-herdr-clone` replaces `pi-herdr-done`, and `pi-footer` replaces `pi-open-in`. The existing Open In config stays in place.
+The installer shows installed Pi and Herdr versions. It asks before updating either tool. After selected replacement packages install successfully, it removes their retired npm sources: `pi-herdr-tools` replaces `pi-herdr-btw`, `pi-herdr-clone`, `pi-herdr-rename`, and `pi-herdr-done`, and `pi-footer` replaces `pi-open-in`. The existing Open In config stays in place.
 
 Use `--update` to approve available updates without a prompt:
 
@@ -25,6 +25,6 @@ curl -fsSL https://pi.henry.wang/install.sh | sh -s -- --update
 
 Each row is an active extension; a filled square marks a **direct** dependency on the package named above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.
 
-![Matrix showing direct workspace dependencies for all 20 active Pi extensions](./docs/extension-dependencies.svg)
+![Matrix showing direct workspace dependencies for all 18 active Pi extensions](./docs/extension-dependencies.svg)
 
 Deprecated extensions and `@deprecated/` are excluded.

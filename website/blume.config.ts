@@ -127,8 +127,20 @@ export default defineConfig({
   },
   redirects: [
     {
+      from: "/extensions/pi-herdr-btw",
+      to: "/extensions/pi-herdr-tools",
+    },
+    {
+      from: "/extensions/pi-herdr-clone",
+      to: "/extensions/pi-herdr-tools",
+    },
+    {
+      from: "/extensions/pi-herdr-rename",
+      to: "/extensions/pi-herdr-tools",
+    },
+    {
       from: "/extensions/pi-herdr-done",
-      to: "/extensions/pi-herdr-clone",
+      to: "/extensions/pi-herdr-tools",
     },
     {
       from: "/extensions/pi-open-in",
