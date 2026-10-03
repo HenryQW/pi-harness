@@ -13,6 +13,7 @@ An Architecture Decision Record (ADR) records one current architecture choice. T
 - [017 — Consumer-Owned Task-Model Routing](017-consumer-owned-task-model-routing.md)
 - [019 — Unified pi-subagent orchestration](019-pi-subagent-orchestration.md)
 - [020 — pi-cron In-Session Scheduler](020-pi-cron-in-session-scheduler.md)
+- [021 — One Herdr Workflow Extension](021-herdr-workflow-consolidation.md)
 
 ## Package architecture
 

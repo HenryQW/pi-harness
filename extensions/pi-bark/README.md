@@ -34,7 +34,7 @@ Treat the Device Key as a secret. Anyone with it can send push notifications to 
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
-| [`@henryqw/pi-herdr-rename`](https://pi.henry.wang/extensions/pi-herdr-rename) | Improves | Adds the same Pi session title to automatic Bark status notifications. |
+| [`@henryqw/pi-herdr-tools`](https://pi.henry.wang/extensions/pi-herdr-tools) | Improves | Adds the same Pi session title to automatic Bark status notifications. |
 
 ## Use
 
@@ -69,7 +69,7 @@ After setup, pi-bark sends two status-only notifications:
 - **Pi needs input** when Pi opens a blocking user prompt, including `ask_question`.
 - **Pi finished** after the agent has fully settled and will not continue automatically.
 
-Each notification includes Pi's current session name. Herdr shows the same name when `pi-herdr-rename` is active. pi-bark does not call Herdr or read Herdr state.
+Each notification includes Pi's current session name. Herdr shows the same name when `pi-herdr-tools` is active. pi-bark does not call Herdr or read Herdr state.
 
 An unset session name appears as `Unnamed`. Status notifications do not include prompts or agent output. No notification is sent when a prompt closes.
 

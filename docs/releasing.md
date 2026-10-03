@@ -54,3 +54,19 @@ Complete this once for each new package:
 3. Keep the package under the `@henryqw` scope.
 
 Trusted publishing requires npm CLI 11.5.1 or newer and GitHub OIDC.
+
+## Retire merged packages
+
+`@henryqw/pi-herdr-tools@1.0.0` consolidates `pi-herdr-btw`, `pi-herdr-clone`, and `pi-herdr-rename`. These old workspaces are retired under `deprecated/` and will not publish further versions. The shared `@henryqw/pi-herdr` library stays active.
+
+Bootstrap the new package and configure its trusted publisher as above. Verify the replacement is publicly installable before adding registry warnings; repository retirement alone does not deprecate npm versions:
+
+```sh
+npm view @henryqw/pi-herdr-tools@1.0.0 version
+for package in pi-herdr-btw pi-herdr-clone pi-herdr-rename pi-herdr-done; do
+  npm deprecate "@henryqw/$package@*" "Merged into @henryqw/pi-herdr-tools. Install the replacement, remove old installs, and restart Pi. See https://pi.henry.wang/extensions/pi-herdr-tools for migration."
+  npm view "@henryqw/$package" deprecated
+done
+```
+
+Registry deprecation requires maintainer authentication and may require browser 2FA. It adds install warnings without unpublishing versions or deleting users' data. Do not deprecate the old packages before the replacement is available.

@@ -109,7 +109,7 @@ fi
 case "$1" in
   --version) printf 'pi 0.85.1\\n' ;;
   install)
-    ${installFails ? "[ \"$2\" != \"npm:@henryqw/pi-herdr-btw\" ] || exit 1" : ":"}
+    ${installFails ? "[ \"$2\" != \"npm:@henryqw/pi-herdr-tools\" ] || exit 1" : ":"}
     ;;
   list) [ ! -f "$source" ] || printf 'User packages:\\n  ${packageSource}\\n    /tmp/legacy-package\\n' ;;
   uninstall)
@@ -167,16 +167,17 @@ test("all mode requires Herdr 0.9.0, installs every extension, and skips absent 
   });
 });
 
-test("pi-herdr-btw alone retains the Herdr 0.7.4 floor", () => {
+test("pi-herdr-tools alone retains the Herdr 0.7.4 floor", () => {
   withInstaller(compatiblePi, baseHerdr, ({ commands, runInstaller }) => {
     assert.equal(runInstaller().status, 0);
     assert.deepEqual(commands(), [
       "pi --version",
       "herdr --version",
-      "pi install npm:@henryqw/pi-herdr-btw",
+      "pi install npm:@henryqw/pi-herdr-tools",
+      "pi list",
     ]);
   }, {
-    extensions: ["@henryqw/pi-herdr-btw"],
+    extensions: ["@henryqw/pi-herdr-tools"],
     herdrLatest: "0.7.4",
   });
 });
@@ -317,12 +318,12 @@ test("a pi-subagent upgrade removes only the exact retired npm source after inst
       "pi --version",
       "herdr --version",
       "pi install npm:@henryqw/pi-subagent",
-      "pi install npm:@henryqw/pi-herdr-btw",
+      "pi install npm:@henryqw/pi-herdr-tools",
       "pi list",
       "pi uninstall npm:@henryqw/pi-auto-dag",
       "pi list",
     ]);
-  }, { extensions: ["@henryqw/pi-subagent", "@henryqw/pi-herdr-btw"] });
+  }, { extensions: ["@henryqw/pi-subagent", "@henryqw/pi-herdr-tools"] });
 });
 
 test("a pi-subagent upgrade removes the retired orchestrator source after installation", () => {
@@ -339,6 +340,33 @@ test("a pi-subagent upgrade removes the retired orchestrator source after instal
   }, { extensions: ["@henryqw/pi-subagent"] });
 });
 
+test("folded packages are removed only after their selected replacement installs", () => {
+  for (const [replacement, retired] of [
+    ["@henryqw/pi-herdr-tools", "npm:@henryqw/pi-herdr-btw"],
+    ["@henryqw/pi-herdr-tools", "npm:@henryqw/pi-herdr-clone"],
+    ["@henryqw/pi-herdr-tools", "npm:@henryqw/pi-herdr-rename"],
+    ["@henryqw/pi-herdr-tools", "npm:@henryqw/pi-herdr-done"],
+    ["@henryqw/pi-footer", "npm:@henryqw/pi-open-in"],
+  ]) {
+    withInstaller(legacyPi({ packageSource: retired }), baseHerdr, ({ commands, runInstaller }) => {
+      assert.equal(runInstaller().status, 0);
+      assert.deepEqual(commands(), [
+        "pi --version", "herdr --version", `pi install npm:${replacement}`,
+        "pi list", `pi uninstall ${retired}`, "pi list",
+      ]);
+    }, { extensions: [replacement], herdrLatest: "0.7.4" });
+  }
+});
+
+test("selecting footer does not remove the retired Herdr completion package", () => {
+  withInstaller(legacyPi({ packageSource: "npm:@henryqw/pi-herdr-done" }), baseHerdr, ({ commands, runInstaller }) => {
+    assert.equal(runInstaller().status, 0);
+    assert.deepEqual(commands(), [
+      "pi --version", "herdr --version", "pi install npm:@henryqw/pi-footer", "pi list",
+    ]);
+  }, { extensions: ["@henryqw/pi-footer"], herdrLatest: "0.7.4" });
+});
+
 test("legacy cleanup does not run when a selected replacement install fails", () => {
   withInstaller(legacyPi({ installFails: true }), compatibleHerdr, ({ commands, runInstaller }) => {
     assert.equal(runInstaller().status, 1);
@@ -346,9 +374,9 @@ test("legacy cleanup does not run when a selected replacement install fails", ()
       "pi --version",
       "herdr --version",
       "pi install npm:@henryqw/pi-subagent",
-      "pi install npm:@henryqw/pi-herdr-btw",
+      "pi install npm:@henryqw/pi-herdr-tools",
     ]);
-  }, { extensions: ["@henryqw/pi-subagent", "@henryqw/pi-herdr-btw"] });
+  }, { extensions: ["@henryqw/pi-subagent", "@henryqw/pi-herdr-tools"] });
 });
 
 test("legacy cleanup ignores package-name substrings", () => {
