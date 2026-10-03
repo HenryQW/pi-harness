@@ -36,11 +36,11 @@ Each run launches a new Pi process in `cwd` with the Role's resources, the job's
 
 ![An open Pi session claims due work in shared state, launches a bounded child, and delivers its result.](./docs/cron-flow.svg)
 
-1. On session start and every minute after, the extension loads the config and checks each enabled job.
+1. On session start and every minute after, the extension checks the configured jobs. Before admitting each one, it reloads the config so edits, disablement, and removal made during an earlier run take effect.
 2. A job seen for the first time only records a baseline; it first runs at its next slot. Use `/cron run` for an immediate run.
 3. A local run slot is admitted before the due job is claimed in shared state, so claims never wait in a child queue. A fresh claim excludes other Pi sessions. A missed slot, for example while no Pi was open, produces one catch-up run, not a backlog.
 4. The run is bounded by `limits`: turn count, idle timeout, and maximum runtime. The outcome, a bounded output summary, and the session path (when a file exists) are recorded.
-5. Delivery follows the job's `notify`: `notify` shows a one-line notice, `followUp` sends the output into the current conversation and starts a turn, `none` stays quiet. Failures always show a notice.
+5. Delivery follows the job's `notify`: `notify` shows a one-line notice, `followUp` sends the output into the current conversation and starts a turn, `none` stays quiet. Failures show a notice while a session UI is active. A rejected follow-up does not change the saved run outcome; synchronous delivery errors show a recovery notice.
 
 ## Config
 
@@ -83,7 +83,7 @@ Package-owned: `~/.pi/agent/config/pi-cron/config.json`
 | `limits.idleMinutes` | Minutes without child activity before the run is stopped. | Positive number; converted milliseconds must be ≤ 2,147,483,647. | `10` |
 | `limits.maxMinutes` | Hard runtime cap per run. | Greater than `idleMinutes`; converted milliseconds must be ≤ 2,147,483,647. | `30` |
 
-Only you edit this file, except that `/cron` toggles a job's `enabled` flag after you choose Enable or Disable. Changes apply at the next check without restarting Pi. Unknown keys, a job with both or neither schedule, an unknown time zone, a relative path, or an invalid route block all jobs with one error notice until the file is fixed; the file is never rewritten to recover.
+Only you edit this file, except that `/cron` toggles a job's `enabled` flag after you choose Enable or Disable. Changes apply before the next scheduled admission without restarting Pi; newly added jobs wait until the next check. An already running job keeps its admitted definition and limits. Unknown keys, a job with both or neither schedule, an unknown time zone, a relative path, or an invalid route block all jobs with one error notice until the file is fixed; the file is never rewritten to recover.
 
 Keep secrets out of this file. The run inherits the current session's environment, so point `env` at a private file or export the variable in the shell that starts Pi.
 
@@ -99,4 +99,4 @@ Jobs run only while a Pi session with this extension is open; there is no backgr
 
 A run cannot answer approval prompts or questions, so a Role that needs interactive confirmation will stall until the idle timeout. A failed or timed-out run records `failure` with the error text. Open the session file when one was created; pre-launch failures have no session and `/cron` says `Session: none created`. Use `/cron run <job-id>` to retry.
 
-A run claim older than `limits.maxMinutes` plus five minutes is treated as stale and may be reclaimed. Runs are launched one at a time per Pi session. `/cron run` reports busy instead of queueing when another local job is active; due scheduled jobs are reconsidered on a later check. Shutdown aborts pending preparation and the active child, even if another Pi session starts in the same process.
+Each claim stores its expiration at admission: the original `limits.maxMinutes` plus five minutes after its start. It may be reclaimed only when that deadline is reached; lowering limits does not expire an active claim early. Runs are launched one at a time per Pi session. `/cron run` reports busy instead of queueing when another local job is active; due scheduled jobs are reconsidered on a later check. Shutdown aborts pending preparation and the active child, even if another Pi session starts in the same process. Results are still recorded, but are not delivered into a shutting-down session. Use `/cron` → Show last run to recover a result that could not be delivered.

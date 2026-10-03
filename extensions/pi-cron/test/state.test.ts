@@ -27,6 +27,17 @@ test("a stale owner's completion cannot clear or overwrite a replacement claim",
 	assert.equal(state.loadSync().jobs.job!.lastOutcome, "success");
 });
 
+test("shorter admission limits cannot expire a claim taken with a longer runtime", async (t) => {
+	const state = await store(t);
+	const original = (await state.claim("job", schedule, 1, options))!;
+	assert.equal(original.expiresAt, 100_001);
+	const shortened = { owner: "other", staleMs: 5, force: false };
+	assert.equal(await state.claim("job", schedule, 60_001, shortened), undefined, "interval is due but the original deadline has not passed");
+	const replacement = (await state.claim("job", schedule, original.expiresAt, shortened))!;
+	assert.equal(replacement.owner, "other");
+	assert.equal(replacement.expiresAt, 100_006);
+});
+
 test("not-due and held claims do not replace state; first sighting still records a baseline", async (t) => {
 	const state = await store(t);
 	assert.equal(await state.claim("constructor", schedule, 1, { ...options, force: false }), undefined);
@@ -46,9 +57,12 @@ test("malformed nested state is reported without replacing the original file", a
 		{ firstSeenAt: 1, lastFinishedAt: 8.64e15 + 1 }, { firstSeenAt: 1, lastOutcome: "maybe" },
 		{ firstSeenAt: 1, lastOutcome: "success" }, { firstSeenAt: 1, lastSummary: 1 },
 		{ firstSeenAt: 1, lastSession: "relative.jsonl" }, { firstSeenAt: 1, extra: true },
-		{ firstSeenAt: 1, running: { startedAt: "now", owner: "one" } },
-		{ firstSeenAt: 1, running: { startedAt: 1, owner: "" } },
-		{ firstSeenAt: 1, running: { startedAt: 1, owner: "one", extra: true } },
+		{ firstSeenAt: 1, running: { startedAt: "now", owner: "one", expiresAt: 3 } },
+		{ firstSeenAt: 1, running: { startedAt: 1, owner: "", expiresAt: 3 } },
+		{ firstSeenAt: 1, running: { startedAt: 1, owner: "one", expiresAt: 3, extra: true } },
+		{ firstSeenAt: 1, running: { startedAt: 1, owner: "one" } },
+		{ firstSeenAt: 1, running: { startedAt: 1, owner: "one", expiresAt: "later" } },
+		{ firstSeenAt: 1, running: { startedAt: 1, owner: "one", expiresAt: 1 } },
 	];
 	for (const record of invalidRecords) {
 		const contents = JSON.stringify({ version: 1, jobs: { job: record } });

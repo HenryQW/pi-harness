@@ -7,6 +7,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type { EphemeralSubagentExecutor, EphemeralSubagentRunInput } from "@henryqw/pi-subagent";
 import { lock } from "proper-lockfile";
 import cronExtension, { CRON_RESULT_TYPE } from "../extensions/cron.ts";
+import type { Limits } from "../internal/config.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => void | Promise<void>;
 type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -42,6 +43,7 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 	const notices: string[] = [];
 	const messages: unknown[] = [];
 	const prepared: Prepared[] = [];
+	const policies: Required<Limits>[] = [];
 	let command: Command | undefined;
 	let selections: string[] = [];
 	const events = new Map<string, Array<(payload: unknown) => void>>();
@@ -90,12 +92,12 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 			return { ...result, exitCode: result.outcome === "success" ? 0 : 1, outputTruncated: false, stderr: "" };
 		},
 	};
-	cronExtension(pi, { agentDir, executor: () => fakeExecutor, now: () => now, tickMs: 3_600_000 });
+	cronExtension(pi, { agentDir, executor: (limits) => { policies.push(limits); return fakeExecutor; }, now: () => now, tickMs: 3_600_000 });
 	const emit = async (event: string) => {
 		for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
 	};
 	return {
-		notices, messages, prepared, emit, ctx,
+		notices, messages, prepared, policies, emit, ctx, pi,
 		command: (args: string) => command!(args, ctx),
 		setNow: (value: number) => { now = value; },
 		select: (...choices: string[]) => { selections = choices; },
@@ -234,6 +236,63 @@ test("pre-launch failures record no session and the menu explains its absence", 
 	await h.command("");
 	assert.ok(h.notices.some((notice) => notice.includes("Session: none created")));
 	await h.emit("session_shutdown");
+});
+
+test("later scheduled admissions reload edited jobs and limits, skipping disabled or removed jobs", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const jobs = ["first", "edited", "disabled", "removed"].map((id) => ({ id, every: "1m", role: "scout", cwd: agentDir, prompt: id }));
+	await writeJobs(jobs);
+	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
+	const h = harness(async (run) => {
+		if (run.task === "first") await gate;
+		return { outcome: "success", output: "done" };
+	});
+	await h.emit("session_start");
+	await h.settle();
+	h.setNow(SLOT);
+	await h.emit("session_start");
+	await h.settle();
+	assert.equal(h.prepared.length, 1);
+	await writeFile(join(agentDir, "config", "pi-cron", "config.json"), JSON.stringify({
+		jobs: [jobs[0], { ...jobs[1], prompt: "edited-v2" }, { ...jobs[2], enabled: false }],
+		limits: { maxTurns: 3 },
+	}));
+	release();
+	await h.settle();
+	assert.deepEqual(h.prepared.map((run) => run.task), ["first", "edited-v2"]);
+	assert.deepEqual(h.policies.map((limits) => limits.maxTurns), [50, 3]);
+	await h.emit("session_shutdown");
+});
+
+test("follow-up delivery failure reports recovery without changing the recorded success", async () => {
+	await writeJobs([{ id: "delivery", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false, notify: "followUp" }]);
+	const h = harness(async () => ({ outcome: "success", output: "Task completed." }));
+	h.pi.sendMessage = () => { throw new Error("session unavailable"); };
+	await h.emit("session_start");
+	await h.command("run delivery");
+	await h.settle();
+	const record = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs.delivery;
+	assert.equal(record.lastOutcome, "success");
+	assert.ok(h.notices.some((notice) => notice.includes("Follow-up delivery failed: session unavailable") && notice.includes("/cron → Show last run") && notice.includes(record.lastSession)));
+	assert.ok(!h.notices.some((notice) => notice.includes("could not run")));
+	await h.emit("session_shutdown");
+});
+
+test("a result recorded after shutdown is not sent into a tearing-down session", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	await writeJobs([{ id: "teardown", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false, notify: "followUp" }]);
+	const h = harness(async () => { await gate; return { outcome: "success", output: "Task completed." }; });
+	await h.emit("session_start");
+	await h.command("run teardown");
+	await h.settle();
+	await h.emit("session_shutdown");
+	release();
+	await h.settle();
+	assert.equal(h.messages.length, 0);
+	const record = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs.teardown;
+	assert.equal(record.lastOutcome, "success");
 });
 
 test("an invalid config pauses jobs with one visible error", async () => {

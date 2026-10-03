@@ -108,18 +108,23 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	};
 
 	const deliver = (ctx: ExtensionContext, job: Job, outcome: Outcome, output: string, sessionFile?: string): void => {
+		if (shutdown.signal.aborted) return;
 		const mode = jobNotify(job);
 		const headline = `Scheduled job ${job.id} ${outcome === "success" ? "finished" : "failed"} · ${sessionFile ?? "no session created"}`;
 		if (mode === "followUp") {
-			pi.sendMessage({
-				customType: CRON_RESULT_TYPE,
-				content: `${headline}\n\n${summarize(output, FOLLOW_UP_BYTES)}`,
-				display: true,
-				details: { jobId: job.id, outcome, sessionFile },
-			}, { triggerTurn: true, deliverAs: "followUp" });
+			try {
+				pi.sendMessage({
+					customType: CRON_RESULT_TYPE,
+					content: `${headline}\n\n${summarize(output, FOLLOW_UP_BYTES)}`,
+					display: true,
+					details: { jobId: job.id, outcome, sessionFile },
+				}, { triggerTurn: true, deliverAs: "followUp" });
+			} catch (error) {
+				if (ctx.hasUI) ctx.ui.notify(`${headline}\nFollow-up delivery failed: ${errorText(error)}\nResult saved; use /cron → Show last run.`, "warning");
+			}
 			return;
 		}
-		// Failures always surface in the UI; `none` silences only successes.
+		// In an active UI, `none` silences only successes.
 		if ((mode === "notify" || outcome === "failure") && ctx.hasUI) {
 			ctx.ui.notify(outcome === "success" ? headline : `${headline}\n${summarize(output, SUMMARY_BYTES)}`, outcome === "success" ? "info" : "error");
 		}
@@ -191,14 +196,18 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 		if (ticking || !latestCtx || signal.aborted) return;
 		ticking = true;
 		try {
-			const config = loadConfig(latestCtx);
-			if (!config) return;
-			for (const job of config.jobs.filter(jobEnabled)) {
+			const initial = loadConfig(latestCtx);
+			if (!initial) return;
+			for (const id of initial.jobs.map((job) => job.id)) {
 				if (signal.aborted) return;
+				const config = loadConfig(latestCtx);
+				if (!config) return;
+				const job = config.jobs.find((candidate) => candidate.id === id);
+				if (!job || !jobEnabled(job)) continue;
 				try {
 					await (await runJob(latestCtx, config, job, false)).done;
 				} catch (error) {
-					if (latestCtx.hasUI) latestCtx.ui.notify(`pi-cron could not schedule ${job.id}: ${errorText(error)}`, "error");
+					if (!signal.aborted && latestCtx.hasUI) latestCtx.ui.notify(`pi-cron could not schedule ${job.id}: ${errorText(error)}`, "error");
 				}
 			}
 		} finally {
@@ -285,7 +294,9 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			ctx.ui.notify(run.reason, "warning");
 			return;
 		}
-		run.done.catch((error) => ctx.ui.notify(`pi-cron could not run ${job.id}: ${errorText(error)}`, "error"));
+		run.done.catch((error) => {
+			if (!shutdown.signal.aborted && latestCtx?.hasUI) latestCtx.ui.notify(`pi-cron could not run ${job.id}: ${errorText(error)}`, "error");
+		});
 		ctx.ui.notify(`Started ${job.id}; the result arrives as ${jobNotify(job) === "followUp" ? "a follow-up message" : "a notification"}.`, "info");
 	}
 }

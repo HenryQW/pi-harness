@@ -16,7 +16,7 @@ export interface JobState {
 	lastOutcome?: Outcome;
 	lastSummary?: string;
 	lastSession?: string;
-	running?: { startedAt: number; owner: string };
+	running?: { startedAt: number; owner: string; expiresAt: number };
 }
 
 export interface CronState {
@@ -28,6 +28,7 @@ export interface Claim {
 	dueAt: number;
 	startedAt: number;
 	owner: string;
+	expiresAt: number;
 }
 
 const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -54,8 +55,9 @@ function parseState(value: unknown, path: string): CronState {
 		if (job.lastSession !== undefined && (!text(job.lastSession) || !isAbsolute(job.lastSession))) invalid(`${id}.lastSession`);
 		if (job.lastOutcome !== undefined && (job.lastFinishedAt === undefined || job.lastSummary === undefined)) invalid(`${id} result`);
 		if (job.running !== undefined) {
-			const run = object(job.running, ["startedAt", "owner"], `${id}.running`);
-			if (!timestamp(run.startedAt) || !text(run.owner) || !run.owner.trim()) invalid(`${id}.running identity`);
+			const run = object(job.running, ["startedAt", "owner", "expiresAt"], `${id}.running`);
+			if (!timestamp(run.startedAt) || !text(run.owner) || !run.owner.trim()
+				|| !timestamp(run.expiresAt) || (run.expiresAt as number) <= (run.startedAt as number)) invalid(`${id}.running identity or expiration`);
 		}
 	}
 	return { version: 1, jobs: Object.assign(Object.create(null), state.jobs) as Record<string, JobState> };
@@ -105,11 +107,11 @@ export class StateStore {
 		return this.update((state) => {
 			const newJob = state.jobs[id] === undefined;
 			const job = state.jobs[id] ??= { firstSeenAt: now };
-			if (job.running && now - job.running.startedAt < options.staleMs) return { value: undefined, changed: false };
+			if (job.running && now < job.running.expiresAt) return { value: undefined, changed: false };
 			const anchor = Math.max(job.firstSeenAt, job.lastStartedAt ?? 0);
 			const due = options.force ? now : dueAt(schedule, now, anchor);
 			if (due === undefined) return { value: undefined, changed: newJob };
-			job.running = { startedAt: now, owner: options.owner };
+			job.running = { startedAt: now, owner: options.owner, expiresAt: now + Math.ceil(options.staleMs) };
 			job.lastStartedAt = now;
 			return { value: { dueAt: due, ...job.running }, changed: true };
 		});
