@@ -838,9 +838,7 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		} as never, ctx), undefined, "an oversized fresh input cannot be dropped");
 		assert.match(notices.at(-1) ?? "", /cannot safely reduce this first request/);
 
-		// No provider usage yet, so the guard falls back to character estimates.
-		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+		// Assistant messages without usage fall back to character estimates.
 		const leadingSystem = {
 			role: "system",
 			content: "s".repeat(600),
@@ -857,13 +855,13 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		const messages = [
 			leadingSystem,
 			{ role: "user", content: big, timestamp: 1 },
-			{ role: "assistant", content: big, usage, timestamp: 2 },
+			{ role: "assistant", content: big, timestamp: 2 },
 			promptUpdate,
 			{ role: "toolResult", content: big, timestamp: 3 },
 			{ role: "user", content: "m".repeat(200), timestamp: 4 },
-			{ role: "assistant", content: "m".repeat(200), usage, timestamp: 5 },
+			{ role: "assistant", content: "m".repeat(200), timestamp: 5 },
 			{ role: "user", content: "continue", timestamp: 6 },
-			{ role: "assistant", content: "done", usage, timestamp: 7 },
+			{ role: "assistant", content: "done", timestamp: 7 },
 		];
 		const result = handlers.get("context_with_system")?.({
 			type: "context_with_system",

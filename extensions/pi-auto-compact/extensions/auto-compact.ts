@@ -112,7 +112,8 @@ function contextTokens(messages: AgentMessage[]): number {
 	let latestPrefix = Number.NEGATIVE_INFINITY;
 	let usage: { tokens: number; index: number } | undefined;
 	messages.forEach((message, index) => {
-		if (message.role === "assistant" && message.timestamp >= latestPrefix &&
+		// Context hooks may supply assistant messages without usage.
+		if (message.role === "assistant" && message.usage && message.timestamp >= latestPrefix &&
 			message.stopReason !== "aborted" && message.stopReason !== "error") {
 			const tokens = calculateContextTokens(message.usage);
 			if (tokens > 0) usage = { tokens, index };
