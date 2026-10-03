@@ -586,6 +586,32 @@ test("direct prompt acknowledges before turn settlement and accepts an already s
 	});
 });
 
+test("direct idle wait timeout accepts the persisted answer before another wait", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, () => "answer after timeout");
+			const app = harness({ cwd, herdr: async (args) => {
+				const response = await fake.exec(args);
+				if (args[0] === "agent" && args[1] === "prompt") {
+					const body = JSON.parse(response.stdout);
+					body.result.agent.agent_status = "idle";
+					return { ...response, stdout: JSON.stringify(body) };
+				}
+				if (args[0] === "agent" && args[1] === "wait") {
+					return { code: 1, stdout: JSON.stringify({ error: { code: "timeout" } }), stderr: "" };
+				}
+				return response;
+			} });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("idle-timeout", { role: "worker", name: "Inspect", task: "inspect" }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.equal(app.sentMessages[0]!.message.details.entries[0].summary, "answer after timeout");
+			assert.equal(fake.calls.filter((args) => args[0] === "agent" && args[1] === "wait").length, 1);
+		});
+	});
+});
+
 test("direct chain waits for exact prior result and rejects writer Roles before Herdr launch", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);

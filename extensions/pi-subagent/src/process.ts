@@ -4,7 +4,7 @@ const OUTPUT_LIMIT_BYTES = 1024 * 1024;
 
 type ProcessOptions = {
 	cwd: string;
-	signal: AbortSignal;
+	signal?: AbortSignal;
 	timeoutMs?: number;
 	stdin?: string;
 };

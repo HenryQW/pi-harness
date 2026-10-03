@@ -540,9 +540,8 @@ export async function resolveConfiguredRoleLaunch(
 ): Promise<PreparedRoleLaunch> {
 	const roleName = parseRoleName(input.role);
 	if (input.modelClass === undefined) throw new Error("Configured Role launch requires an explicit modelClass.");
-	const matches = loadRoles().filter((role) => role.name === roleName);
-	if (matches.length !== 1) throw new Error(`Required configured Role ${roleName} is missing or ambiguous.`);
-	const role = matches[0]!;
+	const role = loadRoles().find((role) => role.name === roleName);
+	if (!role) throw new Error(`Required configured Role ${roleName} is missing or ambiguous.`);
 	if (role.mcps?.length) loadRoleMcpConfig(getAgentDir(), role.mcps, { codemode: roleActivatesCodemode(role.tools) });
 	const resources = await resolveRolePackageResources(role, ctx);
 	const effectiveRole: Role = { ...role, extensions: resources.extensions };

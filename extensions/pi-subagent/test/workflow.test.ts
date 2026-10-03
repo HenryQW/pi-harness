@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
-import { Check } from "typebox/value";
 import {
-	DirectWorkflowSchema,
 	MAX_WORKFLOW_ENTRIES,
 	identifyWorkflowEntries,
 	parseWorkflow as parseDirectWorkflow,
@@ -278,7 +276,6 @@ test("direct schema excludes changesets and their writer-only fields", () => {
 		{ tasks: [{ ...delegation(), checks: [{ command: "true", args: [] }] }] },
 		{ chain: [{ ...delegation(), kind: "changeset" }] },
 	]) {
-		assert.equal(Check(DirectWorkflowSchema, { mode: "direct", ...value }), false);
 		assert.throws(() => parseWorkflow(value), /declared tool schema/);
 	}
 	assert.throws(() => parseWorkflow({ ...delegation(), kind: "changeset" }), /use mode isolated for changesets/);

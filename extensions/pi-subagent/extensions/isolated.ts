@@ -23,12 +23,12 @@ import {
 	IntegrationActionParameters,
 	parseIntegrationAction,
 	parseStageRequest,
-	parseExecuteRequest,
 	parseIdOnly,
 	parseResumeRequest,
 	sameIdentity,
 	StatusOutputSchema,
 	type CheckBatchEvidence,
+	type ExecuteRequest,
 	type ModelClass,
 	type ReviewEvidence,
 	type RunState,
@@ -412,7 +412,7 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 }
 
 export interface IsolatedSurface {
-	execute(params: unknown, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
+	execute(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string, current?: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
@@ -767,10 +767,9 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			requireCurrent(current);
 			return getComponents().runner.drainFollowups(root, requestId, taskId);
 		},
-		async execute(params, signal, ctx) {
+		async execute(request, signal, ctx) {
 			latestCtx = ctx;
 			latestContext();
-			const request = parseExecuteRequest(params);
 			const root = await lookupRoot(ctx.cwd, signal);
 			return await startInSession(request.id, root, signal, ctx,
 				(state) => state.status === "pending" && state.createdAt === state.updatedAt

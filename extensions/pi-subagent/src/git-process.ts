@@ -1,7 +1,6 @@
-import { spawnBounded } from "@henryqw/pi-process";
+import { runProcess } from "./process.ts";
 
 const GIT_TIMEOUT_MS = 30_000;
-const GIT_OUTPUT_LIMIT_BYTES = 1 * 1024 * 1024;
 const GIT_DIAGNOSTIC_LIMIT = 200;
 
 export type GitResult = {
@@ -15,13 +14,7 @@ export type GitRunner = (args: string[], cwd: string, signal?: AbortSignal) => P
 /** Run one ordinary Git command with bounded output; transport failures never throw. */
 export const runGit: GitRunner = async (args, cwd, signal) => {
 	try {
-		const result = await spawnBounded("git", ["--no-pager", ...args], {
-			cwd,
-			signal,
-			timeoutMs: GIT_TIMEOUT_MS,
-			stdoutLimitBytes: GIT_OUTPUT_LIMIT_BYTES,
-			stderrLimitBytes: GIT_OUTPUT_LIMIT_BYTES,
-		});
+		const result = await runProcess("git", ["--no-pager", ...args], { cwd, signal, timeoutMs: GIT_TIMEOUT_MS });
 		if (result.killed) {
 			return {
 				code: -1,
