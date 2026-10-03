@@ -339,6 +339,30 @@ test("a pi-subagent upgrade removes the retired orchestrator source after instal
   }, { extensions: ["@henryqw/pi-subagent"] });
 });
 
+test("folded packages are removed only after their selected replacement installs", () => {
+  for (const [replacement, retired] of [
+    ["@henryqw/pi-herdr-clone", "npm:@henryqw/pi-herdr-done"],
+    ["@henryqw/pi-footer", "npm:@henryqw/pi-open-in"],
+  ]) {
+    withInstaller(legacyPi({ packageSource: retired }), baseHerdr, ({ commands, runInstaller }) => {
+      assert.equal(runInstaller().status, 0);
+      assert.deepEqual(commands(), [
+        "pi --version", "herdr --version", `pi install npm:${replacement}`,
+        "pi list", `pi uninstall ${retired}`, "pi list",
+      ]);
+    }, { extensions: [replacement], herdrLatest: "0.7.4" });
+  }
+});
+
+test("selecting footer does not remove the retired Herdr completion package", () => {
+  withInstaller(legacyPi({ packageSource: "npm:@henryqw/pi-herdr-done" }), baseHerdr, ({ commands, runInstaller }) => {
+    assert.equal(runInstaller().status, 0);
+    assert.deepEqual(commands(), [
+      "pi --version", "herdr --version", "pi install npm:@henryqw/pi-footer", "pi list",
+    ]);
+  }, { extensions: ["@henryqw/pi-footer"], herdrLatest: "0.7.4" });
+});
+
 test("legacy cleanup does not run when a selected replacement install fails", () => {
   withInstaller(legacyPi({ installFails: true }), compatibleHerdr, ({ commands, runInstaller }) => {
     assert.equal(runInstaller().status, 1);

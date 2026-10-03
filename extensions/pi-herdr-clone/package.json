@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-herdr-clone",
-  "version": "2.0.5",
-  "description": "Clone the current Pi conversation path into a new Herdr tab.",
+  "version": "2.1.0",
+  "description": "Clone Pi conversations into Herdr tabs or worktrees, then safely finish worktree tasks.",
   "keywords": [
     "pi-package",
     "pi",
@@ -18,6 +18,7 @@
     "LICENSE",
     "extensions",
     "docs/clone-flow.svg",
+    "docs/done-flow.svg",
     "README.md"
   ],
   "scripts": {
@@ -29,7 +30,7 @@
     "@earendil-works/pi-coding-agent": ">=0.86.0 <0.100.0 || ^1.0.0"
   },
   "dependencies": {
-    "@henryqw/pi-herdr": "^0.4.0"
+    "@henryqw/pi-herdr": "^0.4.1"
   },
   "repository": {
     "type": "git",
@@ -44,7 +45,8 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/clone-tab.ts",
+      "./extensions/done.ts"
     ]
   },
   "devDependencies": {

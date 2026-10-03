@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-footer",
-  "version": "2.2.4",
-  "description": "Show concise repository, branch, and usage details in the Pi footer.",
+  "version": "2.3.0",
+  "description": "Show repository and usage details in the Pi footer and open the current working directory.",
   "keywords": [
     "pi-package",
     "pi",
@@ -19,6 +19,9 @@
     "README.md",
     "example.png"
   ],
+  "exports": {
+    "./open-uri": "./extensions/open.ts"
+  },
   "scripts": {
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
@@ -41,12 +44,13 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/footer.ts"
+      "./extensions/footer.ts",
+      "./extensions/open.ts"
     ],
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-footer/example.png"
   },
   "dependencies": {
-    "@henryqw/pi-open-in": "^3.0.0"
+    "@henryqw/pi-config-store": "^2.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.0.0",

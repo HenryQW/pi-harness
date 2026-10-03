@@ -27,12 +27,10 @@ EXTENSIONS='
 @henryqw/pi-footer
 @henryqw/pi-herdr-btw
 @henryqw/pi-herdr-clone
-@henryqw/pi-herdr-done
 @henryqw/pi-herdr-rename
 @henryqw/pi-memory
 @henryqw/pi-multi-codex
 @henryqw/pi-notes
-@henryqw/pi-open-in
 @henryqw/pi-pr
 @henryqw/pi-prompt-creator
 @henryqw/pi-rtk-test
@@ -287,11 +285,9 @@ ensure_pi() {
 
 select_herdr_minimum() {
   required_herdr_version=$HERDR_MIN_VERSION
-  subagent_selected=false
   for extension in $selected_extensions; do
     if [ "$extension" = "$SUBAGENT_PACKAGE" ]; then
       required_herdr_version=$HERDR_SUBAGENT_MIN_VERSION
-      subagent_selected=true
       return 0
     fi
   done
@@ -440,12 +436,20 @@ source_is_installed() {
 }
 
 remove_retired_package_sources() {
-  [ "$subagent_selected" = true ] || return 0
+  retired_sources=
+  for extension in $selected_extensions; do
+    case "$extension" in
+      "$SUBAGENT_PACKAGE") retired_sources="$retired_sources $RETIRED_PACKAGE_SOURCES" ;;
+      "@henryqw/pi-herdr-clone") retired_sources="$retired_sources npm:@henryqw/pi-herdr-done" ;;
+      "@henryqw/pi-footer") retired_sources="$retired_sources npm:@henryqw/pi-open-in" ;;
+    esac
+  done
+  [ -n "$retired_sources" ] || return 0
 
   if ! installed_sources=$("$pi_bin" list); then
     die "Could not list installed Pi package sources before checking for retired packages."
   fi
-  for source in $RETIRED_PACKAGE_SOURCES; do
+  for source in $retired_sources; do
     if ! source_is_installed "$installed_sources" "$source"; then
       continue
     fi

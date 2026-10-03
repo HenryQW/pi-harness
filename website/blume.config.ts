@@ -127,6 +127,14 @@ export default defineConfig({
   },
   redirects: [
     {
+      from: "/extensions/pi-herdr-done",
+      to: "/extensions/pi-herdr-clone",
+    },
+    {
+      from: "/extensions/pi-open-in",
+      to: "/extensions/pi-footer",
+    },
+    {
       from: "/extensions/pi-config-store",
       to: "/packages/pi-config-store",
     },
