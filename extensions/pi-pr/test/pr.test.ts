@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import type {
+	AgentBeforeSettleEventResult,
 	ExecOptions,
 	ExecResult,
 	ExtensionAPI,
@@ -25,7 +27,7 @@ type Loader = (
 	inspectedLocal?: unknown,
 	observation?: unknown,
 ) => Promise<CurrentPullRequest | CurrentPullRequestDiscovery | null>;
-type EventHandler = (event: unknown, context: ExtensionContext) => Promise<void> | void;
+type EventHandler = (event: unknown, context: ExtensionContext) => Promise<AgentBeforeSettleEventResult | void> | AgentBeforeSettleEventResult | void;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 type Tool = Parameters<ExtensionAPI["registerTool"]>[0];
 type ExtensionDependencies = NonNullable<Parameters<typeof pullRequestExtension>[1]>;
@@ -183,8 +185,8 @@ function harness(options: {
 	inspectBranchRecovery?: ExtensionDependencies["inspectBranchRecovery"];
 	createCiFixer?: ExtensionDependencies["createCiFixer"];
 	isIdle?: () => boolean;
+	skillPath?: string;
 }) {
-	let beforeAgentStart: EventHandler | undefined;
 	let sessionStart: EventHandler | undefined;
 	let sessionShutdown: EventHandler | undefined;
 	let agentSettled: EventHandler | undefined;
@@ -230,7 +232,6 @@ function harness(options: {
 
 	pullRequestExtension({
 		on(event: string, handler: unknown) {
-			if (event === "before_agent_start") beforeAgentStart = handler as EventHandler;
 			if (event === "session_start") sessionStart = handler as EventHandler;
 			if (event === "session_shutdown") sessionShutdown = handler as EventHandler;
 			if (event === "agent_settled") agentSettled = handler as EventHandler;
@@ -250,7 +251,9 @@ function harness(options: {
 				"skill:pi-pr-update-branch",
 				"skill:pi-pr-comment-sweep",
 				"skill:pi-pr-fix-ci",
-			].map((name) => ({ name, source: "skill", sourceInfo: { origin: "package" } }));
+			].map((name) => ({ name, source: "skill", sourceInfo: {
+				origin: "package", path: options.skillPath ?? fileURLToPath(new URL(`../skills/${name.slice("skill:".length)}/SKILL.md`, import.meta.url)),
+			} }));
 		},
 		sendUserMessage(content: string) {
 			messages.push(content);
@@ -302,11 +305,8 @@ function harness(options: {
 		async shutdown(ctx: ExtensionContext): Promise<void> {
 			await handler(sessionShutdown, "session_shutdown")({} as never, callbackContext(ctx));
 		},
-		async beforeStart(prompt: string, ctx: ExtensionContext): Promise<void> {
-			await handler(beforeAgentStart, "before_agent_start")({ prompt } as never, callbackContext(ctx));
-		},
-		async beforeSettle(ctx: ExtensionContext, outcome = "completed"): Promise<void> {
-			await handler(agentBeforeSettle, "agent_before_settle")({ outcome, context: { canContinue: false } } as never, callbackContext(ctx));
+		async beforeSettle(ctx: ExtensionContext, outcome = "completed") {
+			return await handler(agentBeforeSettle, "agent_before_settle")({ outcome, entries: [], context: { canContinue: false } } as never, callbackContext(ctx));
 		},
 		async settle(ctx: ExtensionContext): Promise<void> {
 			await handler(agentSettled, "agent_settled")({} as never, callbackContext(ctx));
@@ -382,7 +382,7 @@ test("registers sequential model-only tools with flat object roots and strict ac
 	}
 });
 
-test("one /pr continues from a final answer through queued workflows without before_agent_start until external CI", async () => {
+test("one /pr continues from a final answer through hidden boundaries until external CI", async () => {
 	let stage = 0;
 	let run = 0;
 	const ids = [1, 2, 3, 4].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
@@ -420,6 +420,7 @@ test("one /pr continues from a final answer through queued workflows without bef
 	try {
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
+		const boundaryPrompts: string[] = [];
 		for (const [tool, args] of [
 			["pi_pr_create", { action: "publish", title: "fix", body: "Summary" }],
 			["pi_pr_update_branch", { action: "publish" }],
@@ -427,11 +428,18 @@ test("one /pr continues from a final answer through queued workflows without bef
 			["pi_pr_sweep", { action: "finalize", guard: { epoch: 1, runId: "run", generation: 1, fingerprint: "a".repeat(64) }, checks: [] }],
 		] as const) {
 			await app.callTool(tool, { runId: ids[stage], ...args }, ctx);
-			await app.beforeSettle(ctx);
+			const result = await app.beforeSettle(ctx);
+			if (result) {
+				assert.equal(result.continue, true);
+				const entry = result.entries![0]!;
+				assert.equal(entry.type, "custom_message");
+				if (entry.type === "custom_message") { assert.equal(entry.display, false); boundaryPrompts.push(String(entry.content)); }
+			}
 		}
 		assert.equal(stage, 4);
-		assert.deepEqual(app.messages.map((message) => message.match(/skill:pi-pr-[^ ]+/)?.[0]),
-			["skill:pi-pr-create", "skill:pi-pr-update-branch", "skill:pi-pr-fix-ci", "skill:pi-pr-comment-sweep"]);
+		assert.deepEqual(app.messages, [`/skill:pi-pr-create runId=${ids[0]} action=prepare`]);
+		assert.deepEqual(boundaryPrompts.map((prompt) => prompt.match(/name="([^"]+)"/)?.[1]),
+			["pi-pr-update-branch", "pi-pr-fix-ci", "pi-pr-comment-sweep"]);
 		assert.match(app.notifications.at(-1)!.message, /waiting for CI/);
 	} finally { await app.shutdown(ctx); }
 });
@@ -819,53 +827,59 @@ test("tool cancellation reaches only its active workflow action", async () => {
 	}
 });
 
-test("keeps a queued follow-up until its exact prompt starts, then clears an unused run", async () => {
-	const authority = currentPullRequest({ conditions: { ci: "failure" } });
-	let idle = false;
+for (const outcome of ["completed", "aborted", "error"]) {
+	test(`busy /pr launch is consumed at boundary or cancelled (${outcome})`, async () => {
+		let idle = false;
+		let loads = 0;
+		const app = harness({
+			async load() { loads += 1; return currentPullRequest({ conditions: { ci: "failure" } }); },
+			useDefaultCommandHandler: true, isIdle: () => idle, newRunId: () => routeRunId,
+			async canonicalWorktree() { return "/canonical/repo"; },
+			createCiFixer: () => ({} as never),
+		});
+		const ctx = app.context();
+		try {
+			await app.start(ctx);
+			await app.command().handler("", ctx as ExtensionCommandContext);
+			assert.deepEqual(app.messages, []);
+			const result = await app.beforeSettle(ctx, outcome);
+			if (outcome === "completed") {
+				assert.equal(result?.continue, true);
+				const entry = result?.entries?.[0];
+				assert.equal(entry?.type, "custom_message");
+				if (entry?.type === "custom_message") {
+					assert.equal(entry.display, false);
+					assert.match(String(entry.content), /name="pi-pr-fix-ci"/);
+					assert.match(String(entry.content), new RegExp(`runId=${routeRunId} action=collect`));
+				}
+				assert.equal(await app.beforeSettle(ctx), undefined, "an unused launch is not replayed");
+			} else assert.equal(result, undefined);
+			assert.equal(loads, 2, "launch handoff must not rediscover the reserved route");
+			idle = true;
+			await app.settle(ctx);
+			assert.equal(loads, 3);
+			await assert.rejects(app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "collect" }, ctx), /No PR workflow is active/);
+		} finally { await app.shutdown(ctx); }
+	});
+}
+
+test("reports an unreadable boundary skill and releases its reserved run without retry", async () => {
 	let loads = 0;
-	const calls: string[] = [];
 	const app = harness({
-		async load() { loads += 1; return authority; },
-		useDefaultCommandHandler: true,
-		isIdle: () => idle,
-		newRunId: () => routeRunId,
+		async load() { loads += 1; return currentPullRequest({ conditions: { ci: "failure" } }); },
+		useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => routeRunId,
 		async canonicalWorktree() { return "/canonical/repo"; },
-		createCiFixer() {
-			return {
-				async collect() { calls.push("collect"); return { fingerprint: "f".repeat(64), failures: [] }; },
-				async publish() { return { kind: "published", head: authority.head.oid, attempt: "applied" }; },
-			} as never;
-		},
+		createCiFixer: () => ({} as never), skillPath: "/missing/pi-pr-fix-ci/SKILL.md",
 	});
 	const ctx = app.context();
-
 	try {
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
-		idle = true;
-		await app.settle(ctx);
-		for (const prompt of [
-			`<skill name="pi-pr-fix-ci" location="/skills/fix-ci/SKILL.md">\n\nunrelated runId=prefix-${routeRunId}-suffix action=collect`,
-			`<skill name="pi-pr-comment-sweep" location="/skills/sweep/SKILL.md">\n\nrunId=${routeRunId} action=collect`,
-			`<skill name="pi-pr-fix-ci" location="/skills/fix-ci/SKILL.md">\n\nrunId=${routeRunId} action=publish`,
-		]) {
-			await app.beforeStart(prompt, ctx);
-			await app.settle(ctx);
-		}
-		assert.equal(loads, 2, "a substring or wrong helper identity must not finish the queued workflow");
-
-		await app.beforeStart(`<skill name="pi-pr-fix-ci" location="/skills/fix-ci/SKILL.md">\n\nrunId=${routeRunId} action=collect`, ctx);
-		await app.settle(ctx);
-		assert.equal(loads, 3);
-		assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
-		assert.deepEqual(calls, []);
-		await assert.rejects(
-			app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "collect" }, ctx),
-			/No PR workflow is active/,
-		);
-	} finally {
-		await app.shutdown(ctx);
-	}
+		assert.equal(await app.beforeSettle(ctx), undefined);
+		assert.match(app.notifications.at(-1)!.message, /PR continuation stopped:.*ENOENT/);
+		assert.equal(loads, 2, "failed launch must not immediately retry discovery");
+		await assert.rejects(app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "collect" }, ctx), /No PR workflow is active/);
+	} finally { await app.shutdown(ctx); }
 });
 
 test("keeps an exact conflict context for continuation, then clears it on settlement", async () => {

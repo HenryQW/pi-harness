@@ -49,7 +49,7 @@ The single highest-priority user-authorized workflow derived from the current li
 _Avoid_: Automatic remediation, PR action, workflow chain
 
 **PR helper run**:
-One random in-memory run ID bound to the current session generation, canonical worktree, selected route, and fresh route authority. Only one run may exist. Most runs end at agent settlement. An exact branch-update conflict may survive for one user-guided continuation. Session replacement and shutdown forget the run without changing a pending rebase.
+One random in-memory run ID bound to the current session generation, canonical worktree, selected route, and fresh route authority. Only one run may exist. Busy-session launches use hidden native settlement-boundary messages, never user input queues. Boundary handoff consumes the exact pending skill/run/action without `before_agent_start`; unused or cancelled runs end at settlement. Pi 1.0.0 or newer is required. Most runs end at agent settlement. An exact branch-update conflict may survive for one user-guided continuation. Session replacement and shutdown forget the run without changing a pending rebase.
 _Avoid_: Reusable token, serialized authority, global workflow context
 
 **PR next-step widget**:

@@ -8,7 +8,7 @@ See the current branch pull request in the Pi footer. Run `/pr` to create, updat
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`.
+Requires Pi 1.0.0 or newer, an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`.
 
 ## Works with
 
@@ -22,7 +22,7 @@ The required packages install with `pi-pr`; Herdr itself is optional.
 
 ## Use
 
-Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the next safe route, and continues until it needs external input, encounters a blocker, waits for CI or review, or merges. It works outside Herdr. A stopped workflow can be retried with `/pr` after the blocker is addressed.
+Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the next safe route, and continues until it needs external input, encounters a blocker, waits for CI or review, or merges. It works outside Herdr. A stopped workflow can be retried with `/pr` after the blocker is addressed. While Pi is busy, internal workflow guidance continues through hidden session context at settlement, not editable user steering or follow-up queues. Cancelling does not restore that guidance to the editor.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |

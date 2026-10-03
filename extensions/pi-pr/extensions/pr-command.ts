@@ -47,6 +47,7 @@ export type PrCommandHandler = (
 export type WorkflowPromptIdentity = Readonly<{
 	route: WorkflowNextStep;
 	skill: string;
+	path: string;
 	runId: string;
 	action: WorkflowLaunchAction;
 }>;
@@ -106,13 +107,11 @@ async function dispatchWorkflow(
 		runId = reserved.runId;
 		invocation?.assertCurrent();
 		const queued = !ctx.isIdle();
-		const identity = { route, skill: workflow.name, runId, action: reserved.action };
+		const identity = { route, skill: workflow.name, path: workflow.sourceInfo.path, runId, action: reserved.action };
 		markPromptQueued(identity, queued);
-		const options = queued
-			? { deliverAs: "followUp" as const, expandPromptTemplates: true }
-			: { expandPromptTemplates: true };
 		invocation?.assertCurrent();
-		pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}`, options);
+		// Busy-session launches are consumed by agent_before_settle, not user input queues.
+		if (!queued) pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}`, { expandPromptTemplates: true });
 	} catch (error) {
 		if (runId !== undefined) release(runId, invocation);
 		throw error;
