@@ -131,6 +131,149 @@ test("warns once at session start when config is missing", () => {
 	}
 });
 
+test("preset picker applies supplied profiles and preserves omitted profiles and current task assignments", async () => {
+	const dir = tempDir();
+	try {
+		const { handler } = controlPlane(eventBus(), dir);
+		const preset = {
+			fast: { primary: { model: "provider/quick", thinkingLevel: "off" } },
+			balanced: {
+				primary: { model: "provider/steady", thinkingLevel: "medium" },
+				fallback: { model: "provider/backup", thinkingLevel: "low" },
+			},
+			frontier: { primary: { model: "provider/deep", thinkingLevel: "high" } },
+		};
+		const fav = { primary: { model: "provider/favorite", thinkingLevel: "max" } };
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		const presetsFile = join(dir, "config", "pi-task-models", "presets.json");
+		const contents = JSON.stringify({ zeta: preset, alpha: preset });
+		writeFileSync(presetsFile, contents);
+		writeFileSync(configFile(dir), JSON.stringify({ profiles: {
+			...preset,
+			frontier: { ...preset.frontier, fallback: preset.fast.primary },
+		} }));
+		const notices: Array<[string, string]> = [];
+		await handler("preset", { ui: {
+			select: async (title: string, options: string[]) => {
+				assert.equal(title, "Task model preset");
+				assert.deepEqual(options, ["alpha", "zeta"]);
+				// Preserve unrelated changes made while the picker is open.
+				writeFileSync(configFile(dir), JSON.stringify({
+					profiles: { fav }, tasks: { "pi-example/review": "balanced" },
+				}));
+				return "alpha";
+			},
+			notify(message: string, level: string) { notices.push([message, level]); },
+		} });
+		assert.deepEqual(loadTaskModelsConfig(dir).value, {
+			profiles: { ...preset, fav }, tasks: { "pi-example/review": "balanced" },
+		});
+		assert.equal(readFileSync(presetsFile, "utf8"), contents);
+		assert.deepEqual(notices, [["Applied task model preset: alpha.", "info"]]);
+
+		const favorite = { primary: { model: "provider/new-favorite", thinkingLevel: "low" } };
+		writeFileSync(presetsFile, JSON.stringify({ "favorite-only": { fav: favorite } }));
+		await handler("preset", { ui: {
+			select: async (_title: string, options: string[]) => {
+				assert.deepEqual(options, ["favorite-only"]);
+				return "favorite-only";
+			},
+			notify() {},
+		} });
+		assert.deepEqual(loadTaskModelsConfig(dir).value, {
+			profiles: { ...preset, fav: favorite }, tasks: { "pi-example/review": "balanced" },
+		});
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("preset selection can create config; cancellation never writes", async () => {
+	const dir = tempDir();
+	try {
+		const { handler } = controlPlane(eventBus(), dir);
+		const profile = { primary: { model: "provider/model", thinkingLevel: "off" } };
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(join(dir, "config", "pi-task-models", "presets.json"), JSON.stringify({
+			setup: { fast: profile, balanced: profile, frontier: profile },
+		}));
+		let selected: string | undefined;
+		const ctx = { ui: { select: async () => selected, notify() {} } };
+		await handler("preset", ctx);
+		assert.throws(() => readFileSync(configFile(dir), "utf8"), { code: "ENOENT" });
+		selected = "setup";
+		await handler("preset", ctx);
+		assert.deepEqual(loadTaskModelsConfig(dir).value, {
+			profiles: { fast: profile, balanced: profile, frontier: profile }, tasks: {},
+		});
+		const contents = readFileSync(configFile(dir), "utf8");
+		selected = undefined;
+		await handler("preset", ctx);
+		assert.equal(readFileSync(configFile(dir), "utf8"), contents);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("missing, empty, or invalid presets leave active config and preset files untouched", async () => {
+	const dir = tempDir();
+	try {
+		const { handler } = controlPlane(eventBus(), dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		const active = JSON.stringify({ tasks: { "pi-example/review": "fast" } });
+		writeFileSync(configFile(dir), active);
+		const path = join(dir, "config", "pi-task-models", "presets.json");
+		const profile = { primary: { model: "provider/model", thinkingLevel: "off" } };
+		for (const [contents, expected] of [
+			[undefined, /Couldn't read task model presets.*presets\.json/],
+			["{}", /No presets found/],
+			["{ not json", /Invalid JSON\./],
+			[JSON.stringify({ invalid: null }), /profiles must be an object/],
+			[JSON.stringify({ invalid: { fast: profile, balanced: profile, frontier: {
+				primary: { model: "provider/model", thinkingLevel: "wrong" },
+			} } }), /frontier profile is invalid/],
+			[JSON.stringify({ invalid: { unknown: profile } }), /Unknown profile: unknown/],
+			[JSON.stringify({ invalid: { fav: { ...profile, fallback: profile.primary } } }), /fav profile has no fallback/],
+		] as const) {
+			if (contents !== undefined) writeFileSync(path, contents);
+			const notices: string[] = [];
+			await handler("preset", { ui: {
+				select: async () => assert.fail("invalid or empty presets must not open a picker"),
+				notify(message: string) { notices.push(message); },
+			} });
+			assert.match(notices[0], expected);
+			assert.equal(readFileSync(configFile(dir), "utf8"), active);
+			if (contents !== undefined) assert.equal(readFileSync(path, "utf8"), contents);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("preset application preserves config corrupted while the picker is open", async () => {
+	const dir = tempDir();
+	try {
+		const { handler } = controlPlane(eventBus(), dir);
+		const profile = { primary: { model: "provider/model", thinkingLevel: "off" } };
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(join(dir, "config", "pi-task-models", "presets.json"), JSON.stringify({
+			setup: { fast: profile, balanced: profile, frontier: profile },
+		}));
+		const notices: Array<[string, string]> = [];
+		await handler("preset", { ui: {
+			select: async () => {
+				writeFileSync(configFile(dir), "{ not json");
+				return "setup";
+			},
+			notify(message: string, level: string) { notices.push([message, level]); },
+		} });
+		assert.equal(readFileSync(configFile(dir), "utf8"), "{ not json");
+		assert.deepEqual(notices, [["Couldn't save task model config.", "error"]]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("uses scoped models and pinned thinking for picker and route resolution", () => {
 	const allowed = { provider: "provider", id: "allowed", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low", high: "high" } } as any;
 	const excluded = { provider: "provider", id: "excluded", input: ["text"], reasoning: false } as any;

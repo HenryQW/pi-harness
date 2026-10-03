@@ -1,6 +1,7 @@
+import { join } from "node:path";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createConfigStore } from "@henryqw/pi-config-store";
+import { createConfigStore, extensionConfigDir, readTextFileBoundedSync } from "@henryqw/pi-config-store";
 
 export const PROFILE_NAMES = ["fast", "balanced", "frontier", "fav"] as const;
 export type ProfileName = (typeof PROFILE_NAMES)[number];
@@ -423,6 +424,15 @@ function discoverModelTasks(pi: Pick<ExtensionAPI, "events">): ModelTask[] {
 	return [...tasks.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
+function loadTaskModelPresets(path: string): Map<string, TaskModelsConfig["profiles"]> {
+	const value: unknown = JSON.parse(readTextFileBoundedSync(path, 64 * 1024));
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Presets must be an object.");
+	return new Map(Object.entries(value).map(([name, profiles]) => {
+		if (!isNonEmptyText(name)) throw new Error("Preset names must be non-empty text without surrounding whitespace or control characters.");
+		return [name, parseConfig({ profiles }).profiles];
+	}));
+}
+
 export function createTaskModelsExtension(
 	pi: ExtensionAPI,
 	options?: { agentDir?: string },
@@ -435,8 +445,13 @@ export function createTaskModelsExtension(
 		}
 	});
 	pi.registerCommand("task-models", {
-		description: "configure shared task model profiles",
-		handler: async (_args, ctx) => {
+		description: "configure shared task model profiles; choose a saved setup with /task-models preset",
+		handler: async (args, ctx) => {
+			const action = args.trim();
+			if (action && action !== "preset") {
+				ctx.ui.notify("Usage: /task-models [preset]", "error");
+				return;
+			}
 			let config: TaskModelsConfig;
 			try {
 				config = configStore.loadSync().value;
@@ -444,6 +459,43 @@ export function createTaskModelsExtension(
 				ctx.ui.notify("Couldn't read task model config.", "error");
 				return;
 			}
+
+			if (action === "preset") {
+				const path = join(extensionConfigDir("pi-task-models", agentDir), "presets.json");
+				let presets: ReturnType<typeof loadTaskModelPresets>;
+				try {
+					presets = loadTaskModelPresets(path);
+				} catch (error) {
+					const message = error instanceof SyntaxError ? "Invalid JSON." : error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(`Couldn't read task model presets at ${path}: ${message}`, "error");
+					return;
+				}
+				if (!presets.size) {
+					ctx.ui.notify(`No presets found in ${path}.`, "info");
+					return;
+				}
+				const selected = await ctx.ui.select("Task model preset", [...presets.keys()].sort());
+				if (!selected) return;
+				const profiles = presets.get(selected)!;
+				try {
+					await configStore.update((current) => ({ ...current, profiles: { ...current.profiles, ...profiles } }));
+				} catch {
+					ctx.ui.notify("Couldn't save task model config.", "error");
+					return;
+				}
+				ctx.ui.notify(`Applied task model preset: ${selected}.`, "info");
+				return;
+			}
+
+			const save = async (): Promise<boolean> => {
+				try {
+					await configStore.save(config);
+					return true;
+				} catch {
+					ctx.ui.notify("Couldn't save task model config.", "error");
+					return false;
+				}
+			};
 
 			const profileOptions = PROFILE_NAMES.map((name) => {
 				const configured = config.profiles[name];
@@ -454,15 +506,6 @@ export function createTaskModelsExtension(
 						: `${name} · not configured`,
 				};
 			});
-			const save = async (): Promise<boolean> => {
-				try {
-					await configStore.save(config);
-					return true;
-				} catch {
-					ctx.ui.notify("Couldn't save task model config.", "error");
-					return false;
-				}
-			};
 			const taskOptions = discoverModelTasks(pi).map((task) => {
 				const profile = config.tasks[task.id] ?? task.defaultProfile;
 				return { task, label: `${task.label} · ${task.id} · ${profile}` };
