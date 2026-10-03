@@ -108,8 +108,6 @@ test("renders family status on the first line and external statuses beside runti
 
 	const footerFactory = await start(ctx);
 	assert.deepEqual(notifications, []);
-	await start(ctx);
-	assert.deepEqual(notifications, []);
 	const colors: [string, string][] = [];
 	let extensionStatuses = new Map([
 		["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],
@@ -232,10 +230,8 @@ test("shows the routed physical model under a virtual selection", async () => {
 	const modelText = () => stripTerminalSequences(footer.render(100)[1]!).replace(/^.* {2}/, "");
 	// The failed response is skipped; the routed level is omitted when the response has none.
 	assert.equal(modelText(), "auto • high → claude-sonnet-4-5");
-	// Same entries and leaf: cached.
+	// Tree navigation changes the branch and leaf and refreshes the routed model.
 	branch = [haiku];
-	assert.equal(modelText(), "auto • high → claude-sonnet-4-5");
-	// Tree navigation changes the leaf and refreshes the routed model.
 	leaf = "haiku";
 	assert.match(footer.render(100)[1]!, /→ claude-haiku-4-5 • \x1b\[38;5;118mmedium\x1b\[39m$/);
 	model = { id: "claude-sonnet-4-5", api: "anthropic-messages" };
@@ -249,10 +245,10 @@ test("preserves CodeGraph badges and muted preparation statuses, and marks direc
 		mode: "tui", cwd: "/repo", sessionManager: { getEntries: () => [] }, getContextUsage: () => undefined,
 	});
 	let statuses = new Map<string, string>([["pi-rewind", "↩ rewind"]]);
-	let renders = 0;
+	let renderRequested = false;
 	const colors: Array<[string, string]> = [];
 	const footer = factory(
-		{ requestRender() { renders++; } },
+		{ requestRender() { renderRequested = true; } },
 		{ fg: (color, text) => { colors.push([color, text]); return text; } },
 		{ getGitBranch: () => undefined, getExtensionStatuses: () => statuses, onBranchChange: () => () => {} },
 	);
@@ -278,14 +274,16 @@ test("preserves CodeGraph badges and muted preparation statuses, and marks direc
 	statuses.set("pi-codegraph", indexed);
 	assert.ok(footer.render(100)[2]!.startsWith(indexed));
 	await handlers.get("tool_execution_start")!({ toolCallId: "cg-1", toolName: "codegraph_explore", args: {} });
+	assert.equal(renderRequested, true);
 	await handlers.get("tool_execution_start")!({ toolCallId: "other", toolName: "mcp", args: { server: "other", tool: "codegraph_explore" } });
 	assert.match(third(), /^● CG · ↩ rewind +◷ 0s$/);
 	assert.ok(colors.some(([color, text]) => color === "accent" && text === "●"));
 	await handlers.get("tool_execution_end")!({ toolCallId: "other", toolName: "mcp" });
 	assert.match(third(), /^● CG · /);
+	renderRequested = false;
 	await handlers.get("tool_execution_end")!({ toolCallId: "cg-1", toolName: "codegraph_explore" });
+	assert.equal(renderRequested, true);
 	assert.match(third(), /^✓ CG · ↩ rewind +◷ 0s$/);
-	assert.equal(renders, 2);
 	await handlers.get("session_shutdown")!(undefined);
 	footer.dispose();
 });

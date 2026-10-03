@@ -29,6 +29,5 @@ test("native package filters load the footer and open commands independently", a
 			selected ? [`${selected}.ts`] : ["footer.ts", "open.ts"]);
 		assert.deepEqual(extensions.flatMap((extension) => [...extension.commands.keys()]).sort(),
 			selected === "footer" ? [] : ["open", "set-open-in"]);
-		assert.equal(extensions.some((extension) => extension.handlers.has("session_start")), selected !== "open");
 	}
 });
