@@ -230,10 +230,6 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 						const waited = await herdr.exec(args, options(signal));
 						if (waited.code !== 0 || waited.killed) {
 							if (!waited.killed && hasHerdrErrorCode(waited, "timeout")) {
-								if (current === "idle") {
-									const answer = await maybeAnswer();
-									if (answer !== undefined) return answer;
-								}
 								continue;
 							}
 							throw new Error(herdrCommandFailure(args, waited));

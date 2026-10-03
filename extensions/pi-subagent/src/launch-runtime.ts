@@ -178,11 +178,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		context: OperationContext,
 	): Promise<PreparedLaunch> {
 		abortIfNeeded(context.signal);
-		const input = { role, modelClass, task: ISOLATED_MODEL_TASK };
-		const prepared = await resolveConfiguredRoleLaunch(this.options.pi, this.options.context(), input);
-		if (prepared.missingSkills.length) {
-			throw new Error(`Role ${role} requires missing Skills: ${prepared.missingSkills.join(", ")}.`);
-		}
+		const prepared = await resolveConfiguredRoleLaunch(this.options.pi, this.options.context(), { role, modelClass });
 		return Object.freeze({
 			launch: Object.freeze({
 				role: prepared.role,

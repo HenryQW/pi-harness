@@ -89,8 +89,10 @@ test("the store persists v5 text state, rejects duplicate creates, and preserves
 		savedStates[0]!.request.goal = "changed by callback";
 		assert.equal(handle.state.request.goal, created.request.goal);
 		handle.state.updatedAt = 2;
-		await handle.save();
-		assert.deepEqual(savedStates.map(({ updatedAt }) => updatedAt), [1, 2]);
+		const firstSave = handle.save();
+		handle.state.updatedAt = 3;
+		await Promise.all([firstSave, handle.save()]);
+		assert.deepEqual(savedStates.map(({ updatedAt }) => updatedAt), [1, 2, 3]);
 		savedStates[1]!.request.goal = "changed after save";
 		assert.equal(handle.state.request.goal, created.request.goal);
 		const contents = await readFile(handle.path, "utf8");
@@ -100,7 +102,7 @@ test("the store persists v5 text state, rejects duplicate creates, and preserves
 		});
 
 		const loaded = await store.load(root, created.request.id);
-		assert.deepEqual(loaded.state, { ...created, updatedAt: 2 });
+		assert.deepEqual(loaded.state, { ...created, updatedAt: 3 });
 
 		for (const version of [1, 2, 3, 4]) {
 			const legacyPath = store.statePath(root, `legacy-v${version}`);

@@ -380,10 +380,8 @@ class DeadlineScope implements RuntimeScope {
 	}
 }
 
-type QueuedFollowup = { kind: "followup"; instruction: string };
-
 class FollowupControl {
-	private readonly queue: QueuedFollowup[] = [];
+	private readonly queue: string[] = [];
 	private readonly validateFollowup: (instruction: string) => void;
 	private sealed = false;
 
@@ -403,21 +401,21 @@ class FollowupControl {
 		if (this.sealed) throw new Error("This task candidate is already sealed for integration.");
 		if (this.queue.length >= MAX_QUEUED_FOLLOWUPS) throw new Error(`A task may queue at most ${MAX_QUEUED_FOLLOWUPS} follow-ups.`);
 		this.validateFollowup(instruction);
-		this.queue.push({ kind: "followup", instruction });
+		this.queue.push(instruction);
 	}
 
 	drainPending(): string[] {
 		if (this.sealed) throw new Error("This task candidate is already sealed for integration.");
-		return this.queue.splice(0).map(({ instruction }) => instruction);
+		return this.queue.splice(0);
 	}
 
-	takeQueuedFollowup(): QueuedFollowup | undefined {
+	takeQueuedFollowup(): string | undefined {
 		if (this.sealed) throw new Error("This task candidate is already sealed for integration.");
 		return this.queue.shift();
 	}
 
 	/** Atomically take the next admitted revision or seal the candidate. */
-	takeQueuedFollowupOrSeal(): QueuedFollowup | undefined {
+	takeQueuedFollowupOrSeal(): string | undefined {
 		const queued = this.takeQueuedFollowup();
 		if (queued) return queued;
 		this.sealed = true;
@@ -892,7 +890,7 @@ export class IsolatedRunner {
 
 	drainFollowups(root: string, requestId: string, taskId: string): string[] {
 		const active = this.activeControl(realpathSync.native(root), requestId, taskId);
-		if (!active || !this.canFollowup(root, requestId, taskId)) {
+		if (!active || active.task.status !== "working" || active.control.isSealed) {
 			throw new Error(`Task ${taskId} is not an active unsealed changeset.`);
 		}
 		return active.control.drainPending();
@@ -904,7 +902,7 @@ export class IsolatedRunner {
 			throw new Error("Follow-up instruction must be non-empty exact text of at most 32000 characters.");
 		}
 		const active = this.activeControl(realpathSync.native(root), requestId, taskId);
-		if (!active || !this.canFollowup(realpathSync.native(root), requestId, taskId)) {
+		if (!active || active.task.status !== "working" || active.control.isSealed) {
 			throw new Error(`Task ${taskId} is not an active unsealed changeset.`);
 		}
 		if (latestAttempt(active.task).prompts.length + active.control.pendingFollowups >= MAX_WORKER_PROMPTS) {
@@ -1385,7 +1383,8 @@ export class IsolatedRunner {
 		return await this.withProductiveRun(root, async (lifecycle) => {
 			const handle = await this.store.withLock(root, async () => await this.store.load(root, action.id), { productiveRunLease: lifecycle.lease });
 			const state = handle.state;
-			const request = parseExecuteRequest(state.request);
+			// Loading state has already normalized optional request fields, including finalChecks.
+			const request = state.request as ExecuteRequest;
 			const generation = state.integration.generations.at(-1);
 			if (action.action === "release") {
 				const scope = new ProductiveScope(outerSignal);
@@ -2543,7 +2542,7 @@ export class IsolatedRunner {
 					const queuedFollowup = control.takeQueuedFollowupOrSeal();
 					if (queuedFollowup) {
 						kind = "followup";
-						instruction = queuedFollowup.instruction;
+						instruction = queuedFollowup;
 						task.status = "working";
 						continue;
 					}
@@ -2582,7 +2581,7 @@ export class IsolatedRunner {
 			const queuedFollowup = control.takeQueuedFollowup();
 			if (queuedFollowup) {
 				kind = "followup";
-				instruction = queuedFollowup.instruction;
+				instruction = queuedFollowup;
 				task.status = "working";
 				continue;
 			}

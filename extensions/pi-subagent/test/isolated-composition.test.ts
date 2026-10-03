@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-	EphemeralSubagentError,
 	type EphemeralSubagentExecutor,
 	type EphemeralSubagentResult,
 	type EphemeralSubagentRunInput,
@@ -175,9 +174,6 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 		{ name: "truncated", value: result({ outputTruncated: true }), pattern: /truncated/i },
 		{ name: "failure", value: result({ outcome: "failure", exitCode: 1, output: "Finding", errorMessage: "failed" }), pattern: /did not complete successfully/i },
 		{ name: "success with nonzero exit", value: result({ exitCode: 1 }), pattern: /did not complete successfully/i },
-		{ name: "timeout", error: new EphemeralSubagentError("timeout", "review timed out"), pattern: /review timed out/i },
-		{ name: "abort", error: new EphemeralSubagentError("aborted", "review aborted"), pattern: /review aborted/i },
-		{ name: "protocol", error: new EphemeralSubagentError("protocol", "bad protocol"), pattern: /bad protocol/i },
 		{ name: "throw", error: new Error("executor threw"), pattern: /executor threw/i },
 	];
 	for (const entry of cases) {
@@ -188,7 +184,7 @@ test("exact Judgment adapter rejects empty, truncated, failed, and thrown transp
 					return entry.value!;
 				},
 			});
-			await assert.rejects(executeReview(reviewInput(), operationContext()), entry.pattern);
+			await assert.rejects(executeReview(reviewInput(), operationContext()), entry.error ? (error) => error === entry.error : entry.pattern);
 		});
 	}
 

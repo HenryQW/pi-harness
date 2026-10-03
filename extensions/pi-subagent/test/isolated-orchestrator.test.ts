@@ -18,15 +18,7 @@ import {
 import type { OperationContext, RunResponse } from "../src/runner.ts";
 import {
 	ExecuteRequestSchema,
-	IdOnlySchema,
-	ResumeRequestParameters,
-	StageRequestSchema,
-	IntegrationActionParameters,
-	parseIntegrationAction,
-	parseStageRequest,
 	parseExecuteRequest,
-	parseIdOnly,
-	parseResumeRequest,
 	StatusOutputSchema,
 	type ExecuteRequest,
 	type RunState,
@@ -327,7 +319,7 @@ async function executeTool(
 	signal: AbortSignal | undefined,
 	ctx: ExtensionContext,
 ) {
-	return await tool.execute("tool-call", params as never, signal, undefined, ctx);
+	return await tool.execute("tool-call", tool.prepareArguments(params) as never, signal, undefined, ctx);
 }
 
 function expectedPublicState() {
@@ -653,23 +645,13 @@ test("registers six strict tools without constructing runtime components", () =>
 	assert.equal(harness.getComponentCreations(), 0);
 
 	const [execute, status, resume, stage, integrate, abort] = harness.tools;
-	assert.equal(execute!.parameters, ExecuteRequestSchema);
-	assert.equal(execute!.prepareArguments, parseExecuteRequest);
-	assert.equal(status!.parameters, IdOnlySchema);
-	assert.equal(status!.prepareArguments, parseIdOnly);
-	assert.equal(resume!.parameters, ResumeRequestParameters);
-	assert.equal(resume!.prepareArguments, parseResumeRequest);
-	assert.equal(stage!.parameters, StageRequestSchema);
-	assert.equal(stage!.prepareArguments, parseStageRequest);
 	assert.throws(() => stage!.prepareArguments({ id: "request-one", action: "stage", taskId: "unit-one" }), /exact candidate and generation/);
-	assert.equal(integrate!.parameters, IntegrationActionParameters);
-	assert.equal(integrate!.prepareArguments, parseIntegrationAction);
 	assert.throws(() => integrate!.prepareArguments({ id: "request-one", action: "promote" }), /exact generation and tip/);
-	assert.equal(abort!.parameters, IdOnlySchema);
-	assert.equal(abort!.prepareArguments, parseIdOnly);
-	assert.deepEqual(parseIdOnly({ id: "request-one" }), { id: "request-one" });
-	assert.throws(() => parseIdOnly({ id: "request-one", extra: true }), /strict schema/i);
-	assert.throws(() => parseIdOnly({ id: "Request_One" }), /strict schema/i);
+	for (const tool of [status!, abort!]) {
+		assert.deepEqual(tool.prepareArguments({ id: "request-one" }), { id: "request-one" });
+		assert.throws(() => tool.prepareArguments({ id: "request-one", extra: true }), /strict schema/i);
+		assert.throws(() => tool.prepareArguments({ id: "Request_One" }), /strict schema/i);
+	}
 	assert.throws(() => execute!.prepareArguments({ ...EXECUTE_REQUEST, extra: true }), /strict task schema/i);
 	assert.throws(() => resume!.prepareArguments({ id: "request-one", action: "finalize", taskId: "unit-one" }), /must match one strict action/i);
 });

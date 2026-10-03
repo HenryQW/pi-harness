@@ -773,6 +773,25 @@ setInterval(() => {}, 1_000);
 	});
 });
 
+test("turn exhaustion wins when the same attempted turn also exceeds the token allowance", async (t) => {
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "turn_start" });
+event({ type: "message_end", message: { role: "assistant", content: [], usage: { totalTokens: 1 } } });
+event({ type: "turn_end" });
+event({ type: "turn_start" });
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "last allowed output" }], stopReason: "toolUse" } });
+event({ type: "turn_end" });
+event({ type: "turn_start" });
+`);
+	const limited = createEphemeralSubagentExecutor({ maxConcurrency: 1, maxTurns: 2, maxTokens: 1, timeout });
+	await assert.rejects(limited.run({ prepare: async () => prepared(cwd) }), (error) => {
+		assert.ok(error instanceof EphemeralSubagentError);
+		assert.equal(error.code, "turn_limit");
+		assert.equal(error.output, "last allowed output");
+		return true;
+	});
+});
+
 test("attempted turn 11 after child exit still rejects with retained output", async (t) => {
 	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
 const event = (value) => console.log(JSON.stringify(value));

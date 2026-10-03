@@ -80,7 +80,7 @@ async function canonicalPlannedPath(path: string): Promise<string> {
 }
 
 function serialize(state: RunState, maxBytes = STATE_MAX_BYTES): string {
-	const validated = parseRunState(structuredClone(state));
+	const validated = parseRunState(state);
 	const contents = `${JSON.stringify(validated, null, 2)}\n`;
 	if (Buffer.byteLength(contents, "utf8") > maxBytes) {
 		throw new Error(`pi-subagent state exceeds ${maxBytes} bytes.`);
