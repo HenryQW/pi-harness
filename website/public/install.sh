@@ -22,6 +22,7 @@ EXTENSIONS='
 @henryqw/pi-auto-compact
 @henryqw/pi-bark
 @henryqw/pi-codegraph
+@henryqw/pi-cron
 @henryqw/pi-deps
 @henryqw/pi-footer
 @henryqw/pi-herdr-btw

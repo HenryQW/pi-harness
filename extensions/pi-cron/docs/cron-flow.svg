@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="cron-flow-title cron-flow-desc" id="cron-flow-root">
+<title id="cron-flow-title">Pi Cron scheduler flow</title>
+<desc id="cron-flow-desc">An open Pi session reads job config, claims a due job in shared state, launches a bounded child, and records its outcome with an optional persisted session before delivering the result.</desc>
+<defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #cron-flow-root { color: #101828; }
+      #cron-flow-root .diagram-container { overflow-x: auto; }</style>
+<marker id="cron-flow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#4c5665"/></marker>
+<marker id="cron-flow-arrow-blue" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#1d4ed8"/></marker>
+</defs>
+<rect width="1280" height="720" fill="#f0eee9"/>
+<text x="40" y="52" font-family="Instrument Serif, serif" font-size="28" fill="#101828">Scheduled work, one bounded run at a time</text>
+<!-- Connections precede nodes. Each path has its own attachment point. -->
+<g fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#cron-flow-arrow)">
+<path d="M200 192 V272"/>
+<path d="M320 292 H392 Q400 292 400 284 V240 Q400 232 408 232 H512 Q520 232 520 224 V200"/>
+<path d="M1032 272 V240 Q1032 232 1024 232 H688 Q680 232 680 224 V200"/>
+<path d="M1032 392 V464" stroke-dasharray="5,4"/>
+<path d="M984 392 V416 Q984 424 976 424 H608 Q600 424 600 432 V464"/>
+</g>
+<path d="M320 332 H900" fill="none" stroke="#1d4ed8" stroke-width="1.6" marker-end="url(#cron-flow-arrow-blue)"/>
+<!-- Label masks stay clear of their connectors and all node rectangles. -->
+<g fill="#f0eee9">
+<rect x="208" y="224" width="72" height="12"/>
+<rect x="408" y="248" width="112" height="12"/>
+<rect x="780" y="210" width="96" height="12"/>
+<rect x="540" y="312" width="112" height="12"/>
+<rect x="1040" y="424" width="104" height="12"/>
+<rect x="760" y="402" width="96" height="12"/>
+</g>
+<g font-family="Geist Mono, monospace" font-size="8" fill="#4c5665">
+<text x="216" y="233">READ JOBS</text>
+<text x="464" y="257" text-anchor="middle">CLAIM DUE JOB</text>
+<text x="828" y="219" text-anchor="middle">FINISH CLAIM</text>
+<text x="596" y="321" text-anchor="middle" fill="#1d4ed8">ROLE + PROMPT</text>
+<text x="1048" y="433">IF CREATED</text>
+<text x="808" y="411" text-anchor="middle">DELIVER RESULT</text>
+</g>
+<!-- Config and shared claim state are separate from the active process. -->
+<rect x="80" y="96" width="240" height="96" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="460" y="96" width="280" height="104" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="80" y="272" width="240" height="120" rx="8" fill="#1d4ed8" fill-opacity="0.08" stroke="#1d4ed8"/>
+<rect x="900" y="272" width="288" height="120" rx="8" fill="#1d4ed8" fill-opacity="0.08" stroke="#1d4ed8"/>
+<rect x="900" y="464" width="288" height="96" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="460" y="464" width="280" height="120" rx="8" fill="#ffffff" stroke="#101828" stroke-opacity="0.2"/>
+<g font-family="Geist, sans-serif" font-size="12" font-weight="600" fill="#101828">
+<text x="104" y="128">User-authored jobs</text>
+<text x="484" y="128">Shared claims and outcomes</text>
+<text x="104" y="304">Open Pi session</text>
+<text x="924" y="304">Fresh bounded child</text>
+<text x="924" y="496">Reopenable run session</text>
+<text x="484" y="496">Result delivery</text>
+</g>
+<g font-family="Geist Mono, monospace" font-size="8" fill="#4c5665">
+<text x="104" y="152">config/pi-cron/config.json</text>
+<text x="104" y="172">every / at · Role · route · cwd</text>
+<text x="484" y="152">config/pi-cron/state.json</text>
+<text x="484" y="172">file lock · owner + start identity</text>
+<text x="104" y="328">session_start + 60s checks</text>
+<text x="104" y="352">one local run admitted before claim</text>
+<text x="924" y="328">pi-subagent · pi-task-models</text>
+<text x="924" y="352">maxTurns · idleMs · maxMs</text>
+<text x="924" y="520">sessions/&lt;job-id&gt;/&lt;timestamp&gt;.jsonl</text>
+<text x="484" y="520">notify / followUp / none</text>
+</g>
+<g font-family="Geist, sans-serif" font-size="12" fill="#4c5665">
+<text x="484" y="552">Only the claim owner can finish.</text>
+<text x="80" y="492">Other Pi sessions share the same claims.</text>
+<text x="80" y="520">Busy manual requests do not queue.</text>
+<text x="80" y="548">Due jobs retry on a later check.</text>
+</g>
+<path d="M40 644 H1240" stroke="#101828" stroke-opacity="0.12"/>
+<text x="40" y="680" font-family="Geist, sans-serif" font-size="12" fill="#4c5665">Runs only while Pi is open. Shutdown aborts the child; no background daemon is created.</text>
+</svg>
