@@ -19,7 +19,7 @@ function showProgress(ctx: ExtensionContext, action: string, signal: AbortSignal
 		const frame = SPINNER_FRAMES[Math.floor(Date.now() / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length]!;
 		const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 		const elapsed = seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", `${frame} codegraph · ${action} ${elapsed}`));
+		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", `${frame} CG · ${action} ${elapsed}`));
 	};
 	update();
 	const timer = ctx.mode === "tui" ? setInterval(update, SPINNER_INTERVAL_MS) : undefined;
@@ -58,7 +58,7 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 	if (version.code !== 0 || version.killed) {
 		const detail = version.killed ? "timed out or killed" : version.stderr.trim().slice(-1000) || `exit ${version.code}`;
 		const message = `pi-codegraph: setup skipped.\ncodegraph --version failed (${detail}). Install CodeGraph: npm install -g @colbymchenry/codegraph. If already installed, check that codegraph runs on Pi's PATH.\nThen restart Pi or /reload.`;
-		ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("warning", "!")} pi-codegraph: prerequisites missing`);
+		ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("warning", "!")} CG: prerequisites missing`);
 		if (ctx.hasUI) ctx.ui.notify(message, "warning");
 		else console.warn(message);
 		return;
@@ -129,7 +129,7 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 	} finally {
 		if (!signal.aborted) {
 			stopProgress();
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			ctx.ui.setStatus(STATUS_KEY, indexed ? `${ctx.ui.theme.fg("success", "✓")} CG` : `${ctx.ui.theme.fg("dim", "○")} CG`);
 		}
 	}
 }
@@ -167,7 +167,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 		setup = initialize(pi, ctx, controller.signal).catch((error) => {
 			if (controller.signal.aborted) return;
 			const message = `pi-codegraph: ${error instanceof Error ? error.message : String(error)}`;
-			ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("error", "!")} pi-codegraph: setup failed`);
+			ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("error", "!")} CG: setup failed`);
 			if (ctx.hasUI) ctx.ui.notify(message, "error");
 			else throw new Error(message, { cause: error });
 		}).finally(() => {
