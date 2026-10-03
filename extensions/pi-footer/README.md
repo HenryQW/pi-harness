@@ -14,7 +14,7 @@ pi install npm:@henryqw/pi-footer
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
-| [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph) | Improves | Shows quiet CodeGraph setup progress and direct tool activity when loaded. |
+| [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph) | Improves | Shows CodeGraph index status, quiet setup progress, and direct tool activity when loaded. |
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Adds active Codex subscription quota and reset status. |
 | [`@henryqw/pi-open-in`](https://pi.henry.wang/extensions/pi-open-in) | Improves | Adds `/open` and `/set-open-in` commands for editor configuration. |
 | [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves | Adds current-branch pull-request status. |
@@ -26,12 +26,12 @@ After installing, start a Pi TUI session to see checkout, usage, model, thinking
 ```text
 pi-harness · clear-field-f8d2 [+2 ~3 ?1 ↑2] · PR #123 · approved    Codex #1 · 50% · 7d 1d 1h 22m
 ↑ 12.4k · ↓ 2.1k · ↺ 84.3% · ⚡ 87.4 t/s · $ 0.127 · ◔ 36.8%    gpt-5.6-luna • high
-⠋ codegraph · indexing 8s · ●  🐴 ponytail: ⚡ FULL                       ◷ 12m 34s
+✓ CG · ●  🐴 ponytail: ⚡ FULL                                          ◷ 12m 34s
 ```
 
 - The first line shows the repository, branch, Git state, and `pi-pr` pull request status beside the checkout identity. The `pi-multi-codex` quota status, when non-empty, occupies the right side. Linked-worktree branches drop the generated `worktree/` prefix.
 - The second line shows cumulative input tokens, output tokens, latest cache-hit rate, and tokens per second for the most recent assistant response. The rate is timed from the response's first streamed content to its last, so request latency, time to first token, and provider work after the stream ends (such as Claude bridge shutting down Claude Code) are excluded. A response that arrives without streamed content, or all at once, shows `—`. It also shows estimated cost and context usage. Totals include reported tool usage and finished `pi-subagent` background workflows. The active model and thinking level are right-aligned. Under a virtual model, the physical model and thinking level of the latest successful response follow an arrow, for example `auto • high → gpt-5.6-luna • medium`, matching Pi's built-in footer.
-- The third line preserves CodeGraph's dim setup spinner and elapsed time first, followed by other extension statuses such as `⠋ deps · installing 12s`. Preparation statuses disappear when work completes; there is no idle CodeGraph index badge. Persistent CodeGraph failures retain their theme-colored `!` icon and meaningful text. During direct `codegraph_explore` calls, `● CG` temporarily replaces the CodeGraph status. A middle dot separates statuses; cumulative agent-work time stays on the right, beneath the active model.
+- The third line shows CodeGraph's icon and `CG` first: `✓ CG` when indexed, `○ CG` when a Git repository has no index, or a dim spinner and elapsed time such as `⠋ CG · indexing 8s` during setup. Non-Git directories show no index badge. Other extension statuses follow, such as `⠋ deps · installing 12s`; dependency preparation statuses disappear when work completes. Persistent CodeGraph failures retain their theme-colored `!` icon and meaningful text. During direct `codegraph_explore` calls, `● CG` temporarily replaces the CodeGraph status, which returns when the call finishes. A middle dot separates statuses; cumulative agent-work time stays on the right, beneath the active model.
 
 Git badges appear only when action is needed:
 
@@ -56,7 +56,7 @@ Unavailable values render as `—` without a misleading percent sign.
 
 `ultra` renders as a rainbow when the active Pi runtime supplies that thinking level. Unsupported levels never appear.
 
-Only the non-empty `pi-multi-codex` quota status occupies the right side of the first line. The `pi-pr` pull-request status stays beside checkout identity, and active CodeGraph setup or tool activity appears separately on the third line.
+Only the non-empty `pi-multi-codex` quota status occupies the right side of the first line. The `pi-pr` pull-request status stays beside checkout identity, and CodeGraph index status, setup progress, or tool activity appears separately on the third line.
 
 Statuses from other extensions, including Ponytail and `pi-rewind`, share the left side of the third line. They are sorted by key; colors, links, glyphs, and interior spacing are preserved. Leading and trailing whitespace is trimmed, line breaks become spaces, and long statuses may be clipped to fit the footer. Only direct `codegraph_explore` tool calls trigger the `● CG` badge; CodeGraph queries made from inside scripted tools are not shown.
 

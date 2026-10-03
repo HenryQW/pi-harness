@@ -4,12 +4,16 @@ import { isToolCallEventType, type ExtensionAPI } from "@earendil-works/pi-codin
 import {
 	CHILD_EXCLUDED_TOOL_NAMES,
 	EXECUTION_BUDGET_ENV,
+	parseRoleToolPolicy,
 	PI_SUBAGENT_PROCESS_LEASE,
 	ROLE_TOOL_POLICY_FLAG,
 	type EphemeralSubagentExecutionBudget,
 } from "@henryqw/pi-subagent";
 
 const childExcludedTools: ReadonlySet<string> = new Set(CHILD_EXCLUDED_TOOL_NAMES);
+// Pi does not declare these exposures on registration: `codemode`/`deferred` tools stay callable from
+// scripts, `hidden` ones are unreachable. The Role policy declares them only when `tools` names them.
+const undeclaredExposures: ReadonlySet<string> = new Set(["codemode", "deferred", "hidden"]);
 const WARNING_RATIO = 0.8;
 const WARNING_MESSAGE_TYPE = "pi-subagent-execution-budget";
 const PROCESS_LEASE_ERROR = `${PI_SUBAGENT_PROCESS_LEASE} must be a nonempty NUL/newline-free absolute path naming a regular non-symlink file owned by the current uid with mode 0600.`;
@@ -31,20 +35,6 @@ function validateProcessLease(path: string): void {
 	if (uid === undefined || !stats.isFile() || stats.isSymbolicLink() || stats.uid !== uid || (stats.mode & 0o7777) !== 0o600) {
 		throw new Error(PROCESS_LEASE_ERROR);
 	}
-}
-
-function configuredTools(value: unknown): string[] {
-	if (typeof value !== "string") throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(value);
-	} catch {
-		throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
-	}
-	if (!Array.isArray(parsed) || parsed.some((name) => typeof name !== "string" || !name.trim() || name.includes("\0"))) {
-		throw new Error(`${ROLE_TOOL_POLICY_FLAG} must be JSON tool names.`);
-	}
-	return [...new Set(parsed.map((name) => name.trim()))];
 }
 
 function executionBudget(value: string | undefined): EphemeralSubagentExecutionBudget | undefined {
@@ -107,11 +97,11 @@ export default function roleTools(pi: ExtensionAPI): void {
 	const budget = executionBudget(process.env[EXECUTION_BUDGET_ENV]);
 	let handoffSent = false;
 	pi.on("session_start", () => {
-		const selected = configuredTools(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
+		const selected = parseRoleToolPolicy(pi.getFlag(ROLE_TOOL_POLICY_FLAG));
 		const allTools = pi.getAllTools();
 		const registeredTools = new Set(allTools.map((tool) => tool.name));
 		const extensionTools = allTools
-			.filter((tool) => !["builtin", "sdk", "inline"].includes(tool.sourceInfo.source))
+			.filter((tool) => !["builtin", "sdk", "inline"].includes(tool.sourceInfo.source) && !undeclaredExposures.has(tool.exposure))
 			.map((tool) => tool.name);
 		pi.setActiveTools([...new Set([...selected, ...extensionTools])].filter((name) => !childExcludedTools.has(name)));
 		const activeTools = new Set(pi.getActiveTools().filter((name) => registeredTools.has(name) && !childExcludedTools.has(name)));

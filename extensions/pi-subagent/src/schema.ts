@@ -523,6 +523,56 @@ const RunStateSchema = Type.Object({
 	updatedAt: TimestampSchema,
 }, { additionalProperties: false });
 
+/**
+ * `subagent_status` structured output: the bounded public projection that Main reads, never raw
+ * run state. Objects stay open so bounded evidence fields pass; the identities and statuses that
+ * drive stage, integrate, resume, and release decisions are typed.
+ */
+export const StatusOutputSchema = Type.Object({
+	state: Type.Object({
+		version: RunStateSchema.properties.version,
+		id: IdSchema,
+		status: RunStateSchema.properties.status,
+		accepted: Type.Boolean(),
+		main: WorkspaceSchema,
+		tasks: Type.Array(Type.Object({
+			taskId: IdSchema,
+			status: Type.Union([...ChangesetTaskStateSchema.properties.status.anyOf, ...TextTaskStateSchema.properties.status.anyOf]),
+		})),
+		final: Type.Object({ status: FinalGateSchema.properties.status }),
+		integration: Type.Object({
+			candidates: Type.Array(Type.Object({
+				taskId: IdSchema,
+				attempt: IntegrationCandidateSchema.properties.attempt,
+				base: WorkspaceSchema,
+				tip: WorkspaceSchema,
+				checked: Type.Boolean(),
+				worker: IntegrationCandidateSchema.properties.worker,
+				decision: Type.Optional(IntegrationCandidateSchema.properties.decision),
+			})),
+			generations: Type.Array(Type.Object({
+				number: IntegrationGenerationSchema.properties.number,
+				status: IntegrationGenerationSchema.properties.status,
+				integrationBase: WorkspaceSchema,
+				combinedTip: Type.Optional(WorkspaceSchema),
+				retainedWorktree: Type.Optional(Type.Object({ path: Type.String(), branch: Type.String() })),
+			})),
+		}),
+		needsAttention: Type.Optional(Type.Object({
+			scope: Type.Union([Type.Literal("task"), Type.Literal("final"), Type.Literal("request")]),
+			taskId: Type.Optional(IdSchema),
+			failure: Type.Optional(Type.String()),
+		})),
+		createdAt: TimestampSchema,
+		updatedAt: TimestampSchema,
+	}),
+	main: Type.Optional(Type.Union([
+		Type.Object({ status: Type.Union([Type.Literal("current"), Type.Literal("drifted")]), expected: WorkspaceSchema, actual: WorkspaceSchema }),
+		Type.Object({ status: Type.Literal("unavailable"), expected: WorkspaceSchema, failure: Type.String() }),
+	])),
+	continuation: Type.Optional(ResumeRequestSchema),
+});
+
 function normalizeCheck(check: CheckCommand, field: string): CheckCommand {
 	return {
 		command: normalizeText(check.command, `${field}.command`),

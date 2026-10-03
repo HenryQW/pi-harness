@@ -243,7 +243,7 @@ test("shows the routed physical model under a virtual selection", async () => {
 	footer.dispose();
 });
 
-test("preserves muted preparation statuses, clears completed work, and marks direct CodeGraph calls", async () => {
+test("preserves CodeGraph badges and muted preparation statuses, and marks direct CodeGraph calls", async () => {
 	const { handlers, start } = setupFooter();
 	const factory = await start({
 		mode: "tui", cwd: "/repo", sessionManager: { getEntries: () => [] }, getContextUsage: () => undefined,
@@ -261,17 +261,22 @@ test("preserves muted preparation statuses, clears completed work, and marks dir
 		return stripTerminalSequences(footer.render(100)[2]!);
 	};
 	assert.match(third(), /^↩ rewind +◷ 0s$/);
-	statuses.set("pi-codegraph", "\x1b[2m⠋ codegraph · indexing 8s\x1b[22m");
+	statuses.set("pi-codegraph", "\x1b[2m⠋ CG · indexing 8s\x1b[22m");
 	statuses.set("pi-deps", "\x1b[2m⠙ deps · installing 12s\x1b[22m");
-	assert.match(third(), /^⠋ codegraph · indexing 8s · ⠙ deps · installing 12s · ↩ rewind +◷ 0s$/);
-	assert.match(footer.render(100)[2]!, /\x1b\[2m⠋ codegraph · indexing 8s\x1b\[22m/);
-	const failure = "\x1b[31m!\x1b[39m pi-codegraph: setup failed";
+	assert.match(third(), /^⠋ CG · indexing 8s · ⠙ deps · installing 12s · ↩ rewind +◷ 0s$/);
+	assert.match(footer.render(100)[2]!, /\x1b\[2m⠋ CG · indexing 8s\x1b\[22m/);
+	const failure = "\x1b[31m!\x1b[39m CG: setup failed";
 	statuses.set("pi-codegraph", failure);
 	assert.ok(footer.render(100)[2]!.startsWith(failure));
-	assert.match(third(), /^! pi-codegraph: setup failed · /);
+	assert.match(third(), /^! CG: setup failed · /);
 	statuses.delete("pi-codegraph");
 	statuses.delete("pi-deps");
 	assert.match(third(), /^↩ rewind +◷ 0s$/);
+	statuses.set("pi-codegraph", "\x1b[2m○\x1b[22m CG");
+	assert.match(third(), /^○ CG · ↩ rewind +◷ 0s$/);
+	const indexed = "\x1b[32m✓\x1b[39m CG";
+	statuses.set("pi-codegraph", indexed);
+	assert.ok(footer.render(100)[2]!.startsWith(indexed));
 	await handlers.get("tool_execution_start")!({ toolCallId: "cg-1", toolName: "codegraph_explore", args: {} });
 	await handlers.get("tool_execution_start")!({ toolCallId: "other", toolName: "mcp", args: { server: "other", tool: "codegraph_explore" } });
 	assert.match(third(), /^● CG · ↩ rewind +◷ 0s$/);
@@ -279,7 +284,7 @@ test("preserves muted preparation statuses, clears completed work, and marks dir
 	await handlers.get("tool_execution_end")!({ toolCallId: "other", toolName: "mcp" });
 	assert.match(third(), /^● CG · /);
 	await handlers.get("tool_execution_end")!({ toolCallId: "cg-1", toolName: "codegraph_explore" });
-	assert.match(third(), /^↩ rewind +◷ 0s$/);
+	assert.match(third(), /^✓ CG · ↩ rewind +◷ 0s$/);
 	assert.equal(renders, 2);
 	await handlers.get("session_shutdown")!(undefined);
 	footer.dispose();

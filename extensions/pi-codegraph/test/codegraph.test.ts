@@ -100,12 +100,12 @@ test("initializes an opted-in linked worktree at its root once, including nested
 		{ command: "codegraph", args: ["init", "--yes", worktree], cwd: worktree },
 	]);
 	assert.deepEqual(run.widgets, []);
-	assert.ok(run.statuses.some((text) => text?.includes("codegraph · indexing")));
-	assert.equal(run.statuses.at(-1), undefined);
+	assert.ok(run.statuses.some((text) => text?.includes("CG · indexing")));
+	assert.equal(run.statuses.at(-1), "<success>✓</success> CG");
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
-test("TUI indexing survives session replacement and silently stops its dim animation", async (t) => {
+test("TUI indexing survives session replacement and replaces its dim animation with an indexed badge", async (t) => {
 	const { primary, worktree, lock } = await fixture(t);
 	await index(primary);
 	t.mock.timers.enable({ apis: ["Date", "setInterval"] });
@@ -131,9 +131,9 @@ test("TUI indexing survives session replacement and silently stops its dim anima
 	t.after(() => run.shutdown());
 	assert.equal(run.start(), undefined);
 	await entered.promise;
-	assert.equal(run.statuses.at(-1), "<dim>⠋ codegraph · indexing 0s</dim>");
+	assert.equal(run.statuses.at(-1), "<dim>⠋ CG · indexing 0s</dim>");
 	t.mock.timers.tick(100);
-	assert.equal(run.statuses.at(-1), "<dim>⠙ codegraph · indexing 0s</dim>");
+	assert.equal(run.statuses.at(-1), "<dim>⠙ CG · indexing 0s</dim>");
 	t.mock.timers.tick(1100);
 	assert.match(run.statuses.at(-1)!, /indexing 1s/);
 	assert.equal(run.start(), undefined); // Repeated starts reuse this initializer.
@@ -146,6 +146,7 @@ test("TUI indexing survives session replacement and silently stops its dim anima
 	release.resolve();
 	await replacement;
 	await cleared.promise;
+	assert.equal(run.statuses.at(-1), "<success>✓</success> CG");
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 	await setImmediate();
 	const count = run.statuses.length;
@@ -206,14 +207,14 @@ test("does not index non-Git directories, unopted repositories, or existing inde
 		await run.start();
 		assert.equal(run.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 		assert.deepEqual(run.notices, []);
-		assert.equal(run.statuses.at(-1), undefined);
+		assert.equal(run.statuses.at(-1), cwd === base ? undefined : "<dim>○</dim> CG");
 	}
 	await index(worktree);
 	const existing = harness(worktree);
 	await existing.start();
 	assert.equal(existing.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 	assert.deepEqual(existing.notices, []);
-	assert.equal(existing.statuses.at(-1), undefined);
+	assert.equal(existing.statuses.at(-1), "<success>✓</success> CG");
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 });
 
@@ -226,7 +227,7 @@ test("warns with the install command when the CLI is unavailable without creatin
 	await run.start();
 	assert.deepEqual(run.calls, [{ command: "codegraph", args: ["--version"], cwd: worktree }]);
 	assert.equal(run.notices[0]!.level, "warning");
-	assert.equal(run.statuses.at(-1), "<warning>!</warning> pi-codegraph: prerequisites missing");
+	assert.equal(run.statuses.at(-1), "<warning>!</warning> CG: prerequisites missing");
 	assert.ok(run.notices[0]!.message.includes("npm install -g @colbymchenry/codegraph"));
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
 	const headless = harness(worktree, { ...options, hasUI: false });
@@ -279,7 +280,7 @@ test("failed init preserves its lock, reports recovery, and a later launch rejec
 	assert.match(failed.notices[0]!.message, /index worker failed/);
 	assert.ok(failed.notices[0]!.message.includes(lock));
 	assert.equal(failed.notices[0]!.level, "error");
-	assert.equal(failed.statuses.at(-1), "<error>!</error> pi-codegraph: setup failed");
+	assert.equal(failed.statuses.at(-1), "<error>!</error> CG: setup failed");
 	t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
 	const waiting = Promise.withResolvers<void>();
 	const retry = harness(worktree, { onStatus: (text) => {
