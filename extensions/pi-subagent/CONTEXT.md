@@ -41,7 +41,8 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 
 ### Direct evidence
 
-- Direct mode admits Roles with known read-only base tools. Extensions and MCP servers are trusted without a read-only guarantee; direct changesets and Roles with write-capable base tools require isolated mode.
+- Direct mode admits Roles with known read-only base tools. `codemode` is read-only: its scripts call only the Role's active tools plus trusted extension and MCP tools. Extensions and MCP servers are trusted without a read-only guarantee; direct changesets and Roles with write-capable base tools require isolated mode.
+- Checkout admission in Main serializes write-capable Pi tool calls per checkout by their model-issued root call: a `codemode` script's nested writes share the script's ownership, independent writers wait, and reads never wait.
 - Each direct worker has a recorded Herdr tab and Pi session identity. The first handle returns before completion; subsequent tab identities remain recoverable on the session branch.
 - An exact settled worker with a bounded final Pi answer produces a follow-up to Main. Blocked, unknown, idle-stalled, truncated, or ambiguous outcomes retain actionable recovery identity. Session replacement never delivers to the wrong Main session.
 
@@ -56,13 +57,14 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - Promotion requires exact unchanged clean Main and a passing combined generation. Durable promotion evidence precedes selected-worker termination and cleanup; recovery never rolls back a proven promotion.
 - Rejected workers and superseded generations stay retained until Main explicitly releases their exact clean, proved-owned resources. At most two unreleased integration checkouts coexist.
 - Failures, ambiguity, interruption, review findings, conflicts, drift, unproved termination, or cleanup failure enter `needs_attention` and preserve evidence.
-- `subagent_status` is read-only. `subagent_resume` accepts only strict `retry`, `verify`, or `finalize` continuations. `subagent_abort` terminates only exact owned workers.
+- `subagent_status` is read-only, callable from `codemode` scripts, and returns the bounded public projection as structured content, never raw run state. `delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. `subagent_resume` accepts only strict `retry`, `verify`, or `finalize` continuations. `subagent_abort` terminates only exact owned workers.
 - The extension never pushes, opens a pull request, publishes, deploys, stashes, resets, force-cleans, or deletes unproved recoverable work.
 
 ### Resource and launch policy
 
 - Ambient child extensions and Skills stay disabled. Only Role/caller resources plus required internal adapters load.
-- Every Role requires `tools`, `extensions`, and `skills` arrays. `extensions` may name Pi built-in extensions as `builtin:<name>`. `mcps` names servers from the global `~/.pi/agent/mcp.json`; their tools load in the child with direct exposure. Omitted or empty `mcps` denies MCP access. Direct `pi-mcp-adapter` loading is rejected because it bypasses the allowlist.
+- Every Role requires `tools`, `extensions`, and `skills` arrays. `extensions` may name Pi built-in extensions as `builtin:<name>`. A Role activates `codemode` only by naming it in `tools` with `builtin:codemode` loaded; MCP configuration never activates it, and Pi's codemode settings apply unchanged. `mcps` names servers from the global `~/.pi/agent/mcp.json`; their tools keep their configured exposure in a codemode Role and are forced to direct exposure otherwise. Omitted or empty `mcps` denies MCP access. Direct `pi-mcp-adapter` loading is rejected because it bypasses the allowlist.
+- The Role tool policy declares the Role's `tools` and the extension tools Pi would declare on registration; extension tools with `codemode` or `deferred` exposure stay callable from scripts without being declared.
 - Selected extensions are trusted executable bundles, not a sandbox. All tools and lifecycle behavior they register load together.
 - Role Skill names resolve through Main's effective Pi registry. Missing Roles, Skills, tools, MCP servers, routes, models, or thinking levels fail before the first productive turn.
 - Route precedence is call model class, then Role default, then registered Model Task assignment/default. A direct model replaces only the route model and must support its thinking level.

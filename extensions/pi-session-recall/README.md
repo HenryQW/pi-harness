@@ -63,6 +63,14 @@ Use `scope:"all"` for cross-repository work. It still returns the corpus when re
 
 In the interactive TUI, the collapsed tool block shows the last five visual lines and the earlier-line count. Press `Ctrl+O` to expand the full bounded response. The model always receives the complete tool result.
 
+### Programmatic output
+
+`session_search` declares an output schema, so programmatic callers such as Pi `codemode` scripts receive the result as a structured value instead of text. That value is the same JSON the model receives, including `mode`, `contentTruncated`, `syncWarning`, and the 50,000-character bound. Each mode is one schema variant selected by `mode`.
+
+Failures are tool errors, not success-shaped JSON. The model sees an error result, and codemode scripts reject with the error message. Rejected session paths and scroll identifiers cannot expand an error message beyond the same 50,000-character budget. This covers invalid or conflicting arguments, a `sessionId` that is missing or outside the Pi sessions directory, an unknown scroll anchor, session files over 32 MiB, failed required repository inventory, cancelled preparation, and results whose metadata alone exceeds the output budget.
+
+The tool keeps Pi's default `direct` exposure: it is declared to the model while active and callable from scripts while active. It is annotated read-only; it writes only its own derived index. This package does not enable codemode.
+
 ### Pattern-miner skill
 
 Invoke `/skill:pi-session-pattern-miner` to find repeated workflows in past sessions. The skill makes exactly one preparation call before interpretation.

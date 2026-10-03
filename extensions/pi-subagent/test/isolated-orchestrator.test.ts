@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { Check } from "typebox/value";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
@@ -26,6 +27,7 @@ import {
 	parseExecuteRequest,
 	parseIdOnly,
 	parseResumeRequest,
+	StatusOutputSchema,
 	type ExecuteRequest,
 	type RunState,
 } from "../dist/schema.js";
@@ -157,6 +159,8 @@ type RegisteredCommand = { handler(args: string, ctx: ExtensionContext): Promise
 type RegisteredTool = {
 	name: string;
 	parameters: unknown;
+	outputSchema?: unknown;
+	exposure?: string;
 	prepareArguments(value: unknown): unknown;
 	execute(
 		toolCallId: string,
@@ -164,7 +168,7 @@ type RegisteredTool = {
 		signal: AbortSignal | undefined,
 		onUpdate: undefined,
 		ctx: ExtensionContext,
-	): Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>;
+	): Promise<{ content: Array<{ type: string; text: string }>; details: unknown; structuredContent?: unknown }>;
 };
 
 type RunnerCall = { method: string; args: unknown[] };
@@ -453,6 +457,24 @@ test("status restores active workspace rows and provides the non-TUI fallback", 
 		{ cwd: "/repo", hasUI: false } as ExtensionContext,
 	);
 	assert.equal(rpcResult.content[0]!.text, "bounded status result\n\nActive workspaces:\n! I [I1] unit-one · attention · The task needs a deliberate rec~ · 012345");
+});
+
+test("status hands codemode scripts the bounded public projection while mutating tools stay model-only", async () => {
+	const harness = createHarness();
+	const status = namedTool(harness, "subagent_status");
+	assert.equal(status.exposure, undefined);
+	assert.equal(status.outputSchema, StatusOutputSchema);
+	for (const name of ["subagent_resume", "subagent_stage", "subagent_integrate", "subagent_abort"]) {
+		assert.equal(namedTool(harness, name).exposure, "model-only", name);
+		assert.equal(namedTool(harness, name).outputSchema, undefined, name);
+	}
+	const result = await executeTool(status, { id: "request-one" }, undefined, context("/repo"));
+	assert.deepEqual(result.structuredContent, result.details);
+	assert.ok(Check(StatusOutputSchema, JSON.parse(JSON.stringify(result.structuredContent))));
+	const structured = result.structuredContent as { state: Record<string, unknown>; main: { status: string } };
+	assert.deepEqual(structured.state, expectedPublicState());
+	assert.equal(structured.main.status, "drifted");
+	assert.equal(JSON.stringify(result.structuredContent).includes("PRIVATE"), false);
 });
 
 test("aborted request keeps mixed task evidence distinct in status and widget", async () => {
@@ -1301,12 +1323,14 @@ test("execute keeps raw cwd while lookup actions use canonical root, bounded con
 	assert.deepEqual(harness.runnerCalls.find(({ method }) => method === "status")!.args, ["request-one", CANONICAL_ROOT, signals[1]]);
 	assert.deepEqual(harness.runnerCalls.find(({ method }) => method === "abort")!.args, ["request-one", CANONICAL_ROOT, signals[3]]);
 	assert.match(execute.content[0]!.text, /durable request accepted/);
+	const publicStatus = {
+		state: expectedPublicState(),
+		main: { status: "drifted", expected: RECORDED_MAIN, actual: CURRENT_MAIN },
+	};
 	assert.deepEqual(status, {
 		content: [{ type: "text", text: "bounded status result" }],
-		details: {
-			state: expectedPublicState(),
-			main: { status: "drifted", expected: RECORDED_MAIN, actual: CURRENT_MAIN },
-		},
+		details: publicStatus,
+		structuredContent: publicStatus,
 	});
 	assert.match(resume.content[0]!.text, /durable request accepted/);
 	assert.deepEqual(abort, { content: [{ type: "text", text: "bounded abort result" }], details: { state: expectedPublicState() } });

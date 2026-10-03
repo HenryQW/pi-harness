@@ -21,8 +21,8 @@ Use slash commands from the Pi prompt as a human; Pi agents use the tools.
 | `/dir-add [path]` | command | Add to this session by default; pass `--project` or `--global` before the path to persist for this Git repository's linked worktrees or every workspace. Omit the path to enter it when prompted; supports `~`. |
 | `/dir-ls` | command | List directories with their scope; select one to remove from that scope. |
 | `/dir-reload` | command | Reload external directory resources. |
-| `add_directory(path)` | tool | Add a directory to this session and return its context and instructions. |
-| `search_external_files(pattern, maxResults?)` | tool | Glob-search added directories; returns up to 50 results by default, configurable to 1,000. |
+| `add_directory(path)` | tool | Add a directory to this session and return its context and instructions. Model-only: codemode scripts cannot call it. |
+| `search_external_files(pattern, maxResults?)` | tool | Glob-search added directories; returns up to 50 results by default, configurable to 1,000. Returns a structured result to codemode scripts. |
 | `@` file autocomplete | ui | Find files in added directories and insert their absolute paths. |
 | External directory widget | ui | Show added directories and point to `/dir-ls` for management. |
 
@@ -33,6 +33,12 @@ Added directories give Pi these resources:
 - Files in the editor's `@` autocomplete, with absolute paths.
 
 `/dir-add` reloads only when the discovered external skill paths change, not merely because the directory contains skills. `add_directory` stays session-local; when its result asks for `/reload`, run it to update external skills.
+
+## Programmatic use
+
+`search_external_files` declares an output schema. Programmatic callers such as Pi `codemode` scripts receive `{ pattern, maxResults, searchedDirectories, totalFound, truncated, directories }`. `directories` lists each directory with at least one match, with its label and absolute file paths. `searchedDirectories` counts only directories actually searched, including those with no matches; directories skipped after reaching the cap are not counted. `truncated` is true when the result cap stopped the search, so later directories or files may hold more matches. The model receives the same matches as text. Calling the tool with no added directories is a tool error, and scripts reject with the message.
+
+`add_directory` is declared to the model only (Pi `model-only` exposure). Codemode scripts and other tools cannot call it, so another directory's `AGENTS.md`, `CLAUDE.md`, and skills enter the session only through a model-visible tool call or a user command. This package does not enable codemode.
 
 ## Config
 
