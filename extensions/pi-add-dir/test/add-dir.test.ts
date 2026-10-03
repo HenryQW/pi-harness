@@ -170,14 +170,25 @@ test("search_external_files returns structured grouped results that match its ou
 		);
 		assert.match(full.content[0].text, /^Found 2 file\(s\) matching "\*\.ts":/);
 
+		// Later directories, including an empty one, must count only if visited.
+		for (const name of ["empty", "later"]) {
+			const directory = join(root, name);
+			await mkdir(directory);
+			if (name === "later") await writeFile(join(directory, "c.ts"), "");
+			await tools.get("add_directory")!.execute(name, { path: directory }, undefined, undefined, ctx);
+		}
 		const capped = await search.execute("capped", { pattern: "*.ts", maxResults: 1 }, undefined, undefined, ctx);
 		assert.equal(Value.Check(search.outputSchema as any, capped.structuredContent), true);
 		assert.equal(capped.structuredContent.totalFound, 1);
+		assert.equal(capped.structuredContent.searchedDirectories, 1, "the cap stopped traversal in the first of three directories");
 		assert.equal(capped.structuredContent.truncated, true, "hitting the cap means more matches may exist");
+		const uncapped = await search.execute("uncapped", { pattern: "*.ts" }, undefined, undefined, ctx);
+		assert.equal(uncapped.structuredContent.searchedDirectories, 3);
+		assert.equal(uncapped.structuredContent.totalFound, 3);
 
 		const none = await search.execute("none", { pattern: "*.md" }, undefined, undefined, ctx);
 		assert.equal(Value.Check(search.outputSchema as any, none.structuredContent), true);
-		assert.deepEqual(none.structuredContent, { pattern: "*.md", maxResults: 50, searchedDirectories: 1, totalFound: 0, truncated: false, directories: [] });
+		assert.deepEqual(none.structuredContent, { pattern: "*.md", maxResults: 50, searchedDirectories: 3, totalFound: 0, truncated: false, directories: [] });
 		assert.match(none.content[0].text, /^No files matching/);
 	} finally {
 		await rm(root, { recursive: true, force: true });

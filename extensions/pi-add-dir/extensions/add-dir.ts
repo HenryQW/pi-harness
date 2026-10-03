@@ -723,12 +723,14 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			const limit = params.maxResults ?? DEFAULT_MAX_RESULTS;
 			const directories: Array<{ path: string; label: string; files: string[] }> = [];
 			let totalFound = 0;
+			let searchedDirectories = 0;
 
 			for (const dir of addedDirs) {
 				signal?.throwIfAborted();
 				const remaining = limit - totalFound;
 				if (remaining <= 0) break;
 
+				searchedDirectories++;
 				const files = await findFiles(dir.absolutePath, pattern, remaining, signal);
 				if (files.length > 0) {
 					directories.push({ path: dir.absolutePath, label: dir.label, files });
@@ -740,7 +742,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			const structuredContent = {
 				pattern,
 				maxResults: limit,
-				searchedDirectories: addedDirs.length,
+				searchedDirectories,
 				totalFound,
 				truncated: totalFound >= limit,
 				directories,

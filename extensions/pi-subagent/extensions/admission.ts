@@ -35,14 +35,21 @@ async function checkoutKey(pi: ExtensionAPI, ctx: ExtensionContext): Promise<str
 export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (input: unknown) => boolean): void {
 	const ownerByCheckout = new Map<string, string>();
 	const checkoutByRoot = new Map<string, string>();
+	const writersByRoot = new Map<string, Set<string>>();
 	/** Model-issued ancestor of each in-flight call; Pi names nested calls `<parent id>/<n>`. */
 	const rootByCall = new Map<string, string>();
 	const release = (toolCallId: string) => {
+		const root = rootByCall.get(toolCallId);
+		if (root === undefined) return;
 		rootByCall.delete(toolCallId);
-		const key = checkoutByRoot.get(toolCallId);
+		const writers = writersByRoot.get(root);
+		writers?.delete(toolCallId);
+		if (rootByCall.has(root) || writers?.size) return;
+		writersByRoot.delete(root);
+		const key = checkoutByRoot.get(root);
 		if (!key) return;
-		checkoutByRoot.delete(toolCallId);
-		if (ownerByCheckout.get(key) === toolCallId) ownerByCheckout.delete(key);
+		checkoutByRoot.delete(root);
+		if (ownerByCheckout.get(key) === root) ownerByCheckout.delete(key);
 	};
 	pi.on("tool_call", async (event, ctx) => {
 		const root = event.parentToolCallId === undefined
@@ -67,12 +74,16 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 		}
 		ownerByCheckout.set(key, root);
 		checkoutByRoot.set(root, key);
+		const writers = writersByRoot.get(root) ?? new Set<string>();
+		writers.add(event.toolCallId);
+		writersByRoot.set(root, writers);
 	});
 	pi.on("tool_result", (event) => release(event.toolCallId));
 	pi.on("tool_execution_end", (event) => release(event.toolCallId));
 	pi.on("session_shutdown", () => {
 		ownerByCheckout.clear();
 		checkoutByRoot.clear();
+		writersByRoot.clear();
 		rootByCall.clear();
 	});
 }

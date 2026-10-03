@@ -495,7 +495,7 @@ export default function (pi: ExtensionAPI): void {
 					resolved = realpathSync(sessionId);
 					root = realpathSync(sessionsDir());
 				} catch {
-					throw new Error(`session file not found: ${sessionId}`);
+					throw new Error(`session file not found: ${sessionId}`.slice(0, OUTPUT_CHAR_BUDGET));
 				}
 				if (!resolved.startsWith(root + sep) || !resolved.endsWith(".jsonl")) {
 					throw new Error("sessionId must be a .jsonl file under the Pi sessions directory");
@@ -509,7 +509,15 @@ export default function (pi: ExtensionAPI): void {
 			if (sessionId && anchor) {
 				const w = clamp(params.window, 1, 20, 5);
 				const branchTip = params.branchTip?.trim() || undefined;
-				const win = getWindow(sessionId, anchor, w, branchTip ? { branchTip } : undefined);
+				let win: ReturnType<typeof getWindow>;
+				try {
+					win = getWindow(sessionId, anchor, w, branchTip ? { branchTip } : undefined);
+				} catch (error) {
+					if (error instanceof Error && error.message.length > OUTPUT_CHAR_BUDGET) {
+						throw new Error(error.message.slice(0, OUTPUT_CHAR_BUDGET), { cause: error });
+					}
+					throw error;
+				}
 				const base = { mode: "scroll", sessionId, branchTip: win.branchTip, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
 				let result: Record<string, unknown> = { ...base, messages: win.messages };
 				if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && win.messages.length > 0) {

@@ -425,6 +425,23 @@ describe("session_search entry point", () => {
 		const ctx = { sessionManager: {} };
 		await assert.rejects(tool.execute("t5", { sessionId: "/nonexistent/file.jsonl" }, undefined, undefined, ctx), /session file not found/);
 		await assert.rejects(tool.execute("t5b", { scope: "all" }, undefined, undefined, ctx), /requires operation/);
+		const longId = "x".repeat(100_000);
+		const session = writeSimpleSession("rejected-ids/session.jsonl", {
+			id: "rejected-ids", cwd: "/tmp", timestamp: "2026-01-01T00:00:00.000Z", text: "anchor",
+		});
+		for (const params of [
+			{ sessionId: longId },
+			{ sessionId: session, aroundMessageId: longId },
+			{ sessionId: session, aroundMessageId: "m1", branchTip: longId },
+		]) {
+			await assert.rejects(tool.execute("long-id", params, undefined, undefined, ctx), (error: unknown) =>
+				error instanceof Error && error.message.length <= 50_000);
+			const length = await runCodemodeScript(tool, `
+				try { await tools.session_search(${JSON.stringify(params)}); }
+				catch (error) { return error.message.length; }
+			`, ctx);
+			assert.ok(length > 0 && length <= 50_000, "codemode rejection must remain bounded");
+		}
 	});
 
 	it("codemode scripts receive the structured result and reject on failure", async () => {

@@ -77,11 +77,18 @@ test("checkout admission attributes nested calls to their model-issued root and 
 	assert.equal(await call("script-2", "codemode"), undefined);
 	assert.deepEqual(await call("script-2/1", "bash", "script-2"), blockedBy("script-1"));
 	assert.equal(await call("script-2/2", "read", "script-2"), undefined);
-	// Nested completions and failures do not release the root; the root's own end does.
+	// Root completion must not release still-running writes, including deeper descendants.
 	handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "script-1/3", toolName: "bash", parentToolCallId: "script-1", isError: true });
-	handlers.get("tool_result")!({ type: "tool_result", toolCallId: "script-1/4", toolName: "edit", parentToolCallId: "script-1" });
 	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));
-	handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "script-1", toolName: "codemode", isError: true });
+	handlers.get("tool_result")!({ toolCallId: "script-1" });
+	handlers.get("tool_execution_end")!({ toolCallId: "script-1" });
+	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));
+	// Duplicate completion hooks must not consume another descendant's admission.
+	handlers.get("tool_result")!({ toolCallId: "script-1/3" });
+	handlers.get("tool_result")!({ toolCallId: "script-1/4" });
+	handlers.get("tool_execution_end")!({ toolCallId: "script-1/4" });
+	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));
+	handlers.get("tool_execution_end")!({ toolCallId: "script-1/3/1" });
 	assert.equal(await call("edit-3", "edit"), undefined);
 	assert.deepEqual(await call("script-2/3", "bash", "script-2"), blockedBy("edit-3"));
 	handlers.get("tool_result")!({ toolCallId: "edit-3" });
