@@ -40,8 +40,10 @@ for (const scenario of ["trim", "compact"] as const) test(`real Pi ${scenario}s 
 			data({ role: "assistant", content: "DONE" }, null);
 			data({}, "stop");
 		}
+		// Report realistic prompt usage; the extension trusts it over character estimates.
+		const promptTokens = Math.ceil(JSON.stringify(input.messages).length / 4);
 		response.write(`data: ${JSON.stringify({ id: `turn-${index}`, model: "model", choices: [], usage: {
-			prompt_tokens: 100, completion_tokens: 10, total_tokens: 110,
+			prompt_tokens: promptTokens, completion_tokens: 10, total_tokens: promptTokens + 10,
 		} })}\n\n`);
 		response.end("data: [DONE]\n\n");
 	});

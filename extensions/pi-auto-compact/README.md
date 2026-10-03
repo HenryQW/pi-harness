@@ -44,6 +44,7 @@ Run `/auto-compact` with no arguments and enter a threshold from 25% to below 10
 
 ![Auto-compact flowchart: completed boundaries trim duplicate reads before summarizing; oversized requests use a separate emergency guard](./docs/auto-compact-flow.svg)
 
+- Context use is measured like Pi's status bar: the provider-reported usage of the latest response plus estimates for later messages. Before any usage exists, and after compaction, every message is estimated at about four characters per token. Estimates count replayed reasoning that some providers do not bill, so they can run high until the next response.
 - At completed `turn_end` and `agent_before_settle` boundaries, the extension replaces older successful, text-only `read` results only when an identical later full read is in the protected recent context. Tool name, arguments, and text must match. Failed, changed, image-bearing, or already edited results stay intact. If trimming brings context below the threshold, no summary request runs.
 - If trimming is insufficient, the extension summarizes older effective context through the `fast` profile's primary route, then fallback, then the current session model. Pi commits context-edit and compaction entries without interrupting a normal tool turn or restarting a final answer. A failed summary does not become a checkpoint.
 - Resumed/forked sessions and oversized fresh input may need emergency `ctx.compact()` before a completed boundary exists. This exceptional path interrupts and resumes the task.
