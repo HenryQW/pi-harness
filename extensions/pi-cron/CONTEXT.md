@@ -20,6 +20,8 @@ Run user-authored job prompts on a schedule in fresh Pi sessions while any Pi se
 - Invalid config pauses all jobs with one visible error and preserves the file.
 - The Role bounds capability. Direct read-only admission is not applied because job entries are user-authored.
 - Route precedence: job `model` and `thinking`, then job `modelClass`, then the Role default, then the `pi-cron/job` Model Task assignment (default `fast`).
+- Local admission precedes shared claiming: busy manual requests do not queue; scheduled jobs are reconsidered later. Each run captures its original session's abort signal before asynchronous preparation.
+- State validates all nested records, skips no-op writes, and refuses replacements above its 1 MiB read limit. Only matching owner/start identities can finish a claim or deliver a result.
 - Every run replaces the Role launch's `--no-session` with `--session <run session>`; the child runs through pi-subagent's bounded ephemeral executor with this extension's `limits`.
 - Failures always surface in the UI when one exists; `none` silences only successes.
 
@@ -27,4 +29,4 @@ Run user-authored job prompts on a schedule in fresh Pi sessions while any Pi se
 
 - Config: `<agent-dir>/config/pi-cron/config.json`
 - State: `<agent-dir>/config/pi-cron/state.json` (version 1, strict)
-- Run sessions: `<agent-dir>/config/pi-cron/sessions/<job-id>/<timestamp>.jsonl`
+- Run sessions: `<agent-dir>/config/pi-cron/sessions/<job-id>/<timestamp>.jsonl`; recorded only when a file was created. Pre-launch failures have no session path.

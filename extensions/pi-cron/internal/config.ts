@@ -168,7 +168,9 @@ function parseLimits(value: unknown): Limits {
 	}
 	for (const key of ["idleMinutes", "maxMinutes"] as const) {
 		if (raw[key] === undefined) continue;
-		if (typeof raw[key] !== "number" || !Number.isFinite(raw[key]) || raw[key] <= 0) throw new Error(`limits.${key} must be a positive number of minutes.`);
+		if (typeof raw[key] !== "number" || !Number.isFinite(raw[key]) || raw[key] <= 0 || raw[key] * 60_000 > 2_147_483_647) {
+			throw new Error(`limits.${key} must be positive minutes within the 2147483647 ms timer limit.`);
+		}
 		limits[key] = raw[key];
 	}
 	const effective = effectiveLimits({ jobs: [], limits });

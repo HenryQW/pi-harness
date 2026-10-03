@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { EphemeralSubagentExecutor, EphemeralSubagentRunInput } from "@henryqw/pi-subagent";
+import { lock } from "proper-lockfile";
 import cronExtension, { CRON_RESULT_TYPE } from "../extensions/cron.ts";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => void | Promise<void>;
@@ -80,7 +81,10 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 	let now = SLOT - 3_600_000;
 	const fakeExecutor: EphemeralSubagentExecutor = {
 		async run(input) {
+			input.signal?.throwIfAborted();
 			const value = await input.prepare();
+			input.signal?.throwIfAborted();
+			await writeFile(value.launch.args[value.launch.args.indexOf("--session") + 1]!, '{"type":"session"}\n');
 			prepared.push(value);
 			const result = await executor(value);
 			return { ...result, exitCode: result.outcome === "success" ? 0 : 1, outputTruncated: false, stderr: "" };
@@ -173,6 +177,62 @@ test("the menu disables and re-enables a job by editing only its enabled flag", 
 	await h.command("");
 	const enabled = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "config.json"), "utf8"));
 	assert.equal(enabled.jobs[0].enabled, undefined);
+	await h.emit("session_shutdown");
+});
+
+test("busy local admission leaves other jobs unclaimed instead of queueing an aging claim", async () => {
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	await writeJobs(["first", "second"].map((id) => ({ id, every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false })));
+	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
+	const h = harness(async () => { await gate; return { outcome: "success", output: "done" }; });
+	await h.emit("session_start");
+	await h.command("run first");
+	await h.settle();
+	h.setNow(SLOT + 29 * 60_000);
+	await h.command("run second");
+	assert.ok(h.notices.some((notice) => notice.includes("already running in this Pi session")));
+	const readState = async () => JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8"));
+	assert.equal((await readState()).jobs.second, undefined);
+	release();
+	await h.settle();
+	await h.command("run second");
+	await h.settle();
+	assert.equal((await readState()).jobs.second.lastStartedAt, SLOT + 29 * 60_000);
+	await h.emit("session_shutdown");
+});
+
+test("a shutdown during claim preparation cannot adopt the next session's signal", async () => {
+	await writeJobs([{ id: "restart", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false }]);
+	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
+	const h = harness(async () => ({ outcome: "success", output: "unexpected" }));
+	await h.emit("session_start");
+	const home = join(agentDir, "config", "pi-cron");
+	const release = await lock(home, { realpath: false, lockfilePath: join(home, "state.json.lock") });
+	const pending = h.command("run restart");
+	await h.emit("session_shutdown");
+	await h.emit("session_start");
+	await release();
+	await pending;
+	await h.settle();
+	assert.equal(h.prepared.length, 0);
+	assert.ok(h.notices.some((notice) => notice.includes("Pi session shut down")));
+	await h.emit("session_shutdown");
+});
+
+test("pre-launch failures record no session and the menu explains its absence", async () => {
+	await writeJobs([{ id: "missing-role", every: "1d", role: "not-configured", cwd: agentDir, prompt: "Go.", enabled: false }]);
+	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
+	const h = harness(async () => ({ outcome: "success", output: "unexpected" }));
+	await h.emit("session_start");
+	await h.command("run missing-role");
+	await h.settle();
+	const record = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs["missing-role"];
+	assert.equal(record.lastSession, undefined);
+	assert.ok(h.notices.some((notice) => notice.includes("no session created") && notice.includes("not configured")));
+	h.select("missing-role · disabled", "Show last run");
+	await h.command("");
+	assert.ok(h.notices.some((notice) => notice.includes("Session: none created")));
 	await h.emit("session_shutdown");
 });
 

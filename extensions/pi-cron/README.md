@@ -1,6 +1,6 @@
 # `@henryqw/pi-cron`
 
-Run a prompt on a schedule in a fresh Pi session, with the Role, model, and thinking level chosen per job. Jobs fire while any Pi session with this extension is open, and each run leaves a reopenable session file.
+Run a prompt on a schedule in a fresh Pi session, with the Role, model, and thinking level chosen per job. Jobs fire while any Pi session with this extension is open, and created session files can be reopened.
 
 ## Install
 
@@ -34,10 +34,12 @@ Each run launches a new Pi process in `cwd` with the Role's resources, the job's
 
 ## Flow
 
+![An open Pi session claims due work in shared state, launches a bounded child, and delivers its result.](./docs/cron-flow.svg)
+
 1. On session start and every minute after, the extension loads the config and checks each enabled job.
 2. A job seen for the first time only records a baseline; it first runs at its next slot. Use `/cron run` for an immediate run.
-3. A due job is claimed in shared state before launch, so several open Pi sessions never run the same slot twice. A missed slot, for example while no Pi was open, produces one catch-up run, not a backlog.
-4. The run is bounded by `limits`: turn count, idle timeout, and maximum runtime. The outcome, a bounded output summary, and the session path are recorded.
+3. A local run slot is admitted before the due job is claimed in shared state, so claims never wait in a child queue. A fresh claim excludes other Pi sessions. A missed slot, for example while no Pi was open, produces one catch-up run, not a backlog.
+4. The run is bounded by `limits`: turn count, idle timeout, and maximum runtime. The outcome, a bounded output summary, and the session path (when a file exists) are recorded.
 5. Delivery follows the job's `notify`: `notify` shows a one-line notice, `followUp` sends the output into the current conversation and starts a turn, `none` stays quiet. Failures always show a notice.
 
 ## Config
@@ -78,8 +80,8 @@ Package-owned: `~/.pi/agent/config/pi-cron/config.json`
 | `jobs[].enabled` | Whether the scheduler considers the job. | `true` or `false`. | `true` |
 | `jobs[].notify` | How a result reaches you. | `notify`, `followUp`, or `none`. | `notify` |
 | `limits.maxTurns` | Provider-turn limit per run. | Safe integer ≥ 1. | `50` |
-| `limits.idleMinutes` | Minutes without child activity before the run is stopped. | Positive number. | `10` |
-| `limits.maxMinutes` | Hard runtime cap per run. | Number greater than `idleMinutes`. | `30` |
+| `limits.idleMinutes` | Minutes without child activity before the run is stopped. | Positive number; converted milliseconds must be ≤ 2,147,483,647. | `10` |
+| `limits.maxMinutes` | Hard runtime cap per run. | Greater than `idleMinutes`; converted milliseconds must be ≤ 2,147,483,647. | `30` |
 
 Only you edit this file, except that `/cron` toggles a job's `enabled` flag after you choose Enable or Disable. Changes apply at the next check without restarting Pi. Unknown keys, a job with both or neither schedule, an unknown time zone, a relative path, or an invalid route block all jobs with one error notice until the file is fixed; the file is never rewritten to recover.
 
@@ -87,7 +89,7 @@ Keep secrets out of this file. The run inherits the current session's environmen
 
 ## State and storage
 
-`~/.pi/agent/config/pi-cron/state.json` records each job's first sighting, last start, last outcome, a bounded output summary, the last session path, and any active run claim. Deleting it resets baselines, so every job waits for its next slot again. A state file that is not a version 1 object is reported and left untouched.
+`~/.pi/agent/config/pi-cron/state.json` records each job's first sighting, last start, last outcome, a bounded output summary, the last session path, and any active run claim. Deleting it resets baselines, so every job waits for its next slot again. Invalid version 1 state, including malformed job records or run claims, is reported and left untouched. State writes above 1 MiB fail before replacing the existing readable file; remove inactive job records from `state.json` while Pi is closed to make room. Completion updates require the same claim owner and start time, so a stale run cannot overwrite its replacement's claim or outcome.
 
 `~/.pi/agent/config/pi-cron/sessions/<job-id>/<timestamp>.jsonl` holds each run's Pi session. These files contain the prompt and the model's output; delete them when you no longer need them.
 
@@ -95,6 +97,6 @@ Keep secrets out of this file. The run inherits the current session's environmen
 
 Jobs run only while a Pi session with this extension is open; there is no background daemon. A slot missed while Pi was closed runs once at the next check.
 
-A run cannot answer approval prompts or questions, so a Role that needs interactive confirmation will stall until the idle timeout. A failed or timed-out run records `failure` with the error text; open the session file to see what happened, then use `/cron run <job-id>` to retry.
+A run cannot answer approval prompts or questions, so a Role that needs interactive confirmation will stall until the idle timeout. A failed or timed-out run records `failure` with the error text. Open the session file when one was created; pre-launch failures have no session and `/cron` says `Session: none created`. Use `/cron run <job-id>` to retry.
 
-A run claim older than `limits.maxMinutes` plus five minutes is treated as stale and may be reclaimed. Runs are launched one at a time per Pi session.
+A run claim older than `limits.maxMinutes` plus five minutes is treated as stale and may be reclaimed. Runs are launched one at a time per Pi session. `/cron run` reports busy instead of queueing when another local job is active; due scheduled jobs are reconsidered on a later check. Shutdown aborts pending preparation and the active child, even if another Pi session starts in the same process.

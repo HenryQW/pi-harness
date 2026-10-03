@@ -26,6 +26,14 @@ test("a valid config round-trips its shape and derives schedule, defaults, and l
 	assert.deepEqual(effectiveLimits(parseCronConfig({ jobs: [], limits: { maxTurns: 5 } })), { maxTurns: 5, idleMinutes: 10, maxMinutes: 30 });
 });
 
+test("timeout minutes cannot exceed the executor timer range", () => {
+	const maxMinutes = (2_147_483_647 - 1) / 60_000;
+	assert.equal(parseCronConfig({ jobs: [], limits: { maxMinutes } }).limits!.maxMinutes, maxMinutes);
+	for (const field of ["idleMinutes", "maxMinutes"]) {
+		assert.throws(() => parseCronConfig({ jobs: [], limits: { [field]: maxMinutes + 1 } }), new RegExp(`limits\\.${field} must be positive minutes within the 2147483647 ms timer limit`));
+	}
+});
+
 test("explicit model routes canonicalize numbered Codex aliases", () => {
 	const [job] = parseCronConfig({ jobs: [{ ...digest, modelClass: undefined, model: "openai-codex-2/gpt-5", thinking: "high" }] }).jobs;
 	assert.equal(job!.model, "openai-codex/gpt-5");

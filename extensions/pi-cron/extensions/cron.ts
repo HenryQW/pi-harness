@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readTextFileBounded } from "@henryqw/pi-config-store";
@@ -26,7 +26,7 @@ import {
 } from "../internal/config.ts";
 import { sessionFilePath, sessionLaunchArgs, summarize } from "../internal/launch.ts";
 import { formatInstant, nextRunAt } from "../internal/schedule.ts";
-import { StateStore, type Outcome } from "../internal/state.ts";
+import { StateStore, type Claim, type Outcome } from "../internal/state.ts";
 
 export const CRON_JOB_TASK = {
 	id: "pi-cron/job",
@@ -62,6 +62,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	let latestCtx: ExtensionContext | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let ticking = false;
+	let running = false;
 	let lastConfigError: string | undefined;
 	let executor: { key: string; value: EphemeralSubagentExecutor } | undefined;
 	// Renewed on session start so a session switch in the same Pi process revives scheduling.
@@ -106,9 +107,9 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 		}));
 	};
 
-	const deliver = (ctx: ExtensionContext, job: Job, outcome: Outcome, output: string, sessionFile: string): void => {
+	const deliver = (ctx: ExtensionContext, job: Job, outcome: Outcome, output: string, sessionFile?: string): void => {
 		const mode = jobNotify(job);
-		const headline = `Scheduled job ${job.id} ${outcome === "success" ? "finished" : "failed"} · ${sessionFile}`;
+		const headline = `Scheduled job ${job.id} ${outcome === "success" ? "finished" : "failed"} · ${sessionFile ?? "no session created"}`;
 		if (mode === "followUp") {
 			pi.sendMessage({
 				customType: CRON_RESULT_TYPE,
@@ -124,28 +125,43 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 		}
 	};
 
-	/** Claim first so the caller learns quickly whether the run started; the run itself finishes in `done`. */
-	const runJob = async (ctx: ExtensionContext, config: CronConfig, job: Job, force: boolean): Promise<{ claimed: boolean; done: Promise<void> }> => {
-		const limits = effectiveLimits(config);
-		const claim = await state.claim(job.id, jobSchedule(job), now(), {
-			owner, force, staleMs: limits.maxMinutes * 60_000 + STALE_MARGIN_MS,
-		});
-		if (!claim) return { claimed: false, done: Promise.resolve() };
-		return { claimed: true, done: execute(ctx, limits, job, sessionFilePath(home, job.id, claim.startedAt)) };
+	/** Admit locally before claiming so no shared claim ages in an executor queue. */
+	const runJob = async (ctx: ExtensionContext, config: CronConfig, job: Job, force: boolean): Promise<
+		{ claimed: true; done: Promise<void> } | { claimed: false; done: Promise<void>; reason: string }
+	> => {
+		const signal = shutdown.signal;
+		if (running || signal.aborted) return { claimed: false, done: Promise.resolve(), reason: "A job is already running in this Pi session, or the session is shutting down." };
+		running = true;
+		try {
+			const limits = effectiveLimits(config);
+			const claim = await state.claim(job.id, jobSchedule(job), now(), {
+				owner, force, staleMs: limits.maxMinutes * 60_000 + STALE_MARGIN_MS,
+			});
+			if (!claim) {
+				running = false;
+				return { claimed: false, done: Promise.resolve(), reason: `${job.id} is not due or is already running in another Pi session.` };
+			}
+			return { claimed: true, done: execute(ctx, limits, job, claim, signal).finally(() => { running = false; }) };
+		} catch (error) {
+			running = false;
+			throw error;
+		}
 	};
 
-	const execute = async (ctx: ExtensionContext, limits: Required<Limits>, job: Job, sessionFile: string): Promise<void> => {
+	const execute = async (ctx: ExtensionContext, limits: Required<Limits>, job: Job, claim: Claim, signal: AbortSignal): Promise<void> => {
+		const sessionFile = sessionFilePath(home, job.id, claim.startedAt);
 		let outcome: Outcome = "failure";
 		let output = "";
 		try {
-			const prompt = job.prompt ?? await readTextFileBounded(job.promptFile!, MAX_PROMPT_BYTES, { signal: shutdown.signal });
+			signal.throwIfAborted();
+			const prompt = job.prompt ?? await readTextFileBounded(job.promptFile!, MAX_PROMPT_BYTES, { signal });
 			if (!prompt.trim()) throw new Error(`prompt file ${job.promptFile} is empty.`);
 			const role = loadRoles(agentDir).find((candidate) => candidate.name === job.role);
 			if (!role) throw new Error(`Role ${job.role} is not configured.`);
 			const launch = prepareLaunch(ctx, job, role);
 			await mkdir(dirname(sessionFile), { recursive: true, mode: 0o700 });
 			const result = await executorFor(limits).run({
-				signal: shutdown.signal,
+				signal,
 				prepare: async () => ({
 					launch: { args: sessionLaunchArgs(launch.args, sessionFile), env: { ...launch.env, ...job.env } },
 					task: prompt,
@@ -160,18 +176,25 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 		} catch (error) {
 			output = errorText(error);
 		}
-		await state.finish(job.id, { finishedAt: now(), outcome, summary: summarize(output, SUMMARY_BYTES), session: sessionFile });
-		deliver(latestCtx ?? ctx, job, outcome, output, sessionFile);
+		let session: string | undefined;
+		try {
+			if ((await stat(sessionFile)).isFile()) session = sessionFile;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		const finished = await state.finish(job.id, claim, { finishedAt: now(), outcome, summary: summarize(output, SUMMARY_BYTES), session });
+		if (finished) deliver(latestCtx ?? ctx, job, outcome, output, session);
 	};
 
 	const tick = async (): Promise<void> => {
-		if (ticking || !latestCtx || shutdown.signal.aborted) return;
+		const signal = shutdown.signal;
+		if (ticking || !latestCtx || signal.aborted) return;
 		ticking = true;
 		try {
 			const config = loadConfig(latestCtx);
 			if (!config) return;
 			for (const job of config.jobs.filter(jobEnabled)) {
-				if (shutdown.signal.aborted) return;
+				if (signal.aborted) return;
 				try {
 					await (await runJob(latestCtx, config, job, false)).done;
 				} catch (error) {
@@ -250,7 +273,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			} else if (action === "Show last run") {
 				const record = jobs[job.id];
 				ctx.ui.notify(record?.lastOutcome
-					? `${job.id} ${record.lastOutcome} at ${formatInstant(record.lastFinishedAt!)}\nSession: ${record.lastSession}\n${record.lastSummary}`
+					? `${job.id} ${record.lastOutcome} at ${formatInstant(record.lastFinishedAt!)}\nSession: ${record.lastSession ?? "none created"}\n${record.lastSummary}`
 					: `${job.id} has not run yet.`, "info");
 			}
 		},
@@ -259,7 +282,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	async function startNow(ctx: ExtensionCommandContext, config: CronConfig, job: Job): Promise<void> {
 		const run = await runJob(ctx, config, job, true);
 		if (!run.claimed) {
-			ctx.ui.notify(`${job.id} is already running in another Pi session.`, "warning");
+			ctx.ui.notify(run.reason, "warning");
 			return;
 		}
 		run.done.catch((error) => ctx.ui.notify(`pi-cron could not run ${job.id}: ${errorText(error)}`, "error"));
