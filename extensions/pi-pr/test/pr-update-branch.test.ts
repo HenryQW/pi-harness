@@ -276,15 +276,24 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 		if (command === "git" && args[0] === "push") pushes += 1;
 		return await spawnBounded(command, args, options);
 	};
+	let liveAuthority = authority;
 	const workflow = new PullRequestBranchUpdater({
 		cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
-		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }),
+		loadCurrentPullRequest: async (_pi, context) => {
+			if ((context.rebaseBranch ?? git("branch", "--show-current")) !== "feature") {
+				return { kind: "blocked", issue: { kind: "detached-head" } };
+			}
+			return { kind: "current", pullRequest: liveAuthority };
+		},
 	});
 	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"] });
 	assert.equal(pushes, 0);
 	await assert.rejects(inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }),
 		/unverified; recover manually/);
 	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
+	liveAuthority = { ...authority, base: { ...authority.base, oid: "d".repeat(40) } };
+	await assert.rejects(workflow.continue(["file.txt"]), /Branch rebase authority changed/);
+	liveAuthority = authority;
 	const verified = await workflow.continue(["file.txt"]);
 	assert.equal(verified.kind, "verified");
 	assert.equal(git("rev-parse", "unrelated-backup"), featureHead);

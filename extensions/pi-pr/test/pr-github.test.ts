@@ -1473,6 +1473,10 @@ test("keeps detached HEAD, malformed push refs, and push lookup failures distinc
 	});
 	assert.equal(detached.calls.some(({ args }) => args[0] === "for-each-ref"), false);
 
+	const rebasing = await discoverCurrentPullRequest(detached.pi, { ...detached.context, rebaseBranch: "feature/local" });
+	assert.equal(rebasing.kind, "current");
+	if (rebasing.kind === "current") assert.equal(rebasing.pullRequest.target.branch, "feature/local");
+
 	const malformed = harness({ pushResult: result("fork/feature/pr\norigin/feature/pr\n") });
 	await assert.rejects(
 		loadCurrentPullRequest(malformed.pi, malformed.context),

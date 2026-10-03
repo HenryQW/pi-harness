@@ -116,7 +116,7 @@ export type PullRequestObservation = {
 	target: { repository: string; branch: string; remote: string; ref: string };
 };
 
-export type PullRequestLoadContext = { cwd: string; signal?: AbortSignal };
+export type PullRequestLoadContext = { cwd: string; signal?: AbortSignal; rebaseBranch?: string };
 
 type PullRequestCreationPreflight = {
 	head: string;
@@ -1365,7 +1365,9 @@ async function readPushTarget(
 	if (worktree.code !== 0) commandFailure("Check Git worktree", worktree);
 	if (worktreeOutput !== "true\n") fail("Check Git worktree", "invalid response");
 
-	const branchResult = await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"]);
+	const branchResult = context.rebaseBranch === undefined
+		? await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])
+		: { stdout: `${context.rebaseBranch}\n` };
 	if (branchResult.stdout === "") return { kind: "blocked", issue: "detached" };
 	let branch: string;
 	try {

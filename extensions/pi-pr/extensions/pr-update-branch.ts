@@ -277,14 +277,14 @@ export class PullRequestBranchUpdater {
 			throw new Error("Resolved paths must include every original conflict path");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			const discovery = await this.load(this.pi(), this.context());
-			if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
-				throw new Error("Branch rebase authority changed");
-			}
 			const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
 			if ((await readFile(resolve(this.cwd, path), "utf8")).trim() !== `refs/heads/${this.authority.target.branch}` ||
 				await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
 				throw new Error("Branch rebase context changed");
+			}
+			const discovery = await this.load(this.pi(), { ...this.context(), rebaseBranch: this.authority.target.branch });
+			if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
+				throw new Error("Branch rebase authority changed");
 			}
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
