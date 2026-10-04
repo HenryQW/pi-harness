@@ -7,6 +7,8 @@ Choose shared model and thinking routes for extension tasks named `fast`, `balan
 
 ## Install
 
+Requires Pi 1.x (1.0.0 or newer). Upgrade Pi before installing version 8 of this package.
+
 ```bash
 pi install npm:@henryqw/pi-task-models
 ```
@@ -38,6 +40,7 @@ Run `/task-models` to complete the first setup:
 | --- | --- | --- |
 | `/task-models` | command | For people: configure shared profile routes and assign profiles to active consumer tasks. |
 | `/task-models preset` | command | For people: choose a saved setup for any of `fast`, `balanced`, `frontier`, and `fav`. |
+| Option+S / Alt+S in `/task-models` | shortcut | For people: save the current profile setup as a named preset in the interactive terminal. |
 | Session start | ui | For people: when the shared config is missing, show a warning that points to `/task-models`. |
 
 Repeat these steps for `balanced`, `frontier`, or `fav` when a consumer needs them. The `fav` profile has no fallback.
@@ -104,7 +107,9 @@ Model references use canonical `provider/model`. Numbered Codex account aliases 
 
 Run `/task-models preset` and choose a name from the list to apply a saved setup. All four profiles (`fast`, `balanced`, `frontier`, and `fav`) are optional: omitted profiles keep their current values. Each included profile replaces its complete routes, including thinking levels and optional fallbacks, in one atomic config update. Task assignments stay unchanged. Cancelling the picker writes nothing.
 
-Create `~/.pi/agent/config/pi-task-models/presets.json` yourself. The command reads this file but never creates or changes it; there is no preset-saving UI. The file maps preset names to any subset of the four profiles, using the same route format as the active config:
+To create a preset, open `/task-models` and press **Option+S** (macOS) or **Alt+S** in the main menu, then enter a name. This saves all currently configured profiles, including their thinking levels and fallbacks, but not task assignments. At least one profile must be configured. Reusing a name asks for confirmation before replacing that preset; other presets stay unchanged. Cancelling either prompt writes nothing.
+
+The shortcut requires interactive terminal mode and a terminal configured to send Option/Alt as Meta (Escape). RPC does not support this shortcut. You can also edit `~/.pi/agent/config/pi-task-models/presets.json` yourself. The file maps preset names to any subset of the four profiles, using the same route format as the active config:
 
 ```json
 {
@@ -127,7 +132,7 @@ Create `~/.pi/agent/config/pi-task-models/presets.json` yourself. The command re
 
 Replace every placeholder with an exact reference from `/task-models`; add more named objects for more setups. For an included profile, omit `fallback` for no fallback; `fav` never accepts a fallback. Omit the whole profile to leave its existing routes unchanged. Preset names must be non-empty, have no surrounding whitespace, and contain no control characters. Names appear alphabetically in the picker.
 
-A missing, empty, or invalid preset file leaves the active config unchanged. The file must be valid UTF-8 JSON and no larger than 64 KiB; any invalid preset prevents the picker from opening. Read and save failures are reported without overwriting malformed files. Applying a preset can create a missing active config, but cannot overwrite an invalid one. Switching stores routes without checking current authentication, model availability, or thinking support; the usual scope and route-resolution rules still apply when a task runs.
+A missing, empty, or invalid preset file leaves the active config unchanged. The file must be valid UTF-8 JSON and no larger than 64 KiB; any invalid preset prevents the picker from opening. Read and save failures are reported without overwriting malformed files. Saving creates a missing preset file and uses a private atomic write under a lock; if another session is saving, retry after it finishes. Applying a preset can create a missing active config, but cannot overwrite an invalid one. Switching stores routes without checking current authentication, model availability, or thinking support; the usual scope and route-resolution rules still apply when a task runs.
 
 ## API
 
