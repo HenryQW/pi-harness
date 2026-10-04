@@ -18,6 +18,8 @@ Keep trivial, mechanically verifiable work in Main. Choose the user-requested mo
 
 Roles describe responsibility and capabilities; they do not select isolation. Bash, MCP tools, unknown tools, and arbitrary extensions are potentially writing. The checkout coordinator reduces races among Pi-owned calls but is not an OS sandbox and cannot control external processes.
 
+The built-in reviewer declares `git_read`, a bounded read-only Git tool without Bash. User reviewer overrides must explicitly add it to `tools`. Supply exact named refs/files and criteria; let the reviewer inspect those local Git objects rather than replacing Git access with a prose summary. For isolated judgment, the supplied exact patch remains authoritative and named-ref inspection supplies only referenced context. Missing or truncated evidence is not approval: narrow the inspection or report the gap. Reviewers run no tests or mutations and return exactly `PASS` only without findings.
+
 After delegation acknowledges a handle or durable request, do other work or end the turn; do not `sleep`, block on a Herdr CLI wait, or repeatedly poll for progress. Pi queues verified direct results and checked isolated candidates as follow-ups, which Main receives after its current turn. Use `subagent_status` for exact isolated evidence when a follow-up arrives or delivery was missed; Herdr lifecycle badges and screen output are not proof of completion.
 
 # Direct requests

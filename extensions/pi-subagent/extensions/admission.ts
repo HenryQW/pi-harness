@@ -5,7 +5,7 @@ import type { Role } from "../dist/index.js";
 // `codemode` mutates nothing itself: its sandbox reaches a checkout only through nested tool calls,
 // which are admitted by their own names here and limited to the Role's active tools in children.
 const READ_ONLY_TOOLS = new Set([
-	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status", "codemode",
+	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status", "codemode", "git_read",
 ]);
 
 export function roleCanWrite(role: Role): boolean {

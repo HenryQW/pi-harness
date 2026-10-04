@@ -5,7 +5,9 @@ import fs, { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
-import { loadBuiltinRole, loadRoles, prepareExactReviewEvidence, REVIEW_MAX_PATCH_BYTES } from "../src/index.ts";
+import { loadBuiltinRole, loadRoles, prepareExactReviewEvidence, REVIEW_MAX_PATCH_BYTES, ROLE_TOOL_POLICY_FLAG } from "../src/index.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import gitRead from "../extensions/git-read.ts";
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -22,6 +24,130 @@ async function repository(t: import("node:test").TestContext): Promise<string> {
 	git(path, "commit", "-qm", "base");
 	return path;
 }
+
+function gitReadTool() {
+	let tool!: { execute: (...args: any[]) => Promise<{ content: { text: string }[]; structuredContent: { output: string; stderr: string; truncated: boolean } }> };
+	const argv = process.argv;
+	try {
+		process.argv = ["node", "pi", `--${ROLE_TOOL_POLICY_FLAG}`, '["git_read"]'];
+		gitRead({ registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
+	} finally { process.argv = argv; }
+	return (cwd: string, params: unknown, signal?: AbortSignal) => tool.execute("git-evidence", params, signal, undefined, { cwd });
+}
+
+const inspectGit = gitReadTool();
+
+test("git_read obtains exact committed, staged, working, and historical evidence without changing Git", async (t) => {
+	const repo = await repository(t);
+	const base = git(repo, "rev-parse", "HEAD");
+	await writeFile(join(repo, "tracked.txt"), "candidate\nsecond line\n");
+	await mkdir(join(repo, "nested"));
+	await writeFile(join(repo, "nested", "*.txt"), "literal path\n");
+	git(repo, "add", ".");
+	git(repo, "commit", "-qm", "candidate");
+	const tip = git(repo, "rev-parse", "HEAD");
+	await writeFile(join(repo, "tracked.txt"), "staged\nsecond line\n");
+	git(repo, "add", "tracked.txt");
+	await writeFile(join(repo, "tracked.txt"), "working\nsecond line\n");
+	await writeFile(join(repo, "untracked.txt"), "untracked\n");
+	const index = await readFile(join(repo, ".git", "index"));
+	const indexTime = (await stat(join(repo, ".git", "index"))).mtimeMs;
+	const output = async (params: unknown, cwd = repo) => (await inspectGit(cwd, params)).structuredContent.output;
+	assert.match(await output({ operation: "status" }), /MM tracked.txt\n\?\? untracked.txt/);
+	assert.match(await output({ operation: "diff", mode: "committed", base, tip, path: "tracked.txt" }), /-base\n\+candidate\n\+second line/);
+	assert.match(await output({ operation: "diff", mode: "staged" }), /-candidate\n\+staged/);
+	assert.match(await output({ operation: "diff" }), /-staged\n\+working/);
+	assert.equal(await output({ operation: "show", revision: "HEAD~1", path: "tracked.txt" }), "base\n");
+	assert.match(await output({ operation: "show", revision: tip }), /candidate[\s\S]*\+second line/);
+	assert.equal(await output({ operation: "show", path: "*.txt" }, join(repo, "nested")), "literal path\n");
+	assert.match(await output({ operation: "log", maxCount: 1, path: "tracked.txt" }), /candidate/);
+	assert.doesNotMatch(await output({ operation: "log", maxCount: 1 }), /    base/);
+	assert.match(await output({ operation: "blame", revision: tip, path: "tracked.txt", startLine: 2, endLine: 2 }), new RegExp(`^${tip} 2 2 1[\\s\\S]*\\tsecond line`));
+	assert.equal(await output({ operation: "rev-parse", revision: "HEAD^" }), `${base}\n`);
+	assert.equal(git(repo, "rev-parse", "HEAD"), tip);
+	assert.deepEqual(await readFile(join(repo, ".git", "index")), index);
+	assert.equal((await stat(join(repo, ".git", "index"))).mtimeMs, indexTime);
+});
+
+test("git_read rejects malicious revisions, paths, and mixed operation arguments before Git", async () => {
+	for (const revision of ["--output=owned", "HEAD:tracked.txt", "HEAD..other", "HEAD@{1}", "HEAD;touch owned", "HEAD\n--help", ":/search", "-cfoo=bar"]) {
+		await assert.rejects(inspectGit("/nonexistent", { operation: "show", revision }), /git_read revision/);
+	}
+	for (const path of ["--output=owned", "../outside", "a/../../outside", "/tmp/outside", "a/./b", ".git/config", "a/.GIT/config", ":(top)*", "a\0b", "C:\\outside"]) {
+		await assert.rejects(inspectGit("/nonexistent", { operation: "show", path }), /git_read path/);
+	}
+	for (const params of [
+		{ operation: "checkout", revision: "HEAD" }, { operation: "status", args: ["--help"] },
+		{ operation: "status", revision: "HEAD" }, { operation: "diff", mode: "committed", base: "HEAD" },
+		{ operation: "diff", mode: "working", base: "HEAD", tip: "HEAD" },
+		{ operation: "blame" }, { operation: "blame", path: "a", startLine: 2, endLine: 1 },
+		{ operation: "blame", path: "a", startLine: 1 }, { operation: "log", maxCount: 101 },
+	]) await assert.rejects(inspectGit("/nonexistent", params), /git_read/);
+});
+
+test("git_read disables repository external diff, textconv, clean/process filters, and fsmonitor", async (t) => {
+	const repo = await repository(t);
+	const marker = join(repo, "helper-ran");
+	const helper = join(repo, "helper.sh");
+	await writeFile(helper, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+	await chmod(helper, 0o755);
+	await writeFile(join(repo, ".gitattributes"), "tracked.txt diff=unsafe filter=unsafe\n");
+	git(repo, "config", "diff.external", helper);
+	git(repo, "config", "diff.unsafe.textconv", helper);
+	git(repo, "config", "filter.unsafe.clean", helper);
+	git(repo, "config", "filter.unsafe.process", helper);
+	git(repo, "config", "filter.unsafe.required", "true");
+	git(repo, "config", "core.fsmonitor", helper);
+	await writeFile(join(repo, "tracked.txt"), "changed\n");
+	for (const params of [
+		{ operation: "status" }, { operation: "diff" }, { operation: "diff", mode: "staged" },
+		{ operation: "show" }, { operation: "blame", path: "tracked.txt" },
+	]) await inspectGit(repo, params);
+	assert.equal(existsSync(marker), false);
+
+	git(repo, "config", "filter.unsafe=name.clean", helper);
+	await writeFile(join(repo, ".gitattributes"), "tracked.txt filter=unsafe=name\n");
+	for (const params of [{ operation: "status" }, { operation: "diff" }]) {
+		await assert.rejects(inspectGit(repo, params), /git_read cannot safely disable filter/);
+	}
+	assert.equal(existsSync(marker), false);
+});
+
+test("git_read refuses missing partial-clone objects without invoking a remote helper", async (t) => {
+	const repo = await repository(t);
+	const blob = git(repo, "rev-parse", "HEAD:tracked.txt");
+	const marker = join(repo, "remote-ran");
+	const helper = join(repo, "remote.sh");
+	await writeFile(helper, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`);
+	await chmod(helper, 0o755);
+	git(repo, "config", "remote.origin.url", `ext::${helper}`);
+	git(repo, "config", "remote.origin.promisor", "true");
+	git(repo, "config", "protocol.ext.allow", "always");
+	await rm(join(repo, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+	await assert.rejects(inspectGit(repo, { operation: "show", path: "tracked.txt" }), /git_read show.*exited 128/);
+	assert.equal(existsSync(marker), false);
+});
+
+test("git_read reports Git failures and truncation and honors cancellation", async (t) => {
+	const repo = await repository(t);
+	await assert.rejects(inspectGit(repo, { operation: "show", revision: "missing-ref" }), /git_read show.*rev-parse exited 128/);
+	await assert.rejects(inspectGit(repo, { operation: "show", path: "missing.txt" }), /git_read show.*exited 128.*does not exist/);
+	const outside = await mkdtemp(join(tmpdir(), "pi-subagent-no-git-"));
+	t.after(() => rm(outside, { recursive: true, force: true }));
+	await assert.rejects(inspectGit(outside, { operation: "status" }), /not a git repository/);
+	await writeFile(join(repo, "large.txt"), `${"large line\n".repeat(10_000)}end\n`);
+	git(repo, "add", ".");
+	git(repo, "commit", "-qm", "large");
+	const result = await inspectGit(repo, { operation: "show", path: "large.txt" });
+	assert.equal(result.structuredContent.truncated, true);
+	assert.ok(Buffer.byteLength(result.structuredContent.output) <= 32768);
+	assert.match(result.structuredContent.output, /end\n$/);
+	assert.match(result.content[0]!.text, /TRUNCATED.*narrow the request/);
+	const controller = new AbortController();
+	const pending = inspectGit(repo, { operation: "status" }, controller.signal);
+	controller.abort(new Error("review cancelled"));
+	await assert.rejects(pending, /review cancelled/);
+});
 
 async function candidate(
 	t: import("node:test").TestContext,

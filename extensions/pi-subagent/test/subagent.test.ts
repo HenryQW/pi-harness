@@ -30,7 +30,7 @@ type ToolCallHandler = (event: any) => unknown;
 test("direct admission trusts configured extensions and MCP servers but rejects write tools", () => {
 	const role = {
 		name: "reader", description: "Read sources", systemPrompt: "Read only.",
-		tools: ["read", "grep"], extensions: ["npm:@example/reader"], skills: [], mcps: ["docs"],
+		tools: ["read", "grep", "git_read"], extensions: ["npm:@example/reader"], skills: [], mcps: ["docs"],
 	};
 	assert.equal(roleCanWrite(role), false);
 	assert.equal(roleCanWrite({ ...role, tools: ["read", "bash"] }), true);
@@ -77,6 +77,7 @@ test("checkout admission attributes nested calls to their model-issued root and 
 	assert.equal(await call("script-2", "codemode"), undefined);
 	assert.deepEqual(await call("script-2/1", "bash", "script-2"), blockedBy("script-1"));
 	assert.equal(await call("script-2/2", "read", "script-2"), undefined);
+	assert.equal(await call("git-reader", "git_read"), undefined);
 	// Root completion must not release still-running writes, including deeper descendants.
 	handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "script-1/3", toolName: "bash", parentToolCallId: "script-1", isError: true });
 	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));

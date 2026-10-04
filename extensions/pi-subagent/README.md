@@ -177,13 +177,32 @@ Role Markdown lives in `~/.pi/agent/config/pi-subagent/` and requires frontmatte
 | --- | --- |
 | `name`, `description` | Required non-empty text without terminal control characters |
 | `modelClass` | Optional `fast`, `balanced`, `frontier`, or `fav` default |
-| `tools` | Required array of base tool names; `[]` selects none. Name `codemode` here to activate it (see below) |
+| `tools` | Required array of base or internal tool names; `[]` selects none. Name `codemode` or `git_read` here to activate it (see below) |
 | `extensions` | Required array of trusted absolute paths, supported package sources, or Pi built-in extensions such as `builtin:codemode` |
 | `skills` | Required array of effective Pi Skill names |
 | `mcps` | Optional exact server names from `~/.pi/agent/mcp.json` in Pi's native `mcpServers` format; omitted or `[]` denies MCP access |
 | body | Required system instructions |
 
-Roles describe responsibility and capabilities. They do not choose isolation; each request does. A same-named user Role overrides a built-in Role. The package ships `implementer`, `reviewer`, and `scout`.
+Roles describe responsibility and capabilities. They do not choose isolation; each request does. A same-named user Role overrides a built-in Role. The package ships `implementer`, `reviewer`, and `scout`. The built-in reviewer includes `git_read`; add it to an existing user reviewer's `tools` array to opt in. No additional extension or Bash access is needed.
+
+### Reviewer Git inspection
+
+`git_read` is an internal child tool, loaded and registered only for Roles that declare it. Direct delegation treats it as read-only. It accepts structured parameters, not shell commands or arbitrary Git options:
+
+| `operation` | Parameters and evidence |
+| --- | --- |
+| `status` | Optional `path`; staged, unstaged, and untracked status |
+| `diff` | `mode: "working"` (default, unstaged), `"staged"`, or `"committed"`; committed requires `base` and `tip`. Optional `path` |
+| `show` | Optional `revision` (default `HEAD`) and `path`; commit patch or file content at that commit |
+| `log` | Optional `revision`, `path`, and `maxCount` (default 20, maximum 100) |
+| `blame` | Required `path`, optional `revision` and paired `startLine`/`endLine` |
+| `rev-parse` | Optional `revision`; resolves one commit ID |
+
+Revisions accept commit IDs or named refs with optional `~N`/`^N` ancestry, not ranges or reflog expressions. Paths are literal and relative to the assigned cwd; absolute paths, traversal, `.git` components, and option-like paths are rejected. Use named candidate refs rather than assuming Main's checkout contains an isolated candidate. In isolated judgment, the supplied exact patch remains authoritative; Git inspection supplies only referenced context, not a replacement diff. Reviewers still cannot run tests, write, commit, or push, and approve only with exact `PASS`.
+
+Each call is cancellable and limited to 30 seconds. Results retain at most the last 32 KiB of UTF-8 output with an explicit `truncated` flag and notice; narrow the path, log count, or blame lines rather than treating truncated evidence as complete. Missing refs/files, non-repositories, invalid UTF-8, timeouts, and Git failures fail visibly. No full-output artifact is written. Git must support `--no-lazy-fetch`; older versions fail rather than allowing network access. Lazy fetch, pager, optional locks, hooks, fsmonitor, external diffs, textconv, and clean/process filters are disabled. Working-tree comparisons therefore use unfiltered bytes and can differ from filter-aware Git output (for example Git LFS). Submodule contents are not inspected. Concurrent edits can still make direct inspection stale.
+
+### Child resources
 
 Children run with `--no-extensions`, so a Role must list the extension that registers its route model's provider, and only declared resources plus required internal policy adapters load. `builtin:<name>` entries load Pi built-in extensions (`builtin:codemode`, `builtin:tool-search`, `builtin:llama.cpp`) explicitly; `builtin:mcp` is rejected because it would connect every configured server and bypass `mcps`. Extension tools registered with `codemode` or `deferred` exposure stay callable from scripts but are declared to the model only when `tools` names them.
 

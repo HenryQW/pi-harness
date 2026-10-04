@@ -67,6 +67,7 @@ const CODEX_ALIAS = /^openai-codex-(?:[2-9]|[1-9]\d+)$/;
 const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-multi-codex/extensions/multi-codex.ts"));
 const ROLE_MCP_EXTENSION = fileURLToPath(new URL("../extensions/role-mcp.ts", import.meta.url));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
+const GIT_READ_EXTENSION = fileURLToPath(new URL("../extensions/git-read.ts", import.meta.url));
 export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 
@@ -447,6 +448,7 @@ function prepareRoleLaunchFromSkills(
 		...selectedExtensions,
 		...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
 		...(mcps.length ? [ROLE_MCP_EXTENSION] : []),
+		...(role.tools.includes("git_read") ? [GIT_READ_EXTENSION] : []),
 		ROLE_TOOLS_EXTENSION,
 	];
 	const env = Object.fromEntries(Object.entries(input.env ?? {}).map(([key, value]) => {
