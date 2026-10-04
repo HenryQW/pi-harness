@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { spawnBounded, type Exec as BoundedExec } from "@henryqw/pi-process";
 import { PullRequestCommentSweep, StaleSweepStart } from "../extensions/pr-comment-sweep.ts";
 import { PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
+import { PullRequestCiFixer, StaleCiCollect } from "../extensions/pr-ci.ts";
 import { PullRequestWorkPublisher } from "../extensions/pr-publish-work.ts";
 import type {
 	AgentBeforeSettleEventResult,
@@ -392,7 +393,7 @@ test("registers sequential model-only tools with flat object roots and strict ac
 	}
 });
 
-for (const route of ["update-branch", "sweep"] as const) test(`queued ${route} replans a local main merge into guarded publication in the same /pr`, async (t) => {
+for (const route of ["update-branch", "sweep", "fix-ci"] as const) test(`queued ${route} replans a local main merge into guarded publication in the same /pr`, async (t) => {
 	const dir = mkdtempSync(join(tmpdir(), "pi-pr-stale-route-"));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	const root = join(dir, "worktree");
@@ -419,14 +420,16 @@ for (const route of ["update-branch", "sweep"] as const) test(`queued ${route} r
 	git("commit", "-m", "base");
 	const base = git("rev-parse", "HEAD");
 	git("switch", "feature/pr");
-	let authority = currentPullRequest({ conditions: { conflict: route === "update-branch", changesRequested: route === "sweep" } });
+	let authority = currentPullRequest({ conditions: { conflict: route === "update-branch", changesRequested: route === "sweep", ci: route === "fix-ci" ? "failure" : "success" } });
 	authority = { ...authority, base: { ...authority.base, oid: base }, head: { ...authority.head, oid: original },
 		target: { ...authority.target, remoteOid: original } };
 	const pushes: string[][] = [];
+	const ciAuthorities: string[] = [];
 	const exec: BoundedExec = async (command, args, options) => {
 		assert.equal(args.includes("rebase"), false, "the existing merge must never be rebased");
 		if (command === "gh" && args[0] === "repo") return execResult(JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" }));
 		if (command === "gh" && args[0] === "api") {
+			assert.equal(/\/check-runs|\/actions\//.test(args.at(-1) ?? ""), false, "stale CI must cancel before reading evidence");
 			const empty = { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } };
 			return execResult(JSON.stringify({ data: { repository: { pullRequest: { comments: empty, reviews: empty, reviewThreads: empty } } } }));
 		}
@@ -449,6 +452,10 @@ for (const route of ["update-branch", "sweep"] as const) test(`queued ${route} r
 		createBranchUpdater: (options) => new PullRequestBranchUpdater({ ...options, exec, agentDir: join(dir, "agent") }),
 		createCommentSweep: (options) => new PullRequestCommentSweep({ ...options, exec, agentDir: join(dir, "agent") }),
 		createWorkPublisher: (options) => new PullRequestWorkPublisher({ ...options, exec, agentDir: join(dir, "agent") }),
+		createCiFixer: (options) => {
+			ciAuthorities.push(options.authority.head.oid);
+			return new PullRequestCiFixer({ ...options, exec, agentDir: join(dir, "agent") });
+		},
 	});
 	const ctx = app.context();
 	try {
@@ -457,11 +464,11 @@ for (const route of ["update-branch", "sweep"] as const) test(`queued ${route} r
 		git("merge", "--no-ff", "main", "-m", "merge main locally");
 		const merged = git("rev-parse", "HEAD");
 		const queued = await app.beforeSettle(ctx);
-		const tool = route === "sweep" ? "pi_pr_sweep" : "pi_pr_update_branch";
-		const action = route === "sweep" ? "start" : "rebase";
-		assert.match(JSON.stringify(queued), route === "sweep" ? /pi-pr-comment-sweep/ : /pi-pr-update-branch/);
+		const tool = route === "fix-ci" ? "pi_pr_fix_ci" : route === "sweep" ? "pi_pr_sweep" : "pi_pr_update_branch";
+		const action = route === "fix-ci" ? "collect" : route === "sweep" ? "start" : "rebase";
+		assert.match(JSON.stringify(queued), route === "fix-ci" ? /pi-pr-fix-ci/ : route === "sweep" ? /pi-pr-comment-sweep/ : /pi-pr-update-branch/);
 		assert.deepEqual((await app.callTool(tool, { runId: ids[0], action }, ctx)).details,
-			{ kind: "stale", reason: `Local HEAD is ahead of the frozen PR head; cancelled before ${route === "sweep" ? "sweep recovery" : "rebase"} or publication` });
+			{ kind: "stale", reason: `Local HEAD is ahead of the frozen PR head; cancelled before ${route === "fix-ci" ? "CI evidence" : route === "sweep" ? "sweep recovery" : "rebase"} or publication` });
 		await assert.rejects(app.callTool(tool, { runId: ids[0], action }, ctx), /cancelled/);
 		const next = await app.beforeSettle(ctx);
 		assert.equal(next?.continue, true);
@@ -477,6 +484,14 @@ for (const route of ["update-branch", "sweep"] as const) test(`queued ${route} r
 		assert.equal(git("rev-parse", "HEAD"), merged);
 		assert.deepEqual(app.messages, []);
 		assert.match(app.notifications[0]!.message, /cancelled.*rediscovering \(1\/2\)/);
+		if (route === "fix-ci") {
+			const resumed = await app.beforeSettle(ctx);
+			assert.equal(resumed?.continue, true);
+			assert.match(JSON.stringify(resumed), /pi-pr-fix-ci/);
+			assert.ok(JSON.stringify(resumed).includes(`runId=${ids[2]} action=collect`));
+			assert.deepEqual(ciAuthorities, [original, merged]);
+			await assert.rejects(app.callTool(tool, { runId: ids[0], action }, ctx), /wrong or stale/);
+		}
 		if (route === "sweep") {
 			const resumed = await app.beforeSettle(ctx);
 			assert.equal(resumed?.continue, true);
@@ -488,11 +503,11 @@ for (const route of ["update-branch", "sweep"] as const) test(`queued ${route} r
 	} finally { await app.shutdown(ctx); }
 });
 
-for (const route of ["update-branch", "sweep"] as const)
+for (const route of ["update-branch", "sweep", "fix-ci"] as const)
 for (const drift of ["identity", "lease", "destination", "worktree", "failure", "recovery"] as const) test(`${route} stale-route continuation stops for ${drift} drift`, async () => {
 	let stale = false;
 	let loads = 0;
-	const pr = currentPullRequest({ conditions: { conflict: route === "update-branch", changesRequested: route === "sweep" } });
+	const pr = currentPullRequest({ conditions: { conflict: route === "update-branch", changesRequested: route === "sweep", ci: route === "fix-ci" ? "failure" : "success" } });
 	const app = harness({
 		async load() {
 			loads++;
@@ -512,6 +527,10 @@ for (const drift of ["identity", "lease", "destination", "worktree", "failure", 
 			if (drift === "failure") throw new Error("feedback fetch failed");
 			throw new StaleSweepStart("HEAD mismatch before mutation");
 		} }) as never,
+		createCiFixer: () => ({ async collect() {
+			if (drift === "failure") throw new Error("CI evidence read failed");
+			throw new StaleCiCollect("HEAD mismatch before evidence");
+		} }) as never,
 		createWorkPublisher: () => { throw new Error("must not authorize publication"); },
 	});
 	const ctx = app.context();
@@ -519,10 +538,10 @@ for (const drift of ["identity", "lease", "destination", "worktree", "failure", 
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		await app.beforeSettle(ctx);
-		const tool = route === "sweep" ? "pi_pr_sweep" : "pi_pr_update_branch";
-		const params = { runId: routeRunId, action: route === "sweep" ? "start" : "rebase" };
+		const tool = route === "fix-ci" ? "pi_pr_fix_ci" : route === "sweep" ? "pi_pr_sweep" : "pi_pr_update_branch";
+		const params = { runId: routeRunId, action: route === "fix-ci" ? "collect" : route === "sweep" ? "start" : "rebase" };
 		if (drift === "failure") {
-			await assert.rejects(app.callTool(tool, params, ctx), /outcome is unknown|feedback fetch failed/);
+			await assert.rejects(app.callTool(tool, params, ctx), /outcome is unknown|feedback fetch failed|CI evidence read failed/);
 		} else await app.callTool(tool, params, ctx);
 		stale = true;
 		const before = loads;
@@ -532,27 +551,32 @@ for (const drift of ["identity", "lease", "destination", "worktree", "failure", 
 	} finally { await app.shutdown(ctx); }
 });
 
-for (const route of ["update-branch", "sweep"] as const) test(`repeated ${route} pre-mutation drift permits only two fresh rediscoveries`, async () => {
+for (const routes of [
+	["update-branch", "update-branch", "update-branch"], ["sweep", "sweep", "sweep"],
+	["fix-ci", "fix-ci", "fix-ci"], ["fix-ci", "sweep", "update-branch"],
+] as const) test(`${routes.join(" → ")} pre-mutation drift shares only two fresh rediscoveries`, async () => {
 	let runs = 0;
 	let loads = 0;
 	const ids = [1, 2, 3].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
 	const app = harness({
-		async load() { loads++; return currentPullRequest({ conditions: { conflict: route === "update-branch", changesRequested: route === "sweep" } }); },
+		async load() { loads++; const route = routes[Math.min(runs, 2)]; return currentPullRequest({ conditions: { conflict: route === "update-branch", changesRequested: route === "sweep", ci: route === "fix-ci" ? "failure" : "success" } }); },
 		useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => ids[runs++]!,
 		async canonicalWorktree() { return "/repo"; },
 		createBranchUpdater: () => ({ state: { phase: "ready" }, async recoveryLaunchAction() { return "rebase"; },
 			async rebase() { return { kind: "stale", reason: "local HEAD advanced before rebase, then restored" }; } }) as never,
 		createCommentSweep: () => ({ async recoveryLaunchAction() { return "start"; },
 			async start() { throw new StaleSweepStart("local HEAD advanced before triage, then restored"); } }) as never,
+		createCiFixer: () => ({ async collect() { throw new StaleCiCollect("local HEAD advanced before evidence, then restored"); } }) as never,
 	});
 	const ctx = app.context();
 	try {
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		await app.beforeSettle(ctx);
-		const tool = route === "sweep" ? "pi_pr_sweep" : "pi_pr_update_branch";
-		const action = route === "sweep" ? "start" : "rebase";
 		for (let n = 0; n < 3; n++) {
+			const route = routes[n];
+			const tool = route === "fix-ci" ? "pi_pr_fix_ci" : route === "sweep" ? "pi_pr_sweep" : "pi_pr_update_branch";
+			const action = route === "fix-ci" ? "collect" : route === "sweep" ? "start" : "rebase";
 			await app.callTool(tool, { runId: ids[n], action }, ctx);
 			const before = loads;
 			const next = await app.beforeSettle(ctx);
@@ -561,7 +585,7 @@ for (const route of ["update-branch", "sweep"] as const) test(`repeated ${route}
 		}
 		assert.equal(runs, 3);
 		assert.match(app.notifications.at(-1)!.message, /rediscovery limit exhausted/);
-		await assert.rejects(app.callTool(tool, { runId: ids[2], action }, ctx), /No PR workflow/);
+		await assert.rejects(app.callTool("pi_pr_fix_ci", { runId: ids[0], action: "collect" }, ctx), /No PR workflow/);
 	} finally { await app.shutdown(ctx); }
 });
 
@@ -897,8 +921,8 @@ test("releases a stale reservation when replacement wins before dispatch resumes
 	}
 });
 
-test("session replacement aborts an in-flight workflow helper", async () => {
-	const authority = currentPullRequest({ conditions: { conflict: true } });
+for (const route of ["update-branch", "fix-ci"] as const) test(`session replacement aborts an in-flight ${route} helper`, async () => {
+	const authority = currentPullRequest({ conditions: { conflict: route === "update-branch", ci: route === "fix-ci" ? "failure" : "success" } });
 	const actionStarted = deferred<void>();
 	let helperSignal: AbortSignal | undefined;
 	const state = {
@@ -910,6 +934,12 @@ test("session replacement aborts an in-flight workflow helper", async () => {
 		useDefaultCommandHandler: true,
 		newRunId: () => routeRunId,
 		async canonicalWorktree() { return "/canonical/repo"; },
+		createCiFixer(options) {
+			const signal = options.signal;
+			assert.ok(signal);
+			helperSignal = signal;
+			return { async collect() { actionStarted.resolve(); return await waitForAbort(signal); } } as never;
+		},
 		createBranchUpdater(options) {
 			const signal = options.signal;
 			assert.ok(signal);
@@ -930,7 +960,7 @@ test("session replacement aborts an in-flight workflow helper", async () => {
 	try {
 		await app.start(first);
 		await app.command().handler("", first as ExtensionCommandContext);
-		const action = app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, first);
+		const action = app.callTool(route === "fix-ci" ? "pi_pr_fix_ci" : "pi_pr_update_branch", { runId: routeRunId, action: route === "fix-ci" ? "collect" : "rebase" }, first);
 		const cancelled = assert.rejects(action, (error) => {
 			assert.equal(error, helperSignal?.reason);
 			return true;
@@ -939,6 +969,8 @@ test("session replacement aborts an in-flight workflow helper", async () => {
 		await app.start(replacement);
 		await cancelled;
 		assert.equal(helperSignal?.aborted, true);
+		assert.equal(await app.beforeSettle(replacement), undefined);
+		await assert.rejects(app.callTool(route === "fix-ci" ? "pi_pr_fix_ci" : "pi_pr_update_branch", { runId: routeRunId, action: route === "fix-ci" ? "collect" : "rebase" }, replacement), /No PR workflow/);
 	} finally {
 		await app.shutdown(replacement);
 	}
