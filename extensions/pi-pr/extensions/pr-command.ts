@@ -37,6 +37,8 @@ export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	sessionGeneration: number;
 	assertCurrent(): void;
 	completedRoutes?: ReadonlySet<string>;
+	staleRediscoveries?: number;
+	replanAuthority?: CurrentPullRequest;
 };
 export type PrCommandHandler = (
 	args: string,
@@ -240,6 +242,10 @@ export function createPrCommandHandler(
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 		const discovery = await load(pi, ctx);
 		onRouteResolved?.assertCurrent();
+		if (onRouteResolved?.replanAuthority && (discovery.kind !== "current" ||
+			!samePullRequestSnapshot(onRouteResolved.replanAuthority, discovery.pullRequest))) {
+			throw new Error("PR stale-route rediscovery cancelled: frozen PR identity, destination, or remote head changed");
+		}
 		if (linkedAuthority && (discovery.kind !== "current" || discovery.pullRequest.target.provenance !== "configured" ||
 			!isSameConfirmedMerge(linkedAuthority, discovery.pullRequest))) {
 			throw new Error("Link branch continuation cancelled: configured pull request context changed");

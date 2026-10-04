@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
-import { PullRequestCiFixer } from "../extensions/pr-ci.ts";
+import { PullRequestCiFixer, StaleCiCollect } from "../extensions/pr-ci.ts";
 
 const original = "a".repeat(40);
 const repair = "b".repeat(40);
@@ -31,6 +31,10 @@ type Scenario = {
 	log?: (jobId: number) => string;
 	logCommand?: (jobId: number, options: Parameters<Exec>[2]) => Promise<ExecResult>;
 	localHeads?: string[];
+	branch?: string;
+	dirty?: boolean;
+	gitOperation?: boolean;
+	ancestor?: boolean;
 	pullRequests?: CurrentPullRequest[];
 	pushUrls?: string[];
 	remoteHeads?: string[];
@@ -208,6 +212,9 @@ function harness(scenario: Scenario) {
 			}
 			const logMatch = /\/actions\/jobs\/(\d+)\/logs$/.exec(endpoint);
 			if (logMatch) {
+				if (!args.includes("--allow-escape-sequences")) {
+					return result("", 1, "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway");
+				}
 				const jobId = Number(logMatch[1]);
 				logReads.set(jobId, (logReads.get(jobId) ?? 0) + 1);
 				if (scenario.logCommand) return await scenario.logCommand(jobId, options);
@@ -221,13 +228,13 @@ function harness(scenario: Scenario) {
 		if (command === "gh" && args[0] === "repo" && args[1] === "view") {
 			return result(JSON.stringify({ nameWithOwner: "acme/fork", url: "https://github.com/acme/fork" }));
 		}
-		if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
-		if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") return result();
-		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(operationPaths);
+		if (command === "git" && args.join(" ") === "branch --show-current") return result(`${scenario.branch ?? "feature"}\n`);
+		if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") return result(scenario.dirty ? " M file\n" : "");
+		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(scenario.gitOperation ? `${agentDir}\n${operationPaths}` : operationPaths);
 		if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}") {
 			return result(`${scenario.localHeads?.[headIndex++] ?? localHead}\n`);
 		}
-		if (command === "git" && args[0] === "merge-base") return result();
+		if (command === "git" && args[0] === "merge-base") return result("", scenario.ancestor === false ? 1 : 0);
 		if (command === "git" && args.join(" ") === "remote get-url --push --all fork") {
 			return result(`${scenario.pushUrls?.[pushUrlIndex++] ?? "git@github.com:acme/fork.git"}\n`);
 		}
@@ -271,6 +278,97 @@ function harness(scenario: Scenario) {
 function oneFailure(): Snapshot {
 	return { checks: [check(11, 101)], jobs: [job(101, 11)] };
 }
+
+test("permits terminal escapes only for job logs and sanitizes collected evidence", async (t) => {
+	const app = harness({ snapshots: [oneFailure()],
+		logCommand: async () => result("\u001b[31mfailed café 😀\u001b[0m\tok\u0007\r\nok\u001b[", 0, "", true) });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	const evidence = await app.workflow.collect();
+	assert.deepEqual(evidence.failures[0]!.log, { scope: "job", text: "failed café 😀\tok\r\nok[", truncated: true });
+	for (const { command, args } of app.calls.filter(({ command }) => command === "gh")) {
+		assert.equal(args.includes("--allow-escape-sequences"), /\/logs$/.test(args.at(-1) ?? ""), `${command} ${args.join(" ")}`);
+	}
+});
+
+test("sanitizes failed log diagnostics and consumes collection without retry", async (t) => {
+	for (const stderr of ["", "\u001b[31mHTTP 403\u001b[0m\u0007\u001b["]) {
+		const app = harness({
+			snapshots: [oneFailure()],
+			logCommand: async () => result("\u001b[31mpartial log\u001b[0m\u0007\u001b[", 1, stderr),
+		});
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		await assert.rejects(app.workflow.collect(), (error: Error) => {
+			assert.match(error.message, stderr ? /failed: HTTP 403\[$/ : /failed: partial log\[$/);
+			assert.doesNotMatch(error.message, /[\u0007\u001b]/);
+			return true;
+		});
+		assert.equal(app.workflow.state.phase, "blocked");
+		await assert.rejects(app.workflow.collect(), /already consumed/);
+		assert.equal(app.logReads.get(101), 1);
+	}
+});
+
+for (const drift of ["ahead", "base"] as const) test(`cancels ${drift} drift only at initial preflight without reading CI evidence`, async (t) => {
+	const fresh = pullRequest(drift === "ahead" ? repair : original);
+	if (drift === "base") fresh.base.oid = "d".repeat(40);
+	const app = harness({ snapshots: [oneFailure()], pullRequests: [fresh] });
+	app.setLocalHead(drift === "ahead" ? repair : original);
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	await assert.rejects(app.workflow.collect(), StaleCiCollect);
+	assert.equal(app.calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
+	assert.equal(app.workflow.state.phase, "blocked");
+	await assert.rejects(app.workflow.collect(), /already consumed/);
+	await assert.rejects(app.workflow.publish(), /unavailable/);
+});
+
+for (const drift of ["dirty", "operation", "branch", "behind", "diverged", "non-descendant", "identity", "head", "destination", "lease", "base-ref", "moving-head"] as const) {
+	test(`initial CI preflight cannot replan unsafe ${drift} drift`, async (t) => {
+		const fresh = pullRequest(repair);
+		if (drift === "behind" || drift === "diverged") fresh.local.head = drift;
+		if (drift === "identity") fresh.id = "PR_other";
+		if (drift === "head") fresh.head.oid = "d".repeat(40);
+		if (drift === "destination") fresh.target.ref = "other";
+		if (drift === "base-ref") fresh.base.ref = "other";
+		const app = harness({ snapshots: [oneFailure()], pullRequests: [fresh],
+			dirty: drift === "dirty", gitOperation: drift === "operation", branch: drift === "branch" ? "other" : "feature",
+			ancestor: drift !== "non-descendant", remoteHeads: drift === "lease" ? ["d".repeat(40)] : undefined,
+			localHeads: drift === "moving-head" ? [repair, "d".repeat(40)] : undefined });
+		app.setLocalHead(repair);
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		await assert.rejects(app.workflow.collect(), (error: Error) => !(error instanceof StaleCiCollect));
+		assert.equal(app.calls.some(({ command, args }) => command === "gh" && args[0] === "api"), false);
+		await assert.rejects(app.workflow.collect(), /already consumed/);
+	});
+}
+
+test("local HEAD advancement after a log read blocks instead of replanning", async (t) => {
+	const app = harness({ snapshots: [oneFailure()], logCommand: async () => {
+		app.setLocalHead(repair);
+		return result("failure\n");
+	} });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	await assert.rejects(app.workflow.collect(), (error: Error) => {
+		assert.match(error.message, /original clean equal local HEAD/);
+		return !(error instanceof StaleCiCollect);
+	});
+	assert.equal(app.logReads.get(101), 1);
+	await assert.rejects(app.workflow.collect(), /already consumed/);
+});
+
+for (const phase of ["collection", "publication"] as const) test(`base movement during ${phase} is terminal, not initial-preflight cancellation`, async (t) => {
+	const changed = pullRequest();
+	changed.base.oid = "d".repeat(40);
+	const app = harness({ snapshots: [oneFailure()], pullRequests: phase === "collection"
+		? [pullRequest(), changed] : [pullRequest(), pullRequest(), changed] });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	if (phase === "publication") { await app.workflow.collect(); app.setLocalHead(repair); }
+	await assert.rejects(phase === "collection" ? app.workflow.collect() : app.workflow.publish(), (error: Error) => {
+		assert.match(error.message, /frozen pull request, base/);
+		return !(error instanceof StaleCiCollect);
+	});
+	assert.equal(app.logReads.get(101), 1);
+	await assert.rejects(app.workflow.collect(), /already consumed/);
+});
 
 test("aborts an in-flight streamed log read and blocks collection", async (t) => {
 	const controller = new AbortController();
