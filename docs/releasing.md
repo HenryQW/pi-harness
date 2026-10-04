@@ -57,7 +57,7 @@ Trusted publishing requires npm CLI 11.5.1 or newer and GitHub OIDC.
 
 ## Retire merged packages
 
-`@henryqw/pi-herdr-tools@1.0.0` consolidates `pi-herdr-btw`, `pi-herdr-clone`, and `pi-herdr-rename`. These old workspaces are retired under `deprecated/` and will not publish further versions. The shared `@henryqw/pi-herdr` library stays active.
+`@henryqw/pi-herdr-tools@1.0.0` consolidates `pi-herdr-btw`, `pi-herdr-clone`, and `pi-herdr-rename`. The final pre-merge source, documentation, and tests of these packages and the earlier `pi-herdr-done` are archived under `deprecated/`. Their READMEs point to the replacement; the archives are excluded from active workspaces, tests, and publishing. The shared `@henryqw/pi-herdr` library stays active.
 
 Bootstrap the new package and configure its trusted publisher as above. Verify the replacement is publicly installable before adding registry warnings; repository retirement alone does not deprecate npm versions:
 

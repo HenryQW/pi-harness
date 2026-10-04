@@ -2,6 +2,8 @@
 
 Merged into [`@henryqw/pi-herdr-tools`](../../extensions/pi-herdr-tools/README.md). Published versions are no longer maintained.
 
+The final pre-merge source, documentation, and tests are preserved here for reference. This archive is not an active workspace; use the replacement rather than loading its old entry point.
+
 Install the replacement, then remove this package to avoid duplicate command registration:
 
 ```sh
