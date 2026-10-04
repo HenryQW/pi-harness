@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pi Extension Workbench"
+  short_description: "Build Pi extensions with installed APIs and smoke checks"
+  default_prompt: "Use $pi-extension-workbench to implement or repair this Pi extension package using installed Pi docs, native APIs, and focused isolated validation."

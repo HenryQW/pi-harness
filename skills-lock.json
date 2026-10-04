@@ -12,6 +12,12 @@
       "sourceType": "github",
       "skillPath": "skills/figma-codegen/SKILL.md",
       "computedHash": "e39313907f73da87259f912f3aaf25f94fb082e09c35040c943f6205bd06842d"
+    },
+    "pi-extension-workbench": {
+      "source": "henryqw/skills",
+      "sourceType": "github",
+      "skillPath": "pi-extension-workbench/SKILL.md",
+      "computedHash": "f34efe264d1a51a5862f84237010ca5a0fddb7c9af179b1f6b23b3e133dce48f"
     }
   }
 }
