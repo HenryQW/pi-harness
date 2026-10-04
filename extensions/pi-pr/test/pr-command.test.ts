@@ -160,6 +160,7 @@ function harness(options: HarnessOptions) {
 	const confirmations: Array<{ title: string; message: string }> = [];
 	const reservations: unknown[] = [];
 	const releases: string[] = [];
+	const queuedPrompts: unknown[] = [];
 	const events: string[] = [];
 	let stateIndex = 0;
 	let statusIndex = 0;
@@ -257,7 +258,7 @@ function harness(options: HarnessOptions) {
 		getCommands: () => (options.commands ?? []).map((command) => ({
 			name: command.name,
 			source: command.source,
-			sourceInfo: { origin: command.origin },
+			sourceInfo: { origin: command.origin, path: `/skills/${command.name}/SKILL.md` },
 		})),
 		sendUserMessage(content: string, messageOptions: unknown) {
 			events.push("send");
@@ -292,6 +293,7 @@ function harness(options: HarnessOptions) {
 				}
 				return await discoverCurrentPullRequest(...args);
 			},
+			markWorkflowPromptQueued(identity, queued) { if (queued) queuedPrompts.push(identity); },
 			async reserveWorkflow(reservation) {
 				events.push("reserve");
 				reservations.push(reservation);
@@ -311,6 +313,7 @@ function harness(options: HarnessOptions) {
 		notifications,
 		confirmations,
 		reservations,
+		queuedPrompts,
 		releases,
 		events,
 	};
@@ -497,7 +500,7 @@ test("publishes scoped dirty work before other routes and blocks a behind local 
 	}
 });
 
-test("dispatches a workflow as a follow-up only while the agent is busy", async () => {
+test("defers a busy-session workflow to the native settlement boundary, not user input", async () => {
 	const app = harness({
 		states: [null],
 		commands: [packageCommand("skill:pi-pr-create")],
@@ -505,9 +508,10 @@ test("dispatches a workflow as a follow-up only while the agent is busy", async 
 	});
 	await app.handler("", app.context);
 
-	assert.deepEqual(app.messages, [{
-		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
-		options: { deliverAs: "followUp", expandPromptTemplates: true },
+	assert.deepEqual(app.messages, []);
+	assert.deepEqual(app.queuedPrompts, [{
+		route: "create", skill: "skill:pi-pr-create", path: "/skills/skill:pi-pr-create/SKILL.md",
+		runId: workflowRunId, action: "prepare",
 	}]);
 });
 

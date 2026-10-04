@@ -1,0 +1,124 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+import {
+	AgentSession, ExtensionRunner, InteractiveMode, SessionManager,
+	type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import pullRequestExtension from "../extensions/pr.ts";
+
+// Exercise native prompt expansion, boundary dispatch/projection, and editor queue restoration;
+// no provider or GitHub requests are made.
+test("publication continues through hidden native context, never editable user queues", async () => {
+	const handlers = new Map<string, Function[]>();
+	const tools = new Map<string, Parameters<ExtensionAPI["registerTool"]>[0]>();
+	let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
+	let busy = false;
+	let published = false;
+	let run = 0;
+	const notifications: string[] = [];
+	const dispatches: Promise<void>[] = [];
+	const skills = ["pi-pr-publish-work", "pi-pr-comment-sweep"].map((name) => {
+		const filePath = fileURLToPath(new URL(`../skills/${name}/SKILL.md`, import.meta.url));
+		return { name, filePath, baseDir: dirname(filePath), sourceInfo: { origin: "package", path: filePath } };
+	});
+	const manager = SessionManager.inMemory("/repo");
+	manager.appendMessage({ role: "user", content: [{ type: "text", text: "/pr" }], timestamp: Date.now() });
+	const ctx = {
+		cwd: "/repo", hasUI: true, mode: "rpc", signal: new AbortController().signal,
+		isIdle: () => !busy, sessionManager: manager,
+		ui: { setWidget() {}, setStatus() {}, theme: { fg: (_color: string, text: string) => text },
+			notify: (message: string) => notifications.push(message) },
+	} as unknown as ExtensionContext;
+	const nativeQueue: unknown[] = [];
+	const runner = Object.assign(Object.create(ExtensionRunner.prototype), {
+		extensions: [{ path: "/pi-pr", handlers }], createContext: () => ctx,
+		getCommand: () => undefined,
+		emitError(error: { error: string }) { throw new Error(error.error); },
+	});
+	const session = Object.assign(Object.create(AgentSession.prototype), {
+		_cwd: "/repo", sessionManager: manager, _extensionRunner: runner,
+		_isAgentRunActive: true, _lastActivityOutcome: "completed",
+		_pendingCustomMessages: [], _eventListeners: [], _entryIdsByMessage: new WeakMap(),
+		_steeringMessages: [], _followUpMessages: [],
+		_resourceLoader: { getSkills: () => ({ skills }), getPrompts: () => ({ prompts: [] }) },
+		agent: { state: { messages: [] }, followUp: (message: unknown) => nativeQueue.push(message),
+			peekQueuedMessages: () => nativeQueue, hasQueuedMessages: () => nativeQueue.length > 0,
+			clearAllQueues: () => { nativeQueue.length = 0; } },
+	}) as Pick<AgentSession, "sendUserMessage" | "getFollowUpMessages" | "getSteeringMessages" | "clearQueue"> & {
+		_runBeforeSettleBoundary(): Promise<boolean>;
+	};
+	pullRequestExtension({
+		on(name: string, handler: Function) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+		registerCommand(_name: string, registered: typeof command) { command = registered; },
+		registerTool(tool: Parameters<ExtensionAPI["registerTool"]>[0]) { tools.set(tool.name, tool); },
+		getCommands: () => skills.map((skill) => ({ name: `skill:${skill.name}`, source: "skill", sourceInfo: skill.sourceInfo })),
+		sendUserMessage(content: string, options: Parameters<ExtensionAPI["sendUserMessage"]>[1]) {
+			if (busy) dispatches.push(session.sendUserMessage(content, options));
+		},
+		appendEntry() {},
+		async exec() { throw new Error("Unexpected external command"); },
+	} as unknown as ExtensionAPI, {
+		async loadCurrentPullRequest() { return { kind: "current", pullRequest: {
+			id: "PR_kwDOExample", approved: false, lifecycle: "open",
+			url: new URL("https://github.com/acme/project/pull/42"), number: 42, host: "github.com",
+			target: { provenance: "configured", repository: "acme/project", branch: "feature", remote: "origin", ref: "feature",
+				host: "github.com", fetchSource: "git@github.com:acme/project.git", remoteOid: "b".repeat(40) },
+			base: { repository: "acme/project", ref: "main", oid: "a".repeat(40) },
+			head: { repository: "acme/project", ref: "feature", oid: "b".repeat(40) },
+			headFetchSource: "git@github.com:acme/project.git",
+			local: { worktree: published ? "clean" : "dirty", head: "equal" },
+			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: published, unresolvedThreads: published ? 1 : 0,
+				ci: "success", review: "ready", policy: "ready" },
+		} }; },
+		async canonicalWorktree() { return "/repo"; },
+		newRunId: () => `${String(++run).repeat(8)}-1111-4111-8111-111111111111`,
+		inspectBranchRecovery: async () => false, inspectSweepRecovery: async () => false,
+		createWorkPublisher: () => ({ async publish() { published = true; return { kind: "published" }; } }) as never,
+		createCommentSweep: () => ({ async recoveryLaunchAction() { return "start"; } }) as never,
+	});
+	await runner.emit({ type: "session_start" });
+	await new Promise((resolve) => setImmediate(resolve));
+	try {
+		await command.handler("", ctx as ExtensionCommandContext);
+		await tools.get("pi_pr_publish_work")!.execute("publish", {
+			runId: "11111111-1111-4111-8111-111111111111", action: "publish",
+		}, ctx.signal, undefined, ctx as never);
+		busy = true;
+		manager.appendMessage({
+			role: "assistant", content: [{ type: "text", text: "Published." }], stopReason: "stop",
+			api: "openai-responses", provider: "openai", model: "probe", timestamp: Date.now(),
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		});
+		assert.equal(await session._runBeforeSettleBoundary(), true);
+		await Promise.all(dispatches);
+		assert.equal(session.getFollowUpMessages().length, 0, "expanded internal skill must not appear in editable follow-up queue");
+		assert.deepEqual(session.getSteeringMessages(), []);
+		const pendingUI: unknown[] = [];
+		const mode = Object.assign(Object.create(InteractiveMode.prototype), {
+			runtimeHost: { session }, compactionQueuedMessages: [],
+			pendingMessagesContainer: { clear: () => { pendingUI.length = 0; }, addChild: (child: unknown) => pendingUI.push(child) },
+		});
+		mode.updatePendingMessagesDisplay();
+		assert.deepEqual(pendingUI, [], "native TUI must not show workflow instructions or the dequeue/edit hint");
+		assert.deepEqual(mode.clearAllQueues(), { steering: [], followUp: [] }, "abort must not restore an internal skill to the editor");
+		const entry = manager.getBranch().at(-1)!;
+		assert.equal(entry.type, "custom_message");
+		if (entry.type !== "custom_message") throw new Error("Missing hidden workflow entry");
+		assert.equal(entry.display, false);
+		assert.match(String(entry.content), /<skill name="pi-pr-comment-sweep"/);
+		assert.match(String(entry.content), /runId=22222222-1111-4111-8111-111111111111 action=start/);
+		assert.match(String(entry.content), /pi_pr_sweep/);
+		// Native boundary continuation does not emit before_agent_start. An unused launch
+		// must still be consumed and cleaned at final settlement, not stranded forever.
+		assert.equal(await session._runBeforeSettleBoundary(), false);
+		busy = false;
+		await runner.emit({ type: "agent_settled" });
+		await assert.rejects(tools.get("pi_pr_sweep")!.execute("unused", {
+			runId: "22222222-1111-4111-8111-111111111111", action: "start",
+		}, ctx.signal, undefined, ctx as never), /No PR workflow is active/);
+		assert.deepEqual(notifications, []);
+	} finally { await runner.emit({ type: "session_shutdown" }); }
+});

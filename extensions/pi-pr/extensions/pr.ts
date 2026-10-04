@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { spawnBounded } from "@henryqw/pi-process";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { dirname } from "node:path";
 import {
 	isBashToolResult,
+	stripFrontmatter,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -196,14 +198,6 @@ function toolResult(value: unknown) {
 		content: [{ type: "text" as const, text: JSON.stringify(value) }],
 		details: value,
 	};
-}
-
-function matchesWorkflowPrompt(prompt: string, identity: WorkflowPromptIdentity): boolean {
-	const tokens = new Set(prompt.split(/\s+/).filter(Boolean));
-	const skillName = identity.skill.startsWith("skill:") ? identity.skill.slice("skill:".length) : "";
-	const matchesSkill = tokens.has(`/${identity.skill}`) ||
-		(skillName !== "" && tokens.has("<skill") && tokens.has(`name="${skillName}"`));
-	return matchesSkill && tokens.has(`runId=${identity.runId}`) && tokens.has(`action=${identity.action}`);
 }
 
 function parseWorkspaceLabel(response: Record<string, unknown>, workspaceId: string): string {
@@ -451,7 +445,7 @@ export default function pullRequestExtension(
 			selected.controller.signal.throwIfAborted();
 			if (worktree !== selected.worktree) throw new Error("PR workflow worktree is wrong or stale");
 			selected.usedSinceSettlement = true;
-			// Drained follow-ups need not emit before_agent_start; this run has been consumed.
+			// A guarded action also acknowledges consumption of the exact reserved run.
 			selected.queuedPrompt = undefined;
 			return toolResult(await action(selected as Extract<WorkflowContext, { route: Route }>));
 		} finally {
@@ -780,13 +774,6 @@ export default function pullRequestExtension(
 		queued = false;
 	};
 
-	pi.on("before_agent_start", (event) => {
-		const selected = workflowContext;
-		if (selected?.queuedPrompt && matchesWorkflowPrompt(event.prompt, selected.queuedPrompt)) {
-			selected.queuedPrompt = undefined;
-		}
-	});
-
 	pi.on("session_start", (_event, ctx) => {
 		stop();
 		observation = latestObservation(ctx);
@@ -801,16 +788,10 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
-		// Pi evaluates continuation again after this handler queues the next workflow.
-		if (event.outcome !== "completed" || !selected?.completed ||
-			selected.queuedPrompt || selected.sessionGeneration !== sessionGeneration) return;
+		if (event.outcome !== "completed" || !selected ||
+			(!selected.completed && !selected.queuedPrompt) || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
 		if (invocation === undefined) return;
-		completedRoutes.add(selected.route);
-		if (selected.route === "create") pendingWorkspaceRename = true;
-		clearWorkflow(selected);
-		activeInvocations.set(invocation, "routing");
-		reconcileWidget(ctx);
 		const generation = sessionGeneration;
 		const callback: PrCommandInvocation = Object.assign((next: string) => {
 			if (generation !== sessionGeneration) return;
@@ -824,16 +805,42 @@ export default function pullRequestExtension(
 			},
 		});
 		try {
-			const next = await commandHandler("", ctx, callback);
-			if (generation !== sessionGeneration) return;
-			if (WORKFLOW_ROUTES.has(next) && !completedRoutes.has(next as WorkflowContext["route"])) {
-				activeInvocations.set(invocation, next === "create" ? "create-workflow" : "workflow");
-				if (next === "create") ctx.ui.setStatus(UI_KEY, undefined);
+			if (!selected.queuedPrompt) {
+				completedRoutes.add(selected.route);
+				if (selected.route === "create") pendingWorkspaceRename = true;
+				clearWorkflow(selected);
+				activeInvocations.set(invocation, "routing");
 				reconcileWidget(ctx);
-				return;
+				const next = await commandHandler("", ctx, callback);
+				if (generation !== sessionGeneration) return;
+				if (WORKFLOW_ROUTES.has(next) && !completedRoutes.has(next as WorkflowContext["route"])) {
+					activeInvocations.set(invocation, next === "create" ? "create-workflow" : "workflow");
+					if (next === "create") ctx.ui.setStatus(UI_KEY, undefined);
+					reconcileWidget(ctx);
+				}
 			}
+			const pending = workflowContext;
+			const identity = pending?.queuedPrompt;
+			if (!identity) return;
+			const body = stripFrontmatter(await readFile(identity.path, { encoding: "utf8", signal: ctx.signal })).trim();
+			callback.assertCurrent();
+			pending.controller.signal.throwIfAborted();
+			ctx.signal?.throwIfAborted();
+			if (workflowContext !== pending) throw new Error("PR workflow changed during continuation");
+			// Native boundary continuation does not emit before_agent_start. Handoff consumes
+			// this exact launch even if the model never calls its helper before settlement.
+			pending.queuedPrompt = undefined;
+			return {
+				entries: [...event.entries, {
+					type: "custom_message" as const, customType: "pi-pr-workflow", display: false,
+					content: `<skill name="${identity.skill.slice("skill:".length)}" location="${identity.path}">\nReferences are relative to ${dirname(identity.path)}.\n\n${body}\n</skill>\n\nrunId=${identity.runId} action=${identity.action}`,
+					details: identity,
+				}],
+				continue: true,
+			};
 		} catch (error) {
 			if (generation === sessionGeneration) {
+				clearWorkflow(workflowContext);
 				activeInvocations.delete(invocation);
 				ctx.ui.notify(`PR continuation stopped: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			}
@@ -851,12 +858,10 @@ export default function pullRequestExtension(
 		if (!ctx.hasUI || !ctx.isIdle() || !context) return;
 		const selected = workflowContext;
 		const helperSettled = selected?.usedSinceSettlement ?? false;
-		const queuedHelperPending = selected?.queuedPrompt !== undefined && !helperSettled;
 		let workflowSettled = false;
 		let createWorkflowSettled = false;
 		for (const [invocation, phase] of activeInvocations) {
 			if (phase !== "workflow" && phase !== "create-workflow") continue;
-			if (queuedHelperPending) continue;
 			activeInvocations.delete(invocation);
 			workflowSettled = true;
 			if (phase === "create-workflow") createWorkflowSettled = true;
@@ -864,12 +869,10 @@ export default function pullRequestExtension(
 		if (selected) {
 			const conflictPending = selected.route === "update-branch" &&
 				selected.workflow.state.phase === "conflict-awaiting-user";
-			if (!queuedHelperPending) {
-				if (helperSettled && conflictPending && !selected.conflictRetained) {
-					selected.usedSinceSettlement = false;
-					selected.conflictRetained = true;
-				} else clearWorkflow(selected);
-			}
+			if (helperSettled && conflictPending && !selected.conflictRetained) {
+				selected.usedSinceSettlement = false;
+				selected.conflictRetained = true;
+			} else clearWorkflow(selected);
 		}
 		const delegatedRefresh = delegatedWorkPending && lastDiscovery !== "inactive";
 		delegatedWorkPending = false;
