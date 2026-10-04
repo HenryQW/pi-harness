@@ -3,6 +3,8 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { executeGitHubMerge } from "./pr-merge.ts";
+import { readHead, validatePaths } from "./pr-execution.ts";
+import type { CommittedPathAuthorization } from "./pr-comment-sweep.ts";
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	linkInferredPullRequest,
@@ -28,7 +30,8 @@ const WORKFLOWS: Record<WorkflowNextStep, string> = {
 export const WORKFLOW_ROUTES: ReadonlySet<string> = new Set(Object.keys(WORKFLOWS));
 type WorkflowReservation =
 	| { route: "create"; target: PullRequestTarget }
-	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
+	| { route: "sweep"; pullRequest: CurrentPullRequest; committedPathAuthorization?: CommittedPathAuthorization }
+	| { route: Exclude<WorkflowNextStep, "create" | "sweep">; pullRequest: CurrentPullRequest };
 type WorkflowLaunchAction = "prepare" | "inspect" | "rebase" | "start" | "resume" | "collect";
 type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
@@ -56,7 +59,7 @@ export type PrCommandDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
 	needsFeedbackAttention?: typeof needsFeedbackAttention;
 	linkInferredPullRequest?: typeof linkInferredPullRequest;
-	inspectSweepRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
+	inspectSweepRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext, authorization?: CommittedPathAuthorization) => Promise<boolean>;
 	inspectBranchRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
 	reserveWorkflow?: (
 		reservation: WorkflowReservation,
@@ -218,6 +221,20 @@ async function linkPullRequest(
 	return await link(pi, ctx, discovery.pullRequest);
 }
 
+function parseCommittedPaths(args: string): string[] | undefined {
+	const input = args.trim();
+	if (!input) return undefined;
+	const match = /^--include-committed-paths\s+([\s\S]+)$/.exec(input);
+	if (!match) throw new Error("/pr does not accept arguments except --include-committed-paths <JSON array>");
+	let paths: unknown;
+	try { paths = JSON.parse(match[1]!); }
+	catch { throw new Error("--include-committed-paths requires a JSON array of exact repository-relative paths"); }
+	if (!Array.isArray(paths) || !paths.length || paths.some((path) => typeof path !== "string")) {
+		throw new Error("--include-committed-paths requires a non-empty JSON array of paths");
+	}
+	return validatePaths(paths, "Committed-path authorization");
+}
+
 export function createPrCommandHandler(
 	pi: PrCommandPi,
 	dependencies: PrCommandDependencies = {},
@@ -237,7 +254,11 @@ export function createPrCommandHandler(
 		onRouteResolved?: PrCommandInvocation,
 		linkedAuthority?: CurrentPullRequest,
 	): Promise<NextStep> => {
-		if (args.trim()) throw new Error("/pr does not accept arguments");
+		const paths = parseCommittedPaths(args);
+		const authorization = paths ? { paths, head: await readHead(
+			(command, commandArgs, options) => pi.exec(command, commandArgs, { cwd: options.cwd, signal: ctx.signal, timeout: 10_000 }),
+			{ cwd: ctx.cwd, signal: ctx.signal },
+		) } : undefined;
 		const discovery = await load(pi, ctx);
 		onRouteResolved?.assertCurrent();
 		if (linkedAuthority && (discovery.kind !== "current" || discovery.pullRequest.target.provenance !== "configured" ||
@@ -245,13 +266,23 @@ export function createPrCommandHandler(
 			throw new Error("Link branch continuation cancelled: configured pull request context changed");
 		}
 		let nextStep = deriveNextStep(discovery);
-		if (discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
+		if (authorization) {
+			if (discovery.kind !== "current" || discovery.pullRequest.lifecycle !== "open" || discovery.pullRequest.conditions.draft
+				|| discovery.pullRequest.target.provenance !== "configured"
+				|| await inspectBranchRecovery(discovery.pullRequest, ctx)
+				|| !await inspectSweepRecovery(discovery.pullRequest, ctx, authorization)) {
+				throw new Error("--include-committed-paths requires matching recorded unpublished sweep recovery");
+			}
+			nextStep = "sweep";
+			onRouteResolved?.assertCurrent();
+		}
+		if (!authorization && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
 			await inspectBranchRecovery(discovery.pullRequest, ctx)) {
 			nextStep = "update-branch";
 			onRouteResolved?.assertCurrent();
 		}
-		if (nextStep !== "update-branch" && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
+		if (!authorization && nextStep !== "update-branch" && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
 			await inspectSweepRecovery(discovery.pullRequest, ctx)) {
 			nextStep = "sweep";
@@ -295,6 +326,7 @@ export function createPrCommandHandler(
 			return "none";
 		}
 		const reservation = workflowReservation(route, discovery);
+		if (reservation.route === "sweep" && authorization) reservation.committedPathAuthorization = authorization;
 		await dispatchWorkflow(
 			pi,
 			ctx,

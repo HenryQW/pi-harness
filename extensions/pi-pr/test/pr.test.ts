@@ -506,6 +506,33 @@ test("a completed helper does not repeat its route when fresh evidence is unchan
 	} finally { await app.shutdown(ctx); }
 });
 
+test("human committed-path authorization reaches the reserved sweep but cannot be supplied by a tool", async () => {
+	const paths = ["AGENTS.md"];
+	const head = "d".repeat(40);
+	const authorization = { paths, head };
+	const pr = currentPullRequest();
+	pr.local.head = "ahead";
+	const app = harness({
+		async load() { return pr; }, useDefaultCommandHandler: true,
+		exec: async () => ({ stdout: `${head}\n`, stderr: "", code: 0, killed: false }),
+		inspectSweepRecovery: async (_pr, _ctx, received) => { assert.deepEqual(received, authorization); return true; },
+		newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/canonical/repo"; },
+		createCommentSweep(options) {
+			assert.deepEqual(options.committedPathAuthorization, authorization);
+			return { async recoveryLaunchAction() { return "resume" as const; }, async resume() { return { phase: "recorded" }; } } as never;
+		},
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler(`--include-committed-paths ${JSON.stringify(paths)}`, ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [`/skill:pi-pr-comment-sweep runId=${routeRunId} action=resume`]);
+		await assert.rejects(app.callTool("pi_pr_sweep", { runId: routeRunId, action: "resume", committedPathAuthorization: authorization }, ctx), /arguments do not match/);
+		await app.callTool("pi_pr_sweep", { runId: routeRunId, action: "resume" }, ctx);
+	} finally { await app.shutdown(ctx); }
+});
+
 test("matching sweep recovery precedes a dirty or behind local gate", async () => {
 	const pr = currentPullRequest();
 	pr.local.worktree = "dirty";

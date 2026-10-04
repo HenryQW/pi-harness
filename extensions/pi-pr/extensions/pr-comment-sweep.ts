@@ -148,6 +148,7 @@ type SweepState = {
 };
 
 type Load = typeof loadCurrentPullRequest;
+export type CommittedPathAuthorization = { paths: string[]; head: string };
 export type PullRequestCommentSweepOptions = {
 	cwd: string;
 	authority?: CurrentPullRequest;
@@ -157,6 +158,7 @@ export type PullRequestCommentSweepOptions = {
 	loadCurrentPullRequest?: Load;
 	newRunId?: () => string;
 	pause?: (milliseconds: number) => Promise<void>;
+	committedPathAuthorization?: CommittedPathAuthorization;
 };
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
 	const actual = Object.keys(value).sort();
@@ -625,6 +627,7 @@ export class PullRequestCommentSweep {
 	private readonly load: Load;
 	private readonly newRunId: () => string;
 	private readonly pause?: (milliseconds: number) => Promise<void>;
+	private committedPathAuthorization?: CommittedPathAuthorization;
 
 	constructor(options: PullRequestCommentSweepOptions) {
 		this.cwd = options.cwd;
@@ -635,6 +638,7 @@ export class PullRequestCommentSweep {
 		this.load = options.loadCurrentPullRequest ?? loadCurrentPullRequest;
 		this.newRunId = options.newRunId ?? randomUUID;
 		this.pause = options.pause;
+		this.committedPathAuthorization = options.committedPathAuthorization;
 	}
 
 	private options(extra: Partial<ExecOptions> = {}): ExecOptions {
@@ -664,11 +668,39 @@ export class PullRequestCommentSweep {
 		if (!this.suppliedAuthority) throw new Error("Comment sweep recovery inspection requires route authority");
 		const location = await this.location();
 		const state = await this.loadIfPresent(location);
-		if (!state) return "start";
+		if (!state) {
+			if (this.committedPathAuthorization) throw new Error("Committed-path authorization requires an existing recorded unpublished sweep");
+			return "start";
+		}
+		if (this.committedPathAuthorization) await this.authorizedOwnedPaths(state);
 		if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority) && !await this.isScopedExternalPublication(state)) {
 			throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match freshly discovered route authority`);
 		}
 		return "resume";
+	}
+
+	/** Human command authorization is checked read-only at launch and again under the resume lock. */
+	private async authorizedOwnedPaths(state: SweepState): Promise<string[]> {
+		const authorization = this.committedPathAuthorization!;
+		if (!this.suppliedAuthority || !recoveryMatchesRouteAuthority(state, this.suppliedAuthority)
+			|| state.phase !== "recorded" || !state.ledger || !state.approved
+			|| state.publicationHead !== null || state.attempts.push.state !== "none"
+			|| state.attempts.commit && state.attempts.commit.state !== "applied"
+			|| state.attempts.resolutions.length || state.attempts.finalize.state !== "none") {
+			throw new Error("Committed-path authorization requires matching recorded unpublished recovery with no uncertain mutation");
+		}
+		await this.currentAuthority(state.authority, state.original.lease);
+		const changed = parseNulPaths((await runChecked(this.exec, "git", [
+			"diff", "--name-only", "--no-renames", "-z", `${state.original.head}..${authorization.head}`,
+		], this.options())).stdout, "Sweep committed paths");
+		const outside = changed.filter((path) => !state.ownedPaths.includes(path));
+		if (!outside.length || outside.length !== authorization.paths.length || outside.some((path) => !authorization.paths.includes(path))) {
+			throw new Error(`Committed-path authorization must name exactly the unexpected committed paths: ${outside.join(", ") || "none"}`);
+		}
+		const ownedPaths = validatePaths([...state.ownedPaths, ...authorization.paths], "Sweep owned paths");
+		await this.requireCleanPublication({ ...state, ownedPaths }, authorization.head);
+		await this.currentAuthority(state.authority, state.original.lease);
+		return ownedPaths;
 	}
 
 	/** Observe a scoped publication without claiming or replaying any external mutation. */
@@ -924,6 +956,7 @@ export class PullRequestCommentSweep {
 			if (!this.suppliedAuthority) throw new Error("Comment sweep resume requires route authority");
 			const location = await this.location();
 			const state = await this.loadState(location);
+			if (this.committedPathAuthorization) state.ownedPaths = await this.authorizedOwnedPaths(state);
 			if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
 				if (!await this.isScopedExternalPublication(state)) {
 					throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
@@ -949,7 +982,8 @@ export class PullRequestCommentSweep {
 			if (published) state.version = 2;
 			const expectedRemote = published ? state.publicationHead! : state.original.lease;
 			await this.currentAuthority(state.authority, expectedRemote, published);
-			await this.requireOwnedLocalState(state, published ? expectedRemote : undefined);
+			if (this.committedPathAuthorization) await this.requireCleanPublication(state, this.committedPathAuthorization.head);
+			else await this.requireOwnedLocalState(state, published ? expectedRemote : undefined);
 			if (state.ledger) {
 				state.approved = true;
 				state.approvalGeneration = state.feedback.generation;
@@ -957,6 +991,7 @@ export class PullRequestCommentSweep {
 			state.epoch += 1;
 			state.runId = safeRunId(this.newRunId());
 			await this.save(location, state);
+			this.committedPathAuthorization = undefined;
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}

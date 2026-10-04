@@ -375,6 +375,7 @@ export default function pullRequestExtension(
 					workflow: createCommentSweep({
 						cwd: worktree,
 						authority: reservation.pullRequest,
+						committedPathAuthorization: reservation.committedPathAuthorization,
 						signal: common.controller.signal,
 						loadCurrentPullRequest: load,
 					}),
@@ -899,9 +900,9 @@ export default function pullRequestExtension(
 			const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
 			return await inspectVerifiedRebaseRecovery(pullRequest, { cwd: worktree, signal: ctx.signal });
 		}),
-		inspectSweepRecovery: dependencies.inspectSweepRecovery ?? (async (pullRequest, ctx) => {
+		inspectSweepRecovery: dependencies.inspectSweepRecovery ?? (async (pullRequest, ctx, committedPathAuthorization) => {
 			const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
-			const sweep = createCommentSweep({ cwd: worktree, authority: pullRequest, signal: ctx.signal, loadCurrentPullRequest: load });
+			const sweep = createCommentSweep({ cwd: worktree, authority: pullRequest, signal: ctx.signal, loadCurrentPullRequest: load, committedPathAuthorization });
 			return await sweep.recoveryLaunchAction() === "resume";
 		}),
 		reserveWorkflow,

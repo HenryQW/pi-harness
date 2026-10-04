@@ -18,6 +18,7 @@ import {
 	PullRequestCommentSweep,
 	SWEEP_RECOVERY_MAX_BYTES,
 	type SweepLedgerEntry,
+	type CommittedPathAuthorization,
 	type SweepStatus,
 } from "../extensions/pr-comment-sweep.ts";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
@@ -126,7 +127,7 @@ type Fixture = {
 	world: { threadLocation: { line: number | null; startLine: number | null; isOutdated: boolean }; threadBody: string; resolved: boolean; body: string; baseOid: string; baseDriftOnRead: string | null; extraBody: string | null; replyBody: string | null; lateThreadComment: string | null; emptyReviewOnReply: boolean; concurrentBodyOnReply: string | null; failFeedbackAfterReply: boolean; replyCalls: number; loseReplyResponse: boolean; applyReply: boolean; mutationCalls: number; pushCalls: number; checkCalls: number; losePushResponse: boolean; applyPush: boolean; loseMutationResponse: boolean; applyMutation: boolean; loseCheckResponse: boolean };
 	exec: Exec;
 	current: () => CurrentPullRequest;
-	workflow: (ids?: string[]) => PullRequestCommentSweep;
+	workflow: (ids?: string[], authorization?: CommittedPathAuthorization) => PullRequestCommentSweep;
 	cleanup: () => void;
 };
 
@@ -224,11 +225,12 @@ function fixture(): Fixture {
 			},
 		};
 	};
-	const workflow = (ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]) => {
+	const workflow = (ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"], committedPathAuthorization?: CommittedPathAuthorization) => {
 		let index = 0;
 		return new PullRequestCommentSweep({
 			cwd: root,
 			authority: current(),
+			committedPathAuthorization,
 			agentDir,
 			exec,
 			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: current() }),
@@ -259,6 +261,74 @@ test("a real sweep start persists recovery and read-only launch inspection choos
 	const recovery = readFileSync(recoveryPath, "utf8");
 	assert.equal(await workflow.recoveryLaunchAction(), "resume");
 	assert.equal(readFileSync(recoveryPath, "utf8"), recovery);
+});
+
+test("explicit committed-path authorization preserves the ledger and resumes an unpublished sweep", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
+	writeFileSync(join(app.root, "extra docs.md"), "intended documentation\n");
+	git(app.root, "add", "extra docs.md");
+	git(app.root, "commit", "-m", "docs: intended addition");
+	const head = git(app.root, "rev-parse", "HEAD");
+	const path = await workflow.recoveryPath();
+	const before = readFileSync(path, "utf8");
+	await assert.rejects(app.workflow().resume(), /outside owned paths/);
+	const recovery = app.workflow(undefined, { paths: ["extra docs.md"], head });
+	assert.equal(await recovery.recoveryLaunchAction(), "resume");
+	assert.equal(readFileSync(path, "utf8"), before, "inspection must not grant authorization");
+	const resumed = await recovery.resume();
+	assert.deepEqual(resumed.plan, { ledger: recorded.plan!.ledger, ownedPaths: ["file.txt", "extra docs.md"] });
+	assert.equal(resumed.originalHead, app.initial);
+	assert.equal(resumed.phase, "recorded");
+	await recovery.resume(); // Authorization is consumed, not reapplied.
+	const fresh = await app.workflow().resume();
+	await recovery.publish(fresh.guard);
+	assert.equal(app.world.pushCalls, 1);
+	assert.equal(git(app.root, "rev-parse", "HEAD"), head);
+});
+
+test("committed-path authorization preserves recovery when scope or safety checks fail", async (t) => {
+	for (const scenario of ["missing-path", "extra-path", "dirty", "uncertain-commit", "published", "head-drift", "base-drift", "remote-drift"] as const) {
+		await t.test(scenario, async (t) => {
+			const app = fixture();
+			t.after(app.cleanup);
+			const workflow = app.workflow();
+			const started = await workflow.start();
+			const recorded = await workflow.record(started.guard, ledger(started), ["file.txt"]);
+			if (scenario === "published") await workflow.publish(recorded.guard);
+			writeFileSync(join(app.root, "docs.md"), "approved docs\n");
+			git(app.root, "add", "docs.md");
+			git(app.root, "commit", "-m", "docs: additional work");
+			const head = git(app.root, "rev-parse", "HEAD");
+			const paths = scenario === "missing-path" ? [] : scenario === "extra-path" ? ["docs.md", "future.md"] : ["docs.md"];
+			const recovery = app.workflow(undefined, { paths, head });
+			const path = await workflow.recoveryPath();
+			if (scenario === "uncertain-commit") {
+				const saved = JSON.parse(readFileSync(path, "utf8"));
+				saved.attempts.commit = { state: "unknown", beforeHead: app.initial, tree: git(app.root, "rev-parse", "HEAD^{tree}"), head: null };
+				writeFileSync(path, `${JSON.stringify(saved)}\n`);
+			}
+			if (["head-drift", "base-drift", "remote-drift"].includes(scenario)) {
+				assert.equal(await recovery.recoveryLaunchAction(), "resume");
+			}
+			if (scenario === "dirty") writeFileSync(join(app.root, "docs.md"), "uncommitted edits\n");
+			if (scenario === "head-drift") {
+				writeFileSync(join(app.root, "docs.md"), "later commit to the same authorized path\n");
+				git(app.root, "commit", "-am", "docs: raced authorization");
+			}
+			if (scenario === "base-drift") app.world.baseOid = "b".repeat(40);
+			if (scenario === "remote-drift") git(app.root, "push", "origin", "HEAD:refs/heads/feature");
+			const before = readFileSync(path, "utf8");
+			const blocker = /exactly the unexpected|clean worktree|no uncertain mutation|local HEAD changed|canonical pull request authority changed|remote lease changed/;
+			await assert.rejects(recovery.recoveryLaunchAction(), blocker);
+			await assert.rejects(recovery.resume(), blocker);
+			assert.equal(readFileSync(path, "utf8"), before);
+			assert.equal(app.world.replyCalls + app.world.mutationCalls, 0);
+		});
+	}
 });
 
 test("post-publication base drift resumes and freezes the new base before resolution", async (t) => {

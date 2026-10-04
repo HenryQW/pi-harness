@@ -40,7 +40,7 @@ Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the
 | Footer | ui | Linked PR number and plain-language status. |
 | Widget | ui | Action hint or transient routing status. |
 
-`/pr` accepts no flags, prose, or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
+`/pr` normally takes no arguments. Its only option, `--include-committed-paths <JSON array>`, explicitly authorizes already-committed paths for a blocked, unpublished feedback sweep (see below). It accepts no prose or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
 
 The `pi_pr_*` tools are model-only and run one action at a time. Codemode scripts and other tools cannot call them, so a script cannot batch guarded actions or filter the result the model needs for its next safety decision. With `codemode.mode` set to `only`, Pi hides other tools behind `codemode` but keeps these declared, so `/pr` workflows still work.
 
@@ -78,6 +78,18 @@ After creating a PR, the extension prefixes the Herdr workspace name with `#<num
 The Pi session stores the configured PR URL, number, host, head identity, and target identity, but not mutable CI or review state. Discovery revalidates this identity against GitHub; no repository cache is created.
 
 In-progress feedback sweeps keep private recovery under `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`; branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect in-progress decisions and remote mutation attempts. A fresh `/pr` resumes only matching, verified recovery. If you manually committed and pushed a recorded sweep's fixes, `/pr` can recognize that publication when the clean local HEAD equals the live PR head, descends from the original commit, changes only recorded owned paths, and has no uncertain mutation. It preserves the ledger and refreshes feedback before replying or resolving; it does not push again. Other mismatched or malformed records remain unchanged and block routing; do not delete them or replay an uncertain mutation to force continuation.
+
+### Include already-committed sweep paths
+
+If an unpublished sweep stops with `Comment sweep commit changed outside owned paths`, inspect the listed commits first. To include those edits intentionally, run this in Pi, using a JSON array of **all and only** the unexpected repository-relative paths:
+
+```text
+/pr --include-committed-paths [".agents/skills/npm-ops/SKILL.md","AGENTS.md","docs/releasing.md"]
+```
+
+This authorizes publishing the committed edits in those files and adds them to that sweep's owned paths; it does not skip validation or discard work. Launch inspection is read-only. The guarded `resume` action saves the expanded scope once, preserving the ledger and original remote lease. Later flagless `/pr` invocations use the saved scope.
+
+The option requires a clean worktree, matching recorded unpublished recovery, and no uncertain mutation. It rejects missing or extra paths, local HEAD movement after command inspection, changed PR authority or remote lease, and already-published recovery. It cannot start a new sweep, select another route, or authorize uncommitted work. Agent tools cannot supply the option themselves. Default `/pr` continues to reject changes outside its saved scope.
 
 ## Limits and recovery
 
