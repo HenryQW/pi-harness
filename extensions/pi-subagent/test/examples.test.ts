@@ -40,7 +40,7 @@ test("missing config directory still returns validated built-in implementer, rev
 		/Preserve required deliverables, unrelated and pre-existing files, and user data/i,
 		/Never use `git clean` or blanket deletion/i,
 		/credentials or the network.*broaden scope only when the task requires/is,
-		/Direct delegation leaves changes uncommitted.*isolated delegation commits completed scoped changes/is,
+		/Direct delegation may write or commit only within Main's explicitly authorized scope.*Isolated delegation commits completed scoped changes/is,
 		/Never push or open a pull request/is,
 	]) assert.match(implementer!.systemPrompt, contract);
 
