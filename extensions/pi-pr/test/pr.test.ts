@@ -357,7 +357,7 @@ test("registers sequential model-only tools with flat object roots and strict ac
 		["pi_pr_update_branch", ["rebase", "continue", "publish"]],
 		["pi_pr_create", ["prepare", "inspect", "commit", "verify", "push", "publish"]],
 		["pi_pr_publish_work", ["inspect", "commit", "validate", "publish"]],
-		["pi_pr_sweep", ["start", "resume", "show", "record", "commit", "publish", "refresh", "resolve", "finalize"]],
+		["pi_pr_sweep", ["start", "resume", "show", "record", "commit", "adopt", "validate", "publish", "refresh", "resolve", "finalize"]],
 		["pi_pr_fix_ci", ["collect", "publish"]],
 	]);
 
@@ -474,7 +474,7 @@ for (const route of ["update-branch", "sweep", "fix-ci"] as const) test(`queued 
 		assert.equal(next?.continue, true);
 		assert.match(JSON.stringify(next), /pi-pr-publish-work/);
 		await assert.rejects(app.callTool(tool, { runId: ids[0], action }, ctx), /wrong or stale/);
-		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "inspect" }, ctx)).details, { paths: [], head: merged });
+		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "inspect" }, ctx)).details, { paths: [], head: merged, originalHead: original });
 		await assert.rejects(app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx), /not validated/);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "validate", checks: [] }, ctx);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx);
@@ -710,33 +710,6 @@ test("a completed helper does not repeat its route when fresh evidence is unchan
 		await app.beforeSettle(ctx);
 		assert.equal(app.messages.length, 1);
 		assert.match(app.notifications.at(-1)!.message, /already ran/);
-	} finally { await app.shutdown(ctx); }
-});
-
-test("human committed-path authorization reaches the reserved sweep but cannot be supplied by a tool", async () => {
-	const paths = ["AGENTS.md"];
-	const head = "d".repeat(40);
-	const authorization = { paths, head };
-	const pr = currentPullRequest();
-	pr.local.head = "ahead";
-	const app = harness({
-		async load() { return pr; }, useDefaultCommandHandler: true,
-		exec: async () => ({ stdout: `${head}\n`, stderr: "", code: 0, killed: false }),
-		inspectSweepRecovery: async (_pr, _ctx, received) => { assert.deepEqual(received, authorization); return true; },
-		newRunId: () => routeRunId,
-		async canonicalWorktree() { return "/canonical/repo"; },
-		createCommentSweep(options) {
-			assert.deepEqual(options.committedPathAuthorization, authorization);
-			return { async recoveryLaunchAction() { return "resume" as const; }, async resume() { return { phase: "recorded" }; } } as never;
-		},
-	});
-	const ctx = app.context();
-	try {
-		await app.start(ctx);
-		await app.command().handler(`--include-committed-paths ${JSON.stringify(paths)}`, ctx as ExtensionCommandContext);
-		assert.deepEqual(app.messages, [`/skill:pi-pr-comment-sweep runId=${routeRunId} action=resume`]);
-		await assert.rejects(app.callTool("pi_pr_sweep", { runId: routeRunId, action: "resume", committedPathAuthorization: authorization }, ctx), /arguments do not match/);
-		await app.callTool("pi_pr_sweep", { runId: routeRunId, action: "resume" }, ctx);
 	} finally { await app.shutdown(ctx); }
 });
 

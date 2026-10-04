@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import { markFeedbackHandled } from "./pr-feedback-attention.ts";
+import { PrRun } from "./pr-run.ts";
 import {
 	extensionConfigDir,
 	readTextFileBounded,
@@ -50,7 +51,7 @@ import {
 
 export const SWEEP_RECOVERY_MAX_BYTES = 1024 * 1024;
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const STATE_FILE = "state.json";
 const LEDGER_NOTE_MAX_BYTES = 2 * 1024;
 const REPLY_METADATA_RESERVE_BYTES = 8 * 1024;
@@ -73,6 +74,8 @@ type SweepRunGuard = {
 	fingerprint: string;
 };
 type SweepCheck = { command: string; args: string[] };
+type PendingScope = { head: string; exactOutsidePaths: string[] };
+type SweepValidation = { head: string; checks: SweepCheck[] };
 type SweepFinalProjection = {
 	generation: number;
 	contentFingerprint: string;
@@ -94,6 +97,9 @@ export type SweepStatus = {
 	plan: { ledger: SweepLedgerEntry[]; ownedPaths: string[] } | null;
 	approved: boolean;
 	legacyRecovery: boolean;
+	pendingScope: PendingScope | null;
+	validation: SweepValidation | null;
+	legacyChecks: SweepCheck[] | null;
 	projection: SweepFinalProjection | null;
 	attempts: {
 		commit: AttemptState;
@@ -122,7 +128,7 @@ type CommitAttempt = {
 	head: string | null;
 };
 type SweepState = {
-	version: 1 | 2;
+	version: 1 | 2 | 3;
 	workflow: "pi-pr-comment-sweep";
 	worktree: { id: string; root: string };
 	epoch: number;
@@ -140,6 +146,8 @@ type SweepState = {
 	approved: boolean;
 	approvalGeneration: number | null;
 	ownedPaths: string[];
+	pendingScope: PendingScope | null;
+	validation: SweepValidation | null;
 	publicationHead: string | null;
 	projection: SweepFinalProjection | null;
 	attempts: {
@@ -151,7 +159,6 @@ type SweepState = {
 };
 
 type Load = typeof loadCurrentPullRequest;
-export type CommittedPathAuthorization = { paths: string[]; head: string };
 export type PullRequestCommentSweepOptions = {
 	cwd: string;
 	authority?: CurrentPullRequest;
@@ -161,7 +168,8 @@ export type PullRequestCommentSweepOptions = {
 	loadCurrentPullRequest?: Load;
 	newRunId?: () => string;
 	pause?: (milliseconds: number) => Promise<void>;
-	committedPathAuthorization?: CommittedPathAuthorization;
+	run?: PrRun;
+	confirmLegacyChecks?: (head: string, checks: SweepCheck[]) => Promise<boolean>;
 };
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
 	const actual = Object.keys(value).sort();
@@ -419,12 +427,13 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		!isRecord(value.attempts) || !isRecord(value.attempts.push) || !isRecord(value.attempts.finalize)) {
 		throw new Error("sweep recovery state is invalid");
 	}
+	if ((value.version !== 1 && value.version !== 2 && value.version !== STATE_VERSION) || value.workflow !== "pi-pr-comment-sweep") throw new Error("unsupported sweep recovery state version");
 	exactKeys(value, [
 		"version", "workflow", "worktree", "epoch", "runId", "phase", "authority", "original", "feedback",
 		"ledger", ...(value.version === 1 && !("approved" in value) ? [] : ["approved"]),
 		...("approvalGeneration" in value ? ["approvalGeneration"] : []), "ownedPaths", "publicationHead", "projection", "attempts",
+		...(value.version === STATE_VERSION ? ["pendingScope", "validation"] : []),
 	], "sweep recovery state");
-	if ((value.version !== 1 && value.version !== STATE_VERSION) || value.workflow !== "pi-pr-comment-sweep") throw new Error("unsupported sweep recovery state version");
 	if (!(["triage", "recorded", "published", "refresh-pending", "refreshed", "resolving", "resolved"] as unknown[]).includes(value.phase)) {
 		throw new Error("sweep recovery phase is invalid");
 	}
@@ -485,8 +494,26 @@ function parseState(value: unknown, expectedRoot: string, expectedId: string): S
 		state: attemptState(value.attempts.finalize.state, "finalize attempt state"),
 		checks: parseChecks(value.attempts.finalize.checks),
 	};
+	let pendingScope: PendingScope | null = null;
+	let validation: SweepValidation | null = null;
+	if (value.version === STATE_VERSION) {
+		if (value.pendingScope !== null) {
+			if (!isRecord(value.pendingScope)) throw new Error("pending scope is invalid");
+			exactKeys(value.pendingScope, ["head", "exactOutsidePaths"], "pending scope");
+			pendingScope = { head: requiredOid(value.pendingScope.head, "pending scope HEAD"), exactOutsidePaths: parseOwnedPaths(value.pendingScope.exactOutsidePaths) };
+			if (value.phase !== "recorded" || push.state !== "none" || !pendingScope.exactOutsidePaths.length || pendingScope.exactOutsidePaths.some((path) => ownedPaths.includes(path))) throw new Error("pending scope is inconsistent");
+		}
+		if (value.validation !== null) {
+			if (!isRecord(value.validation)) throw new Error("validation is invalid");
+			exactKeys(value.validation, ["head", "checks"], "validation");
+			validation = { head: requiredOid(value.validation.head, "validated HEAD"), checks: parseChecks(value.validation.checks) };
+			if (pendingScope || !ledger) throw new Error("validation is inconsistent");
+		}
+	}
 	const state: SweepState = {
-		version: value.version as 1 | 2,
+		version: value.version as 1 | 2 | 3,
+		pendingScope,
+		validation,
 		workflow: "pi-pr-comment-sweep",
 		worktree: { id, root },
 		epoch: integer(value.epoch, "sweep epoch"),
@@ -559,7 +586,10 @@ function status(state: SweepState): SweepStatus {
 		ledgerComplete: state.ledger !== null,
 		plan: state.ledger ? { ledger: structuredClone(state.ledger), ownedPaths: [...state.ownedPaths] } : null,
 		approved: state.approved,
-		legacyRecovery: state.version === 1,
+		legacyRecovery: state.version < STATE_VERSION,
+		pendingScope: structuredClone(state.pendingScope),
+		validation: structuredClone(state.validation),
+		legacyChecks: state.version < STATE_VERSION ? structuredClone(state.attempts.finalize.checks) : null,
 		projection: state.projection ? structuredClone(state.projection) : null,
 		attempts: {
 			commit: state.attempts.commit?.state ?? "none",
@@ -630,7 +660,8 @@ export class PullRequestCommentSweep {
 	private readonly load: Load;
 	private readonly newRunId: () => string;
 	private readonly pause?: (milliseconds: number) => Promise<void>;
-	private committedPathAuthorization?: CommittedPathAuthorization;
+	private readonly run: PrRun;
+	private readonly confirmLegacyChecks?: PullRequestCommentSweepOptions["confirmLegacyChecks"];
 
 	constructor(options: PullRequestCommentSweepOptions) {
 		this.cwd = options.cwd;
@@ -641,7 +672,8 @@ export class PullRequestCommentSweep {
 		this.load = options.loadCurrentPullRequest ?? loadCurrentPullRequest;
 		this.newRunId = options.newRunId ?? randomUUID;
 		this.pause = options.pause;
-		this.committedPathAuthorization = options.committedPathAuthorization;
+		this.run = options.run ?? new PrRun();
+		this.confirmLegacyChecks = options.confirmLegacyChecks;
 	}
 
 	private options(extra: Partial<ExecOptions> = {}): ExecOptions {
@@ -671,39 +703,11 @@ export class PullRequestCommentSweep {
 		if (!this.suppliedAuthority) throw new Error("Comment sweep recovery inspection requires route authority");
 		const location = await this.location();
 		const state = await this.loadIfPresent(location);
-		if (!state) {
-			if (this.committedPathAuthorization) throw new Error("Committed-path authorization requires an existing recorded unpublished sweep");
-			return "start";
-		}
-		if (this.committedPathAuthorization) await this.authorizedOwnedPaths(state);
+		if (!state) return "start";
 		if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority) && !await this.isScopedExternalPublication(state)) {
 			throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match freshly discovered route authority`);
 		}
 		return "resume";
-	}
-
-	/** Human command authorization is checked read-only at launch and again under the resume lock. */
-	private async authorizedOwnedPaths(state: SweepState): Promise<string[]> {
-		const authorization = this.committedPathAuthorization!;
-		if (!this.suppliedAuthority || !recoveryMatchesRouteAuthority(state, this.suppliedAuthority)
-			|| state.phase !== "recorded" || !state.ledger || !state.approved
-			|| state.publicationHead !== null || state.attempts.push.state !== "none"
-			|| state.attempts.commit && state.attempts.commit.state !== "applied"
-			|| state.attempts.resolutions.length || state.attempts.finalize.state !== "none") {
-			throw new Error("Committed-path authorization requires matching recorded unpublished recovery with no uncertain mutation");
-		}
-		await this.currentAuthority(state.authority, state.original.lease);
-		const changed = parseNulPaths((await runChecked(this.exec, "git", [
-			"diff", "--name-only", "--no-renames", "-z", `${state.original.head}..${authorization.head}`,
-		], this.options())).stdout, "Sweep committed paths");
-		const outside = changed.filter((path) => !state.ownedPaths.includes(path));
-		if (!outside.length || outside.length !== authorization.paths.length || outside.some((path) => !authorization.paths.includes(path))) {
-			throw new Error(`Committed-path authorization must name exactly the unexpected committed paths: ${outside.join(", ") || "none"}`);
-		}
-		const ownedPaths = validatePaths([...state.ownedPaths, ...authorization.paths], "Sweep owned paths");
-		await this.requireCleanPublication({ ...state, ownedPaths }, authorization.head);
-		await this.currentAuthority(state.authority, state.original.lease);
-		return ownedPaths;
 	}
 
 	/** Observe a scoped publication without claiming or replaying any external mutation. */
@@ -746,8 +750,10 @@ export class PullRequestCommentSweep {
 	}
 
 	private async save(location: Awaited<ReturnType<PullRequestCommentSweep["location"]>>, state: SweepState): Promise<void> {
-		const checked = parseState(state, location.root, location.id);
-		const contents = `${JSON.stringify(checked)}\n`;
+		const { pendingScope: _pending, validation: _validation, ...legacy } = state;
+		const checked = parseState(state.version === STATE_VERSION ? state : legacy, location.root, location.id);
+		const { pendingScope: _checkedPending, validation: _checkedValidation, ...checkedLegacy } = checked;
+		const contents = `${JSON.stringify(checked.version === STATE_VERSION ? checked : checkedLegacy)}\n`;
 		if (Buffer.byteLength(contents, "utf8") > SWEEP_RECOVERY_MAX_BYTES) {
 			throw new Error(`Comment sweep recovery exceeds ${SWEEP_RECOVERY_MAX_BYTES} bytes`);
 		}
@@ -793,6 +799,81 @@ export class PullRequestCommentSweep {
 			if (committedOutside.length) throw new Error(`Comment sweep commit changed outside owned paths: ${committedOutside.join(", ")}`);
 		}
 		return head;
+	}
+
+	private requireRecorded(state: SweepState): void {
+		if (state.phase !== "recorded" || !state.ledger || !state.approved || state.attempts.push.state !== "none" ||
+			state.attempts.commit && state.attempts.commit.state !== "applied" || state.attempts.resolutions.length || state.attempts.finalize.state !== "none") {
+			throw new Error("Scope repair requires recorded unpublished recovery with no unresolved mutation");
+		}
+	}
+
+	/** Inspect scope only after reconciliation; never infer ownership from branch placement. */
+	private async planScope(state: SweepState): Promise<void> {
+		const head = await readHead(this.exec, this.options());
+		const dirty = await this.localPaths();
+		if (dirty.some((path) => !state.ownedPaths.includes(path))) throw new Error("Comment sweep found changes outside owned paths in the worktree");
+		const changed = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "--no-renames", "-z", `${state.original.head}..${head}`], this.options())).stdout, "Sweep committed paths");
+		const outside = changed.filter((path) => !state.ownedPaths.includes(path));
+		await this.requireOwnedLocalState({ ...state, ownedPaths: [...state.ownedPaths, ...outside] }, head);
+		if (outside.length) {
+			this.requireRecorded(state);
+			if (dirty.length) throw new Error("Scope review requires a clean worktree");
+			state.pendingScope = { head, exactOutsidePaths: validatePaths(outside, "Pending scope paths") };
+			state.validation = null;
+		} else state.pendingScope = null;
+		if (state.validation?.head !== head) state.validation = null;
+		await this.currentAuthority(state.authority, state.original.lease, true);
+		if (await readHead(this.exec, this.options()) !== head || !isDeepStrictEqual(await this.localPaths(), dirty)) throw new Error("Scope inspection local HEAD or worktree changed");
+	}
+
+	async adopt(guard: SweepRunGuard, headInput: string, outsideInput: string[]): Promise<SweepStatus> {
+		const head = requiredOid(headInput, "Reviewed scope HEAD");
+		const paths = parseOwnedPaths(outsideInput);
+		return await withWorktreeLock(this.cwd, async () => {
+			const location = await this.location();
+			const state = await this.loadState(location);
+			requireGuard(state, guard);
+			this.requireRecorded(state);
+			if (!state.pendingScope || state.pendingScope.head !== head || !isDeepStrictEqual([...state.pendingScope.exactOutsidePaths].sort(), [...paths].sort())) throw new Error("Adoption must match the exact pending scope HEAD and outside paths");
+			await this.planScope(state);
+			if (!state.pendingScope || state.pendingScope.head !== head || !isDeepStrictEqual([...state.pendingScope.exactOutsidePaths].sort(), [...paths].sort())) throw new Error("Reviewed committed scope changed before adoption");
+			state.ownedPaths = validatePaths([...state.ownedPaths, ...paths], "Sweep owned paths");
+			state.pendingScope = null;
+			state.validation = null;
+			await this.requireCleanPublication(state, head);
+			await this.currentAuthority(state.authority, state.original.lease, true);
+			await this.requireCleanPublication(state, head);
+			await this.save(location, state);
+			return status(state);
+		}, { agentDir: this.agentDir, signal: this.signal });
+	}
+
+	async validate(guard: SweepRunGuard, checksInput: SweepCheck[]): Promise<SweepStatus> {
+		const checks = parseChecks(checksInput);
+		return await withWorktreeLock(this.cwd, async () => {
+			const location = await this.location();
+			const state = await this.loadState(location);
+			requireGuard(state, guard);
+			this.requireRecorded(state);
+			if (state.pendingScope) throw new Error("Review and adopt pending scope before validation");
+			const head = await readHead(this.exec, this.options());
+			await this.requireCleanPublication(state, head);
+			await this.currentAuthority(state.authority, state.original.lease, true);
+			this.run.beginChecks("sweep", head, checks);
+			state.version = STATE_VERSION;
+			state.validation = null;
+			await this.save(location, state);
+			try {
+				await runChecked(this.exec, "git", ["diff", "--check", state.original.head, head], this.options());
+				for (const check of checks) await runChecked(this.exec, check.command, check.args, this.options());
+				await this.currentAuthority(state.authority, state.original.lease, true);
+				await this.requireCleanPublication(state, head);
+			} catch (error) { this.run.checksFailed(); throw error; }
+			state.validation = { head, checks };
+			await this.save(location, state);
+			return status(state);
+		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
 	private async requireCleanPublication(state: SweepState, expectedHead: string): Promise<void> {
@@ -854,7 +935,7 @@ export class PullRequestCommentSweep {
 			await this.currentAuthority(authority, authority.head.oid);
 			await this.requireStartHead(authority);
 			const state: SweepState = {
-				version: 2,
+				version: STATE_VERSION,
 				workflow: "pi-pr-comment-sweep",
 				worktree: { id: location.id, root: location.root },
 				epoch: 1,
@@ -872,6 +953,8 @@ export class PullRequestCommentSweep {
 				approved: false,
 				approvalGeneration: null,
 				ownedPaths: [],
+				pendingScope: null,
+				validation: null,
 				publicationHead: null,
 				projection: null,
 				attempts: {
@@ -966,7 +1049,6 @@ export class PullRequestCommentSweep {
 			if (!this.suppliedAuthority) throw new Error("Comment sweep resume requires route authority");
 			const location = await this.location();
 			const state = await this.loadState(location);
-			if (this.committedPathAuthorization) state.ownedPaths = await this.authorizedOwnedPaths(state);
 			if (!recoveryMatchesRouteAuthority(state, this.suppliedAuthority)) {
 				if (!await this.isScopedExternalPublication(state)) {
 					throw new Error(`Comment sweep recovery is preserved at ${location.path}: recovery does not match supplied route authority`);
@@ -987,21 +1069,19 @@ export class PullRequestCommentSweep {
 				state.attempts.push = { state: "none", head: null };
 				state.publicationHead = null;
 			}
-			if (state.attempts.finalize.state === "blocked") state.attempts.finalize = { state: "none", checks: [] };
 			const published = state.attempts.push.state === "applied";
-			if (published) state.version = 2;
+			if (!published) state.version = STATE_VERSION;
 			const expectedRemote = published ? state.publicationHead! : state.original.lease;
 			await this.currentAuthority(state.authority, expectedRemote, true);
-			if (this.committedPathAuthorization) await this.requireCleanPublication(state, this.committedPathAuthorization.head);
-			else await this.requireOwnedLocalState(state, published ? expectedRemote : undefined);
 			if (state.ledger) {
 				state.approved = true;
 				state.approvalGeneration = state.feedback.generation;
 			}
+			if (published) await this.requireCleanPublication(state, expectedRemote);
+			else await this.planScope(state);
 			state.epoch += 1;
 			state.runId = safeRunId(this.newRunId());
 			await this.save(location, state);
-			this.committedPathAuthorization = undefined;
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
@@ -1055,6 +1135,7 @@ export class PullRequestCommentSweep {
 			if (state.phase !== "recorded" || !state.ledger || !state.approved || state.attempts.push.state !== "none") {
 				throw new Error("Comment sweep is not ready to commit");
 			}
+			if (state.pendingScope) throw new Error("Review and adopt pending scope before committing");
 			if (state.attempts.commit && state.attempts.commit.state !== "applied") {
 				throw new Error("Comment sweep has an unreconciled commit; use resume");
 			}
@@ -1068,6 +1149,7 @@ export class PullRequestCommentSweep {
 			const tree = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["write-tree"], this.options())).stdout, "Commit tree"), "commit tree");
 			const attempt: CommitAttempt = { state: "attempting", beforeHead, tree, head: null };
 			state.attempts.commit = attempt;
+			state.validation = null;
 			await this.save(location, state);
 			try {
 				await this.currentAuthority(state.authority, state.original.lease, true);
@@ -1099,6 +1181,7 @@ export class PullRequestCommentSweep {
 			if (state.phase !== "recorded" || !state.ledger || state.attempts.push.state !== "none" || !state.approved) {
 				throw new Error("Comment sweep is not ready to publish");
 			}
+			if (state.pendingScope) throw new Error("Review and adopt pending scope before publication");
 			if (state.attempts.commit && state.attempts.commit.state !== "applied") {
 				throw new Error("Comment sweep has an unreconciled commit; use resume");
 			}
@@ -1109,10 +1192,11 @@ export class PullRequestCommentSweep {
 				state.publicationHead = head;
 				state.attempts.push = { state: "applied", head };
 				state.phase = "published";
-				state.version = 2;
 				await this.save(location, state);
 				return status(state);
 			}
+			if (!state.validation || state.validation.head !== head) throw new Error("Comment sweep requires validation on the exact clean HEAD before publication");
+			this.run.beforePush(state.original.lease, head);
 			if (!(await isAncestor(this.exec, this.options(), state.original.lease, head))) {
 				throw new Error("Comment sweep push would not fast-forward the original lease");
 			}
@@ -1135,7 +1219,7 @@ export class PullRequestCommentSweep {
 				await this.currentAuthority(state.authority, head, true);
 				state.attempts.push.state = "applied";
 				state.phase = "published";
-				state.version = 2;
+				this.run.observeRemote(head);
 				await this.save(location, state);
 				return status(state);
 			} catch (error) {
@@ -1173,7 +1257,7 @@ export class PullRequestCommentSweep {
 			state.approved = ledger !== null;
 			state.approvalGeneration = ledger ? state.feedback.generation : null;
 			state.projection = ledger ? buildProjection(state.feedback.generation, snapshot, ledger) : null;
-			state.attempts.finalize = { state: "none", checks: [] };
+			if (state.version === STATE_VERSION) state.attempts.finalize = { state: "none", checks: [] };
 			state.phase = ledger ? "refreshed" : "refresh-pending";
 			await this.save(location, state);
 			return status(state);
@@ -1344,13 +1428,19 @@ export class PullRequestCommentSweep {
 			if (state.attempts.resolutions.some(({ state: attempt }) => attempt !== "applied")) {
 				throw new Error("Comment sweep has unresolved or unknown mutation attempts");
 			}
-			if (state.attempts.finalize.state !== "none" && state.attempts.finalize.state !== "applied") {
-				throw new Error("Comment sweep has an unreconciled finalization attempt; use resume");
+			const legacy = state.version < STATE_VERSION;
+			if (!legacy && state.attempts.finalize.state !== "none" && state.attempts.finalize.state !== "applied") throw new Error("Comment sweep has an unresolved finalization attempt");
+			if (!legacy && checks.length) throw new Error("Run checks with validate before publication; v3 finalization runs no new checks");
+			if (legacy && state.attempts.finalize.state !== "none" && !isDeepStrictEqual(state.attempts.finalize.checks, checks)) throw new Error("Legacy recovery requires exactly its saved checks");
+			if (state.attempts.finalize.state === "unknown" || state.attempts.finalize.state === "attempting") {
+				if (this.run.hasExecuted(state.publicationHead, checks) || !this.confirmLegacyChecks ||
+					!await this.confirmLegacyChecks(state.publicationHead, checks)) throw new Error("Legacy check outcome unknown; a later /pr requires explicit confirmation of safe repeatability");
 			}
 			await this.freshProjection(state);
 			const alreadyChecked = state.attempts.finalize.state === "applied" &&
 				isDeepStrictEqual(state.attempts.finalize.checks, checks);
-			if (!alreadyChecked) {
+			if (!alreadyChecked && legacy) {
+				this.run.beginChecks("sweep-legacy", state.publicationHead, checks);
 				state.attempts.finalize = { state: "attempting", checks };
 				await this.save(location, state);
 				for (const check of checks) {
@@ -1358,16 +1448,19 @@ export class PullRequestCommentSweep {
 					try {
 						result = await this.exec(check.command, check.args, this.options());
 					} catch (error) {
+						this.run.checksFailed();
 						state.attempts.finalize.state = "unknown";
 						await this.save(location, state);
 						throw error;
 					}
 					if (result.killed) {
+						this.run.checksFailed();
 						state.attempts.finalize.state = "unknown";
 						await this.save(location, state);
 						throw new Error(`Finalization check was killed: ${check.command}`);
 					}
 					if (result.code !== 0) {
+						this.run.checksFailed();
 						state.attempts.finalize.state = "blocked";
 						await this.save(location, state);
 						const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;

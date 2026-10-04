@@ -40,7 +40,7 @@ Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the
 | Footer | ui | Linked PR number and plain-language status. |
 | Widget | ui | Action hint or transient routing status. |
 
-`/pr` normally takes no arguments. Its only option, `--include-committed-paths <JSON array>`, explicitly authorizes already-committed paths for a blocked, unpublished feedback sweep (see below). It accepts no prose or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
+`/pr` accepts no flags, prose, or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
 
 The `pi_pr_*` tools are model-only and run one action at a time. Codemode scripts and other tools cannot call them, so a script cannot batch guarded actions or filter the result the model needs for its next safety decision. With `codemode.mode` set to `only`, Pi hides other tools behind `codemode` but keeps these declared, so `/pr` workflows still work.
 
@@ -83,17 +83,23 @@ The Pi session stores the configured PR URL, number, host, head identity, and ta
 
 In-progress feedback sweeps keep private recovery under `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`; branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect in-progress decisions and remote mutation attempts. A fresh `/pr` resumes only matching, verified recovery. Movement of the same base branch's tip does not block planning, scoped commits/publication, or recovery; PR identity, base repository/ref, head/lease, destination, and ownership must still match. The sweep keeps its frozen feedback and plan until the post-publish `refresh` binds the current base; replies and resolution require that fresh snapshot. If you manually committed and pushed a recorded sweep's fixes, `/pr` can recognize that publication when the clean local HEAD equals the live PR head, descends from the original commit, changes only recorded owned paths, and has no uncertain mutation. It preserves the ledger and refreshes feedback before replying or resolving; it does not push again. Other mismatched or malformed records remain unchanged and block routing; do not delete them or replay an uncertain mutation to force continuation.
 
-### Include already-committed sweep paths
+### Automatic sweep scope repair
 
-If an unpublished sweep stops with `Comment sweep commit changed outside owned paths`, inspect the listed commits first. To include those edits intentionally, run this in Pi, using a JSON array of **all and only** the unexpected repository-relative paths:
+Version 8 requires the guarded `validate` action before publishing changed sweep HEADs. Custom callers must move post-publication checks to this step; v3 `finalize` takes `checks: []`. Existing recovery migrates as described below.
 
-```text
-/pr --include-committed-paths [".agents/skills/npm-ops/SKILL.md","AGENTS.md","docs/releasing.md"]
-```
+A matching sweep resumes before local publication. If clean, already-committed work extends its recorded scope, resume reconciles prior attempts and returns `pendingScope` with the exact HEAD and unexpected paths. The agent reviews the complete committed diff and commits against your requested PR work. It adopts **all** intended paths through guarded `adopt`, without asking you for a path list. Being on the branch, or appearing in PR feedback, does not establish ownership. Unrelated or unclear work stops without publishing any of it.
 
-This authorizes publishing the committed edits in those files and adds them to that sweep's owned paths; it does not skip validation or discard work. Launch inspection is read-only. The guarded `resume` action saves the expanded scope once, preserving the ledger and original remote lease. Later flagless `/pr` invocations use the saved scope.
+Pending scope blocks commit, validation, and publication. Adoption rechecks the exact reviewed HEAD, complete outside-path set, clean worktree, ancestry, PR identity, and original remote lease. It extends only the owned paths, preserving the ledger, feedback generation, original head/lease, and mutation history. Dirty outside work, uncertain mutations, changed authority, and already-published scope cannot be adopted.
 
-The option requires a clean worktree, matching recorded unpublished recovery, and no uncertain mutation. It rejects missing or extra paths, local HEAD movement after command inspection, changed PR authority or remote lease, and already-published recovery. It cannot start a new sweep, select another route, or authorize uncommitted work. Agent tools cannot supply the option themselves. Default `/pr` continues to reject changes outside its saved scope.
+Before publishing changed sweep HEADs, `validate` runs mandatory `git diff --check` plus selected non-destructive checks, then verifies that HEAD and worktree stayed fixed. The saved validation must match at publication. Check adequacy and ownership still require agent judgment. New v3 sweeps run no new checks after publication; finalization only verifies feedback and cleans up.
+
+Unpublished v1/v2 recovery migrates to v3 with no validation. Published legacy recovery retains its saved checks and attempts. Failed legacy checks cannot be replaced or dropped; unknown results stay blocked. A later `/pr` can retry unknown local checks only after you explicitly confirm they are safe to repeat on the published HEAD. This confirmation never authorizes replaying uncertain GitHub or push mutations.
+
+### Invocation limits
+
+Optional positive integer `maxPublicationCycles` and `maxRepairAttempts` settings live in `<agent-dir>/config/pi-pr/config.json`, both defaulting to `3`. Missing configuration uses defaults; malformed configuration is preserved and blocks the invocation. Configuration is read once per explicit `/pr`.
+
+Limits, frozen route check sets, executed HEADs, and completed route/head keys survive helper resumes and automatic continuations. A check set runs once per HEAD per invocation, including failures; repairing code must change HEAD without dropping checks. Failed or unknown check sets spend repair attempts. Confirmed PR-head movements spend publication cycles once; duplicate observations, no-ops, and failed pushes do not. Exhaustion prevents another push, not published-sweep cleanup or readiness/merge. Repeating a completed route on the same entry head stops. A later explicit `/pr` or reload starts fresh limits; waiting stops rather than polling.
 
 ## Limits and recovery
 

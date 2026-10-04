@@ -29,7 +29,7 @@ export function loadPrPolicy(agentDir?: string): PrPolicy {
 export class PrRun {
 	private readonly completed = new Map<string, Set<string | null>>();
 	private readonly checks = new Map<string, PrCheck[]>();
-	private readonly executed = new Map<string, Set<string>>();
+	private readonly executed = new Map<string, PrCheck[][]>();
 	private lastRemote: string | null | undefined;
 	private publications = 0;
 	private repairs = 0;
@@ -64,15 +64,19 @@ export class PrRun {
 		if (this.repairs >= this.policy.maxRepairAttempts) throw new Error(`Repair budget stop: limit ${this.policy.maxRepairAttempts} reached; run /pr again`);
 		const frozen = this.checks.get(route);
 		if (frozen && !isDeepStrictEqual(frozen, checks)) throw new Error("Validation checks are frozen for this /pr; failing checks cannot be dropped");
-		if (this.executed.get(route)?.has(head)) throw new Error("No progress: checks already executed on this HEAD in this /pr; repair the code or run /pr again");
+		if (this.hasExecuted(head, checks)) throw new Error("No progress: checks already executed on this HEAD in this /pr; repair the code or run /pr again");
 	}
 
 	beginChecks(route: string, head: string, checks: PrCheck[]): void {
 		this.requireFreshChecks(route, head, checks);
 		this.checks.set(route, structuredClone(checks));
-		const heads = this.executed.get(route) ?? new Set<string>();
-		heads.add(head);
-		this.executed.set(route, heads);
+		const sets = this.executed.get(head) ?? [];
+		sets.push(structuredClone(checks));
+		this.executed.set(head, sets);
+	}
+
+	hasExecuted(head: string, checks: PrCheck[]): boolean {
+		return this.executed.get(head)?.some((set) => isDeepStrictEqual(set, checks)) ?? false;
 	}
 
 	checksFailed(): void { this.repairs += 1; }

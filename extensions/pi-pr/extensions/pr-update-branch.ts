@@ -1,3 +1,4 @@
+import type { PrRun } from "./pr-run.ts";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
@@ -48,6 +49,7 @@ class StaleRebaseRoute extends Error {}
 type Load = typeof loadCurrentPullRequest;
 
 export type UpdateBranchOptions = {
+	run?: PrRun;
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -116,6 +118,7 @@ export async function inspectVerifiedRebaseRecovery(pr: CurrentPullRequest, opti
 export class PullRequestBranchUpdater {
 	readonly state: UpdateBranchState = { phase: "ready" };
 
+	private readonly run?: PrRun;
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
 	private readonly signal?: AbortSignal;
@@ -130,6 +133,7 @@ export class PullRequestBranchUpdater {
 			throw new TypeError("Branch update requires a configured open pull request");
 		}
 		this.cwd = options.cwd;
+		this.run = options.run;
 		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
@@ -335,11 +339,13 @@ export class PullRequestBranchUpdater {
 				throw new Error("Verified branch no longer contains the frozen base");
 			}
 			if (remoteBefore === head) {
+				this.run?.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };
 			}
 			await this.freshAuthority(head, true);
+			this.run?.beforePush(original, head);
 			this.state.phase = "blocked";
 			let pushError: unknown;
 			try {
@@ -358,6 +364,7 @@ export class PullRequestBranchUpdater {
 				throw new Error("Rebase push outcome is unknown; do not retry");
 			}
 			if (remote === head) {
+				this.run?.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };

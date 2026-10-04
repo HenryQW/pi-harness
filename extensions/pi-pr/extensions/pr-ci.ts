@@ -1,3 +1,4 @@
+import type { PrRun } from "./pr-run.ts";
 import { createHash } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
@@ -121,6 +122,7 @@ type CiFixPhase = "ready" | "collecting" | "collected" | "published" | "blocked"
 type CiFixState = { phase: CiFixPhase };
 
 export type PullRequestCiFixOptions = {
+	run?: PrRun;
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -299,6 +301,7 @@ function errorMessage(error: unknown): string {
 export class PullRequestCiFixer {
 	readonly state: CiFixState = { phase: "ready" };
 
+	private readonly run?: PrRun;
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
 	private readonly signal?: AbortSignal;
@@ -315,6 +318,7 @@ export class PullRequestCiFixer {
 			throw new TypeError("CI repair requires the pull request head to match the configured remote OID");
 		}
 		this.cwd = options.cwd;
+		this.run = options.run;
 		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
@@ -739,6 +743,7 @@ export class PullRequestCiFixer {
 				const repairHead = await this.validatePublishAuthority();
 				const original = this.authority.head.oid;
 				await this.finalPublishRevalidation(original, repairHead);
+				this.run?.beforePush(original, repairHead);
 				let pushError: unknown;
 				try {
 					await runChecked(this.exec, "git", [
@@ -762,6 +767,7 @@ export class PullRequestCiFixer {
 					throw new Error(`CI repair push outcome is unknown: ${errorMessage(error)}`);
 				}
 				if (postcondition === repairHead) {
+					this.run?.observeRemote(repairHead);
 					this.state.phase = "published";
 					return { kind: "published", head: repairHead, attempt: "applied" };
 				}

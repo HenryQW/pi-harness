@@ -38,11 +38,13 @@ test("publication budget counts changed remote heads once and permits unchanged-
 test("checks cannot repeat, drop failures, or exceed the invocation repair budget", () => {
 	const run = new PrRun({ maxPublicationCycles: 3, maxRepairAttempts: 2 });
 	const checks = [{ command: "pnpm", args: ["test"] }];
-	run.beginChecks("sweep", "a", checks);
+	run.beginChecks("publish-work", "a", checks);
 	run.checksFailed();
-	assert.throws(() => run.beginChecks("sweep", "a", checks), /already executed/);
-	assert.throws(() => run.beginChecks("sweep", "b", []), /frozen/);
-	run.beginChecks("sweep", "b", checks);
+	assert.throws(() => run.beginChecks("sweep", "a", structuredClone(checks)), /already executed/);
+	run.beginChecks("sweep", "a", [{ command: "pnpm", args: ["typecheck"] }]);
+	assert.throws(() => run.beginChecks("publish-work", "a", checks), /already executed/);
+	assert.throws(() => run.beginChecks("publish-work", "b", []), /frozen/);
+	run.beginChecks("publish-work", "b", checks);
 	run.checksFailed();
 	assert.throws(() => run.beginChecks("sweep", "c", checks), /Repair budget stop/);
 });

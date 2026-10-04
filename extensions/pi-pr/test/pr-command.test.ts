@@ -551,33 +551,6 @@ test("rolls back exactly the new reservation when prompt dispatch fails", async 
 	assert.deepEqual(app.messages, []);
 });
 
-test("explicit committed paths route ahead work only to matching sweep recovery", async () => {
-	const paths = ["AGENTS.md", "extra docs.md"];
-	const app = harness({
-		states: [{}], localHead: nextHead, ancestry: "ahead", reservationAction: "resume",
-		commands: [{ name: "skill:pi-pr-comment-sweep", source: "skill", origin: "package" }],
-		async inspectSweepRecovery(_pr, _ctx, authorization) {
-			assert.deepEqual(authorization, { paths, head: nextHead });
-			return true;
-		},
-	});
-	assert.equal(await app.handler(`--include-committed-paths ${JSON.stringify(paths)}`, app.context), "sweep");
-	assert.deepEqual((app.reservations[0] as { committedPathAuthorization: unknown }).committedPathAuthorization, { paths, head: nextHead });
-	assert.equal(app.messages[0]!.content, `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=resume`);
-
-	const absent = harness({ states: [{}], inspectSweepRecovery: async () => false });
-	await assert.rejects(absent.handler('--include-committed-paths ["AGENTS.md"]', absent.context), /requires matching recorded unpublished sweep/);
-	assert.equal(absent.reservations.length + mutationCalls(absent.calls).length, 0);
-});
-
-test("committed-path arguments reject malformed, unsafe, duplicate, and empty paths before discovery", async () => {
-	for (const input of ['["../AGENTS.md"]', '["/AGENTS.md"]', '["AGENTS.md", "AGENTS.md"]', '[]', '[42]', '{', '["AGENTS.md"] --force']) {
-		const app = harness({ states: [{}] });
-		await assert.rejects(app.handler(`--include-committed-paths ${input}`, app.context), /JSON array|unsafe path|duplicate paths/);
-		assert.equal(app.calls.length, 0);
-	}
-});
-
 test("rejects instructions when the current route handles the action directly", async () => {
 	const app = harness({ states: [{}] });
 
