@@ -41,7 +41,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 
 ### Direct evidence
 
-- Direct mode admits declared write-capable resources for explicitly authorized scope while preserving read-only Role restrictions. Potential-writer requests serialize tasks and retain Pi checkout admission through exact completion; uncertain outcomes retain admission for manual recovery. Direct answers prove session completion, not validation, cleanliness, rollback, or checked integration. Direct changesets require isolated mode.
+- Direct mode admits declared write-capable resources for explicitly authorized scope while preserving read-only Role restrictions. Potential-writer requests serialize tasks and retain Pi checkout admission through exact completion; uncertain outcomes retain admission for manual recovery. Potential-writer answers require an explicit structured `succeeded` outcome; failed, blocked, or malformed completion stops dispatch and retains admission. This is a worker report, not proof of validation, cleanliness, rollback, or checked integration. Direct changesets require isolated mode.
 - Checkout admission in Main serializes write-capable Pi tool calls per checkout by their model-issued root call: a `codemode` script's nested writes share the script's ownership, independent writers wait, and reads never wait.
 - Each direct worker has a recorded Herdr tab and Pi session identity. The first handle returns before completion; subsequent tab identities remain recoverable on the session branch.
 - An exact settled worker with a bounded final Pi answer produces a follow-up to Main. Blocked, unknown, idle-stalled, truncated, or ambiguous outcomes retain actionable recovery identity. Session replacement never delivers to the wrong Main session.

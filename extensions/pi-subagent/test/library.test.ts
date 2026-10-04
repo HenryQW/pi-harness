@@ -573,7 +573,12 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 	for (const clientRegistration of ["dcr", "cimd"]) {
 		const config = { url: "https://docs.test", oauth: { clientRegistration, callbackUrl: "http://127.0.0.1:8080/callback", callbackPort: 8080 } };
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: config } }));
-		assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"]).servers[0]!.config, { ...config, exposure: "direct" });
+		if (clientRegistration === "cimd") {
+			assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion: "1.0.0" }), /mcp\.json: MCP server "docs".*cimd.*requires Pi 1\.0\.1.*current Pi is 1\.0\.0/);
+		}
+		for (const piVersion of clientRegistration === "cimd" ? ["1.0.1", "1.0.2"] : ["1.0.0"]) {
+			assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion }).servers[0]!.config, { ...config, exposure: "direct" });
+		}
 	}
 	await writeFile(mcpPath, JSON.stringify({ mcpServers: { secure, loopback, oauth, "dev-docs": secure, dev_docs: secure, "dev docs": secure } }));
 	assert.deepEqual(

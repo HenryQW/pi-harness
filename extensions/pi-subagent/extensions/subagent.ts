@@ -532,7 +532,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							pi.appendEntry(DIRECT_TAB_TYPE, record);
 							tabs.push(record);
 							tabByEntry.set(entry.id, record);
-						});
+						}, writes);
 				} catch (error) {
 					// A failed start can still be in flight. Keep its private prompt for recovery.
 					throw new Error(`${error instanceof Error ? error.message : String(error)}. Direct Role prompt retained at ${transient.launch.args[prepared.promptArgIndex + 1]} after uncertain start.`, { cause: error });

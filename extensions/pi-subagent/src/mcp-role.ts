@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LoadedMcpConfig, McpServerConfig } from "@earendil-works/pi-coding-agent";
+import { VERSION, type LoadedMcpConfig, type McpServerConfig } from "@earendil-works/pi-coding-agent";
 
 export function parseRoleMcpAllowlist(value: unknown): string[] {
 	if (typeof value !== "string") throw new Error("The Role MCP policy flag must contain a JSON array of MCP server names.");
@@ -77,7 +77,7 @@ const EXPOSURE_CHECKS: Record<string, FieldCheck> = {
 };
 
 /** Validate one selected server against Pi's documented `mcpServers` rules; the native loader is bypassed by `loadConfig`. */
-function validateRoleMcpServer(path: string, name: string, value: unknown, codemode: boolean): McpServerConfig {
+function validateRoleMcpServer(path: string, name: string, value: unknown, codemode: boolean, piVersion: string): McpServerConfig {
 	const fail: (message: string) => never = (message) => { throw new Error(`${path}: MCP server "${name}" ${message}`); };
 	if (!SERVER_NAME.test(name)) fail("has an invalid name (use letters, digits, \"_\" and \"-\").");
 	if (!isRecord(value)) fail("must be an object.");
@@ -90,6 +90,7 @@ function validateRoleMcpServer(path: string, name: string, value: unknown, codem
 		if (fieldValue !== undefined && !valid(fieldValue, value)) fail(`field "${field}" must be ${shape}.`);
 	}
 	if (http && isRecord(value.oauth) && value.oauth.clientRegistration === "cimd") {
+		if (piVersion === "1.0.0") fail('field "oauth.clientRegistration" "cimd" requires Pi 1.0.1 or later; current Pi is 1.0.0.');
 		if (value.oauth.clientId !== undefined || value.oauth.clientName !== undefined) {
 			fail('field "oauth.clientRegistration" "cimd" cannot be combined with "oauth.clientId" or "oauth.clientName".');
 		}
@@ -121,7 +122,7 @@ function validateRoleMcpServer(path: string, name: string, value: unknown, codem
  * cannot reach undeclared tools, so every selected server is forced to direct exposure. Codemode is
  * never activated by MCP configuration: the Role tool policy owns the active set.
  */
-export function loadRoleMcpConfig(agentDir: string, allowlist: readonly string[], options: { codemode: boolean } = { codemode: false }): LoadedMcpConfig {
+export function loadRoleMcpConfig(agentDir: string, allowlist: readonly string[], options: { codemode: boolean; piVersion?: string } = { codemode: false }): LoadedMcpConfig {
 	const path = join(agentDir, "mcp.json");
 	let parsed: unknown = {};
 	try {
@@ -142,7 +143,7 @@ export function loadRoleMcpConfig(agentDir: string, allowlist: readonly string[]
 		const clash = namespaces.get(mcpNamespace(name));
 		if (clash) throw new Error(`${path}: Role MCP server "${name}" conflicts with "${clash}": names that differ only in "-" and "_" share one tool namespace.`);
 		namespaces.set(mcpNamespace(name), name);
-		return { name, config: validateRoleMcpServer(path, name, configured[name], options.codemode), source: path, scope: "global" as const };
+		return { name, config: validateRoleMcpServer(path, name, configured[name], options.codemode, options.piVersion ?? VERSION), source: path, scope: "global" as const };
 	});
 	return { servers, autoEnableCodemode: false, errors: [] };
 }

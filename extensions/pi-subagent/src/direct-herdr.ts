@@ -10,6 +10,7 @@ import type { ResolvedRoleLaunch } from "./index.ts";
 const OPERATION_MS = 30_000;
 const SESSION_LIMIT = 16 * 1024 * 1024;
 const ANSWER_LIMIT = 50 * 1024;
+const DIRECT_OUTCOMES = ["succeeded", "failed", "blocked"] as const;
 
 type Json = Record<string, unknown>;
 const object = (value: unknown, label: string): Json => {
@@ -76,7 +77,7 @@ export function exactDirectTerminalTurn(jsonl: string, prompt: string): boolean 
 	return reason === "stop" || reason === "error" || reason === "aborted";
 }
 
-export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSWER_LIMIT): string {
+export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSWER_LIMIT, requireSuccess = false): string {
 	const final = exactFinalTurn(jsonl, prompt);
 	if (!final || final.stopReason !== "stop" || !Array.isArray(final.content)) {
 		throw new Error("Pi did not persist an exact successful final answer for this prompt.");
@@ -87,7 +88,17 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 	}).join("\n");
 	if (!text.trim()) throw new Error("Pi persisted an empty final answer.");
 	if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`Pi final answer exceeds the ${maxBytes}-byte workflow limit; read the private session file for recovery.`);
-	return text;
+	if (!requireSuccess) return text;
+	let completion: Json;
+	try { completion = JSON.parse(text) as Json; }
+	catch (error) { throw new Error("Pi potential-writer final answer must be a JSON completion object.", { cause: error }); }
+	if (!completion || typeof completion !== "object" || Array.isArray(completion)
+		|| !DIRECT_OUTCOMES.some((outcome) => outcome === completion.outcome)
+		|| typeof completion.answer !== "string" || !completion.answer.trim()) {
+		throw new Error("Pi potential-writer completion must have a valid outcome and a non-empty answer.");
+	}
+	if (completion.outcome !== "succeeded") throw new Error(`Direct task reported ${completion.outcome}: ${completion.answer}`);
+	return completion.answer;
 }
 
 // Ignore a partial trailing JSONL entry while the child is writing it.
@@ -135,7 +146,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 		return field(agent.agent_status, "agent state");
 	};
 	return {
-		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void): Promise<DirectHandle> {
+		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false): Promise<DirectHandle> {
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
 			if (pane.pane_id !== callerPane || pane.workspace_id !== workspaceId) throw new Error("Herdr caller pane no longer matches the launching workspace.");
@@ -168,7 +179,10 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				// A canceled start may have succeeded server-side; retain its tab but
 				// never submit a new prompt after cancellation.
 				signal.throwIfAborted();
-				const prompt = `${task}\n\nDirect shared-checkout boundary: use only your Role's resources for the explicitly authorized task and scope. Writes and commits affect Main's existing checkout immediately; preserve unrelated files and staged changes. Do not create or manage worktrees, change branches, push, or perform external mutations without explicit task authorization. There is no isolated integration, automatic validation, or rollback. If instructions conflict or authorization is missing, stop and report it. Report changes, commit identity if any, checks, remaining risks, and checkout status; never claim isolated guarantees.\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
+				const completionInstruction = requireSuccess
+					? `\n\nPotential-writer completion: Return exactly one JSON object without Markdown, {"outcome":"succeeded","answer":"summary"}. outcome must be ${DIRECT_OUTCOMES.join(", ")}. Use succeeded only when the entire authorized task, including requested checks and commits, completed successfully; a failed mutation, unresolved partial work, or missing authorization must be failed or blocked, even if your Pi turn ends normally. Describe changes, checks, commit identity, remaining risks, and checkout status in answer.`
+					: "";
+				const prompt = `${task}\n\nDirect shared-checkout boundary: use only your Role's resources for the explicitly authorized task and scope. Writes and commits affect Main's existing checkout immediately; preserve unrelated files and staged changes. Do not create or manage worktrees, change branches, push, or perform external mutations without explicit task authorization. There is no isolated integration, automatic validation, or rollback. If instructions conflict or authorization is missing, stop and report it. Report changes, commit identity if any, checks, remaining risks, and checkout status; never claim isolated guarantees.${completionInstruction}\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
 				// Native prompt without --wait acknowledges submission, not completion of the turn.
 				const accepted = await herdr.json(["agent", "prompt", name, prompt], options(signal));
 				const state = inspect(accepted, "agent_prompted", name, paneId, tabId);
@@ -190,7 +204,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 					const readAnswer = async () => {
 						const info = await stat(sessionFile);
 						if (info.size > SESSION_LIMIT) throw new Error(`Pi session in tab ${tabId} exceeds 16 MiB; inspect ${sessionFile} for recovery.`);
-						return exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, maxBytes);
+						return exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, maxBytes, requireSuccess);
 					};
 					const maybeAnswer = async () => {
 						try { return await readAnswer(); } catch (error) {

@@ -461,7 +461,7 @@ Do bounded work.
 `);
 }
 
-function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined | Promise<string | undefined> = () => "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
+function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined | Promise<string | undefined> = (prompt) => prompt.includes("Potential-writer completion:") ? JSON.stringify({ outcome: "succeeded", answer: "exact answer" }) : "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
 	const calls: string[][] = [];
 	const sessions = new Map<string, { path: string; prompt?: string; pane: string; tab: string }>();
 	let next = 1;
@@ -581,7 +581,7 @@ test("authorized direct write and commit use native Pi tools/session and preserv
 			const input = JSON.parse(body); requests.push(input);
 			const used = input.messages.some((message: any) => message.role === "tool");
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			response.end(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 0, model: model.id, choices: [{ index: 0, delta: used ? { content: "Commit completed; unrelated changes preserved." } : { tool_calls: [{ index: 0, id: "authorized", type: "function", function: { name: "bash", arguments: JSON.stringify({ command }) } }] }, finish_reason: used ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+			response.end(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 0, model: model.id, choices: [{ index: 0, delta: used ? { content: JSON.stringify({ outcome: "succeeded", answer: "Commit completed; unrelated changes preserved." }) } : { tool_calls: [{ index: 0, id: "authorized", type: "function", function: { name: "bash", arguments: JSON.stringify({ command }) } }] }, finish_reason: used ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
 		});
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -639,7 +639,7 @@ test("potential-writer parallel tasks serialize and uncertain completion retains
 		await herdrEnvironment(async (cwd) => {
 			let release!: () => void;
 			const gate = new Promise<void>((resolve) => { release = resolve; });
-			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("first") ? "done" : "", gate);
+			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("first") ? JSON.stringify({ outcome: "succeeded", answer: "done" }) : "", gate);
 			const app = harness({ cwd, herdr: fake.exec });
 			await app.handlers.get("session_start")!({}, app.ctx);
 			const params = { mode: "direct", tasks: [
@@ -658,6 +658,31 @@ test("potential-writer parallel tasks serialize and uncertain completion retains
 			assert.match(app.sentMessages[0]!.message.content, /Previous direct task did not complete exactly/);
 			assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx)).block, true);
 			assert.equal(app.sessionEntries.length, 2, "retain exact recovery identities");
+		});
+	});
+});
+
+test("a failed writer with a normal final turn stops later tasks and retains admission", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrite only authorized files.\n`);
+		await herdrEnvironment(async (cwd) => {
+			for (const mode of ["tasks", "chain"] as const) {
+				const fake = fakeHerdr(cwd, () => JSON.stringify({ outcome: "failed", answer: "Commit failed; partial changes remain." }));
+				const app = harness({ cwd, herdr: fake.exec });
+				const params = { mode: "direct", [mode]: [
+					{ role: "writer", name: "First", task: "authorized commit" },
+					{ role: "writer", name: "Second", task: "must not run" },
+				] };
+				await app.handlers.get("tool_call")!({ toolCallId: mode, toolName: "delegate_task", input: params }, app.ctx);
+				await app.tool.execute(mode, params, undefined, undefined, app.ctx);
+				app.handlers.get("tool_result")!({ toolCallId: mode });
+				await waitFor(() => app.sentMessages.length === 1);
+				assert.equal(app.sentMessages[0]!.message.details.entries[0].status, "rejected");
+				assert.match(app.sentMessages[0]!.message.content, /Commit failed; partial changes remain/);
+				assert.equal(app.sessionEntries.length, 1, "no second worker launches");
+				assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx)).block, true);
+			}
 		});
 	});
 });
@@ -755,7 +780,9 @@ test("direct chain waits for exact prior result and admits declared writer Roles
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
-			const fake = fakeHerdr(cwd, (prompt) => prompt.includes("first") ? "prior exact" : "final exact");
+			const fake = fakeHerdr(cwd, (prompt) => prompt.includes("Potential-writer completion:")
+				? JSON.stringify({ outcome: "succeeded", answer: "final exact" })
+				: prompt.includes("first") ? "prior exact" : "final exact");
 			const app = harness({ cwd, herdr: fake.exec });
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("chain", { chain: [

@@ -6,6 +6,8 @@ Automatic analysis only prepares a candidate; the extension never saves it witho
 
 ## Install
 
+Requires Pi 1.0.0 or later. Older Pi releases are no longer supported.
+
 ```bash
 pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-prompt-creator
