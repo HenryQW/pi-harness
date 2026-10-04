@@ -19,8 +19,19 @@ The invocation authorizes one scoped edit, commit, and guarded publish.
 
 The collect action closes after one call. It returns only current failed GitHub
 Actions jobs bound to immutable check-suite, run, attempt, job, and step IDs.
-It resolves runs through GitHub API fields, not HTML details links. If it blocks,
-report the blocker and stop.
+It resolves runs through GitHub API fields, not HTML details links. Before any
+CI evidence read, it may instead return `{ kind: "stale", reason }` when clean
+local HEAD safely advanced from the frozen PR head or only the same base ref's
+tip changed. Report that cancellation and end this helper turn: the active
+`/pr` reserves a fresh route before settlement, using the shared two-rediscovery
+limit. Do not call collect again, publish through this run, or invoke `/pr`
+again. Existing committed local work goes through guarded inspection,
+validation, and publication, then fresh discovery selects the next safe stage.
+Never reuse old evidence or widen a sweep's owned paths to include a local merge.
+
+Other failures, ambiguous authority or ownership, dirty/divergent state, and
+uncertain mutation outcomes remain blockers: report and stop. Automatic
+continuation does not authorize destructive actions or bypass required approval.
 
 ## Diagnose and repair
 

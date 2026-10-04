@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +87,35 @@ test("fetches only the frozen base OID and skips merge when it is already an anc
 		"git", ["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "git@github.com:acme/project.git", base],
 	]);
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "merge"), false);
+});
+
+for (const checkpoint of ["initial", "after-fetch", "final", "diverged", "dirty", "authority"] as const) test(`pre-rebase HEAD drift at ${checkpoint} preserves mutation guards`, async (t) => {
+	let headReads = 0;
+	const staleAt = checkpoint === "after-fetch" ? 2 : checkpoint === "final" ? 3 : 1;
+	const exec: Exec = async (command, args) => {
+		if (command === "git" && args[0] === "status" && checkpoint === "dirty") return result(" M file.txt\n");
+		const inspection = cleanInspection(command, args);
+		if (inspection) return inspection;
+		if (command === "git" && args[0] === "branch") return result("feature\n");
+		if (command === "git" && args[0] === "rev-parse") return result(`${++headReads >= staleAt ? merged : oldHead}\n`);
+		if (command === "gh" && args[0] === "config") return result("ssh\n");
+		if (command === "git" && ["fetch", "cat-file", "rev-list"].includes(args[0]!)) return result();
+		if (command === "git" && args[0] === "merge-base") {
+			if (!args.includes("--is-ancestor")) return result(`${"d".repeat(40)}\n`);
+			return result("", args.includes(base) || checkpoint === "diverged" ? 1 : 0);
+		}
+		throw new Error(`No branch/remote mutation expected: ${command} ${args.join(" ")}`);
+	};
+	const changed = pullRequest({ target: { ...pullRequest().target, remoteOid: "e".repeat(40) } });
+	const app = updater(exec, [checkpoint === "authority" ? changed : pullRequest()]);
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	if (["diverged", "dirty", "authority"].includes(checkpoint)) {
+		await assert.rejects(app.workflow.rebase(), /does not match|worktree is dirty|frozen pull request authority changed/);
+	} else {
+		assert.deepEqual(await app.workflow.rebase(), { kind: "stale", reason: "Local HEAD is ahead of the frozen PR head; cancelled before rebase or publication" });
+		await assert.rejects(app.workflow.rebase(), /already consumed/);
+	}
+	assert.equal(existsSync(join(app.agentDir, "config", "pi-pr", "update-branch")), false, "no recovery record is written");
 });
 
 test("rechecks frozen authority after fetch before launching merge", async (t) => {
@@ -177,7 +206,7 @@ test("does not push when HEAD or target authority changes after final base check
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		app.workflow.state.phase = "verified";
 		app.workflow.state.verifiedHead = merged;
-		await assert.rejects(app.workflow.publish(), race === "HEAD" ? /local HEAD changed/ : /frozen pull request authority changed/);
+		await assert.rejects(app.workflow.publish(), race === "HEAD" ? /local HEAD does not match/ : /frozen pull request authority changed/);
 		assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "push"), false, race);
 	}
 });

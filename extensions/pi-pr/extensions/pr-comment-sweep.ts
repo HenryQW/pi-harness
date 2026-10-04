@@ -79,6 +79,9 @@ type SweepFinalProjection = {
 	items: Array<{ id: string; kind: FeedbackKind }>;
 	threads: Array<{ id: string; isResolved: boolean }>;
 };
+// Only a fresh start before recovery is written may cancel for safe rerouting.
+export class StaleSweepStart extends Error {}
+
 export type SweepStatus = {
 	phase: SweepPhase;
 	guard: SweepRunGuard;
@@ -250,8 +253,8 @@ function recoveryMatchesRouteAuthority(state: SweepState, suppliedAuthority: Swe
 		(state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown" || state.attempts.push.state === "applied") &&
 		state.publicationHead
 	) permittedHeads.add(state.publicationHead);
-	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head,
-		state.attempts.push.state === "applied"));
+	// The base tip belongs to frozen feedback, not recovery or publication identity.
+	return [...permittedHeads].some((head) => sameLinkage(state.authority, suppliedAuthority, head, true));
 }
 
 function feedbackMatchesAuthority(snapshot: FeedbackSnapshot, authority: SweepAuthority, head: string): boolean {
@@ -827,6 +830,17 @@ export class PullRequestCommentSweep {
 		};
 	}
 
+	private async requireStartHead(authority: SweepAuthority): Promise<void> {
+		if ((await this.localPaths()).length) throw new Error("Comment sweep start requires a clean worktree");
+		const head = await readHead(this.exec, this.options());
+		if (head === authority.head.oid) return;
+		await this.currentAuthority(authority, authority.head.oid);
+		if (await isAncestor(this.exec, this.options(), authority.head.oid, head)) {
+			throw new StaleSweepStart("Local HEAD is ahead of the frozen PR head; cancelled before sweep recovery or publication");
+		}
+		throw new Error("Comment sweep start requires local HEAD to descend from the frozen PR head");
+	}
+
 	async start(): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
@@ -834,15 +848,11 @@ export class PullRequestCommentSweep {
 			if (!this.suppliedAuthority) throw new Error("Comment sweep start requires route authority");
 			const authority = this.suppliedAuthority;
 			if (authority.head.oid !== authority.target.remoteOid) throw new Error("Comment sweep requires PR head and remote lease to match");
-			if ((await this.localPaths()).length || await readHead(this.exec, this.options()) !== authority.head.oid) {
-				throw new Error("Comment sweep start requires a clean worktree at the PR head");
-			}
+			await this.requireStartHead(authority);
 			await this.currentAuthority(authority, authority.head.oid);
 			const snapshot = await this.collect(authority, authority.head.oid);
 			await this.currentAuthority(authority, authority.head.oid);
-			if ((await this.localPaths()).length || await readHead(this.exec, this.options()) !== authority.head.oid) {
-				throw new Error("Comment sweep authority changed during feedback fetch");
-			}
+			await this.requireStartHead(authority);
 			const state: SweepState = {
 				version: 2,
 				workflow: "pi-pr-comment-sweep",
@@ -900,7 +910,7 @@ export class PullRequestCommentSweep {
 		if (state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown") {
 			const attemptedHead = state.attempts.push.head;
 			if (!attemptedHead) throw new Error("Attempted push has no captured head");
-			await this.currentAuthority(state.authority, remote);
+			await this.currentAuthority(state.authority, remote, true);
 			if (remote === attemptedHead) {
 				state.attempts.push.state = "applied";
 				state.phase = "published";
@@ -915,7 +925,7 @@ export class PullRequestCommentSweep {
 			: state.original.lease;
 		remote = await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref);
 		if (remote !== expectedRemote) throw new Error("Comment sweep remote authority cannot be reconciled");
-		await this.currentAuthority(state.authority, expectedRemote, state.attempts.push.state === "applied");
+		await this.currentAuthority(state.authority, expectedRemote, true);
 
 		const pending = state.attempts.resolutions.filter(({ state: attempt }) => attempt === "attempting" || attempt === "unknown");
 		if (pending.length > 1) throw new Error("Multiple unresolved mutation attempts cannot be reconciled");
@@ -981,7 +991,7 @@ export class PullRequestCommentSweep {
 			const published = state.attempts.push.state === "applied";
 			if (published) state.version = 2;
 			const expectedRemote = published ? state.publicationHead! : state.original.lease;
-			await this.currentAuthority(state.authority, expectedRemote, published);
+			await this.currentAuthority(state.authority, expectedRemote, true);
 			if (this.committedPathAuthorization) await this.requireCleanPublication(state, this.committedPathAuthorization.head);
 			else await this.requireOwnedLocalState(state, published ? expectedRemote : undefined);
 			if (state.ledger) {
@@ -1013,7 +1023,7 @@ export class PullRequestCommentSweep {
 			if (state.phase === "triage" && state.ledger === null) {
 				if (ownedPathsInput === undefined) throw new Error("Initial comment sweep ledger requires ownedPaths");
 				await this.requireCleanPublication(state, state.original.head);
-				await this.currentAuthority(state.authority, state.original.lease);
+				await this.currentAuthority(state.authority, state.original.lease, true);
 				state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
 				state.approved = true;
 				state.approvalGeneration = state.feedback.generation;
@@ -1048,7 +1058,7 @@ export class PullRequestCommentSweep {
 			if (state.attempts.commit && state.attempts.commit.state !== "applied") {
 				throw new Error("Comment sweep has an unreconciled commit; use resume");
 			}
-			await this.currentAuthority(state.authority, state.original.lease);
+			await this.currentAuthority(state.authority, state.original.lease, true);
 			const beforeHead = await this.requireOwnedLocalState(state);
 			const paths = await this.localPaths();
 			if (paths.some((path) => !state.ownedPaths.includes(path))) throw new Error("Comment sweep found changes outside owned paths before staging");
@@ -1060,7 +1070,7 @@ export class PullRequestCommentSweep {
 			state.attempts.commit = attempt;
 			await this.save(location, state);
 			try {
-				await this.currentAuthority(state.authority, state.original.lease);
+				await this.currentAuthority(state.authority, state.original.lease, true);
 				await this.requireOwnedLocalState(state, beforeHead);
 				if (parseSingleOutputLine((await runChecked(this.exec, "git", ["write-tree"], this.options())).stdout, "Commit tree") !== tree) {
 					throw new Error("Comment sweep index changed before commit");
@@ -1094,7 +1104,7 @@ export class PullRequestCommentSweep {
 			}
 			const head = await this.requireOwnedLocalState(state);
 			if ((await this.localPaths()).length) throw new Error("Comment sweep publish requires a clean worktree; use the commit action for owned fixes first");
-			await this.currentAuthority(state.authority, state.original.lease);
+			await this.currentAuthority(state.authority, state.original.lease, true);
 			if (head === state.original.head) {
 				state.publicationHead = head;
 				state.attempts.push = { state: "applied", head };
@@ -1106,7 +1116,7 @@ export class PullRequestCommentSweep {
 			if (!(await isAncestor(this.exec, this.options(), state.original.lease, head))) {
 				throw new Error("Comment sweep push would not fast-forward the original lease");
 			}
-			await this.currentAuthority(state.authority, state.original.lease);
+			await this.currentAuthority(state.authority, state.original.lease, true);
 			if (await readHead(this.exec, this.options()) !== head || (await this.localPaths()).length) {
 				throw new Error("Comment sweep local HEAD or worktree changed before push");
 			}
@@ -1122,7 +1132,7 @@ export class PullRequestCommentSweep {
 				if (await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref) !== head) {
 					throw new Error("Published remote ref did not match captured HEAD");
 				}
-				await this.currentAuthority(state.authority, head);
+				await this.currentAuthority(state.authority, head, true);
 				state.attempts.push.state = "applied";
 				state.phase = "published";
 				state.version = 2;
