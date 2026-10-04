@@ -67,6 +67,7 @@ const HTTP_CHECKS: Record<string, FieldCheck> = {
 	}, "an http URL on localhost, 127.0.0.1, or [::1] without query or fragment, on the \"oauth.callbackPort\" port"],
 	"oauth.scope": [isString, "a string"],
 	"oauth.clientName": [(value) => typeof value === "string" && value.trim() !== "", "a non-empty string"],
+	"oauth.clientRegistration": [(value) => value === "dcr" || value === "cimd", '"dcr" or "cimd"'],
 	"oauth.authServerMetadataUrl": [(value) => isHttpsOrLoopback(parseUrl(value)), "an https URL, or http on localhost, 127.0.0.1, or [::1]"],
 	auth: [(value) => isRecord(value) && typeof value.provider === "string" && value.provider !== "", "an object with a non-empty \"provider\" string"],
 };
@@ -87,6 +88,15 @@ function validateRoleMcpServer(path: string, name: string, value: unknown, codem
 	for (const [field, [valid, shape]] of Object.entries({ ...COMMON_CHECKS, ...(stdio ? STDIO_CHECKS : HTTP_CHECKS), ...(codemode ? EXPOSURE_CHECKS : {}) })) {
 		const fieldValue = field.split(".").reduce<unknown>((parent, key) => (isRecord(parent) ? parent[key] : undefined), value);
 		if (fieldValue !== undefined && !valid(fieldValue, value)) fail(`field "${field}" must be ${shape}.`);
+	}
+	if (http && isRecord(value.oauth) && value.oauth.clientRegistration === "cimd") {
+		if (value.oauth.clientId !== undefined || value.oauth.clientName !== undefined) {
+			fail('field "oauth.clientRegistration" "cimd" cannot be combined with "oauth.clientId" or "oauth.clientName".');
+		}
+		const callback = parseUrl(value.oauth.callbackUrl);
+		if (callback && (callback.hostname === "[::1]" || callback.pathname !== "/callback")) {
+			fail('field "oauth.clientRegistration" "cimd" requires "oauth.callbackUrl" on localhost or 127.0.0.1 with path /callback.');
+		}
 	}
 	// The native transport sends the provider's token to `url`, so Pi only allows it over https or loopback.
 	if (value.auth !== undefined && !isHttpsOrLoopback(parseUrl(value.url))) {

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { execFile, execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { Compile } from "typebox/compile";
@@ -27,15 +30,16 @@ type Tool = {
 
 type ToolCallHandler = (event: any) => unknown;
 
-test("direct admission trusts configured extensions and MCP servers but rejects write tools", () => {
+test("checkout admission treats unknown tools, extensions and MCP servers as potential writers", () => {
 	const role = {
 		name: "reader", description: "Read sources", systemPrompt: "Read only.",
 		tools: ["read", "grep"], extensions: ["npm:@example/reader"], skills: [], mcps: ["docs"],
 	};
-	assert.equal(roleCanWrite(role), false);
+	assert.equal(roleCanWrite(role), true);
+	assert.equal(roleCanWrite({ ...role, extensions: [], mcps: [] }), false);
 	assert.equal(roleCanWrite({ ...role, tools: ["read", "bash"] }), true);
-	// Scripts can only call the Role's active tools, so `codemode` adds no write capability.
-	assert.equal(roleCanWrite({ ...role, tools: ["read", "codemode"], extensions: ["builtin:codemode"] }), false);
+	// Codemode itself adds no capability, but its trusted extension is not sandboxed.
+	assert.equal(roleCanWrite({ ...role, tools: ["read", "codemode"], extensions: ["builtin:codemode"] }), true);
 	assert.equal(roleCanWrite({ ...role, tools: ["codemode", "edit"], extensions: ["builtin:codemode"] }), true);
 	assert.equal(roleIsReadOnlyScout({ ...role, tools: ["read", "codemode"], extensions: ["builtin:codemode"], mcps: [] }), false);
 	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [] }), true);
@@ -49,7 +53,7 @@ test("checkout admission attributes nested calls to their model-issued root and 
 	t.after(() => rm(checkout, { recursive: true, force: true }));
 	const handlers = new Map<string, (...args: any[]) => any>();
 	let lookup = async () => {};
-	registerCheckoutAdmission({
+	const hold = registerCheckoutAdmission({
 		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 		exec: async () => {
 			await lookup();
@@ -110,6 +114,15 @@ test("checkout admission attributes nested calls to their model-issued root and 
 	handlers.get("tool_execution_end")!({ toolCallId: "script-3/1", parentToolCallId: "script-3" });
 	lookup = async () => {};
 	assert.equal(await call("edit-4", "edit"), undefined);
+	handlers.get("tool_result")!({ toolCallId: "edit-4" });
+	assert.throws(() => hold("unadmitted"), /not admitted as a checkout writer/);
+	assert.equal(await call("direct-writer", "delegate_task"), undefined);
+	const releaseDirect = hold("direct-writer");
+	handlers.get("tool_result")!({ toolCallId: "direct-writer" });
+	handlers.get("tool_execution_end")!({ toolCallId: "direct-writer" });
+	assert.deepEqual(await call("edit-5", "edit"), blockedBy("direct-writer"));
+	releaseDirect();
+	assert.equal(await call("edit-5", "edit"), undefined);
 });
 
 function loadRoleTools(processLease: string | undefined): { events: string[]; toolCall?: ToolCallHandler; childUmask: number } {
@@ -289,7 +302,13 @@ function harness(options: {
 	const theme = { fg: (_color: string, value: string) => value };
 	const api = {
 		events: { on: () => () => {}, emit() {} },
-		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
+		on(event: string, handler: (...args: any[]) => any) {
+			const previous = handlers.get(event);
+			handlers.set(event, (...args) => {
+				const result = previous?.(...args);
+				return result instanceof Promise ? result.then(() => handler(...args)) : handler(...args);
+			});
+		},
 		exec(command: string, args: string[], execOptions?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
 			if (command === "herdr" && options.herdr) return options.herdr(args, execOptions);
 			return new Promise((resolve) => {
@@ -442,7 +461,7 @@ Do bounded work.
 `);
 }
 
-function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
+function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined | Promise<string | undefined> = () => "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
 	const calls: string[][] = [];
 	const sessions = new Map<string, { path: string; prompt?: string; pane: string; tab: string }>();
 	let next = 1;
@@ -454,7 +473,8 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string = () => "exac
 	};
 	const persist = async (name: string) => {
 		const identity = sessions.get(name)!;
-		const text = answer(identity.prompt!);
+		const text = await answer(identity.prompt!);
+		if (text === undefined) return; // Native Pi owns this session in launch integration tests.
 		await writeFile(identity.path, [
 			{ type: "session", id: "session" },
 			{ type: "message", id: "user", parentId: "session", message: { role: "user", content: [{ type: "text", text: identity.prompt }] } },
@@ -537,6 +557,125 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 	});
 });
 
+test("authorized direct write and commit use native Pi tools/session and preserve unrelated changes", { timeout: 30_000 }, async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---\nname: worker\ndescription: Git operator\ntools: [bash]\nextensions: []\nskills: []\n---\nExecute only the authorized command; preserve unrelated work.\n`);
+		const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-write-")));
+		t.after(() => rm(cwd, { recursive: true, force: true }));
+		const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+		git("init", "-q");
+		git("config", "user.name", "Direct test");
+		git("config", "user.email", "direct@example.test");
+		for (const path of ["owned.txt", "staged.txt", "unstaged.txt"]) await writeFile(join(cwd, path), "base\n");
+		git("add", "."); git("commit", "-qm", "base");
+		await writeFile(join(cwd, "staged.txt"), "unrelated staged\n"); git("add", "staged.txt");
+		await writeFile(join(cwd, "unstaged.txt"), "unrelated unstaged\n");
+		await writeFile(join(cwd, "untracked.txt"), "unrelated untracked\n");
+		const before = git("diff", "--cached");
+		const command = "printf 'authorized write\\n' > owned.txt && git add -- owned.txt && git -c commit.gpgsign=false commit --only -m 'authorized direct commit' -- owned.txt";
+		const requests: any[] = [];
+		const server = createServer(async (request, response) => {
+			let body = "";
+			for await (const chunk of request) body += chunk;
+			const input = JSON.parse(body); requests.push(input);
+			const used = input.messages.some((message: any) => message.role === "tool");
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.end(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 0, model: model.id, choices: [{ index: 0, delta: used ? { content: "Commit completed; unrelated changes preserved." } : { tool_calls: [{ index: 0, id: "authorized", type: "function", function: { name: "bash", arguments: JSON.stringify({ command }) } }] }, finish_reason: used ? "stop" : "tool_calls" }] })}\n\ndata: [DONE]\n\n`);
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		const address = server.address() as { port: number };
+		const nativeModel = { ...model, api: "openai-completions", baseUrl: `http://127.0.0.1:${address.port}/v1` };
+		await writeFile(join(agentDir, "models.json"), JSON.stringify({ providers: { test: { api: nativeModel.api, baseUrl: nativeModel.baseUrl, apiKey: "test", models: [{ id: model.id }] } } }));
+		await herdrEnvironment(async () => {
+			let systemPrompt = "";
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				const start = fake.calls.find(([kind, action]) => kind === "agent" && action === "start")!;
+				const args = start.slice(start.indexOf("--") + 1);
+				args[args.indexOf("--append-system-prompt") + 1] = systemPrompt;
+				const cli = join(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))), "bundle", "cli.js");
+				try {
+					const child = promisify(execFile)(process.execPath, [cli, ...args, "--print", "--offline", "--no-context-files", prompt], { cwd, timeout: 20_000, maxBuffer: 64 * 1024 });
+					child.child.stdin!.end();
+					await child;
+				} catch (error) {
+					const child = error as Error & { stdout: string; stderr: string };
+					throw new Error(`Native Pi failed (${requests.length} requests): ${child.stderr.slice(-2000)} ${child.stdout.slice(-2000)}`);
+				}
+				return undefined;
+			});
+			const app = harness({ cwd, herdr: async (args) => {
+				if (args[0] === "agent" && args[1] === "start") systemPrompt = await readFile(args[args.indexOf("--append-system-prompt") + 1]!, "utf8");
+				return fake.exec(args);
+			}, availableModels: [nativeModel], currentModel: nativeModel });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			const params = { mode: "direct", role: "worker", modelClass: "fast", name: "Scoped commit", task: `Authorized: execute ${command}. Do not change any other files or index entries. Do not push.` };
+			await app.handlers.get("tool_call")!({ toolCallId: "commit", toolName: "delegate_task", input: params }, app.ctx);
+			await app.tool.execute("commit", params, undefined, undefined, app.ctx);
+			app.handlers.get("tool_result")!({ toolCallId: "commit" });
+			assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "other", toolName: "edit", input: {} }, app.ctx)).block, true);
+			await waitFor(() => app.sentMessages.length === 1, 25_000);
+			assert.equal(app.sentMessages[0]!.message.details.outcome, "completed", app.sentMessages[0]!.message.content);
+			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "other", toolName: "edit", input: {} }, app.ctx), undefined);
+			const record = app.sessionEntries[0].data;
+			t.after(() => rm(dirname(record.sessionFile), { recursive: true, force: true }));
+			assert.match(await readFile(record.sessionFile, "utf8"), /"role":"toolResult"/);
+		});
+		assert.deepEqual(requests[0].tools.map((tool: any) => tool.function.name), ["bash"]);
+		assert.ok(JSON.stringify(requests[0].messages).includes("Direct shared-checkout boundary"));
+		assert.equal(git("log", "-1", "--format=%s"), "authorized direct commit");
+		assert.equal(git("diff", "--cached"), before);
+		assert.equal(await readFile(join(cwd, "unstaged.txt"), "utf8"), "unrelated unstaged\n");
+		assert.equal(await readFile(join(cwd, "untracked.txt"), "utf8"), "unrelated untracked\n");
+		assert.equal(git("show", "HEAD:owned.txt"), "authorized write");
+	});
+});
+
+test("potential-writer parallel tasks serialize and uncertain completion retains checkout admission", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrite only authorized files.\n`);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("first") ? "done" : "", gate);
+			const app = harness({ cwd, herdr: fake.exec });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			const params = { mode: "direct", tasks: [
+				{ role: "writer", name: "First", task: "first" },
+				{ role: "worker", name: "Second", task: "second" },
+				{ role: "writer", name: "Third", task: "third" },
+			] };
+			await app.handlers.get("tool_call")!({ toolCallId: "writers", toolName: "delegate_task", input: params }, app.ctx);
+			await app.tool.execute("writers", params, undefined, undefined, app.ctx);
+			app.handlers.get("tool_result")!({ toolCallId: "writers" });
+			await waitFor(() => fake.calls.some(([kind, action]) => kind === "agent" && action === "wait"));
+			assert.equal(app.sessionEntries.length, 1, "second tab cannot launch before first finishes");
+			release();
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.deepEqual(app.sentMessages[0]!.message.details.entries.map((entry: any) => entry.status), ["succeeded", "rejected", "rejected"]);
+			assert.match(app.sentMessages[0]!.message.content, /Previous direct task did not complete exactly/);
+			assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx)).block, true);
+			assert.equal(app.sessionEntries.length, 2, "retain exact recovery identities");
+		});
+	});
+});
+
+test("direct resource resolution still rejects recursive delegation packages before opening a tab", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---\nname: worker\ndescription: Invalid\ntools: [bash]\nextensions: ["npm:@henryqw/pi-subagent"]\nskills: []\n---\nWork.\n`);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			const app = harness({ cwd, herdr: fake.exec });
+			await app.handlers.get("tool_call")!({ toolCallId: "invalid", toolName: "delegate_task", input: { mode: "direct", role: "worker", name: "Invalid", task: "write" } }, app.ctx);
+			await assert.rejects(app.tool.execute("invalid", { role: "worker", name: "Invalid", task: "write" }, undefined, undefined, app.ctx), /forbidden pi-subagent\/pi-mcp-adapter source/);
+			assert.equal(fake.calls.length, 0);
+		});
+	});
+});
+
 test("direct widget shows one compact mode, role, route and measured-usage row", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -612,7 +751,7 @@ test("direct idle wait timeout accepts the persisted answer before another wait"
 	});
 });
 
-test("direct chain waits for exact prior result and rejects writer Roles before Herdr launch", async () => {
+test("direct chain waits for exact prior result and admits declared writer Roles", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
@@ -628,8 +767,12 @@ test("direct chain waits for exact prior result and rejects writer Roles before 
 			assert.match(prompts[1]![3]!, /next: prior exact/);
 			assert.match(app.sentMessages[0]!.message.content, /final exact/);
 			await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrites.\n`);
-			await assert.rejects(app.tool.execute("writer", { role: "writer", name: "Write", task: "implement" }, undefined, undefined, app.ctx), /mode isolated/);
-			assert.equal(fake.calls.filter(([kind, command]) => kind === "tab" && command === "create").length, 2);
+			await app.handlers.get("tool_call")!({ toolCallId: "writer", toolName: "delegate_task", input: { mode: "direct", role: "writer", name: "Write", task: "implement" } }, app.ctx);
+			await app.tool.execute("writer", { role: "writer", name: "Write", task: "implement" }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 2);
+			const start = fake.calls.filter(([kind, command]) => kind === "agent" && command === "start").at(-1)!;
+			assert.equal(start[start.indexOf(`--${ROLE_TOOL_POLICY_FLAG}`) + 1], '["bash"]');
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "tab" && command === "create").length, 3);
 		});
 	});
 });
@@ -808,7 +951,7 @@ test("queued chain step rechecks Role capability before opening a tab", async ()
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
 			assert.deepEqual(app.sentMessages[0]!.message.details.entries.map(({ status }: any) => status), ["succeeded", "rejected"]);
-			assert.match(app.sentMessages[0]!.message.content, /became write-capable; use mode isolated/);
+			assert.match(app.sentMessages[0]!.message.content, /became write-capable after admission/);
 			assert.equal(fake.calls.filter(([kind, command]) => kind === "tab" && command === "create").length, 1);
 		});
 	});

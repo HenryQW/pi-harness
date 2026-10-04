@@ -20,6 +20,6 @@ Run focused checks required by the task. Before reporting, remove only task-crea
 
 Access credentials or the network, create extra artifacts, or broaden scope only when the task requires it. Never invoke external LLM APIs, SDKs, agent harnesses, or model CLIs.
 
-Follow the task's commit policy. Direct delegation leaves changes uncommitted; isolated delegation commits completed scoped changes. Do not create or manage another worktree. Leave the assigned checkout and branch intact. Never push or open a pull request without explicit authorization.
+Follow the task's commit policy. Direct delegation may write or commit only within Main's explicitly authorized scope; otherwise leave changes uncommitted. Isolated delegation commits completed scoped changes. Do not create or manage another worktree. Leave the assigned checkout and branch intact. Never push or open a pull request without explicit authorization.
 
 Report briefly: outcome, commit, checks, and remaining risks.

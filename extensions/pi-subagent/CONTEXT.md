@@ -4,7 +4,7 @@
 
 Own Role-configured Pi delegation through one `delegate_task` surface:
 
-- **direct mode** runs read-only compact work in Herdr tabs in Main's workspace and returns a handle before completion;
+- **direct mode** runs authorized compact shared-checkout work in Herdr tabs in Main's workspace and returns a handle before completion;
 - **isolated mode** runs durable checked graphs with Herdr worktrees, exact Git identities, guarded integration, and recovery; and
 - the package root exposes the Role, executor, worktree, evidence, schema, state, and runtime mechanisms used by the extension.
 
@@ -13,7 +13,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - **Main**: the Pi session and checkout coordinating delegated work.
 - **Role**: package or user Markdown defining responsibility, tools, trusted extension sources, Skills, optional MCP names, instructions, and an optional model-class default. Roles do not select isolation.
 - **Model Class**: `fast`, `balanced`, `frontier`, or `fav`, resolved through `pi-task-models`.
-- **Direct task**: one task using read-only base tools in a Herdr tab in Main's current workspace; trusted extensions and MCP servers are not read-only constrained.
+- **Direct task**: one bounded task using its Role's declared resources in Main's shared checkout; authorized writes take effect immediately without checked integration.
 - **Isolated request**: one durable ID, goal, and checked task graph.
 - **Candidate**: exact clean committed task-worktree identity produced by an isolated changeset worker.
 - **Readiness**: durable proof that one exact live-worker candidate passed its preliminary checks and is sealed for Main's explicit selection; it is not a separate user approval.
@@ -41,7 +41,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 
 ### Direct evidence
 
-- Direct mode admits Roles with known read-only base tools. `codemode` is read-only: its scripts call only the Role's active tools plus trusted extension and MCP tools. Extensions and MCP servers are trusted without a read-only guarantee; direct changesets and Roles with write-capable base tools require isolated mode.
+- Direct mode admits declared write-capable resources for explicitly authorized scope while preserving read-only Role restrictions. Potential-writer requests serialize tasks and retain Pi checkout admission through exact completion; uncertain outcomes retain admission for manual recovery. Direct answers prove session completion, not validation, cleanliness, rollback, or checked integration. Direct changesets require isolated mode.
 - Checkout admission in Main serializes write-capable Pi tool calls per checkout by their model-issued root call: a `codemode` script's nested writes share the script's ownership, independent writers wait, and reads never wait.
 - Each direct worker has a recorded Herdr tab and Pi session identity. The first handle returns before completion; subsequent tab identities remain recoverable on the session branch.
 - An exact settled worker with a bounded final Pi answer produces a follow-up to Main. Blocked, unknown, idle-stalled, truncated, or ambiguous outcomes retain actionable recovery identity. Session replacement never delivers to the wrong Main session.

@@ -107,7 +107,7 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 	const mode = workflowMode(value);
 	if (!Check(DirectWorkflowSchema, value)) {
 		const issue = Errors(DirectWorkflowSchema, value)[0];
-		throw new Error(`direct workflow must match the declared tool schema${issue ? ` at ${issue.instancePath || "/"}: ${issue.message}` : ""}. Direct mode is read-only; use mode isolated for changesets.`);
+		throw new Error(`direct workflow must match the declared tool schema${issue ? ` at ${issue.instancePath || "/"}: ${issue.message}` : ""}. Direct mode returns task answers without checked integration; use mode isolated for changesets.`);
 	}
 	if (!mode) throw new Error("direct workflow must select exactly one of single, tasks, or chain.");
 	const input = value as DirectInput;

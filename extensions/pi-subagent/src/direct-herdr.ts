@@ -168,7 +168,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				// A canceled start may have succeeded server-side; retain its tab but
 				// never submit a new prompt after cancellation.
 				signal.throwIfAborted();
-				const prompt = `${task}\n\nDirect text boundary: inspect only. Do not modify files, the Git index, HEAD, branches, or worktrees.\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
+				const prompt = `${task}\n\nDirect shared-checkout boundary: use only your Role's resources for the explicitly authorized task and scope. Writes and commits affect Main's existing checkout immediately; preserve unrelated files and staged changes. Do not create or manage worktrees, change branches, push, or perform external mutations without explicit task authorization. There is no isolated integration, automatic validation, or rollback. If instructions conflict or authorization is missing, stop and report it. Report changes, commit identity if any, checks, remaining risks, and checkout status; never claim isolated guarantees.\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
 				// Native prompt without --wait acknowledges submission, not completion of the turn.
 				const accepted = await herdr.json(["agent", "prompt", name, prompt], options(signal));
 				const state = inspect(accepted, "agent_prompted", name, paneId, tabId);

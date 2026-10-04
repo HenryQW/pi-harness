@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
-import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
+import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, resolveRolePackageResources, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
 import { readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
 import { registerCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
@@ -181,7 +181,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			return true;
 		}
 	};
-	registerCheckoutAdmission(pi, canWrite);
+	const holdAdmission = registerCheckoutAdmission(pi, canWrite);
 	const isolatedSurface = registerIsolatedExtension(pi, {
 		executor,
 		policy: initialPolicy,
@@ -452,10 +452,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate read-only direct work in Herdr or a durable checked isolated graph to Pi Roles. Roles: ${roleSummary()}.`,
-		promptSnippet: "Delegate read-only direct work or a checked isolated task graph",
+		description: `Delegate explicitly authorized direct work in the shared checkout or a durable checked isolated graph to Pi Roles. Roles: ${roleSummary()}.`,
+		promptSnippet: "Delegate authorized shared-checkout work or a checked isolated task graph",
 		promptGuidelines: [
-			"Keep trivial mechanically verifiable work in Main. Use mode direct only for read-only research, analysis, or review in the current workspace. Use mode isolated for any implementation, write-capable Role, or checked changeset; explicit mode never falls back.",
+			"Keep trivial mechanically verifiable work in Main. Use mode direct for bounded, explicitly authorized work with the Role's declared resources in the shared checkout, including writes or commits. Specify allowed scope and exclusions; preserve unrelated changes. Direct work has no isolated checks, rollback, or integration guarantees. Use mode isolated for checked changesets; explicit mode never falls back.",
 			"Direct requests use one compact role/name/task packet, tasks for independent packets, or chain with {previous}. Direct work returns a Herdr handle after launch; results arrive as one follow-up message.",
 			"Isolation uses typed tasks and dependencies. Keep tightly coupled changes with one owner; do not split by file count. Failures, ambiguity, limits, and conflicts retain work and never waive checks or identity guards.",
 			`For delegate_task, ${MODEL_CLASS_GUIDANCE} A direct model replaces only the selected route's model; its thinking level stays unchanged.`,
@@ -482,8 +482,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			for (const delegation of workflow.delegations) {
 				const role = roles.get(delegation.role);
 				if (!role) throw boundedError(new Error(`Unknown Subagent role: ${delegation.role}. Available roles: ${[...roles.keys()].join(", ") || "none"}.`));
-				if (roleCanWrite(role)) throw new Error(`Role ${role.name} exposes write-capable or unverified resources. Use mode isolated for this Role; direct is read-only.`);
 			}
+			const writes = workflow.delegations.some((delegation) => roleCanWrite(roles.get(delegation.role)!));
 			const policy = currentPolicy();
 			const herdr = createDirectHerdr(pi, ctx.cwd, policy.childIdleMs);
 			const entries = identifyWorkflowEntries(toolCallId, workflow);
@@ -500,17 +500,25 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
 			// Register before Herdr can create a tab: session switches must await this
 			// launch, including its identity callback, before copying recovery records.
+			const releaseAdmission = writes ? holdAdmission(toolCallId) : () => {};
 			directTasks.set(taskId, { controller, settled, handles, tabs });
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
 				const role = loadRoles().find((candidate) => candidate.name === entry.delegation.role);
-				if (!role || roleCanWrite(role)) throw new Error(`Role ${entry.delegation.role} disappeared or became write-capable; use mode isolated.`);
+				if (!role) throw new Error(`Role ${entry.delegation.role} disappeared.`);
+				if (!writes && roleCanWrite(role)) throw new Error(`Role ${role.name} became write-capable after admission; delegate again with its current resources.`);
 				const context = latestCtx ?? ctx;
-				const route = prepareRoleLaunch(pi, context, { role, task: DELEGATE_TASK,
+				const resources = await resolveRolePackageResources(role, context);
+				const effectiveRole = { ...role, extensions: resources.extensions };
+				const route = prepareRoleLaunch(pi, context, { role: effectiveRole, task: DELEGATE_TASK,
 					...(entry.delegation.modelClass === undefined ? {} : { modelClass: entry.delegation.modelClass }) });
 				const prepared = entry.delegation.model === undefined ? route : prepareRoleLaunch(pi, context, {
-					role, route: replaceRouteModel(context, entry.delegation.model, route),
+					role: effectiveRole, route: replaceRouteModel(context, entry.delegation.model, route),
 				});
+				prepared.args.push("--no-prompt-templates", "--no-themes",
+					...resources.skills.flatMap((path) => ["--skill", path]),
+					...resources.prompts.flatMap((path) => ["--prompt-template", path]),
+					...resources.themes.flatMap((path) => ["--theme", path]));
 				states.set(entry.id, { ...states.get(entry.id)!, model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
 				startWidgetItem(entry.id, taskId, role.name, prepared.model.id, prepared.thinkingLevel, entry.delegation.name, ctx);
 				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
@@ -552,15 +560,17 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				finishWidgetItem(entries[0]!.id, "failure");
 				directTasks.delete(taskId);
 				resolveSettled();
+				if (!tabs.length) releaseAdmission();
 				throw boundedError(error);
 			} finally { signal?.removeEventListener("abort", abortLaunch); }
 			void (async () => {
 				try {
 					await new Promise<void>((resolve) => setImmediate(resolve));
 					let active = 0;
+					let writerFailed = false;
 					const queue: Array<() => void> = [];
 					const permit = async () => {
-						if (active >= policy.maxSubagents) await new Promise<void>((resolve) => queue.push(resolve));
+						if (active >= (writes ? 1 : policy.maxSubagents)) await new Promise<void>((resolve) => queue.push(resolve));
 						active++;
 						return () => { active--; queue.shift()?.(); };
 					};
@@ -568,6 +578,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						const release = await permit();
 						try {
 							controller.signal.throwIfAborted();
+							if (writerFailed) throw new Error("Previous direct task did not complete exactly; inspect recorded tabs before new shared-checkout work.");
 							const handle = entry.index === 0 ? first : await launch(entry, controller.signal);
 							const answer = await handle.answer(Math.floor(40 * 1024 / entries.length));
 							try {
@@ -578,6 +589,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							finishWidgetItem(entry.id, "success");
 							return answer;
 						} catch (error) {
+							if (writes) writerFailed = true;
 							const { assistantOutput: _partial, ...base } = states.get(entry.id)!;
 							states.set(entry.id, { ...base, status: "rejected", failure: `${tabByEntry.has(entry.id) ? `recover from Herdr tab ${tabByEntry.get(entry.id)!.tabId}, agent ${tabByEntry.get(entry.id)!.name}, session ${tabByEntry.get(entry.id)!.sessionFile}: ` : ""}${capOutput(error instanceof Error ? error.message : String(error))}` });
 							finishWidgetItem(entry.id, "failure");
@@ -596,13 +608,14 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							status: "skipped",
 						});
 					}
+					if ([...states.values()].every(({ status }) => status === "succeeded")) releaseAdmission();
 					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, workflow.mode, [...states.values()], tabs);
 					directTasks.delete(taskId);
 					resolveSettled();
 				}
 			})();
 			return {
-				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${taskId}\nHerdr tab: ${first.tabId} · pane: ${first.paneId} · agent: ${first.name}\nExact session: ${first.sessionFile}\nAll launched tabs: /subagent (on this session branch).\n${entries.length} task(s); result will arrive in one follow-up message.`) }],
+				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${taskId}\nHerdr tab: ${first.tabId} · pane: ${first.paneId} · agent: ${first.name}\nExact session: ${first.sessionFile}\nAll launched tabs: /subagent (on this session branch).\n${entries.length} task(s); result will arrive in one follow-up message. Direct work shares this checkout; completion is an exact answer, not checked integration. ${writes ? "Potential writers run serially; competing Pi writes stay blocked until exact completion. On failure or cancellation, inspect owned tabs before restarting Pi; changes are not rolled back." : "Concurrent changes may make reads stale."}`) }],
 				details: { taskId, mode: workflow.mode, tabId: first.tabId, sessionFile: first.sessionFile,
 					entries: entries.map(({ id, index, delegation }) => ({ id, index, name: delegation.name, role: delegation.role })) },
 			};
