@@ -1372,7 +1372,7 @@ test("manifest entrypoint and Main-side Skill ship with the unified tools", asyn
 	const skill = await readFile(resolve(PACKAGE_ROOT, "skills/pi-subagent/SKILL.md"), "utf8");
 	for (const contract of [
 		/^name: pi-subagent$/m,
-		/`mode: direct`.*read-only.*research/is,
+		/`mode: direct`.*explicitly authorized shared-checkout writes and commits/is,
 		/`mode: isolated`.*checked changes/is,
 		/focused task checks.*`pnpm test`.*combined tip.*Main promotion/is,
 		/`subagent_status`.*`subagent_resume`.*`subagent_abort`/is,
