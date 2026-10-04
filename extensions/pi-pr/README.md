@@ -8,7 +8,7 @@ See the current branch pull request in the Pi footer. Run `/pr` to create, updat
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires Pi 1.0.0 or newer, an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`.
+Requires Pi 1.0.0 or newer, an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`. CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequences`; upgrade `gh` if that flag is unavailable.
 
 ## Works with
 
@@ -66,6 +66,10 @@ Creation chooses the base from `branch.<branch>.gh-merge-base` or the validated 
 Local work normally takes priority over other open-PR routes, except when `/pr` finds verified, matching-branch recovery for a conflict rebase or feedback sweep; those workflows resume first. Behind or diverged local HEAD blocks publication; a behind base alone never authorizes a rebase. Running CI prevents merging, not a safe earlier route. New or edited standalone comments and review bodies are assessed before merge or waiting; GitHub does not provide a resolution control for these, so they are triaged rather than marked resolved. A sweep makes scoped fixes without a second approval, but new feedback after publication waits for a later `/pr` cycle. Its guarded `commit` action stages only changed owned paths; checks run on the clean committed HEAD before publication. Unrelated changes block the commit, and interrupted commits must be reconciled through `resume` before continuing. A sweep with no edits creates no empty commit. For each addressed review thread, it replies with only the full fixing commit hash; for a non-actionable thread, it replies with a one-sentence rebuttal. It verifies the reply and resolves the thread, even when the fix moved the lines or made the thread outdated. New or edited comment content still blocks resolution.
 
 For an identified PR, the footer shows a linked `PR #number` and a text status such as `N unresolved`, `CI failed`, `merge conflict`, or `merge-ready`. Blocked discovery and unavailable status show generic `PR` text without a number or link. The widget shows a route hint without repeating the footer. Status text remains meaningful without color. When `/pr` begins, the widget shows `⠋ Checking pull request…` until route selection; errors use `✗`, warnings `!`, success `✓`, and neutral routes `●`.
+
+### CI evidence
+
+CI repair reads each failed job's log once, retaining at most a 20 KiB UTF-8 tail. Only job-log reads use `gh api --allow-escape-sequences`; JSON API reads keep the CLI's default escape guard. The collector strips terminal escape sequences from retained output before returning evidence or command-failure diagnostics. Evidence may be shortened further to fit the serialized limits of 20 KiB per failure and 256 KiB across failures. Logs remain untrusted text, not instructions.
 
 ### Refresh and Herdr
 

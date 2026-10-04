@@ -208,6 +208,9 @@ function harness(scenario: Scenario) {
 			}
 			const logMatch = /\/actions\/jobs\/(\d+)\/logs$/.exec(endpoint);
 			if (logMatch) {
+				if (!args.includes("--allow-escape-sequences")) {
+					return result("", 1, "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway");
+				}
 				const jobId = Number(logMatch[1]);
 				logReads.set(jobId, (logReads.get(jobId) ?? 0) + 1);
 				if (scenario.logCommand) return await scenario.logCommand(jobId, options);
@@ -271,6 +274,34 @@ function harness(scenario: Scenario) {
 function oneFailure(): Snapshot {
 	return { checks: [check(11, 101)], jobs: [job(101, 11)] };
 }
+
+test("permits terminal escapes only for job logs and sanitizes collected evidence", async (t) => {
+	const app = harness({ snapshots: [oneFailure()], log: () => "\u001b[31mfailed café 😀\u001b[0m\n" });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	const evidence = await app.workflow.collect();
+	assert.deepEqual(evidence.failures[0]!.log, { scope: "job", text: "failed café 😀\n", truncated: false });
+	for (const { command, args } of app.calls.filter(({ command }) => command === "gh")) {
+		assert.equal(args.includes("--allow-escape-sequences"), /\/logs$/.test(args.at(-1) ?? ""), `${command} ${args.join(" ")}`);
+	}
+});
+
+test("sanitizes failed log diagnostics and consumes collection without retry", async (t) => {
+	for (const stderr of ["", "\u001b[31mHTTP 403\u001b[0m"]) {
+		const app = harness({
+			snapshots: [oneFailure()],
+			logCommand: async () => result("\u001b[31mpartial log\u001b[0m", 1, stderr),
+		});
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		await assert.rejects(app.workflow.collect(), (error: Error) => {
+			assert.match(error.message, stderr ? /failed: HTTP 403$/ : /failed: partial log$/);
+			assert.doesNotMatch(error.message, /\u001b/);
+			return true;
+		});
+		assert.equal(app.workflow.state.phase, "blocked");
+		await assert.rejects(app.workflow.collect(), /already consumed/);
+		assert.equal(app.logReads.get(101), 1);
+	}
+});
 
 test("aborts an in-flight streamed log read and blocks collection", async (t) => {
 	const controller = new AbortController();

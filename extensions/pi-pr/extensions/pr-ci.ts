@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	cloneCurrentPullRequest,
@@ -600,13 +601,22 @@ export class PullRequestCiFixer {
 	}
 
 	private async readJobLog(jobId: number): Promise<{ text: string; truncated: boolean }> {
-		const result = await runChecked(this.exec, "gh", [
-			"api", "--hostname", this.authority.host, ...API_HEADERS,
+		// Sanitize before runChecked can include output in a failure diagnostic.
+		const exec: Exec = async (command, args, options) => {
+			const result = await this.exec(command, args, options);
+			if (Buffer.byteLength(result.stdout, "utf8") > LOG_TAIL_BYTES) {
+				throw new Error(`Read failed job ${jobId} log executor exceeded its retained tail limit`);
+			}
+			return {
+				...result,
+				stdout: stripVTControlCharacters(result.stdout),
+				stderr: stripVTControlCharacters(result.stderr),
+			};
+		};
+		const result = await runChecked(exec, "gh", [
+			"api", "--allow-escape-sequences", "--hostname", this.authority.host, ...API_HEADERS,
 			`repos/${this.authority.base.repository}/actions/jobs/${jobId}/logs`,
 		], this.options({ stdoutTailBytes: LOG_TAIL_BYTES, timeoutMs: LOG_TIMEOUT_MS }));
-		if (Buffer.byteLength(result.stdout, "utf8") > LOG_TAIL_BYTES) {
-			throw new Error(`Read failed job ${jobId} log executor exceeded its retained tail limit`);
-		}
 		return { text: result.stdout, truncated: result.stdoutTruncated === true };
 	}
 
