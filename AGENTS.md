@@ -18,6 +18,8 @@ For every published package, runtime imports reachable from its entry points mus
 
 Follow [the release runbook](docs/releasing.md) and `scripts/check-package-versions.mjs` for published-file classification, version choice, lockfile updates, and publishing. Apply required version bumps before the first version check. Run `pnpm run check:package-versions` before the final release commit or any push. Before finishing, state which packages release and why; if none changed, state that CI will not publish.
 
+For each new public package, check whether it exists on npm before finishing. If npm returns `E404`, explicitly prompt the maintainer with the package name, version, and first-publication/trusted-publisher steps from [the bootstrap checklist](docs/releasing.md#first-publication-checklist). Other lookup failures are blockers, not proof that the package is new. Report bootstrap work as pending; CI cannot perform the first publication. Do not authenticate, publish, or change npm trust settings without an explicit request.
+
 ## Documentation
 
 Write user-facing READMEs in plain English: lead with the user outcome, keep commands, paths, API names, and errors exact, and state requirements, limits, failures, and safety risks. After an extension change, update its README if user-visible behavior or guidance changed. For extension READMEs, follow [the canonical template](extensions/README-template.md); use H3 for package-specific topics. `pnpm run docs:validate` enforces H2 names and order against the template.
