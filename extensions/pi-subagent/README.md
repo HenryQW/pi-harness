@@ -1,10 +1,12 @@
 # `@henryqw/pi-subagent`
 
-Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Read-only direct tasks run in Herdr tabs in your current workspace; checked implementation runs in isolated Herdr worktrees. Both return a handle so Main can continue while they work.
+Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Authorized direct tasks run in Herdr tabs in your current workspace; checked implementation runs in isolated Herdr worktrees. Both return a handle so Main can continue while they work.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
 
 ## Install
+
+Requires Pi 1.0.0 or later. Development and automated checks use Pi 1.0.2. Older Pi releases are no longer supported.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
@@ -29,7 +31,7 @@ Commands are for you; tools and the packaged skill are for Main. You do not need
 | --- | --- | --- |
 | `/subagent` | command | Browse work, launch isolated status inspection in a separate Herdr tab with the `fast` model, or send/edit pending instructions. Requires interactive TUI or RPC; inspection also requires a Herdr-managed pane and a read-only `scout` Role. |
 | `/subagent recover` | command | Classify orphaned isolated work in the current canonical repository and send Main one follow-up with request IDs, blockers, and reported next actions. No UI or Herdr pane required. |
-| `delegate_task` | tool | Start read-only direct work or a durable isolated checked graph. |
+| `delegate_task` | tool | Start authorized shared-checkout work or a durable isolated checked graph. |
 | `subagent_status` | tool | Read durable isolated state and the exact allowed continuation without replaying work. Declares an output schema, so `codemode` scripts receive the same bounded public projection as structured content. |
 | `subagent_resume` | tool | Perform the reported `retry`, `verify`, or `finalize` continuation; does not replace staging or integration. |
 | `subagent_stage` | tool | Stage or resolve an exact candidate, or reject/revise it; rejection of a staged candidate freezes that generation. |
@@ -51,7 +53,7 @@ Main chooses the mode from your request; you do not need to select one. Words li
 
 | Mode | Request that triggers it | Checkout behavior |
 | --- | --- | --- |
-| `direct` | Read-only research, analysis, or review | Opens non-focused Herdr tabs in Main's current workspace. No worktree is created. |
+| `direct` | Bounded research, review, or explicitly authorized shared-checkout writes and commits | Opens non-focused Herdr tabs in Main's current workspace. No worktree is created. |
 | `isolated` | Implementation or a checked task graph | Runs changesets in owned Herdr worktrees; Main selects, validates, and promotes exact candidates. |
 
 Keep trivial mechanically verifiable work in Main. Keep tightly coupled changes under one owner rather than splitting by file count.
@@ -77,7 +79,11 @@ Parallel: { mode: "direct", tasks: [{ role, name, task, ... }] }
 Chain:    { mode: "direct", chain: [{ role, name, task, ... }] }
 ```
 
-Only Roles whose declared base tools are known read-only may run direct. `codemode` counts as read-only because its scripts can only call the tools the Role already activates plus trusted extension and MCP tools. Configured extensions and MCP servers are trusted and may provide additional tools; use isolated mode when a task needs write-capable base tools or a checked changeset. Parallel tasks run independently; chains replace each literal `{previous}` with the preceding successful answer and stop on failure.
+Direct tasks use the selected Role's declared tools, extensions, Skills, and MCP servers, including write-capable resources. Authorization comes from your request and Main's bounded task packet, not the Role's capabilities: name allowed paths/actions and exclusions, preserve unrelated edits and staged changes, and authorize commits or external actions explicitly. For example, a configured Git operator with `bash` can stage named pending files and commit them on the `fast` route. Read-only Roles retain their tool restrictions. Use isolated mode for a checked changeset.
+
+Direct writes affect Main's checkout immediately. No clean-checkout prerequisite, automatic checks, rollback, or isolated integration guarantee applies. Requests containing potential writers (including any extensions or MCP servers) run their tasks serially and hold checkout admission after the initial handle returns; competing Pi writes fail until exact successful completion. Pure read-only parallel requests still run concurrently. A failure in a potential-writer request stops further dispatch; an uncertain worker may still be running. Chains replace each literal `{previous}` with the preceding successful answer and stop on failure. On failure, cancellation, or uncertain launch after tab creation, admission stays held: inspect the exact tabs/session files through `/subagent`, stop any remaining owned workers, inspect and preserve their changes, then restart Pi before new writes. Never blindly retry a commit or delete work to recover.
+
+Potential-writer tasks must return one JSON completion object, such as `{"outcome":"succeeded","answer":"Scoped commit completed."}`. `outcome` must be `succeeded`, `failed`, or `blocked`, and `answer` must be non-empty. A normal final Pi turn is not enough: failure, blocked work, plain text, or malformed completion stops later dispatch and retains admission. Success is the worker's explicit report, not independent validation of its changes.
 
 The tool returns a task ID and first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues it after the current turn; if idle, it starts a turn. A blocked, stalled, unknown, or truncated result is not reported as success. Session switch or shutdown stops observation and preserves tab identities for recovery. Open `/subagent` on the session branch to inspect exact tabs, agents, and Pi session files, including tabs launched after the first. A recorded tab may no longer be running; locally observed work is labelled separately.
 
@@ -210,7 +216,7 @@ Checkout admission keeps a script's writer ownership until the script and all it
 
 To let a Role run `codemode` scripts, list `builtin:codemode` in `extensions` and `codemode` in `tools`; both are required, because the built-in registers the tool inactive and the Role tool policy activates it. `codemode` alone in `tools` fails the launch as an unavailable tool. Pi's `codemode.mode` and `codemode.inlineBudget` settings apply in the child unchanged, so the Role never forces codemode-only operation, and MCP configuration never activates `codemode` in a child. Scripts can call only the Role's active tools plus `codemode`/`deferred` extension and MCP tools; inactive base tools such as `bash` stay unreachable.
 
-The servers named in `mcps` come from the global `~/.pi/agent/mcp.json` only. In a Role that activates `codemode`, each selected server keeps its configured `exposure` and `toolExposure` (Pi's default `codemode` exposure makes tools callable from scripts without declaring them, `direct` declares them, `deferred` tools stay reachable from scripts, `hidden` tools stay unreachable), and an invalid exposure value fails the launch. In every other Role, selected servers are forced to `direct` exposure and `toolExposure` is ignored, because that child cannot reach undeclared tools. Declared tools appear to the model as `mcp__<server>__<tool>` once the server connects. Pi replaces `-` in server and tool names with `_` and appends a hash suffix when two tool names collide or a name exceeds 64 characters. Each selected entry is checked against Pi's documented `mcpServers` rules before launch, in Main and again in the child: a disabled, malformed, or unknown-transport entry, an invalid server name, two selected names that differ only in `-` and `_`, `auth.provider` over plain HTTP outside `localhost`, `127.0.0.1`, or `[::1]`, or a non-HTTPS `oauth.authServerMetadataUrl` outside those hosts fails the launch with the file path and field. The file is never modified; fix the entry or choose another server. Valid `auth`, `oauth`, and `description` fields are passed through so Pi's native provider auth and OAuth apply. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. Main-only delegation and recovery tools plus `ask_question` are excluded from children.
+The servers named in `mcps` come from the global `~/.pi/agent/mcp.json` only. In a Role that activates `codemode`, each selected server keeps its configured `exposure` and `toolExposure` (Pi's default `codemode` exposure makes tools callable from scripts without declaring them, `direct` declares them, `deferred` tools stay reachable from scripts, `hidden` tools stay unreachable), and an invalid exposure value fails the launch. In every other Role, selected servers are forced to `direct` exposure and `toolExposure` is ignored, because that child cannot reach undeclared tools. Declared tools appear to the model as `mcp__<server>__<tool>` once the server connects. Pi replaces `-` in server and tool names with `_` and appends a hash suffix when two tool names collide or a name exceeds 64 characters. Each selected entry is checked against Pi's documented `mcpServers` rules before launch, in Main and again in the child: a disabled, malformed, or unknown-transport entry, an invalid server name, two selected names that differ only in `-` and `_`, `auth.provider` over plain HTTP outside `localhost`, `127.0.0.1`, or `[::1]`, or a non-HTTPS `oauth.authServerMetadataUrl` outside those hosts fails the launch with the file path and field. The file is never modified; fix the entry or choose another server. Valid `auth`, `oauth`, and `description` fields are passed through so Pi's native provider auth and OAuth apply. `oauth.clientRegistration` must be `dcr` or `cimd`; `cimd` requires Pi 1.0.1 or later; Pi 1.0.0 rejects it before child launch. It cannot use `clientId` or `clientName`, and any `callbackUrl` must use localhost or 127.0.0.1 with path `/callback`. Project MCP overrides remain ignored: a project cannot change the Role's global server allowlist or exposure. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. Main-only delegation and recovery tools plus `ask_question` are excluded from children.
 
 ## API
 
@@ -237,4 +243,4 @@ Durable state is private under `config/pi-subagent/state/`. Isolated worker Pi s
 
 ## Limits and recovery
 
-Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. Direct admission checks only declared base tools; extensions and MCP servers can perform writes, including to Main's checkout. Concurrent changes can make a direct worker's read stale. Retained-work reports identify exact resources for deliberate recovery.
+Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set. Direct tasks may use declared write-capable resources in Main's checkout only within the authorized scope. Checkout admission coordinates this Main's Pi calls, not other Pi sessions, trusted extension lifecycle code, or external processes. Concurrent changes can make a direct worker's read stale. Retained-work reports identify exact resources for deliberate recovery.

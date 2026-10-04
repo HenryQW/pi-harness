@@ -3,7 +3,7 @@
 `pi-subagent` owns both delegation paths behind `delegate_task`:
 
 ```text
-                         ┌─ direct ─── read-only Herdr tab in Main's workspace
+                         ┌─ direct ─── authorized shared-checkout Herdr tab
 request + Role + route ──┤
                          └─ isolated ─ Herdr worktree, checked candidate, durable state
 ```
@@ -62,7 +62,11 @@ Each entry has:
 
 An explicit model must support the route's thinking level. A launched child is never retried automatically after provider or process failure.
 
-Only Roles whose declared base tools are known read-only may run direct. The internal `git_read` tool is read-only and loads only when declared in the Role's `tools`; the built-in reviewer includes it. Supply named refs and paths for bounded local Git evidence without Bash. User reviewer overrides must opt in explicitly. Exact isolated review keeps the supplied patch authoritative; named-ref inspection may supply only referenced context, never another branch or worktree's candidate diff. Reviewers still run no tests or mutations and approve with exactly `PASS`. Configured extensions and MCP servers are trusted and may provide additional tools or write to Main's checkout. A direct `changeset` or Role with write-capable base tools is rejected; use isolated mode for implementation. Parallel tasks run concurrently and report in request order. A chain substitutes only the preceding successful output and stops at its first failure.
+Direct tasks use their Role's declared resources, including write tools, within explicit task authorization. Read-only Role restrictions, resource/trust validation, and recursive-delegation exclusions still apply. A direct `changeset` is rejected; use isolated mode for checked integration. Tasks in any potential-writer request run serially and reserve checkout admission until exact successful completion; pure read-only parallel tasks run concurrently. Results stay in request order. A chain substitutes only the preceding successful output and stops at its first failure.
+
+The internal `git_read` tool is read-only and loads only when declared in the Role's `tools`; the built-in reviewer includes it. Supply named refs and paths for bounded local Git evidence without Bash. User reviewer overrides must opt in explicitly. Exact isolated review keeps the supplied patch authoritative; named-ref inspection may supply only referenced context, never another branch or worktree's candidate diff. Reviewers still run no tests or mutations and approve with exactly `PASS`.
+
+Writes and commits immediately change the shared checkout; there is no automatic validation, rollback, or isolated promotion. A potential-writer final answer must be a JSON object with `outcome` (`succeeded`, `failed`, or `blocked`) and a non-empty `answer`; only explicit worker-reported success permits later dispatch or admission release, not merely a normally settled Pi turn. Preserve unrelated files and index entries, require explicit commit/external-action scope, and report checkout status. Uncertain launch after tab creation, failure, or cancellation retains admission and exact recovery identities. Inspect `/subagent`, stop remaining owned workers, inspect and preserve changes, then restart Pi before new writes. Admission covers this Main's Pi calls, not other sessions or external processes.
 
 The tool returns a handle after the first exact Herdr tab is launched. The remaining tabs are launched asynchronously; their identities are recorded on the session branch. A session-owned observer awaits each exact agent's lifecycle and retrieves its final answer from its Pi session file, not its possibly truncated screen. Idle, blocked, unknown, malformed, or oversized answers fail with recoverable tab/session identity; no whole-run deadline is imposed. `/subagent` shows exact recorded tabs on this session branch, distinguishing locally observed work from unobserved records. A session switch stops observation and carries tab identity into the new branch.
 

@@ -213,7 +213,7 @@ const stringList = (value: unknown, field: string, source: string): string[] => 
 	return value.map((item) => item.trim());
 };
 
-// Pi 0.99 built-in extensions (`builtin:<name>`, see Pi's settings docs); Pi exports no list of them.
+// Pi built-in extensions (`builtin:<name>`, see Pi's settings docs); Pi exports no list of them.
 // `builtin:mcp` is excluded: it connects every server in mcp.json and would bypass the Role `mcps` allowlist.
 const BUILTIN_EXTENSION_NAMES = ["codemode", "tool-search", "llama.cpp"] as const;
 const BUILTIN_EXTENSION_PREFIX = "builtin:";
