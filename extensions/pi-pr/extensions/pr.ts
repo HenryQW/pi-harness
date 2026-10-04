@@ -12,7 +12,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import { Type, type Static, type TObject, type TSchema, type TUnion } from "typebox";
 import { Check, Errors } from "typebox/value";
-import { PullRequestCiFixer, type PullRequestCiFixOptions } from "./pr-ci.ts";
+import { PullRequestCiFixer, StaleCiCollect, type PullRequestCiFixOptions } from "./pr-ci.ts";
 import { PullRequestCommentSweep, StaleSweepStart, type PullRequestCommentSweepOptions } from "./pr-comment-sweep.ts";
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
@@ -175,7 +175,7 @@ type WorkflowContext =
 	| (WorkflowContextBase & { route: "create"; workflow: CreateWorkflow })
 	| (WorkflowContextBase & { route: "publish-work"; workflow: PullRequestWorkPublisher })
 	| (WorkflowContextBase & { route: "sweep"; workflow: SweepWorkflow; authority: CurrentPullRequest; replan?: string })
-	| (WorkflowContextBase & { route: "fix-ci"; workflow: FixCiWorkflow });
+	| (WorkflowContextBase & { route: "fix-ci"; workflow: FixCiWorkflow; authority: CurrentPullRequest; replan?: string });
 
 type PullRequestExtensionDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
@@ -401,6 +401,7 @@ export default function pullRequestExtension(
 				workflowContext = {
 					...common,
 					route: "fix-ci",
+					authority: cloneCurrentPullRequest(reservation.pullRequest),
 					workflow: createCiFixer({
 						cwd: worktree,
 						authority: reservation.pullRequest,
@@ -440,7 +441,7 @@ export default function pullRequestExtension(
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);
-		if ((selected.route === "update-branch" || selected.route === "sweep") && selected.replan) {
+		if ((selected.route === "update-branch" || selected.route === "sweep" || selected.route === "fix-ci") && selected.replan) {
 			throw new Error(`PR ${selected.route} run was cancelled; fresh routing is pending`);
 		}
 		const abortRun = () => selected.controller.abort(signal?.reason);
@@ -587,7 +588,14 @@ export default function pullRequestExtension(
 			const params = checkedAction(FixCiActions, raw);
 			return executeWorkflowAction(params.runId, "fix-ci", ctx, signal, async (selected) => {
 				switch (params.action) {
-					case "collect": return await selected.workflow.collect();
+					case "collect": {
+						try { return await selected.workflow.collect(); }
+						catch (error) {
+							if (!(error instanceof StaleCiCollect)) throw error;
+							selected.replan = error.message;
+							return { kind: "stale", reason: error.message };
+						}
+					}
 					case "publish": {
 						const result = await selected.workflow.publish();
 						selected.completed = true;
@@ -809,7 +817,7 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
-		const replanning = (selected?.route === "update-branch" || selected?.route === "sweep") && selected.replan !== undefined;
+		const replanning = (selected?.route === "update-branch" || selected?.route === "sweep" || selected?.route === "fix-ci") && selected.replan !== undefined;
 		if (event.outcome !== "completed" || !selected ||
 			(!selected.completed && !selected.queuedPrompt && !replanning) || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];

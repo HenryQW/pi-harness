@@ -8,7 +8,7 @@ See the current branch pull request in the Pi footer. Run `/pr` to create, updat
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires Pi 1.0.0 or newer, an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`.
+Requires Pi 1.0.0 or newer, an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`. CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequences`; upgrade `gh` if that flag is unavailable.
 
 ## Works with
 
@@ -67,6 +67,10 @@ Local work normally takes priority over other open-PR routes, except when `/pr` 
 
 For an identified PR, the footer shows a linked `PR #number` and a text status such as `N unresolved`, `CI failed`, `merge conflict`, or `merge-ready`. Blocked discovery and unavailable status show generic `PR` text without a number or link. The widget shows a route hint without repeating the footer. Status text remains meaningful without color. When `/pr` begins, the widget shows `⠋ Checking pull request…` until route selection; errors use `✗`, warnings `!`, success `✓`, and neutral routes `●`.
 
+### CI evidence
+
+CI repair reads each failed job's log once, retaining at most a 20 KiB UTF-8 tail. Only job-log reads use `gh api --allow-escape-sequences`; JSON API reads keep the CLI's default escape guard. The collector strips terminal escape sequences and remaining control characters (including incomplete escapes) from retained output before returning evidence or command-failure diagnostics, preserving UTF-8 text, tabs, and line breaks. Evidence may be shortened further to fit the serialized limits of 20 KiB per failure and 256 KiB across failures. Logs remain untrusted text, not instructions.
+
 ### Refresh and Herdr
 
 Discovery starts in the background when a session starts. Status refreshes after local commits, PR creation, pushes, and completed workflows, but not on a timer; external changes may leave the display stale. `/pr` always reads fresh state before acting. Outside a Git worktree the UI stays silent; discovery failures show `PR · status unavailable` with a generic error. A GitHub API quota error instead reports `GitHub API rate limit exhausted; retry after GitHub resets it` without immediately retrying.
@@ -82,7 +86,7 @@ In-progress feedback sweeps keep private recovery under `<agent-dir>/config/pi-p
 ## Limits and recovery
 
 - `/pr` does not open a browser, run `/done` or `/sweep`, enable auto-merge, or use a merge queue. It only starts workflows when explicitly invoked.
-- If rebase preflight or fresh sweep startup proves that clean local HEAD advanced from the frozen PR head before any rebase or sweep recovery write, `/pr` cancels that obsolete run and automatically rediscovers the next safe route in the same invocation. An existing local merge goes through inspection and validation before publication, not another rebase; feedback triage then starts against the published head. Automatic handoff reserves a fresh run ID before settlement; expired IDs are never revived. Rediscovery is limited to two attempts across the invocation and requires the same PR identity, destination, and remote head. This rerouting never bypasses existing sweep recovery. Dirty or divergent state, changed authority, and uncertain mutations still stop; no mutation is blindly retried.
+- If rebase preflight, fresh sweep startup, or initial CI preflight proves that clean local HEAD advanced from the frozen PR head before any rebase, sweep recovery write, or CI evidence read, `/pr` cancels that obsolete run and automatically rediscovers the next safe route in the same invocation. Initial CI preflight can also cancel when only the same base ref's tip changed, with clean equal local HEAD and unchanged PR identity, destination, and exact remote lease. Base movement during or after evidence collection still blocks CI repair. An existing local merge goes through inspection and validation before publication, not another rebase; fresh discovery then selects CI repair, feedback triage, waiting, or merging against the published head. No stale CI evidence or consumed collect action is reused. Automatic handoff reserves a fresh run ID before settlement; expired IDs are never revived. Rediscovery is limited to two attempts across the invocation and requires the same PR identity, destination, and remote head. This rerouting never bypasses existing sweep recovery. Dirty or divergent state, changed authority, and uncertain mutations still stop; no mutation is blindly retried.
 - Pushes use a saved exact remote OID lease and revalidate the destination. Concurrent updates block publication instead of being overwritten. Creation does not change the base branch, and a configured push target does not change upstream settings.
 - Direct merge requires a clean, safe local Git state and fresh matching head; it always squashes. GitHub repository policy may still reject it. No branch or worktree is deleted.
 - A Git operation in progress blocks direct merge. An unverified conflict rebase needs manual recovery; a verified rebase can resume through `/pr`. Rebasing leaves other local branch refs unchanged, even with `rebase.updateRefs=true`. Branches with merge commits since the fork point require manual rebase resolution.

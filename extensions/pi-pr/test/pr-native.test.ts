@@ -7,12 +7,13 @@ import {
 	type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import pullRequestExtension from "../extensions/pr.ts";
+import { StaleCiCollect } from "../extensions/pr-ci.ts";
 import { StaleSweepStart } from "../extensions/pr-comment-sweep.ts";
 
 // Exercise native prompt expansion, boundary dispatch/projection, and editor queue restoration;
 // no provider or GitHub requests are made.
-for (const staleSweep of [false, true]) test(staleSweep
-	? "stale sweep publication hands off a fresh live route before native settlement"
+for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRoute
+	? `stale ${staleRoute} publication hands off a fresh live route before native settlement`
 	: "publication continues through hidden native context, never editable user queues", async () => {
 	const handlers = new Map<string, Function[]>();
 	const tools = new Map<string, Parameters<ExtensionAPI["registerTool"]>[0]>();
@@ -23,7 +24,7 @@ for (const staleSweep of [false, true]) test(staleSweep
 	let run = 0;
 	const notifications: string[] = [];
 	const dispatches: Promise<void>[] = [];
-	const skills = ["pi-pr-publish-work", "pi-pr-comment-sweep"].map((name) => {
+	const skills = ["pi-pr-publish-work", "pi-pr-comment-sweep", "pi-pr-fix-ci"].map((name) => {
 		const filePath = fileURLToPath(new URL(`../skills/${name}/SKILL.md`, import.meta.url));
 		return { name, filePath, baseDir: dirname(filePath), sourceInfo: { origin: "package", path: filePath } };
 	});
@@ -72,14 +73,15 @@ for (const staleSweep of [false, true]) test(staleSweep
 			base: { repository: "acme/project", ref: "main", oid: "a".repeat(40) },
 			head: { repository: "acme/project", ref: "feature", oid: "b".repeat(40) },
 			headFetchSource: "git@github.com:acme/project.git",
-			local: { worktree: published || staleSweep ? "clean" : "dirty", head: localAhead && !published ? "ahead" : "equal" },
-			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: published || staleSweep, unresolvedThreads: published || staleSweep ? 1 : 0,
-				ci: "success", review: "ready", policy: "ready" },
+			local: { worktree: published || staleRoute ? "clean" : "dirty", head: localAhead && !published ? "ahead" : "equal" },
+			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: published || staleRoute === "sweep", unresolvedThreads: published || staleRoute === "sweep" ? 1 : 0,
+				ci: !published && staleRoute === "fix-ci" ? "failure" : "success", review: "ready", policy: "ready" },
 		} }; },
 		async canonicalWorktree() { return "/repo"; },
 		newRunId: () => `${String(++run).repeat(8)}-1111-4111-8111-111111111111`,
 		inspectBranchRecovery: async () => false, inspectSweepRecovery: async () => false,
 		createWorkPublisher: () => ({ async publish() { published = true; return { kind: "published" }; } }) as never,
+		createCiFixer: () => ({ async collect() { throw new StaleCiCollect("Clean HEAD advanced before CI evidence"); } }) as never,
 		createCommentSweep: () => ({
 			async recoveryLaunchAction() { return "start"; },
 			async start() {
@@ -92,18 +94,18 @@ for (const staleSweep of [false, true]) test(staleSweep
 	await new Promise((resolve) => setImmediate(resolve));
 	try {
 		await command.handler("", ctx as ExtensionCommandContext);
-		if (staleSweep) {
+		if (staleRoute) {
 			localAhead = true;
-			const cancelled = await tools.get("pi_pr_sweep")!.execute("cancelled-start", {
-				runId: "11111111-1111-4111-8111-111111111111", action: "start",
+			const cancelled = await tools.get(staleRoute === "fix-ci" ? "pi_pr_fix_ci" : "pi_pr_sweep")!.execute("cancelled-start", {
+				runId: "11111111-1111-4111-8111-111111111111", action: staleRoute === "fix-ci" ? "collect" : "start",
 			}, ctx.signal, undefined, ctx as never);
-			assert.deepEqual(cancelled.details, { kind: "stale", reason: "Clean HEAD advanced before sweep recovery" });
+			assert.deepEqual(cancelled.details, { kind: "stale", reason: staleRoute === "fix-ci" ? "Clean HEAD advanced before CI evidence" : "Clean HEAD advanced before sweep recovery" });
 			busy = true;
 			assert.equal(await session._runBeforeSettleBoundary(), true, "safe cancellation must not expire at final settlement");
 			assert.match(String((manager.getBranch().at(-1) as { content: unknown }).content), /pi-pr-publish-work/);
 		}
 		await tools.get("pi_pr_publish_work")!.execute("publish", {
-			runId: staleSweep ? "22222222-1111-4111-8111-111111111111" : "11111111-1111-4111-8111-111111111111", action: "publish",
+			runId: staleRoute ? "22222222-1111-4111-8111-111111111111" : "11111111-1111-4111-8111-111111111111", action: "publish",
 		}, ctx.signal, undefined, ctx as never);
 		busy = true;
 		manager.appendMessage({
@@ -129,12 +131,12 @@ for (const staleSweep of [false, true]) test(staleSweep
 		if (entry.type !== "custom_message") throw new Error("Missing hidden workflow entry");
 		assert.equal(entry.display, false);
 		assert.match(String(entry.content), /<skill name="pi-pr-comment-sweep"/);
-		const sweepRunId = staleSweep ? "33333333-1111-4111-8111-111111111111" : "22222222-1111-4111-8111-111111111111";
+		const sweepRunId = staleRoute ? "33333333-1111-4111-8111-111111111111" : "22222222-1111-4111-8111-111111111111";
 		assert.ok(String(entry.content).includes(`runId=${sweepRunId} action=start`));
 		assert.match(String(entry.content), /pi_pr_sweep/);
-		if (staleSweep) {
-			await assert.rejects(tools.get("pi_pr_sweep")!.execute("expired-start", {
-				runId: "11111111-1111-4111-8111-111111111111", action: "start",
+		if (staleRoute) {
+			await assert.rejects(tools.get(staleRoute === "fix-ci" ? "pi_pr_fix_ci" : "pi_pr_sweep")!.execute("expired-start", {
+				runId: "11111111-1111-4111-8111-111111111111", action: staleRoute === "fix-ci" ? "collect" : "start",
 			}, ctx.signal, undefined, ctx as never), /wrong or stale/);
 			const resumed = await tools.get("pi_pr_sweep")!.execute("fresh-start", {
 				runId: sweepRunId, action: "start",
@@ -149,7 +151,7 @@ for (const staleSweep of [false, true]) test(staleSweep
 		await assert.rejects(tools.get("pi_pr_sweep")!.execute("unused", {
 			runId: sweepRunId, action: "start",
 		}, ctx.signal, undefined, ctx as never), /No PR workflow is active/);
-		if (staleSweep) assert.match(notifications[0]!, /PR sweep cancelled:.*rediscovering \(1\/2\)/);
+		if (staleRoute) assert.match(notifications[0]!, /PR (sweep|fix-ci) cancelled:.*rediscovering \(1\/2\)/);
 		else assert.deepEqual(notifications, []);
 	} finally { await runner.emit({ type: "session_shutdown" }); }
 });
