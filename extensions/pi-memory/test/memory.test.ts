@@ -86,6 +86,7 @@ type ReviewFixture = {
 	notifications: string[];
 	settled: Handler;
 	modelSelect: Handler;
+	handlers: Map<string, Handler>;
 	questions: string[];
 	selections: string[][];
 };
@@ -200,7 +201,7 @@ async function withReviewFixture(
 				input: async () => options.input,
 			},
 		} as unknown as ExtensionContext;
-		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, questions, selections });
+		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, handlers, questions, selections });
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -337,7 +338,7 @@ test("/remember cannot write after a model switch during review without an idle 
 	}, async ({ memoryDir, commands, ctx, modelSelect: handler, notifications }) => {
 		modelSelect = handler;
 		await commands.get("remember")!.handler("candidate", ctx);
-		assert.match(notifications.at(-1)!, /Session changed during \/remember/);
+		assert.match(notifications.at(-1)!, /Session changed during memory review/);
 		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
 	});
 });
@@ -1104,6 +1105,80 @@ test("duplicate-only batches bypass review and storage mutation only for exact s
 		);
 		assert.equal(calls.length, 0);
 		assert.deepEqual(await readFile(path), original);
+	});
+});
+
+test("active-response conflicts return pending and ask only after full settlement", async () => {
+	const conflict = JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", proposedMerge: "merged", explanation: "Same fact." });
+	await withReviewFixture({ memory: "existing", responses: [conflict, conflict], select: (choices) => choices[0] }, async ({ memoryDir, tool, ctx, calls, settled, questions, notifications }) => {
+		const busy = { ...ctx, isIdle: () => false };
+		const result = await tool.execute("defer", { action: "add", content: "candidate" }, undefined, undefined, busy);
+		const status = JSON.parse(result.content[0]!.text);
+		assert.equal(status.queued, true);
+		assert.equal(status.saved, false);
+		assert.match(status.message, /without retrying or asking the user yourself/);
+		assert.deepEqual(questions, []);
+		const rendered = tool.renderResult(result, { expanded: true }, { fg: (_color, text) => text }, { args: {} }).render(120).join("\n");
+		assert.doesNotMatch(rendered, /✓/);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+		await settled({ type: "agent_settled" }, busy);
+		assert.equal(calls.length, 1);
+		await settled({ type: "agent_settled" }, ctx);
+		assert.equal(questions.length, 1);
+		assert.equal(calls.length, 3);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "merged");
+		assert.equal(notifications.at(-1), "Entry replaced.");
+		await settled({ type: "agent_settled" }, ctx);
+		assert.equal(calls.length, 3);
+	});
+});
+
+test("deferred conflicts drain FIFO and re-review live sources before asking", async () => {
+	const conflict = (evidence: string) => JSON.stringify({ verdict: "overlap", source: "memory", evidence, explanation: "Same fact." });
+	await withReviewFixture({
+		memory: "existing", responses: [conflict("existing"), conflict("existing"), conflict("changed externally"), conflict("changed externally")],
+		select: (choices) => choices.find((choice) => choice.includes("Discard the new entry")),
+	}, async ({ memoryDir, tool, ctx, calls, settled, questions }) => {
+		for (const content of ["first", "second"]) await tool.execute(content, { action: "add", content }, undefined, undefined, { ...ctx, isIdle: () => false });
+		await writeFile(join(memoryDir, "MEMORY.md"), "changed externally");
+		await settled({ type: "agent_settled" }, ctx);
+		const requests = calls.slice(2).map((call) => JSON.parse(call.context.messages[0]!.content));
+		assert.deepEqual(requests.map((request) => request.mutation.content), ["first", "second"]);
+		assert.ok(requests.every((request) => request.sources.memory[0] === "changed externally"));
+		assert.ok(questions.every((question) => question.includes("changed externally")));
+		assert.equal(questions.length, 2);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "changed externally");
+	});
+});
+
+test("cancelled or replaced sessions drop pending conflicts without opening UI", async () => {
+	for (const boundary of ["abort", "session_shutdown", "session_start"]) {
+		const controller = new AbortController();
+		await withReviewFixture({
+			memory: "existing", responses: [JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", explanation: "Same fact." })],
+		}, async ({ memoryDir, tool, ctx, calls, settled, handlers, questions }) => {
+			await tool.execute("defer", { action: "add", content: "candidate" }, controller.signal, undefined, { ...ctx, isIdle: () => false });
+			if (boundary === "abort") controller.abort();
+			else await handlers.get(boundary)!({ type: boundary }, SESSION_CONTEXT);
+			await settled({ type: "agent_settled" }, ctx);
+			assert.equal(calls.length, 1, boundary);
+			assert.deepEqual(questions, [], boundary);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+		});
+	}
+});
+
+test("a new response during deferred approval invalidates the write without an idle signal", async () => {
+	let start!: Handler;
+	const conflict = JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", proposedMerge: "merged", explanation: "Same fact." });
+	await withReviewFixture({
+		memory: "existing", responses: [conflict, conflict],
+		select: async (choices) => { await start(promptEvent()); return choices[0]; },
+	}, async ({ memoryDir, tool, ctx, settled, handlers }) => {
+		start = handlers.get("before_agent_start")!;
+		await tool.execute("defer", { action: "add", content: "candidate" }, undefined, undefined, { ...ctx, isIdle: () => false });
+		await settled({ type: "agent_settled" }, ctx);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
 	});
 });
 

@@ -61,8 +61,8 @@ export const MEMORY_PREPARE_TASK = {
 	purpose: "Decide whether a remember request is durable and propose one exact entry and target.",
 	defaultProfile: "balanced",
 } as const satisfies ModelTask;
-const MEMORY_REVIEW_NOTICE = "Adds are independently reviewed against live SYSTEM.md, MEMORY.md, and USER.md. Exact duplicate adds skip review; conflicts ask the user. Do not review them yourself or repeat a successful write.";
-const MEMORY_CHECK = "MEMORY CHECK: Before replying, save newly learned durable user identity/preferences/corrections to user and stable cross-project environment/workflow facts to memory. Inferred habits need two independent signals. Skip project-specific, task-local, temporary, or trivial facts. Use the memory tool; it independently reviews adds and asks the user about conflicts. Do not perform its review yourself.";
+const MEMORY_REVIEW_NOTICE = "Adds are independently reviewed against live SYSTEM.md, MEMORY.md, and USER.md. Exact duplicate adds skip review; conflicts ask the user after the current response settles. Queued conflicts are not saved yet; continue replying without retrying or asking the user yourself. Do not review them yourself or repeat a successful write.";
+const MEMORY_CHECK = "MEMORY CHECK: Before replying, save newly learned durable user identity/preferences/corrections to user and stable cross-project environment/workflow facts to memory. Inferred habits need two independent signals. Skip project-specific, task-local, temporary, or trivial facts. Use the memory tool; it independently reviews adds and asks the user about conflicts after the response settles. Queued conflicts are not saved yet; do not retry or ask the user yourself. Do not perform its review yourself.";
 const REMEMBER_USAGE = "Usage: /remember <instruction>";
 const DREAM_TASK = {
 	id: "pi-memory/promoteEntries",
@@ -656,8 +656,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		initError?: string;
 		observedReviewSystem: boolean;
 		rememberQueue: string[];
+		conflictQueue: { mutation: MemoryMutation; signal?: AbortSignal }[];
 		sessionGeneration: number;
-	} = { conflictWarnings: [], observedReviewSystem: false, rememberQueue: [], sessionGeneration: 0 };
+	} = { conflictWarnings: [], observedReviewSystem: false, rememberQueue: [], conflictQueue: [], sessionGeneration: 0 };
 
 	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<Record<Target, string[]> | undefined> => {
 		if (state.initError) {
@@ -819,6 +820,20 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		const sessionGeneration = state.sessionGeneration;
 		if (state.sessionGeneration !== sessionGeneration || !ctx.isIdle()) return;
 		const isCurrent = () => state.sessionGeneration === sessionGeneration && ctx.isIdle() && !ctx.signal?.aborted;
+		while (isCurrent() && state.conflictQueue.length) {
+			const pending = state.conflictQueue.shift()!;
+			if (pending.signal?.aborted) {
+				ctx.ui.notify("Memory conflict cancelled; nothing was written.", "info");
+				continue;
+			}
+			try {
+				// Re-review live sources, not the snapshot from the active response.
+				const result = await memoryTool.execute("deferred-conflict", pending.mutation, pending.signal ?? ctx.signal, undefined, ctx, sessionGeneration);
+				if (isCurrent()) ctx.ui.notify(result.details.status, "info");
+			} catch (error) {
+				if (isCurrent()) ctx.ui.notify(`Cannot resolve memory conflict: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			}
+		}
 		while (isCurrent() && state.rememberQueue.length) {
 			const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => {
 				if (state.sessionGeneration === sessionGeneration) ctx.ui.notify(message, "warning");
@@ -840,11 +855,13 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => {
 		state.sessionGeneration++;
 		state.rememberQueue = [];
+		state.conflictQueue = [];
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		state.sessionGeneration++;
 		state.rememberQueue = [];
+		state.conflictQueue = [];
 		state.config = undefined;
 		state.stores = undefined;
 		state.snapshotBlocks = undefined;
@@ -973,7 +990,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		}),
 		executionMode: "sequential",
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext, expectedGeneration?: number) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext, expectedGeneration = state.sessionGeneration) {
 			const args = params as MemoryMutation;
 			if (state.initError) throw new Error(`Memory extension failed to initialize and is disabled: ${state.initError}`);
 			if (!state.config || !state.stores) throw new Error("Memory extension is not initialized.");
@@ -1013,8 +1030,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			});
 			const write = async (resolved?: MemoryOperation) => {
 				signal?.throwIfAborted();
-				if (expectedGeneration !== undefined && expectedGeneration !== state.sessionGeneration) {
-					throw new MemoryReviewError("Session changed during /remember review; nothing was written.");
+				if (expectedGeneration !== state.sessionGeneration) {
+					throw new MemoryReviewError("Session changed during memory review; nothing was written.");
 				}
 				const result = resolved ? await store.apply(resolved) : validated.kind === "single"
 					? await store.apply(validated.operation)
@@ -1060,9 +1077,18 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 
 			const review = await reviewMutation(mutation, snapshot, ctx, signal);
 			signal?.throwIfAborted();
+			if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed during memory review; nothing was written.");
 			let resolved: Extract<MemoryOperation, { action: "replace" }> | undefined;
 			if (review.verdict !== "distinct") {
 				if (!review.source || !review.evidence) throw new Error("Memory review returned a conflict without verified evidence.");
+				if (ctx.mode === "tui" && !ctx.isIdle()) {
+					state.conflictQueue.push({ mutation, signal });
+					const status = "Conflict resolution queued until the response settles; nothing was written yet. Continue replying without retrying or asking the user yourself.";
+					return {
+						content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, queued: true, saved: false, message: status }) }],
+						details: { status, entries: [], queued: true },
+					};
+				}
 				resolved = await resolveReviewConflict({ ...review, source: review.source, evidence: review.evidence }, validated, target, snapshot, ctx, signal);
 				if (!resolved) return {
 					content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, message: "User discarded the candidate; nothing was written." }) }],
@@ -1091,12 +1117,12 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		},
 
 		renderResult(result, _options, theme, _context) {
-			const details = result.details as { status: string; entries: string[] } | undefined;
+			const details = result.details as { status: string; entries: string[]; queued?: boolean } | undefined;
 			if (!details) {
 				const content = result.content[0];
 				return new Text(content?.type === "text" ? content.text : "", 0, 0);
 			}
-			let text = theme.fg("success", `✓ ${details.status}`);
+			let text = details.queued ? theme.fg("warning", details.status) : theme.fg("success", `✓ ${details.status}`);
 			for (const entry of details.entries) {
 				text += `\n  ${theme.fg("accent", escapeDisplayControls(entry).replaceAll("\n", "\n  "))}`;
 			}
@@ -1106,6 +1132,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	pi.registerTool(memoryTool);
 
 	pi.on("before_agent_start", (event) => {
+		state.sessionGeneration++;
 		for (const store of Object.values(state.stores ?? {})) store.resetOnSuccess();
 		if (process.argv.includes(BTW_CHILD_PAYLOAD_ARG)) return;
 		// Failed init stays visible every turn (correctness-critical config must
