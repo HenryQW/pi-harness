@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnBounded, type Exec as BoundedExec } from "@henryqw/pi-process";
+import { PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
+import { PullRequestWorkPublisher } from "../extensions/pr-publish-work.ts";
 import type {
 	AgentBeforeSettleEventResult,
 	ExecOptions,
@@ -184,6 +191,7 @@ function harness(options: {
 	inspectSweepRecovery?: ExtensionDependencies["inspectSweepRecovery"];
 	inspectBranchRecovery?: ExtensionDependencies["inspectBranchRecovery"];
 	createCiFixer?: ExtensionDependencies["createCiFixer"];
+	createWorkPublisher?: ExtensionDependencies["createWorkPublisher"];
 	isIdle?: () => boolean;
 	skillPath?: string;
 }) {
@@ -224,6 +232,7 @@ function harness(options: {
 		inspectSweepRecovery: options.inspectSweepRecovery ?? (async () => false),
 		inspectBranchRecovery: options.inspectBranchRecovery ?? (async () => false),
 		createCiFixer: options.createCiFixer,
+		createWorkPublisher: options.createWorkPublisher,
 		needsFeedbackAttention: async () => false,
 	};
 	if (!options.useDefaultCommandHandler) {
@@ -380,6 +389,149 @@ test("registers sequential model-only tools with flat object roots and strict ac
 	] as const) {
 		await assert.rejects(app.callTool(name, args, ctx), /do not match one action/, name);
 	}
+});
+
+test("queued rebase replans a local main merge into guarded publication in the same /pr", async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-stale-route-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const root = join(dir, "worktree");
+	const bare = join(dir, "remote.git");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+	execFileSync("git", ["init", "--bare", bare], { stdio: "ignore" });
+	execFileSync("git", ["init", "--initial-branch=main", root], { stdio: "ignore" });
+	git("config", "user.name", "Stale Route Test");
+	git("config", "user.email", "stale@example.test");
+	writeFileSync(join(root, "file.txt"), "original\n");
+	git("add", "file.txt");
+	git("commit", "-m", "initial");
+	git("switch", "-c", "feature/pr");
+	writeFileSync(join(root, "feature.txt"), "feature\n");
+	git("add", "feature.txt");
+	git("commit", "-m", "feature");
+	const original = git("rev-parse", "HEAD");
+	const destination = "git@github.com:acme/project.git";
+	git("remote", "add", "origin", destination);
+	git("push", bare, `${original}:refs/heads/feature/pr`);
+	git("switch", "main");
+	writeFileSync(join(root, "base.txt"), "base\n");
+	git("add", "base.txt");
+	git("commit", "-m", "base");
+	const base = git("rev-parse", "HEAD");
+	git("switch", "feature/pr");
+	let authority = currentPullRequest({ conditions: { conflict: true } });
+	authority = { ...authority, base: { ...authority.base, oid: base }, head: { ...authority.head, oid: original },
+		target: { ...authority.target, remoteOid: original } };
+	const pushes: string[][] = [];
+	const exec: BoundedExec = async (command, args, options) => {
+		assert.equal(args.includes("rebase"), false, "the existing merge must never be rebased");
+		if (command === "gh" && args[0] === "repo") return execResult(JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" }));
+		if (command === "git" && ["push", "ls-remote"].includes(args[0]!)) {
+			if (args[0] === "push") pushes.push([...args]);
+			args = args.map((arg) => arg === destination ? bare : arg);
+		}
+		return await spawnBounded(command, args, options);
+	};
+	const ids = [routeRunId, "22222222-2222-4222-8222-222222222222"];
+	let run = 0;
+	const app = harness({
+		async load() { return { ...authority, local: { worktree: "clean", head: git("rev-parse", "HEAD") === authority.head.oid ? "equal" : "ahead" } }; },
+		useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => ids[run++]!,
+		async canonicalWorktree() { return root; },
+		createBranchUpdater: (options) => new PullRequestBranchUpdater({ ...options, exec, agentDir: join(dir, "agent") }),
+		createWorkPublisher: (options) => new PullRequestWorkPublisher({ ...options, exec, agentDir: join(dir, "agent") }),
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		git("merge", "--no-ff", "main", "-m", "merge main locally");
+		const merged = git("rev-parse", "HEAD");
+		const queued = await app.beforeSettle(ctx);
+		assert.match(JSON.stringify(queued), /pi-pr-update-branch/);
+		assert.deepEqual((await app.callTool("pi_pr_update_branch", { runId: ids[0], action: "rebase" }, ctx)).details,
+			{ kind: "stale", reason: "Local HEAD is ahead of the frozen PR head; cancelled before rebase or publication" });
+		await assert.rejects(app.callTool("pi_pr_update_branch", { runId: ids[0], action: "publish" }, ctx), /cancelled/);
+		const next = await app.beforeSettle(ctx);
+		assert.equal(next?.continue, true);
+		assert.match(JSON.stringify(next), /pi-pr-publish-work/);
+		await assert.rejects(app.callTool("pi_pr_update_branch", { runId: ids[0], action: "rebase" }, ctx), /wrong or stale/);
+		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "inspect" }, ctx)).details, { paths: [], head: merged });
+		await assert.rejects(app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx), /not validated/);
+		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "validate", checks: [] }, ctx);
+		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx);
+		assert.deepEqual(pushes, [["push", "--porcelain", `--force-with-lease=refs/heads/feature/pr:${original}`,
+			"--recurse-submodules=no", "--", destination, `${merged}:refs/heads/feature/pr`]]);
+		assert.equal(git("ls-remote", bare, "refs/heads/feature/pr").split("\t")[0], merged);
+		assert.equal(git("rev-parse", "HEAD"), merged);
+		assert.deepEqual(app.messages, []);
+		assert.match(app.notifications[0]!.message, /cancelled.*rediscovering \(1\/2\)/);
+	} finally { await app.shutdown(ctx); }
+});
+
+for (const drift of ["identity", "lease", "destination", "worktree", "uncertain", "recovery"] as const) test(`stale-route continuation stops for ${drift} drift`, async () => {
+	let stale = false;
+	let loads = 0;
+	const pr = currentPullRequest({ conditions: { conflict: true } });
+	const app = harness({
+		async load() {
+			loads++;
+			if (!stale) return pr;
+			const fresh = { ...pr, local: { ...pr.local, head: "ahead" as const } };
+			if (drift === "identity") fresh.id = "PR_unrelated";
+			if (drift === "lease") fresh.head = { ...pr.head, oid: "c".repeat(40) };
+			if (drift === "destination") fresh.target = { ...pr.target, ref: "other" };
+			return fresh;
+		},
+		useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => routeRunId,
+		async canonicalWorktree() { return stale && drift === "worktree" ? "/other" : "/repo"; },
+		inspectBranchRecovery: async () => { if (stale && drift === "recovery") throw new Error("rebase outcome is unverified; do not replay it"); return false; },
+		createBranchUpdater: () => ({ state: { phase: "ready" }, async recoveryLaunchAction() { return "rebase"; },
+			async rebase() { if (drift === "uncertain") throw new Error("git rebase was killed; its outcome is unknown"); return { kind: "stale", reason: "HEAD mismatch before mutation" }; } }) as never,
+		createWorkPublisher: () => { throw new Error("must not authorize publication"); },
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.beforeSettle(ctx);
+		if (drift === "uncertain") {
+			await assert.rejects(app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx), /outcome is unknown/);
+		} else await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx);
+		stale = true;
+		const before = loads;
+		assert.equal(await app.beforeSettle(ctx), undefined);
+		assert.equal(loads, before + (["worktree", "uncertain"].includes(drift) ? 0 : 1));
+		if (drift !== "uncertain") assert.match(app.notifications.at(-1)!.message, /continuation stopped/);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("repeated proven pre-mutation drift permits only two fresh rediscoveries", async () => {
+	let runs = 0;
+	let loads = 0;
+	const ids = [1, 2, 3].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
+	const app = harness({
+		async load() { loads++; return currentPullRequest({ conditions: { conflict: true } }); },
+		useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => ids[runs++]!,
+		async canonicalWorktree() { return "/repo"; },
+		createBranchUpdater: () => ({ state: { phase: "ready" }, async recoveryLaunchAction() { return "rebase"; },
+			async rebase() { return { kind: "stale", reason: "local HEAD advanced before rebase, then restored" }; } }) as never,
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.beforeSettle(ctx);
+		for (let n = 0; n < 3; n++) {
+			await app.callTool("pi_pr_update_branch", { runId: ids[n], action: "rebase" }, ctx);
+			const before = loads;
+			const next = await app.beforeSettle(ctx);
+			assert.equal(next?.continue, n < 2 ? true : undefined);
+			assert.equal(loads, before + (n < 2 ? 1 : 0));
+		}
+		assert.equal(runs, 3);
+		assert.match(app.notifications.at(-1)!.message, /rediscovery limit exhausted/);
+		await assert.rejects(app.callTool("pi_pr_update_branch", { runId: ids[2], action: "rebase" }, ctx), /No PR workflow/);
+	} finally { await app.shutdown(ctx); }
 });
 
 test("one /pr continues from a final answer through hidden boundaries until external CI", async () => {

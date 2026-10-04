@@ -82,6 +82,7 @@ In-progress feedback sweeps keep private recovery under `<agent-dir>/config/pi-p
 ## Limits and recovery
 
 - `/pr` does not open a browser, run `/done` or `/sweep`, enable auto-merge, or use a merge queue. It only starts workflows when explicitly invoked.
+- If rebase preflight proves that clean local HEAD advanced from the frozen PR head before rebasing, `/pr` cancels that obsolete run and automatically rediscovers the next safe route in the same invocation. An existing local merge goes through inspection and validation before publication, not another rebase. Rediscovery is limited to two attempts and requires the same PR identity, destination, and remote head. Dirty or divergent state, changed authority, and uncertain mutations still stop; no mutation is blindly retried.
 - Pushes use a saved exact remote OID lease and revalidate the destination. Concurrent updates block publication instead of being overwritten. Creation does not change the base branch, and a configured push target does not change upstream settings.
 - Direct merge requires a clean, safe local Git state and fresh matching head; it always squashes. GitHub repository policy may still reject it. No branch or worktree is deleted.
 - A Git operation in progress blocks direct merge. An unverified conflict rebase needs manual recovery; a verified rebase can resume through `/pr`. Rebasing leaves other local branch refs unchanged, even with `rebase.updateRefs=true`. Branches with merge commits since the fork point require manual rebase resolution.

@@ -29,6 +29,8 @@ import {
 	loadCurrentPullRequest,
 	parsePullRequestObservation,
 	pullRequestObservation,
+	cloneCurrentPullRequest,
+	type CurrentPullRequest,
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
@@ -43,6 +45,7 @@ import {
 } from "./pr-ui.ts";
 import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater, type UpdateBranchOptions } from "./pr-update-branch.ts";
 
+const MAX_STALE_REDISCOVERIES = 2;
 const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
@@ -165,9 +168,10 @@ type WorkflowContextBase = {
 	queuedPrompt?: WorkflowPromptIdentity;
 	conflictRetained: boolean;
 	completed: boolean;
+	staleRediscoveries: number;
 };
 type WorkflowContext =
-	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow })
+	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow; authority: CurrentPullRequest; replan?: string })
 	| (WorkflowContextBase & { route: "create"; workflow: CreateWorkflow })
 	| (WorkflowContextBase & { route: "publish-work"; workflow: PullRequestWorkPublisher })
 	| (WorkflowContextBase & { route: "sweep"; workflow: SweepWorkflow })
@@ -324,12 +328,14 @@ export default function pullRequestExtension(
 			usedSinceSettlement: false,
 			conflictRetained: false,
 			completed: false,
+			staleRediscoveries: invocation.staleRediscoveries ?? 0,
 		};
 		switch (reservation.route) {
 			case "update-branch": {
 				const selected: Extract<WorkflowContext, { route: "update-branch" }> = {
 					...common,
 					route: "update-branch",
+					authority: cloneCurrentPullRequest(reservation.pullRequest),
 					workflow: createBranchUpdater({
 						cwd: worktree,
 						authority: reservation.pullRequest,
@@ -463,8 +469,13 @@ export default function pullRequestExtension(
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(UpdateBranchActions, raw);
 			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, async (selected) => {
+				if (selected.replan) throw new Error("PR update-branch run was cancelled; fresh routing is pending");
 				switch (params.action) {
-					case "rebase": return await selected.workflow.rebase();
+					case "rebase": {
+						const result = await selected.workflow.rebase();
+						if (result.kind === "stale") selected.replan = result.reason;
+						return result;
+					}
 					case "continue": return await selected.workflow.continue(params.resolvedPaths);
 					case "publish": {
 						const result = await selected.workflow.publish();
@@ -788,8 +799,9 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
+		const replanning = selected?.route === "update-branch" && selected.replan !== undefined;
 		if (event.outcome !== "completed" || !selected ||
-			(!selected.completed && !selected.queuedPrompt) || selected.sessionGeneration !== sessionGeneration) return;
+			(!selected.completed && !selected.queuedPrompt && !replanning) || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
 		if (invocation === undefined) return;
 		const generation = sessionGeneration;
@@ -800,13 +812,27 @@ export default function pullRequestExtension(
 		}, {
 			sessionGeneration: generation,
 			completedRoutes,
+			staleRediscoveries: selected.staleRediscoveries + (replanning ? 1 : 0),
+			replanAuthority: replanning ? selected.authority : undefined,
 			assertCurrent() {
 				if (generation !== sessionGeneration) throw new Error("PR workflow session changed during continuation");
 			},
 		});
 		try {
 			if (!selected.queuedPrompt) {
-				completedRoutes.add(selected.route);
+				if (replanning) {
+					selected.controller.signal.throwIfAborted();
+					ctx.signal?.throwIfAborted();
+					if (selected.staleRediscoveries >= MAX_STALE_REDISCOVERIES) {
+						throw new Error("stale-route rediscovery limit exhausted; no mutation was retried");
+					}
+					if (await resolveCanonicalWorktree(ctx.cwd, ctx.signal) !== selected.worktree) {
+						throw new Error("PR stale-route rediscovery cancelled: worktree changed");
+					}
+					callback.assertCurrent();
+					selected.controller.signal.throwIfAborted();
+					ctx.ui.notify(`PR update-branch cancelled: ${selected.replan}; rediscovering (${callback.staleRediscoveries}/${MAX_STALE_REDISCOVERIES})`, "info");
+				} else completedRoutes.add(selected.route);
 				if (selected.route === "create") pendingWorkspaceRename = true;
 				clearWorkflow(selected);
 				activeInvocations.set(invocation, "routing");
