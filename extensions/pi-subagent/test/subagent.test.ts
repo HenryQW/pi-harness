@@ -833,19 +833,24 @@ test("parallel direct delegation returns after first verified tab and delivers o
 	});
 });
 
-test("repeated Herdr wait timeouts stop after idle policy without imposing a task lifetime", async () => {
+test("repeated Herdr wait timeouts stop after idle policy without imposing a task lifetime", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await writeFile(join(agentDir, "config", "pi-subagent", "config.json"), JSON.stringify({ timeout: { idleMinutes: 0.0001 } }));
 		await herdrEnvironment(async (cwd) => {
 			const fake = fakeHerdr(cwd, undefined, undefined, "working", true);
-			const app = harness({ cwd, herdr: fake.exec });
+			const app = harness({ cwd, herdr: async (args) => {
+				const result = await fake.exec(args);
+				if (args[0] === "agent" && args[1] === "wait") t.mock.timers.tick(2);
+				return result;
+			} });
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("idle", { role: "worker", name: "Idle", task: "inspect" }, undefined, undefined, app.ctx);
 			await waitFor(() => app.sentMessages.length === 1);
 			assert.match(app.sentMessages[0]!.message.content, /made no progress/);
 			assert.match(app.sentMessages[0]!.message.content, /recover from Herdr tab w-test:t2/);
-			assert.ok(fake.calls.some((args) => args[1] === "wait"));
+			assert.equal(fake.calls.filter((args) => args[1] === "wait").length, 3);
 			assert.equal(app.sentMessages[0]!.message.details.tabs[0].tabId, "w-test:t2");
 		});
 	});
