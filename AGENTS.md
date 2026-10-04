@@ -26,6 +26,10 @@ Follow [the diagram guide](docs/diagram-style.md). Set each README-linked SVG ro
 
 For README/template-only changes, preserve unique guidance and verify structure, version/lockfile consistency, `pnpm run check:package-versions`, and `git diff --check`. Skip runtime tests, typechecks, and pack checks unless runtime or package structure changed or local README assets need pack verification.
 
+## First-party skills
+
+This repository owns [pi-extension-workbench](.agents/skills/pi-extension-workbench/SKILL.md); maintain it here, not in `HenryQW/skills` or `skills-lock.json`. Keep installed Pi docs, examples, and declarations as runtime authority. Validate skill changes with `python3 .agents/skills/pi-extension-workbench/scripts/validate.py`.
+
 ## Task runbooks
 
 - [GitHub issues](docs/agents/issue-tracker.md) and [triage labels](docs/agents/triage-labels.md)
