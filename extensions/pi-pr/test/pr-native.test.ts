@@ -7,15 +7,19 @@ import {
 	type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import pullRequestExtension from "../extensions/pr.ts";
+import { StaleSweepStart } from "../extensions/pr-comment-sweep.ts";
 
 // Exercise native prompt expansion, boundary dispatch/projection, and editor queue restoration;
 // no provider or GitHub requests are made.
-test("publication continues through hidden native context, never editable user queues", async () => {
+for (const staleSweep of [false, true]) test(staleSweep
+	? "stale sweep publication hands off a fresh live route before native settlement"
+	: "publication continues through hidden native context, never editable user queues", async () => {
 	const handlers = new Map<string, Function[]>();
 	const tools = new Map<string, Parameters<ExtensionAPI["registerTool"]>[0]>();
 	let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
 	let busy = false;
 	let published = false;
+	let localAhead = false;
 	let run = 0;
 	const notifications: string[] = [];
 	const dispatches: Promise<void>[] = [];
@@ -68,22 +72,38 @@ test("publication continues through hidden native context, never editable user q
 			base: { repository: "acme/project", ref: "main", oid: "a".repeat(40) },
 			head: { repository: "acme/project", ref: "feature", oid: "b".repeat(40) },
 			headFetchSource: "git@github.com:acme/project.git",
-			local: { worktree: published ? "clean" : "dirty", head: "equal" },
-			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: published, unresolvedThreads: published ? 1 : 0,
+			local: { worktree: published || staleSweep ? "clean" : "dirty", head: localAhead && !published ? "ahead" : "equal" },
+			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: published || staleSweep, unresolvedThreads: published || staleSweep ? 1 : 0,
 				ci: "success", review: "ready", policy: "ready" },
 		} }; },
 		async canonicalWorktree() { return "/repo"; },
 		newRunId: () => `${String(++run).repeat(8)}-1111-4111-8111-111111111111`,
 		inspectBranchRecovery: async () => false, inspectSweepRecovery: async () => false,
 		createWorkPublisher: () => ({ async publish() { published = true; return { kind: "published" }; } }) as never,
-		createCommentSweep: () => ({ async recoveryLaunchAction() { return "start"; } }) as never,
+		createCommentSweep: () => ({
+			async recoveryLaunchAction() { return "start"; },
+			async start() {
+				if (!published) throw new StaleSweepStart("Clean HEAD advanced before sweep recovery");
+				return { phase: "triage" };
+			},
+		}) as never,
 	});
 	await runner.emit({ type: "session_start" });
 	await new Promise((resolve) => setImmediate(resolve));
 	try {
 		await command.handler("", ctx as ExtensionCommandContext);
+		if (staleSweep) {
+			localAhead = true;
+			const cancelled = await tools.get("pi_pr_sweep")!.execute("cancelled-start", {
+				runId: "11111111-1111-4111-8111-111111111111", action: "start",
+			}, ctx.signal, undefined, ctx as never);
+			assert.deepEqual(cancelled.details, { kind: "stale", reason: "Clean HEAD advanced before sweep recovery" });
+			busy = true;
+			assert.equal(await session._runBeforeSettleBoundary(), true, "safe cancellation must not expire at final settlement");
+			assert.match(String((manager.getBranch().at(-1) as { content: unknown }).content), /pi-pr-publish-work/);
+		}
 		await tools.get("pi_pr_publish_work")!.execute("publish", {
-			runId: "11111111-1111-4111-8111-111111111111", action: "publish",
+			runId: staleSweep ? "22222222-1111-4111-8111-111111111111" : "11111111-1111-4111-8111-111111111111", action: "publish",
 		}, ctx.signal, undefined, ctx as never);
 		busy = true;
 		manager.appendMessage({
@@ -109,16 +129,27 @@ test("publication continues through hidden native context, never editable user q
 		if (entry.type !== "custom_message") throw new Error("Missing hidden workflow entry");
 		assert.equal(entry.display, false);
 		assert.match(String(entry.content), /<skill name="pi-pr-comment-sweep"/);
-		assert.match(String(entry.content), /runId=22222222-1111-4111-8111-111111111111 action=start/);
+		const sweepRunId = staleSweep ? "33333333-1111-4111-8111-111111111111" : "22222222-1111-4111-8111-111111111111";
+		assert.ok(String(entry.content).includes(`runId=${sweepRunId} action=start`));
 		assert.match(String(entry.content), /pi_pr_sweep/);
+		if (staleSweep) {
+			await assert.rejects(tools.get("pi_pr_sweep")!.execute("expired-start", {
+				runId: "11111111-1111-4111-8111-111111111111", action: "start",
+			}, ctx.signal, undefined, ctx as never), /wrong or stale/);
+			const resumed = await tools.get("pi_pr_sweep")!.execute("fresh-start", {
+				runId: sweepRunId, action: "start",
+			}, ctx.signal, undefined, ctx as never);
+			assert.deepEqual(resumed.details, { phase: "triage" }, "new sweep authority must remain live through publication handoff");
+		}
 		// Native boundary continuation does not emit before_agent_start. An unused launch
 		// must still be consumed and cleaned at final settlement, not stranded forever.
 		assert.equal(await session._runBeforeSettleBoundary(), false);
 		busy = false;
 		await runner.emit({ type: "agent_settled" });
 		await assert.rejects(tools.get("pi_pr_sweep")!.execute("unused", {
-			runId: "22222222-1111-4111-8111-111111111111", action: "start",
+			runId: sweepRunId, action: "start",
 		}, ctx.signal, undefined, ctx as never), /No PR workflow is active/);
-		assert.deepEqual(notifications, []);
+		if (staleSweep) assert.match(notifications[0]!, /PR sweep cancelled:.*rediscovering \(1\/2\)/);
+		else assert.deepEqual(notifications, []);
 	} finally { await runner.emit({ type: "session_shutdown" }); }
 });

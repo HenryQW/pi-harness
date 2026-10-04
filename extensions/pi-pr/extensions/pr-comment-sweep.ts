@@ -79,6 +79,9 @@ type SweepFinalProjection = {
 	items: Array<{ id: string; kind: FeedbackKind }>;
 	threads: Array<{ id: string; isResolved: boolean }>;
 };
+// Only a fresh start before recovery is written may cancel for safe rerouting.
+export class StaleSweepStart extends Error {}
+
 export type SweepStatus = {
 	phase: SweepPhase;
 	guard: SweepRunGuard;
@@ -795,6 +798,17 @@ export class PullRequestCommentSweep {
 		};
 	}
 
+	private async requireStartHead(authority: SweepAuthority): Promise<void> {
+		if ((await this.localPaths()).length) throw new Error("Comment sweep start requires a clean worktree");
+		const head = await readHead(this.exec, this.options());
+		if (head === authority.head.oid) return;
+		await this.currentAuthority(authority, authority.head.oid);
+		if (await isAncestor(this.exec, this.options(), authority.head.oid, head)) {
+			throw new StaleSweepStart("Local HEAD is ahead of the frozen PR head; cancelled before sweep recovery or publication");
+		}
+		throw new Error("Comment sweep start requires local HEAD to descend from the frozen PR head");
+	}
+
 	async start(): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
@@ -802,15 +816,11 @@ export class PullRequestCommentSweep {
 			if (!this.suppliedAuthority) throw new Error("Comment sweep start requires route authority");
 			const authority = this.suppliedAuthority;
 			if (authority.head.oid !== authority.target.remoteOid) throw new Error("Comment sweep requires PR head and remote lease to match");
-			if ((await this.localPaths()).length || await readHead(this.exec, this.options()) !== authority.head.oid) {
-				throw new Error("Comment sweep start requires a clean worktree at the PR head");
-			}
+			await this.requireStartHead(authority);
 			await this.currentAuthority(authority, authority.head.oid);
 			const snapshot = await this.collect(authority, authority.head.oid);
 			await this.currentAuthority(authority, authority.head.oid);
-			if ((await this.localPaths()).length || await readHead(this.exec, this.options()) !== authority.head.oid) {
-				throw new Error("Comment sweep authority changed during feedback fetch");
-			}
+			await this.requireStartHead(authority);
 			const state: SweepState = {
 				version: 2,
 				workflow: "pi-pr-comment-sweep",

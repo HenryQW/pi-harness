@@ -13,7 +13,7 @@ import { createHerdrClient } from "@henryqw/pi-herdr";
 import { Type, type Static, type TObject, type TSchema, type TUnion } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { PullRequestCiFixer, type PullRequestCiFixOptions } from "./pr-ci.ts";
-import { PullRequestCommentSweep, type PullRequestCommentSweepOptions } from "./pr-comment-sweep.ts";
+import { PullRequestCommentSweep, StaleSweepStart, type PullRequestCommentSweepOptions } from "./pr-comment-sweep.ts";
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	createPrCommandHandler,
@@ -174,7 +174,7 @@ type WorkflowContext =
 	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow; authority: CurrentPullRequest; replan?: string })
 	| (WorkflowContextBase & { route: "create"; workflow: CreateWorkflow })
 	| (WorkflowContextBase & { route: "publish-work"; workflow: PullRequestWorkPublisher })
-	| (WorkflowContextBase & { route: "sweep"; workflow: SweepWorkflow })
+	| (WorkflowContextBase & { route: "sweep"; workflow: SweepWorkflow; authority: CurrentPullRequest; replan?: string })
 	| (WorkflowContextBase & { route: "fix-ci"; workflow: FixCiWorkflow });
 
 type PullRequestExtensionDependencies = {
@@ -378,6 +378,7 @@ export default function pullRequestExtension(
 				const selected: Extract<WorkflowContext, { route: "sweep" }> = {
 					...common,
 					route: "sweep",
+					authority: cloneCurrentPullRequest(reservation.pullRequest),
 					workflow: createCommentSweep({
 						cwd: worktree,
 						authority: reservation.pullRequest,
@@ -439,6 +440,9 @@ export default function pullRequestExtension(
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);
+		if ((selected.route === "update-branch" || selected.route === "sweep") && selected.replan) {
+			throw new Error(`PR ${selected.route} run was cancelled; fresh routing is pending`);
+		}
 		const abortRun = () => selected.controller.abort(signal?.reason);
 		if (signal?.aborted) abortRun();
 		else signal?.addEventListener("abort", abortRun, { once: true });
@@ -469,7 +473,6 @@ export default function pullRequestExtension(
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(UpdateBranchActions, raw);
 			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, async (selected) => {
-				if (selected.replan) throw new Error("PR update-branch run was cancelled; fresh routing is pending");
 				switch (params.action) {
 					case "rebase": {
 						const result = await selected.workflow.rebase();
@@ -548,7 +551,14 @@ export default function pullRequestExtension(
 			const params = checkedAction(SweepActions, raw);
 			return executeWorkflowAction(params.runId, "sweep", ctx, signal, async (selected) => {
 				switch (params.action) {
-					case "start": return await selected.workflow.start();
+					case "start": {
+						try { return await selected.workflow.start(); }
+						catch (error) {
+							if (!(error instanceof StaleSweepStart)) throw error;
+							selected.replan = error.message;
+							return { kind: "stale", reason: error.message };
+						}
+					}
 					case "resume": return await selected.workflow.resume();
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
@@ -799,7 +809,7 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
-		const replanning = selected?.route === "update-branch" && selected.replan !== undefined;
+		const replanning = (selected?.route === "update-branch" || selected?.route === "sweep") && selected.replan !== undefined;
 		if (event.outcome !== "completed" || !selected ||
 			(!selected.completed && !selected.queuedPrompt && !replanning) || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
@@ -831,7 +841,7 @@ export default function pullRequestExtension(
 					}
 					callback.assertCurrent();
 					selected.controller.signal.throwIfAborted();
-					ctx.ui.notify(`PR update-branch cancelled: ${selected.replan}; rediscovering (${callback.staleRediscoveries}/${MAX_STALE_REDISCOVERIES})`, "info");
+					ctx.ui.notify(`PR ${selected.route} cancelled: ${selected.replan}; rediscovering (${callback.staleRediscoveries}/${MAX_STALE_REDISCOVERIES})`, "info");
 				} else completedRoutes.add(selected.route);
 				if (selected.route === "create") pendingWorkspaceRename = true;
 				clearWorkflow(selected);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -16,6 +16,7 @@ import {
 } from "../extensions/pr-feedback.ts";
 import {
 	PullRequestCommentSweep,
+	StaleSweepStart,
 	SWEEP_RECOVERY_MAX_BYTES,
 	type SweepLedgerEntry,
 	type SweepStatus,
@@ -247,6 +248,45 @@ function ledger(status: SweepStatus): SweepLedgerEntry[] {
 	assert.equal(status.feedbackCount, status.feedback.length);
 	return status.feedback.map(({ id, kind }) => ({ id, kind, disposition: "addressed", note: "verified" }));
 }
+
+for (const drift of ["initial", "feedback", "dirty", "diverged", "authority", "lease", "recovery"] as const) test(`fresh sweep ${drift} drift is replanned only before recovery exists`, async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const advance = () => { writeFileSync(join(app.root, "file.txt"), "advanced\n"); git(app.root, "commit", "-am", "advance locally"); };
+	const frozen = app.current();
+	const workflow = new PullRequestCommentSweep({ cwd: app.root, authority: frozen, agentDir: app.agentDir,
+		exec: async (command, args, options) => {
+			const response = await app.exec(command, args, options);
+			if (drift === "feedback" && command === "gh" && args[0] === "api") advance();
+			return response;
+		},
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: drift === "authority" ? { ...frozen, id: "PR_other" } : frozen }),
+		pause: async () => {},
+	});
+	const path = await workflow.recoveryPath();
+	let saved: string | undefined;
+	if (drift === "recovery") { await workflow.start(); saved = readFileSync(path, "utf8"); }
+	if (drift !== "feedback") advance();
+	if (drift === "dirty") writeFileSync(join(app.root, "file.txt"), "dirty\n");
+	if (drift === "diverged") {
+		const rootCommit = git(app.root, "commit-tree", "HEAD^{tree}", "-m", "unrelated root");
+		git(app.root, "reset", "--hard", rootCommit);
+	}
+	if (drift === "lease") git(app.root, "push", "origin", "HEAD:refs/heads/feature");
+	await assert.rejects(workflow.start(), (error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.equal(error instanceof StaleSweepStart, drift === "initial" || drift === "feedback");
+		assert.match(error.message, {
+			initial: /ahead.*cancelled before sweep recovery/, feedback: /ahead.*cancelled before sweep recovery/,
+			dirty: /requires a clean worktree/, diverged: /requires local HEAD to descend/,
+			authority: /canonical pull request authority changed/, lease: /remote lease changed/, recovery: /already exists; use resume/,
+		}[drift]);
+		return true;
+	});
+	if (saved !== undefined) assert.equal(readFileSync(path, "utf8"), saved);
+	else assert.equal(existsSync(path), false);
+	assert.equal(app.world.pushCalls + app.world.replyCalls + app.world.mutationCalls, 0);
+});
 
 test("a real sweep start persists recovery and read-only launch inspection chooses resume", async (t) => {
 	const app = fixture();
