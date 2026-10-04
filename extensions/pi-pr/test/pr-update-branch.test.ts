@@ -260,7 +260,10 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	});
 	let pushes = 0;
 	let rebases = 0;
+	let stagingAttempts = 0;
+	let duringDiscovery: (() => void) | undefined;
 	const exec: Exec = async (command, args, options) => {
+		if (command === "git" && args.includes("add")) stagingAttempts += 1;
 		if (command === "git" && args.includes("rebase")) {
 			rebases += 1;
 			if (args.includes("--onto")) {
@@ -283,6 +286,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 			if ((context.rebaseBranch ?? git("branch", "--show-current")) !== "feature") {
 				return { kind: "blocked", issue: { kind: "detached-head" } };
 			}
+			duringDiscovery?.();
 			return { kind: "current", pullRequest: liveAuthority };
 		},
 	});
@@ -294,6 +298,21 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	liveAuthority = { ...authority, base: { ...authority.base, oid: "d".repeat(40) } };
 	await assert.rejects(workflow.continue(["file.txt"]), /Branch rebase authority changed/);
 	liveAuthority = authority;
+	const pausedHead = git("rev-parse", "HEAD");
+	const markerPath = join(worktree, git("rev-parse", "--git-path", "rebase-merge/head-name"));
+	const marker = readFileSync(markerPath, "utf8");
+	for (const change of ["head", "marker", "missing-marker"]) {
+		duringDiscovery = () => {
+			if (change === "head") git("update-ref", "HEAD", featureHead);
+			else if (change === "marker") writeFileSync(markerPath, "refs/heads/another-branch\n");
+			else rmSync(markerPath);
+		};
+		await assert.rejects(workflow.continue(["file.txt"]), /Branch rebase context changed/);
+		assert.equal(stagingAttempts, 0);
+		git("update-ref", "HEAD", pausedHead);
+		writeFileSync(markerPath, marker);
+	}
+	duringDiscovery = undefined;
 	const verified = await workflow.continue(["file.txt"]);
 	assert.equal(verified.kind, "verified");
 	assert.equal(git("rev-parse", "unrelated-backup"), featureHead);

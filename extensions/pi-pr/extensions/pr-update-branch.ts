@@ -277,17 +277,25 @@ export class PullRequestBranchUpdater {
 			throw new Error("Resolved paths must include every original conflict path");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
-			if ((await readFile(resolve(this.cwd, path), "utf8")).trim() !== `refs/heads/${this.authority.target.branch}` ||
-				await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
-				throw new Error("Branch rebase context changed");
-			}
+			const assertContext = async () => {
+				const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
+				const marker = await readFile(resolve(this.cwd, path), "utf8").catch((error) => {
+					if (error.code === "ENOENT") throw new Error("Branch rebase context changed", { cause: error });
+					throw error;
+				});
+				if (marker.trim() !== `refs/heads/${this.authority.target.branch}` ||
+					await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
+					throw new Error("Branch rebase context changed");
+				}
+			};
+			await assertContext();
 			const discovery = await this.load(this.pi(), { ...this.context(), rebaseBranch: this.authority.target.branch });
 			if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
 				throw new Error("Branch rebase authority changed");
 			}
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
+			await assertContext();
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
