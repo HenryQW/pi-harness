@@ -98,6 +98,7 @@ test("a base reported BEHIND without a conflict is updated like a conflict", asy
 		if (command === "git" && args[0] === "status") return result();
 		if (command === "gh" && args[0] === "config") return result("ssh\n");
 		if (command === "git" && ["fetch", "cat-file", "merge-base"].includes(args[0]!)) return result();
+		if (command === "git" && args[0] === "ls-remote") return result(`${oldHead}\trefs/heads/feature\n`);
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const behind = pullRequest({ conditions: { ...pullRequest().conditions, conflict: false, baseUpdateRequired: true } });
@@ -107,8 +108,13 @@ test("a base reported BEHIND without a conflict is updated like a conflict", asy
 		t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 		const workflow = new PullRequestBranchUpdater({ cwd, authority: behind, exec, agentDir,
 			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: fresh }) });
-		if (expectVerified) assert.deepEqual(await workflow.rebase(), { kind: "verified", head: oldHead, fastForward: false });
-		else await assert.rejects(workflow.rebase(), /frozen pull request authority changed/);
+		if (expectVerified) {
+			assert.deepEqual(await workflow.rebase(), { kind: "verified", head: oldHead, fastForward: false });
+			assert.deepEqual(await workflow.publish(), { kind: "published", head: oldHead });
+		} else {
+			assert.deepEqual(await workflow.rebase(), { kind: "stale", reason: "Required base update cleared; cancelled before rebase or publication", authority: settled });
+			await assert.rejects(workflow.rebase(), /already consumed/);
+		}
 	}
 });
 

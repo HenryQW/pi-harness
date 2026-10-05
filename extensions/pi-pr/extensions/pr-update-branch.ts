@@ -169,7 +169,7 @@ export class PullRequestBranchUpdater {
 			target: { ...this.authority.target, remoteOid: beforeRebase ? fresh.target.remoteOid : expectedHead },
 		} : this.authority;
 		if (!samePullRequestSnapshot(comparison, fresh) || fresh.lifecycle !== "open" ||
-			(!beforeRebase && (this.authority.base.oid !== fresh.base.oid || !published && !fresh.conditions.conflict))) {
+			(!beforeRebase && (this.authority.base.oid !== fresh.base.oid || !published && !(fresh.conditions.conflict || fresh.conditions.baseUpdateRequired)))) {
 			throw new Error("Branch update cancelled: frozen pull request authority changed (identity, lifecycle, destination, or post-rebase authority)");
 		}
 		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
@@ -192,7 +192,9 @@ export class PullRequestBranchUpdater {
 				throw new Error("Branch update cancelled: local HEAD does not match the expected head");
 			}
 			if (fresh.base.oid !== this.authority.base.oid) reasons.push("Base OID changed");
-			if (!fresh.conditions.conflict) reasons.push("PR conflict cleared");
+			if (!fresh.conditions.conflict && !fresh.conditions.baseUpdateRequired) {
+				reasons.push(this.authority.conditions.conflict ? "PR conflict cleared" : "Required base update cleared");
+			}
 		} else if (head !== expectedHead) {
 			throw new Error("Branch update cancelled: local HEAD does not match the expected head");
 		}
