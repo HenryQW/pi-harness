@@ -5,11 +5,13 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import childToolPolicy from "../extensions/role-tools.ts";
+import gitRead from "../extensions/git-read.ts";
 import {
 	createRoleLaunch,
 	EXECUTION_BUDGET_ENV,
 	finalizeRoleLaunch,
 	loadRoleMcpConfig,
+	loadBuiltinRole,
 	parseRoleMcpAllowlist,
 	prepareRoleLaunch,
 	resolveConfiguredRoleLaunch,
@@ -462,6 +464,41 @@ test("empty Role tools activate only trusted extension tools and caller addition
 	assert.ok(sessionStart);
 	sessionStart();
 	assert.deepEqual(activeTools, ["caller_protocol", "role_extension", "caller_extension"]);
+});
+
+test("only a Role declaring git_read loads and activates the internal Git tool", () => {
+	const mainPi = { getCommands: () => [] } as unknown as Pick<ExtensionAPI, "getCommands">;
+	const originalArgv = process.argv;
+	try {
+		for (const name of ["reviewer", "scout"] as const) {
+			const launch = createRoleLaunch(mainPi, { isProjectTrusted: () => true }, {
+				role: loadBuiltinRole(name), route: { model, thinkingLevel: "high" },
+			});
+			const selected = roleToolPolicyFromArgv(launch.args);
+			assert.equal(valuesAfter(launch.args, "--extension").some((path) => path.endsWith("/git-read.ts")), name === "reviewer");
+			process.argv = ["node", "pi", ...launch.args];
+			const registry = selected.filter((tool) => tool !== "git_read").map((tool) => ({ name: tool, sourceInfo: { source: "builtin" } }));
+			let active: string[] = [];
+			let start!: () => void;
+			const pi = {
+				registerTool(tool: { name: string }) { registry.push({ name: tool.name, sourceInfo: { source: "/git-read.ts" } }); },
+				registerFlag() {},
+				getFlag: () => JSON.stringify(selected),
+				getAllTools: () => registry,
+				getActiveTools: () => active,
+				setActiveTools: (tools: string[]) => { active = tools; },
+				on(event: string, handler: () => void) { if (event === "session_start") start = handler; },
+			} as unknown as ExtensionAPI;
+			gitRead(pi);
+			childToolPolicy(pi);
+			start();
+			assert.equal(registry.some((tool) => tool.name === "git_read"), name === "reviewer");
+			assert.equal(active.includes("git_read"), name === "reviewer");
+			assert.equal(active.includes("bash"), false);
+		}
+		process.argv = ["node", "pi"];
+		gitRead({ registerTool() { assert.fail("Main must not register git_read"); } } as unknown as ExtensionAPI);
+	} finally { process.argv = originalArgv; }
 });
 
 test("Role MCP allowlists load the native MCP extension with direct exposure only", async (t) => {

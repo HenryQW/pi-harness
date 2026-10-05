@@ -70,6 +70,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - Route precedence is call model class, then Role default, then registered Model Task assignment/default. A direct model replaces only the route model and must support its thinking level.
 - Main-only delegation/recovery tools and `ask_question` are excluded from children. Recursive delegation is unavailable.
 - Package built-ins are `implementer`, `reviewer`, and `scout`; a same-named user Role overrides a built-in.
+- `git_read` is an internal read-only child tool loaded only for Roles declaring it; the built-in reviewer opts in. Fixed structured Git operations provide bounded local evidence without Bash, network, external filters, or mutations. Named-ref context supplements but never replaces the authoritative exact isolated review patch.
 
 ### Executor boundaries
 
