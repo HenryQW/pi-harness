@@ -35,7 +35,7 @@ Commands are for you; tools and the packaged skill are for Main. You do not need
 | `subagent_status` | tool | Read durable isolated state and the exact allowed continuation without replaying work. Declares an output schema, so `codemode` scripts receive the same bounded public projection as structured content. |
 | `subagent_resume` | tool | Perform the reported `retry`, `verify`, or `finalize` continuation; does not replace staging or integration. |
 | `subagent_stage` | tool | Stage or resolve an exact candidate, or reject/revise it; rejection of a staged candidate freezes that generation. |
-| `subagent_integrate` | tool | Advance staged dependents, refresh after clean Main drift, validate, record one correction, promote, reconcile interrupted promotion, clean up proven promotion, or explicitly release rejected/superseded resources. |
+| `subagent_integrate` | tool | Advance staged dependents, refresh after clean Main drift or evidence-less validation failure, validate in the background, record one correction, promote, reconcile interrupted promotion, clean up proven promotion, or explicitly release rejected/superseded resources. |
 | `subagent_abort` | tool | Abort an isolated request only when no retained candidates or integration worktrees remain; cannot discard them. |
 | `pi-subagent` | skill | Guide Main through delegation, authorization, checks, integration, and recovery. |
 
@@ -147,6 +147,10 @@ For a locally active unsealed isolated changeset, choose **Send follow-up instru
 A queued follow-up runs after the current turn settles and must produce a new clean commit that passes preliminary checks again. When no queued revision remains, the checked candidate seals immediately; there is no guaranteed post-completion editing window. Late follow-ups fail visibly.
 
 ### Isolated recovery
+
+`subagent_integrate validate` acknowledges only after saving the exact generation's validation intent, then runs checks and any final judgment in the background. A later turn cancellation does not cancel acknowledged validation; session replacement or shutdown still stops it. Completion sends a follow-up to the launching session. Use `subagent_status` if delivery is missed; acknowledgement is not passing evidence.
+
+If validation was interrupted, first prove the old coordinator/check processes have stopped; never take over a live productive lease. Use guarded `reconcile` on the saved generation and `combinedTip`. Missing checks/review never authorize `correct` or `promote`. For a `validation_failed` generation with **no recorded checks, review, or prior combined correction**, `refresh` also accepts identical `expectedMain` and `newMain`. Supply the exact old combined `expectedTip` and the next generation number. Both Main and the retained integration tip must remain exact and clean. This explicitly allocates a new checkout; it does not resume old checks. Restage selected immutable candidates and run fresh full-suite checks and required final judgment before promotion. The old generation stays retained, the two-checkout limit still applies, and correction allowances are not reset. Other failures retain their existing recovery requirements.
 
 After a coordinator interruption, run `/subagent recover` once. It acquires the repository productive lease before changing any orphaned `pending` or `running` state, preserves unreadable state files and retained candidates, and reports blockers and existing continuations to Main without replaying prompts, merges, promotion, or cleanup. If another productive run holds the lease, it only reads status and reports the live owner; wait rather than taking over. Repeating the command is safe. Main uses `subagent_status` for exact identities and the recovery tools in the interface table above for deliberate decisions; the command never stages or promotes. Direct Herdr tab recovery remains in `/subagent`.
 

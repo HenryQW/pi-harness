@@ -6,6 +6,8 @@ Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its
 
 ## Install
 
+Requires Pi 1.0.0 or later in the 1.x series.
+
 ```bash
 pi install npm:@henryqw/pi-ask-question
 pi install npm:@henryqw/pi-task-models
@@ -53,7 +55,9 @@ It resolves the configured Pi registry primary route, then fallback, through `/t
 
 A missing shared task-model config warns once at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before adding memory.
 
-An overlap or contradiction pauses through the shared `ask_question` UI. Choose **Merge with existing entries**, **Discard the new entry, keep current**, or **Replace current entry**; the UI also offers **Something else.** for a custom answer. The recommended choice comes first: merge for overlap, replace for contradiction, and discard for SYSTEM conflicts. pi-memory never edits SYSTEM.md.
+An overlap or contradiction found during an active response queues the question instead of blocking the agent. The tool reports `queued: true` and `saved: false`: nothing has been written, and the agent should finish replying without retrying or asking you itself. After the response fully settles (`agent_settled`), pi-memory drains conflicts in FIFO order, re-reviews live sources, and uses the shared `ask_question` UI if a conflict remains. An idle `/remember` request can ask immediately. Choose **Merge with existing entries**, **Discard the new entry, keep current**, or **Replace current entry**; the UI also offers **Something else.** for a custom answer. The recommended choice comes first: merge for overlap, replace for contradiction, and discard for SYSTEM conflicts. pi-memory never edits SYSTEM.md.
+
+Unconflicted additions still save immediately. Queued conflicts live only in the current session; cancellation drops them, and shutdown, reload, or session replacement clears them. Deferred results and failures appear as UI notifications, without starting another agent turn.
 
 Exact duplicate single adds and duplicate-only add batches are idempotent and skip model review. For a single add conflicting with exactly one entry in the same store, approved merge or replacement is re-reviewed against the other sources and written under the store lock only if those sources remain unchanged. Discard writes nothing. Custom answers, cross-target or ambiguous conflicts, batches, cancellation, and non-interactive UI leave the candidate unwritten. pi-memory cannot resolve a SYSTEM.md conflict.
 
@@ -61,7 +65,7 @@ Exact duplicate single adds and duplicate-only add batches are idempotent and sk
 
 `/remember <instruction>` uses the bounded `pi-memory/prepareCandidate` Model Task to propose a target and exact entry or decline the request. It checks for source changes, then saves through the same reviewed memory tool. It does not dispatch an open-ended instruction to the session agent. The configured `balanced` task-model profile must be available.
 
-If Pi is busy, it queues the trimmed instruction. Once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. If the session starts, shuts down, or changes model during review, `/remember` rejects the write even when Pi provides no idle cancellation signal; retry in the current session. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
+If Pi is busy, it queues the trimmed instruction. Once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. If another response starts, the session shuts down or is replaced, or the model changes during review, `/remember` rejects the write even when Pi provides no idle cancellation signal; retry in the current session. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
 
 ### `/dream`
 
@@ -79,7 +83,7 @@ Final memory qualification remains a current-session-agent workflow; `/remember`
 
 Each turn's shorter memory check asks the current agent to save newly learned durable user identity, preferences, or corrections to `target=user`, and stable cross-project environment or workflow facts to `target=memory`.
 
-Use the memory tool immediately only when something qualifies. Save inferred habits only after two independent signals from the conversation and/or existing profile. Skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.
+Use the memory tool immediately only when something qualifies. If a conflict is queued, continue the response; it is not saved yet and needs no retry or agent-issued question. Save inferred habits only after two independent signals from the conversation and/or existing profile. Skip project- or repository-specific facts, task-local behavior, progress, and temporary preferences.
 
 ## Config
 
