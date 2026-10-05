@@ -60,6 +60,10 @@ function herdrExec(agentStart?: ExecResult) {
 	};
 }
 
+/** `startPiAgent` proves the pane shell with `pane run` and `pane wait-output` before each `agent start`. */
+const isShellProbe = (args: string[]) => args[0] === "pane" && (args[1] === "run" || args[1] === "wait-output");
+const OK: ExecResult = { code: 0, stdout: "", stderr: "" };
+
 class FakeStore implements ContextStorePort {
 	readonly payloadPath = "/tmp/pi-herdr-btw-test/launch-123/payload.json";
 	readonly created: BtwPayload[] = [];
@@ -364,9 +368,11 @@ test("parent command captures native context and launches Herdr without leaking 
 		assert.ok(payload?.launchId);
 		assert.ok((payload?.capability.length ?? 0) >= 64);
 		assert.deepEqual(store.removed, []);
-		assert.equal(harness.execCalls.length, 2);
+		assert.equal(harness.execCalls.length, 4);
 		const splitArgs = harness.execCalls[0]?.args ?? [];
-		const startArgs = harness.execCalls[1]?.args ?? [];
+		assert.deepEqual(harness.execCalls[1]?.args.slice(0, 3), ["pane", "run", "w1:p9"]);
+		assert.deepEqual(harness.execCalls[2]?.args.slice(0, 3), ["pane", "wait-output", "w1:p9"]);
+		const startArgs = harness.execCalls[3]?.args ?? [];
 		assert.deepEqual(startArgs.slice(startArgs.indexOf("--model"), startArgs.indexOf("--model") + 2), [
 			"--model",
 			"test-provider/test-model",
@@ -606,7 +612,7 @@ test("parent uses authenticated task-profile fallback when primary authenticatio
 		harness.cleanup();
 
 		assert.deepEqual(authenticated, ["test-provider/test-model", "anthropic/claude-haiku"]);
-		const startArgs = harness.execCalls[1]?.args ?? [];
+		const startArgs = harness.execCalls[3]?.args ?? [];
 		assert.deepEqual(startArgs.slice(startArgs.indexOf("--model"), startArgs.indexOf("--model") + 2), [
 			"--model",
 			"anthropic/claude-haiku",
@@ -683,6 +689,7 @@ test("parent retains payload when session cancellation cannot close its known pa
 		const startCalled = new Promise<void>((resolve) => (startCalledResolve = resolve));
 		const harness = await createHarness(store, async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "split") return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			if (isShellProbe(args)) return OK;
 			if (args[0] === "agent" && args[1] === "start") {
 				startCalledResolve?.();
 				return new Promise((resolve) => (resolveStart = resolve));
@@ -738,8 +745,8 @@ test("parent command closes the split pane and removes payload when agent start 
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.execCalls.length, 3);
-		assert.deepEqual(harness.execCalls[2]?.args, ["pane", "close", "w1:p9"]);
+		assert.equal(harness.execCalls.length, 5);
+		assert.deepEqual(harness.execCalls[4]?.args, ["pane", "close", "w1:p9"]);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.deepEqual(ctx.notifications.at(-1), {
 			message: "/btw failed: pi not found",
@@ -753,6 +760,7 @@ test("parent retains payload and warns when failed agent cleanup cannot close it
 		const store = new FakeStore();
 		const harness = await createHarness(store, async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "split") return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
+			if (isShellProbe(args)) return OK;
 			if (args[0] === "agent" && args[1] === "start") return { code: 1, stdout: "", stderr: "pi not found" };
 			return { code: 1, stdout: "", stderr: "close failed" };
 		});
@@ -773,16 +781,17 @@ test("parent closes split pane when agent start throws", async () => {
 		const harness = await createHarness(store, async (_command, args) => {
 			if (args[0] === "pane" && args[1] === "split") return { code: 0, stdout: PANE_SPLIT_STDOUT, stderr: "" };
 			if (args[0] === "pane" && args[1] === "close") return { code: 0, stdout: "", stderr: "" };
+			if (isShellProbe(args)) return OK;
 			throw new Error("spawn failed");
 		});
 		const ctx = createCommandContext();
 		await harness.commands.get("btw")?.handler("question", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.execCalls.length, 3);
+		assert.equal(harness.execCalls.length, 5);
 		assert.deepEqual(harness.execCalls[0]?.args.slice(0, 2), ["pane", "split"]);
-		assert.deepEqual(harness.execCalls[1]?.args.slice(0, 2), ["agent", "start"]);
-		assert.deepEqual(harness.execCalls[2]?.args, ["pane", "close", "w1:p9"]);
+		assert.deepEqual(harness.execCalls[3]?.args.slice(0, 2), ["agent", "start"]);
+		assert.deepEqual(harness.execCalls[4]?.args, ["pane", "close", "w1:p9"]);
 		assert.deepEqual(store.removed, [store.payloadPath]);
 		assert.match(ctx.notifications.at(-1)?.message ?? "", /spawn failed/);
 	});
@@ -997,7 +1006,7 @@ test("parent command applies configured tools, split, and auto-submit", async ()
 
 		assert.deepEqual(store.created[0]?.config, configStore.config);
 		const splitArgs = harness.execCalls[0]?.args ?? [];
-		const args = harness.execCalls[1]?.args ?? [];
+		const args = harness.execCalls[3]?.args ?? [];
 		assert.deepEqual(
 			splitArgs.slice(splitArgs.indexOf("--direction"), splitArgs.indexOf("--direction") + 2),
 			["--direction", "down"],
@@ -1018,7 +1027,7 @@ test("parent uses task profile without a current model", async () => {
 		harness.cleanup();
 
 		assert.equal(store.created[0]?.metadata.model, null);
-		const args = harness.execCalls[1]?.args ?? [];
+		const args = harness.execCalls[3]?.args ?? [];
 		assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), [
 			"--model",
 			"test-provider/test-model",
@@ -1040,7 +1049,7 @@ test("parent omits the launch-draft sentinel when auto-submit is off or there is
 		// auto-submit off (default) with a question -> no sentinel
 		await command?.handler("question", createCommandContext());
 		assert.equal(
-			(harness.execCalls[1]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
+			(harness.execCalls[3]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
 			false,
 		);
 
@@ -1049,7 +1058,7 @@ test("parent omits the launch-draft sentinel when auto-submit is off or there is
 		await command?.handler("", createCommandContext());
 		harness.cleanup();
 		assert.equal(
-			(harness.execCalls[3]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
+			(harness.execCalls[7]?.args ?? []).some((arg) => arg.includes("--launch-draft")),
 			false,
 		);
 	});
