@@ -41,11 +41,13 @@ test("/clone-tab retries a briefly busy root pane, copies only the active path, 
 				"exec:pane get",
 				"exec:workspace get",
 				"exec:tab create",
+				"exec:pane process-info",
 				"exec:pane run",
-				"exec:pane wait-output",
+				"exec:pane read",
 				"exec:agent start",
+				"exec:pane process-info",
 				"exec:pane run",
-				"exec:pane wait-output",
+				"exec:pane read",
 				"exec:agent start",
 				"exec:tab focus",
 			]);
@@ -64,7 +66,7 @@ test("/clone-tab retries a briefly busy root pane, copies only the active path, 
 			assert.equal(start[8], "--session");
 			const cloneFile = start[9]!;
 			assert.equal(cloneFile.startsWith("/"), true);
-			assert.deepEqual(app.calls[9].args, ["tab", "focus", "tab-new"]);
+			assert.deepEqual(app.calls[11].args, ["tab", "focus", "tab-new"]);
 			await stat(cloneFile);
 
 			const clone = SessionManager.open(cloneFile);
