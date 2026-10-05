@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "25.1.2",
+  "version": "26.1.0",
   "description": "Delegate bounded direct work or durable checked isolated task graphs to Pi roles.",
   "keywords": [
     "pi-package",
@@ -40,9 +40,9 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.99.1 <0.100.0 || ^1.0.0",
-    "@earendil-works/pi-coding-agent": ">=0.99.1 <0.100.0 || ^1.0.0",
-    "@earendil-works/pi-tui": ">=0.99.1 <0.100.0 || ^1.0.0",
+    "@earendil-works/pi-ai": "^1.0.0",
+    "@earendil-works/pi-coding-agent": "^1.0.0",
+    "@earendil-works/pi-tui": "^1.0.0",
     "typebox": "^1.3.15"
   },
   "repository": {
@@ -74,9 +74,9 @@
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.0",
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@earendil-works/pi-tui": "1.0.0",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
+    "@earendil-works/pi-tui": "1.0.2",
     "@types/proper-lockfile": "^4.1.4"
   }
 }

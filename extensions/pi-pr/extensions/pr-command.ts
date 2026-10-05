@@ -3,6 +3,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { executeGitHubMerge } from "./pr-merge.ts";
+import type { PrRun } from "./pr-run.ts";
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	linkInferredPullRequest,
@@ -36,7 +37,9 @@ type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage"
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	sessionGeneration: number;
 	assertCurrent(): void;
-	completedRoutes?: ReadonlySet<string>;
+	run?: PrRun;
+	staleRediscoveries?: number;
+	replanAuthority?: CurrentPullRequest;
 };
 export type PrCommandHandler = (
 	args: string,
@@ -240,6 +243,11 @@ export function createPrCommandHandler(
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 		const discovery = await load(pi, ctx);
 		onRouteResolved?.assertCurrent();
+		if (discovery.kind === "current") onRouteResolved?.run?.observeRemote(discovery.pullRequest.head.oid);
+		if (onRouteResolved?.replanAuthority && (discovery.kind !== "current" ||
+			!samePullRequestSnapshot(onRouteResolved.replanAuthority, discovery.pullRequest))) {
+			throw new Error("PR stale-route rediscovery cancelled: frozen PR identity, destination, or remote head changed");
+		}
 		if (linkedAuthority && (discovery.kind !== "current" || discovery.pullRequest.target.provenance !== "configured" ||
 			!isSameConfirmedMerge(linkedAuthority, discovery.pullRequest))) {
 			throw new Error("Link branch continuation cancelled: configured pull request context changed");
@@ -290,7 +298,7 @@ export function createPrCommandHandler(
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
 		const route = nextStep as WorkflowNextStep;
-		if (onRouteResolved?.completedRoutes?.has(route)) {
+		if (onRouteResolved?.run?.hasCompleted(route, discovery.kind === "current" ? discovery.pullRequest.head.oid : null)) {
 			ctx.ui.notify(`PR ${route} already ran; inspect fresh state before retrying`, "warning");
 			return "none";
 		}

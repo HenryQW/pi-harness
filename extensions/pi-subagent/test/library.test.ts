@@ -5,11 +5,13 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import childToolPolicy from "../extensions/role-tools.ts";
+import gitRead from "../extensions/git-read.ts";
 import {
 	createRoleLaunch,
 	EXECUTION_BUDGET_ENV,
 	finalizeRoleLaunch,
 	loadRoleMcpConfig,
+	loadBuiltinRole,
 	parseRoleMcpAllowlist,
 	prepareRoleLaunch,
 	resolveConfiguredRoleLaunch,
@@ -464,6 +466,41 @@ test("empty Role tools activate only trusted extension tools and caller addition
 	assert.deepEqual(activeTools, ["caller_protocol", "role_extension", "caller_extension"]);
 });
 
+test("only a Role declaring git_read loads and activates the internal Git tool", () => {
+	const mainPi = { getCommands: () => [] } as unknown as Pick<ExtensionAPI, "getCommands">;
+	const originalArgv = process.argv;
+	try {
+		for (const name of ["reviewer", "scout"] as const) {
+			const launch = createRoleLaunch(mainPi, { isProjectTrusted: () => true }, {
+				role: loadBuiltinRole(name), route: { model, thinkingLevel: "high" },
+			});
+			const selected = roleToolPolicyFromArgv(launch.args);
+			assert.equal(valuesAfter(launch.args, "--extension").some((path) => path.endsWith("/git-read.ts")), name === "reviewer");
+			process.argv = ["node", "pi", ...launch.args];
+			const registry = selected.filter((tool) => tool !== "git_read").map((tool) => ({ name: tool, sourceInfo: { source: "builtin" } }));
+			let active: string[] = [];
+			let start!: () => void;
+			const pi = {
+				registerTool(tool: { name: string }) { registry.push({ name: tool.name, sourceInfo: { source: "/git-read.ts" } }); },
+				registerFlag() {},
+				getFlag: () => JSON.stringify(selected),
+				getAllTools: () => registry,
+				getActiveTools: () => active,
+				setActiveTools: (tools: string[]) => { active = tools; },
+				on(event: string, handler: () => void) { if (event === "session_start") start = handler; },
+			} as unknown as ExtensionAPI;
+			gitRead(pi);
+			childToolPolicy(pi);
+			start();
+			assert.equal(registry.some((tool) => tool.name === "git_read"), name === "reviewer");
+			assert.equal(active.includes("git_read"), name === "reviewer");
+			assert.equal(active.includes("bash"), false);
+		}
+		process.argv = ["node", "pi"];
+		gitRead({ registerTool() { assert.fail("Main must not register git_read"); } } as unknown as ExtensionAPI);
+	} finally { process.argv = originalArgv; }
+});
+
 test("Role MCP allowlists load the native MCP extension with direct exposure only", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-mcp-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
@@ -555,6 +592,11 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		[{ url: "https://docs.test", description: 42 }, /field "description" must be a string\./],
 		[{ url: "http://docs.test/mcp", auth: { provider: "radius" } }, /field "auth" requires "url" to use https, or http on localhost, 127\.0\.0\.1, or \[::1\]\./],
 		[{ url: "https://docs.test", oauth: { clientName: " " } }, /field "oauth\.clientName" must be a non-empty string\./],
+		[{ url: "https://docs.test", oauth: { clientRegistration: "unknown" } }, /field "oauth\.clientRegistration" must be "dcr" or "cimd"/],
+		[{ url: "https://docs.test", oauth: { clientRegistration: "cimd", clientId: "custom" } }, /cannot be combined/],
+		[{ url: "https://docs.test", oauth: { clientRegistration: "cimd", clientName: "custom" } }, /cannot be combined/],
+		[{ url: "https://docs.test", oauth: { clientRegistration: "cimd", callbackUrl: "http://[::1]:8080/callback" } }, /requires "oauth\.callbackUrl" on localhost or 127\.0\.0\.1 with path \/callback/],
+		[{ url: "https://docs.test", oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost:8080/other" } }, /requires "oauth\.callbackUrl"/],
 		[{ url: "https://docs.test", oauth: { authServerMetadataUrl: "http://idp.test/.well-known/openid-configuration" } }, /field "oauth\.authServerMetadataUrl" must be an https URL/],
 		[{ url: "https://docs.test", oauth: { callbackUrl: "https://docs.test/callback" } }, /field "oauth\.callbackUrl" must be an http URL on localhost/],
 	] as const) {
@@ -565,6 +607,16 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 	const secure = { url: "https://docs.test/mcp", description: "Product docs", auth: { provider: "radius" } };
 	const loopback = { url: "http://[::1]:8080/mcp", auth: { provider: "radius" } };
 	const oauth = { url: "https://mcp.example.test/mcp", oauth: { clientName: "Claude Code", authServerMetadataUrl: "https://idp.test/.well-known/openid-configuration" } };
+	for (const clientRegistration of ["dcr", "cimd"]) {
+		const config = { url: "https://docs.test", oauth: { clientRegistration, callbackUrl: "http://127.0.0.1:8080/callback", callbackPort: 8080 } };
+		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: config } }));
+		if (clientRegistration === "cimd") {
+			assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion: "1.0.0" }), /mcp\.json: MCP server "docs".*cimd.*requires Pi 1\.0\.1.*current Pi is 1\.0\.0/);
+		}
+		for (const piVersion of clientRegistration === "cimd" ? ["1.0.1", "1.0.2"] : ["1.0.0"]) {
+			assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion }).servers[0]!.config, { ...config, exposure: "direct" });
+		}
+	}
 	await writeFile(mcpPath, JSON.stringify({ mcpServers: { secure, loopback, oauth, "dev-docs": secure, dev_docs: secure, "dev docs": secure } }));
 	assert.deepEqual(
 		loadRoleMcpConfig(agentDir, ["secure", "loopback", "oauth"]).servers.map((server) => server.config),

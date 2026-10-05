@@ -20,8 +20,7 @@ Run `/task-models` after installation. Configure each profile that your installe
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-auto-compact`](https://pi.henry.wang/extensions/pi-auto-compact) | Consumer | Its local compaction task defaults to `fast`. |
-| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Consumer | Its local side-thread task defaults to `fast`. |
-| [`@henryqw/pi-herdr-rename`](https://pi.henry.wang/extensions/pi-herdr-rename) | Consumer | Its local rename task defaults to `fast`. |
+| [`@henryqw/pi-herdr-tools`](https://pi.henry.wang/extensions/pi-herdr-tools) | Consumer | Its side-thread and rename tasks default to `fast`. |
 | [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Consumer | Its local candidate-review task defaults to `balanced`. |
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Numbered Codex slots dedupe to one route. |
 | [`@henryqw/pi-prompt-creator`](https://pi.henry.wang/extensions/pi-prompt-creator) | Consumer | Its local prompt-drafting task defaults to `fast`. |

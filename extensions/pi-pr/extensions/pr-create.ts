@@ -1,3 +1,4 @@
+import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	branchTrackingRef,
@@ -75,6 +76,7 @@ type CreatePullRequestResult =
 	| { kind: "published"; url: string };
 
 export type CreatePullRequestOptions = {
+	run?: PrRun;
 	cwd: string;
 	target: PullRequestTarget;
 	signal?: AbortSignal;
@@ -162,6 +164,7 @@ function parseCreatedUrl(output: string, host: string, baseRepository: string): 
 export class PullRequestCreator {
 	readonly state: CreatePullRequestState = { phase: "unprepared" };
 
+	private readonly run?: PrRun;
 	private readonly cwd: string;
 	private readonly target: PullRequestTarget;
 	private readonly noTarget: boolean;
@@ -173,6 +176,7 @@ export class PullRequestCreator {
 
 	constructor(options: CreatePullRequestOptions) {
 		this.cwd = options.cwd;
+		this.run = options.run;
 		this.target = { ...options.target };
 		this.noTarget = options.target.provenance === "inferred" && options.target.remoteOid === null;
 		this.signal = options.signal;
@@ -359,6 +363,7 @@ export class PullRequestCreator {
 			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			if (await this.requireCleanHead() !== head) throw new Error("PR creation cancelled: local HEAD changed before push");
+			this.run?.beforePush(original, head);
 			this.state.publicationHead = head;
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", [
@@ -368,6 +373,7 @@ export class PullRequestCreator {
 			if (await readRemoteOid(this.exec, this.options(), this.target.fetchSource, this.target.ref) !== head) {
 				throw new Error("Published remote ref did not match captured HEAD");
 			}
+			this.run?.observeRemote(head);
 			this.state.phase = "pushed";
 			if (this.noTarget) {
 				await this.configureNoTargetUpstream(head);

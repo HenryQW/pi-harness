@@ -21,7 +21,7 @@ Run `/task-models` and configure the `balanced` profile before adding memory. Op
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-ask-question`](https://pi.henry.wang/extensions/pi-ask-question) | Required | Provides the validated conflict prompt. |
-| [`@henryqw/pi-herdr-btw`](https://pi.henry.wang/extensions/pi-herdr-btw) | Improves | Marks side-thread children, suppressing parent-only memory injection and dream advice. |
+| [`@henryqw/pi-herdr-tools`](https://pi.henry.wang/extensions/pi-herdr-tools) | Improves | Marks side-thread children, suppressing parent-only memory injection and dream advice. |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides candidate-review routes. |
 
 ## Use

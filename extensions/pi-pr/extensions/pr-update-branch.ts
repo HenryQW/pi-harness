@@ -1,3 +1,4 @@
+import type { PrRun } from "./pr-run.ts";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
@@ -39,11 +40,16 @@ type UpdateBranchState = {
 type UpdateBranchResult =
 	| { kind: "verified"; head: string; fastForward: boolean }
 	| { kind: "conflict"; paths: string[] }
-	| { kind: "published"; head: string };
+	| { kind: "published"; head: string }
+	| { kind: "stale"; reason: string };
+
+// Only pre-rebase HEAD preflight can prove this cancellation is safe to replan.
+class StaleRebaseRoute extends Error {}
 
 type Load = typeof loadCurrentPullRequest;
 
 export type UpdateBranchOptions = {
+	run?: PrRun;
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -112,6 +118,7 @@ export async function inspectVerifiedRebaseRecovery(pr: CurrentPullRequest, opti
 export class PullRequestBranchUpdater {
 	readonly state: UpdateBranchState = { phase: "ready" };
 
+	private readonly run?: PrRun;
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
 	private readonly signal?: AbortSignal;
@@ -126,6 +133,7 @@ export class PullRequestBranchUpdater {
 			throw new TypeError("Branch update requires a configured open pull request");
 		}
 		this.cwd = options.cwd;
+		this.run = options.run;
 		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
@@ -145,7 +153,7 @@ export class PullRequestBranchUpdater {
 		return { cwd: this.cwd, signal: this.signal };
 	}
 
-	private async freshAuthority(expectedHead: string, requireClean: boolean, published = false): Promise<CurrentPullRequest> {
+	private async freshAuthority(expectedHead: string, requireClean: boolean, published = false, beforeRebase = false): Promise<CurrentPullRequest> {
 		const discovery = await this.load(this.pi(), this.context());
 		const comparison = published ? {
 			...this.authority,
@@ -164,7 +172,12 @@ export class PullRequestBranchUpdater {
 			throw new Error("Branch update cancelled: worktree is dirty or a Git operation is in progress");
 		}
 		const head = await readHead(this.exec, this.execOptions());
-		if (head !== expectedHead) throw new Error("Branch update cancelled: local HEAD changed");
+		if (head !== expectedHead) {
+			if (beforeRebase && await isAncestor(this.exec, this.execOptions(), expectedHead, head)) {
+				throw new StaleRebaseRoute("Local HEAD is ahead of the frozen PR head; cancelled before rebase or publication");
+			}
+			throw new Error("Branch update cancelled: local HEAD does not match the expected head");
+		}
 		return discovery.pullRequest;
 	}
 
@@ -234,7 +247,7 @@ export class PullRequestBranchUpdater {
 		}
 		if (this.state.phase !== "ready") throw new Error("Branch conflict rebase action was already consumed");
 		return await withWorktreeLock(this.cwd, async () => {
-			await this.freshAuthority(this.authority.head.oid, true);
+			await this.freshAuthority(this.authority.head.oid, true, false, true);
 			const source = await resolveRepositoryFetchSource(this.exec, this.execOptions(), {
 				host: this.authority.host,
 				repository: this.authority.base.repository,
@@ -244,7 +257,7 @@ export class PullRequestBranchUpdater {
 				"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", source, this.authority.base.oid,
 			], this.execOptions());
 			await runChecked(this.exec, "git", ["cat-file", "-e", `${this.authority.base.oid}^{commit}`], this.execOptions());
-			await this.freshAuthority(this.authority.head.oid, true);
+			await this.freshAuthority(this.authority.head.oid, true, false, true);
 			if (await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, this.authority.head.oid)) {
 				return await this.verifyRebase();
 			}
@@ -255,7 +268,7 @@ export class PullRequestBranchUpdater {
 				"rev-list", "--max-count=1", "--min-parents=2", `${mergeBase}..${this.authority.head.oid}`,
 			], this.execOptions())).stdout.trim();
 			if (mergeCommits) throw new Error("Branch update cannot rebase a branch with merge commits; preserve its resolutions manually");
-			await this.freshAuthority(this.authority.head.oid, true);
+			await this.freshAuthority(this.authority.head.oid, true, false, true);
 			await this.writeRecovery("pending", null);
 			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.backend=merge", "-c", "rebase.updateRefs=false", "rebase", "--no-autostash", "--onto", this.authority.base.oid, mergeBase], this.execOptions());
 			if (result.killed) throw new Error("git rebase was killed; its outcome is unknown");
@@ -265,7 +278,11 @@ export class PullRequestBranchUpdater {
 			} catch (error) {
 				throw new Error(`git rebase failed: ${result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`}; ${error instanceof Error ? error.message : String(error)}`);
 			}
-		}, { agentDir: this.agentDir, signal: this.signal });
+		}, { agentDir: this.agentDir, signal: this.signal }).catch((error: unknown) => {
+			if (!(error instanceof StaleRebaseRoute)) throw error;
+			this.state.phase = "blocked";
+			return { kind: "stale" as const, reason: error.message };
+		});
 	}
 
 	async continue(resolvedPaths: readonly string[]): Promise<UpdateBranchResult> {
@@ -277,17 +294,25 @@ export class PullRequestBranchUpdater {
 			throw new Error("Resolved paths must include every original conflict path");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			const discovery = await this.load(this.pi(), this.context());
+			const assertContext = async () => {
+				const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
+				const marker = await readFile(resolve(this.cwd, path), "utf8").catch((error) => {
+					if (error.code === "ENOENT") throw new Error("Branch rebase context changed", { cause: error });
+					throw error;
+				});
+				if (marker.trim() !== `refs/heads/${this.authority.target.branch}` ||
+					await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
+					throw new Error("Branch rebase context changed");
+				}
+			};
+			await assertContext();
+			const discovery = await this.load(this.pi(), { ...this.context(), rebaseBranch: this.authority.target.branch });
 			if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
 				throw new Error("Branch rebase authority changed");
 			}
-			const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
-			if ((await readFile(resolve(this.cwd, path), "utf8")).trim() !== `refs/heads/${this.authority.target.branch}` ||
-				await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
-				throw new Error("Branch rebase context changed");
-			}
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
+			await assertContext();
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
@@ -314,11 +339,13 @@ export class PullRequestBranchUpdater {
 				throw new Error("Verified branch no longer contains the frozen base");
 			}
 			if (remoteBefore === head) {
+				this.run?.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };
 			}
 			await this.freshAuthority(head, true);
+			this.run?.beforePush(original, head);
 			this.state.phase = "blocked";
 			let pushError: unknown;
 			try {
@@ -337,6 +364,7 @@ export class PullRequestBranchUpdater {
 				throw new Error("Rebase push outcome is unknown; do not retry");
 			}
 			if (remote === head) {
+				this.run?.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };

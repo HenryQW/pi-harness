@@ -28,7 +28,7 @@ test("missing config directory still returns validated built-in implementer, rev
 
 	assert.deepEqual(roles.map(({ name, tools, extensions, skills, mcps }) => ({ name, tools, extensions, skills, mcps })), [
 		{ name: "implementer", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
-		{ name: "reviewer", tools: ["read", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
+		{ name: "reviewer", tools: ["read", "grep", "find", "ls", "git_read"], extensions: [], skills: [], mcps: [] },
 		{ name: "scout", tools: ["read", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
 	]);
 
@@ -40,7 +40,7 @@ test("missing config directory still returns validated built-in implementer, rev
 		/Preserve required deliverables, unrelated and pre-existing files, and user data/i,
 		/Never use `git clean` or blanket deletion/i,
 		/credentials or the network.*broaden scope only when the task requires/is,
-		/Direct delegation leaves changes uncommitted.*isolated delegation commits completed scoped changes/is,
+		/Direct delegation may write or commit only within Main's explicitly authorized scope.*Isolated delegation commits completed scoped changes/is,
 		/Never push or open a pull request/is,
 	]) assert.match(implementer!.systemPrompt, contract);
 
@@ -48,7 +48,8 @@ test("missing config directory still returns validated built-in implementer, rev
 		/Review the supplied candidate read-only/i,
 		/evidence is insufficient, say so and stop/i,
 		/actionable correctness risks introduced by the change.*not style preferences/is,
-		/Run no commands or tests.*Never edit, write, commit, push, manage Git or worktrees/is,
+		/Run no tests or commands outside `git_read`.*Never edit, write, commit, push, mutate Git or manage worktrees/is,
+		/`git_read` for bounded local Git inspection.*exact patch remains authoritative.*never substitute another branch or worktree/is,
 		/Output exactly `PASS` when there are no findings/i,
 		/Any finding blocks approval.*never combine `PASS` with findings/is,
 	]) assert.match(reviewer!.systemPrompt, contract);

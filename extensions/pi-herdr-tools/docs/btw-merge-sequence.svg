@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="btw-merge-sequence-title btw-merge-sequence-desc">
+      <title id="btw-merge-sequence-title">From /btw side question to Main</title>
+      <desc id="btw-merge-sequence-desc">Sequence diagram showing Main launching an editable Herdr side thread from a static context snapshot while shared working-directory effects remain live. The side pane runs /btw merge with its text transcript and next prompt, which immediately establishes pending delivery. Herdr then refocuses Main and closes the side pane. The pending delivery survives side-pane shutdown and waits for Main to become idle with current model authentication before appending the transcript without starting a turn and submitting the next prompt.</desc>
+      <defs>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
+          .eyebrow { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; letter-spacing: .18em; }
+          .diagram-title { fill: #101828; font: 400 28px 'Instrument Serif', serif; }
+          .diagram-subtitle { fill: #4c5665; font: 400 14px 'Geist', sans-serif; }
+          .lifeline { stroke: rgba(16,24,40,.22); stroke-width: 1; stroke-dasharray: 4 4; }
+          .activation { fill: rgba(16,24,40,.06); stroke: #4c5665; stroke-width: .8; }
+          .message { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#btw-arrow); }
+          .message-live { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 4 4; marker-end: url(#btw-arrow-open); }
+          .message-focal { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#btw-arrow-accent); }
+          .label-mask { fill: #f0eee9; }
+          .label { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; letter-spacing: .06em; text-anchor: middle; }
+          .label-focal { fill: #1d4ed8; font: 500 10px 'Geist Mono', monospace; letter-spacing: .06em; text-anchor: middle; }
+          .note { fill: #4c5665; font: 400 14px 'Geist', sans-serif; }
+          .actor { fill: #fff; stroke: #101828; stroke-width: 1; }
+          .actor-tag { fill: none; stroke: rgba(16,24,40,.32); stroke-width: .8; }
+          .tag { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; letter-spacing: .08em; text-anchor: middle; }
+          .name { fill: #101828; font: 600 14px 'Geist', sans-serif; text-anchor: middle; }
+          .sub { fill: #4c5665; font: 400 10px 'Geist Mono', monospace; text-anchor: middle; }
+          .pending { fill: #e5e3df; stroke: #4c5665; stroke-width: 1; }
+          .legend { fill: #4c5665; font: 400 10px 'Geist', sans-serif; }
+        </style>
+        <marker id="btw-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#4c5665"/>
+        </marker>
+        <marker id="btw-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="btw-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0,8 3,0 6" fill="#1d4ed8"/>
+        </marker>
+        <marker id="btw-arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polyline points="0 0,8 3,0 6" fill="none" stroke="#4c5665" stroke-width="1.2"/>
+        </marker>
+      </defs>
+
+      <rect width="1280" height="720" fill="#f0eee9"/>
+
+      <text class="eyebrow" x="48" y="24">SEQUENCE · BTW MERGE DELIVERY</text>
+      <text class="diagram-title" x="48" y="56">From /btw side question to Main</text>
+      <text class="diagram-subtitle" x="48" y="80">The conversation snapshot stays fixed. File changes in the shared working directory do not.</text>
+
+      <!-- Lifelines -->
+      <line class="lifeline" x1="184" y1="164" x2="184" y2="684"/>
+      <line class="lifeline" x1="640" y1="164" x2="640" y2="684"/>
+      <line class="lifeline" x1="1096" y1="164" x2="1096" y2="684"/>
+
+      <!-- Activations -->
+      <rect class="activation" x="180" y="176" width="8" height="108"/>
+      <rect class="activation" x="636" y="264" width="8" height="396"/>
+      <rect class="activation" x="1092" y="312" width="8" height="272"/>
+      <rect class="activation" x="180" y="652" width="8" height="32"/>
+
+      <!-- Messages -->
+      <path class="message" d="M188 184 H240 Q248 184 248 192 V212 Q248 220 240 220 H188"/>
+      <line class="message" x1="188" y1="276" x2="636" y2="276"/>
+      <line class="message" x1="644" y1="320" x2="1092" y2="320"/>
+      <path class="message" d="M1100 348 H1152 Q1160 348 1160 356 V372 Q1160 380 1152 380 H1100"/>
+      <line class="message-live" x1="1092" y1="400" x2="188" y2="400"/>
+      <line class="message" x1="1092" y1="456" x2="644" y2="456"/>
+      <line class="message" x1="636" y1="540" x2="188" y2="540"/>
+      <line class="message" x1="644" y1="576" x2="1092" y2="576"/>
+      <line class="message-focal" x1="636" y1="660" x2="188" y2="660"/>
+      <path class="message" d="M188 676 H240 Q248 676 248 680 Q248 684 240 684 H188"/>
+
+      <!-- Message labels -->
+      <rect class="label-mask" x="264" y="172" width="264" height="84" rx="4"/>
+      <text class="label" x="280" y="188" style="text-anchor:start">PREPARE</text>
+      <text class="note" x="272" y="208">Snapshot compaction-aware context</text>
+      <text class="note" x="272" y="228">Capture cwd and active tools</text>
+      <text class="note" x="272" y="248">Resolve an authenticated route</text>
+
+      <rect class="label-mask" x="344" y="260" width="136" height="20" rx="2"/>
+      <text class="label" x="412" y="274">STATIC CONTEXT</text>
+      <rect class="label-mask" x="800" y="304" width="136" height="20" rx="2"/>
+      <text class="label" x="868" y="318">OPEN SIDE PANE</text>
+      <rect class="label-mask" x="1156" y="332" width="104" height="20" rx="2"/>
+      <text class="label" x="1208" y="346">SIDE ANSWER</text>
+      <rect class="label-mask" x="808" y="384" width="120" height="20" rx="2"/>
+      <text class="label" x="868" y="398">SHARED CWD</text>
+      <text class="note" x="868" y="428" text-anchor="middle">Tool writes are immediately visible to Main</text>
+      <rect class="label-mask" x="816" y="440" width="104" height="20" rx="2"/>
+      <text class="label" x="868" y="454">/BTW MERGE</text>
+      <text class="note" x="904" y="480" text-anchor="middle">Text transcript + next prompt</text>
+      <rect class="label-mask" x="352" y="524" width="120" height="20" rx="2"/>
+      <text class="label" x="412" y="538">REFOCUS MAIN</text>
+      <rect class="label-mask" x="816" y="560" width="104" height="20" rx="2"/>
+      <text class="label" x="868" y="574">CLOSE PANE</text>
+      <rect class="label-mask" x="336" y="648" width="152" height="20" rx="2"/>
+      <text class="label-focal" x="412" y="662">APPEND WITHOUT TURN</text>
+      <rect class="label-mask" x="264" y="668" width="128" height="20" rx="2"/>
+      <text class="label" x="328" y="682">SUBMIT PROMPT</text>
+
+      <!-- Durable state and actors -->
+      <rect class="pending" x="496" y="468" width="288" height="56" rx="6"/>
+      <text class="name" x="640" y="488">Pending delivery established</text>
+      <text class="sub" x="640" y="508">DURABLE BEFORE REFOCUS / CLOSE</text>
+
+      <rect class="pending" x="496" y="584" width="288" height="60" rx="6"/>
+      <text class="name" x="640" y="608">Pending delivery waits</text>
+      <text class="sub" x="640" y="624">MAIN IDLE + AUTH</text>
+      <text class="sub" x="640" y="640">SURVIVES SIDE-PANE SHUTDOWN</text>
+
+      <rect class="actor" x="64" y="96" width="240" height="68" rx="6"/>
+      <rect class="actor-tag" x="72" y="104" width="40" height="16" rx="2"/>
+      <text class="tag" x="92" y="116">MAIN</text>
+      <text class="name" x="184" y="140">Main</text>
+      <text class="sub" x="184" y="156">USER RUNS /BTW</text>
+
+      <rect class="actor" x="520" y="96" width="240" height="68" rx="6"/>
+      <rect class="actor-tag" x="528" y="104" width="56" height="16" rx="2"/>
+      <text class="tag" x="556" y="116">HERDR</text>
+      <text class="name" x="640" y="140">Herdr / BTW transport</text>
+      <text class="sub" x="640" y="156">DURABLE HANDOFF</text>
+
+      <rect class="actor" x="976" y="96" width="240" height="68" rx="6"/>
+      <rect class="actor-tag" x="984" y="104" width="40" height="16" rx="2"/>
+      <text class="tag" x="1004" y="116">SIDE</text>
+      <text class="name" x="1096" y="140">Side Pane</text>
+      <text class="sub" x="1096" y="156">EDITABLE DRAFT</text>
+
+      <!-- Legend -->
+      <line x1="48" y1="692" x2="1232" y2="692" stroke="rgba(16,24,40,.141)" stroke-width=".8"/>
+      <text class="eyebrow" x="48" y="712">LEGEND</text>
+      <rect class="activation" x="132" y="700" width="8" height="16"/>
+      <text class="legend" x="152" y="712">Active</text>
+      <line class="message-live" x1="248" y1="708" x2="288" y2="708"/>
+      <text class="legend" x="300" y="712">Live cwd effect</text>
+      <rect class="pending" x="444" y="700" width="24" height="16" rx="4"/>
+      <text class="legend" x="480" y="712">Durable pending</text>
+      <line class="message-focal" x1="640" y1="708" x2="680" y2="708"/>
+      <text class="legend" x="692" y="712">Merge delivery</text>
+    </svg>

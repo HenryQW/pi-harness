@@ -12,8 +12,8 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import { Type, type Static, type TObject, type TSchema, type TUnion } from "typebox";
 import { Check, Errors } from "typebox/value";
-import { PullRequestCiFixer, type PullRequestCiFixOptions } from "./pr-ci.ts";
-import { PullRequestCommentSweep, type PullRequestCommentSweepOptions } from "./pr-comment-sweep.ts";
+import { PullRequestCiFixer, StaleCiCollect, type PullRequestCiFixOptions } from "./pr-ci.ts";
+import { PullRequestCommentSweep, StaleSweepStart, type PullRequestCommentSweepOptions } from "./pr-comment-sweep.ts";
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	createPrCommandHandler,
@@ -24,11 +24,14 @@ import {
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
 import { PullRequestWorkPublisher } from "./pr-publish-work.ts";
+import { loadPrPolicy, PrRun } from "./pr-run.ts";
 import {
 	GitHubRateLimitError,
 	loadCurrentPullRequest,
 	parsePullRequestObservation,
 	pullRequestObservation,
+	cloneCurrentPullRequest,
+	type CurrentPullRequest,
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
@@ -43,6 +46,7 @@ import {
 } from "./pr-ui.ts";
 import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater, type UpdateBranchOptions } from "./pr-update-branch.ts";
 
+const MAX_STALE_REDISCOVERIES = 2;
 const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
@@ -135,6 +139,8 @@ const SweepActions = Type.Union([
 		ownedPaths: Type.Optional(OwnedPaths),
 	}, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("commit"), guard: SweepGuard, message: Type.String({ minLength: 1, maxLength: 256 }) }, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("adopt"), guard: SweepGuard, head: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }), outsidePaths: OwnedPaths }, CLOSED),
+	Type.Object({ runId: RouteRunId, action: Type.Literal("validate"), guard: SweepGuard, checks: SweepChecks }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("refresh"), guard: SweepGuard }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("resolve"), guard: SweepGuard }, CLOSED),
@@ -153,7 +159,7 @@ const FixCiActions = Type.Union([
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "inspect" | "commit" | "verify" | "push" | "publish">;
-type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "commit" | "publish" | "refresh" | "resolve" | "finalize">;
+type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "adopt" | "validate" | "commit" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
 
 type WorkflowContextBase = {
@@ -165,13 +171,16 @@ type WorkflowContextBase = {
 	queuedPrompt?: WorkflowPromptIdentity;
 	conflictRetained: boolean;
 	completed: boolean;
+	staleRediscoveries: number;
+	run: PrRun;
+	entryHead: string | null;
 };
 type WorkflowContext =
-	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow })
+	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow; authority: CurrentPullRequest; replan?: string })
 	| (WorkflowContextBase & { route: "create"; workflow: CreateWorkflow })
 	| (WorkflowContextBase & { route: "publish-work"; workflow: PullRequestWorkPublisher })
-	| (WorkflowContextBase & { route: "sweep"; workflow: SweepWorkflow })
-	| (WorkflowContextBase & { route: "fix-ci"; workflow: FixCiWorkflow });
+	| (WorkflowContextBase & { route: "sweep"; workflow: SweepWorkflow; authority: CurrentPullRequest; replan?: string })
+	| (WorkflowContextBase & { route: "fix-ci"; workflow: FixCiWorkflow; authority: CurrentPullRequest; replan?: string });
 
 type PullRequestExtensionDependencies = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
@@ -291,7 +300,7 @@ export default function pullRequestExtension(
 	let pendingWorkspaceRename = false;
 	let displayedWidget: PrDisplay | undefined;
 	let commandGeneration = 0;
-	let completedRoutes = new Set<WorkflowContext["route"]>();
+	let prRun = new PrRun();
 	let workflowContext: WorkflowContext | undefined;
 	const activeInvocations = new Map<number, "routing" | "resolved" | "create-workflow" | "workflow">();
 	let widgetKind: "presentation" | "routing" = "presentation";
@@ -324,16 +333,21 @@ export default function pullRequestExtension(
 			usedSinceSettlement: false,
 			conflictRetained: false,
 			completed: false,
+			staleRediscoveries: invocation.staleRediscoveries ?? 0,
+			run: invocation.run ?? prRun,
+			entryHead: reservation.route === "create" ? reservation.target.remoteOid : reservation.pullRequest.head.oid,
 		};
 		switch (reservation.route) {
 			case "update-branch": {
 				const selected: Extract<WorkflowContext, { route: "update-branch" }> = {
 					...common,
 					route: "update-branch",
+					authority: cloneCurrentPullRequest(reservation.pullRequest),
 					workflow: createBranchUpdater({
 						cwd: worktree,
 						authority: reservation.pullRequest,
 						signal: common.controller.signal,
+						run: common.run,
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -356,6 +370,7 @@ export default function pullRequestExtension(
 						cwd: worktree,
 						target: reservation.target,
 						signal: common.controller.signal,
+						run: common.run,
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -365,17 +380,20 @@ export default function pullRequestExtension(
 					...common,
 					route: "publish-work",
 					workflow: createWorkPublisher({ cwd: worktree, authority: reservation.pullRequest,
-						signal: common.controller.signal, loadCurrentPullRequest: load }),
+						signal: common.controller.signal, run: common.run, loadCurrentPullRequest: load }),
 				};
 				return { runId, action: "inspect" };
 			case "sweep": {
 				const selected: Extract<WorkflowContext, { route: "sweep" }> = {
 					...common,
 					route: "sweep",
+					authority: cloneCurrentPullRequest(reservation.pullRequest),
 					workflow: createCommentSweep({
 						cwd: worktree,
 						authority: reservation.pullRequest,
 						signal: common.controller.signal,
+						run: common.run,
+						confirmLegacyChecks: async (head, checks) => ctx.hasUI && await ctx.ui.confirm("Retry unknown legacy checks?", `Confirm these commands are safe to repeat on published HEAD ${head}:\n${JSON.stringify(checks)}\nDeclining preserves recovery.`),
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -394,10 +412,12 @@ export default function pullRequestExtension(
 				workflowContext = {
 					...common,
 					route: "fix-ci",
+					authority: cloneCurrentPullRequest(reservation.pullRequest),
 					workflow: createCiFixer({
 						cwd: worktree,
 						authority: reservation.pullRequest,
 						signal: common.controller.signal,
+						run: common.run,
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -433,6 +453,9 @@ export default function pullRequestExtension(
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);
+		if ((selected.route === "update-branch" || selected.route === "sweep" || selected.route === "fix-ci") && selected.replan) {
+			throw new Error(`PR ${selected.route} run was cancelled; fresh routing is pending`);
+		}
 		const abortRun = () => selected.controller.abort(signal?.reason);
 		if (signal?.aborted) abortRun();
 		else signal?.addEventListener("abort", abortRun, { once: true });
@@ -464,7 +487,11 @@ export default function pullRequestExtension(
 			const params = checkedAction(UpdateBranchActions, raw);
 			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, async (selected) => {
 				switch (params.action) {
-					case "rebase": return await selected.workflow.rebase();
+					case "rebase": {
+						const result = await selected.workflow.rebase();
+						if (result.kind === "stale") selected.replan = result.reason;
+						return result;
+					}
 					case "continue": return await selected.workflow.continue(params.resolvedPaths);
 					case "publish": {
 						const result = await selected.workflow.publish();
@@ -537,10 +564,19 @@ export default function pullRequestExtension(
 			const params = checkedAction(SweepActions, raw);
 			return executeWorkflowAction(params.runId, "sweep", ctx, signal, async (selected) => {
 				switch (params.action) {
-					case "start": return await selected.workflow.start();
+					case "start": {
+						try { return await selected.workflow.start(); }
+						catch (error) {
+							if (!(error instanceof StaleSweepStart)) throw error;
+							selected.replan = error.message;
+							return { kind: "stale", reason: error.message };
+						}
+					}
 					case "resume": return await selected.workflow.resume();
 					case "show": return await selected.workflow.show(params.guard, params.id);
 					case "record": return await selected.workflow.record(params.guard, params.ledger, params.ownedPaths);
+					case "adopt": return await selected.workflow.adopt(params.guard, params.head, params.outsidePaths);
+					case "validate": return await selected.workflow.validate(params.guard, params.checks);
 					case "commit": return await selected.workflow.commit(params.guard, params.message);
 					case "publish": return await selected.workflow.publish(params.guard);
 					case "refresh": return await selected.workflow.refresh(params.guard);
@@ -566,7 +602,14 @@ export default function pullRequestExtension(
 			const params = checkedAction(FixCiActions, raw);
 			return executeWorkflowAction(params.runId, "fix-ci", ctx, signal, async (selected) => {
 				switch (params.action) {
-					case "collect": return await selected.workflow.collect();
+					case "collect": {
+						try { return await selected.workflow.collect(); }
+						catch (error) {
+							if (!(error instanceof StaleCiCollect)) throw error;
+							selected.replan = error.message;
+							return { kind: "stale", reason: error.message };
+						}
+					}
 					case "publish": {
 						const result = await selected.workflow.publish();
 						selected.completed = true;
@@ -680,7 +723,7 @@ export default function pullRequestExtension(
 		pendingWorkspaceRename = false;
 		displayedWidget = undefined;
 		commandGeneration = 0;
-		completedRoutes = new Set();
+		prRun = new PrRun();
 		clearWorkflow(workflowContext);
 		activeInvocations.clear();
 		stopRoutingSpinner();
@@ -788,8 +831,9 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
+		const replanning = (selected?.route === "update-branch" || selected?.route === "sweep" || selected?.route === "fix-ci") && selected.replan !== undefined;
 		if (event.outcome !== "completed" || !selected ||
-			(!selected.completed && !selected.queuedPrompt) || selected.sessionGeneration !== sessionGeneration) return;
+			(!selected.completed && !selected.queuedPrompt && !replanning) || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
 		if (invocation === undefined) return;
 		const generation = sessionGeneration;
@@ -799,21 +843,35 @@ export default function pullRequestExtension(
 			reconcileWidget(ctx);
 		}, {
 			sessionGeneration: generation,
-			completedRoutes,
+			run: selected.run,
+			staleRediscoveries: selected.staleRediscoveries + (replanning ? 1 : 0),
+			replanAuthority: replanning ? selected.authority : undefined,
 			assertCurrent() {
 				if (generation !== sessionGeneration) throw new Error("PR workflow session changed during continuation");
 			},
 		});
 		try {
 			if (!selected.queuedPrompt) {
-				completedRoutes.add(selected.route);
+				if (replanning) {
+					selected.controller.signal.throwIfAborted();
+					ctx.signal?.throwIfAborted();
+					if (selected.staleRediscoveries >= MAX_STALE_REDISCOVERIES) {
+						throw new Error("stale-route rediscovery limit exhausted; no mutation was retried");
+					}
+					if (await resolveCanonicalWorktree(ctx.cwd, ctx.signal) !== selected.worktree) {
+						throw new Error("PR stale-route rediscovery cancelled: worktree changed");
+					}
+					callback.assertCurrent();
+					selected.controller.signal.throwIfAborted();
+					ctx.ui.notify(`PR ${selected.route} cancelled: ${selected.replan}; rediscovering (${callback.staleRediscoveries}/${MAX_STALE_REDISCOVERIES})`, "info");
+				} else selected.run.complete(selected.route, selected.entryHead);
 				if (selected.route === "create") pendingWorkspaceRename = true;
 				clearWorkflow(selected);
 				activeInvocations.set(invocation, "routing");
 				reconcileWidget(ctx);
 				const next = await commandHandler("", ctx, callback);
 				if (generation !== sessionGeneration) return;
-				if (WORKFLOW_ROUTES.has(next) && !completedRoutes.has(next as WorkflowContext["route"])) {
+				if (WORKFLOW_ROUTES.has(next) && workflowContext !== undefined) {
 					activeInvocations.set(invocation, next === "create" ? "create-workflow" : "workflow");
 					if (next === "create") ctx.ui.setStatus(UI_KEY, undefined);
 					reconcileWidget(ctx);
@@ -845,7 +903,7 @@ export default function pullRequestExtension(
 				ctx.ui.notify(`PR continuation stopped: ${error instanceof Error ? error.message : String(error)}`, "warning");
 			}
 		} finally {
-			if (generation === sessionGeneration && (!workflowContext || completedRoutes.has(workflowContext.route))) {
+			if (generation === sessionGeneration && !workflowContext) {
 				clearWorkflow(workflowContext);
 				// Settlement refreshes successful continuations; failed discovery must not retry immediately.
 				if (activeInvocations.has(invocation)) activeInvocations.set(invocation, "workflow");
@@ -913,7 +971,7 @@ export default function pullRequestExtension(
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
 			cancelRefresh();
-			completedRoutes = new Set();
+			prRun = new PrRun(loadPrPolicy());
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");
@@ -925,6 +983,7 @@ export default function pullRequestExtension(
 			};
 			const commandInvocation: PrCommandInvocation = Object.assign(routeResolved, {
 				sessionGeneration: generation,
+				run: prRun,
 				assertCurrent() {
 					if (sessionGeneration !== generation) {
 						throw new Error("PR command session changed during dispatch");

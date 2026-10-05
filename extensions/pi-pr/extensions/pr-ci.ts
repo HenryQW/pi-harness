@@ -1,4 +1,6 @@
+import type { PrRun } from "./pr-run.ts";
 import { createHash } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
 	cloneCurrentPullRequest,
@@ -42,6 +44,13 @@ const CONCLUSIONS = new Set([
 const STATUSES = new Set(["completed", "in_progress", "pending", "queued", "requested", "waiting"]);
 
 type Load = typeof loadCurrentPullRequest;
+
+// Only initial preflight, before any CI evidence read, can authorize rediscovery.
+export class StaleCiCollect extends Error {}
+
+function sanitizeLog(text: string): string {
+	return stripVTControlCharacters(text).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
 
 type StepIdentity = {
 	number: number;
@@ -113,6 +122,7 @@ type CiFixPhase = "ready" | "collecting" | "collected" | "published" | "blocked"
 type CiFixState = { phase: CiFixPhase };
 
 export type PullRequestCiFixOptions = {
+	run?: PrRun;
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -291,6 +301,7 @@ function errorMessage(error: unknown): string {
 export class PullRequestCiFixer {
 	readonly state: CiFixState = { phase: "ready" };
 
+	private readonly run?: PrRun;
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
 	private readonly signal?: AbortSignal;
@@ -307,6 +318,7 @@ export class PullRequestCiFixer {
 			throw new TypeError("CI repair requires the pull request head to match the configured remote OID");
 		}
 		this.cwd = options.cwd;
+		this.run = options.run;
 		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
@@ -326,21 +338,22 @@ export class PullRequestCiFixer {
 		return { cwd: this.cwd, signal: this.signal };
 	}
 
-	private async freshAuthority(requireOriginalLocal: boolean): Promise<CurrentPullRequest> {
+	private async freshAuthority(requireOriginalLocal: boolean, initial = false): Promise<CurrentPullRequest> {
 		const discovery = await this.load(this.pi(), this.context());
 		if (discovery.kind !== "current" || !samePullRequestSnapshot(this.authority, discovery.pullRequest) ||
-			discovery.pullRequest.base.oid !== this.authority.base.oid ||
+			(!initial && discovery.pullRequest.base.oid !== this.authority.base.oid) ||
 			discovery.pullRequest.conditions.ci !== "failure" ||
 			discovery.pullRequest.target.remoteOid !== this.authority.head.oid) {
 			throw new Error("CI repair cancelled: frozen pull request, base, target, head, or failed-CI authority changed");
 		}
-		if (requireOriginalLocal && (discovery.pullRequest.local.worktree !== "clean" || discovery.pullRequest.local.head !== "equal")) {
+		if (requireOriginalLocal && (discovery.pullRequest.local.worktree !== "clean" ||
+			(discovery.pullRequest.local.head !== "equal" && !(initial && discovery.pullRequest.local.head === "ahead")))) {
 			throw new Error("CI repair evidence requires the original clean equal local HEAD");
 		}
 		return discovery.pullRequest;
 	}
 
-	private async requireOriginalLocal(): Promise<void> {
+	private async requireOriginalLocal(initial = false): Promise<string> {
 		const branch = requiredText(parseSingleOutputLine(
 			(await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout,
 			"current branch",
@@ -349,9 +362,12 @@ export class PullRequestCiFixer {
 		if (await inspectWorktree(this.exec, this.options()) !== "clean") {
 			throw new Error("CI repair requires a clean worktree with no Git operation in progress");
 		}
-		if (await readHead(this.exec, this.options()) !== this.authority.head.oid) {
+		const head = await readHead(this.exec, this.options());
+		if (head !== this.authority.head.oid &&
+			!(initial && await isAncestor(this.exec, this.options(), this.authority.head.oid, head))) {
 			throw new Error("CI repair evidence requires local HEAD to equal the frozen pull request head");
 		}
+		return head;
 	}
 
 	private async api(endpoint: string, label: string, options: Partial<ExecOptions> = {}): Promise<string> {
@@ -545,9 +561,17 @@ export class PullRequestCiFixer {
 		return run;
 	}
 
-	private async readSnapshot(requireOriginalLocal: boolean): Promise<CiSnapshot> {
-		const fresh = await this.freshAuthority(requireOriginalLocal);
-		if (requireOriginalLocal) await this.requireOriginalLocal();
+	private async readSnapshot(requireOriginalLocal: boolean, initial = false): Promise<CiSnapshot> {
+		const fresh = await this.freshAuthority(requireOriginalLocal, initial);
+		const head = requireOriginalLocal ? await this.requireOriginalLocal(initial) : undefined;
+		if (initial && (head !== this.authority.head.oid || fresh.base.oid !== this.authority.base.oid)) {
+			await this.requireSavedDestination(this.authority.head.oid);
+			if (await this.requireOriginalLocal(true) !== head) throw new Error("CI repair HEAD changed during initial preflight");
+			this.signal?.throwIfAborted();
+			throw new StaleCiCollect(head !== this.authority.head.oid
+				? "Local HEAD is ahead of the frozen PR head; cancelled before CI evidence or publication"
+				: "Base tip changed on the same ref; cancelled before CI evidence or publication");
+		}
 		const pageBudget = { pages: 0, records: 0 };
 		const checks = await this.readCheckRuns(pageBudget);
 		const failed = checks.filter(({ conclusion: value }) => value !== null && FAILED_CONCLUSIONS.has(value));
@@ -600,13 +624,22 @@ export class PullRequestCiFixer {
 	}
 
 	private async readJobLog(jobId: number): Promise<{ text: string; truncated: boolean }> {
-		const result = await runChecked(this.exec, "gh", [
-			"api", "--hostname", this.authority.host, ...API_HEADERS,
+		// Sanitize before runChecked can include output in a failure diagnostic.
+		const exec: Exec = async (command, args, options) => {
+			const result = await this.exec(command, args, options);
+			if (Buffer.byteLength(result.stdout, "utf8") > LOG_TAIL_BYTES) {
+				throw new Error(`Read failed job ${jobId} log executor exceeded its retained tail limit`);
+			}
+			return {
+				...result,
+				stdout: sanitizeLog(result.stdout),
+				stderr: sanitizeLog(result.stderr),
+			};
+		};
+		const result = await runChecked(exec, "gh", [
+			"api", "--allow-escape-sequences", "--hostname", this.authority.host, ...API_HEADERS,
 			`repos/${this.authority.base.repository}/actions/jobs/${jobId}/logs`,
 		], this.options({ stdoutTailBytes: LOG_TAIL_BYTES, timeoutMs: LOG_TIMEOUT_MS }));
-		if (Buffer.byteLength(result.stdout, "utf8") > LOG_TAIL_BYTES) {
-			throw new Error(`Read failed job ${jobId} log executor exceeded its retained tail limit`);
-		}
 		return { text: result.stdout, truncated: result.stdoutTruncated === true };
 	}
 
@@ -614,7 +647,7 @@ export class PullRequestCiFixer {
 		if (this.state.phase !== "ready") throw new Error("CI evidence collect action was already consumed");
 		this.state.phase = "collecting";
 		try {
-			const before = await this.readSnapshot(true);
+			const before = await this.readSnapshot(true, true);
 			const metadata = before.failures.map((failure) => failureEvidence(this.authority, failure, { text: "", truncated: false }));
 			const metadataBytes = metadata.map(jsonBytes);
 			const metadataTotal = jsonBytes(metadata);
@@ -710,6 +743,7 @@ export class PullRequestCiFixer {
 				const repairHead = await this.validatePublishAuthority();
 				const original = this.authority.head.oid;
 				await this.finalPublishRevalidation(original, repairHead);
+				this.run?.beforePush(original, repairHead);
 				let pushError: unknown;
 				try {
 					await runChecked(this.exec, "git", [
@@ -733,6 +767,7 @@ export class PullRequestCiFixer {
 					throw new Error(`CI repair push outcome is unknown: ${errorMessage(error)}`);
 				}
 				if (postcondition === repairHead) {
+					this.run?.observeRemote(repairHead);
 					this.state.phase = "published";
 					return { kind: "published", head: repairHead, attempt: "applied" };
 				}

@@ -1,9 +1,10 @@
+import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
 import { extensionExecApi, inspectWorktree, inspectWorktreeState, isAncestor, parseNulPaths, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 type Check = { command: string; args: string[] };
-type Options = { cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
+type Options = { run?: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
 
 /** One local publication attempt. An uncertain push consumes the run, even when a later read recovers. */
 export class PullRequestWorkPublisher {
@@ -49,8 +50,9 @@ export class PullRequestWorkPublisher {
 		if (branch !== this.authority.target.branch) throw new Error("Local publication cancelled: branch changed");
 	}
 
-	async inspect(): Promise<{ paths: string[]; head: string }> {
-		if (this.initialHead) throw new Error("Pending changes already inspected");
+	async inspect(): Promise<{ paths: string[]; head: string; originalHead: string }> {
+		if (this.consumed) throw new Error("Commit or publication run is consumed; inspect its outcome in a fresh /pr");
+		if (this.status !== undefined) throw new Error("Pending changes already inspected");
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
 			if (await inspectWorktreeState(this.exec, this.execOptions()) === "operation") throw new Error("Git operation in progress");
@@ -62,7 +64,7 @@ export class PullRequestWorkPublisher {
 			const paths = validatePaths([...parseStatusSnapshot(status).keys()], "Pending paths");
 			this.initialHead = head;
 			this.status = status;
-			return { paths, head };
+			return { paths, head, originalHead: this.authority.head.oid };
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });
 	}
 
@@ -86,12 +88,17 @@ export class PullRequestWorkPublisher {
 			this.consumed = true;
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.execOptions());
 			await runChecked(this.exec, "git", ["commit", "-m", message], this.execOptions());
-			return { head: await readHead(this.exec, this.execOptions()) };
+			const head = await readHead(this.exec, this.execOptions());
+			this.initialHead = head;
+			this.status = undefined;
+			this.validatedHead = undefined;
+			this.consumed = false;
+			return { head };
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });
 	}
 
 	async validate(checks: Check[]): Promise<{ head: string; checks: number }> {
-		if (!this.initialHead || this.validatedHead) throw new Error("Local publication validation is unavailable");
+		if (!this.initialHead || this.validatedHead || this.consumed) throw new Error("Local publication validation is unavailable");
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
 			if (await inspectWorktree(this.exec, this.execOptions()) !== "clean") throw new Error("Unrelated pending changes remain; ask about ownership before publishing");
@@ -99,10 +106,16 @@ export class PullRequestWorkPublisher {
 			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head))) {
 				throw new Error("Local HEAD is not a descendant of the published PR head");
 			}
-			await runChecked(this.exec, "git", ["diff", "--check", this.authority.head.oid, head], this.execOptions());
-			for (const check of checks) await runChecked(this.exec, check.command, check.args, this.execOptions());
-			if (await readHead(this.exec, this.execOptions()) !== head || await inspectWorktree(this.exec, this.execOptions()) !== "clean") {
-				throw new Error("Validation changed local HEAD or worktree");
+			this.options.run?.beginChecks("publish-work", head, checks);
+			try {
+				await runChecked(this.exec, "git", ["diff", "--check", this.authority.head.oid, head], this.execOptions());
+				for (const check of checks) await runChecked(this.exec, check.command, check.args, this.execOptions());
+				await this.authorityCheck();
+				if (await readHead(this.exec, this.execOptions()) !== head || await inspectWorktree(this.exec, this.execOptions()) !== "clean") throw new Error("Validation changed local HEAD or worktree");
+			} catch (error) {
+				this.status = undefined;
+				this.options.run?.checksFailed();
+				throw error;
 			}
 			this.validatedHead = head;
 			return { head, checks: checks.length + 1 };
@@ -120,6 +133,8 @@ export class PullRequestWorkPublisher {
 			}
 			const original = this.authority.head.oid;
 			if (head === original) return { kind: "published", head };
+			this.options.run?.beforePush(original, head);
+			this.consumed = true; // An uncertain push cannot reopen inspect, commit, or validation.
 			let error: unknown;
 			try {
 				await runChecked(this.exec, "git", ["push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
@@ -129,7 +144,7 @@ export class PullRequestWorkPublisher {
 			let remote: string | null;
 			try { remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref); }
 			catch { throw new Error("Local publication outcome unknown; do not retry"); }
-			if (remote === head) return { kind: "published", head };
+			if (remote === head) { this.options.run?.observeRemote(head); return { kind: "published", head }; }
 			if (remote === original) throw new Error(`Local publication not applied${error ? `: ${String(error)}` : ""}`);
 			throw new Error("Local publication outcome unknown; do not retry");
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });

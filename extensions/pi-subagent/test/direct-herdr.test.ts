@@ -19,6 +19,17 @@ test("native Pi session records exact bounded final assistant text, not interim 
 	assert.throws(() => exactDirectAnswer(session, prompt, 5), /exceeds the 5-byte workflow limit/);
 });
 
+test("potential-writer final turns require an explicit successful completion", () => {
+	const session = (text: string) => lines([{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] } }]);
+	assert.equal(exactDirectAnswer(session(JSON.stringify({ outcome: "succeeded", answer: "Scoped commit completed." })), prompt, 1024, true), "Scoped commit completed.");
+	for (const outcome of ["failed", "blocked"]) {
+		assert.throws(() => exactDirectAnswer(session(JSON.stringify({ outcome, answer: "Partial changes remain." })), prompt, 1024, true), /Direct task reported .*Partial changes remain/);
+	}
+	for (const text of ["Commit failed; partial changes remain.", "null", JSON.stringify({ answer: "Turn finished." }), JSON.stringify({ outcome: "succeeded", answer: "" })]) {
+		assert.throws(() => exactDirectAnswer(session(text), prompt, 1024, true), /Pi potential-writer/);
+	}
+});
+
 test("exact terminal turn evidence includes failed and aborted assistant turns but not interim output", () => {
 	for (const stopReason of ["stop", "error", "aborted"]) {
 		const session = lines([{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason, content: [] } }]);

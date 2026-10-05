@@ -4,6 +4,8 @@ Run a prompt on a schedule in a fresh Pi session, with the Role, model, and thin
 
 ## Install
 
+Requires Pi 1.0.0 or later. Older Pi releases are no longer supported.
+
 ```bash
 pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent

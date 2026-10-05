@@ -11,18 +11,20 @@ Record the requested outcome, allowed scope and exclusions, local delegation/che
 
 Keep trivial, mechanically verifiable work in Main. Choose the user-requested mode when one is explicit. Otherwise:
 
-- Use `mode: direct` for bounded read-only research, analysis, and review with known read-only Roles.
-- Use `mode: isolated` for implementation and other writing tasks, independently checked changes, or an exploratory or discardable candidate. A single isolated task is valid.
+- Use `mode: direct` for bounded research, analysis, review, or explicitly authorized shared-checkout writes and commits using the selected Role's resources.
+- Use `mode: isolated` for independently checked changes, or an exploratory or discardable candidate. A single isolated task is valid.
 - Keep one implementation owner for tightly coupled work. Size alone does not justify splitting it.
 - Never silently fall back from isolated to direct. Scope growth requires a checkpoint and replan, not migration of dirty work.
 
 Roles describe responsibility and capabilities; they do not select isolation. Bash, MCP tools, unknown tools, and arbitrary extensions are potentially writing. The checkout coordinator reduces races among Pi-owned calls but is not an OS sandbox and cannot control external processes.
 
+The built-in reviewer declares `git_read`, a bounded read-only Git tool without Bash. User reviewer overrides must explicitly add it to `tools`. Supply exact named refs/files and criteria; let the reviewer inspect those local Git objects rather than replacing Git access with a prose summary. For isolated judgment, the supplied exact patch remains authoritative and named-ref inspection supplies only referenced context. Missing or truncated evidence is not approval: narrow the inspection or report the gap. Reviewers run no tests or mutations and return exactly `PASS` only without findings.
+
 After delegation acknowledges a handle or durable request, do other work or end the turn; do not `sleep`, block on a Herdr CLI wait, or repeatedly poll for progress. Pi queues verified direct results and checked isolated candidates as follow-ups, which Main receives after its current turn. Use `subagent_status` for exact isolated evidence when a follow-up arrives or delivery was missed; Herdr lifecycle badges and screen output are not proof of completion.
 
 # Direct requests
 
-Use one compact `role`/`name`/`task` packet, `tasks` for independent packets, or `chain` for dependent packets. Only text tasks are accepted; a write-capable Role, `kind: changeset`, checks, and judgment require isolated mode. The tool returns a handle after launching Herdr tabs in the current workspace. Main receives the verified result as a follow-up after the workflow finishes, without interrupting an active turn. If observation stops, open `/subagent` to inspect exact recorded tabs and session files on this session branch; recorded does not prove still running.
+Use one compact `role`/`name`/`task` packet, `tasks` for independent packets, or `chain` for dependent packets. Only answer-returning tasks (`kind: text`) are accepted; writes and commits are allowed within explicit task authorization, but `kind: changeset`, structured checks, and judgment require isolated mode. State scope, exclusions, commit policy, and external-action permission; preserve unrelated files and staged changes. Direct writes take effect immediately with no automatic validation, rollback, or isolated integration guarantees. Requests with potential writers run serially and block competing Pi writes until exact completion. Main may read or do work elsewhere while waiting, not mutate the reserved checkout. On failure/cancellation or an uncertain launched tab, inspect `/subagent` identities, stop remaining owned workers, preserve and inspect changes, then restart Pi before writing or retrying. A failed commit may already have happened; never replay it blindly. The tool returns a handle after launching Herdr tabs in the current workspace. Main receives the verified result as a follow-up after the workflow finishes, without interrupting an active turn. If observation stops, open `/subagent` to inspect exact recorded tabs and session files on this session branch; recorded does not prove still running.
 
 # Isolated requests
 

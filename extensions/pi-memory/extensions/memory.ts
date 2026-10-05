@@ -45,7 +45,7 @@ const DREAM_STATE_MAX_BYTES = 4 * 1024;
 // Defense-in-depth against snapshot frame spoofing by poisoned on-disk entries.
 const FRAME_TOKEN_REPLACEMENT = "[filtered frame token]";
 const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
-// @henryqw/pi-herdr-btw does not export internal/core.ts from its package root.
+// @henryqw/pi-herdr-tools does not export internal/core.ts from its package root.
 const BTW_CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 const PROMPT_SECTION = "pi_memory";
 const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched|[Mm]ultiple entries matched|matched multiple distinct/i;

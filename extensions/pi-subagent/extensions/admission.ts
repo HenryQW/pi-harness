@@ -5,11 +5,11 @@ import type { Role } from "../dist/index.js";
 // `codemode` mutates nothing itself: its sandbox reaches a checkout only through nested tool calls,
 // which are admitted by their own names here and limited to the Role's active tools in children.
 const READ_ONLY_TOOLS = new Set([
-	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status", "codemode",
+	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status", "codemode", "git_read",
 ]);
 
 export function roleCanWrite(role: Role): boolean {
-	return role.tools.some((tool) => !READ_ONLY_TOOLS.has(tool));
+	return role.tools.some((tool) => !READ_ONLY_TOOLS.has(tool)) || role.extensions.length > 0 || Boolean(role.mcps?.length);
 }
 
 export function roleIsReadOnlyScout(role: Role): boolean {
@@ -32,13 +32,15 @@ async function checkoutKey(pi: ExtensionAPI, ctx: ExtensionContext): Promise<str
  * calls it makes through `ctx.executeTool()` (codemode scripts), so its nested
  * writes pass while independent writers wait until it settles.
  */
-export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (input: unknown) => boolean): void {
+export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (input: unknown) => boolean): (toolCallId: string) => () => void {
+	const heldCalls = new Set<string>();
 	const ownerByCheckout = new Map<string, string>();
 	const checkoutByRoot = new Map<string, string>();
 	const writersByRoot = new Map<string, Set<string>>();
 	/** Model-issued ancestor of each in-flight call; Pi names nested calls `<parent id>/<n>`. */
 	const rootByCall = new Map<string, string>();
 	const release = (toolCallId: string) => {
+		if (heldCalls.has(toolCallId)) return;
 		const root = rootByCall.get(toolCallId);
 		if (root === undefined) return;
 		rootByCall.delete(toolCallId);
@@ -85,5 +87,16 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 		checkoutByRoot.clear();
 		writersByRoot.clear();
 		rootByCall.clear();
+		heldCalls.clear();
 	});
+	// A direct handle settles the tool call before the worker settles. Keep its
+	// admission until exact completion; uncertain workers require manual recovery.
+	return (toolCallId) => {
+		const root = rootByCall.get(toolCallId);
+		if (root === undefined || !writersByRoot.get(root)?.has(toolCallId)) {
+			throw new Error(`Direct call ${toolCallId} was not admitted as a checkout writer; delegate again with the current Role resources.`);
+		}
+		heldCalls.add(toolCallId);
+		return () => { heldCalls.delete(toolCallId); release(toolCallId); };
+	};
 }

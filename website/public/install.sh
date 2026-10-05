@@ -25,14 +25,10 @@ EXTENSIONS='
 @henryqw/pi-cron
 @henryqw/pi-deps
 @henryqw/pi-footer
-@henryqw/pi-herdr-btw
-@henryqw/pi-herdr-clone
-@henryqw/pi-herdr-done
-@henryqw/pi-herdr-rename
+@henryqw/pi-herdr-tools
 @henryqw/pi-memory
 @henryqw/pi-multi-codex
 @henryqw/pi-notes
-@henryqw/pi-open-in
 @henryqw/pi-pr
 @henryqw/pi-prompt-creator
 @henryqw/pi-rtk-test
@@ -287,11 +283,9 @@ ensure_pi() {
 
 select_herdr_minimum() {
   required_herdr_version=$HERDR_MIN_VERSION
-  subagent_selected=false
   for extension in $selected_extensions; do
     if [ "$extension" = "$SUBAGENT_PACKAGE" ]; then
       required_herdr_version=$HERDR_SUBAGENT_MIN_VERSION
-      subagent_selected=true
       return 0
     fi
   done
@@ -435,30 +429,45 @@ choose_extensions() {
   done
 }
 
-source_is_installed() {
-  printf '%s\n' "$1" | grep -Fx -e "$2" -e "  $2" >/dev/null
+list_package_sources() {
+  if ! installed_sources=$("$pi_bin" list); then
+    die "Could not list installed Pi package sources."
+  fi
+  printf '%s\n' "$installed_sources" | awk '
+    /^User packages:$/ { scope = "user" }
+    /^Project packages:$/ { scope = "project" }
+    /^  npm:[^[:space:]]+( \(filtered\))?$/ {
+      if (!scope) exit 1
+      sub(/^  /, ""); sub(/ \(filtered\)$/, "")
+      print scope " " $0
+    }
+  ' || die "Could not parse installed Pi package sources."
 }
 
 remove_retired_package_sources() {
-  [ "$subagent_selected" = true ] || return 0
-
-  if ! installed_sources=$("$pi_bin" list); then
-    die "Could not list installed Pi package sources before checking for retired packages."
-  fi
-  for source in $RETIRED_PACKAGE_SOURCES; do
-    if ! source_is_installed "$installed_sources" "$source"; then
-      continue
-    fi
-    info "Removing retired package source $source..."
-    "$pi_bin" uninstall "$source" || die "Could not remove retired Pi package source $source."
-    if ! installed_sources=$("$pi_bin" list); then
-      die "Could not verify removal of retired Pi package source $source."
-    fi
-    if source_is_installed "$installed_sources" "$source"; then
-      die "Retired Pi package source $source is still installed."
-    fi
-    success "Removed retired Pi package source $source."
-  done
+  case "$1" in
+    "$SUBAGENT_PACKAGE") retired_sources=$RETIRED_PACKAGE_SOURCES ;;
+    "@henryqw/pi-herdr-tools") retired_sources="npm:@henryqw/pi-herdr-btw npm:@henryqw/pi-herdr-clone npm:@henryqw/pi-herdr-rename npm:@henryqw/pi-herdr-done" ;;
+    "@henryqw/pi-footer") retired_sources="npm:@henryqw/pi-open-in" ;;
+    *) return 0 ;;
+  esac
+  installed_sources=$(list_package_sources)
+  while read -r scope source; do
+    for retired in $retired_sources; do
+      case "$source" in "$retired"|"$retired"@*) ;; *) continue ;; esac
+      info "Removing retired $scope package source $source..."
+      set -- "$source"
+      [ "$scope" != project ] || set -- "$@" --local
+      "$pi_bin" uninstall "$@" || die "Could not remove retired Pi package source $source."
+      remaining_sources=$(list_package_sources)
+      if printf '%s\n' "$remaining_sources" | grep -Fx -e "$scope $source" >/dev/null; then
+        die "Retired Pi package source $source is still installed."
+      fi
+      success "Removed retired Pi package source $source."
+    done
+  done <<EOF
+$installed_sources
+EOF
 }
 
 install_extensions() {
@@ -471,6 +480,7 @@ install_extensions() {
   info "Installing extensions..."
   for extension in $selected_extensions; do
     "$pi_bin" install "npm:$extension" >/dev/null
+    remove_retired_package_sources "$extension"
     installed=$((installed + 1))
 
     if [ -t 1 ] && [ "${TERM:-}" != "dumb" ]; then
@@ -490,7 +500,6 @@ install_extensions() {
   done
   [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || printf '\n'
   success "Installed $installed extension(s)."
-  remove_retired_package_sources
   info "Start Pi with: $pi_bin"
 }
 
