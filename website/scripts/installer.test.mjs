@@ -24,7 +24,7 @@ function writeExecutable(path, source) {
 }
 
 function withInstaller(piSource, herdrSource, callback, {
-  piLatest = "0.85.1",
+  piLatest = "1.0.0",
   herdrLatest = "0.9.0",
   extensions,
 } = {}) {
@@ -110,7 +110,7 @@ if [ ! -f "$marker" ]; then
   for scope in ${packageScopes.join(" ")}; do : > "$source-$scope"; done
 fi
 case "$1" in
-  --version) printf 'pi 0.85.1\\n' ;;
+  --version) printf 'pi 1.0.0\\n' ;;
   install)
     ${installFails ? "[ \"$2\" != \"npm:@henryqw/pi-herdr-tools\" ] || exit 1" : ":"}
     ;;
@@ -129,7 +129,7 @@ esac
 `;
 }
 
-const compatiblePi = compatibleTool("pi", "0.85.1");
+const compatiblePi = compatibleTool("pi", "1.0.0");
 const compatibleHerdr = compatibleTool("herdr", "0.9.0");
 const baseHerdr = compatibleTool("herdr", "0.7.4");
 
@@ -206,7 +206,7 @@ test("pi-subagent alone rejects Herdr below 0.9.0", () => {
 
 test("update flag approves available Pi and Herdr updates", () => {
   const names = collectInstallablePackages(repoRoot);
-  const pi = updatableTool("pi", "0.85.1", "0.85.2");
+  const pi = updatableTool("pi", "1.0.0", "1.0.1");
   const herdr = updatableTool("herdr", "0.8.2", "0.9.0");
 
   withInstaller(pi, herdr, ({ commands, runInstaller }) => {
@@ -223,14 +223,14 @@ test("update flag approves available Pi and Herdr updates", () => {
         ...(["@henryqw/pi-footer", "@henryqw/pi-herdr-tools", "@henryqw/pi-subagent"].includes(name) ? ["pi list"] : []),
       ]),
     ]);
-  }, { piLatest: "0.85.2", herdrLatest: "0.9.0" });
+  }, { piLatest: "1.0.1", herdrLatest: "0.9.0" });
 });
 
 test("an approved update failure stops before extension installation", () => {
   const pi = `#!/bin/sh
 printf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"
 case "$1" in
-  --version) printf 'pi 0.85.1\\n' ;;
+  --version) printf 'pi 1.0.0\\n' ;;
   update) exit 1 ;;
 esac
 `;
@@ -240,7 +240,7 @@ esac
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Pi update failed/);
     assert.deepEqual(commands(), ["pi --version", "pi update --self"]);
-  }, { piLatest: "0.85.2" });
+  }, { piLatest: "1.0.1" });
 });
 
 test("a skipped Herdr update still enforces the selected 0.9.0 floor", () => {
@@ -275,7 +275,7 @@ test("a broken existing Pi stops before extension installation", () => {
   withInstaller(`#!/bin/sh\nprintf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nexit 1\n`, compatibleHerdr, ({ commands, runInstaller }) => {
     const result = runInstaller();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /could not start.*0\.85\.1\+/);
+    assert.match(result.stderr, /could not start.*1\.0\.0\+/);
     assert.deepEqual(commands(), ["pi --version"]);
   });
 });
@@ -284,7 +284,7 @@ test("an unrecognized existing Pi version stops before extension installation", 
   withInstaller(`#!/bin/sh\nprintf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nprintf 'development build\\n'\n`, compatibleHerdr, ({ commands, runInstaller }) => {
     const result = runInstaller();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /did not report a recognized semantic version.*0\.85\.1\+/);
+    assert.match(result.stderr, /did not report a recognized semantic version.*1\.0\.0\+/);
     assert.deepEqual(commands(), ["pi --version"]);
   });
 });
@@ -293,7 +293,7 @@ test("an older existing Pi reports the required version floor", () => {
   withInstaller(`#!/bin/sh\nprintf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nprintf 'pi 0.85.0\\n'\n`, compatibleHerdr, ({ commands, runInstaller }) => {
     const result = runInstaller();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /Pi 0\.85\.0.*Pi 0\.85\.1\+ is required/);
+    assert.match(result.stderr, /Pi 0\.85\.0.*Pi 1\.0\.0\+ is required/);
     assert.deepEqual(commands(), ["pi --version"]);
   });
 });
@@ -420,7 +420,7 @@ test("legacy cleanup ignores package-name substrings", () => {
   const pi = `#!/bin/sh
 printf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"
 case "$1" in
-  --version) printf 'pi 0.85.1\\n' ;;
+  --version) printf 'pi 1.0.0\\n' ;;
   list) printf 'User packages:\\n  npm:@henryqw/pi-auto-dag-copy\\n    /tmp/pi-auto-dag\\n' ;;
 esac
 `;
