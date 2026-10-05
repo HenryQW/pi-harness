@@ -16,9 +16,11 @@ test("PR policy defaults and valid limits load without overwriting invalid confi
 	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, maxPublicationCycles: 1 });
 	writeFileSync(path, '{"mergeMethod":"rebase"}');
 	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, mergeMethod: "rebase" });
+	writeFileSync(path, '{"ciPollSeconds":2147483}');
+	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, ciPollSeconds: 2147483 });
 	writeFileSync(path, '{"ciWaitMinutes":0,"ciPollSeconds":5}');
 	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ciPollSeconds: 5 });
-	for (const contents of ['{', '{"maxRepairAttempts":0}', '{"ciPollSeconds":0}', '{"ciWaitMinutes":-1}', '{"mergeMethod":"SQUASH"}', '{"mergeMethod":1}', '{"maxPublicationCycles":1.5}', '{"maxRepairAttempts":"3"}', '{"constructor":1}']) {
+	for (const contents of ['{', '{"maxRepairAttempts":0}', '{"ciPollSeconds":0}', '{"ciPollSeconds":2147484}', '{"ciWaitMinutes":-1}', '{"mergeMethod":"SQUASH"}', '{"mergeMethod":1}', '{"maxPublicationCycles":1.5}', '{"maxRepairAttempts":"3"}', '{"constructor":1}']) {
 		writeFileSync(path, contents);
 		assert.throws(() => loadPrPolicy(agentDir), (error: Error) => error.message.includes(path));
 		assert.equal(readFileSync(path, "utf8"), contents);

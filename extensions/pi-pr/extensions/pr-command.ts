@@ -267,7 +267,7 @@ export function createPrCommandHandler(
 			nextStep = "sweep";
 			onRouteResolved?.assertCurrent();
 		}
-		if (discovery.kind === "current" && (nextStep === "merge" || nextStep === "none") &&
+		if (discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci") &&
 			discovery.pullRequest.lifecycle === "open" && !discovery.pullRequest.conditions.draft &&
 			discovery.pullRequest.target.provenance === "configured" &&
 			discovery.pullRequest.local.worktree === "clean" && discovery.pullRequest.local.head === "equal") {

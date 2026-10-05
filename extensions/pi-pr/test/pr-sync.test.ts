@@ -43,14 +43,18 @@ function repository(t: { after(fn: () => void): void }) {
 			repository: "acme/project", host: "github.com", fetchSource: FETCH_SOURCE, remoteOid: prHead },
 	};
 	const commands: string[][] = [];
+	const hooks: { beforeFetch?: () => void } = {};
 	const exec: Exec = async (command, args, options) => {
 		commands.push([command, ...args]);
-		if (command === "git" && args[0] === "fetch") args = args.map((value) => value === FETCH_SOURCE ? bare : value);
+		if (command === "git" && args[0] === "fetch") {
+			hooks.beforeFetch?.();
+			args = args.map((value) => value === FETCH_SOURCE ? bare : value);
+		}
 		return await spawnBounded(command, args, options);
 	};
 	const sync = () => syncLocalHead({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
-	return { root, git, base, prHead, authority, sync, commands };
+	return { root, git, base, prHead, authority, sync, commands, hooks };
 }
 
 test("fast-forwards a behind local branch, keeping non-overlapping local changes", async (t) => {
@@ -66,12 +70,37 @@ test("fast-forwards a behind local branch, keeping non-overlapping local changes
 	assert.equal(readFileSync(join(dirty.root, "other.txt"), "utf8"), "edited locally\n");
 });
 
-test("refuses to fast-forward over overlapping local changes", async (t) => {
-	const repo = repository(t);
-	writeFileSync(join(repo.root, "shared.txt"), "local edit\n");
-	await assert.rejects(repo.sync(), /Local changes overlap the PR head update/);
-	assert.equal(repo.git("rev-parse", "HEAD"), repo.base);
-	assert.equal(readFileSync(join(repo.root, "shared.txt"), "utf8"), "local edit\n");
+test("refuses to fast-forward over overlapping local changes, even with merge.autoStash enabled", async (t) => {
+	for (const autoStash of [false, true]) {
+		const repo = repository(t);
+		if (autoStash) repo.git("config", "merge.autoStash", "true");
+		writeFileSync(join(repo.root, "shared.txt"), "local edit\n");
+		await assert.rejects(repo.sync(), /Local changes overlap the PR head update/, `autoStash=${autoStash}`);
+		assert.equal(repo.git("rev-parse", "HEAD"), repo.base, `autoStash=${autoStash}`);
+		assert.equal(readFileSync(join(repo.root, "shared.txt"), "utf8"), "local edit\n", `autoStash=${autoStash}`);
+		assert.equal(repo.git("stash", "list"), "", `autoStash=${autoStash}`);
+		assert.equal(repo.git("diff", "--name-only", "--diff-filter=U"), "", `autoStash=${autoStash}`);
+	}
+});
+
+test("stops without mutating when the branch or HEAD changes during the fetch", async (t) => {
+	const switched = repository(t);
+	switched.hooks.beforeFetch = () => switched.git("checkout", "-b", "elsewhere");
+	await assert.rejects(switched.sync(), /current branch changed/);
+	assert.equal(switched.git("rev-parse", "HEAD"), switched.base);
+	assert.equal(switched.git("rev-parse", "feature"), switched.base);
+
+	const advanced = repository(t);
+	advanced.hooks.beforeFetch = () => {
+		writeFileSync(join(advanced.root, "other.txt"), "raced\n");
+		advanced.git("commit", "-am", "raced during fetch");
+	};
+	await assert.rejects(advanced.sync(), /local HEAD moved during the fetch/);
+	assert.equal(advanced.git("log", "--format=%s", "-1"), "raced during fetch");
+	assert.equal(advanced.git("rev-parse", "HEAD^"), advanced.base, "the raced commit was neither rebased nor merged");
+	for (const repo of [switched, advanced]) {
+		assert.equal(repo.commands.some(([command, ...args]) => command === "git" && (args[0] === "merge" || args[0] === "rebase")), false);
+	}
 });
 
 test("rebases diverged local commits onto the PR head and aborts a conflicting rebase", async (t) => {

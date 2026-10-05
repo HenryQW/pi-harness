@@ -42,18 +42,26 @@ export async function syncLocalHead(options: SyncLocalHeadOptions): Promise<Sync
 		if (discovery.kind !== "current" || !samePullRequestSnapshot(authority, discovery.pullRequest)) {
 			throw new Error("Local sync cancelled: PR identity or remote head changed");
 		}
-		const branch = parseSingleOutputLine((await runChecked(exec, "git", ["branch", "--show-current"], execOptions)).stdout, "current branch");
-		if (branch !== authority.target.branch) throw new Error("Local sync cancelled: current branch changed");
-		const worktree = await inspectWorktreeState(exec, execOptions);
-		if (worktree === "operation") throw new Error("Local sync cancelled: a Git operation is in progress");
+		const assertLocalContext = async (expectedHead?: string): Promise<string> => {
+			const branch = parseSingleOutputLine((await runChecked(exec, "git", ["branch", "--show-current"], execOptions)).stdout, "current branch");
+			if (branch !== authority.target.branch) throw new Error("Local sync cancelled: current branch changed");
+			const head = await readHead(exec, execOptions);
+			if (expectedHead !== undefined && head !== expectedHead) throw new Error("Local sync cancelled: local HEAD moved during the fetch");
+			return head;
+		};
+		const head = await assertLocalContext();
+		if (await inspectWorktreeState(exec, execOptions) === "operation") throw new Error("Local sync cancelled: a Git operation is in progress");
 		await runChecked(exec, "git", [
 			"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", authority.headFetchSource, target,
 		], execOptions);
 		await runChecked(exec, "git", ["cat-file", "-e", `${target}^{commit}`], execOptions);
-		const head = await readHead(exec, execOptions);
+		// The fetch is the only slow step; branch, HEAD, and worktree are re-read right before any mutation.
+		await assertLocalContext(head);
+		const worktree = await inspectWorktreeState(exec, execOptions);
+		if (worktree === "operation") throw new Error("Local sync cancelled: a Git operation is in progress");
 		if (head === target || await isAncestor(exec, execOptions, target, head)) return { kind: "unchanged", head };
 		if (await isAncestor(exec, execOptions, head, target)) {
-			const merge = await exec("git", ["merge", "--ff-only", target], execOptions);
+			const merge = await exec("git", ["merge", "--ff-only", "--no-autostash", target], execOptions);
 			if (merge.killed) throw new Error("git merge --ff-only was killed; its outcome is unknown");
 			if (merge.code !== 0) {
 				throw new Error(`Local changes overlap the PR head update; commit or move them, then run /pr: ${merge.stderr.trim() || merge.stdout.trim()}`);

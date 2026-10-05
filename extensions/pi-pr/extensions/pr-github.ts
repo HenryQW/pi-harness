@@ -861,10 +861,11 @@ function conditions(
 		? "pending"
 		: "ready";
 	const behind = candidate.mergeStateStatus === "BEHIND";
+	const conflict = candidate.mergeable === "CONFLICTING" || candidate.mergeStateStatus === "DIRTY";
 	return {
 		draft: candidate.isDraft,
 		baseUpdateRequired: behind,
-		conflict: candidate.mergeable === "CONFLICTING" || candidate.mergeStateStatus === "DIRTY",
+		conflict,
 		changesRequested: candidate.reviewDecision === "CHANGES_REQUESTED",
 		unresolvedThreads,
 		ci: ciStatus(candidate.checkStates),
@@ -872,7 +873,8 @@ function conditions(
 		policy: candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "CLEAN"
 			? "ready"
 			: "pending",
-		mergeability: candidate.mergeable === "UNKNOWN" || candidate.mergeStateStatus === "UNKNOWN"
+		// A confirmed conflict on either field is definitive; the other field's UNKNOWN is not worth waiting for.
+		mergeability: !conflict && (candidate.mergeable === "UNKNOWN" || candidate.mergeStateStatus === "UNKNOWN")
 			? "pending"
 			: "known",
 	};

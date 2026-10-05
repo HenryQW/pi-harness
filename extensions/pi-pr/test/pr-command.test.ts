@@ -546,6 +546,10 @@ test("waits for running CI within the invocation budget, then re-reads GitHub be
 	assert.equal(await commented.handler("", commented.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "sweep");
 	assert.equal(mutationCalls(commented.calls).length, 0);
 
+	const standalone = harness({ states: [running], feedbackChecks: [true], commands: [packageCommand("skill:pi-pr-comment-sweep")] });
+	assert.equal(await standalone.handler("", standalone.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "sweep");
+	assert.deepEqual(standalone.events, ["load", "reserve", "send"], "new standalone feedback is triaged before waiting");
+
 	const exhausted = harness({ states: [running, running, running] });
 	assert.equal(await exhausted.handler("", exhausted.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 1 }))), "none");
 	assert.deepEqual(exhausted.events, ["load", "notify", "load", "load", "notify"]);
@@ -571,6 +575,15 @@ test("re-reads pending GitHub mergeability a bounded number of times", async () 
 	const resolved = harness({ states: [pending, {}, {}] });
 	assert.equal(await resolved.handler("", resolved.context), "merge");
 	assert.deepEqual(resolved.events, ["load", "load", "load", "merge"]);
+
+	for (const confirmed of [
+		{ mergeable: "CONFLICTING", mergeStateStatus: "UNKNOWN" },
+		{ mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" },
+	] as const) {
+		const conflict = harness({ states: [confirmed], commands: [packageCommand("skill:pi-pr-update-branch")] });
+		assert.equal(await conflict.handler("", conflict.context), "update-branch", JSON.stringify(confirmed));
+		assert.deepEqual(conflict.events, ["load", "reserve", "send"], JSON.stringify(confirmed));
+	}
 
 	const exhausted = harness({ states: [pending, pending, pending], refreshAttempts: 2 });
 	assert.equal(await exhausted.handler("", exhausted.context), "none");

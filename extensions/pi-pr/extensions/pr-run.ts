@@ -11,6 +11,8 @@ type NumericPolicyKey = Exclude<keyof PrPolicy, "mergeMethod">;
 const NUMERIC_KEYS: readonly NumericPolicyKey[] = ["maxPublicationCycles", "maxRepairAttempts", "ciPollSeconds", "ciWaitMinutes"];
 /** `ciWaitMinutes: 0` disables waiting for running CI; every other limit must be positive. */
 const ZERO_ALLOWED: ReadonlySet<NumericPolicyKey> = new Set(["ciWaitMinutes"]);
+/** Node replaces a timer delay above 2^31-1 ms with 1 ms, which would turn a long poll into a tight loop. */
+const MAX_CI_POLL_SECONDS = 2_147_483;
 
 export function loadPrPolicy(agentDir?: string): PrPolicy {
 	const config = createConfigStore({
@@ -26,6 +28,7 @@ export function loadPrPolicy(agentDir?: string): PrPolicy {
 				if (value[key] !== undefined) {
 					const minimum = ZERO_ALLOWED.has(key) ? 0 : 1;
 					if (!Number.isSafeInteger(value[key]) || (value[key] as number) < minimum) throw new Error(`${key} must be an integer of at least ${minimum}`);
+					if (key === "ciPollSeconds" && (value[key] as number) > MAX_CI_POLL_SECONDS) throw new Error(`ciPollSeconds must be at most ${MAX_CI_POLL_SECONDS}`);
 					policy[key] = value[key] as number;
 				}
 			}
