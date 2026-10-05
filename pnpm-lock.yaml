@@ -121,7 +121,7 @@ importers:
         specifier: ^2.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
-        specifier: ^0.4.1
+        specifier: ^0.4.9
         version: link:../../packages/pi-herdr
       '@henryqw/pi-task-models':
         specifier: ^7.0.0
@@ -272,7 +272,7 @@ importers:
         specifier: ^2.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
-        specifier: ^0.4.7
+        specifier: ^0.4.9
         version: link:../../packages/pi-herdr
       '@henryqw/pi-multi-codex':
         specifier: ^2.0.0

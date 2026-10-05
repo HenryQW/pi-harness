@@ -49,7 +49,13 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 				"exec:worktree create",
 				"exec:pane get",
 				"exec:tab create",
+				"exec:pane process-info",
+				"exec:pane run",
+				"exec:pane read",
 				"exec:agent start",
+				"exec:pane process-info",
+				"exec:pane run",
+				"exec:pane read",
 				"exec:agent start",
 				"exec:tab focus",
 			]);
@@ -61,8 +67,8 @@ test("/clone-worktree copies only the active path into a worktree workspace and 
 				"tab", "create", "--workspace", "workspace-new",
 				"--cwd", "/repos/pi-harness/.herdr-checkouts/wt-x", "--no-focus",
 			]);
-			assert.deepEqual(app.calls[7].args, ["tab", "focus", "tab-clone"]);
-			const start = app.calls[5].args;
+			assert.deepEqual(app.calls[13].args, ["tab", "focus", "tab-clone"]);
+			const start = app.calls[8].args;
 			assert.match(start[2]!, /^clone-[a-f0-9]{24}$/);
 			assert.deepEqual(start.slice(3, 8), ["--kind", "pi", "--pane", "pane-clone", "--"]);
 			assert.equal(start[8], "--session");

@@ -14,6 +14,23 @@ type ExecCall = { command: string; args: string[]; options: { cwd: string } };
 type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type Respond = (args: string[]) => Promise<ExecResult | undefined> | ExecResult | undefined;
 
+let probeToken = "";
+/** Answer `startPiAgent`'s shell-readiness probe for an idle shell pane; undefined for other commands. */
+export function shellProbe(args: string[]): ExecResult | undefined {
+	if (args[0] !== "pane") return undefined;
+	if (args[1] === "process-info") {
+		return success({ result: { type: "pane_process_info", process_info: {
+			pane_id: args[3], shell_pid: 501, foreground_process_group_id: 501, foreground_processes: [{ pid: 501, name: "zsh" }],
+		} } });
+	}
+	if (args[1] === "run") {
+		probeToken = args[3]!.replace(/^echo /, "");
+		return success();
+	}
+	if (args[1] === "read") return success(`\u276f echo ${probeToken}\n${probeToken}\n\u276f `);
+	return undefined;
+}
+
 const usage = {
 	input: 0,
 	output: 0,
@@ -79,6 +96,8 @@ function harness(
 		exec: async (executable: string, args: string[], options: { cwd: string }) => {
 			calls.push({ command: executable, args, options });
 			events.push(`exec:${args.slice(0, 2).join(" ")}`);
+			const probe = shellProbe(args);
+			if (probe) return probe;
 			const workspaceGet = args[0] === "workspace" && args[1] === "get";
 			if (commandName === "clone-tab" && workspaceGet) return workspaceResponse(args, cwd);
 			const custom = respond ? await respond(args) : undefined;

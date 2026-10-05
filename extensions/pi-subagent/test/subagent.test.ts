@@ -464,6 +464,7 @@ Do bounded work.
 
 function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined | Promise<string | undefined> = (prompt) => prompt.includes("Potential-writer completion:") ? JSON.stringify({ outcome: "succeeded", answer: "exact answer" }) : "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
 	const calls: string[][] = [];
+	let probeToken = "";
 	const sessions = new Map<string, { path: string; prompt?: string; pane: string; tab: string }>();
 	let next = 1;
 	const response = (result: any) => ({ code: 0, stdout: JSON.stringify({ id: "mock", result }), stderr: "" });
@@ -492,6 +493,11 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined |
 				return response({ type: "tab_created", tab: { tab_id: tab, workspace_id: "w-test", focused: false },
 					root_pane: { pane_id: `w-test:p${next}`, tab_id: tab, workspace_id: "w-test", cwd, focused: false } });
 			}
+			if (args[0] === "pane" && args[1] === "process-info") {
+				return response({ type: "pane_process_info", process_info: { pane_id: args[3], shell_pid: 501, foreground_process_group_id: 501, foreground_processes: [{ pid: 501, name: "zsh" }] } });
+			}
+			if (args[0] === "pane" && args[1] === "run") { probeToken = args[3]!.replace(/^echo /, ""); return response({ type: "ok" }); }
+			if (args[0] === "pane" && args[1] === "read") return { code: 0, stdout: `\u276f echo ${probeToken}\n${probeToken}\n\u276f `, stderr: "" };
 			if (args[0] === "agent" && args[1] === "start") {
 				if (args.some((arg) => /[\r\n]/.test(arg))) return { code: 1, stdout: JSON.stringify({ error: { code: "invalid_agent_argument" } }), stderr: "Herdr cannot encode multiline arguments" };
 				const name = args[2]!;

@@ -91,7 +91,7 @@ type ExpectedArgs = readonly string[] | ((args: readonly string[], options: Host
 type Step = {
 	command: string;
 	args: ExpectedArgs;
-	result?: ProcessResult;
+	result?: ProcessResult | (() => ProcessResult);
 	error?: Error;
 };
 
@@ -109,7 +109,7 @@ class ScriptedProcess {
 		if (typeof step.args === "function") step.args(args, options);
 		else assert.deepEqual(args, step.args);
 		if (step.error) throw step.error;
-		return step.result ?? { code: 0, stdout: "", stderr: "" };
+		return (typeof step.result === "function" ? step.result() : step.result) ?? { code: 0, stdout: "", stderr: "" };
 	};
 
 	done(): void { assert.deepEqual(this.steps, []); }
@@ -385,6 +385,25 @@ function lsof(path: string, stdout = "", code = stdout ? 0 : 1, pid?: number): S
 	};
 }
 
+/** The shell-readiness probe `startPiAgent` runs before typing the launch command into an idle shell. */
+function shellPromptSteps(): Step[] {
+	let token = "";
+	return [
+		{ command: "herdr", args: ["pane", "process-info", "--pane", WORKER_PANE_ID], result: success({
+			type: "pane_process_info",
+			process_info: { pane_id: WORKER_PANE_ID, shell_pid: 501, foreground_process_group_id: 501, foreground_processes: [{ pid: 501, name: "zsh" }] },
+		}) },
+		{ command: "herdr", args: (args) => {
+			assert.deepEqual(args.slice(0, 3), ["pane", "run", WORKER_PANE_ID]);
+			assert.match(args[3]!, /^echo pi-herdr-ready-[0-9a-f]{16}$/);
+			token = args[3]!.slice("echo ".length);
+		}, result: success({ type: "ok" }) },
+		{ command: "herdr", args: (args) => {
+			assert.deepEqual(args.slice(0, 3), ["pane", "read", WORKER_PANE_ID]);
+		}, result: () => ({ code: 0, stdout: `\u276f echo ${token}\n${token}\n\u276f `, stderr: "" }) },
+	];
+}
+
 function startablePaneSteps(
 	paths: Paths,
 	processOverrides: Record<string, unknown> = {},
@@ -535,10 +554,10 @@ test("preflight accepts linked Main only after Herdr capabilities and current-wo
 	});
 
 	for (const [name, mutate, error] of [
-		["old client", (steps: Step[]) => { steps[0]!.result!.stdout = "herdr 0.8.9\n"; }, /client version/],
-		["prerelease client", (steps: Step[]) => { steps[0]!.result!.stdout = "herdr 0.9.0-beta.1\n"; }, /client version/],
-		["incompatible endpoint", (steps: Step[]) => { steps[1]!.result!.stdout = "status: running\nversion: 0.9.0\nendpoint_compatible: no\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"; }, /server must be compatible/],
-		["old protocol", (steps: Step[]) => { steps[1]!.result!.stdout = "status: running\nversion: 0.9.0\nendpoint_compatible: yes\nprivate_protocol: 21\nprivate_protocol_compatible: yes\n"; }, /protocol >=22/],
+		["old client", (steps: Step[]) => { (steps[0]!.result as ProcessResult).stdout = "herdr 0.8.9\n"; }, /client version/],
+		["prerelease client", (steps: Step[]) => { (steps[0]!.result as ProcessResult).stdout = "herdr 0.9.0-beta.1\n"; }, /client version/],
+		["incompatible endpoint", (steps: Step[]) => { (steps[1]!.result as ProcessResult).stdout = "status: running\nversion: 0.9.0\nendpoint_compatible: no\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"; }, /server must be compatible/],
+		["old protocol", (steps: Step[]) => { (steps[1]!.result as ProcessResult).stdout = "status: running\nversion: 0.9.0\nendpoint_compatible: yes\nprivate_protocol: 21\nprivate_protocol_compatible: yes\n"; }, /protocol >=22/],
 		["missing env capability", (steps: Step[]) => { steps[2]!.result = {
 			code: 0,
 			stdout: JSON.stringify(schema({
@@ -834,6 +853,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	script.push(
 		lsof(tabDetails.leasePath),
 		...startablePaneSteps(fixture),
+		...shellPromptSteps(),
 		{
 			command: "herdr",
 			args: (args) => {
@@ -902,7 +922,7 @@ test("agent allocation accepts the task's explicit Role and rejects launch misma
 			script.push(
 				lsof(leasePath),
 				...startablePaneSteps(fixture),
-				...(candidate.error ? [] : [{
+				...(candidate.error ? [] : [...shellPromptSteps(), {
 					command: "herdr",
 					args: () => {},
 					result: success({ type: "agent_started", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }),
@@ -972,6 +992,7 @@ test("agent start accepts only omitted or null agent as an empty pane", async (t
 			script.push(
 				lsof(leasePath),
 				...startablePaneSteps(fixture, {}, { agent }),
+				...shellPromptSteps(),
 				{
 					command: "herdr",
 					args: () => {},
@@ -1128,7 +1149,7 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 	attempt.allocations.pop();
 	const intent = await plannedIntent(host, attempt, "agent", fixture, script);
 	await privateLease(leasePath);
-	script.push(lsof(leasePath), ...startablePaneSteps(fixture), { command: "herdr", args: () => {}, result: failure("agent_pane_busy") });
+	script.push(lsof(leasePath), ...startablePaneSteps(fixture), ...shellPromptSteps(), { command: "herdr", args: () => {}, result: failure("agent_pane_busy") });
 	let cleanups = 0;
 	assert.deepEqual(await host.allocateHost({ requestId: REQUEST_ID,
 		intent,
@@ -1203,7 +1224,7 @@ test("every allocation crash window reconciles without adoption or duplicate cre
 				const intent = await plannedIntent(host, attempt, kind, fixture, script);
 				if (intent.kind === "worker_tab") leasePath = intent.leasePath;
 				const malformed = boundary === "malformed-after-side-effect";
-				if (kind === "agent") script.push(lsof(leasePath!), ...startablePaneSteps(fixture));
+				if (kind === "agent") script.push(lsof(leasePath!), ...startablePaneSteps(fixture), ...shellPromptSteps());
 				if (kind === "workspace") script.push(repositoryIdentityStep(fixture));
 				if (kind === "worker_tab" && boundary !== "before-side-effect") script.push(...layoutSettleSteps());
 				script.push({
