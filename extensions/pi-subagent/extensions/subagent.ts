@@ -10,7 +10,7 @@ import { registerSubagentCommand, type DirectTask } from "./subagent-command.ts"
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { ENTRY_STATUS_PRESENTATION, formatWorkflowResult, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
-import { createDirectHerdr, type DirectHandle, type DirectTab } from "../dist/direct-herdr.js";
+import { createDirectHerdr, DirectAllocationError, type DirectAllocation, type DirectHandle, type DirectTab } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 1_000;
@@ -110,6 +110,8 @@ function replaceRouteModel(ctx: ExtensionContext, reference: string, route: Reso
 
 const DIRECT_RESULT_TYPE = "subagent-direct-result";
 const DIRECT_TAB_TYPE = "subagent-direct-tab";
+const DIRECT_ALLOCATION_TYPE = "subagent-direct-allocation";
+type DirectAllocationRecord = DirectAllocation & { taskId: string; entryId: string; failure: string };
 type DirectTabRecord = DirectTab & { taskId: string; entryId: string };
 
 function boundedError(error: unknown): Error {
@@ -188,13 +190,19 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		currentPolicy,
 	});
 	let directSequence = 0;
-	const directTasks = new Map<string, { controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[]; close?: (current: () => boolean) => Promise<void>; recovery?: string }>();
+	const directTasks = new Map<string, { controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[]; close?: (current: () => boolean) => Promise<void>; closeScope?: () => boolean; allocation?: DirectAllocationRecord; recovery?: string }>();
 	let latestCtx: ExtensionContext | undefined;
 	let sessionEpoch = 0;
 	registerSubagentCommand(pi, {
 		direct(ctx): DirectTask[] {
 			const grouped = new Map<string, DirectTask & { tabs: Array<DirectTask["tabs"][number]> }>();
 			for (const entry of ctx.sessionManager.getBranch()) {
+				if (entry.type === "custom" && entry.customType === DIRECT_ALLOCATION_TYPE && entry.data) {
+					const allocation = entry.data as DirectAllocationRecord;
+					grouped.set(allocation.taskId, { id: allocation.taskId, name: allocation.name,
+						status: "allocation unverified; admission retained", recovery: allocation.failure,
+						tabs: grouped.get(allocation.taskId)?.tabs ?? [] });
+				}
 				if (entry.type !== "custom" || entry.customType !== DIRECT_TAB_TYPE || !entry.data) continue;
 				const tab = entry.data as DirectTabRecord;
 				const local = directTasks.get(tab.taskId);
@@ -214,6 +222,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				return tab.entryId !== saved.entryId || tab.name !== saved.name || tab.tabId !== saved.tabId
 					|| tab.paneId !== saved.paneId || tab.sessionFile !== saved.sessionFile;
 			})) throw new Error("Direct task ownership changed; reopen /subagent. Recorded-only tasks cannot release admission.");
+			// Cancellation settles through the background finalizer; it must retain this
+			// command's authority across every awaited identity/termination lookup too.
+			local.closeScope = owned;
 			local.controller.abort();
 			await local.settled;
 			// Automatic settlement may already have proved termination and released it.
@@ -374,6 +385,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const recorded = new Set(ctx.sessionManager.getBranch().flatMap((entry) =>
 				entry.type === "custom" && entry.customType === DIRECT_TAB_TYPE && entry.data
 					? [(entry.data as DirectTabRecord).tabId] : []));
+			for (const { allocation } of previous) if (allocation && !ctx.sessionManager.getBranch().some((entry) =>
+				entry.type === "custom" && entry.customType === DIRECT_ALLOCATION_TYPE && (entry.data as DirectAllocationRecord)?.taskId === allocation.taskId)) {
+				pi.appendEntry(DIRECT_ALLOCATION_TYPE, allocation);
+			}
 			for (const { tabs } of previous) for (const tab of tabs) {
 				if (!recorded.has(tab.tabId)) {
 					pi.appendEntry(DIRECT_TAB_TYPE, tab);
@@ -439,7 +454,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		if (stale) return;
 		const transport = formatWorkflowResult(mode, entries);
 		const outcome: BackgroundWorkflowTransportDetails["outcome"] = transport.failed ? "failed" : "completed";
-		const content = [transport.text, ...(recovery ? [`Checkout admission retained: ${recovery}. Open /subagent, select ${taskId}, then Close/cancel-and-release; never blindly retry work.`] : []), ...(tabs.length ? ["Recovery (also available via /subagent):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile }) =>
+		const content = [transport.text, ...(recovery ? [`Checkout admission retained: ${recovery}. Open /subagent, select ${taskId}, and follow its recovery guidance (Close/cancel-and-release only when offered); never blindly retry work.`] : []), ...(tabs.length ? ["Recovery (also available via /subagent):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile }) =>
 			`- ${taskId} · ${entryId} · tab ${tabId} · pane ${paneId} · agent ${name} · session ${sessionFile}`)] : [])].join("\n");
 		const details: BackgroundWorkflowTransportDetails & { tabs: readonly DirectTabRecord[] } = {
 			...transport.details,
@@ -520,9 +535,11 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const releaseAdmission = writes ? holdAdmission(toolCallId) : () => {};
 			const local: NonNullable<ReturnType<typeof directTasks.get>> = { controller, settled, handles, tabs };
 			local.close = async (current) => {
+				const inScope = () => current() && (local.closeScope?.() ?? true);
 				try {
-					for (const tab of tabs) await herdr.stop(tab, current);
-					if (!current()) throw new Error("Direct task scope changed; reopen /subagent.");
+					if (local.allocation) throw new Error(local.allocation.failure);
+					for (const tab of tabs) await herdr.stop(tab, inScope);
+					if (!inScope()) throw new Error("Direct task scope changed; reopen /subagent.");
 					releaseAdmission();
 					directTasks.delete(taskId);
 				} catch (error) {
@@ -563,6 +580,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							tabByEntry.set(entry.id, record);
 						}, writes);
 				} catch (error) {
+					if (error instanceof DirectAllocationError) {
+						local.allocation = { taskId, entryId: entry.id, ...error.allocation, failure: error.message };
+						pi.appendEntry(DIRECT_ALLOCATION_TYPE, local.allocation);
+					}
 					// A failed start can still be in flight. Keep its private prompt for recovery.
 					throw new Error(`${error instanceof Error ? error.message : String(error)}. Direct Role prompt retained at ${transient.launch.args[prepared.promptArgIndex + 1]} after uncertain start.`, { cause: error });
 				}
@@ -587,8 +608,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			} catch (error) {
 				controller.abort();
 				finishWidgetItem(entries[0]!.id, "failure");
-				if (!tabs.length) { releaseAdmission(); directTasks.delete(taskId); }
-				else local.recovery = "Launch outcome uncertain; inspect the exact recorded tab before Close/cancel-and-release";
+				if (!tabs.length && !local.allocation) { releaseAdmission(); directTasks.delete(taskId); }
+				else local.recovery = local.allocation?.failure ?? "Launch outcome uncertain; inspect the exact recorded tab before Close/cancel-and-release";
 				resolveSettled();
 				throw boundedError(error);
 			} finally { signal?.removeEventListener("abort", abortLaunch); }

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { directSessionTokens, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createDirectHerdr, directSessionTokens, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
 
 const prompt = "inspect\n\nTurn identity: unique";
 const lines = (messages: unknown[]) => [
@@ -59,4 +63,30 @@ test("native Pi session errors and unrelated turns cannot masquerade as successf
 		{ type: "message", id: "second-user", parentId: "user", message: { role: "user", content: [{ type: "text", text: "hijack" }] } },
 		{ type: "message", id: "final", parentId: "second-user", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "wrong turn" }] } },
 	]), prompt), /unexpected user turn/);
+});
+
+
+test("stop accepts native unnamed unrelated agents without authorizing mutations", async (t) => {
+	const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-native-list-")));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const leasePath = join(cwd, "process.lease");
+	await writeFile(leasePath, "", { mode: 0o600 });
+	const previous = { ...process.env };
+	Object.assign(process.env, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "owned-workspace", HERDR_PANE_ID: "caller" });
+	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) {
+		if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+	} });
+	const tab = { name: "owned", tabId: "owned-tab", paneId: "owned-pane", leasePath, sessionFile: join(cwd, "session.jsonl") };
+	for (const paneId of ["unrelated-pane", "owned-pane"]) {
+		const exec: ExtensionAPI["exec"] = async (command, args) => {
+			if (command === "lsof") return { code: 1, stdout: "", stderr: "", killed: false };
+			assert.equal(args[1], "list", "the native-shape probe forbids all mutation calls");
+			const result = args[0] === "agent" ? { type: "agent_list", agents: [{ agent: "pi", pane_id: paneId, tab_id: "unrelated-tab" }] }
+				: { type: "pane_list", panes: [] };
+			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false };
+		};
+		const stopping = createDirectHerdr({ exec }, cwd, 1000).stop(tab);
+		if (paneId === "owned-pane") await assert.rejects(stopping, /one exact owned agent/);
+		else await stopping;
+	}
 });

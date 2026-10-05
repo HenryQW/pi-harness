@@ -6,6 +6,7 @@ export interface DirectTask {
 	name: string;
 	status: string;
 	canClose?: boolean;
+	recovery?: string;
 	tabs: readonly { entryId: string; name: string; tabId: string; paneId: string; sessionFile: string }[];
 }
 
@@ -121,6 +122,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (selected.kind === "history") { history = !history; continue; }
 				if (selected.kind === "direct") {
 					ctx.ui.notify(`Direct workflow ${clean(selected.task.name)} (${JSON.stringify(selected.task.id)}) · ${clean(selected.task.status)}`, "info");
+					if (selected.task.recovery) ctx.ui.notify(clean(selected.task.recovery, 4000), "warning");
 					for (const tab of selected.task.tabs) {
 						ctx.ui.notify(`Task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}`, "info");
 					}

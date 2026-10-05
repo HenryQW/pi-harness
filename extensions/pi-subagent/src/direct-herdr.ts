@@ -132,6 +132,18 @@ export function directSessionTokens(jsonl: string, prompt: string): number | und
 
 export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string };
 
+/** Allocation evidence is not ownership and must never authorize pane mutation. */
+export type DirectAllocation = Omit<DirectTab, "tabId" | "paneId"> & {
+	workspaceId: string; cwd: string; label: string; tabId?: string; paneId?: string;
+};
+export class DirectAllocationError extends Error {
+	readonly allocation: DirectAllocation;
+	constructor(allocation: DirectAllocation, cause: unknown) {
+		super(`Direct tab allocation is unverified: ${cause instanceof Error ? cause.message : String(cause)}. No agent start was dispatched. Inspect /subagent allocation evidence: workspace ${allocation.workspaceId}, cwd ${allocation.cwd}, label ${JSON.stringify(allocation.label)}, tab ${allocation.tabId ?? "unknown"}, pane ${allocation.paneId ?? "unknown"}, agent ${allocation.name}, session ${allocation.sessionFile}, lease ${allocation.leasePath}. Manual allocation reconciliation is required; do not replay creation or unlock admission.`, { cause });
+		this.allocation = allocation;
+	}
+}
+
 export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, idleMs: number) {
 	if (process.env.HERDR_ENV !== "1") throw new Error("Direct delegation requires a Herdr-managed Pi pane (HERDR_ENV=1).");
 	const workspaceId = field(process.env.HERDR_WORKSPACE_ID, "HERDR_WORKSPACE_ID");
@@ -158,7 +170,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			if (!Array.isArray(listed.agents)) throw new Error("Malformed Herdr agent list.");
 			const related = listed.agents.map((value) => {
 				const agent = object(value, "listed agent");
-				for (const key of ["name", "pane_id", "tab_id"]) field(agent[key], `listed agent ${key}`);
+				for (const key of ["pane_id", "tab_id"]) field(agent[key], `listed agent ${key}`);
 				return agent;
 			}).filter((agent) => agent.name === tab.name || agent.pane_id === tab.paneId || agent.tab_id === tab.tabId);
 			const panes = async () => {
@@ -204,15 +216,27 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			signal.throwIfAborted();
 			// Tab creation is bounded but not session-cancellable: Herdr may create it
 			// before the CLI responds, and aborting the CLI loses the exact tab ID.
-			const created = result(await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--env", `PI_SUBAGENT_PROCESS_LEASE=${leasePath}`, "--no-focus"], options()), "tab_created");
-			const tab = object(created.tab, "created tab");
-			const workerPane = object(created.root_pane, "created pane");
-			const tabId = field(tab.tab_id, "tab id");
-			const paneId = field(workerPane.pane_id, "pane id");
-			if (tab.workspace_id !== workspaceId || workerPane.workspace_id !== workspaceId || workerPane.tab_id !== tabId
-				|| workerPane.cwd !== workingDir || tab.focused !== false || workerPane.focused !== false || paneId === callerPane) {
-				throw new Error(`Herdr tab ${tabId} has unverified identity, cwd or focus; inspect it before retrying.`);
-			}
+			const allocation: DirectAllocation = { name, workspaceId, cwd: workingDir, label, sessionFile, leasePath };
+			let tabId: string;
+			let paneId: string;
+			try {
+				const response = await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--env", `PI_SUBAGENT_PROCESS_LEASE=${leasePath}`, "--no-focus"], options());
+				const created = object(response.result, "tab allocation result");
+				// Capture every returned ID before validation can fail. These are evidence,
+				// not owned tabs; the caller retains this intent even without either ID.
+				for (const [source, key, target] of [[created.tab, "tab_id", "tabId"], [created.root_pane, "pane_id", "paneId"]] as const) {
+					if (source && typeof source === "object" && typeof (source as Json)[key] === "string") allocation[target] = (source as Json)[key] as string;
+				}
+				result(response, "tab_created");
+				const tab = object(created.tab, "created tab");
+				const workerPane = object(created.root_pane, "created pane");
+				tabId = field(tab.tab_id, "tab id");
+				paneId = field(workerPane.pane_id, "pane id");
+				if (tab.workspace_id !== workspaceId || workerPane.workspace_id !== workspaceId || workerPane.tab_id !== tabId
+					|| workerPane.cwd !== workingDir || tab.focused !== false || workerPane.focused !== false || paneId === callerPane) {
+					throw new Error(`Herdr tab ${tabId} has unverified identity, cwd or focus; inspect it before retrying.`);
+				}
+			} catch (error) { throw new DirectAllocationError(allocation, error); }
 			try {
 				// Record the tab before the agent start can outlive an aborted launch.
 				onTab({ name, tabId, paneId, sessionFile, leasePath });

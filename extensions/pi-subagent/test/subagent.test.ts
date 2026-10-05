@@ -779,6 +779,79 @@ test("failed direct termination retains admission and exact Close retries withou
 	});
 });
 
+
+test("active Close cancellation retains admission when its scope changes during termination lookup", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---\nname: worker\ndescription: Writer\ntools: [bash]\nextensions: []\nskills: []\n---\nWork.\n`);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			let waiting = false;
+			let drift = true;
+			const app = harness({ cwd, lsof: async () => ({ code: 1, stdout: "", stderr: "" }), herdr: async (args, options) => {
+				if (args[0] === "agent" && args[1] === "wait") {
+					waiting = true;
+					await new Promise<void>((_resolve, reject) => options!.signal!.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }));
+				}
+				const response = await fake.exec(args);
+				if (drift && args[0] === "agent" && args[1] === "list") { drift = false; app.switchBranch(); }
+				return response;
+			} });
+			const params = { mode: "direct", role: "worker", name: "Active", task: "work" };
+			await app.handlers.get("tool_call")!({ toolCallId: "active", toolName: "delegate_task", input: params }, app.ctx);
+			await app.tool.execute("active", params, undefined, undefined, app.ctx);
+			app.handlers.get("tool_result")!({ toolCallId: "active" });
+			await waitFor(() => waiting);
+			const saved = app.sessionEntries;
+			let menu = 0;
+			app.ctx.hasUI = true;
+			app.ctx.ui.select = async (_title, choices) => menu++ === 0 ? choices.find((choice) => choice.startsWith("Direct ·"))
+				: menu === 2 ? choices.find((choice) => choice.startsWith("Close/cancel")) : undefined;
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.ok(!fake.calls.some((args) => args[1] === "close"), "stale active cancellation must not close a pane");
+			assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "bash", toolName: "bash", input: {} }, app.ctx)).block, true);
+			app.ctx.sessionManager.getBranch = () => saved;
+			app.ctx.sessionManager.getEntries = () => saved;
+			menu = 0;
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "bash", toolName: "bash", input: {} }, app.ctx), undefined);
+		});
+	});
+});
+
+test("uncertain direct allocation retains admission and recovery intent without starting or closing an agent", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---\nname: worker\ndescription: Writer\ntools: [bash]\nextensions: []\nskills: []\n---\nWork.\n`);
+		await herdrEnvironment(async (cwd) => {
+			for (const failure of ["timeout", "identity", "partial"] as const) {
+				const fake = fakeHerdr(cwd);
+				const app = harness({ cwd, herdr: async (args) => {
+					const response = await fake.exec(args);
+					if (args[0] === "tab" && args[1] === "create") {
+						if (failure === "timeout") throw new Error("tab create timed out after server allocation");
+						const body = JSON.parse(response.stdout);
+						if (failure === "partial") delete body.result.root_pane.pane_id;
+						else body.result.root_pane.cwd = "/unrelated";
+						return { ...response, stdout: JSON.stringify(body) };
+					}
+					return response;
+				} });
+				const params = { mode: "direct", role: "worker", name: "Uncertain", task: "work" };
+				await app.handlers.get("tool_call")!({ toolCallId: failure, toolName: "delegate_task", input: params }, app.ctx);
+				await assert.rejects(app.tool.execute(failure, params, undefined, undefined, app.ctx), /timed out|unverified/);
+				app.handlers.get("tool_result")!({ toolCallId: failure });
+				assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "bash", toolName: "bash", input: {} }, app.ctx))?.block, true);
+				await recoverDirect(app);
+				assert.ok(app.notifications.some(({ message }) => /allocation.*w-test.*process\.lease/s.test(message)), "exact allocation intent must remain inspectable");
+				assert.ok(!fake.calls.some((args) => args[0] === "agent" && ["start", "prompt"].includes(args[1]!) || args[1] === "close"));
+				if (failure === "identity") assert.ok(app.notifications.some(({ message }) => message.includes("w-test:t2") && message.includes("w-test:p2")));
+				if (failure === "partial") assert.ok(app.notifications.some(({ message }) => message.includes("w-test:t2") && message.includes("pane unknown")));
+			}
+		});
+	});
+});
+
 test("direct resource resolution still rejects recursive delegation packages before opening a tab", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
