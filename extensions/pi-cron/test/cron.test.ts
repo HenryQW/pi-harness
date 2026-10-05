@@ -101,7 +101,15 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 		command: (args: string) => command!(args, ctx),
 		setNow: (value: number) => { now = value; },
 		select: (...choices: string[]) => { selections = choices; },
-		settle: () => new Promise((resolve) => setTimeout(resolve, 50)),
+		/** Without a condition, give background work a moment and assert nothing more happened. */
+		settle: async (until?: () => boolean | Promise<boolean>) => {
+			if (!until) return new Promise((resolve) => setTimeout(resolve, 50));
+			const deadline = Date.now() + 5_000;
+			while (!(await until())) {
+				if (Date.now() > deadline) throw new Error(`settle timed out; notices:\n${notices.join("\n")}`);
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+		},
 	};
 }
 
@@ -117,7 +125,7 @@ test("a new job waits for its slot, then runs once in a persisted session with t
 
 	h.setNow(SLOT + 60_000);
 	await h.emit("session_start");
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job digest finished")));
 	assert.equal(h.prepared.length, 1);
 	const [run] = h.prepared;
 	assert.equal(run!.task, "# Digest preferences\nSummarize unread items.\n");
@@ -150,13 +158,12 @@ test("/cron run forces a run, refuses a concurrent claim, and follow-up delivery
 	await h.emit("session_start");
 	await h.settle();
 	await h.command("run digest");
-	await h.settle();
-	assert.equal(h.prepared.length, 1);
+	await h.settle(() => h.prepared.length === 1);
 	assert.ok(h.notices.some((notice) => notice.startsWith("Started digest")), h.notices.join("\n"));
 	await h.command("run digest");
 	assert.ok(h.notices.some((notice) => notice.includes("already running")), h.notices.join("\n"));
 	release();
-	await h.settle();
+	await h.settle(() => h.messages.length === 1);
 	const message = h.messages[0] as { customType: string; content: string; details: { outcome: string } };
 	assert.equal(message.customType, CRON_RESULT_TYPE);
 	assert.equal(message.details.outcome, "failure");
@@ -190,16 +197,16 @@ test("busy local admission leaves other jobs unclaimed instead of queueing an ag
 	const h = harness(async () => { await gate; return { outcome: "success", output: "done" }; });
 	await h.emit("session_start");
 	await h.command("run first");
-	await h.settle();
+	await h.settle(() => h.prepared.length === 1);
 	h.setNow(SLOT + 29 * 60_000);
 	await h.command("run second");
 	assert.ok(h.notices.some((notice) => notice.includes("already running in this Pi session")));
 	const readState = async () => JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8"));
 	assert.equal((await readState()).jobs.second, undefined);
 	release();
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job first finished")));
 	await h.command("run second");
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job second finished")));
 	assert.equal((await readState()).jobs.second.lastStartedAt, SLOT + 29 * 60_000);
 	await h.emit("session_shutdown");
 });
@@ -216,9 +223,8 @@ test("a shutdown during claim preparation cannot adopt the next session's signal
 	await h.emit("session_start");
 	await release();
 	await pending;
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("Pi session shut down")));
 	assert.equal(h.prepared.length, 0);
-	assert.ok(h.notices.some((notice) => notice.includes("Pi session shut down")));
 	await h.emit("session_shutdown");
 });
 
@@ -228,7 +234,7 @@ test("pre-launch failures record no session and the menu explains its absence", 
 	const h = harness(async () => ({ outcome: "success", output: "unexpected" }));
 	await h.emit("session_start");
 	await h.command("run missing-role");
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("no session created")));
 	const record = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs["missing-role"];
 	assert.equal(record.lastSession, undefined);
 	assert.ok(h.notices.some((notice) => notice.includes("no session created") && notice.includes("not configured")));
@@ -252,14 +258,13 @@ test("later scheduled admissions reload edited jobs and limits, skipping disable
 	await h.settle();
 	h.setNow(SLOT);
 	await h.emit("session_start");
-	await h.settle();
-	assert.equal(h.prepared.length, 1);
+	await h.settle(() => h.prepared.length === 1);
 	await writeFile(join(agentDir, "config", "pi-cron", "config.json"), JSON.stringify({
 		jobs: [jobs[0], { ...jobs[1], prompt: "edited-v2" }, { ...jobs[2], enabled: false }],
 		limits: { maxTurns: 3 },
 	}));
 	release();
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job edited finished")));
 	assert.deepEqual(h.prepared.map((run) => run.task), ["first", "edited-v2"]);
 	assert.deepEqual(h.policies.map((limits) => limits.maxTurns), [50, 3]);
 	await h.emit("session_shutdown");
@@ -271,7 +276,7 @@ test("follow-up delivery failure reports recovery without changing the recorded 
 	h.pi.sendMessage = () => { throw new Error("session unavailable"); };
 	await h.emit("session_start");
 	await h.command("run delivery");
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("Follow-up delivery failed")));
 	const record = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs.delivery;
 	assert.equal(record.lastOutcome, "success");
 	assert.ok(h.notices.some((notice) => notice.includes("Follow-up delivery failed: session unavailable") && notice.includes("/cron → Show last run") && notice.includes(record.lastSession)));
@@ -286,13 +291,18 @@ test("a result recorded after shutdown is not sent into a tearing-down session",
 	const h = harness(async () => { await gate; return { outcome: "success", output: "Task completed." }; });
 	await h.emit("session_start");
 	await h.command("run teardown");
-	await h.settle();
+	await h.settle(() => h.prepared.length === 1);
 	await h.emit("session_shutdown");
 	release();
-	await h.settle();
+	const readRecord = async () => {
+		try {
+			return JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs.teardown;
+		} catch {
+			return undefined;
+		}
+	};
+	await h.settle(async () => (await readRecord())?.lastOutcome === "success");
 	assert.equal(h.messages.length, 0);
-	const record = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs.teardown;
-	assert.equal(record.lastOutcome, "success");
 });
 
 test("an invalid config pauses jobs with one visible error", async () => {
