@@ -54,6 +54,7 @@ esac
       commands: () => readFileSync(logPath, "utf8").trim().split("\n"),
       runInstaller: (...args) => spawnSync("sh", [fixtureInstallerPath, ...(args.length ? args : ["--all"])], {
         cwd: temporaryDirectory,
+        detached: true,
         encoding: "utf8",
         env: {
           ...process.env,

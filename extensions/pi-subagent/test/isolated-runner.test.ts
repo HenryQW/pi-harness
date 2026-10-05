@@ -2227,6 +2227,71 @@ test("Main advances a changeset dependent from its exact staged snapshot and ret
 	assertParsed(rejected.state);
 });
 
+test("interrupted validation rebuilds explicitly on unchanged Main without reusing evidence", async (t) => {
+	const git = new StagingGit();
+	let store!: RecordingStore;
+	const { runner, root, runtime } = await harness(t, {
+		integrationGit: git, createStore: (agentDir) => store = new RecordingStore(agentDir),
+	});
+	const id = "rebuild-interrupted-validation";
+	const ready = await runner.execute(request(id, [changesetTask("change")],
+		{ role: "reviewer", modelClass: "frontier", criterion: "Exact combined patch is correct." }), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const choose = { id, action: "stage" as const, generation: 1, taskId: "change",
+		attempt: candidate.attempt, candidate: candidate.tip, expectedTip: ready.state.main };
+	const staged = await runner.stage(choose, root);
+	const action = { id, generation: 1, expectedTip: staged.state.integration.generations[0]!.combinedTip! };
+	store.afterSave = (state) => {
+		if (state.integration.generations[0]?.status === "validating") {
+			store.afterSave = undefined;
+			throw new Error("coordinator stopped after durable validation intent");
+		}
+	};
+	await assert.rejects(runner.integrate({ ...action, action: "validate" }, root), /coordinator stopped/);
+	const refresh = { ...action, action: "refresh" as const, generation: 2,
+		expectedMain: ready.state.main, newMain: ready.state.main };
+	await assert.rejects(runner.integrate(refresh, root), /unresolved integration intent/);
+	await store.withProductiveRunLease(root, async () => {
+		await assert.rejects(runner.integrate({ ...action, action: "reconcile" }, root), /productive request is active/);
+		await assert.rejects(runner.integrate(refresh, root), /productive request is active/);
+	});
+	const reconciled = await runner.integrate({ ...action, action: "reconcile" }, root);
+	assert.equal(reconciled.state.integration.generations[0]?.status, "validation_failed");
+	await assert.rejects(runner.integrate({ ...action, action: "validate" }, root), /prior validation attempt/);
+	await assert.rejects(runner.integrate({ ...action, action: "correct" }, root), /definitive failed/);
+	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /exact successful/);
+	runtime.mainDirty = true;
+	await assert.rejects(runner.integrate(refresh, root), /clean Main|not clean/);
+	runtime.mainDirty = false;
+	git.combinedTip = identity("f", action.expectedTip.branch);
+	await assert.rejects(runner.integrate(refresh, root), /Combined tip changed/);
+	git.combinedTip = undefined;
+	await assert.rejects(runner.integrate({ ...refresh, expectedTip: ready.state.main }, root), /stale Main/);
+	const rebuilt = await runner.integrate(refresh, root);
+	assert.equal(runtime.checkCalls.filter(({ scope }) => scope === "final").length, 0);
+	assert.equal(rebuilt.state.integration.generations[0]?.status, "superseded");
+	assert.deepEqual(rebuilt.state.integration.candidates, ready.state.integration.candidates);
+	assert.equal(rebuilt.state.correctionCount, ready.state.correctionCount);
+	const next = rebuilt.state.integration.generations[1]!;
+	assert.equal(next.checks, undefined);
+	assert.equal(next.review, undefined);
+	assert.deepEqual(next.order, []);
+	assertParsed(rebuilt.state);
+	const forged = structuredClone(rebuilt.state);
+	forged.integration.generations[0]!.supersededFrom = "ready";
+	assert.throws(() => parseRunState(forged), /invalid Main lineage/);
+	const restaged = await runner.stage({ ...choose, generation: 2, expectedTip: next.integrationBase }, root);
+	const current = { id, generation: 2, expectedTip: restaged.state.integration.generations[1]!.combinedTip! };
+	await assert.rejects(runner.integrate({ ...current, action: "promote" }, root), /exact successful/);
+	const validated = await runner.integrate({ ...current, action: "validate" }, root);
+	assert.equal(validated.state.integration.generations[1]?.status, "ready");
+	assert.deepEqual(validated.state.integration.generations[1]?.checks?.results.map(({ command }) => command), ["pnpm", "check-final"]);
+	assert.equal(runtime.reviewCalls.at(-1)?.modelClass, "frontier");
+	assert.equal(git.promotions, 0);
+	assert.deepEqual(runtime.main, ready.state.main);
+	assertParsed(validated.state);
+});
+
 test("failed combined root full-suite check leaves Main unchanged and forbids promotion", async (t) => {
 	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "failed-combination");
 	runtime.failCombinedExit = true;
@@ -2237,7 +2302,25 @@ test("failed combined root full-suite check leaves Main unchanged and forbids pr
 	assert.equal(git.promotions, 0);
 	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /requires exact successful/);
 	await assert.rejects(runner.integrate({ ...action, action: "validate" }, root), /prior validation attempt/);
+	await assert.rejects(runner.integrate({ ...action, action: "refresh", generation: 2,
+		expectedMain: checked.state.main, newMain: checked.state.main }, root), /evidence-less failed validation/);
 	assertParsed(checked.state);
+});
+
+test("unchanged Main rebuild cannot replenish a consumed combined correction", async (t) => {
+	const { runner, root, runtime, action } = await stagedForPromotion(t, "no-refill-correction");
+	runtime.failCombinedExit = true;
+	await runner.integrate({ ...action, action: "validate" }, root);
+	runtime.integrationIdentity = identity("f", action.expectedTip.branch);
+	await runner.integrate({ ...action, action: "correct" }, root);
+	runtime.failFinalChecks = 1;
+	const interrupted = await runner.integrate({ ...action, action: "validate", expectedTip: runtime.integrationIdentity }, root);
+	assert.equal(interrupted.state.integration.generations[0]?.checks, undefined);
+	assert.equal(interrupted.state.integration.generations[0]?.status, "validation_failed");
+	await assert.rejects(runner.integrate({ ...action, action: "refresh", generation: 2,
+		expectedTip: runtime.integrationIdentity, expectedMain: interrupted.state.main,
+		newMain: interrupted.state.main }, root), /without a prior correction/);
+	assertParsed(interrupted.state);
 });
 
 test("changed combined tip and dirty Main invalidate validation before running any suite", async (t) => {

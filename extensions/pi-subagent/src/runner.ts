@@ -1441,7 +1441,15 @@ export class IsolatedRunner {
 				if (!isCleanCommitted(action.newMain) || !sameIdentity(actualMain, action.newMain)) {
 					throw new Error("Refresh requires the exact new clean Main identity.");
 				}
-				await scope.call((context) => this.integrationGit.inspectMainAdvance(root, action.expectedMain, action.newMain, context.signal));
+				const unchangedMain = sameIdentity(action.expectedMain, action.newMain);
+				if (unchangedMain) {
+					if (generation?.status !== "validation_failed" || generation.checks || generation.review || generation.correction) {
+						throw new Error("Unchanged Main refresh requires evidence-less failed validation without a prior correction.");
+					}
+					await this.requireExactIntegration(handle, generation, this.stageReceipts(generation), scope);
+				} else {
+					await scope.call((context) => this.integrationGit.inspectMainAdvance(root, action.expectedMain, action.newMain, context.signal));
+				}
 				// Old dependent snapshots cannot be replayed on a new Main tip. Retain their resources and
 				// invalidate their readiness before admitting any new stages or dependent launches.
 				const stale = new Set<TaskState>();
@@ -1463,7 +1471,7 @@ export class IsolatedRunner {
 					}
 					generation.supersededFrom = generation.status as "staging" | "conflict" | "validation_failed" | "ready" | "promotion_failed";
 					generation.status = "superseded";
-					generation.failure = "Main advanced; retained generation is read-only. Restage immutable candidates in a new generation.";
+					generation.failure = `${unchangedMain ? "Validation evidence missing" : "Main advanced"}; retained generation is read-only. Restage immutable candidates in a new generation.`;
 					delete generation.combinedTip;
 					delete generation.checks;
 					delete generation.review;
