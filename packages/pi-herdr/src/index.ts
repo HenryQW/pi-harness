@@ -23,6 +23,27 @@ export interface HerdrClient<Options> {
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 const MAX_AGENT_START_ATTEMPTS = 5;
 const AGENT_START_RETRY_DELAY_MS = 250;
+const SHELL_PROMPT_TIMEOUT_MS = 20_000;
+
+/**
+ * Prove the pane shell reads commands before `agent start` types a long one. A shell still running
+ * its startup files leaves the tty in canonical mode, where macOS caps one pending input line at
+ * 1024 bytes and silently drops the Enter of a longer launch command. `wait-output` matches one
+ * line at a time; the bare token only appears as command output, never in the echoed command line.
+ */
+async function awaitShellPrompt<Options>(
+	client: Pick<HerdrClient<Options>, "exec">,
+	pane: string,
+	options: Options,
+): Promise<HerdrExecResult> {
+	const token = `pi-herdr-ready-${Math.random().toString(16).slice(2, 18).padEnd(16, "0")}`;
+	const ran = await client.exec(["pane", "run", pane, `echo ${token}`], options);
+	if (ran.code !== 0 || ran.killed) return ran;
+	return await client.exec([
+		"pane", "wait-output", pane, "--source", "recent-unwrapped",
+		"--regex", `^${token}$`, "--timeout", String(SHELL_PROMPT_TIMEOUT_MS),
+	], options);
+}
 
 export interface StartPiAgentOptions<Options> {
 	name: string;
@@ -34,7 +55,7 @@ export interface StartPiAgentOptions<Options> {
 	shouldRetry?: (result: HerdrExecResult) => boolean;
 }
 
-/** Start a Pi agent in a Herdr pane, retrying only transient pane contention. */
+/** Start a Pi agent in a Herdr pane once its shell prompt is ready, retrying only transient pane contention. */
 export async function startPiAgent<Options>(
 	client: Pick<HerdrClient<Options>, "exec">,
 	input: StartPiAgentOptions<Options>,
@@ -48,8 +69,10 @@ export async function startPiAgent<Options>(
 	let onPaneBusy = input.onPaneBusy;
 	let result: HerdrExecResult | undefined;
 	for (let attempt = 1; attempt <= MAX_AGENT_START_ATTEMPTS; attempt += 1) {
-		const args = ["agent", "start", name, "--kind", "pi", "--pane", pane, "--", ...piArgs];
-		result = await client.exec(args, input.options);
+		const ready = await awaitShellPrompt(client, pane, input.options);
+		result = ready.code === 0 && !ready.killed
+			? await client.exec(["agent", "start", name, "--kind", "pi", "--pane", pane, "--", ...piArgs], input.options)
+			: ready;
 		if (result.code === 0 && !result.killed) return result;
 		if (
 			!hasHerdrErrorCode(result, "agent_pane_busy")

@@ -492,6 +492,7 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined |
 				return response({ type: "tab_created", tab: { tab_id: tab, workspace_id: "w-test", focused: false },
 					root_pane: { pane_id: `w-test:p${next}`, tab_id: tab, workspace_id: "w-test", cwd, focused: false } });
 			}
+			if (args[0] === "pane" && (args[1] === "run" || args[1] === "wait-output")) return response({ type: "ok" });
 			if (args[0] === "agent" && args[1] === "start") {
 				if (args.some((arg) => /[\r\n]/.test(arg))) return { code: 1, stdout: JSON.stringify({ error: { code: "invalid_agent_argument" } }), stderr: "Herdr cannot encode multiline arguments" };
 				const name = args[2]!;

@@ -31,6 +31,6 @@ For a ready-to-use Pi workflow, see [`@henryqw/pi-herdr-tools`](https://pi.henry
 | `run` | function | Requires a successful exit and returns stdout. |
 | `json` | function | Requires a successful exit and parses a JSON object. |
 | `hasHerdrErrorCode` | function | Detects structured CLI errors in stdout or stderr. |
-| `startPiAgent` | function | Validates and builds the shared `agent start --kind pi --pane ... --` boundary. It retries structured `agent_pane_busy` responses allowed by the caller's result-aware policy, with a five-attempt limit, and returns the raw final result. |
+| `startPiAgent` | function | Validates and builds the shared `agent start --kind pi --pane ... --` boundary. Before each start it runs `pane run <pane> "echo <token>"` and waits up to 20 seconds with `pane wait-output` for that token as its own output line, which proves the shell is reading commands. Without this, a launch command longer than 1024 bytes sent to a pane whose shell is still starting loses its Enter on macOS and the pane waits forever. A failed probe is returned as the result without starting the agent. It retries structured `agent_pane_busy` responses allowed by the caller's result-aware policy, with a five-attempt limit, and returns the raw final result. |
 
 Callers build Pi-specific arguments and validate responses. The client does not mirror the Herdr command catalog. Herdr remains the source of truth for supported commands and response shapes.
