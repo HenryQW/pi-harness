@@ -6,7 +6,7 @@ import {
 	type CurrentPullRequest,
 	type CurrentPullRequestDiscovery,
 } from "../extensions/pr-github.ts";
-import { createPrCommandHandler } from "../extensions/pr-command.ts";
+import { createPrCommandHandler, type PrCommandDependencies } from "../extensions/pr-command.ts";
 
 const cwd = "/repo";
 const localHead = "a".repeat(40);
@@ -83,6 +83,7 @@ type HarnessOptions = {
 	sendError?: Error;
 	reservationAction?: "start" | "resume";
 	feedbackChecks?: boolean[];
+	inspectSweepRecovery?: PrCommandDependencies["inspectSweepRecovery"];
 };
 
 const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, killed: false });
@@ -286,6 +287,7 @@ function harness(options: HarnessOptions) {
 		pi,
 		handler: createPrCommandHandler(pi, {
 			needsFeedbackAttention: async () => options.feedbackChecks?.[feedbackIndex++] ?? false,
+			inspectSweepRecovery: options.inspectSweepRecovery,
 			async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
 				if (options.states[stateIndex] === null) {
 					events.push("load");

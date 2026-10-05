@@ -1,3 +1,4 @@
+import type { PrRun } from "./pr-run.ts";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
@@ -48,6 +49,7 @@ class StaleRebaseRoute extends Error {}
 type Load = typeof loadCurrentPullRequest;
 
 export type UpdateBranchOptions = {
+	run?: PrRun;
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -116,6 +118,7 @@ export async function inspectVerifiedRebaseRecovery(pr: CurrentPullRequest, opti
 export class PullRequestBranchUpdater {
 	readonly state: UpdateBranchState = { phase: "ready" };
 
+	private readonly run?: PrRun;
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
 	private readonly signal?: AbortSignal;
@@ -130,6 +133,7 @@ export class PullRequestBranchUpdater {
 			throw new TypeError("Branch update requires a configured open pull request");
 		}
 		this.cwd = options.cwd;
+		this.run = options.run;
 		this.authority = cloneCurrentPullRequest(options.authority);
 		this.signal = options.signal;
 		this.agentDir = options.agentDir;
@@ -290,17 +294,25 @@ export class PullRequestBranchUpdater {
 			throw new Error("Resolved paths must include every original conflict path");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			const discovery = await this.load(this.pi(), this.context());
+			const assertContext = async () => {
+				const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
+				const marker = await readFile(resolve(this.cwd, path), "utf8").catch((error) => {
+					if (error.code === "ENOENT") throw new Error("Branch rebase context changed", { cause: error });
+					throw error;
+				});
+				if (marker.trim() !== `refs/heads/${this.authority.target.branch}` ||
+					await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
+					throw new Error("Branch rebase context changed");
+				}
+			};
+			await assertContext();
+			const discovery = await this.load(this.pi(), { ...this.context(), rebaseBranch: this.authority.target.branch });
 			if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
 				throw new Error("Branch rebase authority changed");
 			}
-			const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
-			if ((await readFile(resolve(this.cwd, path), "utf8")).trim() !== `refs/heads/${this.authority.target.branch}` ||
-				await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
-				throw new Error("Branch rebase context changed");
-			}
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
+			await assertContext();
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
@@ -327,11 +339,13 @@ export class PullRequestBranchUpdater {
 				throw new Error("Verified branch no longer contains the frozen base");
 			}
 			if (remoteBefore === head) {
+				this.run?.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };
 			}
 			await this.freshAuthority(head, true);
+			this.run?.beforePush(original, head);
 			this.state.phase = "blocked";
 			let pushError: unknown;
 			try {
@@ -350,6 +364,7 @@ export class PullRequestBranchUpdater {
 				throw new Error("Rebase push outcome is unknown; do not retry");
 			}
 			if (remote === head) {
+				this.run?.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };

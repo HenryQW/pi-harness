@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Herdr tools: one extension, four workflows</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; background: #f0eee9; color: #101828; }
+    main { width: min(1280px, 100%); min-width: 0; margin: auto; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+    svg { display: block; width: 100%; min-width: 1280px; height: auto; }
+    @media print { .diagram-container { overflow-x: visible; } svg { min-width: 0; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="diagram-container">
+    <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="workflow-overview-title workflow-overview-desc">
+      <title id="workflow-overview-title">Herdr tools: one extension, four workflows</title>
+      <desc id="workflow-overview-desc">One Pi extension registers clone, side-question, title, and completion handlers that share the Herdr CLI library, with task-model routing used only for side questions and titles.</desc>
+      <defs>
+        <style>
+          .title { fill: #101828; font: 400 28px 'Instrument Serif', Georgia, serif; }
+          .name { fill: #101828; font: 600 12px 'Geist', system-ui, sans-serif; }
+          .body { fill: #4c5665; font: 400 12px 'Geist', system-ui, sans-serif; }
+          .technical { fill: #4c5665; font: 400 8px 'Geist Mono', ui-monospace, monospace; }
+          .tag { fill: #6a7282; font: 500 8px 'Geist Mono', ui-monospace, monospace; letter-spacing: .12em; }
+          .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+          .focal { fill: #1d4ed8; fill-opacity: .08; stroke: #1d4ed8; stroke-width: 1.2; }
+          .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+          .primary { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#arrow-accent); }
+        </style>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#4c5665"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#1d4ed8"/></marker>
+      </defs>
+      <rect width="1280" height="720" fill="#f0eee9"/>
+      <text class="title" x="40" y="56">One extension, four workflows</text>
+      <text class="technical" x="1240" y="56" text-anchor="end">@henryqw/pi-herdr-tools</text>
+      <rect x="552" y="76" width="288" height="540" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity=".12"/>
+      <text class="tag" x="568" y="92">INTERNAL HANDLERS</text>
+      <path class="primary" d="M208 336 H248"/>
+      <path class="edge" d="M464 288 H488 Q496 288 496 280 V168 Q496 160 504 160 H568"/>
+      <path class="edge" d="M464 320 H500 Q508 320 508 312 V296 Q508 288 516 288 H568"/>
+      <path class="edge" d="M464 352 H524 Q532 352 532 360 V408 Q532 416 540 416 H568"/>
+      <path class="edge" d="M464 384 H512 Q520 384 520 392 V536 Q520 544 528 544 H568"/>
+      <path class="edge" d="M840 256 H1040"/>
+      <path class="edge" d="M840 436 H1040"/>
+      <rect x="896" y="232" width="88" height="14" rx="2" fill="#f0eee9"/>
+      <text class="tag" x="940" y="242" text-anchor="middle">CLI CALLS</text>
+      <rect x="896" y="412" width="88" height="14" rx="2" fill="#f0eee9"/>
+      <text class="tag" x="940" y="422" text-anchor="middle">MODEL ROUTES</text>
+      <g>
+        <rect class="node" x="40" y="288" width="168" height="96" rx="6"/>
+        <text class="tag" x="56" y="312">HOST</text>
+        <text class="name" x="56" y="336">Pi session</text>
+        <text class="technical" x="56" y="360">Pi 1.x</text>
+      </g>
+      <g>
+        <rect class="focal" x="248" y="256" width="216" height="160" rx="6"/>
+        <text class="tag" x="264" y="280">ONE LOADED EXTENSION</text>
+        <text class="name" x="264" y="316">Herdr tools</text>
+        <text class="technical" x="264" y="340">extensions/index.ts</text>
+        <text class="body" x="264" y="372">Registers all four handlers.</text>
+        <text class="body" x="264" y="392">Not separate resources.</text>
+      </g>
+      <g>
+        <rect class="node" x="568" y="112" width="240" height="96" rx="6"/>
+        <text class="technical" x="584" y="136">internal/clone-tab.ts</text>
+        <text class="name" x="584" y="160">Clone conversations</text>
+        <text class="technical" x="584" y="184">/clone-tab · /clone-worktree</text>
+      </g>
+      <g>
+        <rect class="node" x="568" y="240" width="240" height="96" rx="6"/>
+        <text class="technical" x="584" y="264">internal/btw.ts</text>
+        <text class="name" x="584" y="288">Ask and merge side questions</text>
+        <text class="technical" x="584" y="312">/btw · /btw merge</text>
+      </g>
+      <g>
+        <rect class="node" x="568" y="368" width="240" height="96" rx="6"/>
+        <text class="technical" x="584" y="392">internal/rename.ts</text>
+        <text class="name" x="584" y="416">Name conversations</text>
+        <text class="technical" x="584" y="440">/rename · automatic titles</text>
+      </g>
+      <g>
+        <rect class="node" x="568" y="496" width="240" height="96" rx="6"/>
+        <text class="technical" x="584" y="520">internal/done.ts</text>
+        <text class="name" x="584" y="544">Finish worktrees</text>
+        <text class="technical" x="584" y="568">/done [--force]</text>
+      </g>
+      <g>
+        <rect class="node" x="1040" y="208" width="200" height="96" rx="6"/>
+        <text class="technical" x="1056" y="232">@henryqw/pi-herdr</text>
+        <text class="name" x="1056" y="256">Shared Herdr CLI library</text>
+        <text class="body" x="1056" y="280">Used by all four handlers.</text>
+      </g>
+      <g>
+        <rect class="node" x="1040" y="388" width="200" height="96" rx="6"/>
+        <text class="technical" x="1056" y="412">@henryqw/pi-task-models</text>
+        <text class="name" x="1056" y="436">Shared task-model routing</text>
+        <text class="body" x="1056" y="460">Side questions and titles only.</text>
+      </g>
+      <line x1="40" y1="656" x2="1240" y2="656" stroke="#101828" stroke-opacity=".12"/>
+      <path class="primary" d="M40 680 H72"/>
+      <text class="body" x="84" y="684">Extension loading</text>
+      <path class="edge" d="M256 680 H288"/>
+      <text class="body" x="300" y="684">Registration or shared dependency</text>
+      <text class="body" x="1240" y="684" text-anchor="end">Detailed safety and recovery flows remain below.</text>
+    </svg>
+  </div>
+</main>
+</body>
+</html>

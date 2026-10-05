@@ -357,7 +357,7 @@ test("registers sequential model-only tools with flat object roots and strict ac
 		["pi_pr_update_branch", ["rebase", "continue", "publish"]],
 		["pi_pr_create", ["prepare", "inspect", "commit", "verify", "push", "publish"]],
 		["pi_pr_publish_work", ["inspect", "commit", "validate", "publish"]],
-		["pi_pr_sweep", ["start", "resume", "show", "record", "commit", "publish", "refresh", "resolve", "finalize"]],
+		["pi_pr_sweep", ["start", "resume", "show", "record", "commit", "adopt", "validate", "publish", "refresh", "resolve", "finalize"]],
 		["pi_pr_fix_ci", ["collect", "publish"]],
 	]);
 
@@ -474,7 +474,7 @@ for (const route of ["update-branch", "sweep", "fix-ci"] as const) test(`queued 
 		assert.equal(next?.continue, true);
 		assert.match(JSON.stringify(next), /pi-pr-publish-work/);
 		await assert.rejects(app.callTool(tool, { runId: ids[0], action }, ctx), /wrong or stale/);
-		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "inspect" }, ctx)).details, { paths: [], head: merged });
+		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "inspect" }, ctx)).details, { paths: [], head: merged, originalHead: original });
 		await assert.rejects(app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx), /not validated/);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "validate", checks: [] }, ctx);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx);

@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { configuredOpenUri } from "@henryqw/pi-open-in/open-uri";
+import { configuredOpenUri } from "./open.ts";
 
 const THINKING_COLORS = {
 	minimal: 46,
@@ -12,7 +12,7 @@ const THINKING_COLORS = {
 	xhigh: 208,
 	max: 196,
 } as const;
-const HENRY_STATUS_KEY = "pi-multi-codex";
+const QUOTA_STATUS_KEY = "pi-multi-codex";
 const AGENT_TIME_ENTRY = "pi-footer:agent-work";
 const SUBAGENT_BACKGROUND_RESULT = "subagent-background-result";
 /** Pi's VIRTUAL_MODEL_API: catalog entries that route each request to a physical model. */
@@ -219,9 +219,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	const resumeActive = () => {
 		if (!promptPaused) return;
 		promptPaused = false;
-		activeStartedAt = performance.now();
-		if (requestRuntimeRender) runtimeTimer = setInterval(requestRuntimeRender, 1_000);
-		requestRuntimeRender?.();
+		startActive();
 	};
 	const finalizeActive = (): boolean => {
 		if (activeStartedAt === undefined && !promptPaused) return false;
@@ -233,15 +231,9 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		return true;
 	};
 
-	pi.on("agent_start", (_event) => {
-		startActive();
-	});
-	pi.on("ui_prompt_start", () => {
-		pauseActive();
-	});
-	pi.on("ui_prompt_end", () => {
-		resumeActive();
-	});
+	pi.on("agent_start", startActive);
+	pi.on("ui_prompt_start", pauseActive);
+	pi.on("ui_prompt_end", resumeActive);
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!ctx.isIdle()) return;
 		if (finalizeActive()) pi.appendEntry(AGENT_TIME_ENTRY, activeMilliseconds);
@@ -301,12 +293,12 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		// and some (Claude bridge) emit message_end only after post-stream teardown.
 		let assistantStartedAt: number | undefined;
 		let assistantLastUpdateAt: number | undefined;
-		pi.on("message_update", async (event) => {
+		pi.on("message_update", (event) => {
 			if (event.message.role !== "assistant") return;
 			assistantLastUpdateAt = performance.now();
 			assistantStartedAt ??= assistantLastUpdateAt;
 		});
-		pi.on("message_end", async (event) => {
+		pi.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
 			const output = event.message.usage?.output ?? 0;
 			const seconds = assistantStartedAt === undefined ? 0 : (assistantLastUpdateAt! - assistantStartedAt) / 1000;
@@ -314,14 +306,14 @@ export default function footerExtension(pi: ExtensionAPI): void {
 			tps = seconds > 0 ? output / seconds : undefined;
 		});
 
-		// ponytail: keyed on length + last entry (sessions are append-only) + leaf (tree navigation); revisit if entries ever mutate in place.
+		// Session entries are append-only; the leaf also changes on tree navigation.
 		let usageKey: string | undefined;
 		let routed: ReturnType<typeof latestResponse>;
 		let input = 0;
 		let output = 0;
 		let cost = 0;
 		let cacheRate: number | undefined;
-		const computeUsage = () => {
+		const computeUsage = (entries: SessionEntry[]) => {
 			input = 0;
 			output = 0;
 			cost = 0;
@@ -333,7 +325,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 				cost += usage.cost.total;
 			};
 
-			for (const entry of ctx.sessionManager.getEntries()) {
+			for (const entry of entries) {
 				if (entry.type === "message" && entry.message.role === "assistant") {
 					const usage = entry.message.usage;
 					const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
@@ -364,10 +356,10 @@ export default function footerExtension(pi: ExtensionAPI): void {
 				invalidate() { },
 				render(width: number): string[] {
 					const entries = ctx.sessionManager.getEntries();
-					const key = `${entries.length}:${entries.at(-1)?.type}:${ctx.sessionManager.getLeafId()}`;
+					const key = `${entries.length}:${ctx.sessionManager.getLeafId()}`;
 					if (key !== usageKey) {
 						usageKey = key;
-						computeUsage();
+						computeUsage(entries);
 						routed = latestResponse(ctx);
 					}
 
@@ -380,13 +372,12 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const codegraph = activeCodegraphCalls.size > 0
 						? `${theme.fg("accent", "●")} CG`
 						: sanitizeStatus(extensionStatuses.get("pi-codegraph") ?? "");
-					const henryStatuses: string[] = [];
+					const quotaStatus = sanitizeStatus(extensionStatuses.get(QUOTA_STATUS_KEY) ?? "");
 					const externalStatuses: string[] = [];
 					for (const [key, value] of [...extensionStatuses].sort(([a], [b]) => a.localeCompare(b))) {
-						if (key === "pi-pr" || key === "pi-codegraph") continue;
+						if (key === "pi-pr" || key === "pi-codegraph" || key === QUOTA_STATUS_KEY) continue;
 						const text = sanitizeStatus(value);
-						if (!text) continue;
-						(key === HENRY_STATUS_KEY ? henryStatuses : externalStatuses).push(text);
+						if (text) externalStatuses.push(text);
 					}
 					const ellipsis = theme.fg("dim", "…");
 					const usage = theme.fg("dim", [
@@ -415,7 +406,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						: theme.fg("dim", checkout);
 					const checkoutStatus = gitSummary.badges ? `${checkoutLink} ${theme.fg("dim", gitSummary.badges)}` : checkoutLink;
 					const identityLine = prStatus ? `${identity}${checkoutStatus} · ${prStatus}` : `${identity}${checkoutStatus}`;
-					const firstLine = henryStatuses.length ? align(identityLine, henryStatuses.join(" "), width, ellipsis) : identityLine;
+					const firstLine = quotaStatus ? align(identityLine, quotaStatus, width, ellipsis) : identityLine;
 					const lines = [
 						firstLine,
 						align(usage, model, width, ellipsis),
