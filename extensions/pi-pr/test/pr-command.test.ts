@@ -7,6 +7,7 @@ import {
 	type CurrentPullRequestDiscovery,
 } from "../extensions/pr-github.ts";
 import { createPrCommandHandler, type PrCommandDependencies } from "../extensions/pr-command.ts";
+import { PrRun } from "../extensions/pr-run.ts";
 
 const cwd = "/repo";
 const localHead = "a".repeat(40);
@@ -74,6 +75,8 @@ type HarnessOptions = {
 	status?: string;
 	statuses?: string[];
 	ancestry?: "behind" | "ahead" | "diverged";
+	ancestries?: Array<"behind" | "ahead" | "diverged" | undefined>;
+	refreshAttempts?: number;
 	baseRefTargets?: string[];
 	localHead?: string;
 	localHeads?: string[];
@@ -161,6 +164,7 @@ function harness(options: HarnessOptions) {
 	const confirmations: Array<{ title: string; message: string }> = [];
 	const reservations: unknown[] = [];
 	const releases: string[] = [];
+	const syncs: string[] = [];
 	const queuedPrompts: unknown[] = [];
 	const events: string[] = [];
 	let stateIndex = 0;
@@ -250,8 +254,9 @@ function harness(options: HarnessOptions) {
 				const remoteHead = active?.headRefOid ?? localHead;
 				const localReference = (value: string | undefined) => value === configuredLocalHead || value === "HEAD";
 				const remoteReference = (value: string | undefined) => value === remoteHead;
-				if (options.ancestry === "behind" && localReference(left) && remoteReference(right)) return result();
-				if (options.ancestry === "ahead" && remoteReference(left) && localReference(right)) return result();
+				const ancestry = options.ancestries ? options.ancestries[stateIndex - 1] : options.ancestry;
+				if (ancestry === "behind" && localReference(left) && remoteReference(right)) return result();
+				if (ancestry === "ahead" && remoteReference(left) && localReference(right)) return result();
 				return result("", 1);
 			}
 			throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
@@ -288,6 +293,14 @@ function harness(options: HarnessOptions) {
 		handler: createPrCommandHandler(pi, {
 			needsFeedbackAttention: async () => options.feedbackChecks?.[feedbackIndex++] ?? false,
 			inspectSweepRecovery: options.inspectSweepRecovery,
+			refreshDelayMs: 0,
+			ciPollMs: 0,
+			refreshAttempts: options.refreshAttempts,
+			async syncLocalHead({ authority }) {
+				events.push("sync");
+				syncs.push(authority.head.oid);
+				return { kind: "fast-forwarded", head: authority.head.oid };
+			},
 			async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
 				if (options.states[stateIndex] === null) {
 					events.push("load");
@@ -317,6 +330,7 @@ function harness(options: HarnessOptions) {
 		reservations,
 		queuedPrompts,
 		releases,
+		syncs,
 		events,
 	};
 }
@@ -481,11 +495,11 @@ test("does not route an observed GitHub lookup failure to PR creation", async ()
 	assert.deepEqual(app.messages, []);
 });
 
-test("publishes scoped dirty work before other routes and blocks a behind local head", async () => {
-	const conditions: Array<{ name: string; state: PullRequestSpec }> = [
-		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } },
-		{ name: "comment sweep", state: { reviewDecision: "CHANGES_REQUESTED" } },
-		{ name: "CI fix", state: { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] } },
+test("publishes scoped dirty work before other routes and syncs a behind local head first", async () => {
+	const conditions: Array<{ name: string; state: PullRequestSpec; route: keyof typeof workflowActions; command: string; action: string }> = [
+		{ name: "update branch", state: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }, route: "update-branch", command: "skill:pi-pr-update-branch", action: "rebase" },
+		{ name: "comment sweep", state: { reviewDecision: "CHANGES_REQUESTED" }, route: "sweep", command: "skill:pi-pr-comment-sweep", action: "start" },
+		{ name: "CI fix", state: { statusCheckRollup: [actionsCheck({ conclusion: "FAILURE" })] }, route: "fix-ci", command: "skill:pi-pr-fix-ci", action: "collect" },
 	];
 	for (const route of conditions) {
 		const dirty = harness({ states: [route.state], status: " M file.ts\n", commands: [packageCommand("skill:pi-pr-publish-work")] });
@@ -493,13 +507,89 @@ test("publishes scoped dirty work before other routes and blocks a behind local 
 		assert.equal(dirty.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect`);
 
 		const behind = harness({
-			states: [{ ...route.state, headRefOid: nextHead }],
-			ancestry: "behind",
+			states: [route.state, route.state],
+			ancestries: ["behind", undefined],
+			localHead: nextHead,
+			localHeads: [nextHead, localHead, localHead, localHead],
+			commands: [packageCommand(route.command)],
 		});
-		await behind.handler("", behind.context);
-		assert.deepEqual(behind.messages, [], `${route.name} behind`);
-		assert.match(behind.notifications[0]?.message ?? "", /local HEAD behind/, `${route.name} behind`);
+		assert.equal(await behind.handler("", behind.context), route.route, `${route.name} behind`);
+		assert.deepEqual(behind.syncs, [localHead], `${route.name} behind`);
+		assert.deepEqual(behind.events.slice(0, 4), ["load", "sync", "notify", "load"], `${route.name} behind`);
+		assert.equal(behind.messages[0]?.content, `/${route.command} runId=${workflowRunId} action=${route.action}`, `${route.name} behind`);
 	}
+});
+
+test("dirty work on a diverged local HEAD is committed by publish-work before syncing", async () => {
+	const app = harness({ states: [{}], status: " M file.ts\n", ancestry: "diverged", localHead: nextHead, commands: [packageCommand("skill:pi-pr-publish-work")] });
+	assert.equal(await app.handler("", app.context), "publish-work");
+	assert.deepEqual(app.syncs, []);
+	assert.equal(app.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect`);
+});
+
+test("merges with the configured merge method", async () => {
+	const app = harness({ states: [{}, {}] });
+	assert.equal(await app.handler("", app.context, Object.assign(() => {}, { sessionGeneration: 1, run: new PrRun({ mergeMethod: "rebase" }), assertCurrent() {} })), "merge");
+	assert.ok(mutationCalls(app.calls)[0]?.args.includes("mergeMethod=REBASE"));
+});
+
+test("waits for running CI within the invocation budget, then re-reads GitHub before merging", async () => {
+	const running: PullRequestSpec = { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] };
+	const invocation = (run: PrRun) => Object.assign(() => {}, { sessionGeneration: 1, run, assertCurrent() {} });
+
+	const merged = harness({ states: [running, running, {}, {}] });
+	assert.equal(await merged.handler("", merged.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "merge");
+	assert.deepEqual(merged.events, ["load", "notify", "load", "load", "load", "merge"]);
+	assert.match(merged.notifications[0]?.message ?? "", /CI is running; checking every 30 s for up to 10 min/);
+
+	const commented = harness({ states: [running, { reviewDecision: "CHANGES_REQUESTED" }], commands: [packageCommand("skill:pi-pr-comment-sweep")] });
+	assert.equal(await commented.handler("", commented.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "sweep");
+	assert.equal(mutationCalls(commented.calls).length, 0);
+
+	const standalone = harness({ states: [running], feedbackChecks: [true], commands: [packageCommand("skill:pi-pr-comment-sweep")] });
+	assert.equal(await standalone.handler("", standalone.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "sweep");
+	assert.deepEqual(standalone.events, ["load", "reserve", "send"], "new standalone feedback is triaged before waiting");
+
+	const exhausted = harness({ states: [running, running, running] });
+	assert.equal(await exhausted.handler("", exhausted.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 1 }))), "none");
+	assert.deepEqual(exhausted.events, ["load", "notify", "load", "load", "notify"]);
+	assert.match(exhausted.notifications.at(-1)?.message ?? "", /still waiting for CI after 1 min; run \/pr again later/);
+	assert.equal(mutationCalls(exhausted.calls).length, 0);
+
+	const disabled = harness({ states: [running] });
+	assert.equal(await disabled.handler("", disabled.context, invocation(new PrRun({ ciWaitMinutes: 0 }))), "none");
+	assert.deepEqual(disabled.notifications, [{ message: "PR #42 is waiting for CI", type: "warning" }]);
+});
+
+test("a synced head is never synced twice in one invocation", async () => {
+	const run = new PrRun();
+	run.complete("sync-local", localHead);
+	const app = harness({ states: [{}], ancestry: "behind", localHead: nextHead });
+	assert.equal(await app.handler("", app.context, Object.assign(() => {}, { sessionGeneration: 1, run, assertCurrent() {} })), "none");
+	assert.deepEqual(app.syncs, []);
+	assert.match(app.notifications[0]?.message ?? "", /sync-local already ran/);
+});
+
+test("re-reads pending GitHub mergeability a bounded number of times", async () => {
+	const pending: PullRequestSpec = { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" };
+	const resolved = harness({ states: [pending, {}, {}] });
+	assert.equal(await resolved.handler("", resolved.context), "merge");
+	assert.deepEqual(resolved.events, ["load", "load", "load", "merge"]);
+
+	for (const confirmed of [
+		{ mergeable: "CONFLICTING", mergeStateStatus: "UNKNOWN" },
+		{ mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" },
+	] as const) {
+		const conflict = harness({ states: [confirmed], commands: [packageCommand("skill:pi-pr-update-branch")] });
+		assert.equal(await conflict.handler("", conflict.context), "update-branch", JSON.stringify(confirmed));
+		assert.deepEqual(conflict.events, ["load", "reserve", "send"], JSON.stringify(confirmed));
+	}
+
+	const exhausted = harness({ states: [pending, pending, pending], refreshAttempts: 2 });
+	assert.equal(await exhausted.handler("", exhausted.context), "none");
+	assert.deepEqual(exhausted.events, ["load", "load", "load", "notify"]);
+	assert.deepEqual(exhausted.notifications, [{ message: "PR #42 mergeability is still being computed by GitHub; run /pr again", type: "warning" }]);
+	assert.equal(mutationCalls(exhausted.calls).length, 0);
 });
 
 test("defers a busy-session workflow to the native settlement boundary, not user input", async () => {
@@ -594,7 +684,6 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 		{ name: "CI running", state: { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] }, message: "PR #42 is waiting for CI", type: "warning" },
 		{ name: "review pending", state: { reviewDecision: "REVIEW_REQUIRED" }, message: "PR #42 is waiting for review", type: "warning" },
 		{ name: "merge policy pending", state: { mergeStateStatus: "BLOCKED" }, message: "PR #42 is blocked by merge policy", type: "warning" },
-		{ name: "diverged local HEAD", state: { headRefOid: nextHead }, ancestry: "diverged", message: "PR #42 is blocked by local HEAD diverged", type: "warning" },
 	];
 
 	for (const candidate of cases) {
@@ -788,7 +877,7 @@ test("flagless /pr routes freshly detected standalone feedback before merge", as
 			head: { repository: "acme/project", ref: "feature/pr", oid: localHead }, headFetchSource: "git@github.com:acme/project.git",
 			target: { ...noPullRequest().creationTarget, provenance: "configured" }, local: { worktree: "clean", head: "equal" },
 			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: false,
-				unresolvedThreads: 0, ci: "success", review: "ready", policy: "ready" },
+				unresolvedThreads: 0, ci: "success", review: "ready", policy: "ready", mergeability: "known" },
 		} }),
 		needsFeedbackAttention: async () => true,
 		reserveWorkflow: async (reservation) => {

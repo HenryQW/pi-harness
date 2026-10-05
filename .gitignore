@@ -17,6 +17,7 @@ npm-debug.log*
 .context/memory-distill-preview.json
 
 .impeccable/
+.archify/
 
 # Build output
 extensions/*/dist/

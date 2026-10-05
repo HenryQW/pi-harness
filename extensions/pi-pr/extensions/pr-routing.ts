@@ -2,6 +2,8 @@ export type PullRequestLifecycle = "open" | "merged" | "closed";
 export type CiStatus = "none" | "running" | "success" | "failure" | "failure-blocked";
 export type ReviewReadiness = "ready" | "pending";
 type PolicyReadiness = "ready" | "pending";
+/** GitHub computes mergeability asynchronously; `pending` is transient, not a blocker. */
+type Mergeability = "known" | "pending";
 type LocalWorktree = "clean" | "dirty";
 type LocalHeadRelation = "equal" | "behind" | "ahead" | "diverged";
 
@@ -14,6 +16,7 @@ export type PullRequestConditions = {
 	ci: CiStatus;
 	review: ReviewReadiness;
 	policy: PolicyReadiness;
+	mergeability: Mergeability;
 };
 
 export type LocalMergeSafety = {
@@ -60,34 +63,29 @@ export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
 	| { kind: "blocked"; issue: DiscoveryIssue }
 	| { kind: "inactive" };
 
-export type NextStep = "create" | "link-branch" | "blocked" | "none" | "publish-work" | "update-branch" | "sweep" | "fix-ci" | "merge";
-function localMutationSafe(local: LocalMergeSafety): boolean {
-	return local.worktree === "clean" && local.head === "equal";
-}
+export type NextStep =
+	| "create" | "link-branch" | "blocked" | "none"
+	| "sync-local" | "publish-work" | "refresh" | "update-branch" | "sweep" | "fix-ci" | "wait-ci" | "merge";
 
-function localMergeSafe(local: LocalMergeSafety): boolean {
-	return local.worktree === "clean" && (local.head === "equal" || local.head === "behind");
-}
-
+/**
+ * Priority ladder for an open pull request. Local state is normalized first
+ * (sync, then publish), so every later route sees a clean HEAD equal to the PR head.
+ */
 export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<NextStep, "create" | "link-branch" | "blocked"> {
 	const { lifecycle, conditions, local } = pullRequest;
 	if (lifecycle !== "open" || conditions.draft) return "none";
-	if (local.worktree === "dirty" && (local.head === "behind" || local.head === "diverged")) return "none";
+	if (local.head === "behind") return "sync-local";
+	// Dirty diverged work is committed by publish-work first; the committed branch then syncs.
+	if (local.head === "diverged") return local.worktree === "clean" ? "sync-local" : "publish-work";
 	if (local.worktree === "dirty" || local.head === "ahead") return "publish-work";
-	if (conditions.conflict) {
-		return localMutationSafe(local) ? "update-branch" : "none";
-	}
-	if (conditions.ci === "failure") return localMutationSafe(local) ? "fix-ci" : "none";
+	if (conditions.mergeability === "pending") return "refresh";
+	if (conditions.conflict || conditions.baseUpdateRequired) return "update-branch";
+	if (conditions.ci === "failure") return "fix-ci";
 	if (conditions.ci === "failure-blocked") return "none";
-	if (conditions.changesRequested || conditions.unresolvedThreads > 0) {
-		return localMutationSafe(local) ? "sweep" : "none";
-	}
-	if (
-		conditions.review === "pending" ||
-		conditions.policy === "pending" ||
-		!localMergeSafe(local) ||
-		conditions.ci === "running"
-	) return "none";
+	if (conditions.changesRequested || conditions.unresolvedThreads > 0) return "sweep";
+	// Running checks usually leave merge policy BLOCKED, so the wait decision comes before the policy gate.
+	if (conditions.ci === "running") return conditions.review === "pending" ? "none" : "wait-ci";
+	if (conditions.review === "pending" || conditions.policy === "pending") return "none";
 	return "merge";
 }
 

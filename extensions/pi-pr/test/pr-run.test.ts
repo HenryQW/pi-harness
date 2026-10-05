@@ -13,8 +13,14 @@ test("PR policy defaults and valid limits load without overwriting invalid confi
 	const path = extensionConfigPath("pi-pr", agentDir);
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, '{"maxPublicationCycles":1}');
-	assert.deepEqual(loadPrPolicy(agentDir), { maxPublicationCycles: 1, maxRepairAttempts: 3 });
-	for (const contents of ['{', '{"maxRepairAttempts":0}', '{"maxPublicationCycles":1.5}', '{"maxRepairAttempts":"3"}', '{"constructor":1}']) {
+	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, maxPublicationCycles: 1 });
+	writeFileSync(path, '{"mergeMethod":"rebase"}');
+	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, mergeMethod: "rebase" });
+	writeFileSync(path, '{"ciPollSeconds":2147483}');
+	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, ciPollSeconds: 2147483 });
+	writeFileSync(path, '{"ciWaitMinutes":0,"ciPollSeconds":5}');
+	assert.deepEqual(loadPrPolicy(agentDir), { ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ciPollSeconds: 5 });
+	for (const contents of ['{', '{"maxRepairAttempts":0}', '{"ciPollSeconds":0}', '{"ciPollSeconds":2147484}', '{"ciWaitMinutes":-1}', '{"mergeMethod":"SQUASH"}', '{"mergeMethod":1}', '{"maxPublicationCycles":1.5}', '{"maxRepairAttempts":"3"}', '{"constructor":1}']) {
 		writeFileSync(path, contents);
 		assert.throws(() => loadPrPolicy(agentDir), (error: Error) => error.message.includes(path));
 		assert.equal(readFileSync(path, "utf8"), contents);
@@ -47,4 +53,13 @@ test("checks cannot repeat, drop failures, or exceed the invocation repair budge
 	run.beginChecks("publish-work", "b", checks);
 	run.checksFailed();
 	assert.throws(() => run.beginChecks("sweep", "c", checks), /Repair budget stop/);
+});
+
+test("CI waiting consumes poll intervals until the invocation budget is spent", () => {
+	const run = new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 1 });
+	assert.equal(run.consumeCiWait(), 30_000);
+	assert.equal(run.consumeCiWait(), 30_000);
+	assert.equal(run.consumeCiWait(), null);
+	assert.equal(new PrRun({ ciWaitMinutes: 0 }).consumeCiWait(), null);
+	assert.equal(new PrRun({ ciPollSeconds: 45, ciWaitMinutes: 1 }).consumeCiWait(), 45_000);
 });

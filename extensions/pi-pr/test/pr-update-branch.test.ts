@@ -35,7 +35,7 @@ function pullRequest(overrides: Partial<CurrentPullRequest> = {}): CurrentPullRe
 		lifecycle: "open",
 		conditions: {
 			draft: false, baseUpdateRequired: false, conflict: true, changesRequested: false,
-			unresolvedThreads: 0, ci: "success", review: "ready", policy: "pending",
+			unresolvedThreads: 0, ci: "success", review: "ready", policy: "pending", mergeability: "known",
 		},
 		local: { worktree: "clean", head: "equal" },
 		base: { repository: "acme/project", ref: "main", oid: base },
@@ -87,6 +87,29 @@ test("fetches only the frozen base OID and skips merge when it is already an anc
 		"git", ["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "git@github.com:acme/project.git", base],
 	]);
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "merge"), false);
+});
+
+test("a base reported BEHIND without a conflict is updated like a conflict", async (t) => {
+	const exec: Exec = async (command, args) => {
+		const inspection = cleanInspection(command, args);
+		if (inspection) return inspection;
+		if (command === "git" && args[0] === "branch") return result("feature\n");
+		if (command === "git" && args[0] === "rev-parse") return result(`${oldHead}\n`);
+		if (command === "git" && args[0] === "status") return result();
+		if (command === "gh" && args[0] === "config") return result("ssh\n");
+		if (command === "git" && ["fetch", "cat-file", "merge-base"].includes(args[0]!)) return result();
+		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
+	};
+	const behind = pullRequest({ conditions: { ...pullRequest().conditions, conflict: false, baseUpdateRequired: true } });
+	const settled = pullRequest({ conditions: { ...pullRequest().conditions, conflict: false, baseUpdateRequired: false } });
+	for (const [fresh, expectVerified] of [[behind, true], [settled, false]] as const) {
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-update-behind-"));
+		t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+		const workflow = new PullRequestBranchUpdater({ cwd, authority: behind, exec, agentDir,
+			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: fresh }) });
+		if (expectVerified) assert.deepEqual(await workflow.rebase(), { kind: "verified", head: oldHead, fastForward: false });
+		else await assert.rejects(workflow.rebase(), /frozen pull request authority changed/);
+	}
 });
 
 for (const checkpoint of ["initial", "after-fetch", "final", "diverged", "dirty", "authority"] as const) test(`pre-rebase HEAD drift at ${checkpoint} preserves mutation guards`, async (t) => {

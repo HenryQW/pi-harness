@@ -69,7 +69,7 @@ function pullRequest(localHead = original): CurrentPullRequest {
 			unresolvedThreads: 0,
 			ci: "failure",
 			review: "ready",
-			policy: "pending",
+			policy: "pending", mergeability: "known",
 		},
 		local: { worktree: "clean", head: localHead === original ? "equal" : "ahead" },
 		base: { repository: "acme/project", ref: "main", oid: base },

@@ -2,8 +2,10 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { setTimeout as delay } from "node:timers/promises";
 import { executeGitHubMerge } from "./pr-merge.ts";
-import type { PrRun } from "./pr-run.ts";
+import type { MergeMethod, PrRun } from "./pr-run.ts";
+import { syncLocalHead } from "./pr-sync.ts";
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	linkInferredPullRequest,
@@ -27,6 +29,9 @@ const WORKFLOWS: Record<WorkflowNextStep, string> = {
 	"fix-ci": "skill:pi-pr-fix-ci",
 };
 export const WORKFLOW_ROUTES: ReadonlySet<string> = new Set(Object.keys(WORKFLOWS));
+/** GitHub recomputes mergeability shortly after a push; re-read a few times before giving up. */
+const REFRESH_ATTEMPTS = 3;
+const REFRESH_DELAY_MS = 5_000;
 type WorkflowReservation =
 	| { route: "create"; target: PullRequestTarget }
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
@@ -61,6 +66,11 @@ export type PrCommandDependencies = {
 	linkInferredPullRequest?: typeof linkInferredPullRequest;
 	inspectSweepRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
 	inspectBranchRecovery?: (pullRequest: CurrentPullRequest, ctx: ExtensionContext) => Promise<boolean>;
+	syncLocalHead?: typeof syncLocalHead;
+	refreshAttempts?: number;
+	refreshDelayMs?: number;
+	/** Test override for the CI poll sleep; the budget still follows the run policy. */
+	ciPollMs?: number;
 	reserveWorkflow?: (
 		reservation: WorkflowReservation,
 		ctx: ExtensionContext,
@@ -131,15 +141,6 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	if (pullRequest.conditions.ci === "failure-blocked") {
 		return { message: `PR #${pullRequest.number} has a failed CI check that cannot run the CI fix workflow`, type: "warning" };
 	}
-	const mutatingWorkflowSelected = pullRequest.conditions.conflict ||
-		pullRequest.conditions.changesRequested || pullRequest.conditions.unresolvedThreads > 0 ||
-		pullRequest.conditions.ci === "failure";
-	if (mutatingWorkflowSelected && pullRequest.local.worktree === "dirty") {
-		return { message: `PR #${pullRequest.number} is blocked by a dirty worktree`, type: "warning" };
-	}
-	if (mutatingWorkflowSelected && pullRequest.local.head !== "equal") {
-		return { message: `PR #${pullRequest.number} is blocked by local HEAD ${pullRequest.local.head}`, type: "warning" };
-	}
 	if (pullRequest.conditions.ci === "running") {
 		return { message: `PR #${pullRequest.number} is waiting for CI`, type: "warning" };
 	}
@@ -148,12 +149,6 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	}
 	if (pullRequest.conditions.policy === "pending") {
 		return { message: `PR #${pullRequest.number} is blocked by merge policy`, type: "warning" };
-	}
-	if (pullRequest.local.worktree === "dirty") {
-		return { message: `PR #${pullRequest.number} is blocked by a dirty worktree`, type: "warning" };
-	}
-	if (pullRequest.local.head === "ahead" || pullRequest.local.head === "diverged") {
-		return { message: `PR #${pullRequest.number} is blocked by local HEAD ${pullRequest.local.head}`, type: "warning" };
 	}
 	return { message: `PR #${pullRequest.number} has no available action`, type: "warning" };
 }
@@ -173,8 +168,10 @@ async function mergePullRequest(
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
 	needsFeedback: typeof needsFeedbackAttention,
+	mergeMethod: MergeMethod | undefined,
 ): Promise<void> {
 	await executeGitHubMerge({
+		mergeMethod,
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
 			signal: ctx.signal,
@@ -230,6 +227,9 @@ export function createPrCommandHandler(
 	const link = dependencies.linkInferredPullRequest ?? linkInferredPullRequest;
 	const inspectSweepRecovery = dependencies.inspectSweepRecovery ?? (async () => false);
 	const inspectBranchRecovery = dependencies.inspectBranchRecovery ?? (async () => false);
+	const sync = dependencies.syncLocalHead ?? syncLocalHead;
+	const refreshAttempts = dependencies.refreshAttempts ?? REFRESH_ATTEMPTS;
+	const refreshDelayMs = dependencies.refreshDelayMs ?? REFRESH_DELAY_MS;
 	const reserve = dependencies.reserveWorkflow ?? (async () => {
 		throw new Error("/pr workflow tools are unavailable");
 	});
@@ -239,6 +239,8 @@ export function createPrCommandHandler(
 		args: string, ctx: ExtensionContext,
 		onRouteResolved?: PrCommandInvocation,
 		linkedAuthority?: CurrentPullRequest,
+		refreshes = 0,
+		ciWaits = 0,
 	): Promise<NextStep> => {
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 		const discovery = await load(pi, ctx);
@@ -265,7 +267,7 @@ export function createPrCommandHandler(
 			nextStep = "sweep";
 			onRouteResolved?.assertCurrent();
 		}
-		if (discovery.kind === "current" && (nextStep === "merge" || nextStep === "none") &&
+		if (discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci") &&
 			discovery.pullRequest.lifecycle === "open" && !discovery.pullRequest.conditions.draft &&
 			discovery.pullRequest.target.provenance === "configured" &&
 			discovery.pullRequest.local.worktree === "clean" && discovery.pullRequest.local.head === "equal") {
@@ -290,9 +292,52 @@ export function createPrCommandHandler(
 			if (linked.target.provenance !== "configured") throw new Error("Link branch failed: target was not configured");
 			return await handle("", ctx, onRouteResolved, linked);
 		}
+		if (nextStep === "sync-local") {
+			if (discovery.kind !== "current") throw new Error("/pr sync failed: pull request is unavailable");
+			const current = discovery.pullRequest;
+			if (onRouteResolved?.run?.hasCompleted("sync-local", current.head.oid)) {
+				ctx.ui.notify("PR sync-local already ran; inspect fresh state before retrying", "warning");
+				return "none";
+			}
+			const synced = await sync({ cwd: ctx.cwd, authority: current, signal: ctx.signal, loadCurrentPullRequest: load });
+			onRouteResolved?.assertCurrent();
+			onRouteResolved?.run?.complete("sync-local", current.head.oid);
+			const verb = synced.kind === "fast-forwarded" ? "fast-forwarded to" : synced.kind === "rebased" ? "rebased onto" : "already at";
+			ctx.ui.notify(`PR #${current.number}: local branch ${verb} the PR head`, "info");
+			return await handle("", ctx, onRouteResolved);
+		}
+		if (nextStep === "refresh") {
+			if (discovery.kind !== "current") throw new Error("/pr refresh failed: pull request is unavailable");
+			if (refreshes >= refreshAttempts) {
+				ctx.ui.notify(`PR #${discovery.pullRequest.number} mergeability is still being computed by GitHub; run /pr again`, "warning");
+				return "none";
+			}
+			await delay(refreshDelayMs, undefined, { signal: ctx.signal });
+			onRouteResolved?.assertCurrent();
+			return await handle("", ctx, onRouteResolved, undefined, refreshes + 1);
+		}
+		if (nextStep === "wait-ci") {
+			if (discovery.kind !== "current") throw new Error("/pr wait failed: pull request is unavailable");
+			const current = discovery.pullRequest;
+			const run = onRouteResolved?.run;
+			const interval = run?.consumeCiWait() ?? null;
+			if (interval === null) {
+				const budget = run?.policy.ciWaitMinutes ?? 0;
+				ctx.ui.notify(budget > 0
+					? `PR #${current.number} is still waiting for CI after ${budget} min; run /pr again later`
+					: `PR #${current.number} is waiting for CI`, "warning");
+				return "none";
+			}
+			if (ciWaits === 0) {
+				ctx.ui.notify(`PR #${current.number}: CI is running; checking every ${run!.policy.ciPollSeconds} s for up to ${run!.policy.ciWaitMinutes} min`, "info");
+			}
+			await delay(dependencies.ciPollMs ?? interval, undefined, { signal: ctx.signal });
+			onRouteResolved?.assertCurrent();
+			return await handle("", ctx, onRouteResolved, undefined, 0, ciWaits + 1);
+		}
 		if (nextStep === "merge") {
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
-			await mergePullRequest(pi, ctx, discovery.pullRequest, load, needsFeedback);
+			await mergePullRequest(pi, ctx, discovery.pullRequest, load, needsFeedback, onRouteResolved?.run?.policy.mergeMethod);
 			return "merge";
 		}
 

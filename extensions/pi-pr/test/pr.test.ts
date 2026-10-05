@@ -10,6 +10,7 @@ import { PullRequestCommentSweep, StaleSweepStart } from "../extensions/pr-comme
 import { PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
 import { PullRequestCiFixer, StaleCiCollect } from "../extensions/pr-ci.ts";
 import { PullRequestWorkPublisher } from "../extensions/pr-publish-work.ts";
+import { DEFAULT_PR_POLICY, type PrPolicy } from "../extensions/pr-run.ts";
 import type {
 	AgentBeforeSettleEventResult,
 	ExecOptions,
@@ -110,7 +111,7 @@ function currentPullRequest(overrides: {
 			unresolvedThreads: 0,
 			ci: "none",
 			review: "ready",
-			policy: "ready",
+			policy: "ready", mergeability: "known",
 			...overrides.conditions,
 		},
 		local: { worktree: "clean", head: "equal" },
@@ -194,6 +195,8 @@ function harness(options: {
 	inspectBranchRecovery?: ExtensionDependencies["inspectBranchRecovery"];
 	createCiFixer?: ExtensionDependencies["createCiFixer"];
 	createWorkPublisher?: ExtensionDependencies["createWorkPublisher"];
+	syncLocalHead?: ExtensionDependencies["syncLocalHead"];
+	policy?: Partial<PrPolicy>;
 	isIdle?: () => boolean;
 	skillPath?: string;
 }) {
@@ -235,6 +238,8 @@ function harness(options: {
 		inspectBranchRecovery: options.inspectBranchRecovery ?? (async () => false),
 		createCiFixer: options.createCiFixer,
 		createWorkPublisher: options.createWorkPublisher,
+		syncLocalHead: options.syncLocalHead,
+		loadPrPolicy: () => ({ ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ...options.policy }),
 		needsFeedbackAttention: async () => false,
 	};
 	if (!options.useDefaultCommandHandler) {
@@ -474,7 +479,7 @@ for (const route of ["update-branch", "sweep", "fix-ci"] as const) test(`queued 
 		assert.equal(next?.continue, true);
 		assert.match(JSON.stringify(next), /pi-pr-publish-work/);
 		await assert.rejects(app.callTool(tool, { runId: ids[0], action }, ctx), /wrong or stale/);
-		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "inspect" }, ctx)).details, { paths: [], head: merged, originalHead: original });
+		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "inspect" }, ctx)).details, { paths: [], head: merged, originalHead: original, diverged: false });
 		await assert.rejects(app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx), /not validated/);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "validate", checks: [] }, ctx);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx);
@@ -586,6 +591,43 @@ for (const routes of [
 		assert.equal(runs, 3);
 		assert.match(app.notifications.at(-1)!.message, /rediscovery limit exhausted/);
 		await assert.rejects(app.callTool("pi_pr_fix_ci", { runId: ids[0], action: "collect" }, ctx), /No PR workflow/);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("dirty diverged work is committed, synced onto the PR head, and published in one /pr", async () => {
+	const ids = [1, 2].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
+	const locals: Array<CurrentPullRequest["local"]> = [
+		{ worktree: "dirty", head: "diverged" }, { worktree: "clean", head: "diverged" }, { worktree: "clean", head: "ahead" },
+	];
+	let loads = 0;
+	let runs = 0;
+	const syncs: string[] = [];
+	const committed = "c".repeat(40);
+	const app = harness({
+		async load() { return { ...currentPullRequest(), local: locals[Math.min(loads++, locals.length - 1)]! }; },
+		useDefaultCommandHandler: true, newRunId: () => ids[runs++]!,
+		async canonicalWorktree() { return "/repo"; },
+		createWorkPublisher: () => ({
+			async inspect() { return { paths: ["file.ts"], head: "d".repeat(40), originalHead: "b".repeat(40), diverged: true }; },
+			async commit() { return { head: committed, diverged: true }; },
+			async validate() { throw new Error("validate must wait for the synced HEAD"); },
+		}) as never,
+		async syncLocalHead({ authority }) { syncs.push(authority.head.oid); return { kind: "rebased", head: "e".repeat(40) }; },
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [`/skill:pi-pr-publish-work runId=${ids[0]} action=inspect`]);
+		assert.deepEqual((await app.callTool("pi_pr_publish_work", { runId: ids[0], action: "commit", ownedPaths: ["file.ts"], message: "fix: scoped" }, ctx)).details,
+			{ head: committed, diverged: true });
+		await assert.rejects(app.callTool("pi_pr_publish_work", { runId: ids[0], action: "validate", checks: [] }, ctx), /cancelled; fresh routing is pending/);
+		await app.beforeSettle(ctx);
+		assert.deepEqual(syncs, ["b".repeat(40)]);
+		assert.equal(app.messages.length, 2, "the synced branch is published in the same invocation");
+		assert.deepEqual(app.messages.at(-1), `/skill:pi-pr-publish-work runId=${ids[1]} action=inspect`);
+		assert.ok(app.notifications.some(({ message }) => /syncing before publication; rediscovering \(1\/2\)/.test(message)));
+		assert.ok(app.notifications.some(({ message }) => /local branch rebased onto the PR head/.test(message)));
 	} finally { await app.shutdown(ctx); }
 });
 
@@ -1710,7 +1752,7 @@ test("renders the shared projection and refreshes after successful create or pus
 	}, ctx);
 	assert.equal(signals.length, 2);
 	assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · CI running");
-	assert.equal(app.widgets.at(-1), undefined);
+	assert.deepEqual(app.widgets.at(-1), widgetLine("! Run /pr to wait for CI, then continue"));
 
 	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(signals.length, 3);
