@@ -47,7 +47,7 @@ Run `/clone-tab` to open a new Herdr tab with a clone of the active conversation
 | --- | --- | --- |
 | `/clone-tab` | command | Clone the current conversation into a new tab of the current Herdr workspace. |
 | `/clone-worktree` | command | Clone the current conversation into a new Herdr Git worktree workspace. |
-| `/done [--force]` | command | Remove the current worktree and close its Herdr workspace tabs; `--force` skips confirmation and permits forced removal without checking for tabs in other workspaces. |
+| `/done [--force]` or `/done [-f]` | command | Remove the current worktree and close its Herdr workspace tabs; `--force` (or `-f`) skips confirmation and permits forced removal without checking for tabs in other workspaces. |
 | `/btw [<question...>]` | command | For humans in Main: open an empty side pane or start with an editable question draft. |
 | `/btw ask <question...>` | command | For humans in Main: ask a question whose first word is `ask`, `config`, `merge`, or `help`. |
 | `/btw config [option value]` | command | For humans: show values, set `auto-submit` to `on` or `off`, set `tools` to `inherit`, `all`, `read-only`, or `none`, set `split` to `right` or `down`, or reset defaults. |
@@ -61,7 +61,7 @@ Run `/clone-tab` to open a new Herdr tab with a clone of the active conversation
 
 The active path runs from the session root to its current leaf when the command is invoked. Sibling branches and still-streaming assistant output are excluded. Both clone commands require a Pi session in a Herdr pane (`HERDR_ENV=1` and `HERDR_PANE_ID`) and validate the pane, session path, and current leaf before creating a target. If Pi has not written the session file yet, the commands clone the live session state. Neither command has configuration, and the original Pi session is not switched.
 
-Commit or discard changes in a Herdr-managed linked worktree, then run `/done` and confirm. Normal removal refuses dirty worktrees and worktrees in use by another Herdr workspace. **`/done --force` can irreversibly delete uncommitted work and leave other workspaces' tabs pointing at the removed checkout.**
+Commit or discard changes in a Herdr-managed linked worktree, then run `/done` and confirm. Normal removal refuses dirty worktrees and worktrees in use by another Herdr workspace. **`/done --force` (or `/done -f`) can irreversibly delete uncommitted work and leave other workspaces' tabs pointing at the removed checkout.**
 
 ### Ask and merge side questions
 

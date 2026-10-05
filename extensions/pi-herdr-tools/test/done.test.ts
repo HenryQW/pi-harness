@@ -160,15 +160,20 @@ test("/done closes all other tabs in its workspace", async () => {
 	});
 });
 
-test("/done --force skips confirmation and dependents check, forwards force to git worktree remove", async () => {
-	await withHerdrEnvironment("1", "w1:t1", async () => {
-		const app = harness(snapshotExecutor({
-			panes: [{ tab_id: "w2:t9", cwd: checkout }],
-		}));
-		await app.command("--force", context());
-		assert.deepEqual(app.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "remove")?.args,
-			["worktree", "remove", "--force", checkout]);
-	});
+test("/done --force and -f skip confirmation and dependents check, forwarding force to git", async () => {
+	for (const flag of ["--force", "-f"]) {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const app = harness(snapshotExecutor({
+				panes: [{ tab_id: "w2:t9", cwd: checkout }],
+			}));
+			const events: string[] = [];
+			await app.command(flag, context(events));
+			assert.deepEqual(events, ["idle"]);
+			assert.equal(app.calls.some((c) => c.command === "herdr" && c.args[0] === "api"), false);
+			assert.deepEqual(app.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "remove")?.args,
+				["worktree", "remove", "--force", checkout]);
+		});
+	}
 });
 
 test("/done refuses with blocking tab labels when another Herdr tab uses the checkout", async () => {
@@ -226,7 +231,8 @@ test("declined confirmation leaves the worktree untouched", async () => {
 test("/done fails safely before any execution and preserves removal errors", async (t) => {
 	await t.test("rejects arguments and missing Herdr context before execution", async () => {
 		for (const [args, herdrEnv, tabId, workspaceId, expected] of [
-			["--yes", "1", "w1:t1", "w1", /Usage: \/done \[--force\]/],
+			["--yes", "1", "w1:t1", "w1", /Usage: \/done \[--force\|-f\]/],
+			["-f extra", "1", "w1:t1", "w1", /Usage: \/done \[--force\|-f\]/],
 			["", undefined, "w1:t1", "w1", /inside Herdr/],
 			["", "1", undefined, "w1", /HERDR_TAB_ID/],
 			["", "1", "w1:t1", null, /HERDR_WORKSPACE_ID/],
