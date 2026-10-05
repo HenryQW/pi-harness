@@ -493,7 +493,10 @@ export default function pullRequestExtension(
 				switch (params.action) {
 					case "rebase": {
 						const result = await selected.workflow.rebase();
-						if (result.kind === "stale") selected.replan = result.reason;
+						if (result.kind === "stale") {
+							selected.replan = result.reason;
+							selected.authority = cloneCurrentPullRequest(result.authority);
+						}
 						return result;
 					}
 					case "continue": return await selected.workflow.continue(params.resolvedPaths);

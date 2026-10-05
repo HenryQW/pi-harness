@@ -41,10 +41,16 @@ type UpdateBranchResult =
 	| { kind: "verified"; head: string; fastForward: boolean }
 	| { kind: "conflict"; paths: string[] }
 	| { kind: "published"; head: string }
-	| { kind: "stale"; reason: string };
+	| { kind: "stale"; reason: string; authority: CurrentPullRequest };
 
-// Only pre-rebase HEAD preflight can prove this cancellation is safe to replan.
-class StaleRebaseRoute extends Error {}
+// Only pre-mutation preflight can authorize a fresh routing snapshot, never a replay.
+class StaleRebaseRoute extends Error {
+	readonly authority: CurrentPullRequest;
+	constructor(reason: string, authority: CurrentPullRequest) {
+		super(reason);
+		this.authority = authority;
+	}
+}
 
 type Load = typeof loadCurrentPullRequest;
 
@@ -155,16 +161,16 @@ export class PullRequestBranchUpdater {
 
 	private async freshAuthority(expectedHead: string, requireClean: boolean, published = false, beforeRebase = false): Promise<CurrentPullRequest> {
 		const discovery = await this.load(this.pi(), this.context());
-		const comparison = published ? {
+		if (discovery.kind !== "current") throw new Error("Branch update cancelled: pull request is no longer current");
+		const fresh = discovery.pullRequest;
+		const comparison = beforeRebase || published ? {
 			...this.authority,
-			head: { ...this.authority.head, oid: expectedHead },
-			target: { ...this.authority.target, remoteOid: expectedHead },
+			head: { ...this.authority.head, oid: beforeRebase ? fresh.head.oid : expectedHead },
+			target: { ...this.authority.target, remoteOid: beforeRebase ? fresh.target.remoteOid : expectedHead },
 		} : this.authority;
-		if (discovery.kind !== "current" || (published
-			? !samePullRequestSnapshot(comparison, discovery.pullRequest) ||
-				this.authority.base.oid !== discovery.pullRequest.base.oid || discovery.pullRequest.lifecycle !== "open"
-			: !sameAuthority(this.authority, discovery.pullRequest))) {
-			throw new Error("Branch update cancelled: frozen pull request authority changed");
+		if (!samePullRequestSnapshot(comparison, fresh) || fresh.lifecycle !== "open" ||
+			(!beforeRebase && (this.authority.base.oid !== fresh.base.oid || !published && !(fresh.conditions.conflict || fresh.conditions.baseUpdateRequired)))) {
+			throw new Error("Branch update cancelled: frozen pull request authority changed (identity, lifecycle, destination, or post-rebase authority)");
 		}
 		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("Branch update cancelled: current branch changed");
@@ -172,13 +178,39 @@ export class PullRequestBranchUpdater {
 			throw new Error("Branch update cancelled: worktree is dirty or a Git operation is in progress");
 		}
 		const head = await readHead(this.exec, this.execOptions());
-		if (head !== expectedHead) {
-			if (beforeRebase && await isAncestor(this.exec, this.execOptions(), expectedHead, head)) {
-				throw new StaleRebaseRoute("Local HEAD is ahead of the frozen PR head; cancelled before rebase or publication");
+		const reasons: string[] = [];
+		if (beforeRebase) {
+			if (fresh.target.remoteOid !== this.authority.target.remoteOid || fresh.head.oid !== expectedHead) {
+				if (this.authority.target.remoteOid !== expectedHead || fresh.target.remoteOid !== fresh.head.oid ||
+					head !== fresh.head.oid || !(await isAncestor(this.exec, this.execOptions(), expectedHead, head))) {
+					throw new Error("Branch update cancelled: frozen pull request authority changed; head/remote drift is not a clean, already-published fast-forward");
+				}
+				reasons.push("Published PR head advanced by fast-forward");
+			} else if (head !== expectedHead && await isAncestor(this.exec, this.execOptions(), expectedHead, head)) {
+				reasons.push("Local HEAD is ahead of the frozen PR head");
+			} else if (head !== expectedHead) {
+				throw new Error("Branch update cancelled: local HEAD does not match the expected head");
 			}
+			if (fresh.base.oid !== this.authority.base.oid) reasons.push("Base OID changed");
+			if (!fresh.conditions.conflict && !fresh.conditions.baseUpdateRequired) {
+				reasons.push(this.authority.conditions.conflict ? "PR conflict cleared" : "Required base update cleared");
+			}
+		} else if (head !== expectedHead) {
 			throw new Error("Branch update cancelled: local HEAD does not match the expected head");
 		}
-		return discovery.pullRequest;
+		if (reasons.length) {
+			if (fresh.target.remoteOid !== fresh.head.oid) {
+				throw new Error("Branch update cancelled: PR head and remote lease disagree");
+			}
+			const path = recoveryPath(this.cwd, this.authority, this.agentDir);
+			const recovery = await readRecovery(path, this.signal);
+			if (recovery && recovery.phase !== "published") {
+				throw new Error(`Branch update recovery requires reconciliation; record preserved at ${path}; do not replan or replay`);
+			}
+			this.signal?.throwIfAborted();
+			throw new StaleRebaseRoute(`${reasons.join("; ")}; cancelled before rebase or publication`, cloneCurrentPullRequest(fresh));
+		}
+		return fresh;
 	}
 
 	private async writeRecovery(phase: RebaseRecovery["phase"], verified: string | null): Promise<void> {
@@ -280,8 +312,9 @@ export class PullRequestBranchUpdater {
 			}
 		}, { agentDir: this.agentDir, signal: this.signal }).catch((error: unknown) => {
 			if (!(error instanceof StaleRebaseRoute)) throw error;
+			this.signal?.throwIfAborted();
 			this.state.phase = "blocked";
-			return { kind: "stale" as const, reason: error.message };
+			return { kind: "stale" as const, reason: error.message, authority: error.authority };
 		});
 	}
 
