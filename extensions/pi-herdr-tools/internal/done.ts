@@ -20,7 +20,8 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 		description: "Remove the current Herdr worktree and close its workspace tabs",
 		handler: async (args, ctx) => {
 			const option = args.trim();
-			if (option && option !== "--force") throw new Error("Usage: /done [--force]");
+			const force = option === "--force" || option === "-f";
+			if (option && !force) throw new Error("Usage: /done [--force|-f]");
 			if (process.env.HERDR_ENV !== "1") {
 				throw new Error("/done requires the current Pi session inside Herdr (HERDR_ENV=1).");
 			}
@@ -29,7 +30,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
 			if (!workspaceId) throw new Error("HERDR_WORKSPACE_ID is missing.");
 
-			if (option !== "--force") {
+			if (!force) {
 				const confirmed = await ctx.ui.confirm("Done", "Close its Herdr tabs and remove the current worktree?");
 				if (!confirmed) return;
 			}
@@ -48,7 +49,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const siblingTabIds = await withWorktreeLock(checkout, async () => {
 				// With --force, skip the dependents check entirely and let git remove the checkout.
 				let dependentIds: string[] = [];
-				if (option !== "--force") {
+				if (!force) {
 					const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
 					const panes = (snapshot.result as { snapshot?: { panes?: SnapshotPane[] } } | undefined)?.snapshot?.panes;
 					if (!Array.isArray(panes)) throw new Error("herdr api snapshot returned no panes.");
@@ -79,7 +80,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 				}
 
 				await execOrThrow("git", [
-					"worktree", "remove", ...(option === "--force" ? ["--force"] : []), checkout,
+					"worktree", "remove", ...(force ? ["--force"] : []), checkout,
 				], ctx.cwd);
 				return siblingTabIds;
 			});
