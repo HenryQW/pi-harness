@@ -495,7 +495,8 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		if (!current() || sessionClosed) throw new Error("Session or branch changed; reopen /subagent.");
 	};
 	// FileRunStore emits the initial state only after fsync. A resumed run emits its
-	// recovery record after saving it. Neither the tool call nor its abort signal
+	// recovery record after saving it; validation acknowledges its saved exact intent.
+	// Neither the tool call nor its abort signal
 	// owns productive work after that durable boundary.
 	const startInSession = async (
 		id: string,
@@ -610,7 +611,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 					reject(error);
 					return;
 				}
-				deliver("terminal", `Pi Subagent ${id} stopped: ${boundedPublicText(error instanceof Error ? error.message : String(error))}. Use subagent_status to inspect the durable request and subagent_resume or subagent_abort for recovery.`);
+				deliver("terminal", `Pi Subagent ${id} stopped: ${boundedPublicText(error instanceof Error ? error.message : String(error))}. Use subagent_status to inspect the durable request before choosing an explicit recovery action.`);
 			},
 		);
 		const state = await durable;
@@ -668,13 +669,22 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_integrate",
 		label: "Subagent integrate",
-		description: "Main advances staged dependents, refreshes after clean Main drift, validates, corrects, promotes, reconciles an interrupted promotion, cleans up promoted resources, or explicitly releases rejected/superseded owned resources. Never replays an uncertain mutation.",
+		description: "Main advances staged dependents, refreshes after clean Main drift or evidence-less validation failure, validates in the background, corrects, promotes, reconciles interrupted validation/promotion, cleans up promoted resources, or explicitly releases rejected/superseded owned resources. Never replays an uncertain mutation.",
 		parameters: IntegrationActionParameters,
 		prepareArguments: parseIntegrationAction,
 		exposure: "model-only",
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
+			if (params.action === "validate") {
+				return await startInSession(params.id, root, signal, ctx,
+					(state) => {
+						const generation = state.integration.generations.at(-1);
+						return generation?.number === params.generation && generation.status === "validating"
+							&& sameIdentity(generation.combinedTip!, params.expectedTip);
+					},
+					(runSignal) => getComponents().runner.integrate(params, root, runSignal));
+			}
 			if (params.action === "advance") {
 				return await startInSession(params.id, root, signal, ctx,
 					(state) => state.status === "running" && state.waves.at(-1)?.status === "dispatching"

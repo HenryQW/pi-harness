@@ -1000,6 +1000,41 @@ test("advance acknowledges a dependent wave before its workers finish", async ()
 	assert.equal(harness.sent.length, 1);
 });
 
+test("validate acknowledges its exact durable intent and outlives the calling turn", async () => {
+	const done = deferred<RunResponse>();
+	let save!: (state: RunState) => void;
+	let runSignal!: AbortSignal;
+	const validating = structuredClone(PRIVATE_STATE);
+	validating.integration.generations = [{ number: 1, status: "validating", expectedMain: RECORDED_MAIN,
+		integrationBase: RECORDED_MAIN, combinedTip: CURRENT_MAIN, order: [], stages: [] }];
+	const harness = createHarness({
+		onCreate(options) { save = options.onStateSaved; },
+		runner: { async integrate(_action: unknown, _root: string, signal: AbortSignal) {
+			runSignal = signal;
+			save(validating);
+			return await done.promise;
+		} } as never,
+	});
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	const turn = new AbortController();
+	const pending = executeTool(namedTool(harness, "subagent_integrate"),
+		{ id: "request-one", generation: 1, action: "validate", expectedTip: CURRENT_MAIN }, turn.signal, ctx);
+	const result = await Promise.race([pending, new Promise<undefined>((resolve) => setImmediate(() => resolve(undefined)))]);
+	try {
+		assert.ok(result, "validation must acknowledge before checks/review finish");
+		assert.match(result.content[0]!.text, /durable request accepted/);
+		turn.abort();
+		assert.equal(runSignal.aborted, false, "durable validation belongs to the session, not the turn");
+	} finally {
+		done.resolve(response("validate", true, validating));
+		await pending;
+	}
+	await new Promise(setImmediate);
+	assert.equal(harness.sent.length, 1);
+	assert.deepEqual(harness.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+});
+
 test("preflight errors reject before acknowledgement; post-save failures report durable recovery", async () => {
 	const failedPreflight = createHarness({ runner: { async execute() { throw new Error("host preflight failed"); } } as never });
 	await assert.rejects(executeTool(namedTool(failedPreflight, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT)), /host preflight failed/);

@@ -903,7 +903,10 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 	}
 	const refresh = state.refresh;
 	if (refresh && (!isCleanCommitted(refresh.from) || !isCleanCommitted(refresh.to)
-		|| refresh.from.branch !== refresh.to.branch || refresh.from.head === refresh.to.head
+		|| refresh.from.branch !== refresh.to.branch
+		|| (refresh.from.head === refresh.to.head && (!sameIdentity(refresh.from, refresh.to)
+			|| state.generations[refresh.generation - 2]?.supersededFrom !== "validation_failed"
+			|| state.generations[refresh.generation - 2]?.correction !== undefined))
 		|| refresh.generation !== state.generations.length + (refresh.status === "pending" ? 1 : 0)
 		|| (refresh.status === "ready" ? refresh.failure !== undefined : refresh.failure !== undefined && !refresh.failure.trim())
 		|| (refresh.generation > 1 && (state.generations[refresh.generation - 2]?.status !== "superseded"
