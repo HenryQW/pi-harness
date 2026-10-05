@@ -49,6 +49,7 @@ import {
 } from "./runner.ts";
 import { runProcess as defaultRunProcess } from "./process.ts";
 import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
+import { assertPrivateLease, scanProcessLease } from "./process-lease.ts";
 import { exactDirectTerminalTurn } from "./direct-herdr.ts";
 
 const MIN_HERDR_VERSION = [0, 9, 0] as const;
@@ -1347,44 +1348,12 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	private async assertPrivateLease(path: string, allowMissing: boolean): Promise<boolean> {
-		let info;
-		try {
-			info = await lstat(path);
-		} catch (error) {
-			if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") return false;
-			throw new Error(`Exact process lease cannot be inspected: ${path}`, { cause: error });
-		}
-		const uid = process.getuid?.();
-		if (info.isSymbolicLink() || !info.isFile() || (info.mode & 0o777) !== LEASE_MODE || (uid !== undefined && info.uid !== uid)) {
-			throw new Error("Exact process lease must be a current-user regular non-symlink mode-0600 file.");
-		}
-		return true;
+		return assertPrivateLease(path, allowMissing);
 	}
 
-	private async scanLease(
-		path: string,
-		cwd: string,
-		context: OperationContext,
-		pid?: number,
-		allowMissing = false,
-	): Promise<number[]> {
-		if (!await this.assertPrivateLease(path, allowMissing)) return [];
-		const args = ["-nP", "-a", ...(pid === undefined ? [] : ["-p", String(pid)]), "-F", "p", "--", path];
-		const result = await this.execute(this.lsofCommand, args, this.processOptions(cwd, context, LSOF_OPERATION_CAP_MS));
-		if (result.killed || ![0, 1].includes(result.code) || (result.code === 1 && (result.stdout.trim() || result.stderr.trim()))) {
-			throw new Error("Exact process lease lsof scan failed or was ambiguous.");
-		}
-		if (result.code === 1) return [];
-		if (result.stderr.trim()) throw new Error("Exact process lease lsof scan returned unexpected diagnostics.");
-		const lines = result.stdout.trim().split(/\r?\n/).filter(Boolean);
-		if (!lines.length || lines.some((line) => !/^p[1-9]\d*$/.test(line))) {
-			throw new Error("Exact process lease lsof scan returned malformed PID fields.");
-		}
-		const holders = [...new Set(lines.map((line) => Number(line.slice(1))))];
-		if (holders.some((holder) => !Number.isSafeInteger(holder) || holder <= 0) || (pid !== undefined && holders.some((holder) => holder !== pid))) {
-			throw new Error("Exact process lease lsof scan returned an unexpected PID.");
-		}
-		return holders;
+	private async scanLease(path: string, cwd: string, context: OperationContext, pid?: number, allowMissing = false): Promise<number[]> {
+		return scanProcessLease(path, (args) => this.execute(this.lsofCommand, args,
+			this.processOptions(cwd, context, LSOF_OPERATION_CAP_MS)), pid, allowMissing);
 	}
 
 	private async signalExactHolders(

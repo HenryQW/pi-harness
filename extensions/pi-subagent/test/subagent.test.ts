@@ -122,6 +122,8 @@ test("checkout admission attributes nested calls to their model-issued root and 
 	handlers.get("tool_result")!({ toolCallId: "direct-writer" });
 	handlers.get("tool_execution_end")!({ toolCallId: "direct-writer" });
 	assert.deepEqual(await call("edit-5", "edit"), blockedBy("direct-writer"));
+	handlers.get("session_shutdown")!({});
+	assert.deepEqual(await call("edit-5", "edit"), blockedBy("direct-writer"));
 	releaseDirect();
 	assert.equal(await call("edit-5", "edit"), undefined);
 });
@@ -287,6 +289,7 @@ function harness(options: {
 	scopedModels?: any[];
 	cwd?: string;
 	sendMessageError?: Error;
+	lsof?: () => Promise<any>;
 	herdr?: (args: string[], options?: { signal?: AbortSignal; timeout?: number }) => Promise<any>;
 } = {}) {
 	let tool: Tool | undefined;
@@ -311,6 +314,7 @@ function harness(options: {
 			});
 		},
 		exec(command: string, args: string[], execOptions?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
+			if (command === "lsof" && options.lsof) return options.lsof();
 			if (command === "herdr" && options.herdr) return options.herdr(args, execOptions);
 			return new Promise((resolve) => {
 				execFile(command, args, execOptions, (error, stdout, stderr) => resolve({
@@ -464,6 +468,7 @@ Do bounded work.
 
 function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined | Promise<string | undefined> = (prompt) => prompt.includes("Potential-writer completion:") ? JSON.stringify({ outcome: "succeeded", answer: "exact answer" }) : "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
 	const calls: string[][] = [];
+	const closed = new Set<string>();
 	let probeToken = "";
 	const sessions = new Map<string, { path: string; prompt?: string; pane: string; tab: string }>();
 	let next = 1;
@@ -493,6 +498,9 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined |
 				return response({ type: "tab_created", tab: { tab_id: tab, workspace_id: "w-test", focused: false },
 					root_pane: { pane_id: `w-test:p${next}`, tab_id: tab, workspace_id: "w-test", cwd, focused: false } });
 			}
+			if (args[0] === "agent" && args[1] === "list") return response({ type: "agent_list", agents: [...sessions.keys()].filter((name) => !closed.has(sessions.get(name)!.pane)).map((name) => agent(name, "done")) });
+			if (args[0] === "pane" && args[1] === "list") return response({ type: "pane_list", panes: [...sessions.keys()].filter((name) => !closed.has(sessions.get(name)!.pane)).map((name) => agent(name, "done")) });
+			if (args[0] === "pane" && args[1] === "close") { closed.add(args[2]!); return response({ type: "ok" }); }
 			if (args[0] === "pane" && args[1] === "process-info") {
 				return response({ type: "pane_process_info", process_info: { pane_id: args[3], shell_pid: 501, foreground_process_group_id: 501, foreground_processes: [{ pid: 501, name: "zsh" }] } });
 			}
@@ -639,7 +647,7 @@ test("authorized direct write and commit use native Pi tools/session and preserv
 	});
 });
 
-test("potential-writer parallel tasks serialize and uncertain completion retains checkout admission", async () => {
+test("potential-writer parallel tasks serialize and invalid completion releases only after termination", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrite only authorized files.\n`);
@@ -663,13 +671,13 @@ test("potential-writer parallel tasks serialize and uncertain completion retains
 			await waitFor(() => app.sentMessages.length === 1);
 			assert.deepEqual(app.sentMessages[0]!.message.details.entries.map((entry: any) => entry.status), ["succeeded", "rejected", "rejected"]);
 			assert.match(app.sentMessages[0]!.message.content, /Previous direct task did not complete exactly/);
-			assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx)).block, true);
+			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx), undefined);
 			assert.equal(app.sessionEntries.length, 2, "retain exact recovery identities");
 		});
 	});
 });
 
-test("a failed writer with a normal final turn stops later tasks and retains admission", async () => {
+test("a failed writer with a normal final turn stops later tasks and releases admission after termination", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrite only authorized files.\n`);
@@ -688,7 +696,84 @@ test("a failed writer with a normal final turn stops later tasks and retains adm
 				assert.equal(app.sentMessages[0]!.message.details.entries[0].status, "rejected");
 				assert.match(app.sentMessages[0]!.message.content, /Commit failed; partial changes remain/);
 				assert.equal(app.sessionEntries.length, 1, "no second worker launches");
-				assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx)).block, true);
+				assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "bash", toolName: "bash", input: {} }, app.ctx), undefined);
+			}
+		});
+	});
+});
+
+
+test("failed direct termination retains admission and exact Close retries without replay or data loss", async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "worker.md"), `---\nname: worker\ndescription: Writer\ntools: [bash]\nextensions: []\nskills: []\n---\nWork only in scope.\n`);
+		await herdrEnvironment(async () => {
+			const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-recovery-")));
+			t.after(() => rm(cwd, { recursive: true, force: true }));
+			const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+			git("init", "-q");
+			await writeFile(join(cwd, "owned.txt"), "committed work");
+			git("add", "owned.txt");
+			git("-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "preserve");
+			const head = git("rev-parse", "HEAD");
+			await writeFile(join(cwd, "owned.txt"), "partial dirty work");
+			for (const failure of ["close", "holders", "identity", "inventory"] as const) {
+				let blocked = true;
+				let staleOnList = false;
+				let scans = 0;
+				const fake = fakeHerdr(cwd, () => JSON.stringify({ outcome: "failed", answer: "Commit failed; partial changes remain." }));
+				const app = harness({ cwd, lsof: async () => {
+					scans++;
+					return blocked && failure === "holders" ? { code: 0, stdout: "p123\n", stderr: "" } : { code: 1, stdout: "", stderr: "" };
+				}, herdr: async (args) => {
+					if (blocked && failure === "close" && args[0] === "pane" && args[1] === "close") return { code: 1, stdout: "", stderr: "close refused" };
+					const response = await fake.exec(args);
+					if (blocked && failure === "inventory" && args[0] === "pane" && args[1] === "list") return { ...response, stdout: JSON.stringify({ result: { type: "pane_list", panes: [{}] } }) };
+					if (staleOnList && args[0] === "agent" && args[1] === "list") { staleOnList = false; app.switchBranch(); }
+					if (blocked && failure === "identity" && args[1] === "list" && args[0] === "agent") {
+						const body = JSON.parse(response.stdout); body.result.agents[0].pane_id = "other-pane";
+						return { ...response, stdout: JSON.stringify(body) };
+					}
+					return response;
+				} });
+				await app.handlers.get("session_start")!({}, app.ctx);
+				const params = { mode: "direct", role: "worker", name: "Fail", task: "authorized commit" };
+				await app.handlers.get("tool_call")!({ toolCallId: failure, toolName: "delegate_task", input: params }, app.ctx);
+				await app.tool.execute(failure, params, undefined, undefined, app.ctx);
+				app.handlers.get("tool_result")!({ toolCallId: failure });
+				await waitFor(() => app.sentMessages.length === 1);
+				const sessionFile = app.sessionEntries[0].data.sessionFile;
+				assert.match(app.sentMessages[0]!.message.content, /Checkout admission retained:.*Close\/cancel-and-release/s);
+				const write = () => app.handlers.get("tool_call")!({ toolCallId: "main-write", toolName: "add_directory", input: {} }, app.ctx);
+				assert.equal((await write()).block, true);
+				if (failure === "identity") assert.ok(!fake.calls.some((args) => args[1] === "close"), "mismatched workers are never touched");
+				const close = async () => {
+					let menu = 0;
+					app.ctx.hasUI = true;
+					app.ctx.ui.select = async (_title, choices) => menu++ === 0 ? choices.find((choice) => choice.startsWith("Direct ·"))
+						: menu === 2 ? choices.find((choice) => choice.startsWith("Close/cancel")) : undefined;
+					await app.commands.get("subagent")!.handler("", app.ctx);
+				};
+				await close();
+				assert.equal((await write()).block, true, "failed explicit recovery must not unlock");
+				blocked = false;
+				if (failure === "close") {
+					const saved = app.sessionEntries;
+					staleOnList = true;
+					await close();
+					assert.equal((await write()).block, true, "scope change during identity lookup cannot unlock");
+					assert.ok(!fake.calls.some((args) => args[1] === "close"), "scope is rechecked before pane mutation");
+					app.ctx.sessionManager.getBranch = () => saved;
+					app.ctx.sessionManager.getEntries = () => saved;
+				}
+				const scansBefore = scans;
+				await close();
+				assert.equal(await write(), undefined);
+				assert.equal(scans - scansBefore, 2, "two empty exact lease scans precede release");
+				assert.equal(fake.calls.filter((args) => args[1] === "prompt").length, 1, "recovery never replays work");
+				assert.equal(git("rev-parse", "HEAD"), head);
+				assert.equal(await readFile(join(cwd, "owned.txt"), "utf8"), "partial dirty work");
+				await stat(sessionFile);
 			}
 		});
 	});

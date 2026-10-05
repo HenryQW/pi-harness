@@ -5,6 +5,7 @@ export interface DirectTask {
 	id: string;
 	name: string;
 	status: string;
+	canClose?: boolean;
 	tabs: readonly { entryId: string; name: string; tabId: string; paneId: string; sessionFile: string }[];
 }
 
@@ -30,6 +31,7 @@ export interface IsolatedInventory {
  * validation and queue operation. They must not await between those operations. */
 export interface SubagentCommandAdapter {
 	direct(ctx: ExtensionContext): readonly DirectTask[];
+	closeDirect(task: DirectTask, current: () => boolean): Promise<string>;
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
 	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ tabId: string; name: string; sessionFile: string }>;
@@ -121,6 +123,19 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					ctx.ui.notify(`Direct workflow ${clean(selected.task.name)} (${JSON.stringify(selected.task.id)}) · ${clean(selected.task.status)}`, "info");
 					for (const tab of selected.task.tabs) {
 						ctx.ui.notify(`Task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}`, "info");
+					}
+					if (selected.task.canClose) {
+						const action = await choose(ctx, `Direct · ${clean(selected.task.name)} · ${selected.task.id}`, [
+							{ label: "Close/cancel-and-release owned workers (preserve files and commits)", value: "close" },
+							{ label: "Back / refresh", value: "back" },
+						]);
+						if (!valid()) return;
+						if (action === "close") {
+							try {
+								const report = await adapter.closeDirect(selected.task, current);
+								if (valid()) ctx.ui.notify(report, "info");
+							} catch (error) { if (valid()) ctx.ui.notify(`Admission retained: ${errorText(error)}. Inspect the exact tab/session; retry Close/cancel-and-release after resolving termination.`, "error"); }
+						}
 					}
 					continue;
 				}

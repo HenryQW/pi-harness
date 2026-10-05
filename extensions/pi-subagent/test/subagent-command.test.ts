@@ -18,6 +18,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	const entries = ["root", "leaf", "existing-child", "sibling"];
 	let active = true;
 	let inspectCount = 0;
+	const closed: string[] = [];
 	let inventoryCount = 0;
 	let recoverCount = 0;
 	const messages: string[] = [];
@@ -25,6 +26,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	const inventory = options.inventory ?? { root: "/git", requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
 	const adapter: SubagentCommandAdapter = {
 		direct: () => options.direct ?? [],
+		closeDirect: async (task, current) => { assert.equal(current(), true); closed.push(task.id); return "Stopped"; },
 		isolated: async (_cwd, current) => { inventoryCount++; assert.equal(current(), true); if (options.isolatedError) throw options.isolatedError; return inventory; },
 		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
 		inspectInTab: async (_root, id, _ctx, current) => {
@@ -72,7 +74,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick,
+	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick, closed,
 		setRecoverPause: (pause: () => Promise<void>) => { recoverPause = pause; },
 		get recoverCount() { return recoverCount; },
 		setActive: (value: boolean) => { active = value; },
@@ -249,4 +251,14 @@ test("no UI and unknown arguments fail before dialogs or mutations", async () =>
 	await assert.rejects(h.run("task-id"), /Usage/);
 	assert.deepEqual(h.dialogs, []);
 	assert.equal(h.queues.get("task")!.length, 3);
+});
+
+
+test("direct Close is exact and refuses stale branch/session/epoch dialogs", async () => {
+	for (const change of ["changeBranch", "navigateAncestor", "navigateDescendant", "changeSession", "changeFile", "shutdown", "append"] as const) {
+		const h = harness({ direct: [{ id: "owned", name: "Rescue", status: "admission retained", canClose: true, tabs: [] }] });
+		h.responses.push(h.pick("Direct"), (dialog) => { h[change](); return h.pick("Close/cancel")(dialog); }, h.pick("Close"));
+		await h.run();
+		assert.deepEqual(h.closed, change === "append" ? ["owned"] : []);
+	}
 });

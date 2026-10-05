@@ -1,11 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { readFile, mkdtemp, stat } from "node:fs/promises";
+import { readFile, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode, herdrCommandFailure, startPiAgent } from "@henryqw/pi-herdr";
 import type { ResolvedRoleLaunch } from "./index.ts";
+import { assertPrivateLease, scanProcessLease } from "./process-lease.ts";
 
 const OPERATION_MS = 30_000;
 const SESSION_LIMIT = 16 * 1024 * 1024;
@@ -128,7 +130,7 @@ export function directSessionTokens(jsonl: string, prompt: string): number | und
 	return observed ? total : undefined;
 }
 
-export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile">;
+export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string };
 
 export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, idleMs: number) {
 	if (process.env.HERDR_ENV !== "1") throw new Error("Direct delegation requires a Herdr-managed Pi pane (HERDR_ENV=1).");
@@ -146,6 +148,47 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 		return field(agent.agent_status, "agent state");
 	};
 	return {
+		/** Close only an exact owned pane, then prove it and its leased children stopped.
+		 * A task result or Ctrl-C acknowledgement is not termination evidence. */
+		async stop(tab: DirectTab, current: () => boolean = () => true): Promise<void> {
+			const requireCurrent = () => { if (!current()) throw new Error("Direct task scope changed; reopen /subagent."); };
+			requireCurrent();
+			await assertPrivateLease(tab.leasePath, false);
+			const listed = result(await herdr.json(["agent", "list"], options()), "agent_list");
+			if (!Array.isArray(listed.agents)) throw new Error("Malformed Herdr agent list.");
+			const related = listed.agents.map((value) => {
+				const agent = object(value, "listed agent");
+				for (const key of ["name", "pane_id", "tab_id"]) field(agent[key], `listed agent ${key}`);
+				return agent;
+			}).filter((agent) => agent.name === tab.name || agent.pane_id === tab.paneId || agent.tab_id === tab.tabId);
+			const panes = async () => {
+				const list = result(await herdr.json(["pane", "list", "--workspace", workspaceId], options()), "pane_list");
+				if (!Array.isArray(list.panes)) throw new Error("Malformed Herdr pane list.");
+				return list.panes.map((value) => {
+					const pane = object(value, "listed pane");
+					for (const key of ["pane_id", "tab_id"]) field(pane[key], `listed pane ${key}`);
+					if (pane.workspace_id !== workspaceId) throw new Error("Herdr pane list escaped the owned workspace.");
+					return pane;
+				});
+			};
+			if (related.length) {
+				const agent = related[0]!;
+				if (related.length !== 1 || agent.name !== tab.name || agent.pane_id !== tab.paneId
+					|| agent.tab_id !== tab.tabId || agent.workspace_id !== workspaceId || agent.cwd !== workingDir
+					|| tab.paneId === callerPane) throw new Error("Worker termination requires one exact owned agent, workspace, checkout, tab and pane match.");
+				requireCurrent();
+				result(await herdr.json(["pane", "close", tab.paneId], options()), "ok");
+			}
+			if ((await panes()).some((pane) => pane.pane_id === tab.paneId || pane.tab_id === tab.tabId)) {
+				throw new Error(`Owned pane ${tab.paneId} is still present; termination is unproved.`);
+			}
+			for (let scan = 0; scan < 2; scan++) {
+				const holders = await scanProcessLease(tab.leasePath, (args) => pi.exec("lsof", args, { cwd: workingDir, timeout: 3_000 }));
+				if (holders.length) throw new Error(`Owned process lease ${tab.leasePath} still has holders: ${holders.join(", ")}. Stop those owned processes, then retry Close/cancel-and-release.`);
+				if (scan === 0) await sleep(50);
+			}
+			requireCurrent();
+		},
 		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false): Promise<DirectHandle> {
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
@@ -153,13 +196,15 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			if (Object.keys(launch.env).length) throw new Error("Direct Herdr launch cannot transfer Role environment overrides.");
 			const sessionDir = await mkdtemp(join(tmpdir(), "pi-subagent-direct-"));
 			const sessionFile = join(sessionDir, "session.jsonl");
+			const leasePath = join(sessionDir, "process.lease");
+			await writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
 			// Pi's native session is the exact answer channel. Herdr screen output is diagnostic only.
 			const sessionArgs = launch.args.filter((arg) => arg !== "--no-session");
 			if (sessionArgs.length !== launch.args.length - 1) throw new Error("Role launch must contain exactly one --no-session option.");
 			signal.throwIfAborted();
 			// Tab creation is bounded but not session-cancellable: Herdr may create it
 			// before the CLI responds, and aborting the CLI loses the exact tab ID.
-			const created = result(await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--no-focus"], options()), "tab_created");
+			const created = result(await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--env", `PI_SUBAGENT_PROCESS_LEASE=${leasePath}`, "--no-focus"], options()), "tab_created");
 			const tab = object(created.tab, "created tab");
 			const workerPane = object(created.root_pane, "created pane");
 			const tabId = field(tab.tab_id, "tab id");
@@ -170,7 +215,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			}
 			try {
 				// Record the tab before the agent start can outlive an aborted launch.
-				onTab({ name, tabId, paneId, sessionFile });
+				onTab({ name, tabId, paneId, sessionFile, leasePath });
 				signal.throwIfAborted();
 				const started = await startPiAgent(herdr, { name, pane: paneId,
 					args: [...sessionArgs, "--session", sessionFile], options: options(signal), shouldRetry: () => false });
