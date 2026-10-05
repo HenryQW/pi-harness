@@ -18,7 +18,7 @@ const conditions: PullRequestConditions = {
 	unresolvedThreads: 0,
 	ci: "none",
 	review: "ready",
-	policy: "ready",
+	policy: "ready", mergeability: "known",
 };
 const local: LocalMergeSafety = { worktree: "clean", head: "equal" };
 
@@ -39,17 +39,19 @@ test("routes exactly one highest-priority next step", () => {
 		{ name: "merged ignores open blockers", pullRequest: pullRequest({ lifecycle: "merged", conditions: { conflict: true, ci: "failure" } }), expected: "none" },
 		{ name: "closed ignores open blockers", pullRequest: pullRequest({ lifecycle: "closed", conditions: { changesRequested: true, ci: "failure" } }), expected: "none" },
 		{ name: "draft precedes every workflow", pullRequest: pullRequest({ conditions: { draft: true, baseUpdateRequired: true, changesRequested: true, ci: "failure" } }), expected: "none" },
-		{ name: "base update alone does not trigger rebase", pullRequest: pullRequest({ conditions: { baseUpdateRequired: true, policy: "pending" } }), expected: "none" },
+		{ name: "required base update triggers the branch update", pullRequest: pullRequest({ conditions: { baseUpdateRequired: true, policy: "pending", mergeability: "known", changesRequested: true, ci: "failure" } }), expected: "update-branch" },
+		{ name: "pending mergeability is re-read before any merge decision", pullRequest: pullRequest({ conditions: { mergeability: "pending", policy: "pending", changesRequested: true, ci: "failure" } }), expected: "refresh" },
 		{ name: "conflict precedes feedback and CI", pullRequest: pullRequest({ conditions: { conflict: true, changesRequested: true, ci: "failure" } }), expected: "update-branch" },
 		{ name: "changes requested routes to sweep", pullRequest: pullRequest({ conditions: { changesRequested: true } }), expected: "sweep" },
 		{ name: "unresolved threads route to sweep", pullRequest: pullRequest({ conditions: { unresolvedThreads: 2 } }), expected: "sweep" },
 		{ name: "diagnosable CI failure precedes feedback", pullRequest: pullRequest({ conditions: { changesRequested: true, unresolvedThreads: 2, ci: "failure" } }), expected: "fix-ci" },
-		{ name: "diagnosable CI failure precedes waiting", pullRequest: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending" } }), expected: "fix-ci" },
+		{ name: "diagnosable CI failure precedes waiting", pullRequest: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending", mergeability: "known" } }), expected: "fix-ci" },
 		{ name: "unsupported CI failure blocks the fixer and feedback", pullRequest: pullRequest({ conditions: { changesRequested: true, ci: "failure-blocked" } }), expected: "none" },
 		{ name: "unsupported CI failure blocks merge", pullRequest: pullRequest({ conditions: { ci: "failure-blocked" } }), expected: "none" },
-		{ name: "running CI blocks merge", pullRequest: pullRequest({ conditions: { ci: "running" } }), expected: "none" },
+		{ name: "running CI waits for checks before the policy gate", pullRequest: pullRequest({ conditions: { ci: "running", policy: "pending" } }), expected: "wait-ci" },
+		{ name: "running CI with review still required does not wait", pullRequest: pullRequest({ conditions: { ci: "running", review: "pending" } }), expected: "none" },
 		{ name: "pending review waits", pullRequest: pullRequest({ conditions: { ci: "success", review: "pending" } }), expected: "none" },
-		{ name: "pending policy waits", pullRequest: pullRequest({ conditions: { policy: "pending" } }), expected: "none" },
+		{ name: "pending policy waits", pullRequest: pullRequest({ conditions: { policy: "pending", mergeability: "known" } }), expected: "none" },
 		{ name: "successful merge-ready PR merges", pullRequest: pullRequest({ conditions: { ci: "success" } }), expected: "merge" },
 	];
 
@@ -106,41 +108,30 @@ test("routes discovery states without mutating ambiguous targets", () => {
 	assert.equal(deriveNextStep({ kind: "inactive" }), "none");
 });
 
-test("mutating workflows require a clean worktree with local HEAD equal to the PR head", () => {
-	const routes: Array<[Partial<PullRequestConditions>, NextStep]> = [
-		[{ conflict: true }, "update-branch"],
-		[{ changesRequested: true }, "sweep"],
-		[{ ci: "failure" }, "fix-ci"],
+test("local state is normalized before any remote condition is acted on", () => {
+	const localRoutes: Array<[LocalMergeSafety, NextStep]> = [
+		[{ worktree: "clean", head: "behind" }, "sync-local"],
+		[{ worktree: "dirty", head: "behind" }, "sync-local"],
+		[{ worktree: "clean", head: "diverged" }, "sync-local"],
+		[{ worktree: "dirty", head: "diverged" }, "publish-work"],
+		[{ worktree: "dirty", head: "equal" }, "publish-work"],
+		[{ worktree: "clean", head: "ahead" }, "publish-work"],
+		[{ worktree: "dirty", head: "ahead" }, "publish-work"],
 	];
-	for (const [routeConditions, expected] of routes) {
-		assert.equal(derivePullRequestNextStep(pullRequest({ conditions: routeConditions })), expected);
-		for (const blocked of [
-			{ worktree: "dirty", head: "equal" },
-			{ worktree: "clean", head: "behind" },
-			{ worktree: "clean", head: "ahead" },
-			{ worktree: "clean", head: "diverged" },
-		] as const) {
-			assert.equal(
-				derivePullRequestNextStep(pullRequest({ conditions: routeConditions, local: blocked })),
-				(blocked.worktree === "dirty" && blocked.head === "equal") || blocked.head === "ahead" ? "publish-work" : "none",
-				`${expected} ${blocked.worktree}/${blocked.head}`,
-			);
+	const remoteConditions: Array<Partial<PullRequestConditions>> = [
+		{},
+		{ conflict: true },
+		{ baseUpdateRequired: true, policy: "pending" },
+		{ mergeability: "pending", policy: "pending" },
+		{ changesRequested: true },
+		{ ci: "failure" },
+		{ ci: "running" },
+	];
+	for (const [candidateLocal, expected] of localRoutes) {
+		for (const routeConditions of remoteConditions) {
+			const actual = derivePullRequestNextStep(pullRequest({ conditions: routeConditions, local: candidateLocal }));
+			assert.equal(actual, expected, `${candidateLocal.worktree}/${candidateLocal.head} ${JSON.stringify(routeConditions)}`);
 		}
 	}
-});
-
-test("only clean local branches equal to or behind the PR head can merge", () => {
-	const cases: Array<[LocalMergeSafety, NextStep]> = [
-		[{ worktree: "clean", head: "equal" }, "merge"],
-		[{ worktree: "clean", head: "behind" }, "merge"],
-		[{ worktree: "dirty", head: "equal" }, "publish-work"],
-		[{ worktree: "dirty", head: "behind" }, "none"],
-		[{ worktree: "dirty", head: "diverged" }, "none"],
-		[{ worktree: "clean", head: "ahead" }, "publish-work"],
-		[{ worktree: "clean", head: "diverged" }, "none"],
-	];
-
-	for (const [candidateLocal, expected] of cases) {
-		assert.equal(derivePullRequestNextStep(pullRequest({ local: candidateLocal })), expected, `${candidateLocal.worktree}/${candidateLocal.head}`);
-	}
+	assert.equal(derivePullRequestNextStep(pullRequest({ conditions: { ci: "success" } })), "merge");
 });

@@ -1,6 +1,6 @@
 # Route `/pr` by current condition
 
-Single-route and link/merge confirmation clauses below are superseded by [ADR 0003](0003-one-invocation-authorizes-guarded-pr-work.md); conflict-only routing is governed by ADR 0002.
+Single-route and link/merge confirmation clauses below are superseded by [ADR 0003](0003-one-invocation-authorizes-guarded-pr-work.md); conflict-only routing is governed by ADR 0002. Behind-base, behind-local-HEAD, and pending-mergeability handling is governed by [ADR 0004](0004-self-resolving-deterministic-conditions.md).
 
 ## Decision
 

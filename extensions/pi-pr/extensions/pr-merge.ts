@@ -6,6 +6,7 @@ import {
 	runChecked,
 } from "./pr-execution.ts";
 import type { LocalMergeSafety } from "./pr-routing.ts";
+import type { MergeMethod } from "./pr-run.ts";
 
 const MERGE_PULL_REQUEST_MUTATION = "mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!,$mergeMethod:PullRequestMergeMethod!){mergePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid,mergeMethod:$mergeMethod}){pullRequest{id state}}}";
 
@@ -23,6 +24,8 @@ type InspectedLocalMergeSafety = LocalMergeSafety & {
 type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
 	pullRequestId: string;
 	hostname: string;
+	/** Configured merge method; GitHub rejects a method the repository does not allow. */
+	mergeMethod?: MergeMethod;
 	expectedBase: {
 		repository: string;
 		ref: string;
@@ -127,7 +130,7 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 		"-F",
 		`expectedHeadOid=${input.expectedHead}`,
 		"-F",
-		"mergeMethod=SQUASH",
+		`mergeMethod=${(input.mergeMethod ?? "squash").toUpperCase()}`,
 	], { cwd: input.cwd });
 	const output = merged.stdout.trim();
 	if (!output) throw new Error("GitHub merge returned no output");

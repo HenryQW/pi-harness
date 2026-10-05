@@ -6,7 +6,11 @@ import { extensionExecApi, inspectWorktree, inspectWorktreeState, isAncestor, pa
 type Check = { command: string; args: string[] };
 type Options = { run?: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
 
-/** One local publication attempt. An uncertain push consumes the run, even when a later read recovers. */
+/**
+ * One local publication attempt. An uncertain push consumes the run, even when a later read recovers.
+ * A dirty branch that diverged from the PR head may inspect and commit; validation and publication
+ * still require a descendant HEAD, so the active /pr syncs the committed branch first.
+ */
 export class PullRequestWorkPublisher {
 	private readonly authority: CurrentPullRequest;
 	private readonly exec: Exec;
@@ -21,8 +25,8 @@ export class PullRequestWorkPublisher {
 		if (options.authority.lifecycle !== "open" || options.authority.target.provenance !== "configured") {
 			throw new Error("Local publication requires a configured open pull request");
 		}
-		if (options.authority.local.head === "behind" || options.authority.local.head === "diverged") {
-			throw new Error("Local publication requires a branch descended from the published PR head");
+		if (options.authority.local.head === "behind") {
+			throw new Error("Local publication requires a branch that is not behind the published PR head");
 		}
 		this.options = options;
 		this.authority = cloneCurrentPullRequest(options.authority);
@@ -50,25 +54,25 @@ export class PullRequestWorkPublisher {
 		if (branch !== this.authority.target.branch) throw new Error("Local publication cancelled: branch changed");
 	}
 
-	async inspect(): Promise<{ paths: string[]; head: string; originalHead: string }> {
+	async inspect(): Promise<{ paths: string[]; head: string; originalHead: string; diverged: boolean }> {
 		if (this.consumed) throw new Error("Commit or publication run is consumed; inspect its outcome in a fresh /pr");
 		if (this.status !== undefined) throw new Error("Pending changes already inspected");
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
 			if (await inspectWorktreeState(this.exec, this.execOptions()) === "operation") throw new Error("Git operation in progress");
 			const head = await readHead(this.exec, this.execOptions());
-			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head))) {
-				throw new Error("Local HEAD is not a descendant of the published PR head");
-			}
+			const diverged = !(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head));
 			const status = (await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions())).stdout;
 			const paths = validatePaths([...parseStatusSnapshot(status).keys()], "Pending paths");
+			// Clean divergence belongs to local sync; only pending work justifies committing on a diverged HEAD.
+			if (diverged && !paths.length) throw new Error("Local HEAD is not a descendant of the published PR head");
 			this.initialHead = head;
 			this.status = status;
-			return { paths, head, originalHead: this.authority.head.oid };
+			return { paths, head, originalHead: this.authority.head.oid, diverged };
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });
 	}
 
-	async commit(pathsInput: string[], message: string): Promise<{ head: string }> {
+	async commit(pathsInput: string[], message: string): Promise<{ head: string; diverged: boolean }> {
 		if (!this.initialHead || this.status === undefined || this.consumed) throw new Error("Pending changes must be inspected first");
 		const paths = validatePaths(pathsInput, "Commit paths");
 		if (!paths.length || paths.some((path) => !parseStatusSnapshot(this.status!).has(path))) {
@@ -93,7 +97,7 @@ export class PullRequestWorkPublisher {
 			this.status = undefined;
 			this.validatedHead = undefined;
 			this.consumed = false;
-			return { head };
+			return { head, diverged: !(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head)) };
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });
 	}
 

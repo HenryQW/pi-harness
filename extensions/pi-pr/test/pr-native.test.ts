@@ -75,7 +75,7 @@ for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRout
 			headFetchSource: "git@github.com:acme/project.git",
 			local: { worktree: published || staleRoute ? "clean" : "dirty", head: localAhead && !published ? "ahead" : "equal" },
 			conditions: { draft: false, baseUpdateRequired: false, conflict: false, changesRequested: published || staleRoute === "sweep", unresolvedThreads: published || staleRoute === "sweep" ? 1 : 0,
-				ci: !published && staleRoute === "fix-ci" ? "failure" : "success", review: "ready", policy: "ready" },
+				ci: !published && staleRoute === "fix-ci" ? "failure" : "success", review: "ready", policy: "ready", mergeability: "known" },
 		} }; },
 		async canonicalWorktree() { return "/repo"; },
 		newRunId: () => `${String(++run).repeat(8)}-1111-4111-8111-111111111111`,

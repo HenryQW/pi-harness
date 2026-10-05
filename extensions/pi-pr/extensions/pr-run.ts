@@ -3,18 +3,29 @@ import { createConfigStore } from "@henryqw/pi-config-store";
 import { isRecord } from "./pr-execution.ts";
 
 export type PrCheck = { command: string; args: string[] };
-export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number };
-export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3 };
+export type MergeMethod = "squash" | "merge" | "rebase";
+export const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
+export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; mergeMethod: MergeMethod };
+export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, mergeMethod: "squash" };
+type NumericPolicyKey = Exclude<keyof PrPolicy, "mergeMethod">;
+const NUMERIC_KEYS: readonly NumericPolicyKey[] = ["maxPublicationCycles", "maxRepairAttempts", "ciPollSeconds", "ciWaitMinutes"];
+/** `ciWaitMinutes: 0` disables waiting for running CI; every other limit must be positive. */
+const ZERO_ALLOWED: ReadonlySet<NumericPolicyKey> = new Set(["ciWaitMinutes"]);
 
 export function loadPrPolicy(agentDir?: string): PrPolicy {
 	const config = createConfigStore({
 		extensionId: "pi-pr", agentDir, defaults: () => ({ ...DEFAULT_PR_POLICY }),
 		parse(value: unknown): PrPolicy {
-			if (!isRecord(value) || Object.keys(value).some((key) => !Object.hasOwn(DEFAULT_PR_POLICY, key))) throw new Error("Expected only maxPublicationCycles and maxRepairAttempts");
+			if (!isRecord(value) || Object.keys(value).some((key) => !Object.hasOwn(DEFAULT_PR_POLICY, key))) throw new Error(`Expected only ${Object.keys(DEFAULT_PR_POLICY).join(", ")}`);
 			const policy = { ...DEFAULT_PR_POLICY };
-			for (const key of Object.keys(policy) as Array<keyof PrPolicy>) {
+			if (value.mergeMethod !== undefined) {
+				if (!MERGE_METHODS.includes(value.mergeMethod as MergeMethod)) throw new Error(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
+				policy.mergeMethod = value.mergeMethod as MergeMethod;
+			}
+			for (const key of NUMERIC_KEYS) {
 				if (value[key] !== undefined) {
-					if (!Number.isSafeInteger(value[key]) || (value[key] as number) < 1) throw new Error(`${key} must be a positive integer`);
+					const minimum = ZERO_ALLOWED.has(key) ? 0 : 1;
+					if (!Number.isSafeInteger(value[key]) || (value[key] as number) < minimum) throw new Error(`${key} must be an integer of at least ${minimum}`);
 					policy[key] = value[key] as number;
 				}
 			}
@@ -33,11 +44,21 @@ export class PrRun {
 	private lastRemote: string | null | undefined;
 	private publications = 0;
 	private repairs = 0;
+	private ciWaitedMs = 0;
 
-	private readonly policy: PrPolicy;
+	readonly policy: PrPolicy;
 
-	constructor(policy: PrPolicy = DEFAULT_PR_POLICY) {
-		this.policy = policy;
+	constructor(policy: Partial<PrPolicy> = {}) {
+		this.policy = { ...DEFAULT_PR_POLICY, ...policy };
+	}
+
+	/** Reserve one CI poll interval from the invocation's wait budget; null once the budget is spent. */
+	consumeCiWait(): number | null {
+		const remaining = this.policy.ciWaitMinutes * 60_000 - this.ciWaitedMs;
+		if (remaining <= 0) return null;
+		const interval = Math.min(this.policy.ciPollSeconds * 1_000, remaining);
+		this.ciWaitedMs += interval;
+		return interval;
 	}
 
 	observeRemote(head: string | null): void {

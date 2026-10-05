@@ -33,7 +33,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	let authority: CurrentPullRequest = {
 		id: "PR_123", number: 42, url: new URL("https://github.com/acme/project/pull/42"), host: "github.com",
 		approved: true, lifecycle: "open", conditions: { draft: false, baseUpdateRequired: false, conflict: false,
-			changesRequested: false, unresolvedThreads: 0, ci: "success", review: "ready", policy: "ready" },
+			changesRequested: false, unresolvedThreads: 0, ci: "success", review: "ready", policy: "ready", mergeability: "known" },
 		local: { worktree: "dirty", head: "equal" },
 		base: { repository: "acme/project", ref: "main", oid: oldHead },
 		head: { repository: "acme/project", ref: "feature", oid: oldHead },
@@ -59,7 +59,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	};
 	const workflow = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec, run: new PrRun(),
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
-	assert.deepEqual(await workflow.inspect(), { paths: ["*.txt", "file.txt"], head: oldHead, originalHead: oldHead });
+	assert.deepEqual(await workflow.inspect(), { paths: ["*.txt", "file.txt"], head: oldHead, originalHead: oldHead, diverged: false });
 	await assert.rejects(workflow.commit(["unknown.txt"], "fix: scope work"), /reviewed pending paths/);
 	let committed = await workflow.commit(["*.txt"], "fix: scope work");
 	assert.notEqual(committed.head, oldHead);
@@ -121,7 +121,16 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 		head: { ...authority.head, oid: second.head }, target: { ...authority.target, remoteOid: second.head } };
 	const stale = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
-	await assert.rejects(stale.inspect(), /not a descendant/);
-	assert.equal(git("rev-parse", "HEAD"), oldHead);
-	assert.equal(git("status", "--porcelain=v1"), "M file.txt");
+	// Pending work on a non-descendant HEAD may be committed; validation and publication wait for sync.
+	assert.equal((await stale.inspect()).diverged, true);
+	const divergedCommit = await stale.commit(["file.txt"], "fix: work on stale head");
+	assert.equal(divergedCommit.diverged, true);
+	assert.equal(git("rev-parse", "HEAD"), divergedCommit.head);
+	assert.equal(git("status", "--porcelain=v1"), "");
+	await assert.rejects(stale.validate([]), /not a descendant/);
+	assert.equal(pushes, 2);
+	git("reset", "--hard", oldHead);
+	const cleanStale = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+	await assert.rejects(cleanStale.inspect(), /not a descendant/);
 });

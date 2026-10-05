@@ -87,6 +87,8 @@ function footerStatus(input: PrDisplayInput): Pick<PrFooter, "text" | "color"> {
 	if (conditions.unresolvedThreads > 0) return { text: `${conditions.unresolvedThreads} unresolved`, color: "warning" };
 	if (conditions.changesRequested) return { text: "changes requested", color: "error" };
 	if (conditions.ci === "running") return { text: "CI running", color: "warning" };
+	if (conditions.mergeability === "pending") return { text: "mergeability pending", color: "warning" };
+	if (input.local.head === "behind" || input.local.head === "diverged") return { text: `local ${input.local.head}`, color: "warning" };
 	if (derivePullRequestNextStep(input) === "merge") return { text: "merge-ready", color: "success" };
 	if (input.approved) return { text: "approved", color: "success" };
 	return { text: "open", color: "accent" };
@@ -94,14 +96,20 @@ function footerStatus(input: PrDisplayInput): Pick<PrFooter, "text" | "color"> {
 
 function widgetText(nextStep: NextStep): string | undefined {
 	switch (nextStep) {
+		case "sync-local":
+			return "Run /pr to sync the local branch with the PR head";
 		case "publish-work":
 			return "Run /pr to publish local work";
+		case "refresh":
+			return "Run /pr to re-read GitHub mergeability";
 		case "update-branch":
-			return "Run /pr to resolve merge conflict";
+			return "Run /pr to update the branch";
 		case "sweep":
 			return "Run /pr to address review feedback";
 		case "fix-ci":
 			return "Run /pr to fix CI";
+		case "wait-ci":
+			return "Run /pr to wait for CI, then continue";
 		case "merge":
 			return "Run /pr to merge pull request";
 		case "link-branch":

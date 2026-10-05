@@ -60,7 +60,7 @@ export type UpdateBranchOptions = {
 
 function sameAuthority(frozen: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
 	return samePullRequestSnapshot(frozen, fresh) && frozen.base.oid === fresh.base.oid &&
-		fresh.lifecycle === "open" && fresh.conditions.conflict;
+		fresh.lifecycle === "open" && (fresh.conditions.conflict || fresh.conditions.baseUpdateRequired);
 }
 
 type RebaseRecovery = { version: 1; phase: "pending" | "verified" | "published"; identity: string;

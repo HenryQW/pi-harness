@@ -1,11 +1,11 @@
 ---
 name: pi-pr-update-branch
-description: Rebase a confirmed merge-conflicting PR branch onto the exact pinned base OID with the package helper.
+description: Rebase a PR branch with a confirmed merge conflict or a base GitHub reports behind onto the exact pinned base OID with the package helper.
 ---
 
-# Pi PR Conflict Rebase
+# Pi PR Branch Update
 
-Use only `pi_pr_update_branch` for Git and GitHub mechanics. This route is available only for a freshly confirmed merge conflict, **not** simply because the base is behind.
+Use only `pi_pr_update_branch` for Git and GitHub mechanics. This route is available for a freshly confirmed merge conflict, or for a base that GitHub reports as behind, which it does only when repository policy requires an up-to-date branch. A behind-only update normally rebases without conflicts.
 
 Call the prompted `rebase` action. If it returns `kind: "stale"`, the run was cancelled before rebase or publication: report the reason and finish without retrying or calling `publish`. The active `/pr` automatically rediscovers the next safe route at settlement, with a bounded attempt count. Otherwise, it fetches the pinned base OID and starts a rebase. If it reports conflicts, inspect only the returned paths and bounded hunks. Resolve only unambiguous intent, preserving compatible work from both sides. If resolution requires a product, API, data, or migration decision, stop and ask the user; never invent one. Otherwise, give `continue` the complete declared path set. More than one commit may conflict: repeat until verified.
 

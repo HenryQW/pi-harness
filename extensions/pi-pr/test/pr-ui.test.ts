@@ -23,7 +23,7 @@ const conditions: PullRequestConditions = {
 	unresolvedThreads: 0,
 	ci: "none",
 	review: "ready",
-	policy: "ready",
+	policy: "ready", mergeability: "known",
 };
 const local: LocalMergeSafety = { worktree: "clean", head: "equal" };
 const target = {
@@ -117,10 +117,11 @@ test("projects normal runnable, merge, and no-action states", () => {
 		},
 		{
 			name: "required base update",
-			input: pullRequest({ conditions: { baseUpdateRequired: true, policy: "pending" } }),
-			nextStep: "none",
+			input: pullRequest({ conditions: { baseUpdateRequired: true, policy: "pending", mergeability: "known" } }),
+			nextStep: "update-branch",
 			footer: "base update required",
 			color: "warning",
+			widget: "Run /pr to update the branch",
 		},
 		{
 			name: "merge conflict",
@@ -128,7 +129,23 @@ test("projects normal runnable, merge, and no-action states", () => {
 			nextStep: "update-branch",
 			footer: "merge conflict",
 			color: "error",
-			widget: "Run /pr to resolve merge conflict",
+			widget: "Run /pr to update the branch",
+		},
+		{
+			name: "local HEAD behind the PR head",
+			input: pullRequest({ conditions: { ci: "success" }, local: { worktree: "dirty", head: "behind" } }),
+			nextStep: "sync-local",
+			footer: "local behind",
+			color: "warning",
+			widget: "Run /pr to sync the local branch with the PR head",
+		},
+		{
+			name: "mergeability still computing",
+			input: pullRequest({ conditions: { policy: "pending", mergeability: "pending" } }),
+			nextStep: "refresh",
+			footer: "mergeability pending",
+			color: "warning",
+			widget: "Run /pr to re-read GitHub mergeability",
 		},
 		{
 			name: "changes requested",
@@ -156,9 +173,10 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "waiting for CI",
 			input: pullRequest({ conditions: { ci: "running" } }),
-			nextStep: "none",
+			nextStep: "wait-ci",
 			footer: "CI running",
 			color: "warning",
+			widget: "Run /pr to wait for CI, then continue",
 		},
 		{
 			name: "draft before running CI",
@@ -177,7 +195,7 @@ test("projects normal runnable, merge, and no-action states", () => {
 		},
 		{
 			name: "approved but waiting",
-			input: pullRequest({ approved: true, conditions: { policy: "pending" } }),
+			input: pullRequest({ approved: true, conditions: { policy: "pending", mergeability: "known" } }),
 			nextStep: "none",
 			footer: "approved",
 			color: "success",
@@ -263,20 +281,20 @@ test("uses visible-condition priority for combined states", () => {
 			nextStep: "update-branch",
 			footer: "merge conflict",
 			color: "error",
-			widget: "Run /pr to resolve merge conflict",
+			widget: "Run /pr to update the branch",
 		},
 		{
-			name: "behind base does not suppress CI",
+			name: "behind base precedes CI repair and feedback",
 			input: pullRequest({ conditions: {
 				baseUpdateRequired: true,
 				changesRequested: true,
 				unresolvedThreads: 3,
 				ci: "failure",
 			} }),
-			nextStep: "fix-ci",
+			nextStep: "update-branch",
 			footer: "base update required",
 			color: "warning",
-			widget: "Run /pr to fix CI",
+			widget: "Run /pr to update the branch",
 		},
 		{
 			name: "unresolved feedback before changes requested",
@@ -299,7 +317,7 @@ test("uses visible-condition priority for combined states", () => {
 		},
 		{
 			name: "CI failure before waiting",
-			input: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending" } }),
+			input: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending", mergeability: "known" } }),
 			nextStep: "fix-ci",
 			footer: "CI failed",
 			color: "error",
@@ -308,9 +326,10 @@ test("uses visible-condition priority for combined states", () => {
 		{
 			name: "running CI before approved fallback",
 			input: pullRequest({ approved: true, conditions: { ci: "running" } }),
-			nextStep: "none",
+			nextStep: "wait-ci",
 			footer: "CI running",
 			color: "warning",
+			widget: "Run /pr to wait for CI, then continue",
 		},
 	];
 
@@ -350,14 +369,14 @@ test("prefixes plain actions with themed semantic icons", () => {
 			display: projectPrDisplay(pullRequest({ conditions: { conflict: true } })),
 			color: "error",
 			icon: "✗",
-			text: "Run /pr to resolve merge conflict",
+			text: "Run /pr to update the branch",
 		},
 		{
 			name: "warning",
-			display: projectPrDisplay(pullRequest({ conditions: { conflict: true, baseUpdateRequired: true } })),
-			color: "error",
-			icon: "✗",
-			text: "Run /pr to resolve merge conflict",
+			display: projectPrDisplay(pullRequest({ conditions: { baseUpdateRequired: true } })),
+			color: "warning",
+			icon: "!",
+			text: "Run /pr to update the branch",
 		},
 		{
 			name: "success",

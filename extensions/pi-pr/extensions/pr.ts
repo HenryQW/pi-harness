@@ -178,7 +178,7 @@ type WorkflowContextBase = {
 type WorkflowContext =
 	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow; authority: CurrentPullRequest; replan?: string })
 	| (WorkflowContextBase & { route: "create"; workflow: CreateWorkflow })
-	| (WorkflowContextBase & { route: "publish-work"; workflow: PullRequestWorkPublisher })
+	| (WorkflowContextBase & { route: "publish-work"; workflow: PullRequestWorkPublisher; authority: CurrentPullRequest; replan?: string })
 	| (WorkflowContextBase & { route: "sweep"; workflow: SweepWorkflow; authority: CurrentPullRequest; replan?: string })
 	| (WorkflowContextBase & { route: "fix-ci"; workflow: FixCiWorkflow; authority: CurrentPullRequest; replan?: string });
 
@@ -193,6 +193,9 @@ type PullRequestExtensionDependencies = {
 	createCommentSweep?: (options: PullRequestCommentSweepOptions) => SweepWorkflow;
 	createCiFixer?: (options: PullRequestCiFixOptions) => FixCiWorkflow;
 	createWorkPublisher?: (options: ConstructorParameters<typeof PullRequestWorkPublisher>[0]) => PullRequestWorkPublisher;
+	syncLocalHead?: PrCommandDependencies["syncLocalHead"];
+	ciPollMs?: PrCommandDependencies["ciPollMs"];
+	loadPrPolicy?: typeof loadPrPolicy;
 	canonicalWorktree?: (cwd: string, signal?: AbortSignal) => Promise<string>;
 	newRunId?: () => string;
 };
@@ -379,6 +382,7 @@ export default function pullRequestExtension(
 				workflowContext = {
 					...common,
 					route: "publish-work",
+					authority: cloneCurrentPullRequest(reservation.pullRequest),
 					workflow: createWorkPublisher({ cwd: worktree, authority: reservation.pullRequest,
 						signal: common.controller.signal, run: common.run, loadCurrentPullRequest: load }),
 				};
@@ -453,7 +457,7 @@ export default function pullRequestExtension(
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);
-		if ((selected.route === "update-branch" || selected.route === "sweep" || selected.route === "fix-ci") && selected.replan) {
+		if (selected.route !== "create" && selected.replan) {
 			throw new Error(`PR ${selected.route} run was cancelled; fresh routing is pending`);
 		}
 		const abortRun = () => selected.controller.abort(signal?.reason);
@@ -541,7 +545,12 @@ export default function pullRequestExtension(
 			return executeWorkflowAction(params.runId, "publish-work", ctx, signal, async (selected) => {
 				switch (params.action) {
 					case "inspect": return await selected.workflow.inspect();
-					case "commit": return await selected.workflow.commit(params.ownedPaths, params.message);
+					case "commit": {
+						const result = await selected.workflow.commit(params.ownedPaths, params.message);
+						// A committed diverged branch is synced onto the PR head by fresh routing before publication.
+						if (result.diverged) selected.replan = "local work was committed on a HEAD diverged from the PR head; syncing before publication";
+						return result;
+					}
 					case "validate": return await selected.workflow.validate(params.checks);
 					case "publish": {
 						const result = await selected.workflow.publish();
@@ -831,7 +840,7 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
-		const replanning = (selected?.route === "update-branch" || selected?.route === "sweep" || selected?.route === "fix-ci") && selected.replan !== undefined;
+		const replanning = selected !== undefined && selected.route !== "create" && selected.replan !== undefined;
 		if (event.outcome !== "completed" || !selected ||
 			(!selected.completed && !selected.queuedPrompt && !replanning) || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
@@ -953,6 +962,8 @@ export default function pullRequestExtension(
 	const commandHandler = createCommandHandler(pi, {
 		loadCurrentPullRequest: load,
 		needsFeedbackAttention: dependencies.needsFeedbackAttention,
+		syncLocalHead: dependencies.syncLocalHead,
+		ciPollMs: dependencies.ciPollMs,
 		inspectBranchRecovery: dependencies.inspectBranchRecovery ?? (async (pullRequest, ctx) => {
 			const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
 			return await inspectVerifiedRebaseRecovery(pullRequest, { cwd: worktree, signal: ctx.signal });
@@ -971,7 +982,7 @@ export default function pullRequestExtension(
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI || !context) return;
 			cancelRefresh();
-			prRun = new PrRun(loadPrPolicy());
+			prRun = new PrRun((dependencies.loadPrPolicy ?? loadPrPolicy)());
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");

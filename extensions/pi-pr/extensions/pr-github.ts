@@ -872,6 +872,9 @@ function conditions(
 		policy: candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "CLEAN"
 			? "ready"
 			: "pending",
+		mergeability: candidate.mergeable === "UNKNOWN" || candidate.mergeStateStatus === "UNKNOWN"
+			? "pending"
+			: "known",
 	};
 }
 

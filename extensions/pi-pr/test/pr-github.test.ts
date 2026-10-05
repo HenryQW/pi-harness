@@ -578,7 +578,7 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 			unresolvedThreads: 2,
 			ci: "running",
 			review: "pending",
-			policy: "pending",
+			policy: "pending", mergeability: "known",
 		},
 		local: { worktree: "clean", head: "behind" },
 		base: { repository: "acme/project", ref: "main", oid: BASE_HEAD },

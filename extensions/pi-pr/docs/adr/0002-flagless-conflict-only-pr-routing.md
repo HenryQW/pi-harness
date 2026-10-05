@@ -1,6 +1,6 @@
 # Flagless, conflict-only PR routing
 
-Link, feedback, and merge confirmation clauses below are superseded by [ADR 0003](0003-one-invocation-authorizes-guarded-pr-work.md).
+Link, feedback, and merge confirmation clauses below are superseded by [ADR 0003](0003-one-invocation-authorizes-guarded-pr-work.md). The base-BEHIND exclusion is superseded by [ADR 0004](0004-self-resolving-deterministic-conditions.md).
 
 ## Decision
 

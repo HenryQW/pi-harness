@@ -215,7 +215,7 @@ function fixture(): Fixture {
 			lifecycle: "open",
 			conditions: {
 				draft: false, baseUpdateRequired: false, conflict: false, changesRequested: true,
-				unresolvedThreads: world.resolved ? 0 : 1, ci: "success", review: "pending", policy: "pending",
+				unresolvedThreads: world.resolved ? 0 : 1, ci: "success", review: "pending", policy: "pending", mergeability: "known",
 			},
 			local: { worktree: "clean", head: "equal" },
 			base: { repository: "acme/project", ref: "main", oid: world.baseOid },
