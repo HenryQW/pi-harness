@@ -91,7 +91,7 @@ These settings do not affect `/copyb`. CWD overrides live in pi-bark's global co
 
 ## Flow
 
-![Architecture showing copyb and Pi status notifications entering one shared sender, using AES256-GCM, passing ciphertext through the Bark server, and decrypting locally in the Bark App.](./docs/push-encryption-flow.svg)
+![Architecture showing manual /copyb output and automatic Pi status notifications sharing one sender: a Custom Encryption Key encrypts only content, device_key stays plaintext in the same JSON request, and HTTPS adds TLS transport protection.](./docs/push-encryption-flow.svg)
 
 ## Config
 
