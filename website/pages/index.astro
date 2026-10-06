@@ -3,7 +3,6 @@ import PageLayout from "blume/components/layout/PageLayout.astro";
 import data from "blume:data";
 
 import ExtensionCatalog from "../components/ExtensionCatalog.astro";
-import Footer from "../components/Footer.astro";
 import Hero from "../components/Hero.astro";
 import OrchestrationSection from "../components/OrchestrationSection.astro";
 import WorkflowRows from "../components/WorkflowRows.astro";
@@ -34,5 +33,4 @@ const { config } = data;
   <WorkflowRows id="start-with-workflow" />
   <OrchestrationSection />
   <ExtensionCatalog extensions={homepageExtensions} />
-  <Footer slot="footer" />
 </PageLayout>

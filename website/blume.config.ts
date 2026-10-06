@@ -98,6 +98,13 @@ export default defineConfig({
   title: "Henry Pi Harness",
   description: "Opinionated Pi extensions for memory, delegation, Git, model routing, and interaction.",
   feedback: false,
+  footer: {
+    links: [
+      { label: "npm profile", href: "https://www.npmjs.com/~henryqw" },
+      { label: "MIT License", href: "https://github.com/HenryQW/pi-harness/blob/main/LICENSE" },
+      { label: "About Henry", href: "https://henry.wang" },
+    ],
+  },
   logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
     sources: [custom(packageDocs)],
