@@ -12,14 +12,14 @@
       #extension-dependencies-root .name { fill: #101828; font: 600 12px 'Geist', sans-serif; }
       #extension-dependencies-root .column { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
       #extension-dependencies-root .count { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
-      #extension-dependencies-root .empty { fill: #6a7282; font: 400 8px 'Geist Mono', monospace; }
+      #extension-dependencies-root .empty { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; }
       #extension-dependencies-root .note { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }</style>
     <style>
       .axis { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .12em; }
       .name { fill: #101828; font: 600 12px 'Geist', sans-serif; }
       .column { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
       .count { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
-      .empty { fill: #6a7282; font: 400 8px 'Geist Mono', monospace; }
+      .empty { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; }
       .note { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }
     </style>
   </defs>
