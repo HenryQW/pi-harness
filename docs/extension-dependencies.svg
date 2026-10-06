@@ -1,8 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="extension-dependencies-title extension-dependencies-desc">
-  <title id="extension-dependencies-title">Direct dependencies of all active Pi extensions</title>
-  <desc id="extension-dependencies-desc">Dependency matrix with all 18 active extensions as rows and the seven internal packages they use as columns. A filled square means a direct dependency; empty rows have none. Pi Config Store is the most depended-on package, used by 13 extensions.</desc>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="extension-dependencies-title extension-dependencies-desc" id="extension-dependencies-root">
+  <title id="extension-dependencies-title">Direct dependencies of 19 active Pi extensions</title>
+  <desc id="extension-dependencies-desc">Matrix of 19 active Pi extensions and seven internal dependency packages, with 29 direct runtime or peer dependency edges, five rows with no internal dependencies, and Pi Config Store used by 14 extensions.</desc>
   <defs>
-    <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&amp;family=Geist:wght@400;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap');</style>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #extension-dependencies-root { color: #101828; font-family: 'Geist', sans-serif; }
+      #extension-dependencies-root .diagram-container { overflow-x: auto; }
+      #extension-dependencies-root .diagram-container:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 4px; }
+      #extension-dependencies-root .diagram-container { overflow: visible; }
+      #extension-dependencies-root .axis { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .12em; }
+      #extension-dependencies-root .name { fill: #101828; font: 600 12px 'Geist', sans-serif; }
+      #extension-dependencies-root .column { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+      #extension-dependencies-root .count { fill: #4c5665; font: 400 8px 'Geist Mono', monospace; text-anchor: middle; }
+      #extension-dependencies-root .empty { fill: #6a7282; font: 400 8px 'Geist Mono', monospace; }
+      #extension-dependencies-root .note { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }</style>
     <style>
       .axis { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .12em; }
       .name { fill: #101828; font: 600 12px 'Geist', sans-serif; }
@@ -11,9 +22,6 @@
       .empty { fill: #6a7282; font: 400 8px 'Geist Mono', monospace; }
       .note { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }
     </style>
-    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
-    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
-    <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
   </defs>
   <rect width="1280" height="720" fill="#f0eee9"/>
   <text class="axis" x="48" y="64">ALL ACTIVE EXTENSIONS ↓</text>
@@ -21,93 +29,100 @@
   <text class="axis" x="660" y="64">EXTENSIONS USED AS DEPENDENCIES</text>
   <text class="column" x="352" y="108">Pi Config</text>
   <text class="column" x="352" y="124">Store</text>
-  <text class="count" x="352" y="140">13 in</text>
+  <text class="count" data-package="@henryqw/pi-config-store" data-count="14" x="352" y="140">14 in</text>
   <text class="column" x="464" y="108">Pi Herdr</text>
-  <text class="count" x="464" y="140">3 in</text>
+  <text class="count" data-package="@henryqw/pi-herdr" data-count="3" x="464" y="140">3 in</text>
   <text class="column" x="576" y="108">Pi Process</text>
-  <text class="count" x="576" y="140">2 in</text>
+  <text class="count" data-package="@henryqw/pi-process" data-count="2" x="576" y="140">2 in</text>
   <text class="column" x="688" y="108">Pi Task</text>
   <text class="column" x="688" y="124">Models</text>
-  <text class="count" x="688" y="140">5 in</text>
+  <text class="count" data-package="@henryqw/pi-task-models" data-count="6" x="688" y="140">6 in</text>
   <text class="column" x="800" y="108">Pi Subagent</text>
-  <text class="count" x="800" y="140">1 in</text>
+  <text class="count" data-package="@henryqw/pi-subagent" data-count="2" x="800" y="140">2 in</text>
   <text class="column" x="912" y="108">Pi Multi</text>
   <text class="column" x="912" y="124">Codex</text>
-  <text class="count" x="912" y="140">1 in</text>
+  <text class="count" data-package="@henryqw/pi-multi-codex" data-count="1" x="912" y="140">1 in</text>
   <text class="column" x="1024" y="108">Pi Ask</text>
   <text class="column" x="1024" y="124">Question</text>
-  <text class="count" x="1024" y="140">1 in</text>
+  <text class="count" data-package="@henryqw/pi-ask-question" data-count="1" x="1024" y="140">1 in</text>
   <line x1="48" y1="152" x2="1080" y2="152" stroke="#101828" stroke-opacity=".35"/>
-  <line x1="296" y1="152" x2="296" y2="524" stroke="#101828" stroke-opacity=".12"/>
-  <line x1="632" y1="80" x2="632" y2="524" stroke="#101828" stroke-opacity=".18"/>
-  <line x1="1080" y1="152" x2="1080" y2="524" stroke="#101828" stroke-opacity=".12"/>
+  <line x1="296" y1="152" x2="296" y2="544" stroke="#101828" stroke-opacity=".12"/>
+  <line x1="632" y1="80" x2="632" y2="544" stroke="#101828" stroke-opacity=".18"/>
+  <line x1="1080" y1="152" x2="1080" y2="544" stroke="#101828" stroke-opacity=".12"/>
   <line x1="304" y1="148" x2="400" y2="148" stroke="#1d4ed8" stroke-width="2"/>
-  <line x1="408" y1="152" x2="408" y2="524" stroke="#101828" stroke-opacity=".07"/>
-  <line x1="520" y1="152" x2="520" y2="524" stroke="#101828" stroke-opacity=".07"/>
-  <line x1="744" y1="152" x2="744" y2="524" stroke="#101828" stroke-opacity=".07"/>
-  <line x1="856" y1="152" x2="856" y2="524" stroke="#101828" stroke-opacity=".07"/>
-  <line x1="968" y1="152" x2="968" y2="524" stroke="#101828" stroke-opacity=".07"/>
+  <line x1="408" y1="152" x2="408" y2="544" stroke="#101828" stroke-opacity=".07"/>
+  <line x1="520" y1="152" x2="520" y2="544" stroke="#101828" stroke-opacity=".07"/>
+  <line x1="744" y1="152" x2="744" y2="544" stroke="#101828" stroke-opacity=".07"/>
+  <line x1="856" y1="152" x2="856" y2="544" stroke="#101828" stroke-opacity=".07"/>
+  <line x1="968" y1="152" x2="968" y2="544" stroke="#101828" stroke-opacity=".07"/>
   <rect x="40" y="164" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="178">Pi Add Dir</text>
+  <text class="name" data-row="pi-add-dir" x="48" y="178">Pi Add Dir</text>
   <rect data-extension="pi-add-dir" data-dependency="@henryqw/pi-config-store" x="346" y="169" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="198">Pi Ask Question</text>
+  <text class="name" data-row="pi-ask-question" x="48" y="198">Pi Ask Question</text>
   <text class="empty" x="244" y="197">none</text>
   <rect x="40" y="204" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="218">Pi Auto Compact</text>
+  <text class="name" data-row="pi-auto-compact" x="48" y="218">Pi Auto Compact</text>
   <rect data-extension="pi-auto-compact" data-dependency="@henryqw/pi-config-store" x="346" y="209" width="12" height="12" rx="2" fill="#101828"/>
   <rect data-extension="pi-auto-compact" data-dependency="@henryqw/pi-task-models" x="682" y="209" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="238">Pi Bark</text>
+  <text class="name" data-row="pi-bark" x="48" y="238">Pi Bark</text>
   <rect data-extension="pi-bark" data-dependency="@henryqw/pi-config-store" x="346" y="229" width="12" height="12" rx="2" fill="#101828"/>
   <rect x="40" y="244" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="258">Pi Codegraph</text>
+  <text class="name" data-row="pi-codegraph" x="48" y="258">Pi Codegraph</text>
   <text class="empty" x="244" y="257">none</text>
-  <text class="name" x="48" y="278">Pi Deps</text>
-  <text class="empty" x="244" y="277">none</text>
+  <text class="name" data-row="pi-cron" x="48" y="278">Pi Cron</text>
+  <rect data-extension="pi-cron" data-dependency="@henryqw/pi-config-store" x="346" y="269" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-cron" data-dependency="@henryqw/pi-task-models" x="682" y="269" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-cron" data-dependency="@henryqw/pi-subagent" x="794" y="269" width="12" height="12" rx="2" fill="#101828"/>
   <rect x="40" y="284" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="298">Pi Footer</text>
-  <rect data-extension="pi-footer" data-dependency="@henryqw/pi-config-store" x="346" y="289" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="318">Pi Herdr Tools</text>
-  <rect data-extension="pi-herdr-tools" data-dependency="@henryqw/pi-config-store" x="346" y="309" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-herdr-tools" data-dependency="@henryqw/pi-herdr" x="458" y="309" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-herdr-tools" data-dependency="@henryqw/pi-task-models" x="682" y="309" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-deps" x="48" y="298">Pi Deps</text>
+  <text class="empty" x="244" y="297">none</text>
+  <text class="name" data-row="pi-footer" x="48" y="318">Pi Footer</text>
+  <rect data-extension="pi-footer" data-dependency="@henryqw/pi-config-store" x="346" y="309" width="12" height="12" rx="2" fill="#101828"/>
   <rect x="40" y="324" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="338">Pi Memory</text>
-  <rect data-extension="pi-memory" data-dependency="@henryqw/pi-ask-question" x="1018" y="329" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-memory" data-dependency="@henryqw/pi-config-store" x="346" y="329" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-memory" data-dependency="@henryqw/pi-task-models" x="682" y="329" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="358">Pi Multi Codex</text>
-  <rect data-extension="pi-multi-codex" data-dependency="@henryqw/pi-config-store" x="346" y="349" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-herdr-tools" x="48" y="338">Pi Herdr Tools</text>
+  <rect data-extension="pi-herdr-tools" data-dependency="@henryqw/pi-config-store" x="346" y="329" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-herdr-tools" data-dependency="@henryqw/pi-herdr" x="458" y="329" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-herdr-tools" data-dependency="@henryqw/pi-task-models" x="682" y="329" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-memory" x="48" y="358">Pi Memory</text>
+  <rect data-extension="pi-memory" data-dependency="@henryqw/pi-config-store" x="346" y="349" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-memory" data-dependency="@henryqw/pi-task-models" x="682" y="349" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-memory" data-dependency="@henryqw/pi-ask-question" x="1018" y="349" width="12" height="12" rx="2" fill="#101828"/>
   <rect x="40" y="364" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="378">Pi Notes</text>
-  <rect data-extension="pi-notes" data-dependency="@henryqw/pi-config-store" x="346" y="369" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="398">Pi Pr</text>
-  <rect data-extension="pi-pr" data-dependency="@henryqw/pi-config-store" x="346" y="389" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-pr" data-dependency="@henryqw/pi-herdr" x="458" y="389" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-pr" data-dependency="@henryqw/pi-process" x="570" y="389" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-multi-codex" x="48" y="378">Pi Multi Codex</text>
+  <rect data-extension="pi-multi-codex" data-dependency="@henryqw/pi-config-store" x="346" y="369" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-notes" x="48" y="398">Pi Notes</text>
+  <rect data-extension="pi-notes" data-dependency="@henryqw/pi-config-store" x="346" y="389" width="12" height="12" rx="2" fill="#101828"/>
   <rect x="40" y="404" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="418">Pi Prompt Creator</text>
-  <rect data-extension="pi-prompt-creator" data-dependency="@henryqw/pi-config-store" x="346" y="409" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-prompt-creator" data-dependency="@henryqw/pi-subagent" x="794" y="409" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-prompt-creator" data-dependency="@henryqw/pi-task-models" x="682" y="409" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="438">Pi RTK Test</text>
-  <text class="empty" x="244" y="437">none</text>
+  <text class="name" data-row="pi-pr" x="48" y="418">Pi Pr</text>
+  <rect data-extension="pi-pr" data-dependency="@henryqw/pi-config-store" x="346" y="409" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-pr" data-dependency="@henryqw/pi-herdr" x="458" y="409" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-pr" data-dependency="@henryqw/pi-process" x="570" y="409" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-prompt-creator" x="48" y="438">Pi Prompt Creator</text>
+  <rect data-extension="pi-prompt-creator" data-dependency="@henryqw/pi-config-store" x="346" y="429" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-prompt-creator" data-dependency="@henryqw/pi-task-models" x="682" y="429" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-prompt-creator" data-dependency="@henryqw/pi-subagent" x="794" y="429" width="12" height="12" rx="2" fill="#101828"/>
   <rect x="40" y="444" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="458">Pi Session Recall</text>
-  <rect data-extension="pi-session-recall" data-dependency="@henryqw/pi-config-store" x="346" y="449" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="478">Pi Subagent</text>
-  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-config-store" x="346" y="469" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-herdr" x="458" y="469" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-multi-codex" x="906" y="469" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-process" x="570" y="469" width="12" height="12" rx="2" fill="#101828"/>
-  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-task-models" x="682" y="469" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-rtk-test" x="48" y="458">Pi RTK Test</text>
+  <text class="empty" x="244" y="457">none</text>
+  <text class="name" data-row="pi-session-recall" x="48" y="478">Pi Session Recall</text>
+  <rect data-extension="pi-session-recall" data-dependency="@henryqw/pi-config-store" x="346" y="469" width="12" height="12" rx="2" fill="#101828"/>
   <rect x="40" y="484" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
-  <text class="name" x="48" y="498">Pi Task Models</text>
-  <rect data-extension="pi-task-models" data-dependency="@henryqw/pi-config-store" x="346" y="489" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="name" x="48" y="518">Pi Undo</text>
-  <text class="empty" x="244" y="517">none</text>
+  <text class="name" data-row="pi-subagent" x="48" y="498">Pi Subagent</text>
+  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-config-store" x="346" y="489" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-herdr" x="458" y="489" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-process" x="570" y="489" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-task-models" x="682" y="489" width="12" height="12" rx="2" fill="#101828"/>
+  <rect data-extension="pi-subagent" data-dependency="@henryqw/pi-multi-codex" x="906" y="489" width="12" height="12" rx="2" fill="#101828"/>
+  <text class="name" data-row="pi-task-models" x="48" y="518">Pi Task Models</text>
+  <rect data-extension="pi-task-models" data-dependency="@henryqw/pi-config-store" x="346" y="509" width="12" height="12" rx="2" fill="#101828"/>
+  <rect x="40" y="524" width="1040" height="20" fill="#e6e4de" fill-opacity=".6"/>
+  <text class="name" data-row="pi-undo" x="48" y="538">Pi Undo</text>
+  <text class="empty" x="244" y="537">none</text>
+  <text class="note" x="48" y="588">19 extensions · 29 direct edges · 7 dependency packages · 5 rows with no internal dependencies</text>
+  <text class="note" x="48" y="608">Only dependencies and peerDependencies are shown; development and transitive dependencies are excluded.</text>
   <line x1="48" y1="628" x2="1192" y2="628" stroke="#101828" stroke-opacity=".12"/>
   <rect x="48" y="652" width="12" height="12" rx="2" fill="#101828"/>
-  <text class="note" x="72" y="663">Direct dependency</text>
-  <text class="note" x="290" y="663">Blank cell = no dependency</text>
+  <text class="note" x="72" y="663">Direct runtime or peer dependency</text>
+  <text class="note" x="360" y="663">Blank cell = no dependency</text>
   <text class="note" x="680" y="663">Counts show direct dependents among extensions</text>
 </svg>
