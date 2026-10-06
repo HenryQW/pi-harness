@@ -14,7 +14,7 @@
   </style>
 </head>
 <body>
-  <figure class="frame">
+  <figure class="frame" tabindex="0" role="region" aria-label="Push encryption diagram; scroll horizontally on narrow screens">
     <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="push-encryption-flow-title push-encryption-flow-desc">
       <title id="push-encryption-flow-title">How pi-bark protects push content</title>
       <desc id="push-encryption-flow-desc">Manual /copyb output and automatic Pi status notifications share one sender that encrypts only content with AES256-GCM when a Custom Encryption Key is set, sends device_key as plaintext routing metadata in the same JSON request, and uses TLS only with HTTPS.</desc>

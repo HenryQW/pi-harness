@@ -23,7 +23,7 @@
 </head>
 <body>
   <main>
-    <div class="diagram-container">
+    <div class="diagram-container" tabindex="0" role="region" aria-label="PR routing diagram; scroll horizontally on narrow screens">
     <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="pr-routing-title pr-routing-desc">
       <title id="pr-routing-title">How /pr picks each next route</title>
       <desc id="pr-routing-desc">The /pr command creates a pull request when needed, links an inferred open PR before draft handling and repeats discovery, stops on a configured draft, then for non-draft open PRs syncs local state, publishes scoped work, re-reads pending mergeability, rebases conflicts or behind bases, fixes CI, sweeps feedback, waits within its CI budget, and merges only when fresh state is ready.</desc>
