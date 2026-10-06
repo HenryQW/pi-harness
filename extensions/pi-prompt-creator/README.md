@@ -39,7 +39,9 @@ The prompt is created at `~/.pi/agent/prompts/<name>.md`, then Pi reloads its re
 
 ## Flow
 
-![Prompt creator lifecycle from conversation to saved prompt](./docs/prompt-lifecycle.svg)
+![Automatic prompt analysis waits for user display before Main review and approved saving; manual candidates display immediately](./docs/prompt-lifecycle.svg)
+
+The diagram shows the automatic path. Manual analysis displays its candidate immediately, without the WAIT stage. Both paths require Main review and your approval before saving.
 
 ### Automatic analysis
 
