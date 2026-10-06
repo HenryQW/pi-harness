@@ -41,7 +41,7 @@ Import these exports from the package root, `@henryqw/pi-ask-question`.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `askQuestion` | function | Runs the validated question flow for another extension. |
+| `askQuestion(params, ctx, signal)` | function | Runs the validated question flow for another extension. |
 | `AskQuestionOption` | type | Describes a question option. |
 | `AskQuestionRequest` | type | Describes a question request. |
 | `AskQuestionResult` | type | Describes the flow result. |
