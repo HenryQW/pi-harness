@@ -963,7 +963,14 @@ export default function pullRequestExtension(
 	});
 
 	const commandHandler = createCommandHandler(pi, {
-		loadCurrentPullRequest: load,
+		loadCurrentPullRequest: async (api, loadContext, inspectedLocal) => {
+			const generation = sessionGeneration;
+			const discovery = await load(api, loadContext, inspectedLocal);
+			// Show fresh route discovery before settlement, without refreshing helper preflights.
+			if (generation === sessionGeneration && context?.cwd === loadContext.cwd &&
+				!loadContext.signal?.aborted && discovery.kind === "current") render(context, discovery);
+			return discovery;
+		},
 		needsFeedbackAttention: dependencies.needsFeedbackAttention,
 		syncLocalHead: dependencies.syncLocalHead,
 		ciPollMs: dependencies.ciPollMs,

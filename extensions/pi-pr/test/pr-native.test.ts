@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import {
@@ -10,11 +10,19 @@ import pullRequestExtension from "../extensions/pr.ts";
 import { StaleCiCollect } from "../extensions/pr-ci.ts";
 import { StaleSweepStart } from "../extensions/pr-comment-sweep.ts";
 
+const herdrEnv = process.env.HERDR_ENV;
+before(() => { delete process.env.HERDR_ENV; });
+after(() => {
+	if (herdrEnv === undefined) delete process.env.HERDR_ENV;
+	else process.env.HERDR_ENV = herdrEnv;
+});
+
 // Exercise native prompt expansion, boundary dispatch/projection, and editor queue restoration;
 // no provider or GitHub requests are made.
-for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRoute
-	? `stale ${staleRoute} publication hands off a fresh live route before native settlement`
-	: "publication continues through hidden native context, never editable user queues", async () => {
+for (const route of ["create", "publish-work", "sweep", "fix-ci"] as const) test(route === "sweep" || route === "fix-ci"
+	? `stale ${route} publication hands off a fresh live route before native settlement`
+	: `${route} continues through hidden native context with a PR footer before settlement`, async () => {
+	const staleRoute = route === "sweep" || route === "fix-ci" ? route : undefined;
 	const handlers = new Map<string, Function[]>();
 	const tools = new Map<string, Parameters<ExtensionAPI["registerTool"]>[0]>();
 	let command!: Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -22,9 +30,12 @@ for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRout
 	let published = false;
 	let localAhead = false;
 	let run = 0;
+	let loads = 0;
+	let status: string | undefined;
+	let widget: unknown;
 	const notifications: string[] = [];
 	const dispatches: Promise<void>[] = [];
-	const skills = ["pi-pr-publish-work", "pi-pr-comment-sweep", "pi-pr-fix-ci"].map((name) => {
+	const skills = ["pi-pr-create", "pi-pr-publish-work", "pi-pr-comment-sweep", "pi-pr-fix-ci"].map((name) => {
 		const filePath = fileURLToPath(new URL(`../skills/${name}/SKILL.md`, import.meta.url));
 		return { name, filePath, baseDir: dirname(filePath), sourceInfo: { origin: "package", path: filePath } };
 	});
@@ -33,7 +44,9 @@ for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRout
 	const ctx = {
 		cwd: "/repo", hasUI: true, mode: "rpc", signal: new AbortController().signal,
 		isIdle: () => !busy, sessionManager: manager,
-		ui: { setWidget() {}, setStatus() {}, theme: { fg: (_color: string, text: string) => text },
+		ui: { setWidget(_key: string, value: unknown) { widget = value; },
+			setStatus(_key: string, value: string | undefined) { status = value; },
+			theme: { fg: (_color: string, text: string) => text },
 			notify: (message: string) => notifications.push(message) },
 	} as unknown as ExtensionContext;
 	const nativeQueue: unknown[] = [];
@@ -65,7 +78,14 @@ for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRout
 		appendEntry() {},
 		async exec() { throw new Error("Unexpected external command"); },
 	} as unknown as ExtensionAPI, {
-		async loadCurrentPullRequest() { return { kind: "current", pullRequest: {
+		async loadCurrentPullRequest() {
+			loads += 1;
+			if (route === "create" && !published) return { kind: "none",
+				creationTarget: { provenance: "inferred", repository: "acme/project", branch: "feature", remote: "origin", ref: "feature",
+					host: "github.com", fetchSource: "git@github.com:acme/project.git", remoteOid: null },
+				branch: { ahead: 1, worktree: "clean", relation: "distinct-ref" },
+			};
+			return { kind: "current", pullRequest: {
 			id: "PR_kwDOExample", approved: false, lifecycle: "open",
 			url: new URL("https://github.com/acme/project/pull/42"), number: 42, host: "github.com",
 			target: { provenance: "configured", repository: "acme/project", branch: "feature", remote: "origin", ref: "feature",
@@ -80,6 +100,7 @@ for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRout
 		async canonicalWorktree() { return "/repo"; },
 		newRunId: () => `${String(++run).repeat(8)}-1111-4111-8111-111111111111`,
 		inspectBranchRecovery: async () => false, inspectSweepRecovery: async () => false,
+		createPullRequestCreator: () => ({ async publish() { published = true; return { kind: "published", url: "https://github.com/acme/project/pull/42" }; } }) as never,
 		createWorkPublisher: () => ({ async publish() { published = true; return { kind: "published" }; } }) as never,
 		createCiFixer: () => ({ async collect() { throw new StaleCiCollect("Clean HEAD advanced before CI evidence"); } }) as never,
 		createCommentSweep: () => ({
@@ -104,8 +125,9 @@ for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRout
 			assert.equal(await session._runBeforeSettleBoundary(), true, "safe cancellation must not expire at final settlement");
 			assert.match(String((manager.getBranch().at(-1) as { content: unknown }).content), /pi-pr-publish-work/);
 		}
-		await tools.get("pi_pr_publish_work")!.execute("publish", {
+		await tools.get(route === "create" ? "pi_pr_create" : "pi_pr_publish_work")!.execute("publish", {
 			runId: staleRoute ? "22222222-1111-4111-8111-111111111111" : "11111111-1111-4111-8111-111111111111", action: "publish",
+			...(route === "create" ? { title: "Create PR", body: "" } : {}),
 		}, ctx.signal, undefined, ctx as never);
 		busy = true;
 		manager.appendMessage({
@@ -114,7 +136,11 @@ for (const staleRoute of [undefined, "sweep", "fix-ci"] as const) test(staleRout
 			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 		});
+		const loadsBeforeContinuation = loads;
 		assert.equal(await session._runBeforeSettleBoundary(), true);
+		assert.match(status ?? "", /#42/, "the discovered PR must be in the footer before final settlement");
+		assert.equal(widget, undefined, "the action hint stays hidden during automatic continuation");
+		assert.equal(loads, loadsBeforeContinuation + 1, "display must reuse route discovery");
 		await Promise.all(dispatches);
 		assert.equal(session.getFollowUpMessages().length, 0, "expanded internal skill must not appear in editable follow-up queue");
 		assert.deepEqual(session.getSteeringMessages(), []);
