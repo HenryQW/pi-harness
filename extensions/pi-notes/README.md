@@ -33,4 +33,4 @@ Stale files for removed repositories and worktrees are deleted silently when a s
 
 ## Limits and recovery
 
-Each worktree can hold at most four notes. Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for the affected worktree until fixed or reset with `/note-clear`.
+Each worktree can hold at most four notes. The `/note` command normalizes whitespace to single spaces and trims the ends. It rejects any remaining terminal control characters with `Notes cannot contain terminal control characters.` Each worktree file is validated as untrusted data. Malformed files are preserved and block mutation for the affected worktree until fixed or reset with `/note-clear`.
