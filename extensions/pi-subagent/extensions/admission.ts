@@ -83,14 +83,11 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 	pi.on("tool_result", (event) => release(event.toolCallId));
 	pi.on("tool_execution_end", (event) => release(event.toolCallId));
 	pi.on("session_shutdown", () => {
-		ownerByCheckout.clear();
-		checkoutByRoot.clear();
-		writersByRoot.clear();
-		rootByCall.clear();
-		heldCalls.clear();
+		// Session replacement is not proof that a held direct worker stopped.
+		for (const call of rootByCall.keys()) release(call);
 	});
 	// A direct handle settles the tool call before the worker settles. Keep its
-	// admission until exact completion; uncertain workers require manual recovery.
+	// admission until proved termination; uncertain workers require guarded recovery.
 	return (toolCallId) => {
 		const root = rootByCall.get(toolCallId);
 		if (root === undefined || !writersByRoot.get(root)?.has(toolCallId)) {
