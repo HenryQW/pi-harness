@@ -37,7 +37,16 @@ While an interactive TUI question is open, the tool publishes `herdr:blocked` wi
 
 ## API
 
-Extensions can reuse the validated interaction with `askQuestion(params, ctx, signal)`. This package export returns the tool's answer details without registering another UI flow.
+Import these exports from the package root, `@henryqw/pi-ask-question`.
+
+| Surface | Type | Purpose |
+| --- | --- | --- |
+| `askQuestion(params, ctx, signal)` | function | Runs the validated question flow for another extension. |
+| `AskQuestionOption` | type | Describes a question option. |
+| `AskQuestionRequest` | type | Describes a question request. |
+| `AskQuestionResult` | type | Describes the flow result. |
+
+The result has a `null` answer if the user cancels, submits an empty custom answer, the request is invalid, or the context is not in TUI mode. It has an optional `error` for invalid requests and non-TUI contexts.
 
 ## Limits and recovery
 

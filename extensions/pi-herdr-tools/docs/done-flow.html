@@ -23,7 +23,7 @@
       color: var(--ink);
       font-family: var(--sans);
     }
-    main { width: max-content; margin: 0 auto; }
+    main { width: min(1280px, 100%); min-width: 0; margin: 0 auto; }
     .eyebrow {
       margin-bottom: 8px;
       color: var(--muted);
@@ -35,7 +35,8 @@
       margin-bottom: 24px;
       font: 400 28px/1.2 var(--serif);
     }
-    svg { display: block; width: 1280px; height: 720px; }
+    .diagram-container { overflow-x: auto; }
+    svg { display: block; width: 100%; min-width: 1280px; height: auto; }
   </style>
 </head>
 <body>
@@ -43,9 +44,10 @@
     <p class="eyebrow">Sequence · /done safety and cleanup</p>
     <h1>Safe worktree completion</h1>
 
+    <div class="diagram-container" tabindex="0" role="region" aria-label="Scrollable diagram">
     <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="done-flow-title done-flow-desc">
       <title id="done-flow-title">Safe worktree completion</title>
-      <desc id="done-flow-desc">Sequence showing /done waiting for Pi, requiring confirmation or explicit force, refusing unsafe normal removal, then closing workspace tabs around a conditional parent fast-forward whose failure does not stop final tab closure.</desc>
+      <desc id="done-flow-desc">Normal /done asks for confirmation before waiting for Pi to become idle, then checks tab use and removes the worktree before tab cleanup and a conditional parent update; explicit force skips confirmation and the tab-use check.</desc>
       <defs>
         <style>
           .lifeline { stroke: rgba(16,24,40,.20); stroke-width: 1; stroke-dasharray: 4 4; }
@@ -85,66 +87,62 @@
 
       <rect width="1280" height="720" fill="#f0eee9"/>
 
-      <!-- Combined fragment frame and region divider -->
-      <rect class="fragment" x="120" y="200" width="544" height="232" rx="4"/>
-      <line x1="128" y1="352" x2="656" y2="352" stroke="rgba(16,24,40,.20)" stroke-width="1" stroke-dasharray="4 4"/>
+      <!-- Optional normal-mode gates; both modes wait before cleanup. -->
+      <rect class="fragment" x="120" y="144" width="364" height="144" rx="4"/>
+      <rect class="fragment" x="388" y="352" width="292" height="92" rx="4"/>
 
-      <!-- Lifelines -->
+      <!-- Lifelines and activation bars -->
       <line class="lifeline" x1="136" y1="96" x2="136" y2="624"/>
       <line class="lifeline" x1="404" y1="96" x2="404" y2="624"/>
       <line class="lifeline" x1="652" y1="96" x2="652" y2="624"/>
       <line class="lifeline" x1="1124" y1="96" x2="1124" y2="624"/>
-
-      <!-- Activation bars -->
       <rect class="activation" x="400" y="124" width="8" height="476"/>
-      <rect class="activation" x="648" y="304" width="8" height="32"/>
+      <rect class="activation" x="648" y="396" width="8" height="28"/>
       <rect class="activation" x="648" y="456" width="8" height="16"/>
       <rect class="activation" x="1120" y="544" width="8" height="24"/>
 
-      <!-- Fragment labels sit above lifelines for legibility -->
-      <rect class="fragment-tab" x="120" y="200" width="40" height="16" rx="4"/>
-      <text class="fragment-label" x="140" y="212">ALT</text>
-      <rect class="gate-badge" x="168" y="200" width="104" height="16" rx="4"/>
-      <text class="gate-label" x="220" y="212">SAFETY GATE</text>
-      <rect class="label-mask" x="128" y="220" width="528" height="16"/>
-      <text class="guard" x="132" y="232">[normal /done]</text>
-      <text class="guard" x="260" y="232">CONFIRM; DIRTY OR OTHER-WORKSPACE TAB USING CHECKOUT → REFUSE</text>
-      <rect class="label-mask" x="128" y="360" width="528" height="16"/>
-      <text class="guard" x="132" y="372">[explicit --force]</text>
-      <text class="guard" x="260" y="372">PERMITS FORCED REMOVAL · IRREVERSIBLE</text>
+      <rect class="fragment-tab" x="120" y="144" width="40" height="16" rx="4"/>
+      <text class="fragment-label" x="140" y="156">OPT</text>
+      <rect class="label-mask" x="128" y="164" width="344" height="16"/>
+      <text class="guard" x="132" y="176">[normal /done; --force skips confirmation]</text>
+      <rect class="fragment-tab" x="388" y="352" width="40" height="16" rx="4"/>
+      <text class="fragment-label" x="408" y="364">OPT</text>
+      <text class="guard" x="440" y="364">[normal /done]</text>
 
       <!-- Messages: time flows downward -->
       <line class="message" x1="136" y1="124" x2="400" y2="124"/>
-      <rect class="label-mask" x="200" y="104" width="136" height="12" rx="4"/>
-      <text class="message-label" x="268" y="112">RUN /DONE [--FORCE]</text>
+      <rect class="label-mask" x="224" y="104" width="88" height="12" rx="4"/>
+      <text class="message-label" x="268" y="112">RUN /DONE</text>
 
-      <path class="message" d="M408 148 H452 Q460 148 460 156 V172 Q460 180 452 180 H412"/>
-      <rect class="label-mask" x="468" y="156" width="112" height="12" rx="4"/>
-      <text class="message-label" x="524" y="164">WAIT FOR PI IDLE</text>
+      <line class="message" x1="400" y1="208" x2="136" y2="208"/>
+      <rect class="label-mask" x="224" y="188" width="88" height="12" rx="4"/>
+      <text class="message-label" x="268" y="196">CONFIRM?</text>
+      <line class="message-return" x1="136" y1="244" x2="400" y2="244"/>
+      <rect class="label-mask" x="224" y="224" width="88" height="12" rx="4"/>
+      <text class="message-label" x="268" y="232">YES / STOP</text>
 
-      <line class="message" x1="400" y1="256" x2="136" y2="256"/>
-      <rect class="label-mask" x="208" y="236" width="120" height="12" rx="4"/>
-      <text class="message-label" x="268" y="244">CONFIRM REMOVAL?</text>
+      <path class="message" d="M408 308 H452 Q460 308 460 316 V332 Q460 340 452 340 H412"/>
+      <rect class="label-mask" x="468" y="316" width="112" height="12" rx="4"/>
+      <text class="message-label" x="524" y="324">WAIT FOR IDLE</text>
 
-      <line class="message-return" x1="136" y1="280" x2="400" y2="280"/>
-      <rect class="label-mask" x="228" y="260" width="80" height="12" rx="4"/>
-      <text class="message-label" x="268" y="268">CONFIRMED</text>
+      <line class="message" x1="408" y1="396" x2="648" y2="396"/>
+      <rect class="label-mask" x="480" y="376" width="96" height="12" rx="4"/>
+      <text class="message-label" x="528" y="384">CHECK TAB USE</text>
+      <line class="message-return" x1="648" y1="424" x2="408" y2="424"/>
+      <rect class="label-mask" x="484" y="404" width="88" height="12" rx="4"/>
+      <text class="message-label" x="528" y="412">CLEAR / REFUSE</text>
 
-      <line class="message" x1="408" y1="304" x2="648" y2="304"/>
-      <rect class="label-mask" x="480" y="284" width="96" height="12" rx="4"/>
-      <text class="message-label" x="528" y="292">CHECK SAFETY</text>
-
-      <line class="message-return" x1="648" y1="328" x2="408" y2="328"/>
-      <rect class="label-mask" x="484" y="308" width="88" height="12" rx="4"/>
-      <text class="message-label" x="528" y="316">CLEAR / REFUSE</text>
-
-      <path class="message" d="M408 396 H452 Q460 396 460 404 V412 Q460 420 452 420 H412"/>
-      <rect class="label-mask" x="468" y="400" width="104" height="12" rx="4"/>
-      <text class="message-label" x="520" y="408">ACCEPT --FORCE</text>
+      <!-- Safety details apply to the current flow, not a proposed flow. -->
+      <text class="guard" x="744" y="180">Decline: stop without waiting or changing the checkout.</text>
+      <text class="guard" x="744" y="204">Both modes wait for Pi to become idle before cleanup.</text>
+      <text class="guard" x="744" y="372">Normal: another workspace using this checkout blocks removal.</text>
+      <text class="guard" x="744" y="396">Git refuses dirty worktrees unless --force is set.</text>
+      <text class="guard" x="744" y="420">--force skips the tab-use check; data loss is irreversible.</text>
+      <text class="guard" x="744" y="444">Locks serialize worktree removal and primary-checkout updates.</text>
 
       <line class="message-accent" x1="408" y1="464" x2="648" y2="464"/>
       <rect class="label-mask" x="448" y="436" width="160" height="20" rx="4"/>
-      <text class="message-label-accent" x="528" y="444">CLEAR OR EXPLICIT FORCE</text>
+      <text class="message-label-accent" x="528" y="444">CLEAN / FORCE</text>
       <text class="message-label-accent" x="528" y="452">REMOVE WORKTREE</text>
 
       <!-- Successful removal is the partial-success boundary -->
@@ -154,26 +152,26 @@
 
       <line class="message" x1="400" y1="516" x2="136" y2="516"/>
       <rect class="label-mask" x="180" y="496" width="176" height="12" rx="4"/>
-      <text class="message-label" x="268" y="504">CLOSE OTHER WORKSPACE TABS</text>
+      <text class="message-label" x="268" y="504">CLOSE SIBLINGS</text>
 
       <line class="message" x1="408" y1="544" x2="1120" y2="544"/>
       <rect class="label-mask" x="684" y="516" width="160" height="20" rx="4"/>
-      <text class="message-label" x="764" y="524">IF LINKED + NON-BARE PRIMARY</text>
-      <text class="message-label" x="764" y="532">LOCK + FAST-FORWARD ONLY</text>
+      <text class="message-label" x="764" y="524">LINKED PRIMARY</text>
+      <text class="message-label" x="764" y="532">PULL --FF-ONLY</text>
 
       <line class="message-return" x1="1120" y1="568" x2="408" y2="568"/>
       <rect class="label-mask" x="696" y="548" width="136" height="12" rx="4"/>
-      <text class="message-label" x="764" y="556">UPDATED OR FAILED</text>
+      <text class="message-label" x="764" y="556">DONE / FAILED</text>
 
       <line class="message" x1="400" y1="600" x2="136" y2="600"/>
       <rect class="label-mask" x="184" y="580" width="168" height="12" rx="4"/>
-      <text class="message-label" x="268" y="588">ALWAYS CLOSE CURRENT TAB</text>
+      <text class="message-label" x="268" y="588">CLOSE THIS TAB</text>
 
       <!-- Actors are drawn after messages -->
       <rect x="56" y="40" width="160" height="56" rx="6" fill="#f0eee9"/>
       <rect class="actor-input" x="56" y="40" width="160" height="56" rx="6"/>
       <text class="actor-name" x="136" y="68">Herdr workspace</text>
-      <text class="actor-sub" x="136" y="84">CURRENT + OTHER TABS</text>
+      <text class="actor-sub" x="136" y="84">THIS WORKSPACE</text>
 
       <rect x="324" y="40" width="160" height="56" rx="6" fill="#f0eee9"/>
       <rect class="actor" x="324" y="40" width="160" height="56" rx="6"/>
@@ -188,7 +186,9 @@
       <rect x="1044" y="40" width="160" height="56" rx="6" fill="#f0eee9"/>
       <rect class="actor" x="1044" y="40" width="160" height="56" rx="6"/>
       <text class="actor-name" x="1124" y="68">Parent checkout</text>
-      <text class="actor-sub" x="1124" y="84">CONDITIONAL UPDATE</text>
+      <text class="actor-sub" x="1124" y="84">LINKED + NON-BARE</text>
+
+      <text class="guard" x="744" y="604">Close this tab last, even if sibling cleanup or pull fails.</text>
 
       <!-- Legend strip -->
       <line x1="40" y1="640" x2="1240" y2="640" stroke="rgba(16,24,40,.141)" stroke-width=".8"/>
@@ -201,12 +201,13 @@
       <text class="legend-label" x="312" y="668">Return or result</text>
 
       <rect class="fragment" x="448" y="656" width="32" height="16" rx="4"/>
-      <text class="fragment-label" x="464" y="668">ALT</text>
-      <text class="legend-label" x="492" y="668">Safety branch</text>
+      <text class="fragment-label" x="464" y="668">OPT</text>
+      <text class="legend-label" x="492" y="668">Normal-mode gate</text>
 
       <line class="message-accent" x1="624" y1="664" x2="660" y2="664"/>
       <text class="legend-label" x="672" y="668">Successful removal</text>
     </svg>
+    </div>
   </main>
 </body>
 </html>

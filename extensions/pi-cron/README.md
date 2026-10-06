@@ -23,7 +23,7 @@ Run `/task-models` and configure the profiles your jobs use. Create at least one
 
 ## Use
 
-Add a job, keep a Pi session open, and the job runs at its next slot. You get a notification with the session file path, or a follow-up message in the current conversation when the job asks for one.
+Add a job, keep a Pi session open, and it runs at its next slot. Its `notify` setting chooses a UI notice, a follow-up message and turn, or no notice for successful runs.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ Each run launches a new Pi process in `cwd` with the Role's resources, the job's
 2. A job seen for the first time only records a baseline; it first runs at its next slot. Use `/cron run` for an immediate run.
 3. A local run slot is admitted before the due job is claimed in shared state, so claims never wait in a child queue. A fresh claim excludes other Pi sessions. A missed slot, for example while no Pi was open, produces one catch-up run, not a backlog.
 4. The run is bounded by `limits`: turn count, idle timeout, and maximum runtime. The outcome, a bounded output summary, and the session path (when a file exists) are recorded.
-5. Delivery follows the job's `notify`: `notify` shows a one-line notice, `followUp` sends the output into the current conversation and starts a turn, `none` stays quiet. Failures show a notice while a session UI is active. A rejected follow-up does not change the saved run outcome; synchronous delivery errors show a recovery notice.
+5. Delivery follows `notify`. `notify` shows a one-line notice only when a session UI is active. `followUp` sends output, including failures, into the current conversation and starts a turn. It does not also show a notice unless `sendMessage` throws synchronously; an active UI then shows a recovery notice. `none` is silent on success and shows failures only when a session UI is active. The outcome is saved before delivery; use `/cron` → Show last run to recover it after a synchronous delivery error.
 
 ## Config
 

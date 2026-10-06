@@ -16,15 +16,17 @@
       padding: 32px;
       background: #f0eee9;
     }
-    main { width: 100%; max-width: 1280px; }
-    svg { display: block; width: 100%; height: auto; }
+    main { width: 100%; min-width: 0; max-width: 1280px; }
+    .diagram-container { overflow-x: auto; }
+    svg { display: block; width: 100%; min-width: 1280px; height: auto; }
   </style>
 </head>
 <body>
   <main>
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-labelledby="pr-routing-title pr-routing-desc">
+    <div class="diagram-container" tabindex="0" role="region" aria-label="PR routing diagram; scroll horizontally on narrow screens">
+    <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="pr-routing-title pr-routing-desc">
       <title id="pr-routing-title">How /pr picks each next route</title>
-      <desc id="pr-routing-desc">The /pr command creates a pull request when needed, syncs a behind or diverged local branch, scopes local work before publication, re-reads pending mergeability, rebases confirmed conflicts and behind bases onto the pinned base, fixes CI, sweeps feedback, waits for running CI within its budget, and merges with the configured method when fresh state is ready.</desc>
+      <desc id="pr-routing-desc">The /pr command creates a pull request when needed, links an inferred open PR before draft handling and repeats discovery, stops on a configured draft, then for non-draft open PRs syncs local state, publishes scoped work, re-reads pending mergeability, rebases conflicts or behind bases, fixes CI, sweeps feedback, waits within its CI budget, and merges only when fresh state is ready.</desc>
       <defs>
         <marker id="pr-routing-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
           <polygon points="0 0, 8 4, 0 8" fill="#4c5665"/>
@@ -41,22 +43,23 @@
 
       <!-- Header -->
       <text x="80" y="68" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">How /pr picks each next route</text>
-      <text x="80" y="88" fill="#4c5665" font-size="8" font-family="'Geist', sans-serif">Fresh state enters a strict, top-down priority ladder after each completed route.</text>
+      <text x="80" y="88" fill="#4c5665" font-size="8" font-family="'Geist', sans-serif">Ordinary route order; verified branch-update or sweep recovery resumes first on configured, open, non-draft PRs.</text>
       <text x="1200" y="48" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.12em">FIRST MATCHING CONDITION WINS</text>
       <text x="1200" y="68" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.12em">FRESH AFTER EACH ROUTE</text>
 
       <!-- Continuation arrows, drawn before nodes -->
       <g fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#pr-routing-arrow)">
         <line x1="640" y1="136" x2="640" y2="152"/>
-        <line x1="640" y1="192" x2="640" y2="200"/>
-        <line x1="640" y1="240" x2="640" y2="248"/>
-        <line x1="640" y1="288" x2="640" y2="296"/>
-        <line x1="640" y1="336" x2="640" y2="344"/>
-        <line x1="640" y1="384" x2="640" y2="392"/>
-        <line x1="640" y1="432" x2="640" y2="440"/>
-        <line x1="640" y1="480" x2="640" y2="488"/>
-        <line x1="640" y1="528" x2="640" y2="536"/>
-        <line x1="640" y1="576" x2="640" y2="584"/>
+        <line x1="640" y1="188" x2="640" y2="196"/>
+        <line x1="640" y1="232" x2="640" y2="240"/>
+        <line x1="640" y1="276" x2="640" y2="284"/>
+        <line x1="640" y1="320" x2="640" y2="328"/>
+        <line x1="640" y1="364" x2="640" y2="372"/>
+        <line x1="640" y1="408" x2="640" y2="416"/>
+        <line x1="640" y1="452" x2="640" y2="460"/>
+        <line x1="640" y1="496" x2="640" y2="504"/>
+        <line x1="640" y1="540" x2="640" y2="548"/>
+        <line x1="640" y1="584" x2="640" y2="592"/>
       </g>
 
       <!-- Input node -->
@@ -65,114 +68,125 @@
       <text x="640" y="129" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">GITHUB + LOCAL STATE</text>
 
       <!-- 1 -->
-      <rect x="120" y="152" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="158" x2="176" y2="186" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="158" x2="704" y2="186" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="177" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">1</text>
-      <text x="200" y="165" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="181" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Safe PR absence</text>
-      <text x="728" y="165" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="181" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Create pull request</text>
-      <text x="1136" y="181" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-create</text>
+      <rect x="120" y="152" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="156" x2="176" y2="184" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="156" x2="704" y2="184" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="175" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">1</text>
+      <text x="200" y="163" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="179" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Safe PR absence</text>
+      <text x="728" y="163" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="179" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Create pull request</text>
+      <text x="1136" y="163" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-create</text>
 
       <!-- 2 -->
-      <rect x="120" y="200" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="206" x2="176" y2="234" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="206" x2="704" y2="234" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="225" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">2</text>
-      <text x="200" y="213" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="229" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Merged, closed, or draft</text>
-      <text x="728" y="213" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="229" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">No action</text>
-      <text x="1136" y="229" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">report current state</text>
+      <rect x="120" y="196" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="200" x2="176" y2="228" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="200" x2="704" y2="228" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="219" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">2</text>
+      <text x="200" y="207" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="223" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Inferred open PR (including draft)</text>
+      <text x="728" y="207" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="223" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Link exact remote ref; rediscover</text>
+      <text x="1136" y="207" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">link-branch; draft stops after discovery</text>
 
       <!-- 3 -->
-      <rect x="120" y="248" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="254" x2="176" y2="282" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="254" x2="704" y2="282" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="273" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">3</text>
-      <text x="200" y="261" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="277" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Local HEAD behind or diverged (clean)</text>
-      <text x="728" y="261" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="277" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Sync local branch</text>
-      <text x="1136" y="277" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">ff-only or rebase onto PR head; never pushes</text>
+      <rect x="120" y="240" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="244" x2="176" y2="272" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="244" x2="704" y2="272" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="263" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">3</text>
+      <text x="200" y="251" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="267" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Merged, closed, or configured draft</text>
+      <text x="728" y="251" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="267" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">No action</text>
+      <text x="1136" y="251" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">report current state</text>
 
       <!-- 4 -->
-      <rect x="120" y="296" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="302" x2="176" y2="330" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="302" x2="704" y2="330" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="321" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">4</text>
-      <text x="200" y="309" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="325" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Dirty or ahead local work (diverged commits first)</text>
-      <text x="728" y="309" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="325" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Publish scoped work</text>
-      <text x="1136" y="325" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-publish-work</text>
+      <rect x="120" y="284" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="288" x2="176" y2="316" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="288" x2="704" y2="316" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="307" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">4</text>
+      <text x="200" y="295" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="311" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Local HEAD behind or diverged (clean)</text>
+      <text x="728" y="295" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="311" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Sync local branch</text>
+      <text x="1136" y="295" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">ff-only or rebase onto PR head; never pushes</text>
 
       <!-- 5 -->
-      <rect x="120" y="344" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="350" x2="176" y2="378" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="350" x2="704" y2="378" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="369" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">5</text>
-      <text x="200" y="357" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="373" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">GitHub mergeability still computing</text>
-      <text x="728" y="357" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="373" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Re-read fresh state</text>
-      <text x="1136" y="373" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">up to 3 reads, 5 s apart</text>
+      <rect x="120" y="328" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="332" x2="176" y2="360" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="332" x2="704" y2="360" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="351" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">5</text>
+      <text x="200" y="339" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="355" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Dirty or ahead local work (diverged commits first)</text>
+      <text x="728" y="339" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="355" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Publish scoped work</text>
+      <text x="1136" y="339" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-publish-work</text>
 
       <!-- 6 -->
-      <rect x="120" y="392" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="398" x2="176" y2="426" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="398" x2="704" y2="426" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="417" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">6</text>
-      <text x="200" y="405" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="421" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Confirmed conflict or behind base</text>
-      <text x="728" y="405" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="421" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Rebase onto pinned base</text>
-      <text x="1136" y="421" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-update-branch; exact lease push</text>
+      <rect x="120" y="372" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="376" x2="176" y2="404" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="376" x2="704" y2="404" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="395" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">6</text>
+      <text x="200" y="383" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="399" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">GitHub mergeability still computing</text>
+      <text x="728" y="383" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="399" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Re-read fresh state</text>
+      <text x="1136" y="383" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">up to 3 reads, 5 s apart</text>
 
       <!-- 7 -->
-      <rect x="120" y="440" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="446" x2="176" y2="474" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="446" x2="704" y2="474" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="465" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">7</text>
-      <text x="200" y="453" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="469" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">CI failed</text>
-      <text x="728" y="453" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="469" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Fix CI</text>
-      <text x="1136" y="469" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-fix-ci; other failed checks block</text>
+      <rect x="120" y="416" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="420" x2="176" y2="448" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="420" x2="704" y2="448" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="439" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">7</text>
+      <text x="200" y="427" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="443" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Confirmed conflict or behind base</text>
+      <text x="728" y="427" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="443" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Rebase onto pinned base</text>
+      <text x="1136" y="427" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-update-branch; exact lease push</text>
 
       <!-- 8 -->
-      <rect x="120" y="488" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="494" x2="176" y2="522" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="494" x2="704" y2="522" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="513" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">8</text>
-      <text x="200" y="501" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="517" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Changes requested or new feedback</text>
-      <text x="728" y="501" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="517" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Sweep</text>
-      <text x="1136" y="517" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-comment-sweep</text>
+      <rect x="120" y="460" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="464" x2="176" y2="492" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="464" x2="704" y2="492" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="483" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">8</text>
+      <text x="200" y="471" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="487" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">CI failed</text>
+      <text x="728" y="471" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="487" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Fix CI</text>
+      <text x="1136" y="471" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-fix-ci; other failed checks block</text>
 
       <!-- 9 -->
-      <rect x="120" y="536" width="1040" height="40" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="176" y1="542" x2="176" y2="570" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <line x1="704" y1="542" x2="704" y2="570" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
-      <text x="148" y="561" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">9</text>
-      <text x="200" y="549" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="565" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">CI running, nothing else blocking</text>
-      <text x="728" y="549" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="565" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Wait, then re-read</text>
-      <text x="1136" y="565" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">poll every ciPollSeconds, up to ciWaitMinutes</text>
+      <rect x="120" y="504" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="508" x2="176" y2="536" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="508" x2="704" y2="536" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="527" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">9</text>
+      <text x="200" y="515" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="531" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Changes requested or new feedback</text>
+      <text x="728" y="515" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="531" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Sweep</text>
+      <text x="1136" y="515" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">pi-pr-comment-sweep</text>
 
       <!-- 10 -->
-      <rect x="120" y="584" width="1040" height="40" rx="6" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
-      <line x1="176" y1="590" x2="176" y2="618" stroke="rgba(29,78,216,0.32)" stroke-width="1"/>
-      <line x1="704" y1="590" x2="704" y2="618" stroke="rgba(29,78,216,0.32)" stroke-width="1"/>
-      <text x="148" y="609" fill="#1d4ed8" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">10</text>
-      <text x="200" y="597" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
-      <text x="200" y="613" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Merge-ready</text>
-      <text x="728" y="597" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="613" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Recheck, merge</text>
-      <text x="1136" y="613" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">configured mergeMethod; expected-head mutation</text>
+      <rect x="120" y="548" width="1040" height="36" rx="6" fill="#ffffff" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="176" y1="552" x2="176" y2="580" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <line x1="704" y1="552" x2="704" y2="580" stroke="rgba(16,24,40,0.141)" stroke-width="1"/>
+      <text x="148" y="571" fill="#4c5665" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">10</text>
+      <text x="200" y="559" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="575" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">CI running, nothing else blocking</text>
+      <text x="728" y="559" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="575" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Wait, then re-read</text>
+      <text x="1136" y="559" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">poll every ciPollSeconds, up to ciWaitMinutes</text>
+
+      <!-- 11 -->
+      <rect x="120" y="592" width="1040" height="36" rx="6" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
+      <line x1="176" y1="596" x2="176" y2="624" stroke="rgba(29,78,216,0.32)" stroke-width="1"/>
+      <line x1="704" y1="596" x2="704" y2="624" stroke="rgba(29,78,216,0.32)" stroke-width="1"/>
+      <text x="148" y="615" fill="#1d4ed8" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">11</text>
+      <text x="200" y="603" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
+      <text x="200" y="619" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Merge-ready</text>
+      <text x="728" y="603" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
+      <text x="728" y="619" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Recheck, merge</text>
+      <text x="1136" y="603" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">configured mergeMethod; expected-head mutation</text>
 
       <!-- Legend strip -->
       <line x1="44" y1="640" x2="1236" y2="640" stroke="rgba(16,24,40,0.141)" stroke-width="0.8"/>
@@ -181,8 +195,9 @@
       <text x="104" y="674" fill="#101828" font-size="8" font-family="'Geist', sans-serif">Otherwise, continue to the next condition.</text>
       <text x="668" y="672" fill="#101828" font-size="28" font-weight="400" font-family="'Instrument Serif', serif">↻</text>
       <text x="724" y="654" fill="#4c5665" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONTINUATION RULE</text>
-      <text x="724" y="674" fill="#101828" font-size="8" font-family="'Geist', sans-serif">The first match runs; sync, re-read, and completed routes return to fresh discovery.</text>
+      <text x="724" y="674" fill="#101828" font-size="8" font-family="'Geist', sans-serif">The first match runs; link, sync, re-read, and completed routes return to fresh discovery.</text>
     </svg>
+    </div>
   </main>
 </body>
 </html>

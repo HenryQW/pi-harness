@@ -23,8 +23,8 @@ curl -fsSL https://pi.henry.wang/install.sh | sh -s -- --update
 
 ## Extension dependencies
 
-Each row is an active extension; a filled square marks a **direct** dependency on the package named above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.
+Each row is an active extension; a filled square marks a **direct** runtime or peer dependency on the package named above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.
 
-![Matrix showing direct workspace dependencies for all 18 active Pi extensions](./docs/extension-dependencies.svg)
+![Matrix showing 29 direct internal dependency edges across all 19 active Pi extensions and seven dependency packages](./docs/extension-dependencies.svg)
 
-Deprecated extensions and `@deprecated/` are excluded.
+Development and transitive dependencies, deprecated extensions, and `@deprecated/` are excluded.

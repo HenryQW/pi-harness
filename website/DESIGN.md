@@ -273,8 +273,8 @@ Use the shared `0.25rem` radius for buttons, cards, and compact controls. Use `9
 - **Header:** Use Blume's built-in `PageLayout` header without homepage CSS or script overrides. It is `4rem` high with `1rem` side padding and `1.5rem` from the medium breakpoint.
 - **Brand:** Use the configured `favicon.ico` at `1.25rem`, followed by the product name.
 - **Search:** Use Blume's outlined pill trigger. Show only the icon below `64rem`; show `Search` and `⌘K` at larger widths.
-- **Actions:** Use Blume's native `2.25rem` GitHub and theme icon buttons.
-- **Footer:** Text-first navigation with a minimum `2.75rem` hit area and an underline-on-hover cue.
+- **Actions:** Use Blume's native theme icon button. The header has no GitHub action.
+- **Footer:** Use Blume's native `SiteFooter` on all pages. Configure `footer.links` for npm profile, MIT License, and About Henry. The existing `github` configuration supplies one repository icon in the footer. Do not add a duplicate GitHub link or a custom footer.
 
 ### Extension Card
 

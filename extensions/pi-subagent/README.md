@@ -25,7 +25,7 @@ Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` r
 
 Ask Main to delegate a bounded task, such as “Have a scout trace sign-in without editing files.” Main uses `delegate_task`; you receive progress and a result or an actionable failure while Main remains available.
 
-Commands are for you; tools and the packaged skill are for Main. You do not need to call agent tools or manage candidate identities yourself. Delegation and continuation tools use plain-object parameter schemas so providers that omit root-union tools can expose them; each mode and action still requires its exact arguments.
+Commands are for you. Delegation and state tools and the packaged skill are for Main. `git_read` is only for children whose Role declares it, not Main. You do not need to call agent tools or manage candidate identities yourself. Delegation and continuation tools use plain-object parameter schemas so providers that omit root-union tools can expose them; each mode and action still requires its exact arguments.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -37,7 +37,10 @@ Commands are for you; tools and the packaged skill are for Main. You do not need
 | `subagent_stage` | tool | Stage or resolve an exact candidate, or reject/revise it; rejection of a staged candidate freezes that generation. |
 | `subagent_integrate` | tool | Advance staged dependents, refresh after clean Main drift or evidence-less validation failure, validate in the background, record one correction, promote, reconcile interrupted promotion, clean up proven promotion, or explicitly release rejected/superseded resources. |
 | `subagent_abort` | tool | Abort an isolated request only when no retained candidates or integration worktrees remain; cannot discard them. |
+| `git_read` | tool | For Role-declared children (not Main): inspect bounded local Git evidence without Bash, tests, network access, or writes. |
 | `pi-subagent` | skill | Guide Main through delegation, authorization, checks, integration, and recovery. |
+| Direct status widget (`D`) | ui | For you in the TUI: show direct worker status, Role badges, route, elapsed time, and measured session tokens. |
+| Isolated status widget (`I`) | ui | For you in the TUI: show recorded task state, Role/model-class badges, and retained workspaces; readiness does not mean promotion. |
 
 ![Main, its coordinator extension, and a Herdr subagent through checked work, worker failure, and coordinator interruption](./docs/worker-lifecycle.svg)
 
@@ -45,7 +48,11 @@ Commands are for you; tools and the packaged skill are for Main. You do not need
 
 The coordinator is extension code running in Main's Pi process, not another agent. It persists the request, launches the Herdr subagent, checks its committed work, and reports saved results; Main chooses what to stage and promote. If a worker fails, the coordinator reports attention after the wave settles, not necessarily immediately while siblings work. If Main's Pi process stops, no follow-up is guaranteed: restart and run `/subagent recover` in the canonical repository to classify orphaned interruptions and send Main one recovery report. Main then uses `subagent_status` for exact evidence and deliberate next actions. A stale `running` state does not prove a worker is still active; interrupted or ambiguous actions are never replayed automatically.
 
-In the TUI, the compact widget uses one row per visible agent/task: `D` or `I` marks direct or isolated work, and `[S]` or `[I3]` identifies the Role initial (plus the isolated model class: `1` fast, `2` balanced, `3` frontier, `*` fav). Direct rows show the launched model, thinking level, elapsed time, and measured session tokens (`— tok` until usage is available). Isolated rows show the recorded task state and any retained workspace; an aborted request with visible tasks has its own `request aborted` row and does not change their recorded statuses. A committed worker without a checked candidate can still show attention rather than readiness. Status glyphs use the active TUI theme, while the text still names the status without color. Herdr does not currently provide reliable live model, thinking, or token readings for those rows. Attention appears before ordinary work, with a `… N more` summary when direct rows overflow. A ready isolated candidate is **not promoted** to Main. Choose **Refresh** in `/subagent` to reload both the menu and isolated widget from saved state; it does not recover or change a request. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
+The TUI has two separate compact status widgets, each with one row per visible worker or task. `D` marks direct work; `I` marks isolated work. Badges such as `[S]` and `[I3]` identify the Role initial. Isolated badges also include the model class: `1` fast, `2` balanced, `3` frontier, `*` fav.
+
+The direct widget shows the launched model, thinking level, elapsed time, and measured session tokens (`— tok` until usage is available). Failed rows appear before working and completed rows. When rows overflow, `… N more` includes counts by status. The isolated widget shows the recorded task state and any retained workspace, not reliable live model, thinking, or token readings from Herdr. Attention appears before ordinary work; overflow uses `+N more · /subagent`. An aborted request with visible tasks has its own `request aborted` row and does not change their recorded statuses. A committed worker without a checked candidate can still show attention rather than readiness. Status glyphs use the active TUI theme, while the text still names the status without color.
+
+A ready isolated candidate is **not promoted** to Main. Choose **Refresh** in `/subagent` to reload both the menu and isolated widget from saved state; it does not recover or change a request. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
 
 ### How Main routes delegation
 

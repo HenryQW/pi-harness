@@ -27,7 +27,7 @@
       color: var(--ink);
       font-family: var(--sans);
     }
-    .frame { width: min(960px, 100%); }
+    .frame { width: min(1280px, 100%); max-width: 100%; min-width: 0; }
     .eyebrow {
       margin-bottom: 8px;
       color: var(--muted);
@@ -35,138 +35,141 @@
       letter-spacing: .18em;
       text-transform: uppercase;
     }
-    h1 {
-      margin-bottom: 24px;
-      color: var(--ink);
-      font: 400 28px/1.15 var(--serif);
-      letter-spacing: -.02em;
+    .diagram-container { width: 100%; overflow-x: auto; }
+    svg { display: block; width: 100%; height: auto; min-width: 1280px; }
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
     }
-    svg { display: block; width: 100%; min-width: 760px; }
   </style>
 </head>
 <body>
   <main class="frame">
     <p class="eyebrow">Architecture · pi-memory</p>
-    <h1>Reviewed writes, frozen reads</h1>
-
-    <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="memory-architecture-title memory-architecture-desc">
+    <div class="diagram-container" tabindex="0" role="region" aria-label="Memory architecture diagram; scroll horizontally on narrow screens">
+    <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="memory-architecture-title memory-architecture-desc">
       <title id="memory-architecture-title">How pi-memory writes reviewed memory</title>
-      <desc id="memory-architecture-desc">Architecture showing memory requests passing through preflight validation, live-source review, conflict resolution, and locked atomic storage, while session start creates a frozen prompt snapshot.</desc>
+      <desc id="memory-architecture-desc">Memory requests pass through validation, live-source review, conflict resolution, and locked atomic storage, while session start creates a frozen prompt snapshot.</desc>
       <defs>
-        <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style>
         <marker id="memory-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
           <polygon points="0 0, 8 4, 0 8" fill="#4c5665"/>
         </marker>
         <marker id="memory-arrow-accent" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
           <polygon points="0 0, 8 4, 0 8" fill="#1d4ed8"/>
         </marker>
-        <marker id="memory-arrow-link" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
-          <polygon points="0 0, 8 4, 0 8" fill="#1d4ed8"/>
-        </marker>
       </defs>
 
-      <rect width="960" height="600" fill="#f0eee9"/>
+      <rect width="1280" height="720" fill="#f0eee9"/>
+      <text x="40" y="52" fill="#101828" font-size="28" font-family="'Instrument Serif', serif">Reviewed writes, frozen reads</text>
 
       <!-- Zones -->
-      <rect x="32" y="72" width="320" height="400" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.14)" stroke-width="0.8"/>
-      <rect x="48" y="76" width="96" height="16" rx="4" fill="#f0eee9"/>
-      <text x="96" y="88" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">CURRENT SESSION</text>
+      <rect x="40" y="80" width="396" height="496" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.14)" stroke-width="0.8"/>
+      <rect x="56" y="84" width="128" height="16" rx="2" fill="#f0eee9"/>
+      <text x="120" y="96" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">CURRENT SESSION</text>
 
-      <rect x="368" y="72" width="344" height="344" rx="8" fill="rgba(29,78,216,0.03)" stroke="rgba(29,78,216,0.32)" stroke-width="0.8" stroke-dasharray="4,4"/>
-      <rect x="384" y="76" width="120" height="16" rx="4" fill="#f0eee9"/>
-      <text x="444" y="88" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">REVIEW BOUNDARY</text>
+      <rect x="456" y="80" width="460" height="496" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.28)" stroke-width="0.8" stroke-dasharray="4,4"/>
+      <rect x="472" y="84" width="128" height="16" rx="2" fill="#f0eee9"/>
+      <text x="536" y="96" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">REVIEW BOUNDARY</text>
 
-      <rect x="728" y="72" width="200" height="344" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.14)" stroke-width="0.8"/>
-      <rect x="744" y="76" width="104" height="16" rx="4" fill="#f0eee9"/>
-      <text x="796" y="88" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">DURABLE STATE</text>
+      <rect x="936" y="80" width="304" height="496" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.14)" stroke-width="0.8"/>
+      <rect x="952" y="84" width="128" height="16" rx="2" fill="#f0eee9"/>
+      <text x="1016" y="96" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">DURABLE STATE</text>
 
       <!-- Connectors: primary write path -->
-      <path d="M176 172 H208" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
-      <path d="M328 172 H392" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
-      <path d="M520 172 H552" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
-      <path d="M688 172 H756" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#memory-arrow-accent)"/>
+      <path d="M216 208 H256" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <path d="M412 208 H480" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <path d="M664 208 H708" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <path d="M892 208 H960" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#memory-arrow-accent)"/>
 
-      <!-- Conflict path -->
-      <path d="M620 208 V280" fill="none" stroke="#4c5665" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#memory-arrow)"/>
-      <path d="M688 316 H796 Q804 316 804 308 V208" fill="none" stroke="#4c5665" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#memory-arrow)"/>
+      <!-- Conflict path: approved choices are reviewed again before writing -->
+      <path d="M800 256 V376" fill="none" stroke="#4c5665" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#memory-arrow)"/>
+      <rect x="808" y="308" width="72" height="12" rx="2" fill="#f0eee9"/>
+      <text x="844" y="316" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">CONFLICT</text>
+      <path d="M892 424 H920 Q928 424 928 416 V304 Q928 296 936 296 H1016 Q1024 296 1024 288 V256" fill="none" stroke="#4c5665" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#memory-arrow)"/>
+      <rect x="948" y="276" width="72" height="12" rx="2" fill="#f0eee9"/>
+      <text x="984" y="284" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">APPROVED</text>
 
-      <!-- Persistence and frozen snapshot -->
-      <path d="M852 208 V280" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
-      <path d="M828 368 V416 Q828 424 820 424 H248 Q240 424 240 416 V376" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
-      <rect x="452" y="400" width="160" height="12" rx="4" fill="#f0eee9"/>
-      <text x="532" y="408" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SESSION START</text>
-      <path d="M200 296 V252 Q200 244 192 244 H112 Q104 244 104 236 V208" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <!-- Persistence and frozen snapshot: separate write-node attach points -->
+      <path d="M1148 256 V400" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <path d="M1088 520 V576 Q1088 584 1080 584 H332 Q324 584 324 576 V520" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <rect x="612" y="564" width="128" height="12" rx="2" fill="#f0eee9"/>
+      <text x="676" y="572" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SESSION START</text>
+      <path d="M280 416 V316 Q280 308 272 308 H136 Q128 308 128 300 V256" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
 
       <!-- Nodes: current session -->
-      <rect x="56" y="136" width="120" height="72" rx="8" fill="#f0eee9"/>
-      <rect x="56" y="136" width="120" height="72" rx="8" fill="rgba(76,86,101,0.10)" stroke="#6a7282" stroke-width="1"/>
-      <rect x="68" y="144" width="48" height="16" rx="4" fill="rgba(76,86,101,0.14)"/>
-      <text x="92" y="156" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SESSION</text>
-      <text x="116" y="180" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Agent request</text>
-      <text x="116" y="196" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">/remember · memory</text>
+      <rect x="64" y="160" width="152" height="96" rx="8" fill="#f0eee9"/>
+      <rect x="64" y="160" width="152" height="96" rx="8" fill="rgba(76,86,101,0.10)" stroke="#6a7282" stroke-width="1"/>
+      <rect x="76" y="172" width="64" height="16" rx="2" fill="rgba(76,86,101,0.14)"/>
+      <text x="108" y="184" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SESSION</text>
+      <text x="140" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Agent request</text>
+      <text x="140" y="236" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">/remember · memory</text>
 
-      <rect x="208" y="136" width="120" height="72" rx="8" fill="#f0eee9"/>
-      <rect x="208" y="136" width="120" height="72" rx="8" fill="#ffffff" stroke="#101828" stroke-width="1"/>
-      <rect x="220" y="144" width="40" height="16" rx="4" fill="rgba(16,24,40,0.08)"/>
-      <text x="240" y="156" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
-      <text x="268" y="180" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Preflight</text>
-      <text x="268" y="196" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">shape · size · content</text>
+      <rect x="256" y="160" width="156" height="96" rx="8" fill="#f0eee9"/>
+      <rect x="256" y="160" width="156" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-width="1"/>
+      <rect x="268" y="172" width="48" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
+      <text x="292" y="184" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="334" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Preflight</text>
+      <text x="334" y="236" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">shape · size · content</text>
 
-      <rect x="160" y="296" width="160" height="80" rx="8" fill="#f0eee9"/>
-      <rect x="160" y="296" width="160" height="80" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665" stroke-width="1"/>
-      <rect x="172" y="304" width="72" height="16" rx="4" fill="rgba(16,24,40,0.08)"/>
-      <text x="208" y="316" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SNAPSHOT</text>
-      <text x="240" y="340" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Frozen prompt</text>
-      <text x="240" y="356" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">unchanged for the session</text>
+      <rect x="236" y="416" width="176" height="104" rx="8" fill="#f0eee9"/>
+      <rect x="236" y="416" width="176" height="104" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665" stroke-width="1"/>
+      <rect x="248" y="428" width="72" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
+      <text x="284" y="440" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SNAPSHOT</text>
+      <text x="324" y="468" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Frozen prompt</text>
+      <text x="324" y="492" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">unchanged for the session</text>
 
       <!-- Nodes: review boundary -->
-      <rect x="392" y="136" width="128" height="72" rx="8" fill="#f0eee9"/>
-      <rect x="392" y="136" width="128" height="72" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665" stroke-width="1"/>
-      <rect x="404" y="144" width="64" height="16" rx="4" fill="rgba(16,24,40,0.08)"/>
-      <text x="436" y="156" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CONTEXT</text>
-      <text x="456" y="180" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Live sources</text>
-      <text x="456" y="196" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">SYSTEM · MEMORY · USER</text>
+      <rect x="480" y="160" width="184" height="96" rx="8" fill="#f0eee9"/>
+      <rect x="480" y="160" width="184" height="96" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665" stroke-width="1"/>
+      <rect x="492" y="172" width="64" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
+      <text x="524" y="184" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CONTEXT</text>
+      <text x="572" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Live sources</text>
+      <text x="572" y="232" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">SYSTEM · MEMORY · USER</text>
+      <text x="572" y="244" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">bounded · validated</text>
 
-      <rect x="552" y="136" width="136" height="72" rx="8" fill="#f0eee9"/>
-      <rect x="552" y="136" width="136" height="72" rx="8" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
-      <rect x="564" y="144" width="40" height="16" rx="4" fill="rgba(29,78,216,0.14)"/>
-      <text x="584" y="156" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
-      <text x="620" y="180" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Candidate review</text>
-      <text x="620" y="196" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">independent model route</text>
+      <rect x="708" y="160" width="184" height="96" rx="8" fill="#f0eee9"/>
+      <rect x="708" y="160" width="184" height="96" rx="8" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1.2"/>
+      <rect x="720" y="172" width="48" height="16" rx="2" fill="rgba(29,78,216,0.14)"/>
+      <text x="744" y="184" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
+      <text x="800" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Candidate review</text>
+      <text x="800" y="236" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">independent model route</text>
 
-      <rect x="552" y="280" width="136" height="72" rx="8" fill="#f0eee9"/>
-      <rect x="552" y="280" width="136" height="72" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.28)" stroke-width="1" stroke-dasharray="4,4"/>
-      <rect x="564" y="288" width="32" height="16" rx="4" fill="rgba(16,24,40,0.06)"/>
-      <text x="580" y="300" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">UI</text>
-      <text x="620" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Conflict choice</text>
-      <text x="620" y="340" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">ask_question · proceed</text>
+      <rect x="708" y="376" width="184" height="96" rx="8" fill="#f0eee9"/>
+      <rect x="708" y="376" width="184" height="96" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.28)" stroke-width="1" stroke-dasharray="4,4"/>
+      <rect x="720" y="388" width="32" height="16" rx="2" fill="rgba(16,24,40,0.06)"/>
+      <text x="736" y="400" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">UI</text>
+      <text x="800" y="428" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Conflict choice</text>
+      <text x="800" y="448" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">ask_question</text>
+      <text x="800" y="460" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">approved · re-review</text>
+      <text x="480" y="536" fill="#4c5665" font-size="12" font-style="italic" font-family="'Instrument Serif', serif">Invalid or changed review sources block adds.</text>
 
       <!-- Nodes: durable state -->
-      <rect x="756" y="136" width="144" height="72" rx="8" fill="#f0eee9"/>
-      <rect x="756" y="136" width="144" height="72" rx="8" fill="#ffffff" stroke="#101828" stroke-width="1"/>
-      <rect x="768" y="144" width="48" height="16" rx="4" fill="rgba(16,24,40,0.08)"/>
-      <text x="792" y="156" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">WRITE</text>
-      <text x="828" y="180" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Locked mutation</text>
-      <text x="828" y="196" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">recheck · atomic rename</text>
+      <rect x="960" y="160" width="256" height="96" rx="8" fill="#f0eee9"/>
+      <rect x="960" y="160" width="256" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-width="1"/>
+      <rect x="972" y="172" width="48" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
+      <text x="996" y="184" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">WRITE</text>
+      <text x="1088" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Locked mutation</text>
+      <text x="1088" y="236" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">recheck · atomic rename</text>
 
-      <rect x="756" y="280" width="144" height="88" rx="8" fill="#f0eee9"/>
-      <rect x="756" y="280" width="144" height="88" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665" stroke-width="1"/>
-      <rect x="768" y="288" width="48" height="16" rx="4" fill="rgba(16,24,40,0.08)"/>
-      <text x="792" y="300" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
-      <text x="828" y="324" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Durable entries</text>
-      <text x="828" y="340" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">MEMORY.md · USER.md</text>
-      <text x="828" y="356" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">plain · bounded files</text>
+      <rect x="960" y="400" width="256" height="120" rx="8" fill="#f0eee9"/>
+      <rect x="960" y="400" width="256" height="120" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665" stroke-width="1"/>
+      <rect x="972" y="412" width="48" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
+      <text x="996" y="424" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STORE</text>
+      <text x="1088" y="456" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Durable entries</text>
+      <text x="1088" y="480" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">MEMORY.md · USER.md</text>
+      <text x="1088" y="496" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">plain · bounded files</text>
 
       <!-- Legend -->
-      <line x1="32" y1="520" x2="928" y2="520" stroke="rgba(16,24,40,0.14)" stroke-width="0.8"/>
-      <text x="32" y="552" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
-      <line x1="144" y1="548" x2="184" y2="548" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
-      <text x="196" y="552" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace">AUTOMATIC PATH</text>
-      <line x1="344" y1="548" x2="384" y2="548" stroke="#4c5665" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#memory-arrow)"/>
-      <text x="396" y="552" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace">CONFLICT ONLY</text>
-      <rect x="548" y="540" width="16" height="16" rx="4" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1"/>
-      <text x="576" y="552" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace">INDEPENDENT REVIEW</text>
+      <line x1="40" y1="620" x2="1240" y2="620" stroke="rgba(16,24,40,0.14)" stroke-width="0.8"/>
+      <text x="40" y="660" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <line x1="160" y1="656" x2="200" y2="656" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <text x="212" y="660" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace">AUTOMATIC PATH</text>
+      <line x1="400" y1="656" x2="440" y2="656" stroke="#4c5665" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#memory-arrow)"/>
+      <text x="452" y="660" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace">CONFLICT ONLY</text>
+      <rect x="652" y="648" width="16" height="16" rx="4" fill="rgba(29,78,216,0.08)" stroke="#1d4ed8" stroke-width="1"/>
+      <text x="680" y="660" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace">INDEPENDENT REVIEW</text>
     </svg>
+    </div>
   </main>
 </body>
 </html>
