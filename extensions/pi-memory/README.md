@@ -112,7 +112,9 @@ If a proven store disappears, writes stay blocked until you restore it. A path n
 
 Read `<directory>/MEMORY.md` and `<directory>/USER.md` to inspect live state.
 
-Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi-memory/backups/`.
+Backups and the lock file live outside `directory`, under `~/.pi/agent/config/pi-memory/backups/`. The backup files are `MEMORY.md.bak` and `USER.md.bak`.
+
+Before rewriting an existing store, pi-memory copies its previous contents to the matching backup, overwriting that backup. After a successful rewrite, the backup holds the previous store. A failed write can also leave an updated backup. The first write to a missing store creates no backup. These files are not versioned history.
 
 Point `directory` at an iCloud Drive or Obsidian-vault-synced folder. The synced vault only carries files. pi-memory owns the file format and treats the remote as opaque storage, so no merge logic runs on the Pi side.
 
@@ -129,3 +131,13 @@ Both limits are checked before source loading or review. Calls over either limit
 An external edit or sync can push an on-disk file over its cap. The session snapshot then omits the overflow and warns instead of injecting it.
 
 Startup lists at most three unexpected regular filenames in `directory`. It stops on the fourth and reports `at least four unexpected files`. Only `MEMORY.md` and `USER.md` are loaded; reconcile or remove the unexpected files.
+
+### Restore a backup
+
+Do not copy a backup over a live or damaged store. Use these steps for the affected store:
+
+1. Stop all Pi sessions and other writers that use `directory`. Pause sync if the directory is cloud-synced. Keep them stopped during restoration.
+2. Preserve the damaged current file in a separate recovery folder outside `directory` and the backup folder. Verify the saved copy, then move the damaged file out of `directory`. Do not delete it or overwrite the backup.
+3. Inspect the matching `MEMORY.md.bak` or `USER.md.bak`. Confirm that it contains the entries you want, uses valid UTF-8 with `§` entry delimiters, and is within the configured character cap. If the backup is missing or damaged, stop; these backups provide no older versions.
+4. Copy the checked backup to the now-vacant `<directory>/MEMORY.md` or `<directory>/USER.md` path as a regular file, not a symlink. Preserve restrictive file permissions, especially for `USER.md`.
+5. Start one new Pi session. Confirm that initialization succeeds without store warnings, inspect the restored live file, and check the new frozen snapshot before any write. Old sessions cannot validate the restored state because their snapshots do not change. Resume other writers and sync only after checking for remote changes that could replace the restored file.
