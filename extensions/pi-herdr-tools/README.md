@@ -53,8 +53,10 @@ Run `/clone-tab` to open a new Herdr tab with a clone of the active conversation
 | `/btw config [option value]` | command | For humans: show values, set `auto-submit` to `on` or `off`, set `tools` to `inherit`, `all`, `read-only`, or `none`, set `split` to `right` or `down`, or reset defaults. |
 | `/btw merge [<prompt...>]` | command | For humans: in a side pane, queue its transcript and next prompt for Main (`/btw merge` opens the prompt editor); in Main, scan for pending side-thread deliveries. |
 | `/btw help` | command | For humans: show the command grammar. |
+| BTW capability widget | ui | For people in a side pane: shows `tool-free`, `read-only`, or `tool-enabled`. If parent context cannot load, shows the error and recovery steps instead. |
 | `/rename` | command | For people: generate a new title from up to five recent user messages. |
-| First real user prompt | ui | In a new, untitled conversation, starts title generation once the expanded prompt is ready. |
+| Rename progress and result widgets | ui | For people who run `/rename`: shows `renaming...`, then `renamed to <title>` for two seconds on success. |
+| First real user prompt | ui | For people in a new, untitled conversation: starts title generation once the expanded prompt is ready. |
 | `pi-herdr-rename/rename` | model task | Title-generation route; users configure its profile through `/task-models`. |
 
 ### Clone conversations and finish worktrees
@@ -79,9 +81,10 @@ In a new, untitled conversation, send the first real prompt. Pi generates a titl
 
 #### Clone a tab
 
-1. Create an unfocused Herdr tab in the current workspace with the current working directory.
-2. Start Pi in the tab's root pane with `--session <absolute-clone-file>`.
-3. Focus the new tab after Pi starts successfully.
+1. Save the active path as a separate clone session with the current working directory.
+2. Create an unfocused Herdr tab in the current workspace with that working directory.
+3. Start Pi in the tab's root pane with `--session <absolute-clone-file>`.
+4. Focus the new tab after Pi starts successfully.
 
 #### Clone a worktree
 
