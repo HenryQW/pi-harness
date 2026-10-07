@@ -42,7 +42,7 @@ continuation does not authorize destructive actions or bypass required approval.
 5. Edit only the files needed for the diagnosed failure.
 6. Inspect the complete diff and status. Stop if unrelated or generated files appear.
 7. Run the smallest relevant validation. Do not weaken or skip tests.
-8. Stage only reviewed paths and create one scoped Conventional Commit.
+8. Use `pi_git_commit` with `action: "inspect"` and the collected `pullRequest.headOid` as the explicit repair target. Review its pending paths, then call `commit` with the returned `inspectionId`, exact `ownedPaths`, and one scoped Conventional Commit message. Do not commit through shell tools. This helper uses the same guarded staging checks as creation, local publication, and feedback fixes. A commit error stops this run; do not replay an uncertain commit.
 
 Diagnosis, edits, the commit message, and validation choice remain your work.
 Do not ask the publish action to commit or accept a commit OID.

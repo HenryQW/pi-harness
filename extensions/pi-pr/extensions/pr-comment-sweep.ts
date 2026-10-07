@@ -1,3 +1,4 @@
+import { validateCommitMessage, commitStagedPaths, stageCommitPaths } from "./git-commit.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -1127,7 +1128,7 @@ export class PullRequestCommentSweep {
 	}
 
 	async commit(guard: SweepRunGuard, message: string): Promise<{ head: string }> {
-		requiredText(message, "commit message");
+		validateCommitMessage(message);
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);
@@ -1144,7 +1145,7 @@ export class PullRequestCommentSweep {
 			const paths = await this.localPaths();
 			if (paths.some((path) => !state.ownedPaths.includes(path))) throw new Error("Comment sweep found changes outside owned paths before staging");
 			if (!paths.length) throw new Error("Comment sweep has no pending changes to commit; validate and publish the existing HEAD");
-			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.options());
+			await stageCommitPaths(this.exec, this.options(), paths);
 			await this.requireOwnedLocalState(state, beforeHead);
 			const tree = requiredOid(parseSingleOutputLine((await runChecked(this.exec, "git", ["write-tree"], this.options())).stdout, "Commit tree"), "commit tree");
 			const attempt: CommitAttempt = { state: "attempting", beforeHead, tree, head: null };
@@ -1157,7 +1158,7 @@ export class PullRequestCommentSweep {
 				if (parseSingleOutputLine((await runChecked(this.exec, "git", ["write-tree"], this.options())).stdout, "Commit tree") !== tree) {
 					throw new Error("Comment sweep index changed before commit");
 				}
-				await runChecked(this.exec, "git", ["commit", "-m", message], this.options());
+				await commitStagedPaths(this.exec, this.options(), message);
 				const head = await this.verifyCommit(attempt);
 				await this.requireCleanPublication(state, head);
 				attempt.head = head;

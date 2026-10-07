@@ -627,6 +627,12 @@ test("sweep commits reject stale guards, changed authority, and unrelated pendin
 		retargeted = true;
 		await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /authority changed/);
 		retargeted = false;
+		git(app.root, "add", "file.txt");
+		const stagedDiff = git(app.root, "diff", "--cached");
+		writeFileSync(join(app.root, "file.txt"), "partly staged\n");
+		await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /Partially staged/);
+		assert.equal(git(app.root, "diff", "--cached"), stagedDiff);
+		writeFileSync(join(app.root, "file.txt"), "fixed\n");
 		writeFileSync(join(app.root, "unrelated.txt"), "keep\n");
 		if (staged) git(app.root, "add", "unrelated.txt");
 		const before = git(app.root, "status", "--porcelain");
@@ -644,7 +650,7 @@ test("sweep commits stage literal added and deleted paths without requiring unus
 	const literal = ":(glob)*.txt";
 	const recorded = await workflow.record(started.guard, ledger(started), ["file.txt", literal, "unused.txt"]);
 	await assert.rejects(workflow.commit(recorded.guard, "fix: review"), /no pending changes/);
-	rmSync(join(app.root, "file.txt"));
+	git(app.root, "rm", "file.txt");
 	writeFileSync(join(app.root, literal), "new\n");
 	const committed = await workflow.commit(recorded.guard, "fix: review");
 	assert.equal(git(app.root, "ls-tree", "--name-only", committed.head), literal);

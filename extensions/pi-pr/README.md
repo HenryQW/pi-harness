@@ -1,6 +1,6 @@
 # `@henryqw/pi-pr`
 
-See the current branch pull request in the Pi footer. Run `/pr` to create, update, repair, review, or merge it when safe, without repeatedly checking GitHub by hand.
+See the current branch pull request in the Pi footer. Run `/pr` for the full PR lifecycle, or ask the agent to commit local work or create/update a PR without authorizing repair or merge.
 
 ## Install
 
@@ -27,11 +27,16 @@ Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/pr` | command | Human entry point; inspect and act on the current branch's pull request. |
+| `pi_git_commit` | tool | Agent-only local inspection and scoped commits; never pushes. |
+| `pi_git_pr` | tool | Agent-only PR creation/publication; no feedback, CI repair, base rebase, or merge. |
 | `pi_pr_create` | tool | Agent-only guarded creation steps selected by `/pr`. |
 | `pi_pr_fix_ci` | tool | Agent-only guarded GitHub Actions repair. |
 | `pi_pr_publish_work` | tool | Agent-only scoped local work publication. |
 | `pi_pr_sweep` | tool | Agent-only feedback triage and publication. |
 | `pi_pr_update_branch` | tool | Agent-only conflict rebase and publication. |
+| `git-commit` | skill | Agent guidance for standalone scoped Conventional Commits. |
+| `git-pr` | skill | Agent guidance for authorized PR creation or publication. |
+| `update-from-main` | skill | Agent guidance and Python helper for merging exact fetched `origin/main`. |
 | `pi-pr-comment-sweep` | skill | Agent guidance for review feedback. |
 | `pi-pr-create` | skill | Agent guidance for creating a pull request. |
 | `pi-pr-fix-ci` | skill | Agent guidance for failed GitHub Actions. |
@@ -40,9 +45,38 @@ Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the
 | Footer | ui | Linked PR number and plain-language status. |
 | Widget | ui | Action hint or transient routing status. |
 
-`/pr` accepts no flags, prose, or base argument. Start with the command, not a helper skill or tool: direct calls cannot establish route authority. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
+`/pr` accepts no flags, prose, or base argument. For the full lifecycle, start with the command. For a create/update-only request, the agent reads `git-pr` and calls `pi_git_pr`. Both entries establish session-local authority for the same helpers; a direct `pi_pr_*` call cannot establish it. The helper run is bound to the current session and worktree. Its agent tools use plain-object parameter schemas so providers that omit root-union tools can expose them; action-specific arguments are still checked before the workflow runs.
 
-The `pi_pr_*` tools are model-only and run one action at a time. Codemode scripts and other tools cannot call them, so a script cannot batch guarded actions or filter the result the model needs for its next safety decision. With `codemode.mode` set to `only`, Pi hides other tools behind `codemode` but keeps these declared, so `/pr` workflows still work.
+The `pi_git_*` and `pi_pr_*` tools are model-only and run one action at a time. Codemode scripts and other tools cannot call them, so a script cannot batch guarded actions or filter the result the model needs for its next safety decision. With `codemode.mode` set to `only`, Pi hides other tools behind `codemode` but keeps these declared, so `/pr` workflows still work.
+
+### Local commits and bounded PR publication
+
+Ask the agent to commit a scoped change. `git-commit` resolves an explicit local target, the PR base, or the repository default branch. `pi_git_commit` inspects that target and pending work, then commits only reviewed paths. It requires an existing commit and an attached branch. It never fetches, pushes, amends, bypasses hooks, or changes Git configuration.
+
+Ask the agent to create or update a PR. `pi_git_pr` permits creation, local publication, and local sync onto the proven PR head. It stops before feedback, CI repair, base rebase, CI waiting, and merge. Local sync can fast-forward or rebase local commits onto the PR head, but not onto the base. Existing PRs retain their base, title, and body, including an exact-head PR that appears between push and publication. The tool never retargets them. An explicit `base` must match the existing PR base or the configured/default creation base. To select another creation base, explicitly authorize the branch's repository-local `gh-merge-base` setting first.
+
+An inferred target requires specific permission to configure this repository's branch upstream. Without it, the tool stops before linking or creation. `allowUpstream: true` records this consent for one invocation; it never permits global configuration changes. It is not required for an already configured target.
+
+All commit callers use the same literal-path staging and commit parent/tree checks. Standalone, creation, and local-publication inspections also detect file-byte and index changes even when Git status letters stay the same. Unrelated staging, partial staging, `.context/`, and common secret filenames block a commit. Filename checks cannot detect every secret: the agent must inspect content and ownership. Hooks run normally. An uncertain commit or push must not be replayed without checking its actual outcome.
+
+### Agent arguments
+
+- `pi_git_commit`: `{ action: "inspect", target: "<local-ref-or-OID>" }` returns `inspectionId`, `head`, `targetOid`, `mergeBase`, and `paths`. Then use `{ action: "commit", inspectionId: "<returned-ID>", ownedPaths: ["<exact-path>"], message: "fix: <subject>" }`. A successful commit returns `head` and consumes the inspection. Inspect again for another coherent group. Subjects are limited to 72 characters; bodies and footers are allowed.
+- `pi_git_pr`: `{ base?: "<exact-base-ref>", allowUpstream?: true }`. Omit `base` when the user gave no explicit base. Set `allowUpstream` only after specific consent. The result has `nextStep` and can include a proven `url`, `blocker`, or `handoff`. With `handoff`, end the turn: native settlement loads the reserved package skill with its run ID. Do not guess IDs or start another PR entry. Authorization continues across handoffs, but expires when the invocation ends.
+
+### Standalone merge from main
+
+Ask to update the current branch from main. `update-from-main` runs its packaged Python helper once. It requires Python 3.9 or newer and Git with `fetch --porcelain`. Unlike the `/pr` base-update route, this helper **merges**, not rebases. It fetches before local mutation and uses the exact OID from fetch output. It backs up tracked and untracked changes; when ignored paths collide with the source tree, the backup also includes ignored files. It never pushes.
+
+Each backup has a unique Git reflog message, so another linked worktree's stash push cannot change its identity. Restoration always applies the captured OID with `--index`. The helper never pops or drops a stash. Backups stay retained after success as well as conflict, hook, or submodule failures. Report the backup OID and verify restored bytes and staging before explicitly removing it. Do not rerun while a backup remains. Restore from the emitted stash OID, not from a later `origin/main`, and keep the backup until the user verifies restoration and explicitly removes it. See the packaged `update-from-main` skill for recovery.
+
+### Local acceptance checks
+
+From this source checkout, run `pnpm --filter @henryqw/pi-pr test:git-workflows`. It uses existing Node tests, temporary real Git repositories, and controlled GitHub responses, with no live GitHub writes. See [executed cases and independent acceptance instructions](./docs/git-workflows-tested.md) for the commands, tested boundaries, and limits.
+
+### Licences
+
+Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-from-main` skills and the Python helper/validator use Apache-2.0, including their modifications. See [licence scope, source identity, and modification notices](./NOTICE.md). Both licence files are included in the package.
 
 ## Flow
 
