@@ -380,7 +380,7 @@ function transientLaunch(cleanup: () => Promise<void> = async () => {}): {
 function lsof(path: string, stdout = "", code = stdout ? 0 : 1, pid?: number): Step {
 	return {
 		command: "lsof-test",
-		args: ["-nP", "-a", ...(pid === undefined ? [] : ["-p", String(pid)]), "-F", "p", "--", path],
+		args: ["-w", "-nP", "-a", ...(pid === undefined ? [] : ["-p", String(pid)]), "-F", "p", "--", path],
 		result: { code, stdout, stderr: "" },
 	};
 }
@@ -880,7 +880,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 		attempt,
 		acquireLaunch: async () => {
 			assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
-				["lsof-test", "-nP", "-a", "-F", "p", "--", tabDetails.leasePath],
+				["lsof-test", "-w", "-nP", "-a", "-F", "p", "--", tabDetails.leasePath],
 				["herdr", "pane", "get", WORKER_PANE_ID],
 				["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
 			]);
@@ -935,7 +935,7 @@ test("agent allocation accepts the task's explicit Role and rejects launch misma
 				attempt,
 				acquireLaunch: async () => {
 					assert.deepEqual(script.calls.slice(-3).map(({ command, args }) => [command, ...args]), [
-						["lsof-test", "-nP", "-a", "-F", "p", "--", leasePath],
+						["lsof-test", "-w", "-nP", "-a", "-F", "p", "--", leasePath],
 						["herdr", "pane", "get", WORKER_PANE_ID],
 						["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
 					]);
@@ -2234,7 +2234,7 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	});
 	script.push(
 		...terminationPrefix(fixture),
-		lsof(leasePath, "p101\np202\n"),
+		lsof(leasePath, "p101\nf0\np202\nfcwd\n"),
 		lsof(leasePath, "p101\n", 0, 101),
 		lsof(leasePath, "", 1, 202),
 		lsof(leasePath, "p101\n"),
@@ -2355,7 +2355,7 @@ test("termination quarantines ambiguity, late holders, and survivors without sig
 	const { attempt, leasePath } = await fullAttempt(fixture, seed, script);
 	await privateLease(leasePath);
 	script.push(...terminationPrefix(fixture), {
-		command: "lsof-test", args: ["-nP", "-a", "-F", "p", "--", leasePath],
+		command: "lsof-test", args: ["-w", "-nP", "-a", "-F", "p", "--", leasePath],
 		result: { code: 2, stdout: "", stderr: "ambiguous" },
 	});
 	const host = new HerdrHostRuntime({
