@@ -26,71 +26,51 @@ async function checkoutKey(pi: ExtensionAPI, ctx: ExtensionContext): Promise<str
 }
 
 /**
- * Coordinate Pi-owned calls that can mutate one checkout. This is admission,
- * not an OS sandbox: external processes and trusted extension lifecycle code
- * remain outside interception. A model-issued call owns the checkout for the
- * calls it makes through `ctx.executeTool()` (codemode scripts), so its nested
- * writes pass while independent writers wait until it settles.
+ * Reserve checkouts only for direct writers. Main writes can run together, but
+ * each call must finish before a direct writer can start in that checkout.
+ * External processes and trusted extension lifecycle code are not intercepted.
  */
 export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (input: unknown) => boolean): (toolCallId: string) => () => void {
 	const heldCalls = new Set<string>();
 	const ownerByCheckout = new Map<string, string>();
-	const checkoutByRoot = new Map<string, string>();
-	const writersByRoot = new Map<string, Set<string>>();
-	/** Model-issued ancestor of each in-flight call; Pi names nested calls `<parent id>/<n>`. */
-	const rootByCall = new Map<string, string>();
+	const calls = new Map<string, { direct: boolean; key?: string }>();
 	const release = (toolCallId: string) => {
 		if (heldCalls.has(toolCallId)) return;
-		const root = rootByCall.get(toolCallId);
-		if (root === undefined) return;
-		rootByCall.delete(toolCallId);
-		const writers = writersByRoot.get(root);
-		writers?.delete(toolCallId);
-		if (rootByCall.has(root) || writers?.size) return;
-		writersByRoot.delete(root);
-		const key = checkoutByRoot.get(root);
-		if (!key) return;
-		checkoutByRoot.delete(root);
-		if (ownerByCheckout.get(key) === root) ownerByCheckout.delete(key);
+		const call = calls.get(toolCallId);
+		calls.delete(toolCallId);
+		if (call?.key && ownerByCheckout.get(call.key) === toolCallId) ownerByCheckout.delete(call.key);
 	};
 	pi.on("tool_call", async (event, ctx) => {
-		const root = event.parentToolCallId === undefined
-			? event.toolCallId
-			: rootByCall.get(event.parentToolCallId) ?? event.parentToolCallId;
-		rootByCall.set(event.toolCallId, root);
-		const potentiallyWriting = event.toolName === "delegate_task"
-			? directCanWrite(event.input)
-			: !READ_ONLY_TOOLS.has(event.toolName);
-		if (!potentiallyWriting) return;
+		const direct = event.toolName === "delegate_task";
+		if (direct ? !directCanWrite(event.input) : READ_ONLY_TOOLS.has(event.toolName)) return;
+		const call: { direct: boolean; key?: string } = { direct };
+		calls.set(event.toolCallId, call);
 		const key = await checkoutKey(pi, ctx);
-		// A codemode result can settle while an unawaited nested call is still resolving its checkout.
-		if (root !== event.toolCallId && !rootByCall.has(root)) {
-			return { block: true, reason: `Parent call ${root} already settled; ${event.toolCallId} is not admitted.` };
+		if (calls.get(event.toolCallId) !== call) {
+			return { block: true, reason: `Call ${event.toolCallId} already settled; use mode: isolated to keep Main free.` };
 		}
 		const owner = ownerByCheckout.get(key);
-		if (owner && owner !== root) {
+		const main = direct ? [...calls].find(([, active]) => !active.direct && active.key === key)?.[0] : undefined;
+		if (owner || main) {
+			release(event.toolCallId);
 			return {
 				block: true,
-				reason: `Checkout ${key} already has an admitted Pi writer (${owner}); retry after it settles.`,
+				reason: `Checkout ${key} has ${owner ? `an admitted direct writer (${owner})` : `a Main potentially-writing call in flight (${main})`}; retry after it stops, or use mode: isolated to keep Main free.`,
 			};
 		}
-		ownerByCheckout.set(key, root);
-		checkoutByRoot.set(root, key);
-		const writers = writersByRoot.get(root) ?? new Set<string>();
-		writers.add(event.toolCallId);
-		writersByRoot.set(root, writers);
+		call.key = key;
+		if (direct) ownerByCheckout.set(key, event.toolCallId);
 	});
 	pi.on("tool_result", (event) => release(event.toolCallId));
 	pi.on("tool_execution_end", (event) => release(event.toolCallId));
 	pi.on("session_shutdown", () => {
 		// Session replacement is not proof that a held direct worker stopped.
-		for (const call of rootByCall.keys()) release(call);
+		for (const toolCallId of calls.keys()) release(toolCallId);
 	});
-	// A direct handle settles the tool call before the worker settles. Keep its
-	// admission until proved termination; uncertain workers require guarded recovery.
+	// The tool returns a handle before its worker stops. Release only after verified termination.
 	return (toolCallId) => {
-		const root = rootByCall.get(toolCallId);
-		if (root === undefined || !writersByRoot.get(root)?.has(toolCallId)) {
+		const call = calls.get(toolCallId);
+		if (!call?.direct || !call.key) {
 			throw new Error(`Direct call ${toolCallId} was not admitted as a checkout writer; delegate again with the current Role resources.`);
 		}
 		heldCalls.add(toolCallId);
