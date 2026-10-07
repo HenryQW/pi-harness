@@ -855,6 +855,35 @@ test("edited same-ID feedback cannot inherit its pre-refresh disposition", async
 	await workflow.finalize(resolved.guard, []);
 });
 
+test("published sweep retains only Bot body edits as non-actionable", async (t) => {
+	for (const authorType of ["User", "Bot"]) {
+		const app = fixture();
+		t.after(app.cleanup);
+		const exec: Exec = async (command, args, options) => {
+			const response = await app.exec(command, args, options);
+			if (command === "gh" && options.stdin?.includes("query Feedback(")) {
+				const value = JSON.parse(response.stdout);
+				value.data.repository.pullRequest.comments.nodes[0].author.__typename = authorType;
+				return result(JSON.stringify(value));
+			}
+			return response;
+		};
+		const workflow = app.workflow(undefined, { exec });
+		const started = await workflow.start();
+		const decisions = ledger(started).map((entry) => entry.id === "conversation-1"
+			? { ...entry, disposition: "non-actionable" as const, note: "Status report only" } : entry);
+		const published = await publishRecorded(workflow, await workflow.record(started.guard, decisions, []));
+		app.world.body = "Updated status report";
+		const refreshed = await workflow.refresh(published.guard);
+		assert.equal(refreshed.plan?.ledger.find(({ id }) => id === "conversation-1")?.disposition,
+			authorType === "Bot" ? "non-actionable" : "blocked", authorType);
+		const resolved = await workflow.resolve(refreshed.guard);
+		await workflow.finalize(resolved.guard, []);
+		assert.equal(await needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec,
+			load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), authorType !== "Bot", authorType);
+	}
+});
+
 test("blocked child feedback keeps its parent open and prevents resolution", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
