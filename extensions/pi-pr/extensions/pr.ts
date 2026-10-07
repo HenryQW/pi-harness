@@ -47,6 +47,7 @@ import {
 import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater, type UpdateBranchOptions } from "./pr-update-branch.ts";
 
 const MAX_STALE_REDISCOVERIES = 2;
+const STALE_PR_REFRESH_MS = 2 * 60_000;
 const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
@@ -198,6 +199,7 @@ type PullRequestExtensionDependencies = {
 	loadPrPolicy?: typeof loadPrPolicy;
 	canonicalWorktree?: (cwd: string, signal?: AbortSignal) => Promise<string>;
 	newRunId?: () => string;
+	now?: () => number;
 };
 
 async function canonicalWorktree(cwd: string, signal?: AbortSignal): Promise<string> {
@@ -277,20 +279,31 @@ export default function pullRequestExtension(
 	const createWorkPublisher = dependencies.createWorkPublisher ?? ((options) => new PullRequestWorkPublisher(options));
 	const resolveCanonicalWorktree = dependencies.canonicalWorktree ?? canonicalWorktree;
 	const newRunId = dependencies.newRunId ?? randomUUID;
+	const now = dependencies.now ?? Date.now;
 	let context: ExtensionContext | undefined;
 	let observation: PullRequestObservation | undefined;
 	const load: typeof loadCurrentPullRequest = async (api, loadContext, inspectedLocal) => {
 		const generation = sessionGeneration;
-		const discovery = await discover(api, loadContext, inspectedLocal, observation);
-		if (generation !== sessionGeneration) return discovery;
-		if (discovery.kind === "current") {
-			const current = pullRequestObservation(discovery.pullRequest);
-			if (current !== null && !samePullRequestObservation(observation, current)) {
-				pi.appendEntry(OBSERVATION_ENTRY, current);
-				observation = current;
+		try {
+			const discovery = await discover(api, loadContext, inspectedLocal, observation);
+			if (generation !== sessionGeneration) return discovery;
+			if (context?.cwd === loadContext.cwd && !loadContext.signal?.aborted) {
+				lastDiscoveryOpen = discovery.kind === "current" && discovery.pullRequest.lifecycle === "open";
+			}
+			if (discovery.kind === "current") {
+				const current = pullRequestObservation(discovery.pullRequest);
+				if (current !== null && !samePullRequestObservation(observation, current)) {
+					pi.appendEntry(OBSERVATION_ENTRY, current);
+					observation = current;
+				}
+			}
+			return discovery;
+		} finally {
+			// Failed checks also delay the next stale refresh.
+			if (generation === sessionGeneration && context?.cwd === loadContext.cwd && !loadContext.signal?.aborted) {
+				lastDiscoveryCompletedAt = now();
 			}
 		}
-		return discovery;
 	};
 	let sessionGeneration = 0;
 	let active: AbortController | undefined;
@@ -298,6 +311,8 @@ export default function pullRequestExtension(
 	let reportedRefreshFailure: "generic" | "quota" | undefined;
 	let displayEstablished = false;
 	let lastDiscovery: "configured" | "inferred" | "absent" | "blocked" | "inactive" | undefined;
+	let lastDiscoveryOpen = false;
+	let lastDiscoveryCompletedAt: number | undefined;
 	let lastBlockedIssueKey: string | undefined;
 	let delegatedWorkPending = false;
 	let pendingWorkspaceRename = false;
@@ -730,6 +745,8 @@ export default function pullRequestExtension(
 		reportedRefreshFailure = undefined;
 		displayEstablished = false;
 		lastDiscovery = undefined;
+		lastDiscoveryOpen = false;
+		lastDiscoveryCompletedAt = undefined;
 		lastBlockedIssueKey = undefined;
 		delegatedWorkPending = false;
 		pendingWorkspaceRename = false;
@@ -946,7 +963,11 @@ export default function pullRequestExtension(
 		}
 		const delegatedRefresh = delegatedWorkPending && lastDiscovery !== "inactive";
 		delegatedWorkPending = false;
-		if (!workflowSettled && !helperSettled && !delegatedRefresh) return;
+		if (!workflowSettled && !helperSettled && !delegatedRefresh) {
+			if (!active && !queued && lastDiscoveryOpen && lastDiscoveryCompletedAt !== undefined &&
+				now() - lastDiscoveryCompletedAt >= STALE_PR_REFRESH_MS) refreshInBackground();
+			return;
+		}
 		cancelRefresh();
 		if (createWorkflowSettled || helperSettled && selected?.route === "create") pendingWorkspaceRename = true;
 		await refresh().catch(reportRefreshFailure);
