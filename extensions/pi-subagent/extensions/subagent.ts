@@ -173,7 +173,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const canWrite = (input: unknown): boolean => {
 		try {
 			const parsed = parseDelegateTask(input);
-			if (parsed.mode === "isolated") return true;
+			if (parsed.mode === "isolated") return false;
 			const roles = new Map(loadRoles().map((role) => [role.name, role]));
 			return parsed.workflow.delegations.some((delegation) => {
 				const role = roles.get(delegation.role);

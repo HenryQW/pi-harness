@@ -23,6 +23,26 @@ test("native Pi session records exact bounded final assistant text, not interim 
 	assert.throws(() => exactDirectAnswer(session, prompt, 5), /exceeds the 5-byte workflow limit/);
 });
 
+test("direct completion follows exact ancestry through non-message session entries", () => {
+	const entries = [
+		{ type: "model_change", id: "model", parentId: "user", provider: "test", modelId: "test" },
+		{ type: "thinking_level_change", id: "thinking", parentId: "model", thinkingLevel: "high" },
+		{ type: "custom", id: "custom", parentId: "thinking", customType: "test", data: {} },
+	];
+	const final = { type: "message", id: "final", parentId: "custom", message: {
+		role: "assistant", stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ outcome: "succeeded", answer: "Done." }) }],
+	} };
+	const session = lines([...entries, final]);
+	assert.equal(exactDirectAnswer(session, prompt, 1024, true), "Done.");
+	assert.equal(exactDirectTerminalTurn(session, prompt), true);
+	assert.throws(() => exactDirectAnswer(session, `${prompt}\n`, 1024, true), /exact successful final answer/);
+	for (const parentId of ["missing", "custom", "session"]) {
+		const unrelated = lines([...entries.slice(0, -1), { ...entries[2], parentId }, final]);
+		assert.throws(() => exactDirectAnswer(unrelated, prompt, 1024, true), /exact successful final answer/);
+		assert.equal(exactDirectTerminalTurn(unrelated, prompt), false);
+	}
+});
+
 test("potential-writer final turns require an explicit successful completion", () => {
 	const session = (text: string) => lines([{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] } }]);
 	assert.equal(exactDirectAnswer(session(JSON.stringify({ outcome: "succeeded", answer: "Scoped commit completed." })), prompt, 1024, true), "Scoped commit completed.");

@@ -49,9 +49,11 @@ function exactFinalTurn(jsonl: string, prompt: string): Json | undefined {
 	const parents = new Map<string, string>();
 	for (const line of lines) {
 		const entry = object(JSON.parse(line) as unknown, "session entry");
-		if (entry.type !== "message") continue;
-		const id = field(entry.id, "message id");
+		if (entry.type === "session") continue;
+		const id = field(entry.id, "session entry id");
+		// Non-message entries also link the exact session branch.
 		if (typeof entry.parentId === "string") parents.set(id, entry.parentId);
+		if (entry.type !== "message") continue;
 		const message = object(entry.message, "session message");
 		if (message.role === "user" && Array.isArray(message.content)
 			&& message.content.length === 1 && object(message.content[0], "user content").text === prompt) {

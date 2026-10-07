@@ -48,84 +48,137 @@ test("checkout admission treats unknown tools, extensions and MCP servers as pot
 	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [], tools: ["bash"] }), false);
 });
 
-test("checkout admission attributes nested calls to their model-issued root and keeps independent writers out", async (t) => {
+async function admissionHarness(t: { after: (callback: () => Promise<void>) => void }) {
 	const checkout = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-admission-")));
 	t.after(() => rm(checkout, { recursive: true, force: true }));
 	const handlers = new Map<string, (...args: any[]) => any>();
-	let lookup = async () => {};
-	const hold = registerCheckoutAdmission({
-		on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
-		exec: async () => {
-			await lookup();
-			return { stdout: `${checkout}\n`, stderr: "", code: 0, killed: false };
-		},
-	} as unknown as ExtensionAPI, () => true);
-	const ctx = { cwd: checkout } as ExtensionContext;
-	const call = (toolCallId: string, toolName: string, parentToolCallId?: string) =>
-		handlers.get("tool_call")!({ type: "tool_call", toolCallId, toolName, input: {}, ...(parentToolCallId === undefined ? {} : { parentToolCallId }) }, ctx);
-	const blockedBy = (owner: string) => ({ block: true, reason: `Checkout ${checkout} already has an admitted Pi writer (${owner}); retry after it settles.` });
-	// A script that only reads holds nothing, so an independent writer is admitted beside it.
-	assert.equal(await call("script-1", "codemode"), undefined);
-	assert.equal(await call("script-1/1", "grep", "script-1"), undefined);
-	assert.equal(await call("edit-1", "edit"), undefined);
-	assert.deepEqual(await call("script-1/2", "bash", "script-1"), blockedBy("edit-1"));
-	handlers.get("tool_result")!({ type: "tool_result", toolCallId: "edit-1", toolName: "edit" });
-	// The first nested write makes the script's root the writer; deeper and later nested calls pass.
-	assert.equal(await call("script-1/3", "bash", "script-1"), undefined);
-	assert.equal(await call("script-1/3/1", "write", "script-1/3"), undefined);
-	assert.equal(await call("script-1/4", "edit", "script-1"), undefined);
-	assert.equal(await call("script-1/5", "read", "script-1"), undefined);
-	// Independent roots, including another script's nested writes, wait; their reads do not.
-	assert.deepEqual(await call("edit-2", "edit"), blockedBy("script-1"));
-	assert.deepEqual(await call("delegate-1", "delegate_task"), blockedBy("script-1"));
-	assert.equal(await call("script-2", "codemode"), undefined);
-	assert.deepEqual(await call("script-2/1", "bash", "script-2"), blockedBy("script-1"));
-	assert.equal(await call("script-2/2", "read", "script-2"), undefined);
-	assert.equal(await call("git-reader", "git_read"), undefined);
-	// Root completion must not release still-running writes, including deeper descendants.
-	handlers.get("tool_execution_end")!({ type: "tool_execution_end", toolCallId: "script-1/3", toolName: "bash", parentToolCallId: "script-1", isError: true });
-	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));
-	handlers.get("tool_result")!({ toolCallId: "script-1" });
-	handlers.get("tool_execution_end")!({ toolCallId: "script-1" });
-	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));
-	// Duplicate completion hooks must not consume another descendant's admission.
-	handlers.get("tool_result")!({ toolCallId: "script-1/3" });
-	handlers.get("tool_result")!({ toolCallId: "script-1/4" });
-	handlers.get("tool_execution_end")!({ toolCallId: "script-1/4" });
-	assert.deepEqual(await call("edit-3", "edit"), blockedBy("script-1"));
-	handlers.get("tool_execution_end")!({ toolCallId: "script-1/3/1" });
-	assert.equal(await call("edit-3", "edit"), undefined);
-	assert.deepEqual(await call("script-2/3", "bash", "script-2"), blockedBy("edit-3"));
-	handlers.get("tool_result")!({ toolCallId: "edit-3" });
-	// A script can finish before an unawaited nested write completes its admission lookup.
+	const app = {
+		lookup: async () => {},
+		hold: registerCheckoutAdmission({
+			on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
+			exec: async () => {
+				await app.lookup();
+				return { stdout: `${checkout}\n`, stderr: "", code: 0, killed: false };
+			},
+		} as unknown as ExtensionAPI, (input) => {
+			const request = input as { mode?: string; readOnly?: boolean };
+			return request.mode !== "isolated" && !request.readOnly;
+		}),
+		call: (toolCallId: string, toolName = "delegate_task", input: Record<string, unknown> = { mode: "direct" }, parentToolCallId?: string) =>
+			handlers.get("tool_call")!({ toolCallId, toolName, input, parentToolCallId }, { cwd: checkout }),
+		end: (toolCallId: string, event = "tool_result") => handlers.get(event)!({ toolCallId }),
+	};
+	return app;
+}
+
+function assertAdmissionBlocked(result: any, owner: string) {
+	assert.equal(result.block, true);
+	assert.ok(result.reason.includes(`(${owner})`), result.reason);
+	assert.match(result.reason, /mode: isolated to keep Main free/);
+}
+
+test("Main edits, all Bash and nested writes run together; direct writers wait for each call", async (t) => {
+	const app = await admissionHarness(t);
+	await app.call("script", "codemode");
+	for (const [id, tool, command] of [["edit-1", "edit", ""], ["edit-2", "edit", ""], ["read-bash", "bash", "git status"], ["write-bash", "bash", "touch file"], ["script/1", "write", ""]] as const) {
+		assert.equal(await app.call(id, tool, { command }, id.includes("/") ? "script" : undefined), undefined);
+	}
+	assert.throws(() => app.hold("edit-1"), /not admitted as a checkout writer/);
+	assertAdmissionBlocked(await app.call("direct"), "edit-1");
+	app.end("edit-1", "tool_execution_end");
+	app.end("edit-1");
+	app.end("edit-1", "tool_execution_end");
+	assertAdmissionBlocked(await app.call("direct"), "edit-2");
+	app.end("edit-2");
+	assertAdmissionBlocked(await app.call("direct"), "read-bash");
+	app.end("read-bash");
+	assertAdmissionBlocked(await app.call("direct"), "write-bash");
+	app.end("write-bash");
+	// Parent results do not release nested writes, and ended parents do not reject new nested writes.
+	app.end("script");
+	assertAdmissionBlocked(await app.call("direct"), "script/1");
+	assert.equal(await app.call("script/2", "edit", undefined, "script"), undefined);
+	app.end("script/1");
+	assertAdmissionBlocked(await app.call("direct"), "script/2");
+	app.end("script/2");
+	assert.equal(await app.call("direct"), undefined);
+});
+
+test("direct ownership excludes other writers, permits reads and isolated calls, and survives held shutdown", async (t) => {
+	const app = await admissionHarness(t);
+	assert.throws(() => app.hold("unadmitted"), /not admitted as a checkout writer/);
+	assert.equal(await app.call("direct"), undefined);
+	const release = app.hold("direct");
+	for (const event of ["tool_result", "tool_execution_end", "session_shutdown", "tool_result"]) app.end("direct", event);
+	assertAdmissionBlocked(await app.call("other"), "direct");
+	for (const tool of ["edit", "bash", "unknown-tool"]) assertAdmissionBlocked(await app.call(tool, tool), "direct");
+	await app.call("script", "codemode");
+	assertAdmissionBlocked(await app.call("script/1", "write", undefined, "script"), "direct");
+	assertAdmissionBlocked(await app.call("direct/1", "edit", undefined, "direct"), "direct");
+	for (const tool of ["read", "grep", "git_read", "subagent_status"]) assert.equal(await app.call(tool, tool), undefined);
+	assert.equal(await app.call("read-delegate", "delegate_task", { mode: "direct", readOnly: true }), undefined);
+	assert.equal(await app.call("isolated", "delegate_task", { mode: "isolated" }), undefined);
+	release();
+	release();
+	assert.equal(await app.call("other"), undefined);
+	app.end("other");
+	assert.equal(await app.call("main-edit", "edit"), undefined);
+	app.end("main-edit");
+	assert.equal(await app.call("direct-after-reads"), undefined);
+});
+
+test("shutdown releases unheld direct and Main admissions", async (t) => {
+	const app = await admissionHarness(t);
+	assert.equal(await app.call("unheld"), undefined);
+	app.end("unheld", "session_shutdown");
+	assert.equal(await app.call("main-1", "edit"), undefined);
+	assert.equal(await app.call("main-2", "bash"), undefined);
+	app.end("main-1", "session_shutdown");
+	assert.equal(await app.call("next"), undefined);
+});
+
+test("concurrent checkout lookups check the current owner and Main calls when they resolve", async (t) => {
+	const app = await admissionHarness(t);
 	let entered!: () => void;
 	let resume!: () => void;
 	const started = new Promise<void>((resolve) => { entered = resolve; });
 	const paused = new Promise<void>((resolve) => { resume = resolve; });
-	lookup = async () => { entered(); await paused; };
-	await call("script-3", "codemode");
-	const lateWrite = call("script-3/1", "write", "script-3");
+	app.lookup = async () => { entered(); await paused; };
+	const pending = [app.call("direct-1"), app.call("direct-2")];
 	await started;
-	handlers.get("tool_result")!({ toolCallId: "script-3" });
 	resume();
-	assert.deepEqual(await lateWrite, {
-		block: true,
-		reason: "Parent call script-3 already settled; script-3/1 is not admitted.",
-	});
-	handlers.get("tool_execution_end")!({ toolCallId: "script-3/1", parentToolCallId: "script-3" });
-	lookup = async () => {};
-	assert.equal(await call("edit-4", "edit"), undefined);
-	handlers.get("tool_result")!({ toolCallId: "edit-4" });
-	assert.throws(() => hold("unadmitted"), /not admitted as a checkout writer/);
-	assert.equal(await call("direct-writer", "delegate_task"), undefined);
-	const releaseDirect = hold("direct-writer");
-	handlers.get("tool_result")!({ toolCallId: "direct-writer" });
-	handlers.get("tool_execution_end")!({ toolCallId: "direct-writer" });
-	assert.deepEqual(await call("edit-5", "edit"), blockedBy("direct-writer"));
-	handlers.get("session_shutdown")!({});
-	assert.deepEqual(await call("edit-5", "edit"), blockedBy("direct-writer"));
-	releaseDirect();
-	assert.equal(await call("edit-5", "edit"), undefined);
+	const results = await Promise.all(pending);
+	const winner = results.findIndex((result) => result === undefined);
+	assertAdmissionBlocked(results[1 - winner], `direct-${winner + 1}`);
+	app.end(`direct-${winner + 1}`);
+	for (const first of ["direct", "main"]) {
+		let pause!: () => void;
+		let start!: () => void;
+		const reached = new Promise<void>((resolve) => { start = resolve; });
+		const gate = new Promise<void>((resolve) => { pause = resolve; });
+		app.lookup = async () => { start(); await gate; };
+		const second = first === "direct" ? "main" : "direct";
+		const waiting = app.call(second, second === "main" ? "edit" : "delegate_task");
+		await reached;
+		app.lookup = async () => {};
+		assert.equal(await app.call(first, first === "main" ? "bash" : "delegate_task"), undefined);
+		pause();
+		assertAdmissionBlocked(await waiting, first);
+		app.end(first);
+	}
+	// Shutdown during lookup must not create a new reservation after shutdown.
+	let pause!: () => void;
+	let start!: () => void;
+	const reached = new Promise<void>((resolve) => { start = resolve; });
+	const gate = new Promise<void>((resolve) => { pause = resolve; });
+	app.lookup = async () => { start(); await gate; };
+	const late = app.call("late");
+	await reached;
+	app.end("late", "session_shutdown");
+	pause();
+	assert.match((await late).reason, /already settled/);
+	app.lookup = async () => {};
+	assert.equal(await app.call("next"), undefined);
 });
 
 function loadRoleTools(processLease: string | undefined): { events: string[]; toolCall?: ToolCallHandler; childUmask: number } {
@@ -427,6 +480,9 @@ test("registered tools have object roots and preserve closed union validation", 
 			deliverable: "Report", dependsOn: [], contextFrom: [],
 		}] };
 		assert.ok(Compile(JSON.parse(JSON.stringify(app.tools.get("delegate_task")!.parameters))).Check(isolated));
+		assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "isolated", toolName: "delegate_task", input: isolated }, app.ctx), undefined);
+		assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "main-edit", toolName: "edit", input: {} }, app.ctx), undefined);
+		app.handlers.get("tool_result")!({ toolCallId: "main-edit" });
 		assert.equal(app.tools.get("delegate_task")!.exposure, "model-only");
 		assert.throws(() => app.tools.get("subagent_resume")!.prepareArguments!({ id: "request-one", action: "retry" }), /one strict action/);
 		assert.throws(() => app.tools.get("subagent_integrate")!.prepareArguments!({ id: "request-one", action: "refresh", generation: 1, expectedTip: tip }), /exact generation and tip/);
