@@ -63,7 +63,10 @@ export async function stageCommitPaths(exec: Exec, options: ExecOptions, input: 
 	if (staged.some((path) => !paths.includes(path))) throw new Error("Unrelated staged changes require an ownership decision");
 	const unstaged = parseNulPaths((await runChecked(exec, "git", ["diff", "--no-renames", "--name-only", "-z"], options)).stdout, "Unstaged paths");
 	if (staged.some((path) => unstaged.includes(path))) throw new Error("Partially staged changes require an ownership decision; staging was preserved");
-	await runChecked(exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], options);
+	// Keep coherent staging, including deletions and both sides of a rename. Deleted paths
+	// are no longer in the index, so adding them again can fail with an unmatched pathspec.
+	const toStage = paths.filter((path) => !staged.includes(path));
+	if (toStage.length) await runChecked(exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...toStage], options);
 }
 
 export function validateCommitMessage(message: string): void {

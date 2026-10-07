@@ -432,6 +432,20 @@ def self_test() -> None:
         assert (repo / "ignored.txt").read_text(encoding="utf-8") == "upstream\n"
         assert test_git(repo, "stash", "show", "--include-untracked", "--name-only", stash_oid) == "ignored.txt"
 
+        seed, repo = setup_repo(root / "untracked-collision")
+        main_sha = commit(seed, "new.txt", "upstream\n", "test: main collision")
+        test_git(seed, "push", "origin", "main")
+        (repo / "new.txt").write_text("local\n", encoding="utf-8")
+        result, output = update_in(repo)
+        assert result == 3 and "status=stash_restore_failed" in output
+        stash_oid = test_git(repo, "rev-parse", "refs/stash")
+        assert f"main={FETCHED_MAIN_REF}:{main_sha}" in output
+        assert f"stash={stash_oid}:retained" in output
+        assert test_git(repo, "show", f"{stash_oid}^3:new.txt") == "local"
+        assert (repo / "new.txt").read_text(encoding="utf-8") == "upstream\n"
+        assert update_in(repo)[0] == 1
+        assert test_git(repo, "rev-parse", "refs/stash") == stash_oid
+
         seed, repo = setup_repo(root / "fetch-failure")
         (repo / "shared.txt").write_text("staged\n", encoding="utf-8")
         test_git(repo, "add", "shared.txt")

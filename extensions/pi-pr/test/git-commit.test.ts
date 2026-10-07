@@ -48,6 +48,19 @@ test("unrelated and partially staged work is not overwritten", async (t) => {
 	assert.equal(git("diff", "--cached"), index);
 });
 
+test("coherent staged renames and deletions commit without restaging missing paths", async (t) => {
+	const { git, committer } = fixture(t);
+	git("mv", "file.txt", "renamed.txt");
+	let snapshot = await committer.inspect("main");
+	await assert.rejects(committer.commit(snapshot.inspectionId, ["renamed.txt"], "refactor: rename"), /Unrelated staged/);
+	await committer.commit(snapshot.inspectionId, ["file.txt", "renamed.txt"], "refactor: rename");
+	assert.equal(git("status", "--porcelain=v1"), "");
+	git("rm", "renamed.txt");
+	snapshot = await committer.inspect("main");
+	await committer.commit(snapshot.inspectionId, ["renamed.txt"], "refactor: remove file");
+	assert.equal(git("show", "--format=", "--name-status", "HEAD"), "D\trenamed.txt");
+});
+
 test("same-status byte changes, branch movement, Git operations, context and secret paths block commits", async (t) => {
 	const { cwd, git, write, committer } = fixture(t);
 	write("file.txt", "first\n");

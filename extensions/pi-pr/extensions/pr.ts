@@ -996,6 +996,10 @@ export default function pullRequestExtension(
 	pi.on("tool_result", async (event, ctx) => {
 		if (!ctx.hasUI || event.isError || lastDiscovery === "inactive") return;
 		if (DELEGATED_TOOLS.has(event.toolName)) delegatedWorkPending = true;
+		if (event.toolName === "pi_git_commit" && event.input.action === "commit") {
+			await refresh().catch(reportRefreshFailure);
+			return;
+		}
 		if (!isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {

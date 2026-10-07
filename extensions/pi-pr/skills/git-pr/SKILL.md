@@ -1,24 +1,16 @@
 ---
 name: git-pr
-description: Use pi-pr's guarded /pr workflow to create or update the current branch GitHub pull request. Check explicit base intent and current-PR authority before routing.
+description: Create or update the current branch GitHub pull request through pi_git_pr. Use when asked to open, create, or publish a PR, with explicit base intent and repository-local upstream consent.
 ---
 
 # git-pr
 
-Use the existing `/pr` command. Do not push with shell tools, call `gh pr create`, edit PR metadata, or call a route helper without its reserved run ID. The package has one PR mutation workflow, not a second skill implementation.
+Use `pi_git_pr` after the user authorizes PR creation or publication. It uses the same guarded creation and publication helpers as `/pr`, but stops before feedback, CI repair, base rebase, CI waiting, or merge. Do not ask the user to run `/pr` for a create/update-only request. `/pr` remains the separate full-lifecycle command.
 
-## Base and current PR
-
-- An existing, proven current-branch PR owns its base. If the user supplies a different base, stop and report the mismatch. Do not retarget it or create a duplicate.
-- For a new PR, `/pr` selects one `branch.<branch>.gh-merge-base` value, then the validated `origin` default branch. An explicit base from the old skill is not a `/pr` argument. Compare it with that selection before routing. If it differs, stop and ask the user to set the branch's repository-local `gh-merge-base` explicitly, then run `/pr`. Never write this setting silently or change global Git configuration.
-- Do not infer a base from the branch name, pick the first remote/PR, or use an unbounded branch-name PR search. `/pr` establishes PR identity from the validated destination, repository, ref, and exact OID. Ambiguity and a published branch with no proven PR remain blockers.
-
-## Handoff
-
-Tell the user to run `/pr` when this skill is called outside an authorized `/pr` invocation. A skill or shell command cannot create the required session-local authority. Do not send a shell `/pr` or pretend that `sendUserMessage` executes extension commands.
-
-Explain the contract before handoff: `/pr` is the full PR lifecycle, not a create-only command. It can commit scoped work, validate, publish, address feedback, repair CI, and merge when ready. A request only to create a PR does not silently authorize that broader lifecycle. The user must invoke `/pr` for it. If a run is already active, follow its package skill and run ID; do not start another invocation.
-
-Creation and local publication use guarded `inspect` and `commit` actions. Preserve unrelated staging and never include secrets or `.context/`. Stop for unclear ownership. Validation, exact-OID pushes, leases, PR reuse, and uncertain-outcome recovery belong to the package helpers. The old skill's independent `origin` push and metadata update path is removed. Existing PRs are reused by exact authority; their title/body are not automatically rewritten.
-
-Report the validated PR URL and any blocker or lifecycle result. Do not claim success from a shell push or from stale discovery.
+1. Read repository instructions and inspect local status and changes. A create/update request permits only intended work. Never include secrets, `.context/`, or unrelated changes. Stop if ownership is unclear. Preserve coherent staging; the helpers commit whole paths and reject partial staging. Do not stash, discard, or hide other work.
+2. Keep an explicit user base as the `base` argument. For an existing proven PR, it must equal that PR's base. For creation, it must equal one `branch.<branch>.gh-merge-base` value or the validated `origin` default branch. A mismatch stops before publication. Do not retarget a PR or silently write Git configuration. If the user wants another creation base, ask for permission to set the branch's repository-local `gh-merge-base`, then start again. Never change global configuration or infer the base from the branch name.
+3. An absent configured push target can require repository-local upstream configuration. Ask for this specific permission unless the user already gave it for this repository and branch. Set `allowUpstream: true` only with that permission. Omit it otherwise; the helper stops before linking or inferred-target creation. This permission does not permit other configuration changes.
+4. Call `pi_git_pr` with the explicit `base`, if supplied, and `allowUpstream` as above. Do not push with shell tools, run `gh pr create`, edit PR metadata, or call a route helper without its reserved run ID. Do not start another entry while a run is active. Ambiguous destinations, PRs, and published branches without a proven PR remain blockers.
+5. If the result has `handoff`, end this turn. The reserved package skill enters this same session at settlement with its exact `runId` and initial action. Follow it through inspection, scoped commits, relevant non-destructive checks, and publication. Do not guess a run ID or use `sendUserMessage` to imitate a command. Local sync may fast-forward or rebase onto the PR head; it never rebases onto the base under this authorization.
+6. Existing PRs are reused by validated repository, destination ref, and exact head, without automatic title/body changes. Creation chooses a concise Conventional Commit title and a body with `Summary` and `Testing`. Exact-OID pushes, saved leases, authority checks, and uncertain-outcome recovery belong to the package helpers. After an uncertain mutation, stop and inspect its outcome; never replay it.
+7. Report the validated PR URL and any blocker. If the PR needs feedback, CI repair, a base update, or merge, report that creation/publication stopped there. Do not claim that these steps ran. The user must invoke `/pr` to authorize the full lifecycle.

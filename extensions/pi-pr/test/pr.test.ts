@@ -1806,11 +1806,12 @@ test("warns once for one blocked issue and warns again after recovery", async ()
 	await app.shutdown(ctx);
 });
 
-test("renders the shared projection and refreshes after successful create or push", async () => {
+test("renders the shared projection and refreshes after successful create, push, or guarded commit", async () => {
 	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery> = [
 		currentPullRequest({ conditions: { ci: "failure" } }),
 		currentPullRequest({ conditions: { ci: "running" } }),
 		noPullRequest(1),
+		noPullRequest(2),
 	];
 	const signals: Array<AbortSignal | undefined> = [];
 	const app = harness({
@@ -1846,6 +1847,12 @@ test("renders the shared projection and refreshes after successful create or pus
 	assert.equal(signals.length, 3);
 	assert.equal(app.statuses.at(-1), undefined);
 	assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+
+	await app.tool({ toolName: "pi_git_commit", input: { action: "inspect" }, isError: false }, ctx);
+	await app.tool({ toolName: "pi_git_commit", input: { action: "commit" }, isError: true }, ctx);
+	assert.equal(signals.length, 3);
+	await app.tool({ toolName: "pi_git_commit", input: { action: "commit" }, isError: false }, ctx);
+	assert.equal(signals.length, 4);
 
 	await app.shutdown(ctx);
 });
@@ -2972,5 +2979,75 @@ test("agent PR entry carries base constraint, rejects overlap, and expires an ab
 		busy = false;
 		await app.settle(ctx);
 		await assert.rejects(app.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, ctx), /No PR workflow/);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("native source Git tools commit and publish in a controlled temporary repository", async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-source-tools-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(dir, { recursive: true, force: true });
+	});
+	const root = join(dir, "worktree");
+	const bare = join(dir, "remote.git");
+	execFileSync("git", ["init", "--bare", bare], { stdio: "ignore" });
+	execFileSync("git", ["init", "--initial-branch=main", root], { stdio: "ignore" });
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+	git("config", "user.name", "Source Tool Test"); git("config", "user.email", "test@example.invalid");
+	writeFileSync(join(root, "file.txt"), "base\n");
+	git("add", "file.txt"); git("commit", "-qm", "initial"); git("switch", "-c", "feature/pr");
+	const initial = git("rev-parse", "HEAD");
+	git("push", bare, `${initial}:refs/heads/feature/pr`);
+	git("remote", "add", "origin", "git@github.com:acme/project.git");
+	let pushes = 0;
+	const exec: BoundedExec = async (command, args, options) => {
+		if (command === "gh" && args[0] === "repo") return execResult(JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" }));
+		assert.equal(command, "git", "unexpected GitHub mutation or command");
+		if (["push", "ls-remote"].includes(args[0]!) && args.includes("git@github.com:acme/project.git")) {
+			if (args[0] === "push") {
+				pushes++;
+				assert.ok(args.includes(`--force-with-lease=refs/heads/feature/pr:${initial}`));
+				assert.ok(args.includes(`${git("rev-parse", "HEAD")}:refs/heads/feature/pr`));
+			}
+			args = args.map((value) => value === "git@github.com:acme/project.git" ? bare : value);
+		}
+		return await spawnBounded(command, args, options);
+	};
+	const app = harness({ useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => routeRunId,
+		load: async () => {
+			const pr = currentPullRequest({ conditions: { ci: "success" } });
+			const remoteHead = git("ls-remote", bare, "refs/heads/feature/pr").split("\t")[0]!;
+			pr.base.oid = initial; pr.head.oid = remoteHead; pr.target.remoteOid = remoteHead;
+			pr.local = { worktree: git("status", "--porcelain") ? "dirty" : "clean", head: git("rev-parse", "HEAD") === remoteHead ? "equal" : "ahead" };
+			return pr;
+		},
+		createWorkPublisher: (options) => new PullRequestWorkPublisher({ ...options, exec, agentDir: join(dir, "agent") }),
+	});
+	const ctx = { ...app.context(), cwd: root, hasUI: false };
+	try {
+		await app.start(ctx);
+		writeFileSync(join(root, "file.txt"), "local commit\n");
+		const inspected = (await app.callTool("pi_git_commit", { action: "inspect", target: "main" }, ctx)).details as { inspectionId: string };
+		await app.callTool("pi_git_commit", { action: "commit", inspectionId: inspected.inspectionId, ownedPaths: ["file.txt"], message: "fix: local work" }, ctx);
+		assert.equal(pushes, 0, "standalone commit never publishes");
+		await assert.rejects(app.callTool("pi_git_pr", { base: "release" }, ctx), /differs from current PR base/);
+		writeFileSync(join(root, "file.txt"), "published work\n");
+		const launched = await app.callTool("pi_git_pr", { base: "main" }, ctx);
+		assert.match(String((launched.details as { handoff: string }).handoff), /End this turn/);
+		const handoff = (await app.beforeSettle(ctx))?.entries?.[0];
+		assert.ok(handoff && "content" in handoff);
+		assert.match(String(handoff.content), /pi-pr-publish-work/);
+		await assert.rejects(app.callTool("pi_git_commit", { action: "inspect", target: "main" }, ctx), /active PR route/);
+		await app.callTool("pi_pr_publish_work", { runId: routeRunId, action: "inspect" }, ctx);
+		await app.callTool("pi_pr_publish_work", { runId: routeRunId, action: "commit", ownedPaths: ["file.txt"], message: "fix: publish work" }, ctx);
+		await app.callTool("pi_pr_publish_work", { runId: routeRunId, action: "validate", checks: [] }, ctx);
+		await app.callTool("pi_pr_publish_work", { runId: routeRunId, action: "publish" }, ctx);
+		assert.equal(pushes, 1);
+		assert.equal(git("ls-remote", bare, "refs/heads/feature/pr").split("\t")[0], git("rev-parse", "HEAD"));
+		assert.equal(await app.beforeSettle(ctx), undefined, "merge-ready PR is not merged by create/update authorization");
+		assert.ok(app.notifications.some(({ message }) => /authorization stops before merge/.test(message)));
 	} finally { await app.shutdown(ctx); }
 });

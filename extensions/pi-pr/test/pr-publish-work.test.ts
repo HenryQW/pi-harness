@@ -60,6 +60,10 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	const workflow = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec, run: new PrRun(),
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 	assert.deepEqual(await workflow.inspect(), { paths: ["*.txt", "file.txt"], head: oldHead, originalHead: oldHead, diverged: false });
+	writeFileSync(join(root, "*.txt"), "same status, different bytes\n");
+	await assert.rejects(workflow.commit(["*.txt"], "fix: drifted work"), /changed after inspection/);
+	assert.equal(git("diff", "--cached"), "");
+	writeFileSync(join(root, "*.txt"), "updated literal path\n");
 	await assert.rejects(workflow.commit(["unknown.txt"], "fix: scope work"), /reviewed pending paths/);
 	let committed = await workflow.commit(["*.txt"], "fix: scope work");
 	assert.notEqual(committed.head, oldHead);
@@ -104,6 +108,8 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	assert.deepEqual((await renamed.inspect()).paths, ["renamed.txt", "*.txt"]);
 	await assert.rejects(renamed.commit(["renamed.txt"], "fix: rename"), /Unrelated staged changes/);
 	assert.equal(git("status", "--porcelain=v1"), "R  *.txt -> renamed.txt");
+	await renamed.commit(["*.txt", "renamed.txt"], "refactor: rename file");
+	assert.equal(git("status", "--porcelain=v1"), "");
 	git("reset", "--hard", second.head);
 	writeFileSync(join(root, "file.txt"), "commit response will be lost\n");
 	const uncertain = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,

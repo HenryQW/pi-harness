@@ -789,6 +789,10 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	workflow.state.base = { host: "github.com", repository: "acme/project", ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/project.git" };
 	assert.deepEqual(await workflow.inspect(), { paths: ["file.txt"], head: initial });
+	writeFileSync(join(root, "file.txt"), "same status, different bytes\n");
+	await assert.rejects(workflow.commit(["file.txt"], "fix: drifted work"), /changed after inspection/);
+	assert.equal(git("diff", "--cached"), "");
+	await workflow.inspect();
 	await assert.rejects(workflow.commit(["other.txt"], "fix: pending work"), /reviewed pending paths/);
 	const committed = await workflow.commit(["file.txt"], "fix: pending work");
 	assert.equal(committed.head, git("rev-parse", "HEAD"));
@@ -805,4 +809,6 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	assert.deepEqual((await renamed.inspect()).paths, ["renamed.txt", "file.txt"]);
 	await assert.rejects(renamed.commit(["renamed.txt"], "fix: rename"), /Unrelated staged changes/);
 	assert.equal(git("status", "--porcelain=v1"), "R  file.txt -> renamed.txt");
+	await renamed.commit(["file.txt", "renamed.txt"], "refactor: rename file");
+	assert.equal(git("status", "--porcelain=v1"), "");
 });

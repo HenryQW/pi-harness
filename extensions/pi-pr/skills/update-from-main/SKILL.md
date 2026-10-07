@@ -48,4 +48,4 @@ git merge-base --is-ancestor <emitted-main-sha> HEAD
 git status --short --branch
 ```
 
-Run only smallest relevant check; docs-only recovery gets docs-specific checks, not broad tests. Run project dependency preflight before dependency-backed checks. Redirect check output to temp file. On success report command plus `PASS`; on failure print only final 100 lines. Never rebase, reset, abort, push, or commit unrelated work.
+Run only smallest relevant check; docs-only recovery gets docs-specific checks, not broad tests. Run project dependency preflight before dependency-backed checks. Redirect check output to temp file. On success report the command and at most 20 summary lines. On failure report at most 80 lines or 8 KiB of relevant errors. Never rebase, reset, abort, push, or commit unrelated work.
