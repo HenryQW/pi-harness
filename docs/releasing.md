@@ -35,7 +35,7 @@ Before the final release commit or any push, run:
 pnpm run check:package-versions
 ```
 
-Pull-request CI runs the same version check, plus tests, typechecks, and pack checks in `.github/workflows/ci.yml`. Pi `devDependencies` pin the floor, so these checks test the floor. Direct pushes to `main` rely on the local version check.
+Pull-request CI runs the same version check, plus tests, typechecks, and pack checks in `.github/workflows/ci.yml`. These checks test only the Pi version that each package's `devDependencies` pin, so pin it to the floor (see [Pi peer ranges](#pi-peer-ranges)). A range that also accepts an older Pi major is not tested on that major. Direct pushes to `main` rely on the local version check.
 
 When a published README links local files, include them in the package allowlist and verify that package with `npm pack --dry-run`.
 

@@ -36,22 +36,26 @@ Implement `remove` items first, then `change` items; record before and after mea
 
 ## 3. Test the target
 
-Release with [docs/releasing.md](../releasing.md). Then test the commit at the target: each workspace resolves its own pinned Pi packages, so use a temporary workspace override:
+Before you release, test the final commit at the target. Each workspace resolves its own pinned Pi packages, so use a temporary workspace override. The trap restores the files also when a check fails:
 
 ```bash
-set -e
-printf '\noverrides:\n' >> pnpm-workspace.yaml
-for package in pi-agent-core pi-ai pi-coding-agent pi-tui; do
-  printf "  '@earendil-works/%s': %s\n" "$package" "$TARGET" >> pnpm-workspace.yaml
-done
-pnpm install && pnpm test && pnpm run typecheck
-git checkout -- pnpm-workspace.yaml pnpm-lock.yaml && pnpm install --frozen-lockfile
+(
+  set -e
+  trap 'git checkout -- pnpm-workspace.yaml pnpm-lock.yaml && pnpm install --frozen-lockfile' EXIT
+  printf '\noverrides:\n' >> pnpm-workspace.yaml
+  for package in pi-agent-core pi-ai pi-coding-agent pi-tui; do
+    printf "  '@earendil-works/%s': %s\n" "$package" "$TARGET" >> pnpm-workspace.yaml
+  done
+  pnpm install && pnpm test && pnpm run typecheck
+)
 ```
 
-If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimumReleaseAgeExclude` in the same temporary edit. Fix failures in a new commit and repeat CI and the target test. Run live or interactive TUI tests only when the changed behavior needs them.
+If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimumReleaseAgeExclude` in the same temporary edit. Fix failures in a new commit and repeat the target test. Run live or interactive TUI tests only when the changed behavior needs them. Then release with [docs/releasing.md](../releasing.md).
 
-Update the audit log to `TARGET`, even when every decision is `none`. Report decisions, the target-run result, untested live or interactive behavior, and npm deprecations pending maintainer action.
+Add an audit log entry, even when every decision is `none`. Report decisions, the target-run result, untested live or interactive behavior, and npm deprecations pending maintainer action.
 
 ## Audit log
 
-Last audited Pi version: `1.0.4` (2026-10-07). No deprecation, removal, or performance opportunity was found in 1.0.1 to 1.0.4.
+Add one entry per audit: the version range, the date, and each `remove` or `change` decision with its changelog item. `none` items need no entry. The last entry's upper version is `BASE`.
+
+- `1.0.1` to `1.0.4` (2026-10-07): all `none`.
