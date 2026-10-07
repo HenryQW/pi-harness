@@ -6,7 +6,7 @@ The candidate includes checkpoints `36008cb0c6fabf94e7d8ddee3c2b302c8fffd121` an
 
 - `pi_git_commit` is the standalone local entry. Creation, local publication, and feedback commits share literal-path staging and parent/tree checks. CI guidance uses the standalone commit entry with the captured PR head as its target.
 - `git-pr` now calls `pi_git_pr`, not a second shell workflow or a request to run `/pr`. Its authorization permits creation, local publication, and sync onto the PR head. It excludes feedback, CI repair, base rebase, CI waiting, and merge. `/pr` retains its full lifecycle.
-- `update-from-main` remains a standalone merge of the exact fetched OID. Recovery keeps backups. The original `/Users/henry/Git/skills` sources were read only and were not retired.
+- `update-from-main` remains a standalone merge of the exact fetched OID. Recovery keeps backups. The original `/Users/henry/Git/skills` sources stayed read-only during isolated validation. Source retirement is a separate step after Main acceptance.
 - The package manifest publishes all eight skills and their helpers. The root local manifest also declares the same skill directory. `@henryqw/pi-pr` moves from `9.0.3` to `9.1.0` for the new callable workflows and skills. No other package needs a release.
 
 ## Executed cases
@@ -84,6 +84,15 @@ Final checks run on this revision:
 
 The release stays `@henryqw/pi-pr@9.1.0`; no other package releases. Main owns root-wide combined validation and final independent acceptance. These revision checks do not rerun the prior independent collectors or fixture scripts. Live GitHub, live models, TUI behavior, and manual backup removal remain untested.
 
+## Main acceptance
+
+Main accepted and promoted runtime candidate `62711f2643bd73c26d2fe29925e00c758c21df65`, with the same source tree as revision `274695fe84b7da903d998edc3b21d85c2b509651`.
+
+- `pnpm --filter @henryqw/pi-pr test:git-workflows`: exit 0 on that exact integration candidate. Log: `/tmp/pi-pr-main-acceptance.zKbmC8`.
+- Guarded final checks: `pnpm test`, `pnpm run docs:validate`, `pnpm run check:package-versions`, `git diff --check`, and `npm pack --dry-run --json` from `extensions/pi-pr` all returned exit 0. The runtime candidate stayed unchanged.
+- The guarded exact-candidate review and the separate final reviewer both returned `PASS`.
+- This section is a report-only update after promotion. It does not claim another model-driven package run, live GitHub write, or replay of the previous independent fixture scripts. Credential replacement and removal of installed standalone skill copies remain user actions.
+
 ## Independent acceptance entry
 
 From the exact candidate checkout, with existing workspace dependencies and Python 3.9+ installed, run:
@@ -103,8 +112,8 @@ Main can give separate acceptance workers the source `extensions/pi-pr/extension
 
 ## Limits
 
-- Automated native tests use the workspace-pinned Pi `1.0.0` dependency. The installed `1.0.2` authority is `/Users/henry/.pi/agent/install/releases/1.0.2/node_modules/@earendil-works/pi-coding-agent`; its documentation and declarations were inspected, and its resource APIs were probed. There was no live model session, TUI trial, or provider request.
+- Automated native tests use the workspace-pinned Pi `1.0.0` dependency. The installed `1.0.2` authority is `/Users/henry/.pi/agent/install/releases/1.0.2/node_modules/@earendil-works/pi-coding-agent`; its documentation and declarations were inspected, and its resource APIs were probed. Live model-driven use of the packaged tools and TUI behavior were not tested.
 - Controlled GitHub responses test authorization and command boundaries. They do not prove live GitHub authentication, repository policy, network transport, or GitHub Enterprise behavior.
 - A user request and upstream consent are agent guidance requirements; a Boolean tool field cannot prove that a person gave consent. Ownership, secret-content detection, check adequacy, and semantic conflict resolution still need agent/user judgment.
-- The acceptance entry is supplied for Main. This worker runs its component cases through package/focused checks; Main must run its own acceptance on the integrated candidate. Root-wide tests and typecheck are also Main's final acceptance responsibility.
-- No live GitHub change, external push, npm publication, original skill deletion, or persistent user configuration edit was made.
+- The acceptance entry is available for later local runs. Main's exact-candidate acceptance and root-wide checks are recorded above. Package typecheck passed on the revision; no new claim is made for unchanged packages' typechecks.
+- No live GitHub change, external push, npm publication, or persistent user configuration edit was made. Source retirement is permitted only after acceptance; installed standalone copies are not removed automatically.
