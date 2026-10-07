@@ -1,4 +1,4 @@
-import { commitStagedPaths, stageCommitPaths } from "./git-commit.ts";
+import { validateCommitMessage, commitStagedPaths, stageCommitPaths } from "./git-commit.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -1128,7 +1128,7 @@ export class PullRequestCommentSweep {
 	}
 
 	async commit(guard: SweepRunGuard, message: string): Promise<{ head: string }> {
-		requiredText(message, "commit message");
+		validateCommitMessage(message);
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
 			const state = await this.loadState(location);

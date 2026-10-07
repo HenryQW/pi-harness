@@ -21,6 +21,7 @@ import {
 	WORKFLOW_ROUTES,
 	type PrCommandDependencies,
 	type PrCommandInvocation,
+	type PublicationRequest,
 	type WorkflowPromptIdentity,
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
@@ -157,6 +158,10 @@ const WorkActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("validate"), checks: SweepChecks }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
 ]);
+const PublicationParameters = Type.Object({
+	base: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, pattern: "^[^\\s\\x00]+$" })),
+	allowUpstream: Type.Optional(Type.Boolean()),
+}, CLOSED);
 const FixCiActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("collect") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
@@ -179,6 +184,7 @@ type WorkflowContextBase = {
 	staleRediscoveries: number;
 	run: PrRun;
 	entryHead: string | null;
+	publication?: PublicationRequest;
 };
 type WorkflowContext =
 	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow; authority: CurrentPullRequest; replan?: string })
@@ -344,6 +350,7 @@ export default function pullRequestExtension(
 			completed: false,
 			staleRediscoveries: invocation.staleRediscoveries ?? 0,
 			run: invocation.run ?? prRun,
+			publication: invocation.publication,
 			entryHead: reservation.route === "create" ? reservation.target.remoteOid : reservation.pullRequest.head.oid,
 		};
 		switch (reservation.route) {
@@ -376,6 +383,7 @@ export default function pullRequestExtension(
 					...common,
 					route: "create",
 					workflow: createPullRequestCreator({
+						expectedBase: invocation.publication?.base,
 						cwd: worktree,
 						target: reservation.target,
 						signal: common.controller.signal,
@@ -887,6 +895,7 @@ export default function pullRequestExtension(
 		}, {
 			sessionGeneration: generation,
 			run: selected.run,
+			publication: selected.publication,
 			staleRediscoveries: selected.staleRediscoveries + (replanning ? 1 : 0),
 			replanAuthority: replanning ? selected.authority : undefined,
 			assertCurrent() {
@@ -956,7 +965,7 @@ export default function pullRequestExtension(
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!ctx.hasUI || !ctx.isIdle() || !context) return;
+		if (!ctx.isIdle()) return;
 		const selected = workflowContext;
 		const helperSettled = selected?.usedSinceSettlement ?? false;
 		let workflowSettled = false;
@@ -975,6 +984,7 @@ export default function pullRequestExtension(
 				selected.conflictRetained = true;
 			} else clearWorkflow(selected);
 		}
+		if (!ctx.hasUI || !context) return;
 		const delegatedRefresh = delegatedWorkPending && lastDiscovery !== "inactive";
 		delegatedWorkPending = false;
 		if (!workflowSettled && !helperSettled && !delegatedRefresh) return;
@@ -1018,10 +1028,9 @@ export default function pullRequestExtension(
 		markWorkflowPromptQueued,
 		releaseWorkflow,
 	});
-	pi.registerCommand("pr", {
-		description: "Run the current branch pull request lifecycle",
-		handler: async (args, ctx) => {
-			if (!ctx.hasUI || !context) return;
+	const launch = async (args: string, ctx: ExtensionContext, publication?: PublicationRequest) => {
+			ctx.signal?.throwIfAborted();
+			if (publication && (workflowContext || activeInvocations.size)) throw new Error("A PR invocation is still active");
 			cancelRefresh();
 			prRun = new PrRun((dependencies.loadPrPolicy ?? loadPrPolicy)());
 			const generation = sessionGeneration;
@@ -1033,10 +1042,14 @@ export default function pullRequestExtension(
 				activeInvocations.set(invocation, "resolved");
 				reconcileWidget(ctx);
 			};
+			let observed: Awaited<ReturnType<typeof loadCurrentPullRequest>> | undefined;
 			const commandInvocation: PrCommandInvocation = Object.assign(routeResolved, {
 				sessionGeneration: generation,
 				run: prRun,
+				publication,
+				onDiscovery(discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>) { observed = discovery; },
 				assertCurrent() {
+					ctx.signal?.throwIfAborted();
 					if (sessionGeneration !== generation) {
 						throw new Error("PR command session changed during dispatch");
 					}
@@ -1071,6 +1084,27 @@ export default function pullRequestExtension(
 				activeInvocations.delete(invocation);
 				refreshInBackground();
 			}
+			return { nextStep,
+				...(observed?.kind === "current" ? { url: observed.pullRequest.url.href } : {}),
+				...(observed?.kind === "blocked" ? { blocker: discoveryIssueDetails(observed.issue).message } : {}),
+				...(WORKFLOW_ROUTES.has(nextStep) ? { handoff: "End this turn. The reserved package skill will enter this session at settlement; do not call another PR entry or guess a run ID." } : {}),
+			};
+	};
+	pi.registerCommand("pr", {
+		description: "Run the current branch pull request lifecycle",
+		handler: async (args, ctx) => { if (ctx.hasUI && context) await launch(args, ctx); },
+	});
+	pi.registerTool({
+		name: "pi_git_pr",
+		label: "Create or Update PR",
+		description: "Start guarded PR creation or local publication in this session. Requires user create/update authorization. Never repairs feedback/CI, updates the base, or merges. base must match the existing PR or configured/default creation base. Set allowUpstream only with explicit permission to configure the repository-local branch upstream. Read git-pr guidance first.",
+		parameters: PublicationParameters,
+		executionMode: "sequential",
+		exposure: "model-only",
+		async execute(_id, raw, signal, _update, ctx) {
+			if (!Check(PublicationParameters, raw)) throw new Error("Invalid PR publication request");
+			return toolResult(await launch("", { ...ctx, signal: signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal },
+				{ base: raw.base, allowUpstream: raw.allowUpstream === true }));
 		},
 	});
 }

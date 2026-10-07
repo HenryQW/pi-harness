@@ -89,3 +89,24 @@ test("hook failure and a lost successful commit response cannot be replayed", as
 		assert.equal(attempts, 1);
 	}
 });
+
+test("cancellation before staging preserves the index and allows a fresh inspection", async (t) => {
+	const { git, write, committer } = fixture(t);
+	write("file.txt", "pending\n");
+	const snapshot = await committer.inspect("main");
+	const signal = AbortSignal.abort(new Error("cancelled"));
+	await assert.rejects(committer.commit(snapshot.inspectionId, ["file.txt"], "fix: cancelled", signal), /cancelled/);
+	assert.equal(git("diff", "--cached"), "");
+	const fresh = await committer.inspect("main");
+	await committer.commit(fresh.inspectionId, ["file.txt"], "fix: fresh attempt");
+});
+
+test("a hook that changes the commit tree fails closed without replay", async (t) => {
+	const { cwd, git, write, committer } = fixture(t);
+	write("file.txt", "owned\n"); write("other.txt", "unrelated\n");
+	writeFileSync(join(cwd, ".git/hooks/pre-commit"), "#!/bin/sh\ngit add other.txt\n", { mode: 0o755 });
+	const snapshot = await committer.inspect("main");
+	await assert.rejects(committer.commit(snapshot.inspectionId, ["file.txt"], "fix: owned"), /Commit parent or tree changed/);
+	assert.equal(git("show", "--format=", "--name-only", "HEAD"), "file.txt\nother.txt");
+	await assert.rejects(committer.inspect("main"), /manual review/);
+});

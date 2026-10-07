@@ -1,4 +1,4 @@
-import { commitStagedPaths, inspectPendingCommit, requirePendingCommit, stageCommitPaths, type PendingCommit } from "./git-commit.ts";
+import { validateCommitMessage, commitStagedPaths, inspectPendingCommit, requirePendingCommit, stageCommitPaths, type PendingCommit } from "./git-commit.ts";
 import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
@@ -76,6 +76,7 @@ type CreatePullRequestResult =
 	| { kind: "published"; url: string };
 
 export type CreatePullRequestOptions = {
+	expectedBase?: string;
 	run?: PrRun;
 	cwd: string;
 	target: PullRequestTarget;
@@ -164,6 +165,7 @@ function parseCreatedUrl(output: string, host: string, baseRepository: string): 
 export class PullRequestCreator {
 	readonly state: CreatePullRequestState = { phase: "unprepared" };
 
+	private readonly expectedBase?: string;
 	private readonly run?: PrRun;
 	private readonly cwd: string;
 	private readonly target: PullRequestTarget;
@@ -175,6 +177,7 @@ export class PullRequestCreator {
 	private readonly load: Load;
 
 	constructor(options: CreatePullRequestOptions) {
+		this.expectedBase = options.expectedBase;
 		this.cwd = options.cwd;
 		this.run = options.run;
 		this.target = { ...options.target };
@@ -252,6 +255,9 @@ export class PullRequestCreator {
 				throw new Error("PR creation requires at least one commit ahead of the selected base or pending work");
 			}
 			const { base } = preflight;
+			if (this.expectedBase && base.ref !== this.expectedBase) {
+				throw new Error(`Requested base ${this.expectedBase} differs from selected base ${base.ref}; set branch gh-merge-base only with explicit permission`);
+			}
 			this.state.base = {
 				host: base.host,
 				repository: base.repository,
@@ -295,7 +301,7 @@ export class PullRequestCreator {
 		if (!paths.length || paths.some((path) => !parseStatusSnapshot(this.state.pending!.status).has(path))) {
 			throw new Error("Commit paths must be reviewed pending paths");
 		}
-		requiredText(message, "commit message");
+		validateCommitMessage(message);
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshNone();
 			await requirePendingCommit(this.exec, this.options(), this.state.pending!);

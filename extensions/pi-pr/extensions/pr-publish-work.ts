@@ -1,4 +1,4 @@
-import { commitStagedPaths, inspectPendingCommit, requirePendingCommit, stageCommitPaths, type PendingCommit } from "./git-commit.ts";
+import { validateCommitMessage, commitStagedPaths, inspectPendingCommit, requirePendingCommit, stageCommitPaths, type PendingCommit } from "./git-commit.ts";
 import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
@@ -80,7 +80,7 @@ export class PullRequestWorkPublisher {
 		if (!paths.length || paths.some((path) => !parseStatusSnapshot(this.status!).has(path))) {
 			throw new Error("Commit paths must be reviewed pending paths");
 		}
-		requiredText(message, "commit message");
+		validateCommitMessage(message);
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
 			await requirePendingCommit(this.exec, this.execOptions(), this.pending!);

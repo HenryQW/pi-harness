@@ -496,6 +496,8 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 	const cases = [
 		{ name: "configured", explicit: undefined, configured: "release", selected: "release" },
 		{ name: "default", explicit: undefined, configured: undefined, selected: "trunk" },
+		{ name: "matching request", explicit: "release", configured: "release", selected: "release" },
+		{ name: "mismatched request", explicit: "release", configured: undefined, selected: "trunk" },
 	];
 	for (const candidate of cases) {
 		const calls: Array<[string, string[]]> = [];
@@ -530,6 +532,7 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 		const workflow = new PullRequestCreator({
 			cwd,
 			target: creationTarget,
+			expectedBase: candidate.explicit,
 			agentDir,
 			exec,
 			async loadCurrentPullRequest() {
@@ -537,6 +540,13 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 			},
 		});
 
+		if (candidate.explicit && candidate.explicit !== candidate.selected) {
+			await assert.rejects(workflow.prepare(), /Requested base release differs from selected base trunk/);
+			assert.equal(workflow.state.phase, "unprepared");
+			assert.equal(calls.some(([command, args]) => command === "git" && ["add", "commit", "push"].includes(args[0]!)), false);
+			assert.ok(calls.filter(([command, args]) => command === "git" && args[0] === "config").every(([, args]) => args[1] === "--get-all"));
+			continue;
+		}
 		const prepared = await workflow.prepare();
 		assert.deepEqual(prepared, {
 			kind: "prepared",

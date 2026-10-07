@@ -66,9 +66,19 @@ export async function stageCommitPaths(exec: Exec, options: ExecOptions, input: 
 	await runChecked(exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], options);
 }
 
+export function validateCommitMessage(message: string): void {
+	if (typeof message !== "string" || !/^(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\([^\r\n()]+\))?!?: [^\r\n]+(?:\n[\s\S]*)?$/.test(message) || message.split("\n")[0]!.length > 72 || message.length > 16_384 || message.includes("\0")) {
+		throw new Error("Use a Conventional Commit message with a subject of at most 72 characters");
+	}
+}
+
 export async function commitStagedPaths(exec: Exec, options: ExecOptions, message: string): Promise<void> {
-	if (typeof message !== "string" || !message.trim() || message.includes("\0") || message.length > 16_384) throw new Error("Invalid commit message");
+	validateCommitMessage(message);
+	const parent = await readHead(exec, options);
+	const tree = requiredOid((await runChecked(exec, "git", ["write-tree"], options)).stdout.trim(), "commit tree");
 	await runChecked(exec, "git", ["commit", "-m", message], options);
+	const actual = (await runChecked(exec, "git", ["show", "-s", "--format=%P %T", "HEAD"], options)).stdout.trim();
+	if (actual !== `${parent} ${tree}`) throw new Error("Commit parent or tree changed, possibly by a hook; inspect the actual commit and do not replay it");
 }
 
 type Options = { cwd: string; agentDir?: string; exec?: Exec };
@@ -78,7 +88,8 @@ export class GitCommitter {
 	private pending?: PendingCommit & { inspectionId: string; branch: string };
 	private uncertain = false;
 	private readonly exec: Exec;
-	constructor(private readonly options: Options) { this.exec = options.exec ?? spawnBounded; }
+	private readonly options: Options;
+	constructor(options: Options) { this.options = options; this.exec = options.exec ?? spawnBounded; }
 
 	async inspect(target: string, signal?: AbortSignal) {
 		if (this.uncertain) throw new Error("Commit outcome needs manual review; do not replay it. Reload only after review");
@@ -100,9 +111,7 @@ export class GitCommitter {
 		if (!pending || pending.inspectionId !== inspectionId || this.uncertain) throw new Error("Commit inspection is absent, stale, or consumed");
 		const paths = commitPaths(pathsInput);
 		if (paths.some((path) => !parseStatusSnapshot(pending.status).has(path))) throw new Error("Commit paths must be reviewed pending paths");
-		if (!/^(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\([^\r\n()]+\))?!?: [^\r\n]+(?:\n[\s\S]*)?$/.test(message) || message.split("\n")[0]!.length > 72 || message.length > 16_384 || message.includes("\0")) {
-			throw new Error("Use a Conventional Commit message with a subject of at most 72 characters");
-		}
+		validateCommitMessage(message);
 		return withWorktreeLock(this.options.cwd, async () => {
 			const options = { cwd: this.options.cwd, signal };
 			if ((await runChecked(this.exec, "git", ["branch", "--show-current"], options)).stdout.trim() !== pending.branch) throw new Error("Commit branch changed");
