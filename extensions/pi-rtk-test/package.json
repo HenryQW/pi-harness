@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-rtk-test",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Route direct Pi pnpm test calls through RTK.",
   "keywords": [
     "pi-package",
@@ -24,7 +24,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.86.0 <0.100.0 || ^1.0.0"
+    "@earendil-works/pi-coding-agent": "^1.0.0"
   },
   "repository": {
     "type": "git",

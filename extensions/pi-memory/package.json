@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-memory",
-  "version": "9.0.1",
+  "version": "9.0.2",
   "description": "Auto-managed markdown memory for Pi: capped MEMORY.md/USER.md entry stores with frozen session snapshots.",
   "keywords": [
     "pi-package",
@@ -25,8 +25,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
-    "@henryqw/pi-ask-question": "^2.0.0",
-    "@henryqw/pi-config-store": "^2.0.0",
+    "@henryqw/pi-ask-question": "^3.0.0",
+    "@henryqw/pi-config-store": "^3.0.0",
     "@henryqw/pi-task-models": "^7.0.0",
     "proper-lockfile": "^4.1.2"
   },
