@@ -18,24 +18,24 @@ const READ_ATTEMPTS = 3;
 const FEEDBACK_QUERY = `
 query Feedback($owner:String!,$repo:String!,$number:Int!,$commentsCursor:String,$reviewsCursor:String,$threadsCursor:String){
   repository(owner:$owner,name:$repo){pullRequest(number:$number){
-    comments(first:100,after:$commentsCursor){pageInfo{hasNextPage endCursor} nodes{id url body createdAt author{login}}}
-    reviews(first:100,after:$reviewsCursor){pageInfo{hasNextPage endCursor} nodes{id url state body submittedAt author{login}}}
+    comments(first:100,after:$commentsCursor){pageInfo{hasNextPage endCursor} nodes{id url body createdAt author{login __typename}}}
+    reviews(first:100,after:$reviewsCursor){pageInfo{hasNextPage endCursor} nodes{id url state body submittedAt author{login __typename}}}
     reviewThreads(first:100,after:$threadsCursor){pageInfo{hasNextPage endCursor} nodes{
       id isResolved isOutdated path line diffSide startLine startDiffSide originalLine originalStartLine
-      comments(first:100){pageInfo{hasNextPage endCursor} nodes{id url body createdAt author{login}}}
+      comments(first:100){pageInfo{hasNextPage endCursor} nodes{id url body createdAt author{login __typename}}}
     }}
   }}
 }`;
 const THREAD_REPLIES_QUERY = `
 query ThreadReplies($threadId:ID!,$cursor:String){node(id:$threadId){... on PullRequestReviewThread{
-  comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id url body createdAt author{login}}}
+  comments(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{id url body createdAt author{login __typename}}}
 }}}`;
 const RESOLVE_THREAD_MUTATION = `
 mutation ResolveThread($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{id isResolved}}}`;
 const REPLY_THREAD_MUTATION = `
 mutation ReplyThread($threadId:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}){comment{id body}}}`;
 
-type FeedbackAuthor = { login: string } | null;
+type FeedbackAuthor = { login: string; __typename?: string } | null;
 type FeedbackComment = {
 	id: string;
 	url: string;
@@ -201,7 +201,11 @@ function parseAuthority(value: unknown): FeedbackAuthority {
 function parseAuthor(value: unknown, label: string): FeedbackAuthor {
 	if (value === null) return null;
 	if (!isRecord(value)) throw new Error(`${label} author is invalid`);
-	return { login: requiredText(value.login, `${label} author login`) };
+	return {
+		login: requiredText(value.login, `${label} author login`),
+		// Keep old recovery snapshots unchanged so their saved fingerprints remain valid.
+		...("__typename" in value ? { __typename: requiredText(value.__typename, `${label} author type`) } : {}),
+	};
 }
 
 function parseComment(value: unknown, label: string): FeedbackComment {
