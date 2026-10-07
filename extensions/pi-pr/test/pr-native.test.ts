@@ -19,7 +19,7 @@ after(() => {
 
 // Exercise native prompt expansion, boundary dispatch/projection, and editor queue restoration;
 // no provider or GitHub requests are made.
-for (const route of ["create", "publish-work", "sweep", "fix-ci"] as const) test(route === "sweep" || route === "fix-ci"
+for (const [route, bounded] of [["create", false], ["publish-work", false], ["sweep", false], ["fix-ci", false], ["create", true], ["publish-work", true]] as const) test(bounded ? `agent ${route} uses native dispatch and stops at publication without UI` : route === "sweep" || route === "fix-ci"
 	? `stale ${route} publication hands off a fresh live route before native settlement`
 	: `${route} continues through hidden native context with a PR footer before settlement`, async () => {
 	const staleRoute = route === "sweep" || route === "fix-ci" ? route : undefined;
@@ -42,7 +42,7 @@ for (const route of ["create", "publish-work", "sweep", "fix-ci"] as const) test
 	const manager = SessionManager.inMemory("/repo");
 	manager.appendMessage({ role: "user", content: [{ type: "text", text: "/pr" }], timestamp: Date.now() });
 	const ctx = {
-		cwd: "/repo", hasUI: true, mode: "rpc", signal: new AbortController().signal,
+		cwd: "/repo", hasUI: !bounded, mode: "rpc", signal: new AbortController().signal,
 		isIdle: () => !busy, sessionManager: manager,
 		ui: { setWidget(_key: string, value: unknown) { widget = value; },
 			setStatus(_key: string, value: string | undefined) { status = value; },
@@ -114,7 +114,13 @@ for (const route of ["create", "publish-work", "sweep", "fix-ci"] as const) test
 	await runner.emit({ type: "session_start" });
 	await new Promise((resolve) => setImmediate(resolve));
 	try {
-		await command.handler("", ctx as ExtensionCommandContext);
+		if (bounded) {
+			busy = true;
+			await tools.get("pi_git_pr")!.execute("start", { base: "main", allowUpstream: true }, ctx.signal, undefined, ctx as never);
+			assert.equal(await session._runBeforeSettleBoundary(), true);
+			assert.match(String((manager.getBranch().at(-1) as { content: unknown }).content), new RegExp(`pi-pr-${route}`));
+			assert.equal(await session._runBeforeSettleBoundary(), false, "launch is consumed exactly once");
+		} else await command.handler("", ctx as ExtensionCommandContext);
 		if (staleRoute) {
 			localAhead = true;
 			const cancelled = await tools.get(staleRoute === "fix-ci" ? "pi_pr_fix_ci" : "pi_pr_sweep")!.execute("cancelled-start", {
@@ -137,6 +143,18 @@ for (const route of ["create", "publish-work", "sweep", "fix-ci"] as const) test
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 		});
 		const loadsBeforeContinuation = loads;
+		if (bounded) {
+			assert.equal(await session._runBeforeSettleBoundary(), false, "publication must not authorize feedback or merge");
+			assert.equal(run, 1, "no lifecycle helper is reserved");
+			assert.match(notifications.join("\n"), /authorization stops before sweep/);
+			busy = false;
+			await runner.emit({ type: "agent_settled" });
+			await assert.rejects(tools.get(route === "create" ? "pi_pr_create" : "pi_pr_publish_work")!.execute("expired", {
+				runId: "11111111-1111-4111-8111-111111111111", action: "publish",
+				...(route === "create" ? { title: "Create PR", body: "" } : {}),
+			}, ctx.signal, undefined, ctx as never), /No PR workflow is active/);
+			return;
+		}
 		assert.equal(await session._runBeforeSettleBoundary(), true);
 		assert.match(status ?? "", /#42/, "the discovered PR must be in the footer before final settlement");
 		assert.equal(widget, undefined, "the action hint stays hidden during automatic continuation");

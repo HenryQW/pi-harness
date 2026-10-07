@@ -496,6 +496,8 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 	const cases = [
 		{ name: "configured", explicit: undefined, configured: "release", selected: "release" },
 		{ name: "default", explicit: undefined, configured: undefined, selected: "trunk" },
+		{ name: "matching request", explicit: "release", configured: "release", selected: "release" },
+		{ name: "mismatched request", explicit: "release", configured: undefined, selected: "trunk" },
 	];
 	for (const candidate of cases) {
 		const calls: Array<[string, string[]]> = [];
@@ -530,6 +532,7 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 		const workflow = new PullRequestCreator({
 			cwd,
 			target: creationTarget,
+			expectedBase: candidate.explicit,
 			agentDir,
 			exec,
 			async loadCurrentPullRequest() {
@@ -537,6 +540,13 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 			},
 		});
 
+		if (candidate.explicit && candidate.explicit !== candidate.selected) {
+			await assert.rejects(workflow.prepare(), /Requested base release differs from selected base trunk/);
+			assert.equal(workflow.state.phase, "unprepared");
+			assert.equal(calls.some(([command, args]) => command === "git" && ["add", "commit", "push"].includes(args[0]!)), false);
+			assert.ok(calls.filter(([command, args]) => command === "git" && args[0] === "config").every(([, args]) => args[1] === "--get-all"));
+			continue;
+		}
 		const prepared = await workflow.prepare();
 		assert.deepEqual(prepared, {
 			kind: "prepared",
@@ -672,6 +682,58 @@ test("prepare rejects a shared preflight with no commits ahead", async (t) => {
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "cat-file"), false);
 });
 
+for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as const) test(`${scenario} metadata when an exact PR appears after push`, async (t) => {
+	const bounded = scenario !== "full";
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-race-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	const creationTarget = target(false);
+	let pushed = false;
+	let appeared = false;
+	let metadata = { title: "Existing title", body: "Existing body" };
+	const mutations: string[] = [];
+	const exec: Exec = async (command, args, options) => {
+		const text = args.join(" ");
+		if (command === "git" && text === "branch --show-current") return result("feature\n");
+		if (command === "git" && ["remote get-url --push --all origin", "remote get-url --all origin"].includes(text)) return result("git@github.com:acme/project.git\n");
+		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
+		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+		if (command === "git" && args[0] === "merge-base") return result();
+		if (command === "git" && args[0] === "push") { pushed = true; return result(); }
+		if (command === "git" && args[0] === "ls-remote") return result(`${pushed ? head : creationTarget.remoteOid}\trefs/heads/feature\n`);
+		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+		if (command === "gh" && args[0] === "api") {
+			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+			return result(query.includes("associatedPullRequests(") ? searchOutput(appeared) : baseOutput());
+		}
+		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(JSON.stringify({
+			...JSON.parse(publication(metadata.body)), title: metadata.title,
+			baseRefName: scenario === "base-mismatch" ? "release" : "main",
+			headRefOid: scenario === "head-mismatch" ? "d".repeat(40) : head,
+		}));
+		if (command === "gh" && args[0] === "pr" && ["edit", "create"].includes(args[1]!)) {
+			mutations.push(args[1]!);
+			metadata = { title: args[args.indexOf("--title") + 1]!, body: options.stdin! };
+			return result();
+		}
+		throw new Error(`Unexpected ${command} ${text}`);
+	};
+	const workflow = new PullRequestCreator({ cwd, agentDir, target: creationTarget, exec,
+		preserveExistingMetadata: bounded,
+		loadCurrentPullRequest: async () => none({ ...creationTarget, remoteOid: pushed ? head : creationTarget.remoteOid }),
+	});
+	workflow.state.phase = "verified";
+	workflow.state.verifiedHead = head;
+	workflow.state.base = { host: "github.com", repository: "acme/project", ref: "main", oid: base, fetchSource: "git@github.com:acme/project.git" };
+	await workflow.push();
+	appeared = true; // Another actor opens this exact PR between push and metadata publication.
+	if (scenario === "base-mismatch" || scenario === "head-mismatch") {
+		await assert.rejects(workflow.publish("feat: new title", "New body"), /different base|metadata is not canonical/);
+	} else assert.deepEqual(await workflow.publish("feat: new title", "New body"), { kind: "published", url });
+	assert.deepEqual(mutations, bounded ? [] : ["edit"]);
+	assert.deepEqual(metadata, bounded ? { title: "Existing title", body: "Existing body" } : { title: "feat: new title", body: "New body" });
+});
+
 test("a title/body race after PR mutation is terminal unknown and is never replayed", async (t) => {
 	let searches = 0;
 	let mutations = 0;
@@ -779,6 +841,10 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	workflow.state.base = { host: "github.com", repository: "acme/project", ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/project.git" };
 	assert.deepEqual(await workflow.inspect(), { paths: ["file.txt"], head: initial });
+	writeFileSync(join(root, "file.txt"), "same status, different bytes\n");
+	await assert.rejects(workflow.commit(["file.txt"], "fix: drifted work"), /changed after inspection/);
+	assert.equal(git("diff", "--cached"), "");
+	await workflow.inspect();
 	await assert.rejects(workflow.commit(["other.txt"], "fix: pending work"), /reviewed pending paths/);
 	const committed = await workflow.commit(["file.txt"], "fix: pending work");
 	assert.equal(committed.head, git("rev-parse", "HEAD"));
@@ -795,4 +861,6 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	assert.deepEqual((await renamed.inspect()).paths, ["renamed.txt", "file.txt"]);
 	await assert.rejects(renamed.commit(["renamed.txt"], "fix: rename"), /Unrelated staged changes/);
 	assert.equal(git("status", "--porcelain=v1"), "R  file.txt -> renamed.txt");
+	await renamed.commit(["file.txt", "renamed.txt"], "refactor: rename file");
+	assert.equal(git("status", "--porcelain=v1"), "");
 });

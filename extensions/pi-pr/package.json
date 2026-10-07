@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "9.0.6",
+  "version": "9.1.0",
   "description": "Run /pr to safely discover or link the current pull request, then create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
@@ -13,16 +13,20 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "license": "MIT",
+  "license": "(MIT AND Apache-2.0)",
   "files": [
     "LICENSE",
+    "LICENSE-APACHE-2.0",
+    "NOTICE.md",
     "docs/pr-routing.svg",
+    "docs/git-workflows-tested.md",
     "extensions",
     "skills",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts && node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs self-test",
+    "test": "node --test test/*.test.ts && node skills/pi-pr-comment-sweep/scripts/pr-feedback.mjs self-test && python3 skills/update-from-main/scripts/validate.py",
+    "test:git-workflows": "node --test test/git-commit.test.ts test/pr-native.test.ts test/pr-publish-work.test.ts && node --test --test-name-pattern='native source Git tools' test/pr.test.ts && python3 skills/update-from-main/scripts/validate.py",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },

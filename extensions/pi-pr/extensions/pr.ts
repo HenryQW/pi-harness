@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GitCommitter } from "./git-commit.ts";
 import { spawnBounded } from "@henryqw/pi-process";
 import { readFile, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -20,6 +21,7 @@ import {
 	WORKFLOW_ROUTES,
 	type PrCommandDependencies,
 	type PrCommandInvocation,
+	type PublicationRequest,
 	type WorkflowPromptIdentity,
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
@@ -110,6 +112,10 @@ function checkedAction<T extends TUnion<TObject[]>>(actions: T, args: unknown): 
 	throw new Error(`Tool arguments do not match one action${issue ? `: ${issue.message}` : ""}`);
 }
 
+const CommitActions = Type.Union([
+	Type.Object({ action: Type.Literal("inspect"), target: Type.String({ minLength: 1, maxLength: 1_024 }) }, CLOSED),
+	Type.Object({ action: Type.Literal("commit"), inspectionId: RouteRunId, ownedPaths: OwnedPaths, message: Type.String({ minLength: 1, maxLength: 16_384 }) }, CLOSED),
+]);
 const UpdateBranchActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("rebase") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("continue"), resolvedPaths: ResolvedPaths }, CLOSED),
@@ -153,6 +159,10 @@ const WorkActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("validate"), checks: SweepChecks }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
 ]);
+const PublicationParameters = Type.Object({
+	base: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, pattern: "^[^\\s\\x00]+$" })),
+	allowUpstream: Type.Optional(Type.Boolean()),
+}, CLOSED);
 const FixCiActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("collect") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
@@ -175,6 +185,7 @@ type WorkflowContextBase = {
 	staleRediscoveries: number;
 	run: PrRun;
 	entryHead: string | null;
+	publication?: PublicationRequest;
 };
 type WorkflowContext =
 	| (WorkflowContextBase & { route: "update-branch"; workflow: UpdateBranchWorkflow; authority: CurrentPullRequest; replan?: string })
@@ -320,6 +331,7 @@ export default function pullRequestExtension(
 	let commandGeneration = 0;
 	let prRun = new PrRun();
 	let workflowContext: WorkflowContext | undefined;
+	let standaloneCommit: { worktree: string; committer: GitCommitter; controller: AbortController } | undefined;
 	const activeInvocations = new Map<number, "routing" | "resolved" | "create-workflow" | "workflow">();
 	let widgetKind: "presentation" | "routing" = "presentation";
 	let routingSpinnerFrame = 0;
@@ -353,6 +365,7 @@ export default function pullRequestExtension(
 			completed: false,
 			staleRediscoveries: invocation.staleRediscoveries ?? 0,
 			run: invocation.run ?? prRun,
+			publication: invocation.publication,
 			entryHead: reservation.route === "create" ? reservation.target.remoteOid : reservation.pullRequest.head.oid,
 		};
 		switch (reservation.route) {
@@ -385,6 +398,8 @@ export default function pullRequestExtension(
 					...common,
 					route: "create",
 					workflow: createPullRequestCreator({
+						preserveExistingMetadata: invocation.publication !== undefined,
+						expectedBase: invocation.publication?.base,
 						cwd: worktree,
 						target: reservation.target,
 						signal: common.controller.signal,
@@ -494,6 +509,29 @@ export default function pullRequestExtension(
 			signal?.removeEventListener("abort", abortRun);
 		}
 	};
+
+	pi.registerTool({
+		name: "pi_git_commit",
+		label: "Commit Scoped Work",
+		description: "Inspect a local target and pending work, then commit reviewed paths. Never pushes. Read git-commit guidance first.",
+		parameters: flatRoot(CommitActions),
+		executionMode: "sequential",
+		exposure: "model-only",
+		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
+			const params = checkedAction(CommitActions, raw);
+			if (workflowContext && workflowContext.route !== "fix-ci") throw new Error("Use the active PR route's commit action");
+			const generation = sessionGeneration;
+			const worktree = await resolveCanonicalWorktree(ctx.cwd, signal);
+			if (generation !== sessionGeneration) throw new Error("Commit session changed");
+			if (standaloneCommit && standaloneCommit.worktree !== worktree) throw new Error("Commit worktree changed; finish the previous inspection first");
+			standaloneCommit ??= { worktree, committer: new GitCommitter({ cwd: worktree }), controller: new AbortController() };
+			const selected = standaloneCommit;
+			const operationSignal = signal ? AbortSignal.any([signal, selected.controller.signal]) : selected.controller.signal;
+			return toolResult(params.action === "inspect"
+				? await selected.committer.inspect(params.target, operationSignal)
+				: await selected.committer.commit(params.inspectionId, params.ownedPaths, params.message, operationSignal));
+		},
+	});
 
 	pi.registerTool({
 		name: "pi_pr_update_branch",
@@ -739,6 +777,8 @@ export default function pullRequestExtension(
 
 	const stop = (): void => {
 		sessionGeneration += 1;
+		standaloneCommit?.controller.abort();
+		standaloneCommit = undefined;
 		context = undefined;
 		observation = undefined;
 		queued = false;
@@ -873,6 +913,7 @@ export default function pullRequestExtension(
 		}, {
 			sessionGeneration: generation,
 			run: selected.run,
+			publication: selected.publication,
 			staleRediscoveries: selected.staleRediscoveries + (replanning ? 1 : 0),
 			replanAuthority: replanning ? selected.authority : undefined,
 			assertCurrent() {
@@ -942,7 +983,7 @@ export default function pullRequestExtension(
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!ctx.hasUI || !ctx.isIdle() || !context) return;
+		if (!ctx.isIdle()) return;
 		const selected = workflowContext;
 		const helperSettled = selected?.usedSinceSettlement ?? false;
 		let workflowSettled = false;
@@ -961,6 +1002,7 @@ export default function pullRequestExtension(
 				selected.conflictRetained = true;
 			} else clearWorkflow(selected);
 		}
+		if (!ctx.hasUI || !context) return;
 		const delegatedRefresh = delegatedWorkPending && lastDiscovery !== "inactive";
 		delegatedWorkPending = false;
 		if (!workflowSettled && !helperSettled && !delegatedRefresh) {
@@ -976,6 +1018,10 @@ export default function pullRequestExtension(
 	pi.on("tool_result", async (event, ctx) => {
 		if (!ctx.hasUI || event.isError || lastDiscovery === "inactive") return;
 		if (DELEGATED_TOOLS.has(event.toolName)) delegatedWorkPending = true;
+		if (event.toolName === "pi_git_commit" && event.input.action === "commit") {
+			await refresh().catch(reportRefreshFailure);
+			return;
+		}
 		if (!isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
@@ -1008,10 +1054,9 @@ export default function pullRequestExtension(
 		markWorkflowPromptQueued,
 		releaseWorkflow,
 	});
-	pi.registerCommand("pr", {
-		description: "Run the current branch pull request lifecycle",
-		handler: async (args, ctx) => {
-			if (!ctx.hasUI || !context) return;
+	const launch = async (args: string, ctx: ExtensionContext, publication?: PublicationRequest) => {
+			ctx.signal?.throwIfAborted();
+			if (publication && (workflowContext || activeInvocations.size)) throw new Error("A PR invocation is still active");
 			cancelRefresh();
 			prRun = new PrRun((dependencies.loadPrPolicy ?? loadPrPolicy)());
 			const generation = sessionGeneration;
@@ -1023,10 +1068,14 @@ export default function pullRequestExtension(
 				activeInvocations.set(invocation, "resolved");
 				reconcileWidget(ctx);
 			};
+			let observed: Awaited<ReturnType<typeof loadCurrentPullRequest>> | undefined;
 			const commandInvocation: PrCommandInvocation = Object.assign(routeResolved, {
 				sessionGeneration: generation,
 				run: prRun,
+				publication,
+				onDiscovery(discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>) { observed = discovery; },
 				assertCurrent() {
+					ctx.signal?.throwIfAborted();
 					if (sessionGeneration !== generation) {
 						throw new Error("PR command session changed during dispatch");
 					}
@@ -1061,6 +1110,27 @@ export default function pullRequestExtension(
 				activeInvocations.delete(invocation);
 				refreshInBackground();
 			}
+			return { nextStep,
+				...(observed?.kind === "current" ? { url: observed.pullRequest.url.href } : {}),
+				...(observed?.kind === "blocked" ? { blocker: discoveryIssueDetails(observed.issue).message } : {}),
+				...(WORKFLOW_ROUTES.has(nextStep) ? { handoff: "End this turn. The reserved package skill will enter this session at settlement; do not call another PR entry or guess a run ID." } : {}),
+			};
+	};
+	pi.registerCommand("pr", {
+		description: "Run the current branch pull request lifecycle",
+		handler: async (args, ctx) => { if (ctx.hasUI && context) await launch(args, ctx); },
+	});
+	pi.registerTool({
+		name: "pi_git_pr",
+		label: "Create or Update PR",
+		description: "Start guarded PR creation or local publication in this session. Requires user create/update authorization. Never repairs feedback/CI, updates the base, or merges. base must match the existing PR or configured/default creation base. Set allowUpstream only with explicit permission to configure the repository-local branch upstream. Read git-pr guidance first.",
+		parameters: PublicationParameters,
+		executionMode: "sequential",
+		exposure: "model-only",
+		async execute(_id, raw, signal, _update, ctx) {
+			if (!Check(PublicationParameters, raw)) throw new Error("Invalid PR publication request");
+			return toolResult(await launch("", { ...ctx, signal: signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal },
+				{ base: raw.base, allowUpstream: raw.allowUpstream === true }));
 		},
 	});
 }

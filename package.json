@@ -33,6 +33,9 @@
       "./extensions/pi-undo/extensions/undo.ts",
       "./extensions/pi-rtk-test/extensions/rtk-test.ts",
       "./extensions/pi-cron/extensions/cron.ts"
+    ],
+    "skills": [
+      "./extensions/pi-pr/skills"
     ]
   },
   "scripts": {

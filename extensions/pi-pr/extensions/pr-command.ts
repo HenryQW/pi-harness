@@ -12,6 +12,7 @@ import {
 	loadCurrentPullRequest,
 	samePullRequestSnapshot,
 	type CurrentPullRequest,
+	type CurrentPullRequestDiscovery,
 } from "./pr-github.ts";
 import {
 	deriveNextStep,
@@ -39,10 +40,14 @@ type WorkflowLaunchAction = "prepare" | "inspect" | "rebase" | "start" | "resume
 type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
+export type PublicationRequest = { base?: string; allowUpstream: boolean };
+
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	sessionGeneration: number;
 	assertCurrent(): void;
 	run?: PrRun;
+	publication?: PublicationRequest;
+	onDiscovery?: (discovery: CurrentPullRequestDiscovery) => void;
 	staleRediscoveries?: number;
 	replanAuthority?: CurrentPullRequest;
 };
@@ -245,6 +250,7 @@ export function createPrCommandHandler(
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 		const discovery = await load(pi, ctx);
 		onRouteResolved?.assertCurrent();
+		onRouteResolved?.onDiscovery?.(discovery);
 		if (discovery.kind === "current") onRouteResolved?.run?.observeRemote(discovery.pullRequest.head.oid);
 		if (onRouteResolved?.replanAuthority && (discovery.kind !== "current" ||
 			!samePullRequestSnapshot(onRouteResolved.replanAuthority, discovery.pullRequest))) {
@@ -253,6 +259,10 @@ export function createPrCommandHandler(
 		if (linkedAuthority && (discovery.kind !== "current" || discovery.pullRequest.target.provenance !== "configured" ||
 			!isSameConfirmedMerge(linkedAuthority, discovery.pullRequest))) {
 			throw new Error("Link branch continuation cancelled: configured pull request context changed");
+		}
+		const publication = onRouteResolved?.publication;
+		if (publication?.base && discovery.kind === "current" && publication.base !== discovery.pullRequest.base.ref) {
+			throw new Error(`Requested base ${publication.base} differs from current PR base ${discovery.pullRequest.base.ref}; no retargeting is authorized`);
 		}
 		let nextStep = deriveNextStep(discovery);
 		if (discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
@@ -267,12 +277,21 @@ export function createPrCommandHandler(
 			nextStep = "sweep";
 			onRouteResolved?.assertCurrent();
 		}
-		if (discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci") &&
+		if (!publication && discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci") &&
 			discovery.pullRequest.lifecycle === "open" && !discovery.pullRequest.conditions.draft &&
 			discovery.pullRequest.target.provenance === "configured" &&
 			discovery.pullRequest.local.worktree === "clean" && discovery.pullRequest.local.head === "equal") {
 			if (await needsFeedback(discovery.pullRequest, { cwd: ctx.cwd, signal: ctx.signal, load })) nextStep = "sweep";
 			onRouteResolved?.assertCurrent();
+		}
+		if (publication) {
+			if ((nextStep === "link-branch" || nextStep === "create" && discovery.kind === "none" && discovery.creationTarget.provenance === "inferred") && !publication.allowUpstream) {
+				throw new Error("Publication needs repository-local upstream configuration; ask for permission, then set allowUpstream: true");
+			}
+			if (!["create", "publish-work", "sync-local", "link-branch", "none"].includes(nextStep)) {
+				ctx.ui.notify(`Create/update authorization stops before ${nextStep}${discovery.kind === "current" ? `: ${discovery.pullRequest.url.href}` : ""}; use /pr only for the full lifecycle`, "info");
+				nextStep = "none";
+			}
 		}
 		onRouteResolved?.(nextStep);
 		if (discovery.kind === "inactive") return nextStep;
