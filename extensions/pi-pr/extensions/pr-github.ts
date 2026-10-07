@@ -370,25 +370,30 @@ async function invoke(
 	command: string,
 	args: string[],
 ): Promise<CommandOutput> {
+	const signal = context.signal;
 	let result: unknown;
 	try {
 		result = await pi.exec(command, args, {
 			cwd: context.cwd,
-			signal: context.signal,
+			signal,
 			timeout: EXEC_TIMEOUT_MS,
 		});
 	} catch {
 		fail(action, "command threw");
 	}
-	return parseCommandOutput(result, action);
+	const output = parseCommandOutput(result, action);
+	if (output.killed) {
+		fail(action, signal?.aborted ? "command was cancelled" : `command timed out after ${EXEC_TIMEOUT_MS} ms`);
+	}
+	return output;
 }
 
 function commandFailure(action: string, result: CommandOutput, command?: string): never {
 	if (
-		command === "gh" && !result.killed && result.code !== 0 &&
+		command === "gh" && result.code !== 0 &&
 		result.stderr.includes("GraphQL: API rate limit exceeded")
 	) throw new GitHubRateLimitError();
-	fail(action, result.killed ? "command was cancelled" : `exit code ${result.code}`);
+	fail(action, `exit code ${result.code}`);
 }
 
 async function execute(
@@ -399,7 +404,7 @@ async function execute(
 	args: string[],
 ): Promise<CommandOutput> {
 	const result = await invoke(pi, context, action, command, args);
-	if (result.killed || result.code !== 0) commandFailure(action, result, command);
+	if (result.code !== 0) commandFailure(action, result, command);
 	return result;
 }
 
@@ -989,7 +994,6 @@ async function readConfiguredCreationBaseRef(
 	const result = await invoke(pi, context, "Read creation base configuration", "git", [
 		"config", "--get-all", `branch.${branch}.gh-merge-base`,
 	]);
-	if (result.killed) commandFailure("Read creation base configuration", result);
 	if (result.code === 1 && result.stdout === "" && result.stderr === "") return null;
 	if (result.code !== 0) commandFailure("Read creation base configuration", result);
 	if (result.stderr !== "") fail("Read creation base configuration", "unexpected diagnostic");
@@ -1184,7 +1188,7 @@ async function readRemoteAuthority(
 				? ["remote", "get-url", "--push", "--all", remote]
 				: ["remote", "get-url", "--all", remote];
 			const result = await invoke(pi, context, action, "git", args);
-			if (result.killed || result.code !== 0) commandFailure(action, result);
+			if (result.code !== 0) commandFailure(action, result);
 			const urls = lines(result.stdout, action, `${kind} URL`);
 			if (urls.length !== 1) fail(action, `multiple ${kind} URLs are configured`);
 			return parseRemoteUrl(urls[0], kind);
@@ -1241,7 +1245,6 @@ async function readRemoteHeadOid(
 		fetchSource,
 		`refs/heads/${ref}`,
 	]);
-	if (remoteHead.killed) commandFailure("Read remote push ref", remoteHead);
 	if (remoteHead.code === 2) {
 		if (remoteHead.stdout !== "") fail("Read remote push ref", "invalid absent-ref response");
 		return null;
@@ -1256,7 +1259,6 @@ async function readConfigValues(
 	key: string,
 ): Promise<string[] | null> {
 	const result = await invoke(pi, context, "Read Git configuration", "git", ["config", "--get-all", key]);
-	if (result.killed) commandFailure("Read Git configuration", result);
 	if (result.code === 1 && result.stdout === "") return [];
 	if (result.code !== 0) commandFailure("Read Git configuration", result);
 	try {
@@ -1275,7 +1277,6 @@ async function readBooleanConfigValues(
 	const result = await invoke(pi, context, "Read Git configuration", "git", [
 		"config", "--type=bool", "--get-all", key,
 	]);
-	if (result.killed) commandFailure("Read Git configuration", result);
 	if (result.code === 1 && result.stdout === "") return [];
 	if (result.code !== 0) return null;
 	try {
@@ -1344,7 +1345,6 @@ async function readPushTarget(
 	context: PullRequestLoadContext,
 ): Promise<TargetReadResult> {
 	const worktree = await invoke(pi, context, "Check Git worktree", "git", ["rev-parse", "--is-inside-work-tree"]);
-	if (worktree.killed) commandFailure("Check Git worktree", worktree);
 	const worktreeOutput = worktree.stdout.replace(/\r\n/g, "\n");
 	if (worktree.code === 128 && worktreeOutput === "") {
 		const probe = await invoke(pi, context, "Classify Git worktree", "env", [
@@ -1357,7 +1357,6 @@ async function readPushTarget(
 			"rev-parse",
 			"--is-inside-work-tree",
 		]);
-		if (probe.killed) commandFailure("Classify Git worktree", probe);
 		if (
 			probe.code === 128 && probe.stdout === "" &&
 			probe.stderr.replace(/\r\n/g, "\n") ===
@@ -1392,7 +1391,6 @@ async function readPushTarget(
 	const remoteNames = normalizedRemotes === "" ? [] : lines(normalizedRemotes, "Read push remotes", "remote");
 	if (pushReference === null) {
 		const branchCheck = await invoke(pi, context, "Read current branch", "git", ["check-ref-format", "--branch", branch]);
-		if (branchCheck.killed) commandFailure("Read current branch", branchCheck);
 		if (branchCheck.code !== 0 || branchCheck.stdout.replace(/\r\n/g, "\n") !== `${branch}\n`) {
 			return { kind: "blocked", issue: "target" };
 		}
@@ -1878,7 +1876,6 @@ export async function readTrackingOid(
 	const result = await invoke(pi, context, "Read remote-tracking ref", "git", [
 		"rev-parse", "--verify", "--quiet", `${trackingRef}^{commit}`,
 	]);
-	if (result.killed) commandFailure("Read remote-tracking ref", result);
 	if (result.code === 1 && result.stdout === "") return null;
 	if (result.code !== 0) commandFailure("Read remote-tracking ref", result);
 	return oid(singleLine(result.stdout, "Read remote-tracking ref", "OID"), "Read remote-tracking ref", "OID");
@@ -1939,7 +1936,6 @@ async function restoreConfigValue(
 	const unset = await invoke(pi, context, "Restore branch upstream", "git", [
 		"config", "--fixed-value", "--unset-all", key, expected,
 	]);
-	if (unset.killed) commandFailure("Restore branch upstream", unset);
 	if (unset.code === 5) {
 		throw new Error("Restore branch upstream failed: branch configuration changed concurrently");
 	}

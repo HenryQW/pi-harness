@@ -10,6 +10,7 @@ import {
 	loadCurrentPullRequest as discoverCurrentPullRequest,
 	preflightPullRequestCreation,
 	PullRequestLoadError,
+	readPullRequestBaseRefOid,
 } from "../extensions/pr-github.ts";
 
 async function loadCurrentPullRequest(
@@ -1835,6 +1836,7 @@ test("keeps ordinary optional remote-authority failures as a blocked target", as
 test("fails visibly when remote push-ref authority errors or is malformed", async () => {
 	for (const candidate of [
 		{ result: result("", 1), error: /Read remote push ref failed: exit code 1/ },
+		{ result: result("", 2, "", true), error: /Read remote push ref failed: command timed out after 10000 ms/ },
 		{ result: result(`${REMOTE_HEAD}\trefs/heads/other\n`), error: /response does not match push ref/ },
 	]) {
 		const { pi, context } = harness({ remoteHeadResult: candidate.result });
@@ -2006,6 +2008,35 @@ test("requires a base update whenever GitHub reports the PR behind", async () =>
 	assert.ok(loaded);
 	assert.equal(loaded.conditions.baseUpdateRequired, true);
 	assert.equal(loaded.conditions.policy, "pending");
+});
+
+test("classifies killed base ref commands with the signal used for execution", async (t) => {
+	for (const scenario of ["timeout", "no signal", "abort", "abort then clear signal", "replace with aborted signal"]) {
+		await t.test(scenario, async () => {
+			const controller = new AbortController();
+			const signal = scenario === "no signal" ? undefined : controller.signal;
+			const context = { cwd: "/repo", signal };
+			const aborted = scenario.startsWith("abort");
+			const pi = {
+				exec: async (command: string, _args: string[], options?: CommandCall["options"]) => {
+					assert.equal(command, "gh");
+					assert.equal(options?.signal, signal);
+					assert.equal(options?.timeout, 10_000);
+					if (aborted) controller.abort();
+					if (scenario === "abort then clear signal") context.signal = undefined;
+					if (scenario === "replace with aborted signal") context.signal = AbortSignal.abort();
+					return result("", 0, "", true);
+				},
+			};
+			await assert.rejects(
+				readPullRequestBaseRefOid(pi, context, { host: "github.com", repository: "acme/project", ref: "main" }),
+				{
+					name: "PullRequestLoadError",
+					message: `Read base ref failed: ${aborted ? "command was cancelled" : "command timed out after 10000 ms"}`,
+				},
+			);
+		});
+	}
 });
 
 test("fails visibly when current base branch authority fails or is malformed", async () => {
