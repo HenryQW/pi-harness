@@ -601,7 +601,8 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		[{ url: "https://docs.test", oauth: { callbackUrl: "https://docs.test/callback" } }, /field "oauth\.callbackUrl" must be an http URL on localhost/],
 	] as const) {
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs } }));
-		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), message);
+		// Pi 1.0.0 rejects CIMD before these field checks.
+		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion: "1.0.1" }), message);
 	}
 	// Valid provider auth over https and loopback, and new OAuth fields, are copied for Pi's native transport.
 	const secure = { url: "https://docs.test/mcp", description: "Product docs", auth: { provider: "radius" } };

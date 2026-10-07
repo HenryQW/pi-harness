@@ -616,6 +616,11 @@ function carryLedger(before: FeedbackSnapshot, after: FeedbackSnapshot, ledger: 
 		const decision = decisions.get(entry.id);
 		if (old && decision && old.kind === entry.kind) {
 			if (entry.kind !== "thread" && isDeepStrictEqual(old.node, entry.node)) return decision;
+			if (entry.kind === "conversation_comment" && decision.disposition === "non-actionable") {
+				const { body: _oldBody, ...previous } = old.node as FeedbackSnapshot["conversationComments"][number];
+				const { body: _newBody, ...current } = entry.node as FeedbackSnapshot["conversationComments"][number];
+				if (current.author?.__typename === "Bot" && isDeepStrictEqual(previous, current)) return decision;
+			}
 			if (entry.kind === "thread") {
 				// A fixing push can move or obsolete the current anchor without changing the review.
 				// Original anchors remain identity; child comment content is checked separately.

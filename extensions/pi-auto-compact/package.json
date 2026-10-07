@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-auto-compact",
-  "version": "4.1.5",
+  "version": "5.0.0",
   "description": "Trim repeated reads and compact Pi context at a configurable threshold.",
   "keywords": [
     "pi-package",
@@ -26,7 +26,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.87.0 <0.100.0 || ^1.0.0"
+    "@earendil-works/pi-coding-agent": "^1.0.0"
   },
   "repository": {
     "type": "git",
@@ -45,7 +45,7 @@
     ]
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^2.0.0",
+    "@henryqw/pi-config-store": "^3.0.0",
     "@henryqw/pi-task-models": "^7.0.0"
   },
   "devDependencies": {
