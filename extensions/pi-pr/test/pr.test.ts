@@ -188,6 +188,7 @@ function harness(options: {
 	sessionEntries?: unknown[];
 	canonicalWorktree?: ExtensionDependencies["canonicalWorktree"];
 	newRunId?: ExtensionDependencies["newRunId"];
+	now?: ExtensionDependencies["now"];
 	createBranchUpdater?: ExtensionDependencies["createBranchUpdater"];
 	createPullRequestCreator?: ExtensionDependencies["createPullRequestCreator"];
 	createCommentSweep?: ExtensionDependencies["createCommentSweep"];
@@ -231,6 +232,7 @@ function harness(options: {
 		},
 		canonicalWorktree: options.canonicalWorktree,
 		newRunId: options.newRunId,
+		now: options.now,
 		createBranchUpdater: options.createBranchUpdater,
 		createPullRequestCreator: options.createPullRequestCreator,
 		createCommentSweep: options.createCommentSweep,
@@ -2196,6 +2198,123 @@ test("reports generic then sanitized rate-limit failures, clears its stale actio
 	await app.shutdown(ctx);
 });
 
+test("refreshes a stale open PR in the background only on idle settlement", async () => {
+	const pending = deferred<CurrentPullRequest>();
+	let now = 0;
+	let idle = true;
+	let loads = 0;
+	let signal: AbortSignal | undefined;
+	const app = harness({
+		now: () => now,
+		isIdle: () => idle,
+		async load(_pi, ctx) {
+			if (++loads === 1) return currentPullRequest({ conditions: { ci: "running" } });
+			signal = ctx.signal;
+			return pending.promise;
+		},
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		now = 119_999;
+		await app.settle(ctx);
+		assert.equal(loads, 1);
+		now = 120_000;
+		idle = false;
+		await app.settle(ctx);
+		assert.equal(loads, 1);
+		idle = true;
+		await app.settle(ctx);
+		assert.equal(loads, 2, "settlement must not wait for background discovery");
+		await app.settle(ctx);
+		assert.equal(signal?.aborted, false, "settlement must not cancel active discovery");
+		pending.resolve(currentPullRequest({ lifecycle: "merged" }));
+		await flush();
+		assert.equal(loads, 2, "settlement must not queue another discovery");
+		assert.match(plain(app.statuses.at(-1) ?? ""), /PR #42.*merged/);
+	} finally { await app.shutdown(ctx); }
+});
+
+for (const state of ["inactive", "absent", "blocked", "merged", "closed"] as const) {
+	test(`does not stale-refresh ${state} discovery`, async () => {
+		let now = 0;
+		let loads = 0;
+		const app = harness({
+			now: () => now,
+			async load() {
+				loads += 1;
+				if (state === "inactive") return { kind: "inactive" };
+				if (state === "absent") return noPullRequest();
+				if (state === "blocked") return { kind: "blocked", issue: { kind: "published-without-pr", remote: "origin" } };
+				return currentPullRequest({ lifecycle: state });
+			},
+		});
+		const ctx = app.context();
+		try {
+			await app.start(ctx);
+			now = 120_000;
+			await app.settle(ctx);
+			assert.equal(loads, 1);
+		} finally { await app.shutdown(ctx); }
+	});
+}
+
+for (const quota of [false, true]) test(`delays stale refresh after ${quota ? "quota" : "generic"} failure completion`, async () => {
+	const pending = deferred<CurrentPullRequest>();
+	let now = 0;
+	let loads = 0;
+	const app = harness({
+		now: () => now,
+		async load() {
+			if (++loads === 2) return pending.promise;
+			return currentPullRequest();
+		},
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		now = 120_000;
+		await app.settle(ctx);
+		now = 150_000;
+		pending.reject(quota ? new GitHubRateLimitError() : new Error("temporary failure"));
+		await flush();
+		await app.settle(ctx);
+		now = 269_999;
+		await app.settle(ctx);
+		assert.equal(loads, 2, "failed discovery must reset age at completion");
+		assert.equal(app.notifications.length, 1);
+		now = 270_000;
+		await app.settle(ctx);
+		await flush();
+		assert.equal(loads, 3);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("command route discovery resets stale age before workflow dispatch completes", async () => {
+	const worktree = deferred<string>();
+	let now = 0;
+	let loads = 0;
+	const app = harness({
+		now: () => now,
+		async load() { loads += 1; return currentPullRequest({ conditions: { ci: "failure" } }); },
+		useDefaultCommandHandler: true,
+		canonicalWorktree: () => worktree.promise,
+		createCiFixer: () => ({}) as never,
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		now = 120_000;
+		const command = app.command().handler("", ctx as ExtensionCommandContext);
+		await flush();
+		now = 239_999;
+		await app.settle(ctx);
+		assert.equal(loads, 2, "fresh route discovery must delay stale refresh");
+		worktree.resolve("/repo");
+		await command;
+	} finally { await app.shutdown(ctx); }
+});
+
 test("serializes native-event refreshes, retains loader errors, and stops cleanly", async () => {
 	const pending = deferred<CurrentPullRequest | null>();
 	const duringShutdown = deferred<CurrentPullRequest | null>();
@@ -2623,7 +2742,9 @@ test("session replacement aborts Herdr labeling before stale rename or warning",
 test("keeps a non-create hint hidden until its workflow settles", async () => {
 	const workflow = deferred<"fix-ci">();
 	let loads = 0;
+	let now = 0;
 	const app = harness({
+		now: () => now,
 		async load() {
 			loads += 1;
 			return loads < 3
@@ -2657,8 +2778,10 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 		}, ctx);
 		assert.equal(app.widgets.at(-1), undefined, "a workflow refresh must not restore the hint");
 
+		now = 120_000;
 		await app.settle(ctx);
-		assert.equal(loads, 3);
+		await flush();
+		assert.equal(loads, 3, "workflow settlement must not add a stale refresh");
 		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
 	} finally {
 		await app.shutdown(ctx);
