@@ -4,7 +4,7 @@ The retired Herdr packages keep their final pre-merge source, documentation, and
 
 Use [`@henryqw/pi-herdr-tools`](../extensions/pi-herdr-tools/README.md) for cloning, side questions, conversation titles, and worktree completion. Install it before removing old packages, then restart Pi. Each archived package's README links to the migration instructions.
 
-Repository retirement is separate from npm deprecation. Add registry warnings only after the replacement is publicly installable; follow the [release runbook](../docs/releasing.md#retire-merged-packages).
+Repository retirement is separate from npm deprecation. Add registry warnings only after the replacement is publicly installable; follow the [release runbook](../docs/releasing.md#retire-a-package).
 
 | Extension | Reason |
 | --- | --- |

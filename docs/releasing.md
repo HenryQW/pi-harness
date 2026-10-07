@@ -15,21 +15,19 @@ Root-only changes and package test-only changes do not require a bump. Classify 
 
 ## Prepare versions
 
-After the final base sync, bump each affected package exactly once. Classify the package's own documented public contract, not the size of the diff or the version of a dependency:
+Before version bumps, fetch and merge current `origin/main` with `update-from-main`. Resolve source conflicts first; regenerate `pnpm-lock.yaml` instead of hand-merging it. Record the final main SHA and use it as the release baseline.
+
+Bump each affected package exactly once. Classify the package's own documented public contract, not the size of the diff or the version of a dependency:
 
 - **Patch:** fixes, documentation, refactors, implementation dependency updates, and consumer dependency-range updates that preserve the consumer's contract.
-- **Minor:** backward-compatible features.
-- **Major:** incompatible changes to exported APIs, commands or tool schemas, configuration or persisted data that requires user action, documented behavior, or the supported host/runtime range.
+- **Minor:** backward-compatible features and a raised Pi peer floor within the same Pi major.
+- **Major:** incompatible changes to exported APIs, commands or tool schemas, configuration or persisted data that requires user action, or documented behavior, including a function removed because Pi now provides it; dropping a Pi major or a Node.js runtime.
 
-An internal dependency's major release does not automatically make its consumers breaking. A consumer that adapts while preserving its own contract normally receives a patch.
+If an internal `@henryqw/*` workspace gets a major bump, update every direct consumer's range and add those consumers to the release set. A consumer that adapts while preserving its own contract normally receives a patch; the dependency's major release alone does not make it breaking.
 
 For a `0.x` package, use patch for compatible fixes and minor for features or breaking changes. Move to `1.0.0` only when intentionally declaring its public contract stable.
 
-Do not raise a peer dependency's minimum merely to match the version used for development or validation. If the package remains compatible with the old minimum, widen the range to include the new tested version while preserving that minimum. If the package requires a newer peer contract and drops previously supported hosts, that is a breaking change for packages at `1.x` or later.
-
-On a clean working tree, use `pnpm --filter ./<root>/<package> version patch --no-git-tag-version` (replace `patch` with the chosen release level). This command refuses a dirty tree; when editing published files, update the version in that package's `package.json` directly instead of stashing or committing unfinished work to run it.
-
-Use `extensions` as the root for Pi extensions and `packages` for support libraries. Regenerate `pnpm-lock.yaml` after manifest edits, commit it when it changes, and do not create release tags.
+Edit `version` in the package's `package.json` directly. Use `extensions` as the root for Pi extensions and `packages` for support libraries. After all manifest and version edits, run `pnpm install --lockfile-only --ignore-scripts`. Commit `pnpm-lock.yaml` when it changes; do not create release tags.
 
 Before the final release commit or any push, run:
 
@@ -37,9 +35,18 @@ Before the final release commit or any push, run:
 pnpm run check:package-versions
 ```
 
-Pull-request CI runs the same version check. Direct pushes to `main` rely on the local check.
+Pull-request CI runs the same version check, plus tests, typechecks, and pack checks in `.github/workflows/ci.yml`. These checks test only the Pi version that each package's `devDependencies` pin, so pin it to the floor (see [Pi peer ranges](#pi-peer-ranges)). A range that also accepts an older Pi major is not tested on that major. Direct pushes to `main` rely on the local version check.
 
 When a published README links local files, include them in the package allowlist and verify that package with `npm pack --dry-run`.
+
+## Pi peer ranges
+
+The floor is the oldest Pi version the package supports, normally the major's `.0` release (for example `^1.0.0`). Pin Pi `devDependencies` to the floor.
+
+- Keep the floor when unchanged code works with the target. Do not raise a peer dependency's minimum merely to match the development or validation version.
+- Raise the floor only to adopt a Pi feature or required fix. Use the first version that provides it, for example `^1.0.4`. Within one Pi major, this is a minor release of our package. State the new minimum in its README and update Pi `devDependencies` to the new floor.
+- Accept a new Pi major by widening the range when unchanged code supports both, for example `^1.0.0 || ^2.0.0`. Dropping a Pi major is a major release of our package.
+- Use the same range style across Pi peers in a package. Add a Pi peer only for a directly imported package. Preserve unrelated peers such as `typebox`.
 
 ## Publish
 
@@ -49,7 +56,7 @@ Push `main`. After CI succeeds, `.github/workflows/publish.yml` compares each pu
 
 A new package needs one authenticated maintainer publication before npm can accept its trusted-publisher configuration. CI cannot bootstrap it with OIDC. Complete this setup before relying on CI to release that package; later versions use `.github/workflows/publish.yml`.
 
-When adding a public workspace, check `npm view <package-name> version`. An `E404` means the package is unavailable in the registry; ask the maintainer to verify ownership and complete the steps below. Authentication, network, and other lookup errors are blockers, not evidence of a missing package. Prompt with the exact package name, version, and directory, and keep the setup marked pending until both checks in step 4 pass.
+When adding a public workspace, check `npm view <package-name> version`. An `E404` means the package is unavailable in the registry; ask the maintainer to verify ownership and complete the steps below. Authentication, network, and other lookup errors are blockers, not evidence of a missing package. Prompt with the exact package name, version, and directory, and keep the setup marked pending until the final trust check and exact-version check pass.
 
 ### Maintainer steps
 
@@ -66,27 +73,24 @@ npx --yes npm@^11.15.0 whoami
 npx --yes npm@^11.15.0 login --auth-type=web # Only if not signed in.
 npx --yes npm@^11.15.0 publish --access public
 
-# 3. Once the package exists, configure its trusted publisher.
-npx --yes npm@^11.15.0 trust github "$PACKAGE" \
-  --repo HenryQW/pi-harness --file publish.yml --allow-publish --yes
+# 3. From the repository root, check trust, apply changes, then check again.
+cd "$(git rev-parse --show-toplevel)"
+bash .agents/skills/npm-ops/sync.sh --check
+bash .agents/skills/npm-ops/sync.sh # Apply only after reviewing mismatches.
+bash .agents/skills/npm-ops/sync.sh --check
 
-# 4. Verify the initial version and the trusted publisher.
+# 4. Verify the initial version.
 npm view "$PACKAGE@$VERSION" version
-npx --yes npm@^11.15.0 trust list "$PACKAGE" --json
 ```
 
 Authenticate, publish, and change trust settings only after an explicit request. Complete login and 2FA in the browser; never paste credentials or one-time passwords into chat. Publication is public, not a dry run. If its response is lost, verify the exact version on npm before deciding whether to retry.
 
-If trust settings already exist, inspect them before step 3 and use the repository's `npm-ops` skill for repairs; its bulk sync can change other packages' mismatched settings. Report bootstrap complete only after verifying the exact version, publisher repository `HenryQW/pi-harness`, workflow `publish.yml`, and permission to publish. No registry deprecations are included in this checklist.
+Step 3 uses the [`npm-ops` trusted publishing sync](../.agents/skills/npm-ops/SKILL.md#trusted-publishing). It creates missing trust configuration and can change other packages' mismatched settings. Inspect the check results before applying changes. Report bootstrap complete only after verifying the exact version, publisher repository `HenryQW/pi-harness`, workflow `publish.yml`, and permission to publish. No registry deprecations are included in this checklist.
 
 CI trusted publishing requires npm CLI 11.5.1 or newer and GitHub OIDC; the workflow grants `id-token: write`. No npm token needs to be added to GitHub secrets.
 
-## Retire merged packages
+## Retire a package
 
-`@henryqw/pi-herdr-tools@1.0.0` consolidates `pi-herdr-btw`, `pi-herdr-clone`, and `pi-herdr-rename`. The final pre-merge source, documentation, and tests of these packages and the earlier `pi-herdr-done` are archived under `deprecated/`. Their READMEs point to the replacement; the archives are excluded from active workspaces, tests, and publishing. The shared `@henryqw/pi-herdr` library stays active.
+Archive the final source, docs, and tests under `deprecated/`, excluded from workspaces, tests, and publishing. Point the README to the replacement and record the decision in an ADR.
 
-Bootstrap the new package and configure its trusted publisher as above. Repository retirement alone does not deprecate npm versions. Use the repository's [`npm-ops` skill](../.agents/skills/npm-ops/SKILL.md#deprecate-packages-or-versions) to automate deprecation: it drafts the migration message, verifies replacement availability, previews the exact version selectors, applies an explicitly requested deprecation, and checks every affected version.
-
-For this consolidation, the targets are `@henryqw/pi-herdr-btw@*`, `@henryqw/pi-herdr-clone@*`, `@henryqw/pi-herdr-rename@*`, and `@henryqw/pi-herdr-done@*`; the replacement is `@henryqw/pi-herdr-tools@1.0.0`. The draft should explain the merge, instruct users to install the replacement, remove the old sources in the relevant user/project scopes, and restart Pi, and link to `https://pi.henry.wang/extensions/pi-herdr-tools` for migration.
-
-Registry deprecation requires maintainer authentication and may require browser 2FA. It adds install warnings without unpublishing versions or deleting users' data. Do not deprecate the old packages before the replacement is publicly available. Asking to update the skill or draft a message does not authorize live deprecation.
+Repository retirement does not deprecate npm versions. After the replacement is published, use the [`npm-ops` skill](../.agents/skills/npm-ops/SKILL.md#deprecate-packages-or-versions) to draft, preview, apply, and verify deprecation. Live deprecation needs an explicit request, maintainer authentication, and possibly browser 2FA. A request to update the skill or draft a message is not authorization. Deprecation adds install warnings; it does not unpublish versions or delete users' data.
