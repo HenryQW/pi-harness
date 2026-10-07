@@ -780,7 +780,11 @@ for (const quotaExhausted of [false, true]) test(quotaExhausted
 		idle = false;
 		await app.callTool("pi_pr_create", { runId: routeRunId, action: "publish", title: "fix", body: "Summary" }, ctx);
 		await app.beforeSettle(ctx);
-		assert.equal(app.statuses.at(-1), undefined, "presentation waits until the agent settles");
+		if (quotaExhausted) assert.equal(app.statuses.at(-1), undefined);
+		else {
+			assert.match(plain(String(app.statuses.at(-1))), /PR #42.*CI running/);
+			assert.equal(app.widgets.at(-1), undefined, "the action hint waits until the agent settles");
+		}
 		const loadsBeforeSettlement = loads;
 		idle = true;
 		await app.settle(ctx);
@@ -942,6 +946,7 @@ test("rejects session replacement while workflow discovery is pending", async ()
 		staleDiscovery.resolve(authority);
 
 		await assert.rejects(staleCommand, /session changed during dispatch/);
+		assert.equal(app.statuses.at(-1), undefined, "stale command discovery must not replace the new session footer");
 		assert.equal(canonicalCalls, 0);
 		assert.deepEqual(app.messages, []);
 		await assert.rejects(
@@ -951,6 +956,27 @@ test("rejects session replacement while workflow discovery is pending", async ()
 	} finally {
 		await app.shutdown(replacement);
 	}
+});
+
+for (const cancelled of [false, true]) test(`does not render command discovery from ${cancelled ? "an aborted lookup" : "another cwd"}`, async () => {
+	const pending = deferred<CurrentPullRequest>();
+	let loads = 0;
+	const app = harness({
+		async load() { return ++loads === 2 ? pending.promise : { kind: "inactive" }; },
+		useDefaultCommandHandler: true,
+		async canonicalWorktree() { throw new Error("stop after discovery"); },
+	});
+	const ctx = app.context();
+	const controller = new AbortController();
+	const commandContext = { ...ctx, cwd: cancelled ? ctx.cwd : "/other", signal: controller.signal };
+	try {
+		await app.start(ctx);
+		const command = app.command().handler("", commandContext as ExtensionCommandContext);
+		if (cancelled) controller.abort();
+		pending.resolve(currentPullRequest({ conditions: { conflict: true } }));
+		await assert.rejects(command, /stop after discovery/);
+		assert.ok(app.statuses.every((status) => status === undefined), "unrelated discovery must never enter the footer");
+	} finally { await app.shutdown(ctx); }
 });
 
 test("rejects session replacement while canonical workflow authority is pending", async () => {
