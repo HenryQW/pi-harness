@@ -6,7 +6,7 @@ Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Authorize
 
 ## Install
 
-Requires Pi 1.0.0 or later. Development and automated checks use Pi 1.0.2. Older Pi releases are no longer supported.
+Requires Pi 1.0.0 or later. Development and automated checks use Pi 1.0.0. Older Pi releases are no longer supported.
 
 ```bash
 pi install npm:@henryqw/pi-task-models

@@ -133,14 +133,6 @@ An existing config file must be a JSON object with exactly one non-empty string 
 
 When the configured executable is `code` and Pi reports hyperlink support, the accent-colored checkout name links to the current path. The link opens a new window for `code -n` or `code --new-window`. A missing config silently uses `code`. Other executables and terminals with hyperlinks disabled render plain text.
 
-Pi handles the custom URI in its fullscreen TUI, which is the default since Pi 1.0. Then use normal primary click. On older supported Pi versions (before 1.0), enable it:
-
-```json
-{
-  "tuiMode": "fullscreen"
-}
-```
-
-Set this through `/settings`, or launch with `--tui-mode fullscreen`. Regular TUI (`"tuiMode": "regular"` or `--tui-mode regular`) delegates OSC 8 activation to the terminal, so the link works only where the terminal opens custom URI schemes.
+Pi handles the custom URI in its default fullscreen TUI. Use normal primary click. Regular TUI (`"tuiMode": "regular"` or `--tui-mode regular`) delegates OSC 8 activation to the terminal, so the link works only where the terminal opens custom URI schemes.
 
 Ghostty uses `Cmd+click` but may not open custom URI schemes.

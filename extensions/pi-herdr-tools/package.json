@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-tools",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Clone, name, and finish Pi conversations in Herdr, with mergeable side questions.",
   "keywords": ["pi-package", "pi", "herdr", "session", "clone", "side-thread", "title"],
   "type": "module",
@@ -17,7 +17,7 @@
     "@earendil-works/pi-coding-agent": "^1.0.0"
   },
   "dependencies": {
-    "@henryqw/pi-config-store": "^2.0.0",
+    "@henryqw/pi-config-store": "^3.0.0",
     "@henryqw/pi-herdr": "^0.4.9",
     "@henryqw/pi-task-models": "^7.0.0"
   },

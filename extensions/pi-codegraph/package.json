@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-codegraph",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Initialize CodeGraph indexes in opted-in Git worktrees and expose codegraph_explore as a Pi tool.",
   "keywords": [
     "pi-package",
@@ -24,7 +24,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.87.0 <0.100.0 || ^1.0.0",
+    "@earendil-works/pi-coding-agent": "^1.0.0",
     "typebox": "^1.3.15"
   },
   "devDependencies": {
