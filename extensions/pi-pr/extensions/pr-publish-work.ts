@@ -1,7 +1,8 @@
+import { commitStagedPaths, inspectPendingCommit, requirePendingCommit, stageCommitPaths, type PendingCommit } from "./git-commit.ts";
 import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { extensionExecApi, inspectWorktree, inspectWorktreeState, isAncestor, parseNulPaths, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
+import { extensionExecApi, inspectWorktree, inspectWorktreeState, isAncestor, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 type Check = { command: string; args: string[] };
 type Options = { run?: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
@@ -18,6 +19,7 @@ export class PullRequestWorkPublisher {
 	private readonly options: Options;
 	private initialHead?: string;
 	private status?: string;
+	private pending?: PendingCommit;
 	private validatedHead?: string;
 	private consumed = false;
 
@@ -59,15 +61,15 @@ export class PullRequestWorkPublisher {
 		if (this.status !== undefined) throw new Error("Pending changes already inspected");
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
-			if (await inspectWorktreeState(this.exec, this.execOptions()) === "operation") throw new Error("Git operation in progress");
-			const head = await readHead(this.exec, this.execOptions());
+			const pending = await inspectPendingCommit(this.exec, this.execOptions());
+			const { head, status } = pending;
 			const diverged = !(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head));
-			const status = (await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions())).stdout;
 			const paths = validatePaths([...parseStatusSnapshot(status).keys()], "Pending paths");
 			// Clean divergence belongs to local sync; only pending work justifies committing on a diverged HEAD.
 			if (diverged && !paths.length) throw new Error("Local HEAD is not a descendant of the published PR head");
 			this.initialHead = head;
 			this.status = status;
+			this.pending = pending;
 			return { paths, head, originalHead: this.authority.head.oid, diverged };
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });
 	}
@@ -81,17 +83,10 @@ export class PullRequestWorkPublisher {
 		requiredText(message, "commit message");
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
-			if (await readHead(this.exec, this.execOptions()) !== this.initialHead ||
-				await inspectWorktreeState(this.exec, this.execOptions()) === "operation" ||
-				(await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions())).stdout !== this.status) {
-				throw new Error("Pending changes moved after inspection; inspect again in a new /pr");
-			}
-			// Never let an already-staged unrelated path enter this commit.
-			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--no-renames", "--name-only", "-z"], this.execOptions())).stdout, "Staged paths");
-			if (staged.some((path) => !paths.includes(path))) throw new Error("Unrelated staged changes require an ownership decision");
+			await requirePendingCommit(this.exec, this.execOptions(), this.pending!);
+			await stageCommitPaths(this.exec, this.execOptions(), paths);
 			this.consumed = true;
-			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.execOptions());
-			await runChecked(this.exec, "git", ["commit", "-m", message], this.execOptions());
+			await commitStagedPaths(this.exec, this.execOptions(), message);
 			const head = await readHead(this.exec, this.execOptions());
 			this.initialHead = head;
 			this.status = undefined;

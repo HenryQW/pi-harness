@@ -1,3 +1,4 @@
+import { commitStagedPaths, inspectPendingCommit, requirePendingCommit, stageCommitPaths, type PendingCommit } from "./git-commit.ts";
 import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import {
@@ -24,7 +25,6 @@ import {
 	extensionExecApi,
 	inspectWorktree,
 	inspectWorktreeState,
-	parseNulPaths,
 	parseStatusSnapshot,
 	validatePaths,
 	isAncestor,
@@ -64,7 +64,7 @@ type CreatePullRequestState = {
 	phase: CreatePhase;
 	base?: CreateBaseAuthority;
 	createAuthority?: CrossRepositoryCreateAuthority;
-	pending?: { head: string; status: string };
+	pending?: PendingCommit;
 	publicationHead?: string;
 	verifiedHead?: string;
 };
@@ -281,11 +281,10 @@ export class PullRequestCreator {
 		if (this.state.phase !== "prepared") throw new Error("PR creation must be prepared before inspecting pending work");
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshNone();
-			if (await inspectWorktreeState(this.exec, this.options()) === "operation") throw new Error("Git operation in progress");
-			const head = await readHead(this.exec, this.options());
-			const status = (await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options())).stdout;
+			const pending = await inspectPendingCommit(this.exec, this.options());
+			const { head, status } = pending;
 			const paths = validatePaths([...parseStatusSnapshot(status).keys()], "Pending paths");
-			this.state.pending = { head, status };
+			this.state.pending = pending;
 			return { paths, head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
@@ -299,17 +298,14 @@ export class PullRequestCreator {
 		requiredText(message, "commit message");
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.freshNone();
-			if (await readHead(this.exec, this.options()) !== this.state.pending!.head ||
-				await inspectWorktreeState(this.exec, this.options()) === "operation" ||
-				(await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.options())).stdout !== this.state.pending!.status) {
-				throw new Error("Pending work changed after inspection");
-			}
-			const staged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--cached", "--no-renames", "--name-only", "-z"], this.options())).stdout, "Staged paths");
-			if (staged.some((path) => !paths.includes(path))) throw new Error("Unrelated staged changes require an ownership decision");
-			this.state.pending = undefined; // Commit outcome may be uncertain; never replay it.
-			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "-A", "--", ...paths], this.options());
-			await runChecked(this.exec, "git", ["commit", "-m", message], this.options());
-			return { head: await readHead(this.exec, this.options()) };
+			await requirePendingCommit(this.exec, this.options(), this.state.pending!);
+			await stageCommitPaths(this.exec, this.options(), paths);
+			this.state.pending = undefined;
+			this.state.phase = "blocked"; // Commit outcome may be uncertain; never replay it.
+			await commitStagedPaths(this.exec, this.options(), message);
+			const head = await readHead(this.exec, this.options());
+			this.state.phase = "prepared";
+			return { head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 

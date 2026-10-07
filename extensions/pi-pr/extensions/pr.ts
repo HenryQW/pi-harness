@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GitCommitter } from "./git-commit.ts";
 import { spawnBounded } from "@henryqw/pi-process";
 import { readFile, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -109,6 +110,10 @@ function checkedAction<T extends TUnion<TObject[]>>(actions: T, args: unknown): 
 	throw new Error(`Tool arguments do not match one action${issue ? `: ${issue.message}` : ""}`);
 }
 
+const CommitActions = Type.Union([
+	Type.Object({ action: Type.Literal("inspect"), target: Type.String({ minLength: 1, maxLength: 1_024 }) }, CLOSED),
+	Type.Object({ action: Type.Literal("commit"), inspectionId: RouteRunId, ownedPaths: OwnedPaths, message: Type.String({ minLength: 1, maxLength: 16_384 }) }, CLOSED),
+]);
 const UpdateBranchActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("rebase") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("continue"), resolvedPaths: ResolvedPaths }, CLOSED),
@@ -305,6 +310,7 @@ export default function pullRequestExtension(
 	let commandGeneration = 0;
 	let prRun = new PrRun();
 	let workflowContext: WorkflowContext | undefined;
+	let standaloneCommit: { worktree: string; committer: GitCommitter; controller: AbortController } | undefined;
 	const activeInvocations = new Map<number, "routing" | "resolved" | "create-workflow" | "workflow">();
 	let widgetKind: "presentation" | "routing" = "presentation";
 	let routingSpinnerFrame = 0;
@@ -479,6 +485,29 @@ export default function pullRequestExtension(
 			signal?.removeEventListener("abort", abortRun);
 		}
 	};
+
+	pi.registerTool({
+		name: "pi_git_commit",
+		label: "Commit Scoped Work",
+		description: "Inspect a local target and pending work, then commit reviewed paths. Never pushes. Read git-commit guidance first.",
+		parameters: flatRoot(CommitActions),
+		executionMode: "sequential",
+		exposure: "model-only",
+		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
+			const params = checkedAction(CommitActions, raw);
+			if (workflowContext && workflowContext.route !== "fix-ci") throw new Error("Use the active PR route's commit action");
+			const generation = sessionGeneration;
+			const worktree = await resolveCanonicalWorktree(ctx.cwd, signal);
+			if (generation !== sessionGeneration) throw new Error("Commit session changed");
+			if (standaloneCommit && standaloneCommit.worktree !== worktree) throw new Error("Commit worktree changed; finish the previous inspection first");
+			standaloneCommit ??= { worktree, committer: new GitCommitter({ cwd: worktree }), controller: new AbortController() };
+			const selected = standaloneCommit;
+			const operationSignal = signal ? AbortSignal.any([signal, selected.controller.signal]) : selected.controller.signal;
+			return toolResult(params.action === "inspect"
+				? await selected.committer.inspect(params.target, operationSignal)
+				: await selected.committer.commit(params.inspectionId, params.ownedPaths, params.message, operationSignal));
+		},
+	});
 
 	pi.registerTool({
 		name: "pi_pr_update_branch",
@@ -724,6 +753,8 @@ export default function pullRequestExtension(
 
 	const stop = (): void => {
 		sessionGeneration += 1;
+		standaloneCommit?.controller.abort();
+		standaloneCommit = undefined;
 		context = undefined;
 		observation = undefined;
 		queued = false;
