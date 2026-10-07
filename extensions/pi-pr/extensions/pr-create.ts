@@ -76,6 +76,7 @@ type CreatePullRequestResult =
 	| { kind: "published"; url: string };
 
 export type CreatePullRequestOptions = {
+	preserveExistingMetadata?: boolean;
 	expectedBase?: string;
 	run?: PrRun;
 	cwd: string;
@@ -165,6 +166,7 @@ function parseCreatedUrl(output: string, host: string, baseRepository: string): 
 export class PullRequestCreator {
 	readonly state: CreatePullRequestState = { phase: "unprepared" };
 
+	private readonly preserveExistingMetadata: boolean;
 	private readonly expectedBase?: string;
 	private readonly run?: PrRun;
 	private readonly cwd: string;
@@ -177,6 +179,7 @@ export class PullRequestCreator {
 	private readonly load: Load;
 
 	constructor(options: CreatePullRequestOptions) {
+		this.preserveExistingMetadata = options.preserveExistingMetadata === true;
 		this.expectedBase = options.expectedBase;
 		this.cwd = options.cwd;
 		this.run = options.run;
@@ -439,6 +442,10 @@ export class PullRequestCreator {
 			const before = await this.exactCandidate();
 			if (before && (before.base.repository.toLowerCase() !== this.state.base!.repository.toLowerCase() || before.base.ref !== this.state.base!.ref)) {
 				throw new Error("Exact-head pull request targets a different base");
+			}
+			if (before && this.preserveExistingMetadata) {
+				this.state.phase = "published";
+				return { kind: "published", url: before.url.href };
 			}
 			const repository = `${this.state.base!.host}/${this.state.base!.repository}`;
 			const sameRepository = this.state.base!.repository.toLowerCase() === this.target.repository.toLowerCase();

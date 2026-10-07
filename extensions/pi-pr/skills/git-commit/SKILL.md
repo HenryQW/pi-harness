@@ -5,6 +5,8 @@ description: Create scoped Conventional Commits from current repository changes 
 
 # git-commit
 
+<!-- SPDX-License-Identifier: Apache-2.0. Derived from HenryQW/skills; modified for pi-pr native commit checks. See ../../NOTICE.md for source identity and changes. -->
+
 Use `pi_git_commit` for local commits. It does not push or change Git configuration. During a PR creation, publication, or feedback run, use that route's `commit` action instead; those actions share the same staging checks.
 
 1. Resolve the target from explicit user input, the current PR base, or the repository default branch, in that order. Use read-only Git/GitHub inspection to establish the target. Stop if ambiguous or unavailable; never infer it from the branch name. Do not fetch without permission. For the CI repair route, use its captured `pullRequest.headOid` as the explicit repair target.

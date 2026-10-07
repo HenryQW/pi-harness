@@ -383,6 +383,7 @@ export default function pullRequestExtension(
 					...common,
 					route: "create",
 					workflow: createPullRequestCreator({
+						preserveExistingMetadata: invocation.publication !== undefined,
 						expectedBase: invocation.publication?.base,
 						cwd: worktree,
 						target: reservation.target,

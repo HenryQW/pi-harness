@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Derived from HenryQW/skills; modified for exact backup identity, retention, and regressions.
+# See ../../../NOTICE.md for the source snapshot and modification notices.
 """Update current non-main worktree branch from fetched origin/main."""
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -53,16 +57,6 @@ def git(args: list[str], *, cwd: Path | None = None) -> str:
 
 def revision(ref: str) -> str:
     return git(["rev-parse", "--verify", f"{ref}^{{commit}}"])
-
-
-def optional_revision(ref: str) -> str | None:
-    result = run(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], check=False)
-    if result.returncode == 0:
-        return result.stdout.strip()
-    if result.returncode == 1:
-        return None
-    detail = (result.stderr or result.stdout).strip()
-    raise UpdateError(detail or f"could not resolve {ref}")
 
 
 def current_branch_ref() -> str:
@@ -113,7 +107,8 @@ def require_ready_worktree() -> str:
     if unmerged_paths():
         raise UpdateError("worktree has unresolved conflicts")
     branch = current_branch_ref()
-    if any(line.endswith(": update-from-main") for line in git(["stash", "list", "--format=%gs"]).splitlines()):
+    if any(re.search(r": update-from-main(?: [0-9a-f-]{36})?$", line)
+           for line in git(["stash", "list", "--format=%gs"]).splitlines()):
         raise UpdateError("update-from-main backup remains retained; finish its recovery before another run")
     return branch
 
@@ -122,13 +117,15 @@ def stash_dirty_worktree(source_sha: str) -> str | None:
     ignored = ignored_source_paths(source_sha)
     if not status_lines() and not ignored:
         return None
-    before = optional_revision("refs/stash")
+    message = f"update-from-main {uuid.uuid4()}"
     mode = "--all" if ignored else "--include-untracked"
-    run(["stash", "push", mode, "--message", "update-from-main"])
-    stash_oid = revision("refs/stash")
-    if stash_oid == before:
-        raise UpdateError("git stash did not create a backup")
-    return stash_oid
+    run(["stash", "push", mode, "--message", message])
+    # Linked worktrees share the stash stack. Find this run's entry, not its mutable tip.
+    entries = git(["stash", "list", "--format=%H%x00%gs"]).splitlines()
+    matches = [line.split("\0", 1)[0] for line in entries if line.endswith(f": {message}")]
+    if len(matches) != 1:
+        raise UpdateError(f"could not identify backup with message {message}; inspect the stash reflog before retrying")
+    return matches[0]
 
 
 def fetch_source() -> str:
@@ -166,14 +163,9 @@ def is_ancestor(ancestor: str, descendant: str) -> bool:
 
 
 def restore_stash(stash_oid: str) -> tuple[bool, str, str]:
-    if optional_revision("refs/stash") == stash_oid:
-        result = run(["stash", "pop", "--index", "stash@{0}"], check=False)
-        state = "popped"
-    else:
-        result = run(["stash", "apply", "--index", stash_oid], check=False)
-        state = "retained"
+    result = run(["stash", "apply", "--index", stash_oid], check=False)
     detail = (result.stderr or result.stdout).strip().replace("\n", " | ")
-    return result.returncode == 0, state, detail
+    return result.returncode == 0, "retained", detail
 
 
 def emit(
@@ -381,12 +373,59 @@ def self_test() -> None:
         assert f"before={head_before}" in output
         assert f"main={FETCHED_MAIN_REF}:{main_sha}" in output
         assert f"head={test_git(repo, 'rev-parse', 'HEAD')}" in output
-        assert "stash=" in output and output.rstrip().endswith(":popped")
+        stash_oid = test_git(repo, "rev-parse", "refs/stash")
+        assert f"stash={stash_oid}:retained" in output
         assert test_git(repo, "rev-parse", FETCHED_MAIN_REF) == main_sha
         assert (repo / "main.txt").read_text(encoding="utf-8") == "main\n"
         assert "A  staged.txt" in test_git(repo, "status", "--porcelain=v1", "--untracked-files=all")
         assert (repo / "untracked.txt").read_text(encoding="utf-8") == "untracked\n"
-        assert not test_git(repo, "stash", "list")
+        assert update_in(repo)[0] == 1  # Even a restored backup needs explicit user removal.
+        assert test_git(repo, "rev-parse", "refs/stash") == stash_oid
+
+        for phase in ("capture", "restore"):
+            seed, repo = setup_repo(root / f"stash-race-{phase}")
+            main_sha = commit(seed, "main.txt", "main\n", "test: main")
+            test_git(seed, "push", "origin", "main")
+            peer = root / f"peer-{phase}"
+            test_git(repo, "worktree", "add", "--detach", os.fspath(peer), "HEAD")
+            (repo / "shared.txt").write_text("staged\n", encoding="utf-8")
+            test_git(repo, "add", "shared.txt")
+            (repo / "shared.txt").write_text("unstaged\n", encoding="utf-8")
+            (repo / "local.txt").write_bytes(b"local\x00bytes\n")
+            (peer / "peer.txt").write_text("peer backup\n", encoding="utf-8")
+            real_run = run
+            peer_oid = None
+
+            def push_peer_stash(args, **kwargs):
+                nonlocal peer_oid
+                if phase == "restore" and args[:2] in (["stash", "apply"], ["stash", "pop"]):
+                    real_run(["stash", "push", "--include-untracked", "-m", "peer backup"], cwd=peer)
+                    peer_oid = test_git(peer, "rev-parse", "refs/stash")
+                result = real_run(args, **kwargs)
+                if phase == "capture" and args[:2] == ["stash", "push"]:
+                    real_run(["stash", "push", "--include-untracked", "-m", "peer backup"], cwd=peer)
+                    peer_oid = test_git(peer, "rev-parse", "refs/stash")
+                return result
+
+            with mock.patch(__name__ + ".run", side_effect=push_peer_stash):
+                result, output = update_in(repo)
+            assert result == 0, output
+            own_oid = re.search(r"stash=([0-9a-f]+):retained", output).group(1)
+            assert own_oid != peer_oid and f"main={FETCHED_MAIN_REF}:{main_sha}" in output
+            assert test_git(repo, "show", ":shared.txt") == "staged"
+            assert (repo / "shared.txt").read_text(encoding="utf-8") == "unstaged\n"
+            assert (repo / "local.txt").read_bytes() == b"local\x00bytes\n"
+            assert test_git(peer, "rev-parse", "refs/stash") == peer_oid
+            assert test_git(peer, "show", f"{peer_oid}^3:peer.txt") == "peer backup"
+            assert len(test_git(repo, "stash", "list").splitlines()) == 2
+            assert update_in(repo)[0] == 1
+
+        _seed, repo = setup_repo(root / "legacy-backup")
+        (repo / "legacy.txt").write_text("legacy\n", encoding="utf-8")
+        test_git(repo, "stash", "push", "--include-untracked", "-m", "update-from-main")
+        legacy_oid = test_git(repo, "rev-parse", "refs/stash")
+        assert update_in(repo)[0] == 1
+        assert test_git(repo, "rev-parse", "refs/stash") == legacy_oid
 
         seed, repo = setup_repo(root / "conflict")
         commit(repo, "conflict.txt", "feature\n", "test: feature")
@@ -527,7 +566,7 @@ def self_test() -> None:
         assert result == 1
         assert (repo / "ordinary.txt").read_text(encoding="utf-8") == "ordinary\n"
         assert (repo / "sub" / "child.txt").read_text(encoding="utf-8") == "dirty\n"
-        assert not test_git(repo, "stash", "list")
+        assert test_git(repo, "stash", "list")  # Error-path restoration also retains its backup.
 
         seed, repo = setup_repo(root / "submodule-update")
         child = root / "submodule-update-child"

@@ -13,9 +13,11 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "license": "MIT",
+  "license": "(MIT AND Apache-2.0)",
   "files": [
     "LICENSE",
+    "LICENSE-APACHE-2.0",
+    "NOTICE.md",
     "docs/pr-routing.svg",
     "docs/git-workflows-tested.md",
     "extensions",

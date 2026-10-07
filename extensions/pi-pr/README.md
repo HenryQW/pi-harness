@@ -53,7 +53,7 @@ The `pi_git_*` and `pi_pr_*` tools are model-only and run one action at a time. 
 
 Ask the agent to commit a scoped change. `git-commit` resolves an explicit local target, the PR base, or the repository default branch. `pi_git_commit` inspects that target and pending work, then commits only reviewed paths. It requires an existing commit and an attached branch. It never fetches, pushes, amends, bypasses hooks, or changes Git configuration.
 
-Ask the agent to create or update a PR. `pi_git_pr` permits creation, local publication, and local sync onto the proven PR head. It stops before feedback, CI repair, base rebase, CI waiting, and merge. Local sync can fast-forward or rebase local commits onto the PR head, but not onto the base. Existing PRs retain their base, title, and body; the tool never retargets them. An explicit `base` must match the existing PR base or the configured/default creation base. To select another creation base, explicitly authorize the branch's repository-local `gh-merge-base` setting first.
+Ask the agent to create or update a PR. `pi_git_pr` permits creation, local publication, and local sync onto the proven PR head. It stops before feedback, CI repair, base rebase, CI waiting, and merge. Local sync can fast-forward or rebase local commits onto the PR head, but not onto the base. Existing PRs retain their base, title, and body, including an exact-head PR that appears between push and publication. The tool never retargets them. An explicit `base` must match the existing PR base or the configured/default creation base. To select another creation base, explicitly authorize the branch's repository-local `gh-merge-base` setting first.
 
 An inferred target requires specific permission to configure this repository's branch upstream. Without it, the tool stops before linking or creation. `allowUpstream: true` records this consent for one invocation; it never permits global configuration changes. It is not required for an already configured target.
 
@@ -68,11 +68,15 @@ All commit callers use the same literal-path staging and commit parent/tree chec
 
 Ask to update the current branch from main. `update-from-main` runs its packaged Python helper once. It requires Python 3.9 or newer and Git with `fetch --porcelain`. Unlike the `/pr` base-update route, this helper **merges**, not rebases. It fetches before local mutation and uses the exact OID from fetch output. It backs up tracked and untracked changes; when ignored paths collide with the source tree, the backup also includes ignored files. It never pushes.
 
-A merge conflict, stash collision, failed merge hook, or required submodule update retains the backup and reports recovery steps. Do not rerun while a backup remains. Restore from the emitted stash OID, not from a later `origin/main`, and keep the backup until the user verifies restoration and explicitly removes it. See the packaged `update-from-main` skill for recovery.
+Each backup has a unique Git reflog message, so another linked worktree's stash push cannot change its identity. Restoration always applies the captured OID with `--index`. The helper never pops or drops a stash. Backups stay retained after success as well as conflict, hook, or submodule failures. Report the backup OID and verify restored bytes and staging before explicitly removing it. Do not rerun while a backup remains. Restore from the emitted stash OID, not from a later `origin/main`, and keep the backup until the user verifies restoration and explicitly removes it. See the packaged `update-from-main` skill for recovery.
 
 ### Local acceptance checks
 
 From this source checkout, run `pnpm --filter @henryqw/pi-pr test:git-workflows`. It uses existing Node tests, temporary real Git repositories, and controlled GitHub responses, with no live GitHub writes. See [executed cases and independent acceptance instructions](./docs/git-workflows-tested.md) for the commands, tested boundaries, and limits.
+
+### Licences
+
+Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-from-main` skills and the Python helper/validator use Apache-2.0, including their modifications. See [licence scope, source identity, and modification notices](./NOTICE.md). Both licence files are included in the package.
 
 ## Flow
 

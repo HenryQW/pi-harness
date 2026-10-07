@@ -5,6 +5,8 @@ description: Create or update the current branch GitHub pull request through pi_
 
 # git-pr
 
+<!-- SPDX-License-Identifier: Apache-2.0. Derived from HenryQW/skills; modified for pi-pr bounded native publication. See ../../NOTICE.md for source identity and changes. -->
+
 Use `pi_git_pr` after the user authorizes PR creation or publication. It uses the same guarded creation and publication helpers as `/pr`, but stops before feedback, CI repair, base rebase, CI waiting, or merge. Do not ask the user to run `/pr` for a create/update-only request. `/pr` remains the separate full-lifecycle command.
 
 1. Read repository instructions and inspect local status and changes. A create/update request permits only intended work. Never include secrets, `.context/`, or unrelated changes. Stop if ownership is unclear. Preserve coherent staging; the helpers commit whole paths and reject partial staging. Do not stash, discard, or hide other work.

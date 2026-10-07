@@ -33,7 +33,7 @@ Added cases also establish same-status byte-drift rejection in both PR inspectio
 
 During development, typecheck rejected an unsafe test-only boundary-entry access. The test now checks the entry before reading its content. The first source-tool probe expected the wrong no-action notification text; that redundant assertion was removed. These were test defects, not successful workflow claims. The four focused Git cases then passed.
 
-Final checks on the completed runtime candidate:
+Checks on the previous candidate `6a4d39d`, before the independent review corrections (these are not revision rerun results):
 
 | Command | Result |
 | --- | --- |
@@ -47,6 +47,42 @@ Final checks on the completed runtime candidate:
 | `git diff --check` | Exit 0. |
 
 Output was captured in temporary logs. Success summaries were limited to 20 lines; failure output was limited to 80 lines or 8 KiB. The installed-authority resource probe ran with `node --input-type=module` and imported `DefaultPackageManager`, `SettingsManager`, and `loadSkills` directly from the Pi `1.0.2` path given below.
+
+## Independent evidence on the previous candidate
+
+The parent supplied the following exact-source acceptance results for the previous tree. This worker has not rerun these independent probes on the revision or inspected raw worker sessions.
+
+- First agent: 22 passing tests, including five registered-source guidance probes. These used real local commits, native handoff, checks, and local exact-OID/lease pushes. Commands and saved logs are under `/tmp/pi-git-acceptance-c2e9d284.Y5SPGS`. Its collector rejected valid final ancestry across a custom record; the cases and unchanged identity were recovered from saved evidence. The collector failure is not proof that the native workflow failed.
+- Second agent: four successful subprocess fixtures. Safe evidence is `/tmp/pi-update-main-acceptance.ZXSHb1/report.txt` and `probe-results.json`: partial-index/untracked byte restoration; ignored upstream collision backup; conflict recovery using the original OID after main advanced, with retained-backup rerun refusal; and fetch failure preserving all state. `acceptance.py` exited 1 after the first two cases because macOS `sed` rejected `--`. `resume.py` inspected and continued the same fixture and returned 0; it did not restart or rerun an uncertain merge.
+- The old success result that popped the backup is invalid under the corrected retention policy. These prior fixtures do not prove the new concurrent-stash behavior.
+- The second task overall FAILED because its environment probe disclosed a credential, despite its passing Git fixtures. The parent notified the user. No token value is in the safe reports or fixtures. This revision does not inspect or reproduce credential output and does not change pi-subagent.
+
+## Review corrections and revision evidence
+
+1. The merge helper no longer captures `refs/stash` after push or checks it before `pop stash@{0}`. Native stash pushes use a unique run message; the helper finds its OID in the native stash reflog. Restoration always uses `git stash apply --index <captured-OID>`. Every backup stays retained after success or failure until verified explicit user removal. Legacy named backups still block another run. Exact fetched-main OID and merge/conflict/hook/submodule recovery are unchanged.
+2. The registered bounded entry passes `preserveExistingMetadata` into the shared creator. An exact-head PR that appears after push is validated for open lifecycle, repository/ref/OID, and base, then reused without edit/create. Full `/pr` keeps its metadata-update behavior. Controlled regressions exercise bounded reuse, full metadata update, and rejection of a different base or head. The entry-boundary test checks that bounded authority reaches the creator.
+3. The package now declares `(MIT AND Apache-2.0)`. `LICENSE` still applies to existing MIT code. `LICENSE-APACHE-2.0` is byte-for-byte equal to the read-only original `/Users/henry/Git/skills/LICENSE`. `NOTICE.md` identifies source commit `6857c81611ab8e7aaacf4233452a0841d7df79a9`, lists the imported paths and modifications, and scopes Apache versus MIT. Each imported skill/helper/validator has a source and modification notice. The source has no separate NOTICE file for these paths. Both licences and the notice are published.
+
+The smallest real-Git race regressions use another linked worktree. One inserts its stash push after this helper's push but before backup capture. The other inserts its push immediately before restoration. Both verify partial-index and binary untracked bytes, the original backup OID, the peer backup's OID/content, and two retained stack entries. Legacy-backup refusal and successful-restoration rerun refusal are also checked. No automatic stack deletion is used.
+
+Focused commands run on this revision:
+
+- `python3 extensions/pi-pr/skills/update-from-main/scripts/validate.py`: exit 0, including both real-Git races and recovery checks.
+- `pnpm --filter @henryqw/pi-pr exec node --test --test-name-pattern='metadata when an exact PR appears|agent PR entry carries base' test/pr-create.test.ts test/pr.test.ts`: initially three cases passed before adding the two mismatched-authority cases; the complete final package run below covers those added cases.
+
+Final checks run on this revision:
+
+| Command | Result and local log |
+| --- | --- |
+| `pnpm --filter @henryqw/pi-pr test` | Exit 0: 432 Node tests plus feedback and expanded merge self-tests. Log: `/var/folders/6y/58h3_t417xdb67x996096jjr0000gn/T/tmp.jXV17CCNcZ`. |
+| `pnpm --filter @henryqw/pi-pr typecheck` | Exit 0. Log: `/var/folders/6y/58h3_t417xdb67x996096jjr0000gn/T/tmp.vtgSindNDY`. |
+| `pnpm run docs:validate` | Exit 0: structure, 49 docs tests, and link checks. Log: `/var/folders/6y/58h3_t417xdb67x996096jjr0000gn/T/tmp.JW98lXOnhR`. |
+| `pnpm install --lockfile-only --offline --ignore-scripts` | Exit 0; lockfile remains unchanged. Log: `/var/folders/6y/58h3_t417xdb67x996096jjr0000gn/T/tmp.BcSv0ViqC9`. |
+| `pnpm run check:package-versions` | Exit 0. Log: `/var/folders/6y/58h3_t417xdb67x996096jjr0000gn/T/tmp.lTNTARDRvY`. |
+| `cd extensions/pi-pr && npm pack --dry-run --ignore-scripts --json` | Exit 0; 37 files. Assertions verified both licences, NOTICE.md, all eight skills, Python helper/validator, source entries, report and SVG. The Apache licence equals the original bytes. No tarball was created. Log: `/var/folders/6y/58h3_t417xdb67x996096jjr0000gn/T/tmp.jYi8Xk2CQl`. |
+| `git diff --check` | Exit 0. |
+
+The release stays `@henryqw/pi-pr@9.1.0`; no other package releases. Main owns root-wide combined validation and final independent acceptance. These revision checks do not rerun the prior independent collectors or fixture scripts. Live GitHub, live models, TUI behavior, and manual backup removal remain untested.
 
 ## Independent acceptance entry
 

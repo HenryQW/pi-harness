@@ -2964,16 +2964,22 @@ for (const scenario of ["merge", "fix-ci", "update-branch", "sweep-recovery"] as
 
 test("agent PR entry carries base constraint, rejects overlap, and expires an aborted non-UI handoff", async () => {
 	let expectedBase: string | undefined;
+	let preserveExistingMetadata: boolean | undefined;
 	let busy = true;
 	const app = harness({ load: async () => noPullRequest(1), useDefaultCommandHandler: true,
 		isIdle: () => !busy, canonicalWorktree: async () => "/repo", newRunId: () => routeRunId,
-		createPullRequestCreator(options) { expectedBase = options.expectedBase; return {} as never; },
+		createPullRequestCreator(options) {
+			expectedBase = options.expectedBase;
+			preserveExistingMetadata = options.preserveExistingMetadata;
+			return {} as never;
+		},
 	});
 	const ctx = { ...app.context(), hasUI: false };
 	try {
 		await app.start(ctx);
 		await app.callTool("pi_git_pr", { base: "release", allowUpstream: true }, ctx);
 		assert.equal(expectedBase, "release");
+		assert.equal(preserveExistingMetadata, true);
 		await assert.rejects(app.callTool("pi_git_pr", {}, ctx), /still active/);
 		assert.equal(await app.beforeSettle(ctx, "aborted"), undefined);
 		busy = false;
