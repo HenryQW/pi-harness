@@ -6,7 +6,7 @@ Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Authorize
 
 ## Install
 
-Requires Pi 1.0.0 or later. Development and automated checks use Pi 1.0.0. Older Pi releases are no longer supported.
+Requires Pi 1.1.0 or later. Development and automated checks use Pi 1.1.0. Older Pi releases are no longer supported.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
@@ -246,7 +246,7 @@ The servers named in `mcps` come from the global `~/.pi/agent/mcp.json` only. In
 | `RoleLaunchRuntime`, `HerdrHostRuntime`, `CheckedGitRuntime` | classes | Supply launch, host, and Git behavior to the runner. |
 | `ExecutionPolicySnapshot`, `RunState`, `CoordinatorRuntime` | types | Describe persisted policy, state, and runner integration. |
 
-`createEphemeralSubagentExecutor` accepts global concurrency, turn/token, idle, and hard-runtime policy. Queued time consumes no child timeout. A run resolves resources only after receiving its permit and accepts abort, output, token, and activity callbacks. Output and diagnostics are bounded.
+`createEphemeralSubagentExecutor` accepts global concurrency, turn/token, idle, and hard-runtime policy. Queued time consumes no child timeout. A run resolves resources only after receiving its permit and accepts abort, output, token, and activity callbacks. Output and diagnostics are bounded. A child that reports `agent_settled.aborted: true` returns a failure result with `stopReason: "aborted"`, even if its process exits with code 0. Collected output, usage, and child error text are kept. `aborted: false` does not prove provider success. A parent abort or timeout still rejects with `EphemeralSubagentError`.
 
 See [Orchestration and package-author API](./docs/orchestration.md) for the detailed contracts and recovery model.
 

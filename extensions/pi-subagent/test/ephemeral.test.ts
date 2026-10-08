@@ -16,7 +16,8 @@ import {
 
 const timeout = { idleMs: 1_000, maxMs: 2_000 };
 const launch: PiLaunch = { env: {}, args: [] };
-const successfulRunner = `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } }));\n`;
+const successfulRunner = `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } }));
+console.log(JSON.stringify({ type: "agent_settled", aborted: false }));\n`;
 
 function simulateActivePi(t: import("node:test").TestContext): void {
 	const previousMarker = process.env.PI_CODING_AGENT;
@@ -1010,24 +1011,73 @@ test("executor rejects timeout with accumulated Usage without double counting", 
 
 test("executor rejects relevant protocol overflow with accumulated Usage", async (t) => {
 	const observedUsage = usage(1);
-	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_update", usage: ${JSON.stringify(observedUsage)} })); process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "x".repeat(2 * 1024 * 1024) }] } })); setInterval(() => {}, 1_000);\n`);
-	await assert.rejects(executor().run({ prepare: async () => prepared(cwd) }), (error) => {
-		assert.ok(error instanceof EphemeralSubagentError);
-		assert.equal(error.code, "protocol");
-		assert.ok(error.cause instanceof Error);
-		assert.deepEqual(error.usage, observedUsage);
-		return true;
-	});
+	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_update", usage: ${JSON.stringify(observedUsage)} }));
+const oversized = "x".repeat(2 * 1024 * 1024);
+process.stdout.write(JSON.stringify(process.argv.at(-1).includes("settlement")
+	? { type: "agent_settled", aborted: true, extra: oversized }
+	: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: oversized }] } }));
+setInterval(() => {}, 1_000);\n`);
+	for (const task of ["message", "settlement"]) {
+		await assert.rejects(executor().run({ prepare: async () => prepared(cwd, task) }), (error) => {
+			assert.ok(error instanceof EphemeralSubagentError);
+			assert.equal(error.code, "protocol");
+			assert.ok(error.cause instanceof Error);
+			assert.deepEqual(error.usage, observedUsage);
+			return true;
+		});
+	}
 });
 
-test("executor returns process failures as typed outcomes", async (t) => {
-	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "model failed" } })); process.stderr.write("details"); process.exitCode = 2;\n`);
+test("an aborted settlement after an earlier successful assistant message returns failure", async (t) => {
+	const observedUsage = usage(1);
+	const cwd = await useRunner(t, `const event = (value) => console.log(JSON.stringify(value));
+event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "earlier answer" }], usage: ${JSON.stringify(observedUsage)}, stopReason: "stop" } });
+event({ type: "agent_settled", aborted: true });
+`);
 	const result = await executor().run({ prepare: async () => prepared(cwd) });
 	assert.equal(result.outcome, "failure");
-	assert.equal(result.exitCode, 2);
-	assert.equal(result.stopReason, "error");
-	assert.equal(result.errorMessage, "model failed");
-	assert.equal(result.stderr, "details");
+	assert.equal(result.exitCode, 0);
+	assert.equal(result.stopReason, "aborted");
+	assert.equal(result.output, "earlier answer");
+	assert.deepEqual(result.usage, observedUsage);
+});
+
+test("an aborted settlement without a final assistant message keeps partial output and usage", async (t) => {
+	const observedUsage = usage(2);
+	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_update", usage: ${JSON.stringify(observedUsage)}, assistantMessageEvent: { type: "text_delta", delta: "partial answer" } }));
+process.stdout.write(JSON.stringify({ type: "agent_settled", aborted: true }));
+`);
+	const tokens: number[] = [];
+	const result = await executor().run({
+		onTokens: (value) => tokens.push(value),
+		prepare: async () => prepared(cwd),
+	});
+	assert.equal(result.outcome, "failure");
+	assert.equal(result.stopReason, "aborted");
+	assert.equal(result.output, "partial answer");
+	assert.deepEqual(result.usage, observedUsage);
+	assert.deepEqual(tokens, [observedUsage.totalTokens]);
+});
+
+test("settlement requires a boolean aborted field at the JSON boundary", async (t) => {
+	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "agent_settled", ...(process.argv.at(-1).includes("missing") ? {} : { aborted: "true" }) }));`);
+	for (const task of ["missing", "string"]) {
+		await assert.rejects(executor().run({ prepare: async () => prepared(cwd, task) }), (error) =>
+			error instanceof EphemeralSubagentError && error.code === "protocol"
+			&& /agent_settled.aborted must be a boolean/.test(error.message));
+	}
+});
+
+test("executor keeps process and provider failures when settlement is not aborted", async (t) => {
+	const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], stopReason: "error", errorMessage: "model failed" } })); console.log(JSON.stringify({ type: "agent_settled", aborted: false })); process.stderr.write("details"); process.exitCode = Number(process.argv.at(-1).split(" ").at(-1));\n`);
+	for (const exitCode of [0, 2]) {
+		const result = await executor().run({ prepare: async () => prepared(cwd, String(exitCode)) });
+		assert.equal(result.outcome, "failure");
+		assert.equal(result.exitCode, exitCode);
+		assert.equal(result.stopReason, "error");
+		assert.equal(result.errorMessage, "model failed");
+		assert.equal(result.stderr, "details");
+	}
 });
 
 test("executor requires the active Pi marker, exact process title, and reusable invocation", (t) => {
