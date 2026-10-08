@@ -816,7 +816,12 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", async (event, ctx) => {
+		if (event.aborted) {
+			state.conflictQueue = [];
+			state.rememberQueue = [];
+			return;
+		}
 		const sessionGeneration = state.sessionGeneration;
 		if (state.sessionGeneration !== sessionGeneration || !ctx.isIdle()) return;
 		const isCurrent = () => state.sessionGeneration === sessionGeneration && ctx.isIdle() && !ctx.signal?.aborted;

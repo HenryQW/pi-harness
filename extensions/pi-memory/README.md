@@ -6,7 +6,7 @@ Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its
 
 ## Install
 
-Requires Pi 1.0.0 or later in the 1.x series.
+Requires Pi 1.1.0 or later in the 1.x series.
 
 ```bash
 pi install npm:@henryqw/pi-ask-question
@@ -65,7 +65,7 @@ Exact duplicate single adds and duplicate-only add batches are idempotent and sk
 
 `/remember <instruction>` uses the bounded `pi-memory/prepareCandidate` Model Task to propose a target and exact entry or decline the request. It checks for source changes, then saves through the same reviewed memory tool. It does not dispatch an open-ended instruction to the session agent. The configured `balanced` task-model profile must be available.
 
-If Pi is busy, it queues the trimmed instruction. Once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. If another response starts, the session shuts down or is replaced, or the model changes during review, `/remember` rejects the write even when Pi provides no idle cancellation signal; retry in the current session. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
+If Pi is busy, it queues the trimmed instruction. If that response is cancelled, queued `/remember` requests and conflicts are dropped before preparation, dialogs, or writes start, even without a context cancellation signal. They do not return on the next run. Completed writes remain saved; you can issue a new `/remember` command later. Otherwise, once the response settles, it drains queued requests in FIFO order while the session remains idle, reading live entries for each. If another response starts, the session shuts down or is replaced, or the model changes during review, `/remember` rejects the write even when Pi provides no idle cancellation signal; retry in the current session. Unsuitable project-specific, temporary, trivial, or otherwise unsuitable content is refused.
 
 ### `/dream`
 

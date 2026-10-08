@@ -248,7 +248,7 @@ test("/remember rejects invalid preparation and queues busy requests in order", 
 		await remember.handler("first", { ...ctx, isIdle: () => false });
 		await remember.handler("second", { ...ctx, isIdle: () => false });
 		assert.equal(calls.length, 2);
-		await settled({ type: "agent_settled" }, ctx);
+		await settled({ type: "agent_settled", aborted: false }, ctx);
 		assert.deepEqual(calls.slice(2).map((call) => JSON.parse(call.context.messages[0]!.content).candidate), ["first", "second"]);
 		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
 	});
@@ -265,7 +265,7 @@ test("/remember drains a busy queue with fresh state from earlier queued writes"
 		const remember = commands.get("remember")!;
 		await remember.handler("first", { ...ctx, isIdle: () => false });
 		await remember.handler("second", { ...ctx, isIdle: () => false });
-		await settled({ type: "agent_settled" }, ctx);
+		await settled({ type: "agent_settled", aborted: false }, ctx);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "first fact");
 		assert.deepEqual(calls.map((call) => JSON.parse(call.context.messages[0]!.content).candidate).filter(Boolean), ["first", "second"]);
 		assert.deepEqual(JSON.parse(calls[2]!.context.messages[0]!.content).entries.memory, ["first fact"]);
@@ -1121,14 +1121,14 @@ test("active-response conflicts return pending and ask only after full settlemen
 		const rendered = tool.renderResult(result, { expanded: true }, { fg: (_color, text) => text }, { args: {} }).render(120).join("\n");
 		assert.doesNotMatch(rendered, /✓/);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
-		await settled({ type: "agent_settled" }, busy);
+		await settled({ type: "agent_settled", aborted: false }, busy);
 		assert.equal(calls.length, 1);
-		await settled({ type: "agent_settled" }, ctx);
+		await settled({ type: "agent_settled", aborted: false }, ctx);
 		assert.equal(questions.length, 1);
 		assert.equal(calls.length, 3);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "merged");
 		assert.equal(notifications.at(-1), "Entry replaced.");
-		await settled({ type: "agent_settled" }, ctx);
+		await settled({ type: "agent_settled", aborted: false }, ctx);
 		assert.equal(calls.length, 3);
 	});
 });
@@ -1141,13 +1141,40 @@ test("deferred conflicts drain FIFO and re-review live sources before asking", a
 	}, async ({ memoryDir, tool, ctx, calls, settled, questions }) => {
 		for (const content of ["first", "second"]) await tool.execute(content, { action: "add", content }, undefined, undefined, { ...ctx, isIdle: () => false });
 		await writeFile(join(memoryDir, "MEMORY.md"), "changed externally");
-		await settled({ type: "agent_settled" }, ctx);
+		await settled({ type: "agent_settled", aborted: false }, ctx);
 		const requests = calls.slice(2).map((call) => JSON.parse(call.context.messages[0]!.content));
 		assert.deepEqual(requests.map((request) => request.mutation.content), ["first", "second"]);
 		assert.ok(requests.every((request) => request.sources.memory[0] === "changed externally"));
 		assert.ok(questions.every((question) => question.includes("changed externally")));
 		assert.equal(questions.length, 2);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "changed externally");
+	});
+});
+
+test("aborted settlement without a signal drops both queues and preserves later commands", async () => {
+	const conflict = JSON.stringify({ verdict: "overlap", source: "memory", evidence: "saved fact", explanation: "Same fact." });
+	await withReviewFixture({
+		responses: [JSON.stringify({ verdict: "distinct", explanation: "New fact." }), conflict,
+			JSON.stringify({ target: "user", content: "later preference" }),
+			JSON.stringify({ verdict: "distinct", explanation: "New preference." })],
+	}, async ({ memoryDir, tool, commands, ctx, calls, settled, questions }) => {
+		await tool.execute("save", { action: "add", content: "saved fact" }, undefined, undefined, ctx);
+		const busy = { ...ctx, isIdle: () => false };
+		await tool.execute("defer", { action: "add", content: "cancelled conflict" }, undefined, undefined, busy);
+		await commands.get("remember")!.handler("cancelled remember", busy);
+		assert.equal(ctx.signal, undefined);
+		await settled({ type: "agent_settled", aborted: true }, ctx);
+		assert.equal(calls.length, 2);
+		assert.deepEqual(questions, []);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "saved fact");
+		await assert.rejects(readFile(join(memoryDir, "USER.md")), /ENOENT/);
+
+		await settled({ type: "agent_settled", aborted: false }, ctx);
+		assert.equal(calls.length, 2);
+		assert.deepEqual(questions, []);
+		await commands.get("remember")!.handler("later preference", ctx);
+		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "later preference");
+		assert.equal(calls.length, 4);
 	});
 });
 
@@ -1160,7 +1187,7 @@ test("cancelled or replaced sessions drop pending conflicts without opening UI",
 			await tool.execute("defer", { action: "add", content: "candidate" }, controller.signal, undefined, { ...ctx, isIdle: () => false });
 			if (boundary === "abort") controller.abort();
 			else await handlers.get(boundary)!({ type: boundary }, SESSION_CONTEXT);
-			await settled({ type: "agent_settled" }, ctx);
+			await settled({ type: "agent_settled", aborted: false }, ctx);
 			assert.equal(calls.length, 1, boundary);
 			assert.deepEqual(questions, [], boundary);
 			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
@@ -1177,7 +1204,7 @@ test("a new response during deferred approval invalidates the write without an i
 	}, async ({ memoryDir, tool, ctx, settled, handlers }) => {
 		start = handlers.get("before_agent_start")!;
 		await tool.execute("defer", { action: "add", content: "candidate" }, undefined, undefined, { ...ctx, isIdle: () => false });
-		await settled({ type: "agent_settled" }, ctx);
+		await settled({ type: "agent_settled", aborted: false }, ctx);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
 	});
 });
