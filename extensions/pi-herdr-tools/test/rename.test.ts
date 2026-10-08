@@ -78,6 +78,7 @@ function harness(options: {
 
 	const ctx = {
 		model: options.currentModel ?? defaultModel,
+		scopedModels: [],
 		modelRegistry: {
 			getAvailable: () => models,
 			streamSimple: (model: Model, context: any, completionOptions: any) => ({
