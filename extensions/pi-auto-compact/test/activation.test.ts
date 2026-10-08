@@ -251,6 +251,7 @@ test("silences missing shared task-model config but reports present config error
 			compact: (options: { customInstructions?: string }) => {
 				compactionInstructions = options.customInstructions;
 			},
+			scopedModels: [],
 			modelRegistry: { getAvailable: () => [] },
 			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
 		} as unknown as ExtensionContext;
@@ -327,6 +328,7 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 				compactions++;
 				autoInstructions = options.customInstructions;
 			},
+			scopedModels: [],
 			modelRegistry: {
 				getAvailable: () => [
 					{ provider: "primary", id: "model", input: ["text"] },
@@ -427,6 +429,7 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 			compact: (options: { customInstructions?: string }) => {
 				autoInstructions = options.customInstructions;
 			},
+			scopedModels: [],
 			modelRegistry: {
 				getAvailable: () => [
 					{ provider: "primary", id: "model", input: ["text"] },
