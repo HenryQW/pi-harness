@@ -15,8 +15,8 @@ Each source path below is relative to that repository. Each package path is rela
 | --- | --- | --- |
 | `git-commit/SKILL.md` | `skills/git-commit/SKILL.md` | Modified for pi-pr: use the shared native scoped commit tool, content/index checks, and uncertain-outcome rules. |
 | `git-pr/SKILL.md` | `skills/git-pr/SKILL.md` | Modified for pi-pr: replace shell publication with bounded native dispatch, explicit base intent, upstream consent, and exact PR reuse. |
-| `update-from-main/SKILL.md` | `skills/update-from-main/SKILL.md` | Modified for pi-pr: packaged helper guidance, bounded check output, exact backup identity, and retained-backup recovery after success or failure. |
-| `update-from-main/scripts/update_from_main.py` | `skills/update-from-main/scripts/update_from_main.py` | Modified for pi-pr: add collision/race regressions, identify the backup by a unique reflog message, and apply its exact OID without popping or dropping it. |
+| `update-from-main/SKILL.md` | `skills/update-from-main/SKILL.md` | Modified for pi-pr: packaged helper guidance, bounded check output, exact backup identity, worktree ownership, and retained-backup recovery after success or failure. |
+| `update-from-main/scripts/update_from_main.py` | `skills/update-from-main/scripts/update_from_main.py` | Modified for pi-pr: add collision/race regressions, identify the backup by a unique reflog message, record its owner in per-worktree refs, and apply its exact OID without popping or dropping it. |
 | `update-from-main/scripts/validate.py` | `skills/update-from-main/scripts/validate.py` | Copied validator; added the source, licence, and modification notice header. |
 
 The source snapshot has no separate `NOTICE` file and no file-specific copyright notice in these five files. The full original Apache licence, including its appendix, is preserved unchanged. Attribution to the source author and repository is retained here. The unrelated source `agents/openai.yaml` files were not imported.
