@@ -1,14 +1,33 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+/** Saved before launch for user matching only; never ownership or mutation authority. */
+export interface DirectDisplay {
+	/** Session-local workflow number. */
+	workflow: number;
+	/** One-based original workflow entry index. */
+	worker: number;
+	workers: number;
+	title: string;
+	role: string;
+}
+export const directRef = ({ workflow, worker }: DirectDisplay): string => `D${workflow}.${worker}`;
+
 /** Read-only branch records; the adapter groups all tabs of a direct workflow. */
 export interface DirectTask {
 	id: string;
+	/** Legacy label: saved allocation label, otherwise the exact task ID. */
 	name: string;
 	status: string;
 	canClose?: boolean;
 	recovery?: string;
-	tabs: readonly { entryId: string; name: string; tabId: string; paneId: string; sessionFile: string }[];
+	/** Recorded workers by original index; empty for legacy records. */
+	workers: readonly DirectDisplay[];
+	tabs: readonly { entryId: string; name: string; tabId: string; paneId: string; sessionFile: string; display?: DirectDisplay }[];
 }
+
+const workerLabel = (display: DirectDisplay) => `${directRef(display)} · ${display.role} · ${display.title}`;
+const directLabel = ({ name, workers: [first] }: DirectTask): string => !first ? name
+	: first.workers === 1 ? workerLabel(first) : `D${first.workflow} · ${first.workers} workers`;
 
 export interface IsolatedTask {
 	id: string;
@@ -35,7 +54,7 @@ export interface SubagentCommandAdapter {
 	closeDirect(task: DirectTask, current: () => boolean): Promise<string>;
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
-	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ tabId: string; name: string; sessionFile: string }>;
+	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ ref: string; tabId: string; name: string; sessionFile: string }>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
 	drain(root: string, requestId: string, taskId: string, current: () => boolean): readonly string[];
@@ -104,7 +123,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${JSON.stringify(id)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "close" };
 				const selections: Choice<Selection>[] = [
-					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${task.name} · ${task.status} · ${task.id}`, value: { kind: "direct" as const, task } })),
+					// One row per workflow; new records keep opaque IDs in details. Status is last so clipping preserves the reference.
+					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${directLabel(task)} · ${task.status}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct" as const, task } })),
 					...(inventory?.requests ?? []).filter((request) => history || !completed(request.status) || /retained/i.test(request.status)).map((request) => ({ label: `Isolated · ${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
 					{ label: "Refresh", value: { kind: "refresh" as const } },
 					{ label: history ? "Active work" : "Completed / history (including retained work)", value: { kind: "history" as const } },
@@ -121,20 +141,25 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (selected.kind === "refresh") continue;
 				if (selected.kind === "history") { history = !history; continue; }
 				if (selected.kind === "direct") {
-					ctx.ui.notify(`Direct workflow ${clean(selected.task.name)} (${JSON.stringify(selected.task.id)}) · ${clean(selected.task.status)}`, "info");
-					if (selected.task.recovery) ctx.ui.notify(clean(selected.task.recovery, 4000), "warning");
-					for (const tab of selected.task.tabs) {
-						ctx.ui.notify(`Task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}`, "info");
+					const { task } = selected;
+					const label = clean(directLabel(task));
+					ctx.ui.notify(`Direct workflow ${label} · ${clean(task.status)} · ID ${JSON.stringify(task.id)}`, "info");
+					if (task.recovery) ctx.ui.notify(clean(task.recovery, 4000), "warning");
+					for (const tab of task.tabs) {
+						ctx.ui.notify(`${tab.display ? `${clean(workerLabel(tab.display))} · ` : ""}task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}`, "info");
 					}
-					if (selected.task.canClose) {
-						const action = await choose(ctx, `Direct · ${clean(selected.task.name)} · ${selected.task.id}`, [
-							{ label: "Close/cancel-and-release owned workers (preserve files and commits)", value: "close" },
+					const untabbed = task.workers.filter((worker) => !task.tabs.some((tab) => tab.display?.worker === worker.worker));
+					for (const worker of untabbed) ctx.ui.notify(`${clean(workerLabel(worker))} · no verified tab recorded`, "info");
+					if (task.workers[0] && task.workers.length < task.workers[0].workers) ctx.ui.notify(`${task.workers[0].workers - task.workers.length} other worker(s) in D${task.workers[0].workflow} have no recorded tab.`, "info");
+					if (task.canClose) {
+						const action = await choose(ctx, `Direct · ${label}`, [
+							{ label: "Close/cancel-and-release ALL owned workers in this workflow (preserve files and commits)", value: "close" },
 							{ label: "Back / refresh", value: "back" },
 						]);
 						if (!valid()) return;
 						if (action === "close") {
 							try {
-								const report = await adapter.closeDirect(selected.task, current);
+								const report = await adapter.closeDirect(task, current);
 								if (valid()) ctx.ui.notify(report, "info");
 							} catch (error) { if (valid()) ctx.ui.notify(`Admission retained: ${errorText(error)}. Inspect the exact tab/session; retry Close/cancel-and-release after resolving termination.`, "error"); }
 						}
@@ -157,7 +182,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					if (action === "inspect") {
 						try {
 							const tab = await adapter.inspectInTab(root, request.id, ctx, current);
-							if (valid()) ctx.ui.notify(`Status inspection started in Herdr tab ${tab.tabId} · agent ${tab.name} · session ${tab.sessionFile}.`, "info");
+							if (valid()) ctx.ui.notify(`Status inspection ${tab.ref} started in Herdr tab ${tab.tabId} · agent ${tab.name} · session ${tab.sessionFile}.`, "info");
 						}
 						catch (error) { if (valid()) ctx.ui.notify(`Inspection failed: ${errorText(error)}`, "error"); }
 						continue;
