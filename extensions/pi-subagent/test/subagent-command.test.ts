@@ -31,7 +31,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
 		inspectInTab: async (_root, id, _ctx, current) => {
 			assert.equal(current(), true); inspectCount++;
-			return { tabId: `tab-${id}`, name: "status-scout", sessionFile: "/status/session.jsonl" };
+			return { ref: "D9.1", tabId: `tab-${id}`, name: "status-scout", sessionFile: "/status/session.jsonl" };
 		},
 		canFollowup: () => active,
 		epoch: () => epoch,
@@ -89,10 +89,10 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	};
 }
 
-test("direct recovery, history and duplicate labels retain exact records", async () => {
+test("legacy direct recovery, history and duplicate labels retain exact records", async () => {
 	const h = harness({ direct: [
-		{ id: "direct-a", name: "Same", status: "recorded (not observed)", tabs: [{ entryId: "entry-1", name: "worker", tabId: "tab-1", paneId: "pane-1", sessionFile: "/one" }, { entryId: "entry-2", name: "worker", tabId: "tab-2", paneId: "pane-2", sessionFile: "/two" }] },
-		{ id: "direct-b", name: "Same", status: "completed", tabs: [{ entryId: "entry-3", name: "worker", tabId: "tab-3", paneId: "pane-3", sessionFile: "/three" }] },
+		{ id: "direct-a", name: "Same", status: "recorded (not observed)", workers: [], tabs: [{ entryId: "entry-1", name: "worker", tabId: "tab-1", paneId: "pane-1", sessionFile: "/one" }, { entryId: "entry-2", name: "worker", tabId: "tab-2", paneId: "pane-2", sessionFile: "/two" }] },
+		{ id: "direct-b", name: "Same", status: "completed", workers: [], tabs: [{ entryId: "entry-3", name: "worker", tabId: "tab-3", paneId: "pane-3", sessionFile: "/three" }] },
 	] });
 	h.responses.push(h.pick("Direct · Same · recorded"), h.pick("Completed / history"), h.pick("direct-b"), h.pick("Isolated · Same"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
@@ -102,6 +102,37 @@ test("direct recovery, history and duplicate labels retain exact records", async
 	assert.equal(h.inspectCount, 1);
 	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Isolated")));
 	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Direct")));
+});
+
+test("direct rows use saved references; multi-worker workflows group under one row with named details", async () => {
+	const worker = (workflow: number, index: number, workers: number, title: string) => ({ workflow, worker: index, workers, title, role: "worker" });
+	const tab = (n: number, display: ReturnType<typeof worker>) => ({ entryId: `entry-${n}`, name: `d-${n}`, tabId: `tab-${n}`, paneId: `pane-${n}`, sessionFile: `/s${n}`, display });
+	const single = worker(1, 1, 1, "Same");
+	const duplicate = worker(2, 1, 1, "Same");
+	const multi = [worker(3, 1, 3, "Scan"), worker(3, 2, 3, "Fix")];
+	const h = harness({ direct: [
+		{ id: "direct-1-x", name: "direct-1-x", status: "observed locally", canClose: true, workers: [single], tabs: [tab(1, single)] },
+		{ id: "direct-2-x", name: "direct-2-x", status: `admission retained ${"e".repeat(300)}`, workers: [duplicate], tabs: [tab(2, duplicate)] },
+		{ id: "direct-3-x", name: "direct-3-x", status: "allocation unverified; admission retained", recovery: "allocation evidence", workers: multi, tabs: [tab(3, multi[0]!)] },
+	] });
+	h.responses.push(h.pick("D3 · 3 workers"), h.pick("D1.1"), (dialog) => {
+		assert.match(dialog.title, /^Direct · D1\.1 · worker · Same$/);
+		assert.match(dialog.options![0]!, /^Close\/cancel-and-release ALL owned workers in this workflow/);
+		return h.pick("Back")(dialog);
+	}, h.pick("Close"));
+	await h.run();
+	const rows = h.dialogs[0]!.options!.filter((label) => label.startsWith("Direct"));
+	assert.equal(rows.length, 3);
+	for (const prefix of ["Direct · D1.1 · worker · Same · observed locally", "Direct · D2.1 · worker · Same · admission retained", "Direct · D3 · 3 workers · allocation unverified"]) {
+		assert.ok(rows.some((label) => label.startsWith(prefix)), prefix);
+	}
+	assert.ok(rows.every((label) => !label.includes("direct-")), "opaque IDs stay in details");
+	const notices = h.notices.map(({ message }) => message);
+	assert.ok(notices.includes('Direct workflow D3 · 3 workers · allocation unverified; admission retained · ID "direct-3-x"'));
+	assert.ok(notices.includes('D3.1 · worker · Scan · task "entry-3" · agent "d-3" · tab "tab-3" · pane "pane-3" · session "/s3"'));
+	assert.ok(notices.includes("D3.2 · worker · Fix · no verified tab recorded"));
+	assert.ok(notices.includes("1 other worker(s) in D3 have no recorded tab."));
+	assert.deepEqual(h.closed, []);
 });
 
 test("Refresh reloads the isolated inventory for the widget as well as the picker", async () => {
@@ -115,7 +146,7 @@ test("inspection launches a Herdr tab without queuing a Main turn or changing wo
 	const h = harness();
 	h.responses.push(h.pick("Isolated"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
-	assert.ok(h.notices.some(({ message }) => message.includes("Herdr tab tab-request · agent status-scout")));
+	assert.ok(h.notices.some(({ message }) => message.includes("Status inspection D9.1 started in Herdr tab tab-request · agent status-scout")));
 	assert.equal(h.inspectCount, 1);
 	assert.deepEqual(h.queues.get("task"), ["first", "first", "third"]);
 	assert.deepEqual(h.sent, []);
@@ -132,7 +163,7 @@ test("inspection does not launch after the session changes in the menu", async (
 });
 
 test("failed isolated discovery preserves direct branch recovery and invalid inventory does not suppress healthy requests", async () => {
-	const direct = [{ id: "direct", name: "Rescue", status: "recorded", tabs: [{ entryId: "task", name: "worker", tabId: "tab", paneId: "pane", sessionFile: "/recover" }] }];
+	const direct = [{ id: "direct", name: "Rescue", status: "recorded", workers: [], tabs: [{ entryId: "task", name: "worker", tabId: "tab", paneId: "pane", sessionFile: "/recover" }] }];
 	const failed = harness({ direct, isolatedError: new Error("outside Git") });
 	failed.responses.push(failed.pick("Direct"), failed.pick("Close"));
 	await failed.run();
@@ -256,7 +287,7 @@ test("no UI and unknown arguments fail before dialogs or mutations", async () =>
 
 test("direct Close is exact and refuses stale branch/session/epoch dialogs", async () => {
 	for (const change of ["changeBranch", "navigateAncestor", "navigateDescendant", "changeSession", "changeFile", "shutdown", "append"] as const) {
-		const h = harness({ direct: [{ id: "owned", name: "Rescue", status: "admission retained", canClose: true, tabs: [] }] });
+		const h = harness({ direct: [{ id: "owned", name: "Rescue", status: "admission retained", canClose: true, workers: [], tabs: [] }] });
 		h.responses.push(h.pick("Direct"), (dialog) => { h[change](); return h.pick("Close/cancel")(dialog); }, h.pick("Close"));
 		await h.run();
 		assert.deepEqual(h.closed, change === "append" ? ["owned"] : []);

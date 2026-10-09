@@ -6,7 +6,7 @@ import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecuto
 import { readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
 import { registerCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
-import { registerSubagentCommand, type DirectTask } from "./subagent-command.ts";
+import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { ENTRY_STATUS_PRESENTATION, formatWorkflowResult, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
@@ -20,6 +20,7 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 
 type WidgetStatus = "working" | "success" | "failure";
 type WidgetItem = {
+	ref: string;
 	role: string;
 	model: string;
 	thinkingLevel: string;
@@ -68,7 +69,7 @@ function renderWidgetRows(
 		- (b.status === "failure" ? 0 : b.status === "working" ? 1 : 2));
 	const visible = ordered.slice(0, ordered.length > MAX_WIDGET_LINES ? MAX_WIDGET_LINES - 1 : MAX_WIDGET_LINES);
 	const lines = visible.map((item) => {
-		const prefix = `${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", `D ${item.role}`)} ${item.status === "working" ? "" : `${statusLabel(item.status)} · `}`;
+		const prefix = `${statusGlyph(item.status, spinnerIndex, theme)} ${theme.fg("accent", `${item.ref} ${item.role}`)} ${item.status === "working" ? "" : `${statusLabel(item.status)} · `}`;
 		const metrics = [
 			`${item.model}/${item.thinkingLevel}`,
 			tokenLabel(item.tokens),
@@ -111,8 +112,9 @@ function replaceRouteModel(ctx: ExtensionContext, reference: string, route: Reso
 const DIRECT_RESULT_TYPE = "subagent-direct-result";
 const DIRECT_TAB_TYPE = "subagent-direct-tab";
 const DIRECT_ALLOCATION_TYPE = "subagent-direct-allocation";
-type DirectAllocationRecord = DirectAllocation & { taskId: string; entryId: string; failure: string };
-type DirectTabRecord = DirectTab & { taskId: string; entryId: string };
+// Legacy records have no display metadata.
+type DirectAllocationRecord = DirectAllocation & { taskId: string; entryId: string; failure: string; display?: DirectDisplay };
+type DirectTabRecord = DirectTab & { taskId: string; entryId: string; display?: DirectDisplay };
 
 function boundedError(error: unknown): Error {
 	const message = capOutput(error instanceof Error ? error.message : String(error));
@@ -193,25 +195,46 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const directTasks = new Map<string, { controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[]; close?: (current: () => boolean) => Promise<void>; closeScope?: () => boolean; allocation?: DirectAllocationRecord; recovery?: string }>();
 	let latestCtx: ExtensionContext | undefined;
 	let sessionEpoch = 0;
+	// Shutdown still saves outgoing identities; only a session start defers records to its carry loop.
+	let directRecordEpoch = 0;
+	let directWorkflow = 0;
+	/** Saved display workflow numbers anywhere in this session, by owning task. */
+	const savedWorkflows = (ctx: ExtensionContext) => {
+		const saved = new Map<number, string>();
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type !== "custom" || (entry.customType !== DIRECT_TAB_TYPE && entry.customType !== DIRECT_ALLOCATION_TYPE)) continue;
+			const record = entry.data as DirectTabRecord | undefined;
+			if (record?.display) saved.set(record.display.workflow, record.taskId);
+		}
+		return saved;
+	};
+	// The in-memory counter also covers launches that have not saved a record yet.
+	const nextWorkflow = (ctx: ExtensionContext) => (directWorkflow = Math.max(directWorkflow, ...savedWorkflows(ctx).keys()) + 1);
 	registerSubagentCommand(pi, {
 		direct(ctx): DirectTask[] {
-			const grouped = new Map<string, DirectTask & { tabs: Array<DirectTask["tabs"][number]> }>();
+			const grouped = new Map<string, DirectTask & { workers: DirectDisplay[]; tabs: Array<DirectTask["tabs"][number]> }>();
 			for (const entry of ctx.sessionManager.getBranch()) {
-				if (entry.type === "custom" && entry.customType === DIRECT_ALLOCATION_TYPE && entry.data) {
-					const allocation = entry.data as DirectAllocationRecord;
-					grouped.set(allocation.taskId, { id: allocation.taskId, name: allocation.name,
-						status: "allocation unverified; admission retained", recovery: allocation.failure,
-						tabs: grouped.get(allocation.taskId)?.tabs ?? [] });
+				if (entry.type !== "custom" || !entry.data || (entry.customType !== DIRECT_TAB_TYPE && entry.customType !== DIRECT_ALLOCATION_TYPE)) continue;
+				const record = entry.data as DirectTabRecord | DirectAllocationRecord;
+				const local = directTasks.get(record.taskId);
+				let task = grouped.get(record.taskId);
+				if (!task) grouped.set(record.taskId, task = { id: record.taskId, name: record.taskId,
+					status: local?.recovery ? "admission retained" : local ? "observed locally" : "recorded only; not proof of running or completion",
+					...(local?.recovery ? { recovery: local.recovery } : {}), canClose: Boolean(local?.close), workers: [], tabs: [] });
+				const { display } = record;
+				if (display && !task.workers.some(({ worker }) => worker === display.worker)) task.workers.push(display);
+				if (entry.customType === DIRECT_ALLOCATION_TYPE) {
+					const { label, failure } = record as DirectAllocationRecord;
+					if (!display) task.name = label;
+					task.status = "allocation unverified; admission retained";
+					task.recovery = failure;
+					task.canClose = false;
+				} else if (!task.tabs.some(({ tabId }) => tabId === record.tabId)) {
+					const { entryId, name, tabId, paneId, sessionFile } = record as DirectTabRecord;
+					task.tabs.push({ entryId, name, tabId, paneId, sessionFile, ...(display ? { display } : {}) });
 				}
-				if (entry.type !== "custom" || entry.customType !== DIRECT_TAB_TYPE || !entry.data) continue;
-				const tab = entry.data as DirectTabRecord;
-				const local = directTasks.get(tab.taskId);
-				const existing = grouped.get(tab.taskId);
-				const record = { entryId: tab.entryId, name: tab.name, tabId: tab.tabId, paneId: tab.paneId, sessionFile: tab.sessionFile };
-				if (existing) {
-					if (!existing.tabs.some((item) => item.tabId === tab.tabId)) existing.tabs.push(record);
-				} else grouped.set(tab.taskId, { id: tab.taskId, name: tab.name, status: local?.recovery ? `admission retained: ${local.recovery}` : local ? "observed locally" : "recorded (not observed)", canClose: Boolean(local?.close), tabs: [record] });
 			}
+			for (const task of grouped.values()) task.workers.sort((a, b) => a.worker - b.worker);
 			return [...grouped.values()];
 		},
 		async closeDirect(task, current) {
@@ -230,7 +253,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			// Automatic settlement may already have proved termination and released it.
 			if (!current()) throw new Error("Direct task scope changed; reopen /subagent.");
 			if (directTasks.has(task.id)) await local.close(owned);
-			return "Owned workers stopped; checkout admission released. Dirty files, commits and session evidence preserved. Inspect changes before retrying work.";
+			return "All owned workers in this workflow stopped; checkout admission released. Dirty files, commits and session evidence preserved. Inspect changes before retrying work.";
 		},
 		isolated: isolatedSurface.inventory,
 		recover: (cwd) => isolatedSurface.recover(cwd),
@@ -245,6 +268,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
 			const controller = new AbortController();
 			const taskId = `inspect-${id}-${randomUUID()}`;
+			const display: DirectDisplay = { workflow: nextWorkflow(ctx), worker: 1, workers: 1, title: `Inspect ${id}`, role: role.name };
+			const recordEpoch = directRecordEpoch;
 			const handles: DirectHandle[] = [];
 			const tabs: DirectTabRecord[] = [];
 			let resolveSettled!: () => void;
@@ -257,10 +282,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				try {
 					handle = await herdr.start(
 						{ ...prepared, args: [...transient.launch.args] }, `i-${randomUUID().replaceAll("-", "").slice(0, 24)}`,
-						`Inspect ${id}`, `Analyze this saved, read-only status snapshot for request ${id}. Summarize blockers and safe next decisions; do not infer missing evidence or mutate resources. The subagent_status tool in Main remains authoritative for exact action identities.\n\n${snapshot}`,
+						`${directRef(display)} ${display.title}`, `Analyze this saved, read-only status snapshot for request ${id}. Summarize blockers and safe next decisions; do not infer missing evidence or mutate resources. The subagent_status tool in Main remains authoritative for exact action identities.\n\n${snapshot}`,
 						controller.signal, (tab) => {
-							const record = { taskId, entryId: id, ...tab };
-							pi.appendEntry(DIRECT_TAB_TYPE, record);
+							const record = { taskId, entryId: id, display, ...tab };
+							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
 							tabs.push(record);
 						});
 				} catch (error) {
@@ -272,7 +297,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					await handle.cancel();
 					throw new Error(`Session changed during inspection launch; inspect Herdr tab ${handle.tabId}.`);
 				}
-				return { tabId: handle.tabId, name: handle.name, sessionFile: handle.sessionFile };
+				return { ref: directRef(display), tabId: handle.tabId, name: handle.name, sessionFile: handle.sessionFile };
 			} finally {
 				directTasks.delete(taskId);
 				resolveSettled();
@@ -333,10 +358,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const startWidgetItem = (
 		id: string,
 		taskId: string,
-		role: string,
+		display: DirectDisplay,
 		model: string,
 		thinkingLevel: string | undefined,
-		name: string,
 		ctx: ExtensionContext,
 	) => {
 		if (!ctx.hasUI) return;
@@ -349,11 +373,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			}
 		}
 		widgetItems.set(id, {
-			role: roleBadge(role),
+			ref: directRef(display),
+			role: roleBadge(display.role),
 			model,
 			thinkingLevel: thinkingLevel ?? "default",
 			taskId,
-			name,
+			name: display.title,
 			startedAt: Date.now(),
 			status: "working",
 		});
@@ -373,6 +398,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		sessionEpoch += 1;
+		directRecordEpoch += 1;
+		// Numbers are session-local; saved records rebuild the next number.
+		directWorkflow = 0;
 		if (latestCtx) {
 			const previous = [...directTasks.values()];
 			for (const { controller, handles } of previous) {
@@ -382,17 +410,30 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			await Promise.allSettled(previous.map(({ settled }) => settled));
 			// A switch discards the old session's ordinary follow-up. Carry exact
 			// recovery identities into the new branch as well as the original one.
-			const recorded = new Set(ctx.sessionManager.getBranch().flatMap((entry) =>
+			const branch = ctx.sessionManager.getBranch();
+			const recorded = new Set(branch.flatMap((entry) =>
 				entry.type === "custom" && entry.customType === DIRECT_TAB_TYPE && entry.data
 					? [(entry.data as DirectTabRecord).tabId] : []));
-			for (const { allocation } of previous) if (allocation && !ctx.sessionManager.getBranch().some((entry) =>
-				entry.type === "custom" && entry.customType === DIRECT_ALLOCATION_TYPE && (entry.data as DirectAllocationRecord)?.taskId === allocation.taskId)) {
-				pi.appendEntry(DIRECT_ALLOCATION_TYPE, allocation);
-			}
-			for (const { tabs } of previous) for (const tab of tabs) {
-				if (!recorded.has(tab.tabId)) {
-					pi.appendEntry(DIRECT_TAB_TYPE, tab);
-					recorded.add(tab.tabId);
+			for (const local of previous) {
+				const carryAllocation = local.allocation && !branch.some((entry) => entry.type === "custom"
+					&& entry.customType === DIRECT_ALLOCATION_TYPE && (entry.data as DirectAllocationRecord)?.taskId === local.allocation!.taskId);
+				const records = [...local.tabs, ...(local.allocation ? [local.allocation] : [])];
+				const display = records.find((record) => record.display)?.display;
+				const owner = display && savedWorkflows(ctx).get(display.workflow);
+				if (owner !== undefined && owner !== records[0]!.taskId) {
+					// Another workflow owns this number here; renumber display only, never exact identity.
+					const workflow = nextWorkflow(ctx);
+					const renumber = <T extends DirectTabRecord | DirectAllocationRecord>(record: T): T =>
+						record.display ? { ...record, display: { ...record.display, workflow } } : record;
+					local.tabs.splice(0, local.tabs.length, ...local.tabs.map(renumber));
+					if (local.allocation) local.allocation = renumber(local.allocation);
+				}
+				if (carryAllocation) pi.appendEntry(DIRECT_ALLOCATION_TYPE, local.allocation);
+				for (const tab of local.tabs) {
+					if (!recorded.has(tab.tabId)) {
+						pi.appendEntry(DIRECT_TAB_TYPE, tab);
+						recorded.add(tab.tabId);
+					}
 				}
 			}
 		}
@@ -445,6 +486,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const reportDirect = (
 		launchEpoch: number,
 		taskId: string,
+		ref: string,
 		mode: ParsedWorkflow["mode"],
 		entries: readonly WorkflowTransportEntry[],
 		tabs: readonly DirectTabRecord[],
@@ -454,8 +496,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		if (stale) return;
 		const transport = formatWorkflowResult(mode, entries);
 		const outcome: BackgroundWorkflowTransportDetails["outcome"] = transport.failed ? "failed" : "completed";
-		const content = [transport.text, ...(recovery ? [`Checkout admission retained: ${recovery}. Open /subagent, select ${taskId}, and follow its recovery guidance (Close/cancel-and-release only when offered); never blindly retry work.`] : []), ...(tabs.length ? ["Recovery (also available via /subagent):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile }) =>
-			`- ${taskId} · ${entryId} · tab ${tabId} · pane ${paneId} · agent ${name} · session ${sessionFile}`)] : [])].join("\n");
+		const content = [transport.text, ...(recovery ? [`Checkout admission retained: ${recovery}. Open /subagent, select ${ref} (${taskId}), and follow its recovery guidance (Close/cancel-and-release of all its owned workers only when offered); never blindly retry work.`] : []), ...(tabs.length ? ["Recovery (also available via /subagent):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile, display }) =>
+			`- ${display ? `${directRef(display)} · ` : ""}${taskId} · ${entryId} · tab ${tabId} · pane ${paneId} · agent ${name} · session ${sessionFile}`)] : [])].join("\n");
 		const details: BackgroundWorkflowTransportDetails & { tabs: readonly DirectTabRecord[] } = {
 			...transport.details,
 			taskId,
@@ -523,8 +565,14 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				id: entry.id, index: entry.index, name: entry.delegation.name, role: entry.delegation.role, status: "pending",
 			}]));
 			const taskId = `direct-${++directSequence}-${Date.now().toString(36)}`;
+			const workflowNumber = nextWorkflow(ctx);
+			const ref = `D${workflowNumber}`;
+			const displayOf = ({ index, delegation }: WorkflowEntry): DirectDisplay => ({
+				workflow: workflowNumber, worker: index + 1, workers: entries.length, title: delegation.name, role: delegation.role,
+			});
 			const controller = new AbortController();
 			const launchEpoch = sessionEpoch;
+			const recordEpoch = directRecordEpoch;
 			const handles: DirectHandle[] = [];
 			const tabs: DirectTabRecord[] = [];
 			const tabByEntry = new Map<string, DirectTabRecord>();
@@ -566,23 +614,24 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					...resources.prompts.flatMap((path) => ["--prompt-template", path]),
 					...resources.themes.flatMap((path) => ["--theme", path]));
 				states.set(entry.id, { ...states.get(entry.id)!, model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
-				startWidgetItem(entry.id, taskId, role.name, prepared.model.id, prepared.thinkingLevel, entry.delegation.name, ctx);
+				const display = displayOf(entry);
+				startWidgetItem(entry.id, taskId, display, prepared.model.id, prepared.thinkingLevel, ctx);
 				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
 					promptArgIndex: prepared.promptArgIndex }, activeSignal);
 				let handle: DirectHandle;
 				try {
 					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
-						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, entry.delegation.name, entry.delegation.task, activeSignal, (tab) => {
-							const record = { taskId, entryId: entry.id, ...tab };
-							// Persist before agent start, including launches interrupted by a session switch.
-							pi.appendEntry(DIRECT_TAB_TYPE, record);
+						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, `${directRef(display)} ${display.title}`, entry.delegation.task, activeSignal, (tab) => {
+							const record = { taskId, entryId: entry.id, display, ...tab };
+							// Persist before agent start, or let the new session carry the exact identity after settlement.
+							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
 							tabs.push(record);
 							tabByEntry.set(entry.id, record);
 						}, writes);
 				} catch (error) {
 					if (error instanceof DirectAllocationError) {
-						local.allocation = { taskId, entryId: entry.id, ...error.allocation, failure: error.message };
-						pi.appendEntry(DIRECT_ALLOCATION_TYPE, local.allocation);
+						local.allocation = { taskId, entryId: entry.id, display, ...error.allocation, failure: error.message };
+						if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_ALLOCATION_TYPE, local.allocation);
 					}
 					// A failed start can still be in flight. Keep its private prompt for recovery.
 					throw new Error(`${error instanceof Error ? error.message : String(error)}. Direct Role prompt retained at ${transient.launch.args[prepared.promptArgIndex + 1]} after uncertain start.`, { cause: error });
@@ -662,12 +711,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						try { await local.close!(() => directTasks.get(taskId) === local); }
 						catch { /* Retain ownership and admission for an explicit guarded retry. */ }
 					} else directTasks.delete(taskId);
-					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, workflow.mode, [...states.values()], tabs, local.recovery);
+					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, ref, workflow.mode, [...states.values()], tabs, local.recovery);
 					resolveSettled();
 				}
 			})();
 			return {
-				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${taskId}\nHerdr tab: ${first.tabId} · pane: ${first.paneId} · agent: ${first.name}\nExact session: ${first.sessionFile}\nAll launched tabs: /subagent (on this session branch).\n${entries.length} task(s); result will arrive in one follow-up message. Direct work shares this checkout; completion is an exact answer, not checked integration. ${writes ? "Potential writers run serially; competing Pi writes stay blocked until owned workers are proved stopped. If termination is uncertain, use /subagent Close/cancel-and-release; changes are not rolled back." : "Concurrent changes may make reads stale."}`) }],
+				content: [{ type: "text" as const, text: capOutput(`Direct delegation started · ${ref} · ${taskId}\nHerdr tab: ${first.tabId} · pane: ${first.paneId} · agent: ${first.name}\nExact session: ${first.sessionFile}\nAll launched tabs: /subagent (on this session branch).\n${entries.length} task(s); result will arrive in one follow-up message. Direct work shares this checkout; completion is an exact answer, not checked integration. ${writes ? "Potential writers run serially; competing Pi writes stay blocked until owned workers are proved stopped. If termination is uncertain, use /subagent ${ref} Close/cancel-and-release (stops ALL its owned workers); changes are not rolled back." : "Concurrent changes may make reads stale."}`) }],
 				details: { taskId, mode: workflow.mode, tabId: first.tabId, sessionFile: first.sessionFile,
 					entries: entries.map(({ id, index, delegation }) => ({ id, index, name: delegation.name, role: delegation.role })) },
 			};
