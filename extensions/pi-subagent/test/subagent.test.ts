@@ -898,7 +898,13 @@ test("uncertain direct allocation retains admission and recovery intent without 
 				await assert.rejects(app.tool.execute(failure, params, undefined, undefined, app.ctx), /timed out|unverified/);
 				app.handlers.get("tool_result")!({ toolCallId: failure });
 				assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "bash", toolName: "bash", input: {} }, app.ctx))?.block, true);
+				assert.deepEqual(app.sessionEntries.map(({ customType, data }) => [customType, data.display]), [
+					["subagent-direct-allocation", { workflow: 1, worker: 1, workers: 1, title: "Uncertain", role: "worker" }],
+				]);
+				const create = fake.calls.find(([kind, command]) => kind === "tab" && command === "create")!;
+				assert.equal(create[create.indexOf("--label") + 1], "D1.1 Uncertain");
 				await recoverDirect(app);
+				assert.ok(app.notifications.some(({ message }) => message.startsWith("Direct workflow D1.1 · worker · Uncertain · allocation unverified")));
 				assert.ok(app.notifications.some(({ message }) => /allocation.*w-test.*process\.lease/s.test(message)), "exact allocation intent must remain inspectable");
 				assert.ok(!fake.calls.some((args) => args[0] === "agent" && ["start", "prompt"].includes(args[1]!) || args[1] === "close"));
 				if (failure === "identity") assert.ok(app.notifications.some(({ message }) => message.includes("w-test:t2") && message.includes("w-test:p2")));
@@ -922,7 +928,7 @@ test("direct resource resolution still rejects recursive delegation packages bef
 	});
 });
 
-test("direct widget shows one compact mode, role, route and measured-usage row", async () => {
+test("direct widget and /subagent show the same saved reference, role and name", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
@@ -933,12 +939,19 @@ test("direct widget shows one compact mode, role, route and measured-usage row",
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("widget", { role: "worker", name: "Search audit", task: "inspect" }, undefined, undefined, app.ctx);
 			assert.equal(app.widget?.render(120).length, 1);
-			assert.match(app.widget!.render(120)[0]!, /^⠋ D \[W\] Search audit · .*\/.* · — tok · /);
+			assert.match(app.widget!.render(120)[0]!, /^⠋ D1\.1 \[W\] Search audit · .*\/.* · — tok · /);
+			let rows: string[] = [];
+			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices; return undefined; };
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.deepEqual(rows.filter((row) => row.startsWith("Direct")), ["Direct · D1.1 · worker · Search audit · observed locally [1]"]);
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
-			assert.match(app.widget!.render(120)[0]!, /✓ D \[W\] complete · Search audit · .* · 1\.5k tok · /);
-			assert.ok(visibleWidth(app.widget!.render(26)[0]!) <= 26);
-			assert.match(app.widget!.render(26)[0]!, /^✓ D \[W\] complete · /);
+			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.5k tok · /);
+			for (const width of [26, 12]) {
+				const [row] = app.widget!.render(width);
+				assert.ok(visibleWidth(row!) <= width);
+				assert.match(row!, width === 26 ? /^✓ D1\.1 \[W\] complete · / : /^✓ D1\.1/, "reference precedes optional metrics");
+			}
 		});
 	});
 });
@@ -1103,6 +1116,58 @@ test("parallel tabs persist exact identities across a session switch without a f
 			}
 			assert.deepEqual(originalBranch.map(({ data }) => data.tabId), ["w-test:t2", "w-test:t3"]);
 			assert.deepEqual(app.sessionEntries.map(({ data }) => data.tabId), ["w-test:t2", "w-test:t3"]);
+		});
+	});
+});
+
+test("display numbers continue after reload and carried workflows never reuse a saved number", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, () => "late answer", gate);
+			const app = harness({ cwd, herdr: fake.exec });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			const started = await app.tool.execute("carry", { tasks: [
+				{ role: "worker", name: "Same", task: "first" },
+				{ role: "worker", name: "Same", task: "second" },
+			] }, undefined, undefined, app.ctx);
+			assert.match(started.content[0].text, /^Direct delegation started · D1 · direct-/);
+			await waitFor(() => app.sessionEntries.length === 2);
+			const originalBranch = app.sessionEntries;
+			app.switchBranch();
+			// The new session already owns D1 and a legacy record without display metadata.
+			const other = { name: "d-other", paneId: "p-other", sessionFile: "/other", leasePath: "/other.lease", entryId: "x" };
+			app.sessionEntries.push(
+				{ type: "custom", customType: "subagent-direct-tab", data: { ...other, taskId: "other", tabId: "t-other", display: { workflow: 1, worker: 1, workers: 1, title: "Other", role: "worker" } } },
+				{ type: "custom", customType: "subagent-direct-tab", data: { ...other, taskId: "direct-legacy", tabId: "t-legacy" } },
+				{ type: "custom", customType: "subagent-direct-allocation", data: { ...other, taskId: "direct-alloc", workspaceId: "w", cwd, label: "Legacy label", failure: "unverified" } },
+			);
+			const switched = app.handlers.get("session_start")!({}, app.ctx);
+			release();
+			await switched;
+			assert.deepEqual(originalBranch.map(({ data }) => data.display.workflow), [1, 1], "the original session keeps its numbers");
+			assert.deepEqual(app.sessionEntries.slice(3).map(({ data }) => [data.tabId, data.display.workflow, data.display.worker]), [["w-test:t2", 2, 1], ["w-test:t3", 2, 2]]);
+			let rows: string[] = [];
+			app.ctx.hasUI = true;
+			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices.filter((row) => row.startsWith("Direct")); return undefined; };
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.deepEqual(rows.map((row) => row.replace(/ \[\d+\]$/, "")).sort(), [
+				"Direct · D1.1 · worker · Other · recorded only; not proof of running or completion",
+				"Direct · D2 · 2 workers · recorded only; not proof of running or completion",
+				"Direct · Legacy label · allocation unverified; admission retained · direct-alloc",
+				"Direct · direct-legacy · recorded only; not proof of running or completion",
+			]);
+			const next = await app.tool.execute("next", { role: "worker", name: "Next", task: "inspect" }, undefined, undefined, app.ctx);
+			assert.match(next.content[0].text, /^Direct delegation started · D3 · /);
+			await waitFor(() => app.sentMessages.length === 1);
+			const reloaded = harness({ cwd, herdr: fake.exec });
+			reloaded.sessionEntries.push(...app.sessionEntries);
+			await reloaded.handlers.get("session_start")!({}, reloaded.ctx);
+			const after = await reloaded.tool.execute("reload", { role: "worker", name: "Reloaded", task: "inspect" }, undefined, undefined, reloaded.ctx);
+			assert.match(after.content[0].text, /^Direct delegation started · D4 · /);
+			await waitFor(() => reloaded.sentMessages.length === 1);
 		});
 	});
 });
