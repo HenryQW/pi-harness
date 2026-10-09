@@ -8,6 +8,8 @@ Get [Bark](https://bark.day.app) notifications when Pi finishes or needs your in
 pi install npm:@henryqw/pi-bark
 ```
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 ### Setup
 
 1. Open the Bark App and copy its test URL.

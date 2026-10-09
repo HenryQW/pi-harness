@@ -8,7 +8,7 @@ See the current branch pull request in the Pi footer. Run `/pr` for the full PR 
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires Pi 1.0.0 or newer, an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`. CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequences`; upgrade `gh` if that flag is unavailable.
+Requires Pi 1.1.0 or newer in the 1.x series, an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`. CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequences`; upgrade `gh` if that flag is unavailable.
 
 ## Works with
 

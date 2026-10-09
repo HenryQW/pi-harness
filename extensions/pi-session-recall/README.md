@@ -8,7 +8,7 @@ Search past Pi sessions locally to find prior decisions and context without inje
 pi install npm:@henryqw/pi-session-recall
 ```
 
-Requires Node.js 22.19.0 or later.
+Requires Pi 1.1.0 or later in the 1.x series and Node.js 22.19.0 or later.
 
 ## Use
 

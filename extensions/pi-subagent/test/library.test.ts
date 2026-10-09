@@ -601,8 +601,7 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		[{ url: "https://docs.test", oauth: { callbackUrl: "https://docs.test/callback" } }, /field "oauth\.callbackUrl" must be an http URL on localhost/],
 	] as const) {
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs } }));
-		// Pi 1.0.0 rejects CIMD before these field checks.
-		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion: "1.0.1" }), message);
+		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), message);
 	}
 	// Valid provider auth over https and loopback, and new OAuth fields, are copied for Pi's native transport.
 	const secure = { url: "https://docs.test/mcp", description: "Product docs", auth: { provider: "radius" } };
@@ -611,12 +610,7 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 	for (const clientRegistration of ["dcr", "cimd"]) {
 		const config = { url: "https://docs.test", oauth: { clientRegistration, callbackUrl: "http://127.0.0.1:8080/callback", callbackPort: 8080 } };
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: config } }));
-		if (clientRegistration === "cimd") {
-			assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion: "1.0.0" }), /mcp\.json: MCP server "docs".*cimd.*requires Pi 1\.0\.1.*current Pi is 1\.0\.0/);
-		}
-		for (const piVersion of clientRegistration === "cimd" ? ["1.0.1", "1.0.2"] : ["1.0.0"]) {
-			assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"], { codemode: false, piVersion }).servers[0]!.config, { ...config, exposure: "direct" });
-		}
+		assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"]).servers[0]!.config, { ...config, exposure: "direct" });
 	}
 	await writeFile(mcpPath, JSON.stringify({ mcpServers: { secure, loopback, oauth, "dev-docs": secure, dev_docs: secure, "dev docs": secure } }));
 	assert.deepEqual(

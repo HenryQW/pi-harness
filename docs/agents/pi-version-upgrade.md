@@ -59,3 +59,4 @@ Add an audit log entry, even when every decision is `none`. Report decisions, th
 Add one entry per audit: the version range, the date, and each `remove` or `change` decision with its changelog item. `none` items need no entry. The last entry's upper version is `BASE`.
 
 - `1.0.1` to `1.0.4` (2026-10-07): all `none`.
+- `1.0.4` to `1.1.0` (2026-10-09): `change` for "Added `aborted` to `agent_settled`": `@henryqw/pi-memory` drops deferred work from cancelled runs. All other items `none`. Every Pi-dependent workspace now uses one Pi `1.1.0` package graph, which removes mixed `pi-ai` and `pi-tui` type identities. With the raised floor, `@henryqw/pi-subagent` also removed its obsolete Pi `1.0.0` rejection of `oauth.clientRegistration` `cimd`.

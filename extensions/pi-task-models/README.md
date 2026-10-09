@@ -7,7 +7,7 @@ Choose shared model and thinking routes for extension tasks named `fast`, `balan
 
 ## Install
 
-Requires Pi 1.x (1.0.0 or newer). Upgrade Pi before installing version 8 of this package.
+Requires Pi 1.1.0 or later in the 1.x series. Upgrade Pi before installing version 8.1 or later of this package.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
