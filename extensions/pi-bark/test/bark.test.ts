@@ -208,13 +208,17 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 
 	const settled = lifecycleHandlers.get("agent_settled");
 	assert.ok(settled);
-	assert.equal(settled({}, ctx), undefined, "agent_settled stays non-blocking for later handlers");
+	assert.equal(settled({ type: "agent_settled", aborted: true }, ctx), undefined);
+	await waitForImmediate();
+	assert.equal(pushes.length, 1, "a cancelled settlement sends no Pi finished push");
+
+	assert.equal(settled({ type: "agent_settled", aborted: false }, ctx), undefined, "agent_settled stays non-blocking for later handlers");
 	idle = false;
 	await waitForImmediate();
 	assert.equal(pushes.length, 1, "a continuation queued by a later settled handler suppresses Pi finished");
 
 	idle = true;
-	assert.equal(settled({}, ctx), undefined);
+	assert.equal(settled({ type: "agent_settled", aborted: false }, ctx), undefined);
 	await waitForImmediate();
 	assert.deepEqual(pushes[1], {
 		device_key: "device-key",
@@ -270,7 +274,7 @@ test("a continuation cancels a finished push after its deferred idle check", asy
 	await commands.get("set-bark")!("device-key", ctx);
 	notices.length = 0;
 
-	assert.equal(lifecycleHandlers.get("agent_settled")!({}, ctx), undefined);
+	assert.equal(lifecycleHandlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, ctx), undefined);
 	await waitForImmediate();
 	assert.equal(requestSignal?.aborted, false);
 
@@ -317,7 +321,7 @@ test("automatic status pushes preserve event order and event-time state", async 
 	assert.equal(pushes[0]?.title, "Pi needs input");
 
 	sessionName = "Settled at event";
-	assert.equal(settled({}, ctx), undefined);
+	assert.equal(settled({ type: "agent_settled", aborted: false }, ctx), undefined);
 	await commands.get("bark")!("off", ctx);
 	sessionName = "Disabled at event";
 	assert.equal(promptStart({}, ctx), undefined);
@@ -377,7 +381,7 @@ test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is
 	const plaintext = Buffer.concat([decipher.update(combined.subarray(0, -16)), decipher.final()]).toString("utf8");
 	assert.equal(plaintext, JSON.stringify({ body: text }));
 
-	lifecycleHandlers.get("agent_settled")!({}, {
+	lifecycleHandlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, {
 		cwd: join(agentDir, "project"),
 		isIdle: () => true,
 		ui: { notify: () => {} },
@@ -416,7 +420,7 @@ test("/copyb requires valid config and preserves malformed files", async (t) => 
 	};
 	const configPath = join(agentDir, "config", "pi-bark", "config.json");
 
-	await lifecycleHandlers.get("agent_settled")!({}, {
+	await lifecycleHandlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, {
 		cwd: join(agentDir, "project"),
 		isIdle: () => true,
 		ui: { notify: () => {} },
