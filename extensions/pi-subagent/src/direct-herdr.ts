@@ -38,6 +38,8 @@ export interface DirectHandle {
 	prompt: string;
 	answer(maxBytes: number): Promise<string>;
 	usageTokens(): Promise<number | undefined>;
+	/** Display-only activity from the last usageTokens() sample. */
+	readonly activity?: DirectToolActivity;
 	cancel(): Promise<void>;
 }
 
@@ -105,31 +107,58 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 	return completion.answer;
 }
 
+export interface DirectToolActivity {
+	pending: string[];
+	latest?: { name: string; durationMs?: number };
+}
+
 // Ignore a partial trailing JSONL entry while the child is writing it.
-export function directSessionTokens(jsonl: string, prompt: string): number | undefined {
+export function directSessionUsage(jsonl: string, prompt: string): { tokens?: number; activity?: DirectToolActivity } {
 	let active = false;
 	let total = 0;
 	let observed = false;
+	const pending = new Map<string, string>();
+	let latest: DirectToolActivity["latest"];
 	for (const line of jsonl.split("\n")) {
 		if (!line.trim()) continue;
 		let entry: Json;
 		try { entry = JSON.parse(line) as Json; } catch { break; }
-		if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+		if (!entry || entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
 		const message = entry.message as Json;
 		if (message.role === "user") {
 			active = Array.isArray(message.content) && message.content.length === 1
 				&& (message.content[0] as Json)?.text === prompt;
-			if (active) { total = 0; observed = false; }
-		} else if (active && message.role === "assistant" && message.usage && typeof message.usage === "object") {
-			const usage = message.usage as Json;
-			const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
-			if (values.every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
-				total += (values as number[]).reduce((sum, value) => sum + value, 0);
-				observed = true;
+			if (active) { total = 0; observed = false; pending.clear(); latest = undefined; }
+		} else if (active && message.role === "assistant") {
+			if (message.usage && typeof message.usage === "object") {
+				const usage = message.usage as Json;
+				const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
+				if (values.every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
+					total += (values as number[]).reduce((sum, value) => sum + value, 0);
+					observed = true;
+				}
+			}
+			if (Array.isArray(message.content)) for (const part of message.content) {
+				if (part?.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
+					pending.set(part.id, part.name);
+				}
+			}
+		} else if (active && message.role === "toolResult" && typeof message.toolCallId === "string") {
+			const name = pending.get(message.toolCallId);
+			if (name === undefined) continue;
+			pending.delete(message.toolCallId);
+			latest = { name };
+			if (typeof message.durationMs === "number" && Number.isFinite(message.durationMs) && message.durationMs >= 0) {
+				latest.durationMs = message.durationMs;
 			}
 		}
 	}
-	return observed ? total : undefined;
+	return { tokens: observed ? total : undefined,
+		activity: pending.size || latest ? { pending: [...pending.values()], latest } : undefined };
+}
+
+export function directSessionTokens(jsonl: string, prompt: string): number | undefined {
+	return directSessionUsage(jsonl, prompt).tokens;
 }
 
 export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string };
@@ -259,17 +288,18 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				const state = inspect(accepted, "agent_prompted", name, paneId, tabId);
 				if (state === "blocked" || state === "unknown") throw new Error(`Herdr agent became ${state}; inspect it before retrying.`);
 				let lastUsageSize = -1;
-				let lastTokens: number | undefined;
+				let lastUsage: ReturnType<typeof directSessionUsage> = {};
 				return {
 				name, tabId, paneId, sessionFile, prompt,
+				get activity() { return lastUsage.activity; },
 				async usageTokens() {
 					const info = await stat(sessionFile);
-					if (info.size > SESSION_LIMIT) return undefined;
+					if (info.size > SESSION_LIMIT) { lastUsage = {}; return undefined; }
 					if (info.size !== lastUsageSize) {
-						lastTokens = directSessionTokens(await readFile(sessionFile, "utf8"), prompt);
+						lastUsage = directSessionUsage(await readFile(sessionFile, "utf8"), prompt);
 						lastUsageSize = info.size;
 					}
-					return lastTokens;
+					return lastUsage.tokens;
 				},
 				async answer(maxBytes) {
 					const readAnswer = async () => {

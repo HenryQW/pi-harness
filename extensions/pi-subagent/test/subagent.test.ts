@@ -935,7 +935,18 @@ test("direct widget and /subagent show the same saved reference, role and name",
 			let release!: () => void;
 			const gate = new Promise<void>((resolve) => { release = resolve; });
 			const fake = fakeHerdr(cwd, () => "answer", gate);
-			const app = harness({ cwd, herdr: fake.exec, ui: true });
+			const app = harness({ cwd, ui: true, herdr: async (args) => {
+				const response = await fake.exec(args);
+				if (args[0] === "agent" && args[1] === "wait") {
+					const path = app.sessionEntries.find((entry) => entry.customType === "subagent-direct-tab")!.data.sessionFile;
+					const records = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+					records.splice(2, 0,
+						{ type: "message", id: "call", message: { role: "assistant", content: [{ type: "toolCall", id: "a", name: "read" }] } },
+						{ type: "message", id: "result", message: { role: "toolResult", toolCallId: "a", durationMs: 125 } });
+					await writeFile(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+				}
+				return response;
+			} });
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("widget", { role: "worker", name: "Search audit", task: "inspect" }, undefined, undefined, app.ctx);
 			assert.equal(app.widget?.render(120).length, 1);
@@ -947,10 +958,66 @@ test("direct widget and /subagent show the same saved reference, role and name",
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
 			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.5k tok · /);
+			assert.match(app.widget!.render(220)[0]!, /last read 125ms recorded/);
 			for (const width of [26, 12]) {
 				const [row] = app.widget!.render(width);
 				assert.ok(visibleWidth(row!) <= width);
 				assert.match(row!, width === 26 ? /^✓ D1\.1 \[W\] complete · / : /^✓ D1\.1/, "reference precedes optional metrics");
+			}
+		});
+	});
+});
+
+test("direct widget shows pending tools and recorded time without losing identity or failure on narrow rows", async (t) => {
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd, () => { throw new Error("worker failed"); }, gate);
+			const app = harness({ cwd, herdr: fake.exec, ui: true });
+			await app.tool.execute("activity", { role: "worker", name: "Search audit", task: "inspect" }, undefined, undefined, app.ctx);
+			const sessionFile = app.sessionEntries.find((entry) => entry.customType === "subagent-direct-tab")!.data.sessionFile;
+			const prompt = fake.calls.find((args) => args[0] === "agent" && args[1] === "prompt")![3];
+			const entries: any[] = [
+				{ type: "message", id: "user", message: { role: "user", content: [{ type: "text", text: prompt }] } },
+				{ type: "message", id: "calls", message: { role: "assistant", durationMs: 9999, content: [
+					{ type: "toolCall", id: "a", name: "re\nad\u001b\u009f" }, { type: "toolCall", id: "b", name: "bash" },
+				] } },
+			];
+			const sample = async () => {
+				await writeFile(sessionFile, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+				const renders = app.renders;
+				t.mock.timers.tick(2000);
+				await waitFor(() => app.renders > renders + 2);
+			};
+			try {
+				await sample();
+				const pending = app.widget!.render(220)[0]!;
+				assert.match(pending, /pending re ad  , bash/);
+				assert.doesNotMatch(pending, /running|recorded|[\u0000-\u001f\u007f-\u009f]/);
+				entries.push({ type: "message", id: "result-b", message: { role: "toolResult", toolCallId: "b", durationMs: 2500 } });
+				await sample();
+				const completed = app.widget!.render(220)[0]!;
+				assert.match(completed, /pending re ad  .*last bash 2s recorded/);
+				assert.match(completed, /— tok · \d+s · pending/, "task elapsed time is separate from tool time");
+				const narrow = app.widget!.render(90)[0]!;
+				assert.match(narrow, /^\S D1\.1 \[W\] Search audit · .*\/.* · — tok · /);
+				assert.doesNotMatch(narrow, /pending|recorded/, "activity is removed before existing metrics");
+				entries.push({ type: "message", id: "result-a", message: { role: "toolResult", toolCallId: "a" } });
+				await sample();
+				assert.doesNotMatch(app.widget!.render(220)[0]!, /pending|recorded/, "an untimed latest result does not keep an older time");
+				entries.push({ type: "message", id: "call-c", message: { role: "assistant", content: [{ type: "toolCall", id: "c", name: "read" }] } });
+				await sample();
+				assert.match(app.widget!.render(220)[0]!, /pending read/);
+			} finally { release(); }
+			await waitFor(() => app.sentMessages.length === 1);
+			for (const width of [26, 12]) {
+				const row = app.widget!.render(width)[0]!;
+				assert.ok(visibleWidth(row) <= width);
+				assert.match(row, width === 12 ? /^✗ D1\.1/ : /^✗ D1\.1 \[W\] failed · /);
+				assert.doesNotMatch(row, /pending|recorded/);
 			}
 		});
 	});

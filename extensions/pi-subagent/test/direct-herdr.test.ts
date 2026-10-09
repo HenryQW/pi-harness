@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDirectHerdr, directSessionTokens, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
+import { createDirectHerdr, directSessionTokens, directSessionUsage, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
 
 const prompt = "inspect\n\nTurn identity: unique";
 const lines = (messages: unknown[]) => [
@@ -72,6 +72,51 @@ test("direct usage counts only completed Pi usage records for the exact turn", (
 	assert.equal(directSessionTokens(session, prompt), 48);
 	assert.equal(directSessionTokens(session, "another prompt"), undefined);
 	assert.equal(directSessionTokens(lines([]), prompt), undefined);
+});
+
+test("direct activity matches parallel results by ID and uses only the latest recorded result duration", () => {
+	const calls = { type: "message", id: "calls", message: { role: "assistant", timestamp: 1, durationMs: 999,
+		content: [{ type: "toolCall", id: "a", name: "read" }, { type: "toolCall", id: "b", name: "bash" }] } };
+	const result = (toolCallId: string, durationMs?: number) => ({ type: "message", id: toolCallId, message: {
+		role: "toolResult", toolCallId, toolName: "ignored result name", timestamp: 10_000, durationMs,
+	} });
+	assert.deepEqual(directSessionUsage(lines([calls]), prompt).activity, { pending: ["read", "bash"], latest: undefined });
+	assert.deepEqual(directSessionUsage(lines([calls, result("b", 2400)]), prompt).activity,
+		{ pending: ["read"], latest: { name: "bash", durationMs: 2400 } });
+	assert.deepEqual(directSessionUsage(lines([calls, result("b", 2400), result("a", 125), result("unknown", 9999)]), prompt).activity,
+		{ pending: [], latest: { name: "read", durationMs: 125 } });
+});
+
+test("direct activity waits for a full trailing result and omits absent or invalid timing", () => {
+	const call = { type: "message", id: "call", message: { role: "assistant", timestamp: 1,
+		content: [{ type: "toolCall", id: "a", name: "read" }, { type: "toolCall", id: "b", name: "bash" }] } };
+	const result = (toolCallId: string, durationMs: unknown) => ({ type: "message", id: "result", message: {
+		role: "toolResult", toolCallId, durationMs, timestamp: 9999,
+	} });
+	const prefix = lines([call, result("a", 250)]);
+	const final = JSON.stringify(result("b", 800));
+	assert.deepEqual(directSessionUsage(prefix + final.slice(0, -2), prompt).activity,
+		{ pending: ["bash"], latest: { name: "read", durationMs: 250 } });
+	assert.deepEqual(directSessionUsage(prefix + final + "\n", prompt).activity,
+		{ pending: [], latest: { name: "bash", durationMs: 800 } });
+	for (const durationMs of [undefined, -1, "800"]) {
+		assert.deepEqual(directSessionUsage(prefix + JSON.stringify(result("b", durationMs)), prompt).activity,
+			{ pending: [], latest: { name: "bash" } });
+	}
+});
+
+test("direct activity stays inside the exact prompt boundary and resets on a new exact task", () => {
+	const call = (id: string, name: string) => ({ type: "message", id, message: { role: "assistant",
+		content: [{ type: "toolCall", id, name }] } });
+	const result = (toolCallId: string) => ({ type: "message", id: "result", message: { role: "toolResult", toolCallId, durationMs: 900 } });
+	const user = (text: string) => ({ type: "message", id: "next", message: { role: "user", content: [{ type: "text", text }] } });
+	const session = JSON.stringify(call("old", "old tool")) + "\n" + lines([
+		result("old"), call("task", "task tool"), user(`${prompt} extra`), result("task"), call("other", "other tool"),
+	]);
+	assert.deepEqual(directSessionUsage(session, prompt).activity, { pending: ["task tool"], latest: undefined });
+	assert.equal(directSessionUsage(session, "different prompt").activity, undefined);
+	const next = session + [user(prompt), result("task"), call("new", "new tool")].map((entry) => JSON.stringify(entry)).join("\n");
+	assert.deepEqual(directSessionUsage(next, prompt).activity, { pending: ["new tool"], latest: undefined });
 });
 
 test("native Pi session errors and unrelated turns cannot masquerade as successful results", () => {
