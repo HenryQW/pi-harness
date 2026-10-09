@@ -351,8 +351,11 @@ export function loadRoles(agentDir = getAgentDir()): Role[] {
 	return [...byName.values()];
 }
 
+type TaskRouteContext = Parameters<typeof resolveTaskModelRoute>[0];
+type RoleLaunchContext = TaskRouteContext & Pick<ExtensionContext, "isProjectTrusted">;
+
 export function resolveTaskRoute(
-	ctx: ExtensionContext,
+	ctx: TaskRouteContext,
 	profileName: ProfileName,
 	agentDir = getAgentDir(),
 ): ResolvedTaskRoute {
@@ -366,7 +369,7 @@ export function resolveTaskRoute(
 }
 
 function resolveConfiguredRoute(
-	ctx: ExtensionContext,
+	ctx: TaskRouteContext,
 	profileName: ProfileName,
 	profile: ReturnType<typeof loadTaskModelsConfig>["value"]["profiles"][ProfileName],
 ): ResolvedTaskRoute {
@@ -479,7 +482,7 @@ function prepareRoleLaunchFromSkills(
 
 function prepareResolvedRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
-	ctx: ExtensionContext,
+	ctx: RoleLaunchContext,
 	input: ResolveRoleLaunchInput,
 ): PreparedRoleLaunch {
 	const { task, modelClass, agentDir, ...launchInput } = input;
@@ -494,7 +497,7 @@ function prepareResolvedRoleLaunch(
 
 export function resolveRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
-	ctx: ExtensionContext,
+	ctx: RoleLaunchContext,
 	input: ResolveRoleLaunchInput,
 ): ResolvedRoleLaunch {
 	return finalizeRoleLaunch(prepareResolvedRoleLaunch(pi, ctx, input));
@@ -508,17 +511,17 @@ function assertNoMissingRoleSkills(role: Role, launch: ResolvedRoleLaunch): void
 /** Prepare a resolved or resolvable Role launch while keeping its system prompt out of argv. */
 export function prepareRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
-	ctx: ExtensionContext,
+	ctx: RoleLaunchContext,
 	input: ResolveRoleLaunchInput,
 ): PreparedRoleLaunch;
 export function prepareRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
-	ctx: ExtensionContext,
+	ctx: RoleLaunchContext,
 	input: CreateRoleLaunchInput,
 ): PreparedRoleLaunch;
 export function prepareRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
-	ctx: ExtensionContext,
+	ctx: RoleLaunchContext,
 	input: ResolveRoleLaunchInput | CreateRoleLaunchInput,
 ): PreparedRoleLaunch {
 	const role = parseRoleName(input.role.name);
@@ -537,7 +540,7 @@ export function prepareRoleLaunch(
 /** Resolve and prepare a configured Role with its package-owned resources. */
 export async function resolveConfiguredRoleLaunch(
 	pi: Pick<ExtensionAPI, "getCommands">,
-	ctx: ExtensionContext,
+	ctx: RoleLaunchContext & Pick<ExtensionContext, "cwd">,
 	input: ResolveConfiguredRoleLaunchInput,
 ): Promise<PreparedRoleLaunch> {
 	const roleName = parseRoleName(input.role);

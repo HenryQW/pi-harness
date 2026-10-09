@@ -164,6 +164,8 @@ A missing, empty, or invalid preset file leaves the active config unchanged. The
 | `orderedProfileRoutes(profile)` | function | Returns the primary route followed by the optional fallback. |
 | `createTaskModelsExtension(pi, options?)` (also the default export) | function | Registers the `/task-models` command and missing-config warning. |
 
+Model and route helpers use only `ctx.model`, `ctx.scopedModels`, and `ctx.modelRegistry.getAvailable()`. They do not require UI methods, so consumers can use different supported Pi 1.x versions.
+
 Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use.
 
 Profile thinking is authoritative. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
