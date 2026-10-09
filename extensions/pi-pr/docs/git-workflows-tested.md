@@ -112,7 +112,7 @@ Main can give separate acceptance workers the source `extensions/pi-pr/extension
 
 ## Limits
 
-- Automated native tests use the workspace-pinned Pi `1.0.0` dependency. The installed `1.0.2` authority is `/Users/henry/.pi/agent/install/releases/1.0.2/node_modules/@earendil-works/pi-coding-agent`; its documentation and declarations were inspected, and its resource APIs were probed. Live model-driven use of the packaged tools and TUI behavior were not tested.
+- The automated native tests in this report used the workspace-pinned Pi `1.0.0` dependency of that time. The package now requires and pins Pi `1.1.0`; its test suite runs on that version. The installed `1.0.2` authority is `/Users/henry/.pi/agent/install/releases/1.0.2/node_modules/@earendil-works/pi-coding-agent`; its documentation and declarations were inspected, and its resource APIs were probed. Live model-driven use of the packaged tools and TUI behavior were not tested.
 - Controlled GitHub responses test authorization and command boundaries. They do not prove live GitHub authentication, repository policy, network transport, or GitHub Enterprise behavior.
 - A user request and upstream consent are agent guidance requirements; a Boolean tool field cannot prove that a person gave consent. Ownership, secret-content detection, check adequacy, and semantic conflict resolution still need agent/user judgment.
 - The acceptance entry is available for later local runs. Main's exact-candidate acceptance and root-wide checks are recorded above. Package typecheck passed on the revision; no new claim is made for unchanged packages' typechecks.

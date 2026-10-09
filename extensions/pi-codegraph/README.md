@@ -9,7 +9,7 @@ npm install -g @colbymchenry/codegraph
 pi install npm:@henryqw/pi-codegraph
 ```
 
-Requires only the `codegraph` executable on Pi's `PATH`. No MCP server or MCP configuration is needed.
+Requires Pi 1.1.0 or later in the 1.x series and the `codegraph` executable on Pi's `PATH`. No MCP server or MCP configuration is needed.
 
 ## Works with
 

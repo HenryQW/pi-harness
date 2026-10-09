@@ -10,6 +10,8 @@ Pause Pi for one clear user choice, with up to three options or a custom answer.
 pi install npm:@henryqw/pi-ask-question
 ```
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 ## Use
 
 In an interactive TUI session, call `ask_question` with a question and one to three options. Pi pauses for the user's choice and returns the selected or custom answer.

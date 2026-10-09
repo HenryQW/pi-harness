@@ -4,7 +4,7 @@ Get [Bark](https://bark.day.app) notifications when Pi finishes or needs your in
 
 ## Install
 
-Requires Pi 1.1.0 or later.
+Requires Pi 1.1.0 or later in the 1.x series.
 
 ```bash
 pi install npm:@henryqw/pi-bark

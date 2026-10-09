@@ -11,6 +11,8 @@ Add multiple ChatGPT Codex OAuth accounts and start Pi work on the eligible slot
 pi install npm:@henryqw/pi-multi-codex
 ```
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 ## Works with
 
 | Package | Relationship | Purpose |

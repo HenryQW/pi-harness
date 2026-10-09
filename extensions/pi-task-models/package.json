@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-task-models",
-  "version": "8.0.3",
+  "version": "8.1.0",
   "description": "Shared task model profiles and routing for HenryQW Pi extensions.",
   "keywords": [
     "pi-package",
@@ -37,9 +37,9 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^1.0.0",
-    "@earendil-works/pi-coding-agent": "^1.0.0",
-    "@earendil-works/pi-tui": "^1.0.0"
+    "@earendil-works/pi-ai": "^1.1.0",
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@earendil-works/pi-tui": "^1.1.0"
   },
   "repository": {
     "type": "git",
@@ -63,9 +63,9 @@
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.0",
-    "@earendil-works/pi-coding-agent": "1.0.0",
-    "@earendil-works/pi-tui": "1.0.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-tui": "1.1.0",
     "@types/proper-lockfile": "^4.1.4"
   }
 }

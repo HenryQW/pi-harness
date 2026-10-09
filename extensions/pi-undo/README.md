@@ -8,6 +8,8 @@ Return to your latest user prompt so you can edit and retry it without later con
 pi install npm:@henryqw/pi-undo
 ```
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 ## Use
 
 Run `/undo` with no arguments. It stops active work, waits for it to finish stopping, and returns to the latest user prompt on the current branch so you can edit or submit it again. It does not select prompts on other branches. If the current branch has no user message, Pi displays `Nothing to undo.`

@@ -10,6 +10,8 @@ Keep checkout identity, model usage, elapsed agent work, and extension status vi
 pi install npm:@henryqw/pi-footer
 ```
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 Version 3 replaces `@henryqw/pi-open-in`. If you have it installed, remove it before upgrading to prevent duplicate `/open` and `/set-open-in` commands:
 
 ```bash

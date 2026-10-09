@@ -37,6 +37,9 @@ Example paths below are relative to `examples/extensions/`.
   leading system message. Do not accidentally mutate stored history.
 - `agent_end` is not necessarily final. Actionable boundary continuations need
   a terminating condition; `agent_settled` is final and notification-only.
+  In Pi 1.1.0, use `event.aborted` to identify cancelled runs at settlement;
+  `ctx.signal` is not available there. A false `aborted` value does not prove
+  provider success.
 - Honor compaction cancellation and expose failures through its error callback
   or `session_compact_failed`. Avoid duplicate compaction requests.
 - Sibling tool calls can run concurrently; do not assume another result exists.

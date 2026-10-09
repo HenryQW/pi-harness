@@ -8,6 +8,8 @@ Keep noisy `pnpm test` output out of Pi's model context. This extension rewrites
 pi install npm:@henryqw/pi-rtk-test
 ```
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 Install Rust Token Killer (`rtk`) on Pi's `PATH`. This extension does not install or update RTK.
 
 ```bash

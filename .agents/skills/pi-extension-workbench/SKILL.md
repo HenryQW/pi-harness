@@ -3,7 +3,7 @@ name: pi-extension-workbench
 description: Use when developing, modifying, or debugging a Pi extension or Pi extension package, including requests identified only by package name.
 ---
 
-<!-- Last reviewed against Pi 1.0.0; verify contracts against each installed version. -->
+<!-- Last reviewed against Pi 1.1.0; verify contracts against each installed version. -->
 
 # Pi Extension Workbench
 

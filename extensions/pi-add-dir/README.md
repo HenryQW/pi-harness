@@ -10,6 +10,8 @@ Give the current Pi session context, skills, and searchable files from directori
 pi install npm:@henryqw/pi-add-dir
 ```
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 ## Use
 
 Run `/dir-add`, enter a directory, then run `/dir-ls` to confirm it was added. Pi lists the directory and exposes its supported resources.

@@ -7,7 +7,7 @@ set -eu
 
 PI_INSTALLER_URL="https://pi.dev/install.sh"
 PI_LATEST_URL="https://pi.dev/api/installer/releases/latest"
-PI_MIN_VERSION="1.0.0"
+PI_MIN_VERSION="1.1.0"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
 HERDR_LATEST_URL="https://herdr.dev/latest.json"
 HERDR_MIN_VERSION="0.7.4"

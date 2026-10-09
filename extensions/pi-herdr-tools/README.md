@@ -11,7 +11,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Requires Herdr 0.7.4+. Herdr operations require a Herdr-managed Pi pane; outside Herdr, rename still sets the Pi session title. Run `/task-models`, configure `fast`, and verify it no longer says `not configured` before using title generation or side threads.
+Requires Pi 1.1.0 or later in the 1.x series and Herdr 0.7.4+. Herdr operations require a Herdr-managed Pi pane; outside Herdr, rename still sets the Pi session title. Run `/task-models`, configure `fast`, and verify it no longer says `not configured` before using title generation or side threads.
 
 ### Migrating from the merged packages
 
