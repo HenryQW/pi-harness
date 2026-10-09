@@ -38,6 +38,10 @@ export type TaskModelsConfig = {
 
 export type AvailableModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
 
+type TaskModelContext = Pick<ExtensionContext, "model" | "scopedModels"> & {
+	modelRegistry: Pick<ExtensionContext["modelRegistry"], "getAvailable">;
+};
+
 export type ResolvedTaskRoute = {
 	model: AvailableModel;
 	thinkingLevel: ThinkingLevel;
@@ -242,7 +246,7 @@ export function resolveAvailableModel(
 		?? models.find((model) => model.provider === "openai-codex" && model.id === id);
 }
 
-export function availableTaskModels(ctx: ExtensionContext): AvailableModel[] {
+export function availableTaskModels(ctx: TaskModelContext): AvailableModel[] {
 	const scopedModels = ctx.scopedModels;
 	return dedupeAvailableModels(
 		(scopedModels.length ? scopedModels.map(({ model }) => model) : ctx.modelRegistry.getAvailable())
@@ -251,7 +255,7 @@ export function availableTaskModels(ctx: ExtensionContext): AvailableModel[] {
 	);
 }
 
-export function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel): ThinkingLevel[] {
+export function taskThinkingLevels(ctx: TaskModelContext, model: AvailableModel): ThinkingLevel[] {
 	const supported = getSupportedThinkingLevels(model) as ThinkingLevel[];
 	const pinned = ctx.scopedModels.find(({ model: scoped }) =>
 		scoped.provider === model.provider && scoped.id === model.id)?.thinkingLevel;
@@ -260,7 +264,7 @@ export function taskThinkingLevels(ctx: ExtensionContext, model: AvailableModel)
 }
 
 export function resolveTaskModelRoute(
-	ctx: ExtensionContext,
+	ctx: TaskModelContext,
 	route: TaskModelRoute,
 	thinking?: ThinkingLevel,
 ): ResolvedTaskRoute | undefined {
@@ -277,7 +281,7 @@ export function resolveTaskModelRoute(
 }
 
 export function resolveConfiguredTaskRoutes(
-	ctx: ExtensionContext,
+	ctx: TaskModelContext,
 	task: ModelTask,
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
@@ -320,7 +324,7 @@ function taskRouteError(taskRouteCode: TaskRouteErrorCode, message: string, prof
 }
 
 export function resolveConfiguredTaskRoute(
-	ctx: ExtensionContext,
+	ctx: TaskModelContext,
 	task: ModelTask,
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,

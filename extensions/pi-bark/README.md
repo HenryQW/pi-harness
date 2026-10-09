@@ -4,11 +4,11 @@ Get [Bark](https://bark.day.app) notifications when Pi finishes or needs your in
 
 ## Install
 
+Requires Pi 1.1.0 or later in the 1.x series.
+
 ```bash
 pi install npm:@henryqw/pi-bark
 ```
-
-Requires Pi 1.1.0 or later in the 1.x series.
 
 ### Setup
 
@@ -69,7 +69,9 @@ The `body` value is the same text that Pi's `/copy` command selects. `/copyb` tr
 After setup, pi-bark sends two status-only notifications:
 
 - **Pi needs input** when Pi opens a blocking user prompt, including `ask_question`.
-- **Pi finished** after the agent has fully settled and will not continue automatically.
+- **Pi finished** after the agent has fully settled and will not continue automatically, unless the run was cancelled.
+
+A cancelled run, for example with Escape, sends no automatic **Pi finished** notification. Input notifications and explicit `/copyb` remain available. A non-cancelled settlement does not prove that the provider completed successfully; this extension does not filter provider errors.
 
 Each notification includes Pi's current session name. Herdr shows the same name when `pi-herdr-tools` is active. pi-bark does not call Herdr or read Herdr state.
 

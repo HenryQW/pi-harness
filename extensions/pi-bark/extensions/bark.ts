@@ -96,8 +96,8 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		pendingFinishedPush = undefined;
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
-		if (!ctx.isIdle()) return;
+	pi.on("agent_settled", (event, ctx) => {
+		if (event.aborted || !ctx.isIdle()) return;
 		const controller = new AbortController();
 		pendingFinishedPush?.abort();
 		pendingFinishedPush = controller;

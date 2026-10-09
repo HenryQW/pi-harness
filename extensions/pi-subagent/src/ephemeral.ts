@@ -48,7 +48,7 @@ const PI_JSON_EVENTS = {
 	summarization_retry_finished: true,
 	bash_execution_update: true,
 } satisfies Record<AgentSessionEvent["type"], true>;
-const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end"]);
+const CONSUMED_JSON_EVENTS = new Set(["message_start", "message_update", "message_end", "agent_settled"]);
 const JSON_EVENT_TYPE = /^\s*\{\s*"type"\s*:\s*"([^"\\]+)"/;
 const JSON_STRING = `"(?:[^"\\\\\u0000-\u001f]|\\\\(?:["\\\\/bfnrt]|u[0-9a-fA-F]{4}))*"`;
 const JSON_OVERSIZED_TOOL_START = new RegExp(
@@ -502,6 +502,7 @@ async function runPi(
 		let spawnError: Error | undefined;
 		let protocolError: Error | undefined;
 		let aborted = false;
+		let settlementAborted = false;
 		let limit: "turn_limit" | "token_limit" | undefined;
 		let tokenBudget: TokenBudgetState = "within";
 		let startedTurns = 0;
@@ -584,6 +585,7 @@ async function runPi(
 				reject(new EphemeralSubagentError("spawn", spawnError.message, spawnError));
 			} else {
 				const exitCode = code ?? 1;
+				if (settlementAborted) stopReason = "aborted";
 				const outcome = exitCode !== 0 || stopReason === "error" || stopReason === "aborted" ? "failure" : "success";
 				resolve({
 					outcome,
@@ -683,6 +685,14 @@ async function runPi(
 			if (!event || typeof event !== "object" || Array.isArray(event)) return;
 			const record = event as Record<string, unknown>;
 			if (typeof record.type !== "string" || !Object.hasOwn(PI_JSON_EVENTS, record.type)) return;
+			if (record.type === "agent_settled") {
+				if (typeof record.aborted !== "boolean") {
+					protocolError = new Error("Subagent agent_settled.aborted must be a boolean.");
+					stop(true);
+					return;
+				}
+				settlementAborted ||= record.aborted;
+			}
 			observeEvent();
 			if (record.type === "turn_start") {
 				if (++startedTurns > budget.maxTurns) {

@@ -684,7 +684,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		scopedModels: [],
 		modelRegistry: { getAvailable: () => [model] },
 		isProjectTrusted: () => false,
-	} as unknown as ExtensionContext;
+	};
 
 	const task = {
 		id: "pi-example/review",

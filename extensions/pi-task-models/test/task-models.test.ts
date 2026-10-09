@@ -413,9 +413,9 @@ test("uses scoped models and pinned thinking for picker and route resolution", (
 	const excluded = { provider: "provider", id: "excluded", input: ["text"], reasoning: false } as any;
 	const ctx = {
 		model: allowed,
-		scopedModels: [{ model: allowed, thinkingLevel: "high" }],
+		scopedModels: [{ model: allowed, thinkingLevel: "high" as const }],
 		modelRegistry: { getAvailable: () => [allowed, excluded] },
-	} as any;
+	};
 
 	assert.deepEqual(availableTaskModels(ctx), [allowed]);
 	assert.deepEqual(taskThinkingLevels(ctx, allowed), ["high"]);
@@ -433,7 +433,7 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 			model: primary,
 			scopedModels: [],
 			modelRegistry: { getAvailable: () => [primary, fallback] },
-		} as any;
+		};
 		const file = configFile(dir);
 		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
 

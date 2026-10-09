@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-# Derived from HenryQW/skills; modified for exact backup identity, retention, and regressions.
+# Derived from HenryQW/skills; modified for exact backup identity, retention, worktree ownership, and regressions.
 # See ../../../NOTICE.md for the source snapshot and modification notices.
 """Update current non-main worktree branch from fetched origin/main."""
 
@@ -23,6 +23,14 @@ from unittest import mock
 MAIN_SOURCE_REF = "refs/heads/main"
 FETCHED_MAIN_REF = "refs/remotes/origin/main"
 MAIN_BRANCH_REF = "refs/heads/main"
+# Per-worktree refs record backup ownership; other worktrees cannot see them.
+OWNER_PREFIX = "refs/worktree/update-from-main/"
+BACKUP_REF = OWNER_PREFIX + "backup"
+PENDING_PREFIX = OWNER_PREFIX + "pending/"
+# Shared marker: an owner adopted this legacy backup in its worktree.
+ADOPTED_PREFIX = "refs/update-from-main/adopted/"
+# Stash subjects written before worktree ownership existed; they have no recorded owner.
+LEGACY_SUBJECT = re.compile(r": update-from-main(?: [0-9a-f-]{36})?$")
 IN_PROGRESS_PATHS = (
     "MERGE_HEAD",
     "CHERRY_PICK_HEAD",
@@ -37,10 +45,13 @@ class UpdateError(RuntimeError):
     pass
 
 
-def run(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run(
+    args: list[str], *, cwd: Path | None = None, check: bool = True, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        input=input,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -107,9 +118,17 @@ def require_ready_worktree() -> str:
     if unmerged_paths():
         raise UpdateError("worktree has unresolved conflicts")
     branch = current_branch_ref()
-    if any(re.search(r": update-from-main(?: [0-9a-f-]{36})?$", line)
-           for line in git(["stash", "list", "--format=%gs"]).splitlines()):
-        raise UpdateError("update-from-main backup remains retained; finish its recovery before another run")
+    owned = git(["for-each-ref", "--format=%(refname) %(objectname)", OWNER_PREFIX])
+    if owned:
+        raise UpdateError(
+            f"this worktree has unfinished update-from-main recovery: {'; '.join(owned.splitlines())}; "
+            "finish and complete it before another run"
+        )
+    adopted = set(git(["for-each-ref", "--format=%(objectname)", ADOPTED_PREFIX]).splitlines())
+    entries = (line.split("\0", 1) for line in git(["stash", "list", "--format=%H%x00%gs"]).splitlines())
+    legacy = [oid for oid, subject in entries if LEGACY_SUBJECT.search(subject) and oid not in adopted]
+    if legacy:
+        raise UpdateError(f"legacy update-from-main backup {legacy[0]} has no recorded owner; its owner must recover or adopt it")
     return branch
 
 
@@ -117,14 +136,23 @@ def stash_dirty_worktree(source_sha: str) -> str | None:
     ignored = ignored_source_paths(source_sha)
     if not status_lines() and not ignored:
         return None
-    message = f"update-from-main {uuid.uuid4()}"
+    token = str(uuid.uuid4())
+    message = f"update-from-main owned {token}"
+    pending = PENDING_PREFIX + token
+    # Record ownership before the stash can change the worktree.
+    run(["update-ref", pending, "HEAD", ""])
     mode = "--all" if ignored else "--include-untracked"
-    run(["stash", "push", mode, "--message", message])
+    pushed = run(["stash", "push", mode, "--message", message], check=False)
     # Linked worktrees share the stash stack. Find this run's entry, not its mutable tip.
     entries = git(["stash", "list", "--format=%H%x00%gs"]).splitlines()
     matches = [line.split("\0", 1)[0] for line in entries if line.endswith(f": {message}")]
+    detail = (pushed.stderr or pushed.stdout).strip()
     if len(matches) != 1:
-        raise UpdateError(f"could not identify backup with message {message}; inspect the stash reflog before retrying")
+        failure = f"{detail}; " if pushed.returncode else ""
+        raise UpdateError(f"{failure}could not identify backup with message {message}; {pending} blocks this worktree until recovery")
+    run(["update-ref", "--stdin"], input=f"create {BACKUP_REF} {matches[0]}\ndelete {pending}\n")
+    if pushed.returncode:
+        raise UpdateError(f"{detail}; stash backup retained at {matches[0]}")
     return matches[0]
 
 
@@ -379,8 +407,76 @@ def self_test() -> None:
         assert (repo / "main.txt").read_text(encoding="utf-8") == "main\n"
         assert "A  staged.txt" in test_git(repo, "status", "--porcelain=v1", "--untracked-files=all")
         assert (repo / "untracked.txt").read_text(encoding="utf-8") == "untracked\n"
-        assert update_in(repo)[0] == 1  # Even a restored backup needs explicit user removal.
-        assert test_git(repo, "rev-parse", "refs/stash") == stash_oid
+        peer = root / "clean-peer"
+        test_git(repo, "worktree", "add", "-b", "peer", os.fspath(peer), "HEAD")
+        (peer / "peer.txt").write_text("peer\n", encoding="utf-8")
+        result, output = update_in(peer)  # Another worktree's retained backup does not block this one.
+        assert result == 0, output
+        peer_oid = re.search(r"stash=([0-9a-f]+):retained", output).group(1)
+        assert peer_oid != stash_oid and test_git(peer, "rev-parse", BACKUP_REF) == peer_oid
+        assert (peer / "peer.txt").read_text(encoding="utf-8") == "peer\n"
+        assert test_git(repo, "rev-parse", BACKUP_REF) == stash_oid
+        assert update_in(repo)[0] == 1  # Even a restored backup needs explicit user completion.
+        test_git(repo, "checkout", "-b", "switched")
+        assert update_in(repo)[0] == 1  # Ownership follows the worktree, not its branch.
+        assert test_git(repo, "rev-parse", BACKUP_REF) == stash_oid
+
+        _seed, repo = setup_repo(root / "interrupted")
+        (repo / "shared.txt").write_text("staged\n", encoding="utf-8")
+        test_git(repo, "add", "shared.txt")
+        (repo / "shared.txt").write_text("unstaged\n", encoding="utf-8")
+        (repo / "local.txt").write_bytes(b"local\x00bytes\n")
+        real_run = run
+
+        def interrupt_after_push(args, **kwargs):
+            result = real_run(args, **kwargs)
+            if args[:2] == ["stash", "push"]:
+                raise KeyboardInterrupt
+            return result
+
+        with mock.patch(__name__ + ".run", side_effect=interrupt_after_push):
+            try:
+                update_in(repo)
+            except KeyboardInterrupt:
+                pass
+            else:
+                raise AssertionError("interruption did not propagate")
+        pending = test_git(repo, "for-each-ref", "--format=%(refname)", PENDING_PREFIX)
+        assert len(pending.splitlines()) == 1 and not (repo / "local.txt").exists()
+        assert update_in(repo)[0] == 1  # Uncaptured backup blocks until recovered.
+        assert test_git(repo, "for-each-ref", "--format=%(refname)", PENDING_PREFIX) == pending
+        token = pending.removeprefix(PENDING_PREFIX)
+        entries = test_git(repo, "stash", "list", "--format=%H %gs").splitlines()
+        (stash_oid,) = [line.split()[0] for line in entries if line.endswith(f": update-from-main owned {token}")]
+        test_git(repo, "update-ref", BACKUP_REF, stash_oid, "")
+        test_git(repo, "update-ref", "-d", pending)
+        test_git(repo, "stash", "apply", "--index", stash_oid)
+        assert test_git(repo, "show", ":shared.txt") == "staged"
+        assert (repo / "shared.txt").read_text(encoding="utf-8") == "unstaged\n"
+        assert (repo / "local.txt").read_bytes() == b"local\x00bytes\n"
+        assert update_in(repo)[0] == 1
+
+        _seed, repo = setup_repo(root / "stash-store-failure")
+        (repo / "shared.txt").write_text("staged\n", encoding="utf-8")
+        test_git(repo, "add", "shared.txt")
+        (repo / "shared.txt").write_text("unstaged\n", encoding="utf-8")
+        (repo / "local.txt").write_bytes(b"local\x00bytes\n")
+        before_status = test_git(repo, "status", "--porcelain=v1")
+        stash_lock = repo / ".git" / "refs" / "stash.lock"
+        stash_lock.touch()
+        try:
+            assert update_in(repo)[0] == 1
+        finally:
+            stash_lock.unlink()
+        assert test_git(repo, "status", "--porcelain=v1") == before_status
+        assert test_git(repo, "show", ":shared.txt") == "staged"
+        assert (repo / "shared.txt").read_text(encoding="utf-8") == "unstaged\n"
+        assert (repo / "local.txt").read_bytes() == b"local\x00bytes\n"
+        assert not test_git(repo, "stash", "list")
+        pending = test_git(repo, "for-each-ref", "--format=%(refname)", PENDING_PREFIX)
+        assert len(pending.splitlines()) == 1 and update_in(repo)[0] == 1
+        test_git(repo, "update-ref", "-d", pending)  # Explicit completion after byte/index verification.
+        assert update_in(repo)[0] == 0
 
         for phase in ("capture", "restore"):
             seed, repo = setup_repo(root / f"stash-race-{phase}")
@@ -421,11 +517,19 @@ def self_test() -> None:
             assert update_in(repo)[0] == 1
 
         _seed, repo = setup_repo(root / "legacy-backup")
-        (repo / "legacy.txt").write_text("legacy\n", encoding="utf-8")
-        test_git(repo, "stash", "push", "--include-untracked", "-m", "update-from-main")
+        owner = root / "legacy-owner"
+        test_git(repo, "worktree", "add", "-b", "owner", os.fspath(owner), "HEAD")
+        (owner / "legacy.txt").write_text("legacy\n", encoding="utf-8")
+        test_git(owner, "stash", "push", "--include-untracked", "-m", "update-from-main")
         legacy_oid = test_git(repo, "rev-parse", "refs/stash")
-        assert update_in(repo)[0] == 1
-        assert test_git(repo, "rev-parse", "refs/stash") == legacy_oid
+        assert update_in(repo)[0] == 1  # An unowned legacy backup blocks every worktree.
+        assert update_in(owner)[0] == 1
+        # Owner-confirmed adoption keeps the entry, blocks its owner, and unblocks other worktrees.
+        test_git(owner, "update-ref", BACKUP_REF, legacy_oid, "")
+        test_git(owner, "update-ref", ADOPTED_PREFIX + legacy_oid, legacy_oid, "")
+        assert update_in(repo)[0] == 0
+        assert update_in(owner)[0] == 1
+        assert test_git(repo, "stash", "list", "--format=%H %gs") == f"{legacy_oid} On owner: update-from-main"
 
         seed, repo = setup_repo(root / "conflict")
         commit(repo, "conflict.txt", "feature\n", "test: feature")
@@ -484,6 +588,12 @@ def self_test() -> None:
         assert (repo / "new.txt").read_text(encoding="utf-8") == "upstream\n"
         assert update_in(repo)[0] == 1
         assert test_git(repo, "rev-parse", "refs/stash") == stash_oid
+        assert test_git(repo, "rev-parse", BACKUP_REF) == stash_oid
+        # The user restores the chosen version, then explicitly completes recovery.
+        (repo / "new.txt").write_text(test_git(repo, "show", f"{stash_oid}^3:new.txt") + "\n", encoding="utf-8")
+        test_git(repo, "update-ref", "-d", BACKUP_REF, stash_oid)
+        result, output = update_in(repo)
+        assert result == 0 and (repo / "new.txt").read_text(encoding="utf-8") == "local\n", output
 
         seed, repo = setup_repo(root / "fetch-failure")
         (repo / "shared.txt").write_text("staged\n", encoding="utf-8")
@@ -567,6 +677,7 @@ def self_test() -> None:
         assert (repo / "ordinary.txt").read_text(encoding="utf-8") == "ordinary\n"
         assert (repo / "sub" / "child.txt").read_text(encoding="utf-8") == "dirty\n"
         assert test_git(repo, "stash", "list")  # Error-path restoration also retains its backup.
+        assert test_git(repo, "rev-parse", BACKUP_REF) == test_git(repo, "rev-parse", "refs/stash")
 
         seed, repo = setup_repo(root / "submodule-update")
         child = root / "submodule-update-child"

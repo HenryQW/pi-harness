@@ -47,9 +47,11 @@ The diagram shows the automatic path. Manual analysis displays its candidate imm
 
 Automatic mode waits for the configured number of non-empty user inputs. The default is three.
 
-It starts at the next idle `agent_settled` event. It starts at most once per extension runtime.
+It starts at the next idle `agent_settled` event that is not aborted. It starts at most once per extension runtime.
 
-A manual analysis consumes that opportunity.
+An aborted run does not start automatic analysis. It keeps the input count and the automatic opportunity, so a later eligible normal settlement can start analysis. `aborted: false` does not prove that the provider completed successfully.
+
+Explicit `/promptor analyze` remains available after cancellation. A manual analysis consumes the automatic opportunity.
 
 Branch changes reset the input counter. Automatic analysis and candidate widgets require the interactive TUI.
 
