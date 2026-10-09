@@ -246,6 +246,8 @@ The servers named in `mcps` come from the global `~/.pi/agent/mcp.json` only. In
 | `RoleLaunchRuntime`, `HerdrHostRuntime`, `CheckedGitRuntime` | classes | Supply launch, host, and Git behavior to the runner. |
 | `ExecutionPolicySnapshot`, `RunState`, `CoordinatorRuntime` | types | Describe persisted policy, state, and runner integration. |
 
+Role route and launch helpers require only model routing fields and `isProjectTrusted()` from the context, plus `cwd` for configured package resources. They do not require UI methods.
+
 `createEphemeralSubagentExecutor` accepts global concurrency, turn/token, idle, and hard-runtime policy. Queued time consumes no child timeout. A run resolves resources only after receiving its permit and accepts abort, output, token, and activity callbacks. Output and diagnostics are bounded. A child that reports `agent_settled.aborted: true` returns a failure result with `stopReason: "aborted"`, even if its process exits with code 0. Collected output, usage, and child error text are kept. `aborted: false` does not prove provider success. A parent abort or timeout still rejects with `EphemeralSubagentError`.
 
 See [Orchestration and package-author API](./docs/orchestration.md) for the detailed contracts and recovery model.
