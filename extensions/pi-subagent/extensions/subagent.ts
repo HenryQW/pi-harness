@@ -10,7 +10,7 @@ import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { ENTRY_STATUS_PRESENTATION, formatWorkflowResult, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, type Delegation, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
-import { createDirectHerdr, DirectAllocationError, type DirectAllocation, type DirectHandle, type DirectTab } from "../dist/direct-herdr.js";
+import { createDirectHerdr, DirectAllocationError, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 1_000;
@@ -30,6 +30,7 @@ type WidgetItem = {
 	status: WidgetStatus;
 	finishedAt?: number;
 	tokens?: number;
+	activity?: DirectToolActivity;
 };
 
 function roleBadge(role: string): string {
@@ -57,6 +58,18 @@ function tokenLabel(tokens: number | undefined): string {
 	return tokens === undefined ? "— tok" : `${tokens < 1_000 ? tokens : `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`} tok`;
 }
 
+function activityLabel(activity: DirectToolActivity | undefined): string | undefined {
+	if (!activity) return undefined;
+	const name = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 40);
+	const parts: string[] = [];
+	if (activity.pending.length) parts.push(`pending ${activity.pending.map(name).join(", ")}`);
+	if (activity.latest?.durationMs !== undefined) {
+		const ms = activity.latest.durationMs;
+		parts.push(`last ${name(activity.latest.name)} ${ms < 1_000 ? `${Math.round(ms)}ms` : formatDuration(ms)} recorded`);
+	}
+	return parts.length ? parts.join(" · ") : undefined;
+}
+
 function renderWidgetRows(
 	items: WidgetItem[],
 	width: number,
@@ -75,6 +88,8 @@ function renderWidgetRows(
 			tokenLabel(item.tokens),
 			formatDuration((item.finishedAt ?? now) - item.startedAt),
 		];
+		const activity = activityLabel(item.activity);
+		if (activity) metrics.push(activity); // Activity is the first metric removed on narrow rows.
 		while (metrics.length && width - visibleWidth(prefix) - visibleWidth(` · ${metrics.join(" · ")}`) < 8) {
 			if (metrics.length === 2) metrics.shift(); // Preserve measured tokens ahead of route details.
 			else metrics.pop();
@@ -332,8 +347,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				samplingTokens.add(id);
 				void handle.usageTokens().then((tokens) => {
 					const item = widgetItems.get(id);
-					if (tokens !== undefined && item?.status === "working" && tokenHandles.get(id) === handle) {
+					if (item?.status === "working" && tokenHandles.get(id) === handle) {
 						item.tokens = tokens;
+						item.activity = handle.activity;
 						requestWidgetRender();
 					}
 				}).catch(() => { /* Usage is optional; never interrupt work for telemetry. */ })
@@ -682,7 +698,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							const answer = await handle.answer(Math.floor(40 * 1024 / entries.length));
 							try {
 								const tokens = await handle.usageTokens();
-								if (tokens !== undefined && widgetItems.has(entry.id)) widgetItems.get(entry.id)!.tokens = tokens;
+								const item = widgetItems.get(entry.id);
+								if (item) { item.tokens = tokens; item.activity = handle.activity; }
 							} catch { /* Optional telemetry. */ }
 							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer });
 							finishWidgetItem(entry.id, "success");

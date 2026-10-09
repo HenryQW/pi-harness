@@ -39,7 +39,7 @@ Commands are for you. Delegation and state tools and the packaged skill are for 
 | `subagent_abort` | tool | Abort an isolated request only when no retained candidates or integration worktrees remain; cannot discard them. |
 | `git_read` | tool | For Role-declared children (not Main): inspect bounded local Git evidence without Bash, tests, network access, or writes. |
 | `pi-subagent` | skill | Guide Main through delegation, authorization, checks, integration, and recovery. |
-| Direct status widget (`D`) | ui | For you in the TUI: show direct worker references (such as `D7.1`), status, Role badges, names, route, elapsed time, and measured session tokens. |
+| Direct status widget (`D`) | ui | For you in the TUI: show direct worker references (such as `D7.1`), status, Role badges, names, route, task elapsed time, measured session tokens, pending tools, and the latest tool's recorded time. |
 | Isolated status widget (`I`) | ui | For you in the TUI: show recorded task state, Role/model-class badges, and retained workspaces; readiness does not mean promotion. |
 
 ![Main, its coordinator extension, and a Herdr subagent through checked work, worker failure, and coordinator interruption](./docs/worker-lifecycle.svg)
@@ -53,6 +53,14 @@ The TUI has two separate compact status widgets, each with one row per visible w
 Each direct row starts with a saved reference such as `D7.1`. `D7` is the workflow number in this Pi session, and `.1` is the worker's position in the original request. `/subagent` uses the same reference and name; the Herdr tab label shows them at launch. Numbers continue after reload and are never reused in the session; if a session switch carries a workflow into a session that already uses its number, it gets a new number there. An existing Herdr tab keeps its original launch label. The direct widget shows the launched model, thinking level, elapsed time, and measured session tokens (`— tok` until usage is available). Failed rows appear before working and completed rows. When rows overflow, `… N more` includes counts by status. The isolated widget shows the recorded task state and any retained workspace, not reliable live model, thinking, or token readings from Herdr. Attention appears before ordinary work; overflow uses `+N more · /subagent`. An aborted request with visible tasks has its own `request aborted` row and does not change their recorded statuses. A committed worker without a checked candidate can still show attention rather than readiness. Status glyphs use the active TUI theme, while the text still names the status without color.
 
 A ready isolated candidate is **not promoted** to Main. Choose **Refresh** in `/subagent` to reload both the menu and isolated widget from saved state; it does not recover or change a request. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
+
+### Direct tool activity
+
+Direct rows can show `pending read, bash` and `last read 125ms recorded`. Pending means Pi saved the call but has no matching result in this task's session. It does not prove that execution started. Parallel calls remain pending until their own results arrive.
+
+Recorded time comes only from the latest matched tool result's `durationMs`. It is not calculated from assistant timestamps. If the latest result has no timing, no tool time is shown, even if an earlier result had timing. Older sessions and calls rejected before execution can have no recorded time. Task elapsed time remains a separate metric.
+
+Activity uses the existing session sample and file-size cache. A partial trailing JSONL entry is ignored until it is complete. Tool names have terminal control characters removed for display. Narrow rows drop activity before other metrics to keep worker identity and failure state visible. Activity and time are display information, not proof of task completion, worker ownership, or a timeout.
 
 ### How Main routes delegation
 
