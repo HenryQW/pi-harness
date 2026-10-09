@@ -166,7 +166,7 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
 	}
 }
 
-test("automatic analysis starts after three inputs and keeps its candidate pending", async () => {
+test("aborted settlement preserves the automatic opportunity after three inputs and keeps its candidate pending", async () => {
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
 		const app = harness({
@@ -179,11 +179,15 @@ test("automatic analysis starts after three inputs and keeps its candidate pendi
 		for (const text of ["first", "second"]) {
 			app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
 		}
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 0);
 
 		app.handlers.get("input")!({ source: "interactive", text: "third" }, app.ctx);
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: true }, app.ctx);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(child.runs.length, 0, "aborted settlement must not start an automatic child");
+
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		await eventually(() => child.runs.length === 1);
 		child.runs[0]!.resolve(success('{"candidate":{"name":"automatic-candidate","markdown":"# Automatic"}}'));
 		await eventually(() => Array.isArray(app.widgets.at(-1)?.content));
@@ -191,6 +195,10 @@ test("automatic analysis starts after three inputs and keeps its candidate pendi
 
 		await app.registeredCommands.get("promptor")!("", app.ctx);
 		assert.equal(app.sentMessages.length, 1);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(child.runs.length, 1, "normal settlement consumes the automatic opportunity once");
 	});
 });
 
@@ -218,22 +226,22 @@ test("automatic analysis defaults on when only the input threshold is configured
 		app.handlers.get("input")!({ source: "interactive", text: "   " }, app.ctx);
 		app.handlers.get("input")!({ source: "interactive", text: "one" }, app.ctx);
 		app.handlers.get("input")!({ source: "rpc", text: "two" }, app.ctx);
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 0);
 		app.handlers.get("input")!({ source: "interactive", text: "three" }, app.ctx);
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 0, "analysis waits for the configured threshold");
 		app.handlers.get("input")!({ source: "interactive", text: "four" }, app.ctx);
 
 		app.setMode("rpc");
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 0, "automatic analysis is TUI-only");
 		app.setMode("tui");
 		app.setIdle(false);
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 0);
 		app.setIdle(true);
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		await eventually(() => child.runs.length === 1);
 
 		const run = child.runs[0]!;
@@ -269,7 +277,7 @@ test("automatic analysis defaults on when only the input threshold is configured
 		for (const text of ["new one", "new two", "new three"]) {
 			app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
 		}
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 1, "the runtime-wide automatic opportunity stays consumed");
 	});
 });
@@ -464,7 +472,14 @@ test("manual analysis shows its candidate directly, and failure requires manual 
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
 		const promptor = app.registeredCommands.get("promptor")!;
 
-		await promptor("", app.ctx);
+		for (const text of ["first", "second", "third"]) {
+			app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
+		}
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: true }, app.ctx);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(child.runs.length, 0);
+
+		await promptor("analyze", app.ctx);
 		await eventually(() => child.runs.length === 1);
 		child.runs[0]!.resolve(success(JSON.stringify({
 			candidate: { name: "review-template", markdown: "# Review\n\nCheck the complete change." },
@@ -491,7 +506,7 @@ test("manual analysis shows its candidate directly, and failure requires manual 
 		assert.deepEqual(app.widgets.at(-1)?.content, ["Prompt analysis failed — /promptor"]);
 		app.handlers.get("input")!({ source: "interactive", text: "next request" }, app.ctx);
 		assert.equal(app.widgets.at(-1)?.content, undefined);
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 2, "failed analysis is not retried automatically");
 		await promptor("analyze", app.ctx);
 		await eventually(() => child.runs.length === 3);
@@ -693,7 +708,7 @@ test("malformed config is preserved and warns once until an explicit toggle repl
 		assert.equal(app.notifications.filter(({ message }) => message.includes("config is invalid")).length, 1);
 		assert.equal(await readFile(configPath, "utf8"), malformed);
 		for (const text of ["one", "two", "three"]) app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
-		await app.handlers.get("agent_settled")!({ type: "agent_settled" }, app.ctx);
+		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
 		assert.equal(child.runs.length, 0, "invalid config disables automatic analysis");
 
 		await app.registeredCommands.get("promptor")!("automatic on", app.ctx);

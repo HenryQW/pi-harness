@@ -433,9 +433,10 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		return { action: "continue" };
 	});
 
-	pi.on("agent_settled", (_event, ctx) => {
+	pi.on("agent_settled", (event, ctx) => {
 		if (
-			ctx.mode !== "tui"
+			event.aborted
+			|| ctx.mode !== "tui"
 			|| !ctx.isIdle()
 			|| !automatic
 			|| automaticConsumed
