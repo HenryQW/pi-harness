@@ -490,13 +490,13 @@ test("registered tools have object roots and preserve closed union validation", 
 	});
 });
 
-async function recoverDirect(app: ReturnType<typeof harness>): Promise<void> {
+async function recoverDirect(app: ReturnType<typeof harness>, reference = ""): Promise<void> {
 	let shown = false;
 	app.ctx.hasUI = true;
 	app.ctx.ui.select = async (_title: string, choices: string[]) => {
 		if (shown) return undefined;
 		shown = true;
-		return choices.find((choice) => choice.startsWith("Direct ·"));
+		return choices.find((choice) => choice.startsWith("Direct ·") && choice.includes(reference));
 	};
 	await app.commands.get("subagent")!.handler("", app.ctx);
 }
@@ -1176,7 +1176,7 @@ test("switch during tab creation retains exact identity before cancellation; unk
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
-			for (const stage of ["tab", "start", "start-ack", "prompt"] as const) {
+			for (const stage of ["tab", "allocation", "start", "start-ack", "prompt"] as const) {
 				let entered!: () => void;
 				let release!: () => void;
 				const reached = new Promise<void>((resolve) => { entered = resolve; });
@@ -1184,11 +1184,16 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				const fake = fakeHerdr(cwd);
 				const app = harness({ cwd, herdr: async (args, options) => {
 					const response = await fake.exec(args); // Herdr has already applied the operation.
-					if (args[0] === (stage === "tab" ? "tab" : "agent") && args[1] === (stage === "tab" ? "create" : stage === "start-ack" ? "start" : stage)) {
+					if (args[0] === (stage === "tab" || stage === "allocation" ? "tab" : "agent") && args[1] === (stage === "tab" || stage === "allocation" ? "create" : stage === "start-ack" ? "start" : stage)) {
 						entered();
-						if (stage === "tab") {
+						if (stage === "tab" || stage === "allocation") {
 							assert.equal(options?.signal, undefined, "tab creation must survive cancellation to return its identity");
 							await gate;
+							if (stage === "allocation") {
+								const body = JSON.parse(response.stdout);
+								body.result.root_pane.cwd = "/wrong";
+								return { ...response, stdout: JSON.stringify(body) };
+							}
 						} else {
 							await Promise.race([gate, new Promise<void>((resolve) => options?.signal?.addEventListener("abort", () => resolve(), { once: true }))]);
 							if (options?.signal?.aborted && stage !== "start-ack") return { code: -1, stdout: "", stderr: "", killed: true };
@@ -1201,14 +1206,18 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				let retainedPrompt: string | undefined;
 				const rejected = assert.rejects(launching, (error: Error) => {
 					retainedPrompt = /Direct Role prompt retained at (\S+) after uncertain start/.exec(error.message)?.[1];
-					return /Direct launch|Launching session changed/.test(error.message);
+					return /Direct launch|Launching session changed|unverified/.test(error.message);
 				});
 				await reached;
 				const originalBranch = app.sessionEntries;
 				app.switchBranch();
+				app.sessionEntries.push({ type: "custom", customType: "subagent-direct-tab", data: {
+					taskId: "other", entryId: "other", name: "d-other", tabId: "t-other", paneId: "p-other", sessionFile: "/other",
+					display: { workflow: 1, worker: 1, workers: 1, title: "Other", role: "worker" },
+				} });
 				const switched = app.handlers.get("session_start")?.({}, app.ctx);
-				if (stage === "tab") {
-					assert.equal(app.sessionEntries.length, 0);
+				if (stage === "tab" || stage === "allocation") {
+					assert.equal(app.sessionEntries.length, 1);
 					assert.equal(fake.calls.some(([kind, action]) => kind === "agent" && action === "start"), false);
 				}
 				release();
@@ -1219,14 +1228,48 @@ test("switch during tab creation retains exact identity before cancellation; unk
 					await rm(dirname(retainedPrompt), { recursive: true, force: true });
 				}
 				assert.equal(app.sentMessages.length, 0);
-				assert.equal(app.sessionEntries.length, 1);
-				assert.equal(app.sessionEntries[0]!.data.tabId, "w-test:t2");
-				assert.equal(originalBranch.length, stage === "tab" ? 0 : 1);
+				assert.equal(app.sessionEntries.length, 2);
+				const record = app.sessionEntries[1]!;
+				assert.equal(record.data.tabId, "w-test:t2");
+				assert.equal(record.data.display.workflow, 2, "the late record cannot reuse the new session's D1");
+				assert.equal(record.data.display.title, "Check");
+				assert.equal(record.customType, stage === "allocation" ? "subagent-direct-allocation" : "subagent-direct-tab");
+				assert.equal(originalBranch.length, stage === "tab" || stage === "allocation" ? 0 : 1);
 				assert.equal(fake.calls.filter(([kind, action]) => kind === "agent" && action === "prompt").length, stage === "prompt" ? 1 : 0);
-				await recoverDirect(app);
-				assert.ok(app.notifications.some(({ message }) => message.includes(`tab ${JSON.stringify(app.sessionEntries[0]!.data.tabId)}`)
-					&& message.includes(`session ${JSON.stringify(app.sessionEntries[0]!.data.sessionFile)}`)));
+				await recoverDirect(app, "D2.1");
+				assert.ok(app.notifications.some(({ message }) => message.startsWith("Direct workflow D2.1 · worker · Check")));
+				if (stage === "allocation") assert.ok(app.notifications.some(({ message }) => message.includes("allocation")));
+				else assert.ok(app.notifications.some(({ message }) => message.includes(`tab ${JSON.stringify(record.data.tabId)}`)
+					&& message.includes(`session ${JSON.stringify(record.data.sessionFile)}`)));
 			}
+		});
+	});
+});
+
+test("shutdown preserves a late tab record in the outgoing session", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let entered!: () => void;
+			let release!: () => void;
+			const reached = new Promise<void>((resolve) => { entered = resolve; });
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const fake = fakeHerdr(cwd);
+			const app = harness({ cwd, herdr: async (args) => {
+				const response = await fake.exec(args);
+				if (args[0] === "tab" && args[1] === "create") { entered(); await gate; }
+				return response;
+			} });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			const launching = app.tool.execute("shutdown-tab", { role: "worker", name: "Check", task: "inspect" }, undefined, undefined, app.ctx);
+			const rejected = assert.rejects(launching, /Direct launch/);
+			await reached;
+			const shutdown = app.handlers.get("session_shutdown")!({}, app.ctx);
+			release();
+			await Promise.all([rejected, shutdown]);
+			assert.equal(app.sessionEntries.length, 1);
+			assert.equal(app.sessionEntries[0]!.data.tabId, "w-test:t2");
+			assert.equal(app.sessionEntries[0]!.data.display.workflow, 1);
 		});
 	});
 });

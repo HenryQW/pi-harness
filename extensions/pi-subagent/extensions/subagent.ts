@@ -195,6 +195,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const directTasks = new Map<string, { controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[]; close?: (current: () => boolean) => Promise<void>; closeScope?: () => boolean; allocation?: DirectAllocationRecord; recovery?: string }>();
 	let latestCtx: ExtensionContext | undefined;
 	let sessionEpoch = 0;
+	// Shutdown still saves outgoing identities; only a session start defers records to its carry loop.
+	let directRecordEpoch = 0;
 	let directWorkflow = 0;
 	/** Saved display workflow numbers anywhere in this session, by owning task. */
 	const savedWorkflows = (ctx: ExtensionContext) => {
@@ -267,6 +269,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const controller = new AbortController();
 			const taskId = `inspect-${id}-${randomUUID()}`;
 			const display: DirectDisplay = { workflow: nextWorkflow(ctx), worker: 1, workers: 1, title: `Inspect ${id}`, role: role.name };
+			const recordEpoch = directRecordEpoch;
 			const handles: DirectHandle[] = [];
 			const tabs: DirectTabRecord[] = [];
 			let resolveSettled!: () => void;
@@ -282,7 +285,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						`${directRef(display)} ${display.title}`, `Analyze this saved, read-only status snapshot for request ${id}. Summarize blockers and safe next decisions; do not infer missing evidence or mutate resources. The subagent_status tool in Main remains authoritative for exact action identities.\n\n${snapshot}`,
 						controller.signal, (tab) => {
 							const record = { taskId, entryId: id, display, ...tab };
-							pi.appendEntry(DIRECT_TAB_TYPE, record);
+							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
 							tabs.push(record);
 						});
 				} catch (error) {
@@ -395,6 +398,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		sessionEpoch += 1;
+		directRecordEpoch += 1;
 		// Numbers are session-local; saved records rebuild the next number.
 		directWorkflow = 0;
 		if (latestCtx) {
@@ -413,10 +417,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			for (const local of previous) {
 				const carryAllocation = local.allocation && !branch.some((entry) => entry.type === "custom"
 					&& entry.customType === DIRECT_ALLOCATION_TYPE && (entry.data as DirectAllocationRecord)?.taskId === local.allocation!.taskId);
-				const carried = [...local.tabs.filter(({ tabId }) => !recorded.has(tabId)), ...(carryAllocation ? [local.allocation!] : [])];
-				const display = carried.find((record) => record.display)?.display;
+				const records = [...local.tabs, ...(local.allocation ? [local.allocation] : [])];
+				const display = records.find((record) => record.display)?.display;
 				const owner = display && savedWorkflows(ctx).get(display.workflow);
-				if (owner !== undefined && owner !== carried[0]!.taskId) {
+				if (owner !== undefined && owner !== records[0]!.taskId) {
 					// Another workflow owns this number here; renumber display only, never exact identity.
 					const workflow = nextWorkflow(ctx);
 					const renumber = <T extends DirectTabRecord | DirectAllocationRecord>(record: T): T =>
@@ -568,6 +572,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			});
 			const controller = new AbortController();
 			const launchEpoch = sessionEpoch;
+			const recordEpoch = directRecordEpoch;
 			const handles: DirectHandle[] = [];
 			const tabs: DirectTabRecord[] = [];
 			const tabByEntry = new Map<string, DirectTabRecord>();
@@ -618,15 +623,15 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
 						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, `${directRef(display)} ${display.title}`, entry.delegation.task, activeSignal, (tab) => {
 							const record = { taskId, entryId: entry.id, display, ...tab };
-							// Persist before agent start, including launches interrupted by a session switch.
-							pi.appendEntry(DIRECT_TAB_TYPE, record);
+							// Persist before agent start, or let the new session carry the exact identity after settlement.
+							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
 							tabs.push(record);
 							tabByEntry.set(entry.id, record);
 						}, writes);
 				} catch (error) {
 					if (error instanceof DirectAllocationError) {
 						local.allocation = { taskId, entryId: entry.id, display, ...error.allocation, failure: error.message };
-						pi.appendEntry(DIRECT_ALLOCATION_TYPE, local.allocation);
+						if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_ALLOCATION_TYPE, local.allocation);
 					}
 					// A failed start can still be in flight. Keep its private prompt for recovery.
 					throw new Error(`${error instanceof Error ? error.message : String(error)}. Direct Role prompt retained at ${transient.launch.args[prepared.promptArgIndex + 1]} after uncertain start.`, { cause: error });
