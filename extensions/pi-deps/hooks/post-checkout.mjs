@@ -7,6 +7,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const installMode = "--pi-deps-install";
+const nodeInstallCommands = {
+	npm: ["npm", ["ci"]],
+	pnpm: ["pnpm", ["install", "--frozen-lockfile"]],
+	bun: ["bun", ["install", "--frozen-lockfile"]],
+	yarn: ["yarn", ["install", "--immutable"]],
+};
 
 function errorMessage(error) {
 	return error instanceof Error ? error.message : String(error);
@@ -67,23 +73,20 @@ function nodeCommands() {
 		throw new Error(`Cannot read package.json: ${errorMessage(error)}`);
 	}
 	const declared = packageJson?.packageManager;
-	let manager = locks[0];
+	const manager = locks[0];
 	if (declared !== undefined) {
 		if (typeof declared !== "string" || !/^(npm|pnpm|yarn|bun)@.+$/.test(declared)) {
 			throw new Error(`Unsupported packageManager: ${JSON.stringify(declared)}`);
 		}
-		manager = declared.slice(0, declared.indexOf("@"));
+		const declaredManager = declared.slice(0, declared.indexOf("@"));
 		if (/^yarn@1(?:\D|$)/.test(declared)) throw new Error("Yarn Classic 1.x is not supported");
-		if (manager !== locks[0]) {
-			throw new Error(`packageManager ${manager} does not match ${locks[0]} lockfile`);
+		if (declaredManager !== manager) {
+			throw new Error(`packageManager ${declaredManager} does not match ${manager} lockfile`);
 		}
 	}
 
 	if (isDirectory("node_modules") || (manager === "yarn" && isFile(".pnp.cjs"))) return [];
-	if (manager === "npm") return [["npm", ["ci"]]];
-	if (manager === "pnpm") return [["pnpm", ["install", "--frozen-lockfile"]]];
-	if (manager === "bun") return [["bun", ["install", "--frozen-lockfile"]]];
-	return [["yarn", ["install", "--immutable"]]];
+	return [nodeInstallCommands[manager]];
 }
 
 function installCommands() {

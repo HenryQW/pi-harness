@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const hookSourcePath = fileURLToPath(new URL("../hooks/post-checkout.mjs", import.meta.url));
 const managedHookMarker = "pi-deps-managed-hook";
@@ -77,21 +77,15 @@ interface InstallStatus {
 	message?: string;
 }
 
-interface InstallWatchContext {
-	cwd: string;
-	mode?: string;
-	ui: Pick<ExtensionUIContext, "setStatus" | "setWidget" | "theme">;
-}
-
 // Watches the status file written by the background installer spawned by the post-checkout hook.
 // First consumer wins: the status file is removed once reported.
 async function watchDependencyInstallation(
-	exec: ExtensionAPI["exec"],
-	ctx: InstallWatchContext,
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
 	signal: AbortSignal,
 ): Promise<void> {
-	if (ctx.mode && ctx.mode !== "tui") return;
-	const git = await exec("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: ctx.cwd });
+	if (ctx.mode !== "tui") return;
+	const git = await pi.exec("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: ctx.cwd });
 	if (git.code !== 0 || git.killed) return;
 	const stateDir = join(git.stdout.trim(), "pi-deps");
 	const statusPath = join(stateDir, "status.json");
@@ -147,7 +141,7 @@ export default function depsExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", (_event, ctx) => {
 		watcher?.abort();
 		const controller = watcher = new AbortController();
-		void watchDependencyInstallation(pi.exec.bind(pi), ctx, controller.signal).catch((error) => {
+		void watchDependencyInstallation(pi, ctx, controller.signal).catch((error) => {
 			if (!controller.signal.aborted) ctx.ui.notify(`pi-deps: ${errorMessage(error)}`, "error");
 		});
 	});
@@ -155,22 +149,16 @@ export default function depsExtension(pi: ExtensionAPI): void {
 		description: "Toggle dependency preparation for future Git worktrees",
 		handler: async (args, ctx) => {
 			if (args.trim()) throw new Error("Usage: /deps");
-			const git = (args2: string[]) => pi.exec("git", args2, { cwd: ctx.cwd });
-			const result = await git(["rev-parse", "--git-common-dir"]);
+			const result = await pi.exec("git", ["rev-parse", "--git-common-dir", "--git-path", "hooks"], { cwd: ctx.cwd });
 			if (result.code !== 0 || result.killed) {
 				throw new Error(`Cannot locate shared Git directory: ${result.stderr.trim() || `exit code ${result.code}`}`);
 			}
-			const commonGitDir = result.stdout.trim();
-			if (!commonGitDir) throw new Error("Cannot locate shared Git directory: git returned an empty path");
+			const [commonGitDir, hooksDir] = result.stdout.trim().split(/\r?\n/);
 
 			// core.hooksPath replaces <commonGitDir>/hooks; refuse instead of writing where Git ignores or shares the hook.
-			const hooksDir = await git(["rev-parse", "--git-path", "hooks"]);
-			if (hooksDir.code !== 0 || hooksDir.killed) {
-				throw new Error(`Cannot locate effective hooks directory: ${hooksDir.stderr.trim() || `exit code ${hooksDir.code}`}`);
-			}
 			const defaultHooksDir = resolve(ctx.cwd, commonGitDir, "hooks");
-			if (resolve(ctx.cwd, hooksDir.stdout.trim()) !== defaultHooksDir) {
-				throw new Error(`Refusing non-default hooks directory (core.hooksPath?): ${hooksDir.stdout.trim()}; expected ${defaultHooksDir}`);
+			if (resolve(ctx.cwd, hooksDir) !== defaultHooksDir) {
+				throw new Error(`Refusing non-default hooks directory (core.hooksPath?): ${hooksDir}; expected ${defaultHooksDir}`);
 			}
 
 			try {
