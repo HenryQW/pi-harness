@@ -157,9 +157,6 @@ export function directSessionUsage(jsonl: string, prompt: string): { tokens?: nu
 		activity: pending.size || latest ? { pending: [...pending.values()], latest } : undefined };
 }
 
-export function directSessionTokens(jsonl: string, prompt: string): number | undefined {
-	return directSessionUsage(jsonl, prompt).tokens;
-}
 
 export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string };
 

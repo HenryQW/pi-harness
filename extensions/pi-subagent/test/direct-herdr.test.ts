@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDirectHerdr, directSessionTokens, directSessionUsage, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
+import { createDirectHerdr, directSessionUsage, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
 
 const prompt = "inspect\n\nTurn identity: unique";
 const lines = (messages: unknown[]) => [
@@ -69,9 +69,9 @@ test("direct usage counts only completed Pi usage records for the exact turn", (
 		{ type: "message", id: "one", message: { role: "assistant", usage: usage(10) } },
 		{ type: "message", id: "two", message: { role: "assistant", usage: usage(20) } },
 	]) + '{"type":"message"';
-	assert.equal(directSessionTokens(session, prompt), 48);
-	assert.equal(directSessionTokens(session, "another prompt"), undefined);
-	assert.equal(directSessionTokens(lines([]), prompt), undefined);
+	assert.equal(directSessionUsage(session, prompt).tokens, 48);
+	assert.equal(directSessionUsage(session, "another prompt").tokens, undefined);
+	assert.equal(directSessionUsage(lines([]), prompt).tokens, undefined);
 });
 
 test("direct activity matches parallel results by ID and uses only the latest recorded result duration", () => {

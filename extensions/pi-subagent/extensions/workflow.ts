@@ -148,12 +148,7 @@ export async function runForegroundWorkflow(
 	signal?: AbortSignal,
 ): Promise<void> {
 	signal?.throwIfAborted();
-	if (mode === "single") {
-		await runEntry(entries[0]!, run);
-		signal?.throwIfAborted();
-		return;
-	}
-	if (mode === "parallel") {
+	if (mode === "single" || mode === "parallel") {
 		await Promise.all(entries.map((entry) => runEntry(entry, run)));
 		signal?.throwIfAborted();
 		return;

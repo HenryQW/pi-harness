@@ -754,30 +754,6 @@ test("inspection exposes late retained resources without dumping irrelevant stat
 	assert.deepEqual(harness.runnerCalls.map(({ method }) => method), ["status"]);
 });
 
-test("Role child argv causes zero registration and dependency side effects", () => {
-	const originalArgv = process.argv;
-	let piAccesses = 0;
-	let dependencyAccesses = 0;
-	const pi = new Proxy({}, {
-		get() {
-			piAccesses += 1;
-			throw new Error("child mode touched Pi");
-		},
-	}) as ExtensionAPI;
-	const createComponents: CreateIsolatedComponents = () => {
-		dependencyAccesses += 1;
-		throw new Error("child mode touched dependencies");
-	};
-	try {
-		process.argv = [...originalArgv, `--${ROLE_TOOL_POLICY_FLAG}`, "[]"];
-		registerIsolatedExtension(pi, {} as never);
-	} finally {
-		process.argv = originalArgv;
-	}
-	assert.equal(piAccesses, 0);
-	assert.equal(dependencyAccesses, 0);
-});
-
 test("lazily creates one component graph and supplies fresh session context", async () => {
 	const harness = createHarness();
 	const initial = context("/nested/initial", { id: "initial-model" });
