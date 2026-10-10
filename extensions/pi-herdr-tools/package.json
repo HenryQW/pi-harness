@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-herdr-tools",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Clone, name, and finish Pi conversations in Herdr, with mergeable side questions.",
   "keywords": ["pi-package", "pi", "herdr", "session", "clone", "side-thread", "title"],
   "type": "module",
