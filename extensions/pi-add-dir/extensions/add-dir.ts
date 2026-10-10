@@ -84,7 +84,6 @@ interface AddDirectoryDetails {
 	directory: string;
 	hasAgentsMd: boolean;
 	hasClaudeMd: boolean;
-	skillCount: number;
 	skillNames: string[];
 }
 
@@ -94,38 +93,32 @@ interface SearchDetails {
 	dirCount: number;
 }
 
-function isAddedDir(value: unknown): value is AddedDir {
-	if (!value || typeof value !== "object") return false;
-	const dir = value as Partial<AddedDir>;
-	return typeof dir.absolutePath === "string" && isAbsolute(dir.absolutePath) && typeof dir.label === "string";
+interface SessionDir {
+	absolutePath: string;
 }
 
-function readState(data: unknown): AddedDir[] {
+function isAddedDir(value: unknown): value is SessionDir {
+	if (!value || typeof value !== "object") return false;
+	const dir = value as Partial<SessionDir>;
+	return typeof dir.absolutePath === "string" && isAbsolute(dir.absolutePath);
+}
+
+function readState(data: unknown): SessionDir[] {
 	if (!data || typeof data !== "object") return [];
 	const dirs = (data as { dirs?: unknown }).dirs;
 	return Array.isArray(dirs) ? dirs.filter(isAddedDir) : [];
 }
 
-function parseAddArgs(args: string | undefined): ParsedAddArgs {
-	const input = args?.trim() ?? "";
+function parseAddArgs(args: string): ParsedAddArgs | undefined {
+	const input = args.trim();
 	if (!input) return { source: "session", path: "" };
 	for (const source of ["project", "global"] as const) {
 		const flag = `--${source}`;
 		if (input === flag) return { source, path: "" };
 		if (input.startsWith(`${flag} `)) return { source, path: input.slice(flag.length).trim() };
 	}
-	if (input.startsWith("--")) throw new Error(DIR_ADD_USAGE);
+	if (input.startsWith("--")) return undefined;
 	return { source: "session", path: input };
-}
-
-function validateStoredPaths(paths: string[], source: DirSource): void {
-	if (
-		paths.some(
-			(path) => typeof path !== "string" || !isAbsolute(path) || /\p{C}/u.test(path),
-		)
-	) {
-		throw new Error(`Invalid ${source} pi-add-dir configuration: expected absolute paths.`);
-	}
 }
 
 function hasGitMarker(cwd: string): boolean {
@@ -150,12 +143,15 @@ function isWithinDir(dir: string, candidate: string): boolean {
 	return relativePath === "" || (!relativePath.startsWith(`..${sep}`) && relativePath !== ".." && !isAbsolute(relativePath));
 }
 
+function overlaps(a: string, b: string): boolean {
+	return isWithinDir(a, b) || isWithinDir(b, a);
+}
+
 function contextDetails(dirCtx: DirContext, absolutePath: string): AddDirectoryDetails {
 	return {
 		directory: absolutePath,
 		hasAgentsMd: dirCtx.agentsMd !== null,
 		hasClaudeMd: dirCtx.claudeMd !== null,
-		skillCount: dirCtx.skills.size,
 		skillNames: [...dirCtx.skills],
 	};
 }
@@ -231,7 +227,7 @@ export function createExternalAutocompleteProvider(
 
 export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOptions = {}): void {
 	const globalStore = createAddDirConfigStore(options.agentDir);
-	let sessionDirs: AddedDir[] = [];
+	let sessionDirs: SessionDir[] = [];
 	let projectPaths: string[] = [];
 	let globalPaths: string[] = [];
 	let managedDirs: ScopedDir[] = [];
@@ -318,17 +314,11 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 				}
 				const duplicate = nextActive.find((dir) => dir.absolutePath === absolutePath);
 				if (!inactiveReason && duplicate) inactiveReason = `shadowed by ${duplicate.source} scope`;
-				if (
-					!inactiveReason &&
-					(isWithinDir(cwdPath, absolutePath) || isWithinDir(absolutePath, cwdPath))
-				) {
+				if (!inactiveReason && overlaps(cwdPath, absolutePath)) {
 					inactiveReason = "overlaps current working directory scope";
 				}
 				const overlap = !inactiveReason
-					? nextActive.find(
-							(dir) =>
-								isWithinDir(dir.absolutePath, absolutePath) || isWithinDir(absolutePath, dir.absolutePath),
-						)
+					? nextActive.find((dir) => overlaps(dir.absolutePath, absolutePath))
 					: undefined;
 				if (overlap) inactiveReason = `overlaps ${overlap.source} directory ${overlap.absolutePath}`;
 				const scoped = {
@@ -361,7 +351,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 	}
 
 	function persistState(): void {
-		pi.appendEntry(STATE_TYPE, { dirs: sessionDirs.map((dir) => ({ ...dir })) });
+		pi.appendEntry(STATE_TYPE, { dirs: sessionDirs.map(({ absolutePath }) => ({ absolutePath })) });
 	}
 
 	async function readProjectPaths(cwd: string, required: boolean): Promise<string[]> {
@@ -381,7 +371,9 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			throw new Error(`Cannot read project pi-add-dir configuration: ${result.stderr.trim() || `git exited ${result.code}`}`);
 		}
 		const paths = result.stdout.split("\0").filter((path) => path.length > 0);
-		validateStoredPaths(paths, "project");
+		if (paths.some((path) => !isAbsolute(path) || /\p{C}/u.test(path))) {
+			throw new Error("Invalid project pi-add-dir configuration: expected absolute paths.");
+		}
 		return [...new Set(paths)];
 	}
 
@@ -424,7 +416,6 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 	async function addDir(
 		dirPath: string,
 		source: DirSource,
-		cwd: string,
 		ctx: ExtensionContext,
 	): Promise<{ ok: boolean; message: string; resourcesChanged: boolean; absolutePath?: string; context?: DirContext }> {
 		const input = dirPath.trim();
@@ -432,7 +423,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 		let absolutePath: string;
 		try {
-			absolutePath = resolveDir(input, cwd);
+			absolutePath = resolveDir(input, ctx.cwd);
 			if (!dirExists(absolutePath)) {
 				return { ok: false, message: `Directory does not exist: ${absolutePath}`, resourcesChanged: false };
 			}
@@ -453,14 +444,11 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 				resourcesChanged: false,
 			};
 		}
-		const cwdPath = resolveDir(cwd, cwd);
-		if (isWithinDir(cwdPath, absolutePath) || isWithinDir(absolutePath, cwdPath)) {
+		if (overlaps(resolveDir(ctx.cwd, ctx.cwd), absolutePath)) {
 			return { ok: false, message: "Directory overlaps current working directory scope.", resourcesChanged: false };
 		}
 		const overlap = addedDirs.find(
-			(dir) =>
-				dir.absolutePath !== absolutePath &&
-				(isWithinDir(dir.absolutePath, absolutePath) || isWithinDir(absolutePath, dir.absolutePath)),
+			(dir) => dir.absolutePath !== absolutePath && overlaps(dir.absolutePath, absolutePath),
 		);
 		if (overlap) {
 			return {
@@ -475,32 +463,13 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 		const label = basename(absolutePath) || absolutePath;
 		try {
 			if (source === "session") {
-				sessionDirs.push({ absolutePath, label });
+				sessionDirs.push({ absolutePath });
 				persistState();
 			} else {
-				const previousSessionDirs = sessionDirs;
+				await writePersistentPath(source, absolutePath, ctx);
 				if (sessionMatch) {
 					sessionDirs = sessionDirs.filter((dir) => resolveDir(dir.absolutePath, ctx.cwd) !== absolutePath);
-					try {
-						persistState();
-					} catch (error) {
-						sessionDirs = previousSessionDirs;
-						throw error;
-					}
-				}
-				try {
-					await writePersistentPath(source, absolutePath, ctx);
-				} catch (error) {
-					if (sessionMatch) {
-						sessionDirs = previousSessionDirs;
-						try {
-							persistState();
-						} catch (recoveryError) {
-							const recoveryMessage = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
-							throw new Error(`Persistent write failed and session recovery failed: ${recoveryMessage}`, { cause: error });
-						}
-					}
-					throw error;
+					persistState();
 				}
 			}
 		} catch (error) {
@@ -577,18 +546,15 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 		description: "Reload external directory resources",
 		handler: async (_args, ctx) => {
 			await ctx.reload();
-			return;
 		},
 	});
 
 	pi.registerCommand("dir-add", {
 		description: "Add an external directory to this session, project, or global scope",
 		handler: async (args, ctx) => {
-			let parsed: ParsedAddArgs;
-			try {
-				parsed = parseAddArgs(args);
-			} catch (error) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			const parsed = parseAddArgs(args);
+			if (!parsed) {
+				ctx.ui.notify(DIR_ADD_USAGE, "error");
 				return;
 			}
 			if (!parsed.path) {
@@ -597,7 +563,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 				parsed.path = prompted;
 			}
 
-			const result = await addDir(parsed.path, parsed.source, ctx.cwd, ctx);
+			const result = await addDir(parsed.path, parsed.source, ctx);
 			const message = result.ok && result.resourcesChanged ? `${result.message} Reloading external skills...` : result.message;
 			ctx.ui.notify(message, result.ok ? "info" : "error");
 			if (result.ok && result.resourcesChanged) await ctx.reload();
@@ -645,8 +611,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 		annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const inputPath = params.path.trim();
-			const result = await addDir(inputPath, "session", ctx.cwd, ctx);
+			const result = await addDir(params.path, "session", ctx);
 			if (!result.ok) throw new Error(result.message);
 
 			const absolutePath = result.absolutePath!;
@@ -689,7 +654,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			const badges: string[] = [];
 			if (details.hasAgentsMd) badges.push(theme.fg("accent", "AGENTS.md"));
 			if (details.hasClaudeMd) badges.push(theme.fg("accent", "CLAUDE.md"));
-			if (details.skillCount > 0) badges.push(theme.fg("warning", `${details.skillCount} skills`));
+			if (details.skillNames.length > 0) badges.push(theme.fg("warning", `${details.skillNames.length} skills`));
 			if (badges.length > 0) parts.push(theme.fg("dim", " | ") + badges.join(theme.fg("dim", ", ")));
 			if (expanded && details.skillNames.length > 0) {
 				parts.push("\n" + theme.fg("muted", "  Skills: ") + details.skillNames.map((name) => theme.fg("text", name)).join(", "));
