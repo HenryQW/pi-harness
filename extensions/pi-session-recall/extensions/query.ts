@@ -370,9 +370,10 @@ export function buildLikeQueryPlan(rawQuery: string): LikeQueryPlan | null {
 	// Boolean LIKE preserves simple AND/OR/NOT; unsupported shapes degrade
 	// to AND-of-terms. Both forms are fully parameterized.
 	const bool = buildBooleanLikeSql(query);
+	const clauses = terms.map((term) => likeClause(term, true)!);
 	return {
 		terms,
-		where: bool?.where ?? terms.map(() => "(ulower(m.head) LIKE ? ESCAPE '\\' OR ulower(m.tail) LIKE ? ESCAPE '\\')").join(" AND "),
-		params: bool?.params ?? terms.flatMap((term) => [likePattern(term), likePattern(term)]),
+		where: bool?.where ?? clauses.map((clause) => clause.clause).join(" AND "),
+		params: bool?.params ?? clauses.flatMap((clause) => clause.params),
 	};
 }

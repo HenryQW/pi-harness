@@ -15,7 +15,6 @@ const GIT_STDERR_BYTES = 4 * 1024;
 const BATCH_RECORD_BYTES = 128;
 const BATCH_CHECK_STDOUT_BYTES = BATCH_RECORD_BYTES * MAX_PACKAGE_MANIFESTS;
 const CONTENT_BATCH_STDOUT_BYTES = MAX_TOTAL_MANIFEST_BYTES + BATCH_RECORD_BYTES * MAX_PACKAGE_MANIFESTS;
-const BATCH_STDIN_BYTES = (64 + 1) * MAX_PACKAGE_MANIFESTS;
 const INSTRUCTION_NAMES = new Set(["AGENTS.md", "AGENTS.override.md", "CLAUDE.md"]);
 const REGULAR_MODES = new Set(["100644", "100755"]);
 const INDEX_MODES = new Set(["100644", "100755", "120000", "160000"]);
@@ -118,9 +117,6 @@ function runGit(
 	options: { allowNonzero?: boolean; allowStderrOnNonzero?: boolean; stdin?: Buffer } = {},
 ): Promise<GitResult> {
 	throwIfAborted(signal);
-	if (options.stdin !== undefined && options.stdin.length > BATCH_STDIN_BYTES) {
-		throw new Error("Repository inventory Git stdin exceeded its limit.");
-	}
 	return new Promise((resolve, reject) => {
 		let child: ReturnType<typeof spawn>;
 		try {
@@ -135,14 +131,9 @@ function runGit(
 			return;
 		}
 
-		const childStdout = child.stdout;
-		const childStderr = child.stderr;
+		const childStdout = child.stdout!;
+		const childStderr = child.stderr!;
 		const childStdin = child.stdin;
-		if (!childStdout || !childStderr || (options.stdin !== undefined && !childStdin)) {
-			child.kill("SIGKILL");
-			reject(new Error("Repository inventory could not start Git."));
-			return;
-		}
 		const stdout: Buffer[] = [];
 		let stdoutBytes = 0;
 		let stderrBytes = 0;
@@ -201,7 +192,6 @@ function runGit(
 			finish(undefined, { stdout: Buffer.concat(stdout, stdoutBytes), code });
 		});
 		signal?.addEventListener("abort", onAbort, { once: true });
-		if (signal?.aborted) onAbort();
 		if (options.stdin !== undefined && !failure) {
 			try {
 				childStdin!.end(options.stdin);
@@ -265,7 +255,6 @@ function normalizeRepositoryPath(value: string): string {
 	const segments = value.split("/");
 	if (
 		!value ||
-		value.includes("�") ||
 		value.includes("\\") ||
 		path.isAbsolute(value) ||
 		path.win32.isAbsolute(value) ||
@@ -481,7 +470,6 @@ export async function inventoryRepository(
 	ctx: InventoryContext,
 	mode: RepositoryInventoryMode = "required",
 ): Promise<RepositoryInventory> {
-	if (mode !== "required" && mode !== "optional") throw new Error("Invalid repository inventory mode.");
 	throwIfAborted(ctx.signal);
 	const gitRoot = await resolveGitRoot(ctx);
 	throwIfAborted(ctx.signal);
