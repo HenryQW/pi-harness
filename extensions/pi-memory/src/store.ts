@@ -59,7 +59,7 @@ type Result = {
 const PREVIEW_WIDTH = 80;
 const MAX_PREVIEW_CHARS = 1500;
 
-function isEnoent(error: unknown): boolean {
+export function isEnoent(error: unknown): boolean {
 	return !!error && typeof error === "object" && "code" in error && error.code === "ENOENT";
 }
 
@@ -124,7 +124,7 @@ export class MemoryStore {
 	}
 
 	private charCount(): number {
-		return this.entries.length ? this.entries.join(ENTRY_DELIMITER).length : 0;
+		return this.entries.join(ENTRY_DELIMITER).length;
 	}
 
 	private currentUsage(): string {
@@ -502,7 +502,7 @@ export class MemoryStore {
 			working = [...new Set(working)];
 		}
 
-		const newTotal = working.length ? working.join(ENTRY_DELIMITER).length : 0;
+		const newTotal = working.join(ENTRY_DELIMITER).length;
 		if (newTotal > this.limit) {
 			const current = this.charCount();
 			return this.consolidationFailure(

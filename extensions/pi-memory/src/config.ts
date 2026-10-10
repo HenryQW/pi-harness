@@ -11,7 +11,7 @@ export interface MemoryConfig {
 	userCharLimit: number;
 }
 
-export function DEFAULT_DIRECTORY(agentDir?: string): string {
+function DEFAULT_DIRECTORY(agentDir?: string): string {
 	return join(extensionConfigDir(EXTENSION_ID, agentDir), "memory");
 }
 
@@ -60,24 +60,19 @@ function parseMemoryConfig(value: unknown, path: string, defaultDirectory: strin
 	};
 }
 
-function memoryConfigStore(agentDir?: string) {
-	const path = configPath(agentDir);
-	return createConfigStore<MemoryConfig>({
-		extensionId: EXTENSION_ID,
-		agentDir,
-		defaults: () => ({
-			directory: DEFAULT_DIRECTORY(agentDir),
-			memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
-			userCharLimit: DEFAULT_USER_CHAR_LIMIT,
-		}),
-		parse: (value) => parseMemoryConfig(value, path, DEFAULT_DIRECTORY(agentDir)),
-	});
-}
-
 export function loadMemoryConfig(agentDir?: string): { source: "file" | "missing"; value: MemoryConfig } {
 	const path = configPath(agentDir);
 	try {
-		return memoryConfigStore(agentDir).loadSync();
+		return createConfigStore<MemoryConfig>({
+			extensionId: EXTENSION_ID,
+			agentDir,
+			defaults: () => ({
+				directory: DEFAULT_DIRECTORY(agentDir),
+				memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
+				userCharLimit: DEFAULT_USER_CHAR_LIMIT,
+			}),
+			parse: (value) => parseMemoryConfig(value, path, DEFAULT_DIRECTORY(agentDir)),
+		}).loadSync();
 	} catch (error) {
 		if (error instanceof SyntaxError) {
 			throw new Error(`Malformed JSON in memory config at ${path}: ${error.message}`);
