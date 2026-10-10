@@ -34,7 +34,7 @@ export async function askQuestion(
 	const question = params.question.trim();
 	const suppliedOptions = params.options.map((option) => ({
 		label: option.label.trim(),
-		...(option.description === undefined ? {} : { description: option.description.trim() }),
+		description: option.description?.trim(),
 	}));
 	const options = suppliedOptions.map((option) => option.label);
 	if (ctx.mode !== "tui") {
