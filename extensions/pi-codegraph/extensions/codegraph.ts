@@ -107,9 +107,9 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 			}
 			const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"], signal);
 			const first = worktrees.split("\0", 1)[0];
-			if (!first?.startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
+			if (!first.startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
 			const primary = first.slice("worktree ".length);
-			if (!primary || primary === root || !(await hasIndex(primary))) return;
+			if (primary === root || !(await hasIndex(primary))) return;
 			stopProgress();
 			stopProgress = showProgress(ctx, "indexing", signal);
 			attempted = true;
