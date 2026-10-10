@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { readTextFileBoundedSync, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { lock } from "proper-lockfile";
+import { JOB_ID } from "./config.ts";
 import { dueAt, type Schedule } from "./schedule.ts";
 
 const MAX_STATE_BYTES = 1024 * 1024;
@@ -9,7 +10,7 @@ const LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: {
 
 export type Outcome = "success" | "failure";
 
-export interface JobState {
+interface JobState {
 	firstSeenAt: number;
 	lastStartedAt?: number;
 	lastFinishedAt?: number;
@@ -19,19 +20,17 @@ export interface JobState {
 	running?: { startedAt: number; owner: string; expiresAt: number };
 }
 
-export interface CronState {
+interface CronState {
 	version: 1;
 	jobs: Record<string, JobState>;
 }
 
 export interface Claim {
-	dueAt: number;
 	startedAt: number;
 	owner: string;
 	expiresAt: number;
 }
 
-const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 const timestamp = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 8.64e15;
 const text = (value: unknown): value is string => typeof value === "string" && !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value);
 
@@ -44,7 +43,7 @@ function parseState(value: unknown, path: string): CronState {
 	const state = object(value, ["version", "jobs"], "root");
 	if (state.version !== 1 || !state.jobs || typeof state.jobs !== "object" || Array.isArray(state.jobs)) invalid("version or jobs");
 	for (const [id, value] of Object.entries(state.jobs as Record<string, unknown>)) {
-		if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) invalid(`job id ${id}`);
+		if (!JOB_ID.test(id)) invalid(`job id ${id}`);
 		const job = object(value, ["firstSeenAt", "lastStartedAt", "lastFinishedAt", "lastOutcome", "lastSummary", "lastSession", "running"], `job ${id}`);
 		if (!timestamp(job.firstSeenAt)) invalid(`${id}.firstSeenAt`);
 		for (const key of ["lastStartedAt", "lastFinishedAt"] as const) {
@@ -75,7 +74,7 @@ export class StateStore {
 		try {
 			contents = readTextFileBoundedSync(this.path, MAX_STATE_BYTES);
 		} catch (error) {
-			if (isMissing(error)) return { version: 1, jobs: Object.create(null) as Record<string, JobState> };
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, jobs: Object.create(null) as Record<string, JobState> };
 			throw error;
 		}
 		return parseState(JSON.parse(contents), this.path);
@@ -113,7 +112,7 @@ export class StateStore {
 			if (due === undefined) return { value: undefined, changed: newJob };
 			job.running = { startedAt: now, owner: options.owner, expiresAt: now + Math.ceil(options.staleMs) };
 			job.lastStartedAt = now;
-			return { value: { dueAt: due, ...job.running }, changed: true };
+			return { value: { ...job.running }, changed: true };
 		});
 	}
 

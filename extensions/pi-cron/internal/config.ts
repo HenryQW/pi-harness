@@ -1,5 +1,4 @@
 import { isAbsolute } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, extensionConfigDir } from "@henryqw/pi-config-store";
 import {
 	canonicalModelReference,
@@ -10,8 +9,8 @@ import {
 } from "@henryqw/pi-task-models";
 import { parseEvery, type Schedule } from "./schedule.ts";
 
-export const EXTENSION_ID = "pi-cron";
-export const NOTIFY_MODES = ["notify", "followUp", "none"] as const;
+const EXTENSION_ID = "pi-cron";
+const NOTIFY_MODES = ["notify", "followUp", "none"] as const;
 export type NotifyMode = (typeof NOTIFY_MODES)[number];
 
 /** One validated job exactly as written in config.json; derived values come from the helpers below. */
@@ -43,10 +42,10 @@ export interface CronConfig {
 	limits?: Limits;
 }
 
-export const DEFAULT_LIMITS = { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 } as const;
+const DEFAULT_LIMITS = { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 } as const;
 const JOB_KEYS = ["id", "every", "at", "timezone", "role", "modelClass", "model", "thinking", "cwd", "env", "prompt", "promptFile", "enabled", "notify"] as const;
 const LIMIT_KEYS = ["maxTurns", "idleMinutes", "maxMinutes"] as const;
-const JOB_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const JOB_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const CLOCK = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -83,7 +82,7 @@ function parseJob(value: unknown, index: number): Job {
 	const label = `Job ${id}`;
 	rejectUnknownKeys(raw, JOB_KEYS, label);
 	if ((raw.every === undefined) === (raw.at === undefined)) throw new Error(`${label} needs exactly one of every or at.`);
-	const every = optional(raw.every, (candidate) => {
+	optional(raw.every, (candidate) => {
 		const spec = text(candidate, `${label} every`);
 		if (parseEvery(spec) === undefined) throw new Error(`${label} every must be like 15m, 6h, or 1d, between 1m and 7d.`);
 		return spec;
@@ -94,7 +93,7 @@ function parseJob(value: unknown, index: number): Job {
 		return clock;
 	});
 	if (raw.timezone !== undefined && at === undefined) throw new Error(`${label} timezone requires at.`);
-	const timezone = optional(raw.timezone, (candidate) => validTimeZone(candidate, `${label} timezone`));
+	optional(raw.timezone, (candidate) => validTimeZone(candidate, `${label} timezone`));
 	const modelClass = optional(raw.modelClass, (candidate) => {
 		if (typeof candidate !== "string" || !(PROFILE_NAMES as readonly string[]).includes(candidate)) {
 			throw new Error(`${label} modelClass must be one of ${PROFILE_NAMES.join(", ")}.`);
@@ -110,7 +109,7 @@ function parseJob(value: unknown, index: number): Job {
 			throw new Error(`${label} model must be provider/model.`);
 		}
 	});
-	const thinking = optional(raw.thinking, (candidate) => {
+	optional(raw.thinking, (candidate) => {
 		if (typeof candidate !== "string" || !(THINKING_LEVELS as readonly string[]).includes(candidate)) {
 			throw new Error(`${label} thinking must be one of ${THINKING_LEVELS.join(", ")}.`);
 		}
@@ -118,7 +117,7 @@ function parseJob(value: unknown, index: number): Job {
 	});
 	const cwd = text(raw.cwd, `${label} cwd`);
 	if (!isAbsolute(cwd)) throw new Error(`${label} cwd must be an absolute path.`);
-	const env = optional(raw.env, (candidate) => {
+	optional(raw.env, (candidate) => {
 		const entries = Object.entries(record(candidate, `${label} env`));
 		for (const [name, entry] of entries) {
 			if (!ENV_NAME.test(name)) throw new Error(`${label} env has an invalid variable name: ${name}.`);
@@ -127,35 +126,24 @@ function parseJob(value: unknown, index: number): Job {
 		return Object.fromEntries(entries) as Record<string, string>;
 	});
 	if ((raw.prompt === undefined) === (raw.promptFile === undefined)) throw new Error(`${label} needs exactly one of prompt or promptFile.`);
-	const prompt = optional(raw.prompt, (candidate) => text(candidate, `${label} prompt`));
-	const promptFile = optional(raw.promptFile, (candidate) => {
+	optional(raw.prompt, (candidate) => text(candidate, `${label} prompt`));
+	optional(raw.promptFile, (candidate) => {
 		const file = text(candidate, `${label} promptFile`);
 		if (!isAbsolute(file)) throw new Error(`${label} promptFile must be an absolute path.`);
 		return file;
 	});
-	const enabled = optional(raw.enabled, (candidate) => {
+	optional(raw.enabled, (candidate) => {
 		if (typeof candidate !== "boolean") throw new Error(`${label} enabled must be true or false.`);
 		return candidate;
 	});
-	const notify = optional(raw.notify, (candidate) => {
+	optional(raw.notify, (candidate) => {
 		if (typeof candidate !== "string" || !(NOTIFY_MODES as readonly string[]).includes(candidate)) {
 			throw new Error(`${label} notify must be one of ${NOTIFY_MODES.join(", ")}.`);
 		}
 		return candidate as NotifyMode;
 	});
-	const job: Job = { id, role: text(raw.role, `${label} role`), cwd };
-	if (every !== undefined) job.every = every;
-	if (at !== undefined) job.at = at;
-	if (timezone !== undefined) job.timezone = timezone;
-	if (modelClass !== undefined) job.modelClass = modelClass;
-	if (model !== undefined) job.model = model;
-	if (thinking !== undefined) job.thinking = thinking;
-	if (env !== undefined) job.env = env;
-	if (prompt !== undefined) job.prompt = prompt;
-	if (promptFile !== undefined) job.promptFile = promptFile;
-	if (enabled !== undefined) job.enabled = enabled;
-	if (notify !== undefined) job.notify = notify;
-	return job;
+	text(raw.role, `${label} role`);
+	return { ...raw, ...(model === undefined ? {} : { model }) } as Job;
 }
 
 function parseLimits(value: unknown): Limits {
@@ -206,8 +194,8 @@ export function jobSchedule(job: Job): Schedule {
 export const jobEnabled = (job: Job): boolean => job.enabled ?? true;
 export const jobNotify = (job: Job): NotifyMode => job.notify ?? "notify";
 
-export function cronConfigStore(agentDir = getAgentDir()) {
+export function cronConfigStore(agentDir: string) {
 	return createConfigStore<CronConfig>({ extensionId: EXTENSION_ID, agentDir, defaults: () => ({ jobs: [] }), parse: parseCronConfig });
 }
 
-export const cronHome = (agentDir = getAgentDir()): string => extensionConfigDir(EXTENSION_ID, agentDir);
+export const cronHome = (agentDir: string): string => extensionConfigDir(EXTENSION_ID, agentDir);

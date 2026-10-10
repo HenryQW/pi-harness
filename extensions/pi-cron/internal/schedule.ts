@@ -6,8 +6,8 @@ type ClockSchedule = Extract<Schedule, { kind: "at" }>;
 
 const MINUTE_MS = 60_000;
 const UNIT_MS = { m: MINUTE_MS, h: 60 * MINUTE_MS, d: 24 * 60 * MINUTE_MS } as const;
-export const MIN_EVERY_MS = MINUTE_MS;
-export const MAX_EVERY_MS = 7 * UNIT_MS.d;
+const MIN_EVERY_MS = MINUTE_MS;
+const MAX_EVERY_MS = 7 * UNIT_MS.d;
 
 /** Parse `15m`, `6h`, or `1d` into milliseconds within the supported range. */
 export function parseEvery(spec: string): number | undefined {
@@ -17,25 +17,16 @@ export function parseEvery(spec: string): number | undefined {
 	return ms >= MIN_EVERY_MS && ms <= MAX_EVERY_MS ? ms : undefined;
 }
 
-const formatters = new Map<string, Intl.DateTimeFormat>();
-function formatter(timeZone: string): Intl.DateTimeFormat {
-	let cached = formatters.get(timeZone);
-	if (!cached) {
-		cached = new Intl.DateTimeFormat("en-US", {
-			timeZone, hourCycle: "h23",
-			year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
-		});
-		formatters.set(timeZone, cached);
-	}
-	return cached;
-}
-
 type Parts = { year: number; month: number; day: number; hour: number; minute: number; second: number };
 const PART_TYPES = new Set(["year", "month", "day", "hour", "minute", "second"]);
 
 function zonedParts(instant: number, timeZone: string): Parts {
 	const parts: Partial<Parts> = {};
-	for (const { type, value } of formatter(timeZone).formatToParts(new Date(instant))) {
+	const formatter = new Intl.DateTimeFormat("en-US", {
+		timeZone, hourCycle: "h23",
+		year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+	});
+	for (const { type, value } of formatter.formatToParts(new Date(instant))) {
 		if (PART_TYPES.has(type)) parts[type as keyof Parts] = Number(value);
 	}
 	return parts as Parts;

@@ -64,24 +64,10 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	let ticking = false;
 	let running = false;
 	let lastConfigError: string | undefined;
-	let executor: { key: string; value: EphemeralSubagentExecutor } | undefined;
 	// Renewed on session start so a session switch in the same Pi process revives scheduling.
 	let shutdown = new AbortController();
 
 	registerModelTask(pi, CRON_JOB_TASK);
-
-	const executorFor = (limits: Required<Limits>): EphemeralSubagentExecutor => {
-		const key = JSON.stringify(limits);
-		if (executor?.key !== key) {
-			const value = options.executor?.(limits) ?? createEphemeralSubagentExecutor({
-				maxConcurrency: 1,
-				maxTurns: limits.maxTurns,
-				timeout: { idleMs: limits.idleMinutes * 60_000, maxMs: limits.maxMinutes * 60_000 },
-			});
-			executor = { key, value };
-		}
-		return executor.value;
-	};
 
 	const loadConfig = (ctx: ExtensionContext): CronConfig | undefined => {
 		try {
@@ -131,11 +117,9 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	};
 
 	/** Admit locally before claiming so no shared claim ages in an executor queue. */
-	const runJob = async (ctx: ExtensionContext, config: CronConfig, job: Job, force: boolean): Promise<
-		{ claimed: true; done: Promise<void> } | { claimed: false; done: Promise<void>; reason: string }
-	> => {
+	const runJob = async (ctx: ExtensionContext, config: CronConfig, job: Job, force: boolean): Promise<{ done: Promise<void> } | { reason: string }> => {
 		const signal = shutdown.signal;
-		if (running || signal.aborted) return { claimed: false, done: Promise.resolve(), reason: "A job is already running in this Pi session, or the session is shutting down." };
+		if (running || signal.aborted) return { reason: "A job is already running in this Pi session, or the session is shutting down." };
 		running = true;
 		try {
 			const limits = effectiveLimits(config);
@@ -144,9 +128,9 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			});
 			if (!claim) {
 				running = false;
-				return { claimed: false, done: Promise.resolve(), reason: `${job.id} is not due or is already running in another Pi session.` };
+				return { reason: `${job.id} is not due or is already running in another Pi session.` };
 			}
-			return { claimed: true, done: execute(ctx, limits, job, claim, signal).finally(() => { running = false; }) };
+			return { done: execute(ctx, limits, job, claim, signal).finally(() => { running = false; }) };
 		} catch (error) {
 			running = false;
 			throw error;
@@ -165,7 +149,12 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			if (!role) throw new Error(`Role ${job.role} is not configured.`);
 			const launch = prepareLaunch(ctx, job, role);
 			await mkdir(dirname(sessionFile), { recursive: true, mode: 0o700 });
-			const result = await executorFor(limits).run({
+			const executor = options.executor?.(limits) ?? createEphemeralSubagentExecutor({
+				maxConcurrency: 1,
+				maxTurns: limits.maxTurns,
+				timeout: { idleMs: limits.idleMinutes * 60_000, maxMs: limits.maxMinutes * 60_000 },
+			});
+			const result = await executor.run({
 				signal,
 				prepare: async () => ({
 					launch: { args: sessionLaunchArgs(launch.args, sessionFile), env: { ...launch.env, ...job.env } },
@@ -175,9 +164,8 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			});
 			outcome = result.outcome;
 			output = result.outcome === "success"
-				? result.output
+				? `${modelReference(launch.model)} (${launch.thinkingLevel})\n${result.output}`
 				: `${result.errorMessage ?? result.stopReason ?? `exit ${result.exitCode}`}\n${result.output}\n${result.stderr}`;
-			if (result.outcome === "success") output = `${modelReference(launch.model)} (${launch.thinkingLevel})\n${result.output}`;
 		} catch (error) {
 			output = errorText(error);
 		}
@@ -205,7 +193,8 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 				const job = config.jobs.find((candidate) => candidate.id === id);
 				if (!job || !jobEnabled(job)) continue;
 				try {
-					await (await runJob(latestCtx, config, job, false)).done;
+					const run = await runJob(latestCtx, config, job, false);
+					if ("done" in run) await run.done;
 				} catch (error) {
 					if (!signal.aborted && latestCtx.hasUI) latestCtx.ui.notify(`pi-cron could not schedule ${job.id}: ${errorText(error)}`, "error");
 				}
@@ -290,7 +279,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 
 	async function startNow(ctx: ExtensionCommandContext, config: CronConfig, job: Job): Promise<void> {
 		const run = await runJob(ctx, config, job, true);
-		if (!run.claimed) {
+		if ("reason" in run) {
 			ctx.ui.notify(run.reason, "warning");
 			return;
 		}

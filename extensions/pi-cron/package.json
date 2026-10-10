@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-cron",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Run scheduled job prompts in new Pi sessions with per-job interval, Role, model, and thinking level.",
   "keywords": [
     "pi-package",
