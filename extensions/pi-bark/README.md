@@ -1,6 +1,6 @@
 # `@henryqw/pi-bark`
 
-Get [Bark](https://bark.day.app) notifications when Pi finishes or needs your input. Use `/copyb` to send Pi's latest response to your device.
+Get [Bark](https://bark.day.app) notifications when Pi finishes, fails, or needs your input. Use `/copyb` to send Pi's latest response to your device.
 
 ## Install
 
@@ -66,16 +66,19 @@ The `body` value is the same text that Pi's `/copy` command selects. `/copyb` tr
 
 ### Automatic status notifications
 
-After setup, pi-bark sends two status-only notifications:
+After setup, pi-bark sends these status-only notifications:
 
 - **Pi needs input** when Pi opens a blocking user prompt, including `ask_question`.
-- **Pi finished** after the agent has fully settled and will not continue automatically, unless the run was cancelled.
+- **Pi failed** after the agent has fully settled and will not continue automatically, when the run ended in an unrecovered failure.
+- **Pi finished** after the agent has fully settled and will not continue automatically, when the run completed normally.
 
-A cancelled run, for example with Escape, sends no automatic **Pi finished** notification. Input notifications and explicit `/copyb` remain available. A non-cancelled settlement does not prove that the provider completed successfully; this extension does not filter provider errors.
+The outcome follows Pi's own run status. The last agent response of the run decides it: a provider error means failure, and a later successful retry clears that failure. A failed context compaction during the run, including overflow recovery, also means failure. Each new run starts with a clean outcome; earlier runs and other branches do not affect it. A failed `/compact` while Pi is idle sends no notification.
+
+A cancelled run, for example with Escape, or a cancelled compaction sends no settled notification. Input notifications and explicit `/copyb` remain available. If a new run starts before a settled notification is sent, pi-bark cancels that notification.
 
 Each notification includes Pi's current session name. Herdr shows the same name when `pi-herdr-tools` is active. pi-bark does not call Herdr or read Herdr state.
 
-An unset session name appears as `Unnamed`. Status notifications do not include prompts or agent output. No notification is sent when a prompt closes.
+An unset session name appears as `Unnamed`. Status notifications do not include prompts, agent output, or error messages. No notification is sent when a prompt closes.
 
 Automatic notifications are enabled by default. Disable them only in the current CWD:
 
@@ -114,7 +117,7 @@ Config changes take effect on the next command or status event; Pi does not need
 
 Push encryption is optional. It prevents the Bark server and Apple Push Notification service from reading push content.
 
-Once configured, pi-bark encrypts every push it sends. This includes `/copyb` and both automatic status notifications.
+Once configured, pi-bark encrypts every push it sends. This includes `/copyb` and all automatic status notifications.
 
 #### Set up encryption
 

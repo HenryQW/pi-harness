@@ -284,6 +284,83 @@ test("a continuation cancels a finished push after its deferred idle check", asy
 	assert.deepEqual(notices, []);
 });
 
+test("settled notifications report the run outcome without error details", async (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+
+	const pushes: Array<Record<string, string>> = [];
+	const notices: string[] = [];
+	const { commands, lifecycleHandlers } = harness(
+		agentDir,
+		(async (_input: string | URL | Request, init?: RequestInit) => {
+			init?.signal?.throwIfAborted();
+			pushes.push(JSON.parse(String(init?.body)) as Record<string, string>);
+			return new Response(null, { status: 200 });
+		}) as typeof fetch,
+		async () => {},
+		"Deploy API",
+	);
+	const ctx = {
+		cwd: join(agentDir, "project"),
+		sessionManager: { buildContextEntries: () => [assistantEntry([{ type: "text", text: "older branch" }], "error")] },
+		isIdle: () => true,
+		ui: { notify: (message: string) => notices.push(message) },
+	};
+	await commands.get("set-bark")!("device-key", ctx);
+	notices.length = 0;
+
+	const emit = (name: string, event: unknown) => lifecycleHandlers.get(name)!(event, ctx);
+	const assistant = (stopReason: string) => [
+		"message_end",
+		{ type: "message_end", message: { role: "assistant", content: [], stopReason, errorMessage: "provider detail" } },
+	] as const;
+	const compactFailed = (reason: string, aborted: boolean) => [
+		"session_compact_failed",
+		{
+			type: "session_compact_failed",
+			reason,
+			aborted,
+			willRetry: false,
+			errorMessage: aborted ? undefined : "Compaction failed: detail",
+			fromExtension: false,
+		},
+	] as const;
+	const run = async (events: ReadonlyArray<readonly [string, unknown]>, aborted = false) => {
+		const count = pushes.length;
+		emit("agent_start", { type: "agent_start" });
+		for (const [name, event] of events) emit(name, event);
+		emit("agent_settled", { type: "agent_settled", aborted });
+		await waitForImmediate();
+		return pushes.slice(count).map((push) => push.title);
+	};
+
+	assert.deepEqual(await run([assistant("error")]), ["Pi failed"]);
+	assert.deepEqual(pushes[0], { device_key: "device-key", title: "Pi failed", body: "Pi session: Deploy API" });
+	assert.deepEqual(await run([assistant("error"), assistant("stop")]), ["Pi finished"], "a successful retry clears the failure");
+	assert.deepEqual(await run([assistant("length"), compactFailed("overflow", false)]), ["Pi failed"]);
+	assert.deepEqual(await run([assistant("error"), compactFailed("overflow", true)]), [], "an aborted compaction is silent");
+	assert.deepEqual(await run([assistant("error")], true), [], "a cancelled settlement is silent");
+	assert.deepEqual(
+		await run([["message_end", { type: "message_end", message: { role: "user", content: [] } }]]),
+		["Pi finished"],
+		"a fresh run ignores earlier and branch failures",
+	);
+
+	emit(...compactFailed("manual", false));
+	emit("agent_settled", { type: "agent_settled", aborted: false });
+	await waitForImmediate();
+	assert.equal(pushes.at(-1)?.title, "Pi finished", "idle manual compaction does not change the outcome");
+
+	const count = pushes.length;
+	emit("agent_start", { type: "agent_start" });
+	emit(...assistant("error"));
+	emit("agent_settled", { type: "agent_settled", aborted: false });
+	emit("agent_start", { type: "agent_start" });
+	await waitForImmediate();
+	assert.equal(pushes.length, count, "a new run suppresses the pending Pi failed push");
+	assert.deepEqual(notices, []);
+});
+
 test("automatic status pushes preserve event order and event-time state", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));

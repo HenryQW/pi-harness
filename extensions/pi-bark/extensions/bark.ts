@@ -66,7 +66,10 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	const fetchImpl = options.fetch ?? globalThis.fetch;
 
 	let statusPushQueue = Promise.resolve();
-	let pendingFinishedPush: AbortController | undefined;
+	let pendingSettledPush: AbortController | undefined;
+	// Mirrors Pi's ProgramStatusReporter: the latest assistant message or active-run compaction failure decides the outcome.
+	let runActive = false;
+	let runOutcome: "finished" | "failed" | "aborted" = "finished";
 	const queueStatus = async (
 		title: string,
 		cwd: string,
@@ -92,24 +95,39 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	});
 
 	pi.on("agent_start", () => {
-		pendingFinishedPush?.abort();
-		pendingFinishedPush = undefined;
+		runActive = true;
+		runOutcome = "finished";
+		pendingSettledPush?.abort();
+		pendingSettledPush = undefined;
+	});
+
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		runOutcome = event.message.stopReason === "error" ? "failed" : "finished";
+	});
+
+	pi.on("session_compact_failed", (event) => {
+		if (!runActive) return;
+		if (event.aborted) runOutcome = "aborted";
+		else if (event.errorMessage) runOutcome = "failed";
 	});
 
 	pi.on("agent_settled", (event, ctx) => {
-		if (event.aborted || !ctx.isIdle()) return;
+		runActive = false;
+		if (event.aborted || runOutcome === "aborted" || !ctx.isIdle()) return;
+		const title = runOutcome === "failed" ? "Pi failed" : "Pi finished";
 		const controller = new AbortController();
-		pendingFinishedPush?.abort();
-		pendingFinishedPush = controller;
+		pendingSettledPush?.abort();
+		pendingSettledPush = controller;
 		const shouldSend = new Promise<boolean>((resolve) => {
 			setImmediate(() => resolve(ctx.isIdle()));
 		});
-		void queueStatus("Pi finished", ctx.cwd, shouldSend, controller.signal)
+		void queueStatus(title, ctx.cwd, shouldSend, controller.signal)
 			.catch((error) => {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 			})
 			.finally(() => {
-				if (pendingFinishedPush === controller) pendingFinishedPush = undefined;
+				if (pendingSettledPush === controller) pendingSettledPush = undefined;
 			});
 	});
 
