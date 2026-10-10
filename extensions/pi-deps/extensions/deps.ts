@@ -12,7 +12,10 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-async function toggleDependencyHook(commonGitDir: string): Promise<{ enabled: boolean; path: string }> {
+export async function toggleDependencyHook(
+	commonGitDir: string,
+	moveAside = rename, // test seam for races between the marker check and the move
+): Promise<{ enabled: boolean; path: string }> {
 	const source = await readFile(hookSourcePath, "utf8");
 	const path = join(commonGitDir, "hooks", "post-checkout");
 	let existing: string | undefined;
@@ -28,18 +31,23 @@ async function toggleDependencyHook(commonGitDir: string): Promise<{ enabled: bo
 		}
 		// Rename first so the content check happens on the exact inode being removed.
 		const staging = `${path}.pi-deps-${process.pid}-${randomUUID()}`;
-		await rename(path, staging);
+		await moveAside(path, staging);
+		let managed = false;
 		try {
-			const removed = await readFile(staging, "utf8");
-			if (!removed.includes(managedHookMarker)) {
-				await rename(staging, path);
-				throw new Error(`Refusing to modify unmanaged Git hook: ${path}`);
+			managed = (await readFile(staging, "utf8")).includes(managedHookMarker);
+		} finally {
+			if (!managed) {
+				// Restore unverified content without clobbering a hook created meanwhile.
+				try {
+					await link(staging, path);
+				} catch (error) {
+					throw new Error(`Cannot restore Git hook ${path}; its content remains at ${staging}`, { cause: error });
+				}
+				await rm(staging);
 			}
-			await rm(staging);
-		} catch (error) {
-			await rm(staging, { force: true });
-			throw error;
 		}
+		if (!managed) throw new Error(`Refusing to modify unmanaged Git hook: ${path}`);
+		await rm(staging);
 		return { enabled: false, path };
 	}
 
