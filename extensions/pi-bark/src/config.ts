@@ -41,7 +41,7 @@ export function parseServerUrl(value: string): string {
 	return url.href.replace(/\/$/, "");
 }
 
-export function parseDeviceKey(value: unknown): string | null {
+function parseDeviceKey(value: unknown): string | null {
 	if (value === null) return null;
 	if (typeof value !== "string" || !value.trim()) {
 		throw new Error('Invalid Bark config: "deviceKey" must be a non-empty string.');
@@ -67,12 +67,7 @@ function parseEncryption(value: unknown): BarkEncryption | null {
 			`Invalid Bark encryption config: expected ${ENCRYPTION_ALGORITHM}, ${ENCRYPTION_MODE}, ${ENCRYPTION_PADDING}, and a ${ENCRYPTION_KEY_BYTES}-byte UTF-8 key.`,
 		);
 	}
-	return {
-		algorithm: ENCRYPTION_ALGORITHM,
-		mode: ENCRYPTION_MODE,
-		padding: ENCRYPTION_PADDING,
-		key: encryption.key,
-	};
+	return value as BarkEncryption;
 }
 
 function parseStatusNotifications(value: unknown): BarkConfig["statusNotifications"] {
@@ -90,14 +85,10 @@ function parseStatusNotifications(value: unknown): BarkConfig["statusNotificatio
 	) {
 		throw new Error('Invalid Bark config: expected "defaultEnabled" and "cwdOverrides" notification settings.');
 	}
-	const entries = Object.entries(overrides);
-	if (entries.some(([cwd, enabled]) => !isAbsolute(cwd) || typeof enabled !== "boolean")) {
+	if (Object.entries(overrides).some(([cwd, enabled]) => !isAbsolute(cwd) || typeof enabled !== "boolean")) {
 		throw new Error("Invalid Bark config: CWD notification overrides must map absolute paths to booleans.");
 	}
-	return {
-		defaultEnabled: notifications.defaultEnabled,
-		cwdOverrides: Object.fromEntries(entries) as Record<string, boolean>,
-	};
+	return value as BarkConfig["statusNotifications"];
 }
 
 function parseBarkConfig(value: unknown): BarkConfig {

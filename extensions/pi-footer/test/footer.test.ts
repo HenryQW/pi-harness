@@ -26,11 +26,9 @@ function setupFooter(
 	{
 		appendEntry = () => {},
 		exec = async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
-		notify = () => {},
 	}: {
 		appendEntry?: (customType: string, data: unknown) => void;
 		exec?: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number; killed: boolean }>;
-		notify?: (message: string, type: string) => void;
 	} = {},
 ) {
 	const handlers = new Map<string, Handler>();
@@ -52,7 +50,6 @@ function setupFooter(
 					setFooter(factory: FooterFactory) {
 						footerFactory = factory;
 					},
-					notify,
 				},
 			}) as unknown as ExtensionContext;
 			const sessionStart = handlers.get("session_start");
@@ -91,10 +88,8 @@ test("renders family status on the first line and external statuses beside runti
 			details: { usage: usage(300, 50, 0, 0.04) },
 		},
 	];
-	const notifications: Array<[string, string]> = [];
 	const { start } = setupFooter({
 		exec: async () => ({ stdout: gitOutput, stderr: "", code: 0, killed: false }),
-		notify: (message, type) => notifications.push([message, type]),
 	});
 
 	const ctx = {
@@ -107,7 +102,6 @@ test("renders family status on the first line and external statuses beside runti
 	};
 
 	const footerFactory = await start(ctx);
-	assert.deepEqual(notifications, []);
 	const colors: [string, string][] = [];
 	let extensionStatuses = new Map([
 		["ponytail", "●  🐴\tponytail: ⚡ FULL\r\nready"],
@@ -521,11 +515,10 @@ test("excludes prompt waits and persists a paused run", async () => {
 
 test("restores cumulative agent time on resume and appends updated totals", async () => {
 	const appended: Array<[string, unknown]> = [];
-	const { handlers, start } = setupFooter({
-		appendEntry(customType, data) {
-			appended.push([customType, data]);
-		},
-	});
+	const appendEntry = (customType: string, data: unknown) => {
+		appended.push([customType, data]);
+	};
+	const { handlers, start } = setupFooter({ appendEntry });
 	const entries = [
 		{ type: "custom", customType: "pi-footer:agent-work", data: 1_000 },
 		{ type: "custom", customType: "pi-footer:agent-work", data: -5 },
@@ -552,15 +545,16 @@ test("restores cumulative agent time on resume and appends updated totals", asyn
 		assert.deepEqual(appended, [["pi-footer:agent-work", 67_500]]);
 		assert.equal(footer.render(100)[2]!.trim(), "◷ 1m 7s");
 
-		// Non-TUI sessions restore their own total before global agent handlers append.
+		// Non-TUI sessions restore their own total before agent handlers append.
 		now = 10_000;
-		await handlers.get("session_start")!({}, {
+		const resumed = setupFooter({ appendEntry }).handlers;
+		await resumed.get("session_start")!({}, {
 			mode: "rpc",
 			sessionManager: { getEntries: () => entries },
 		} as unknown as ExtensionContext);
-		await handlers.get("agent_start")!(undefined, ctx);
+		await resumed.get("agent_start")!(undefined, ctx);
 		now = 11_500;
-		await handlers.get("agent_settled")!(undefined, ctx);
+		await resumed.get("agent_settled")!(undefined, ctx);
 		assert.deepEqual(appended, [
 			["pi-footer:agent-work", 67_500],
 			["pi-footer:agent-work", 66_500],

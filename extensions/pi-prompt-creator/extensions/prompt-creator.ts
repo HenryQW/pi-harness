@@ -35,7 +35,7 @@ const READY_WIDGET = "Prompt ready — /promptor";
 const FAILURE_WIDGET = "Prompt analysis failed — /promptor";
 const REFINEMENT_GUIDANCE = "Refine this candidate conversationally with the user. When the user approves it, Main must emit only the complete Final Prompt Draft. Then run /promptor save to use the suggested name, or /promptor save <name>.";
 
-export const DRAFT_TASK = {
+const DRAFT_TASK = {
 	id: "pi-prompt-creator/draft",
 	label: "Prompt draft",
 	purpose: "Find a reusable prompt candidate in the current conversation.",
@@ -61,15 +61,16 @@ The object must have exactly these keys. name must start with a lowercase ASCII 
 } satisfies Role;
 
 type Config = { automatic: boolean; inputThreshold: number };
-export type PromptCandidate = { name: string; markdown: string };
+type PromptCandidate = { name: string; markdown: string };
 type ConversationItem = { role: "summary" | "user" | "assistant"; text: string };
 type ContextMessage = ReturnType<typeof buildSessionContext>["messages"][number];
+type MessageContent = Extract<ContextMessage, { role: "user" | "assistant" }>["content"];
 type ExistingPrompt = { name: string; description: string };
 type AnalysisPayload = { currentConversation: ConversationItem[]; existingPrompts: ExistingPrompt[] };
 type ActiveRun = { controller: AbortController; branchGeneration: number };
 type ReviewBoundary = { entryId: string };
 
-export interface PromptCreatorOptions {
+interface PromptCreatorOptions {
 	agentDir?: string;
 	executor?: EphemeralSubagentExecutor;
 }
@@ -94,11 +95,11 @@ function parseConfig(value: unknown): Config {
 	return { automatic, inputThreshold };
 }
 
-export function isPromptName(value: unknown): value is string {
+function isPromptName(value: unknown): value is string {
 	return typeof value === "string" && value.length <= MAX_NAME_CHARS && NAME.test(value);
 }
 
-export function isPromptMarkdown(value: unknown): value is string {
+function isPromptMarkdown(value: unknown): value is string {
 	return typeof value === "string"
 		&& value.trim().length > 0
 		&& Buffer.byteLength(value, "utf8") <= MAX_MARKDOWN_BYTES
@@ -121,18 +122,10 @@ export function parseDraftOutput(output: string): PromptCandidate | null {
 	return { name: candidate.name, markdown: candidate.markdown };
 }
 
-function messageText(content: unknown): string {
+function messageText(content: MessageContent): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
-	return content
-		.flatMap((part) =>
-			part && typeof part === "object" && !Array.isArray(part)
-				&& (part as Record<string, unknown>).type === "text"
-				&& typeof (part as Record<string, unknown>).text === "string"
-				? [(part as { text: string }).text]
-				: [],
-		)
-		.join("\n");
+	return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
 function conversationItem(message: ContextMessage): ConversationItem | undefined {
@@ -229,11 +222,7 @@ ${quotedMarkdown}
 ${REFINEMENT_GUIDANCE}`;
 }
 
-function errorCode(error: unknown): string | undefined {
-	return error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
-}
-
-export async function createPromptFile(path: string, markdown: string): Promise<void> {
+async function createPromptFile(path: string, markdown: string): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	let file: Awaited<ReturnType<typeof open>> | undefined;
 	let created = false;
@@ -289,10 +278,10 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 	const showFailure = (ctx: ExtensionContext) => {
 		failure = true;
 		candidate = undefined;
-		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, [FAILURE_WIDGET]);
+		ctx.ui.setWidget(WIDGET_KEY, [FAILURE_WIDGET]);
 	};
 	const isCurrent = (run: ActiveRun) =>
-		activeRun === run && branchGeneration === run.branchGeneration && !run.controller.signal.aborted;
+		activeRun === run && branchGeneration === run.branchGeneration;
 	const resetBranch = (ctx: ExtensionContext) => {
 		branchGeneration += 1;
 		inputCount = 0;
@@ -322,7 +311,6 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		reviewBoundary = boundaryId ? { entryId: boundaryId } : undefined;
 	};
 	const startAnalysis = (ctx: ExtensionContext, manual: boolean) => {
-		if (ctx.mode !== "tui" || activeRun || candidate) return;
 		if (manual) automaticConsumed = true;
 		failure = false;
 		candidateNameHint = undefined;
@@ -391,7 +379,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			await createPromptFile(path, draft);
 		} catch (error) {
 			ctx.ui.notify(
-				errorCode(error) === "EEXIST" ? `Prompt /${name} already exists.` : `Could not save /${name}.`,
+				(error as NodeJS.ErrnoException).code === "EEXIST" ? `Prompt /${name} already exists.` : `Could not save /${name}.`,
 				"error",
 			);
 			return;
