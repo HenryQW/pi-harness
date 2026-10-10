@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { collectPullRequestFeedback, feedbackAuthorityFromCurrent, feedbackEntries, type FeedbackSnapshot } from "./pr-feedback.ts";
 import { loadCurrentPullRequest, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { extensionExecApi, isRecord, parseSingleOutputLine, runChecked } from "./pr-execution.ts";
+import { canonicalWorktree, extensionExecApi, isRecord } from "./pr-execution.ts";
 
 function fingerprint(snapshot: FeedbackSnapshot, blockedIds: ReadonlySet<string> = new Set()): string {
 	const entries = feedbackEntries(snapshot).filter(({ id }) => !blockedIds.has(id)).map(({ id, kind, node }) => ({
@@ -15,8 +14,7 @@ function fingerprint(snapshot: FeedbackSnapshot, blockedIds: ReadonlySet<string>
 }
 
 async function markerPath(cwd: string, agentDir?: string, signal?: AbortSignal, exec: Exec = spawnBounded): Promise<string> {
-	const root = parseSingleOutputLine((await runChecked(exec, "git", ["rev-parse", "--show-toplevel"], { cwd, signal })).stdout, "worktree root");
-	const identity = createHash("sha256").update(await realpath(root)).digest("hex");
+	const identity = createHash("sha256").update(await canonicalWorktree(cwd, signal, exec)).digest("hex");
 	return join(extensionConfigDir("pi-pr", agentDir), "feedback", `${identity}.json`);
 }
 

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GitCommitter } from "./git-commit.ts";
-import { spawnBounded } from "@henryqw/pi-process";
-import { readFile, realpath } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
 	isBashToolResult,
@@ -37,7 +36,7 @@ import {
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
-import { isRecord, parseSingleOutputLine, runChecked } from "./pr-execution.ts";
+import { canonicalWorktree, isRecord } from "./pr-execution.ts";
 import {
 	discoveryIssueDetails,
 	formatPrFooter,
@@ -207,17 +206,11 @@ type PullRequestExtensionDependencies = {
 	createCiFixer?: (options: PullRequestCiFixOptions) => FixCiWorkflow;
 	createWorkPublisher?: (options: ConstructorParameters<typeof PullRequestWorkPublisher>[0]) => PullRequestWorkPublisher;
 	syncLocalHead?: PrCommandDependencies["syncLocalHead"];
-	ciPollMs?: PrCommandDependencies["ciPollMs"];
 	loadPrPolicy?: typeof loadPrPolicy;
 	canonicalWorktree?: (cwd: string, signal?: AbortSignal) => Promise<string>;
 	newRunId?: () => string;
 	now?: () => number;
 };
-
-async function canonicalWorktree(cwd: string, signal?: AbortSignal): Promise<string> {
-	const result = await runChecked(spawnBounded, "git", ["rev-parse", "--show-toplevel"], { cwd, signal });
-	return await realpath(parseSingleOutputLine(result.stdout, "Git worktree root resolution"));
-}
 
 function toolResult(value: unknown) {
 	return {
@@ -369,9 +362,10 @@ export default function pullRequestExtension(
 			publication: invocation.publication,
 			entryHead: reservation.route === "create" ? reservation.target.remoteOid : reservation.pullRequest.head.oid,
 		};
+		let selected: Extract<WorkflowContext, { route: "update-branch" | "sweep" }>;
 		switch (reservation.route) {
-			case "update-branch": {
-				const selected: Extract<WorkflowContext, { route: "update-branch" }> = {
+			case "update-branch":
+				selected = {
 					...common,
 					route: "update-branch",
 					authority: cloneCurrentPullRequest(reservation.pullRequest),
@@ -383,17 +377,7 @@ export default function pullRequestExtension(
 						loadCurrentPullRequest: load,
 					}),
 				};
-				workflowContext = selected;
-				try {
-					const action = await selected.workflow.recoveryLaunchAction();
-					invocation.assertCurrent();
-					if (workflowContext !== selected) throw new Error("PR workflow session changed during recovery inspection");
-					return { runId, action };
-				} catch (error) {
-					clearWorkflow(selected);
-					throw error;
-				}
-			}
+				break;
 			case "create":
 				workflowContext = {
 					...common,
@@ -418,8 +402,8 @@ export default function pullRequestExtension(
 						signal: common.controller.signal, run: common.run, loadCurrentPullRequest: load }),
 				};
 				return { runId, action: "inspect" };
-			case "sweep": {
-				const selected: Extract<WorkflowContext, { route: "sweep" }> = {
+			case "sweep":
+				selected = {
 					...common,
 					route: "sweep",
 					authority: cloneCurrentPullRequest(reservation.pullRequest),
@@ -432,17 +416,7 @@ export default function pullRequestExtension(
 						loadCurrentPullRequest: load,
 					}),
 				};
-				workflowContext = selected;
-				try {
-					const action = await selected.workflow.recoveryLaunchAction();
-					invocation.assertCurrent();
-					if (workflowContext !== selected) throw new Error("PR workflow session changed during recovery inspection");
-					return { runId, action };
-				} catch (error) {
-					clearWorkflow(selected);
-					throw error;
-				}
-			}
+				break;
 			case "fix-ci":
 				workflowContext = {
 					...common,
@@ -457,6 +431,16 @@ export default function pullRequestExtension(
 					}),
 				};
 				return { runId, action: "collect" };
+		}
+		workflowContext = selected;
+		try {
+			const action = await selected.workflow.recoveryLaunchAction();
+			invocation.assertCurrent();
+			if (workflowContext !== selected) throw new Error("PR workflow session changed during recovery inspection");
+			return { runId, action };
+		} catch (error) {
+			clearWorkflow(selected);
+			throw error;
 		}
 	};
 
@@ -1043,7 +1027,6 @@ export default function pullRequestExtension(
 		},
 		needsFeedbackAttention: dependencies.needsFeedbackAttention,
 		syncLocalHead: dependencies.syncLocalHead,
-		ciPollMs: dependencies.ciPollMs,
 		inspectBranchRecovery: dependencies.inspectBranchRecovery ?? (async (pullRequest, ctx) => {
 			const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
 			return await inspectVerifiedRebaseRecovery(pullRequest, { cwd: worktree, signal: ctx.signal });

@@ -2,7 +2,7 @@ import { validateCommitMessage, commitStagedPaths, inspectPendingCommit, require
 import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { extensionExecApi, inspectWorktree, inspectWorktreeState, isAncestor, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
+import { extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 type Check = { command: string; args: string[] };
 type Options = { run?: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
@@ -100,7 +100,7 @@ export class PullRequestWorkPublisher {
 		if (!this.initialHead || this.validatedHead || this.consumed) throw new Error("Local publication validation is unavailable");
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
-			if (await inspectWorktree(this.exec, this.execOptions()) !== "clean") throw new Error("Unrelated pending changes remain; ask about ownership before publishing");
+			if (await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") throw new Error("Unrelated pending changes remain; ask about ownership before publishing");
 			const head = await readHead(this.exec, this.execOptions());
 			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head))) {
 				throw new Error("Local HEAD is not a descendant of the published PR head");
@@ -110,7 +110,7 @@ export class PullRequestWorkPublisher {
 				await runChecked(this.exec, "git", ["diff", "--check", this.authority.head.oid, head], this.execOptions());
 				for (const check of checks) await runChecked(this.exec, check.command, check.args, this.execOptions());
 				await this.authorityCheck();
-				if (await readHead(this.exec, this.execOptions()) !== head || await inspectWorktree(this.exec, this.execOptions()) !== "clean") throw new Error("Validation changed local HEAD or worktree");
+				if (await readHead(this.exec, this.execOptions()) !== head || await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") throw new Error("Validation changed local HEAD or worktree");
 			} catch (error) {
 				this.status = undefined;
 				this.options.run?.checksFailed();
@@ -127,7 +127,7 @@ export class PullRequestWorkPublisher {
 		this.validatedHead = undefined; // A response loss must never allow a second push.
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();
-			if (await inspectWorktree(this.exec, this.execOptions()) !== "clean" || await readHead(this.exec, this.execOptions()) !== head) {
+			if (await inspectWorktreeState(this.exec, this.execOptions()) !== "clean" || await readHead(this.exec, this.execOptions()) !== head) {
 				throw new Error("Validated local HEAD or worktree changed");
 			}
 			const original = this.authority.head.oid;

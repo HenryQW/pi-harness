@@ -1,7 +1,9 @@
 import type { Exec } from "@henryqw/pi-process";
 import {
-	inspectWorktree,
+	inspectWorktreeState,
+	isAncestor,
 	isRecord,
+	parseGraphQLResponse,
 	readHead,
 	runChecked,
 } from "./pr-execution.ts";
@@ -36,7 +38,7 @@ type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
 
 /** Inspect local state without changing branches, the index, or the worktree. */
 export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInput): Promise<InspectedLocalMergeSafety> {
-	const worktree = await inspectWorktree(input.exec, { cwd: input.cwd });
+	const worktree = await inspectWorktreeState(input.exec, { cwd: input.cwd }) === "clean" ? "clean" : "dirty";
 	await runChecked(input.exec, "git", [
 		"fetch",
 		"--no-write-fetch-head",
@@ -50,43 +52,8 @@ export async function inspectLocalMergeSafety(input: InspectLocalMergeSafetyInpu
 	const headOid = await readHead(input.exec, { cwd: input.cwd });
 	if (headOid === input.expectedHead) return { worktree, head: "equal", headOid };
 
-	const localAncestor = await runChecked(
-		input.exec,
-		"git",
-		["merge-base", "--is-ancestor", headOid, input.expectedHead],
-		{ cwd: input.cwd },
-		[0, 1],
-	);
-	if (localAncestor.code === 0) return { worktree, head: "behind", headOid };
-
-	const expectedAncestor = await runChecked(
-		input.exec,
-		"git",
-		["merge-base", "--is-ancestor", input.expectedHead, headOid],
-		{ cwd: input.cwd },
-		[0, 1],
-	);
-	return { worktree, head: expectedAncestor.code === 0 ? "ahead" : "diverged", headOid };
-}
-
-function parseGraphQLResponse(output: string, action: string): Record<string, unknown> {
-	let value: unknown;
-	try {
-		value = JSON.parse(output);
-	} catch {
-		throw new Error(`${action}: invalid GraphQL output`);
-	}
-	if (!isRecord(value)) throw new Error(`${action}: invalid GraphQL output`);
-	const errors = value.errors;
-	if (errors !== undefined) {
-		if (!Array.isArray(errors)) throw new Error(`${action}: invalid GraphQL output`);
-		if (errors.length > 0) {
-			const messages = errors.map((error) => isRecord(error) && typeof error.message === "string" && error.message ? error.message : undefined);
-			if (messages.some((message) => message === undefined)) throw new Error(`${action}: invalid GraphQL errors`);
-			throw new Error(`${action}: ${messages.join("; ")}`);
-		}
-	}
-	return value;
+	if (await isAncestor(input.exec, { cwd: input.cwd }, headOid, input.expectedHead)) return { worktree, head: "behind", headOid };
+	return { worktree, head: await isAncestor(input.exec, { cwd: input.cwd }, input.expectedHead, headOid) ? "ahead" : "diverged", headOid };
 }
 
 function parseMergeResponse(output: string, expectedId: string): void {
@@ -110,8 +77,7 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
 	}
 	await input.revalidateReadiness(local);
-	const finalWorktree = await inspectWorktree(input.exec, { cwd: input.cwd });
-	if (finalWorktree !== "clean") {
+	if (await inspectWorktreeState(input.exec, { cwd: input.cwd }) !== "clean") {
 		throw new Error("Final local merge safety check failed: worktree is dirty");
 	}
 	const finalHead = await readHead(input.exec, { cwd: input.cwd });

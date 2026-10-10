@@ -14,7 +14,7 @@ import {
 import {
 	assertOnlyDeclaredStatusChanged,
 	extensionExecApi,
-	inspectWorktree,
+	inspectWorktreeState,
 	isAncestor,
 	parseNulPaths,
 	parseSingleOutputLine,
@@ -176,7 +176,7 @@ export class PullRequestBranchUpdater {
 		}
 		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("Branch update cancelled: current branch changed");
-		if (requireClean && await inspectWorktree(this.exec, this.execOptions()) !== "clean") {
+		if (requireClean && await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") {
 			throw new Error("Branch update cancelled: worktree is dirty or a Git operation is in progress");
 		}
 		const head = await readHead(this.exec, this.execOptions());
@@ -235,7 +235,7 @@ export class PullRequestBranchUpdater {
 		await runChecked(this.exec, "git", ["rebase", "--abort"], this.execOptions());
 		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
 		if (branch !== this.authority.target.branch || await readHead(this.exec, this.execOptions()) !== original ||
-			await inspectWorktree(this.exec, this.execOptions()) !== "clean") {
+			await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") {
 			throw new Error(`Branch rebase authority changed; abort did not restore clean ${original}; recover manually`);
 		}
 		await rm(recoveryPath(this.cwd, this.authority, this.agentDir), { force: true });
@@ -266,7 +266,7 @@ export class PullRequestBranchUpdater {
 		assertVerifiedRecovery(recovery, this.authority, path);
 		const head = recovery.verified!;
 		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
-		if (branch !== this.authority.target.branch || await inspectWorktree(this.exec, this.execOptions()) !== "clean" ||
+		if (branch !== this.authority.target.branch || await inspectWorktreeState(this.exec, this.execOptions()) !== "clean" ||
 			await readHead(this.exec, this.execOptions()) !== head ||
 			!(await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, head))) {
 			throw new Error("Branch update recovery does not match a clean verified branch; do not replay the rebase");
@@ -280,7 +280,7 @@ export class PullRequestBranchUpdater {
 
 	private async verifyRebase(): Promise<UpdateBranchResult> {
 		const head = await readHead(this.exec, this.execOptions());
-		if (await inspectWorktree(this.exec, this.execOptions()) !== "clean" ||
+		if (await inspectWorktreeState(this.exec, this.execOptions()) !== "clean" ||
 			!(await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, head))) {
 			throw new Error("Rebase did not leave a clean branch based on the frozen base");
 		}

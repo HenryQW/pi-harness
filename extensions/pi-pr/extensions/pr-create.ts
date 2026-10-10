@@ -23,12 +23,12 @@ import {
 } from "./pr-routing.ts";
 import {
 	extensionExecApi,
-	inspectWorktree,
 	inspectWorktreeState,
 	parseStatusSnapshot,
 	validatePaths,
 	isAncestor,
 	isRecord,
+	parseGraphQLResponse,
 	parseSingleOutputLine,
 	readHead,
 	readRemoteOid,
@@ -93,30 +93,12 @@ function sameTarget(left: PullRequestTarget, right: PullRequestTarget, expectedR
 		left.fetchSource === right.fetchSource && right.remoteOid === expectedRemoteOid;
 }
 
-function graphQlResponse(output: string, action: string): Record<string, unknown> {
-	let value: unknown;
-	try {
-		value = JSON.parse(output);
-	} catch {
-		throw new Error(`${action} returned invalid GraphQL output`);
-	}
-	if (!isRecord(value)) throw new Error(`${action} returned invalid GraphQL output`);
-	const errors = value.errors;
-	if (errors !== undefined) {
-		if (!Array.isArray(errors) || errors.some((error) => !isRecord(error) || typeof error.message !== "string" || !error.message)) {
-			throw new Error(`${action} returned invalid GraphQL errors`);
-		}
-		if (errors.length) throw new Error(`${action} failed: ${errors.map((error) => error.message).join("; ")}`);
-	}
-	return value;
-}
-
 function parseCreateAuthority(
 	output: string,
 	baseRepository: string,
 	headRepository: string,
 ): CrossRepositoryCreateAuthority {
-	const response = graphQlResponse(output, "PR creation preflight");
+	const response = parseGraphQLResponse(output, "PR creation preflight failed");
 	const data = response.data;
 	const base = isRecord(data) ? data.base : undefined;
 	const head = isRecord(data) ? data.head : undefined;
@@ -147,7 +129,7 @@ function parseCreateAuthority(
 }
 
 function parseCreatedUrl(output: string, host: string, baseRepository: string): URL {
-	const response = graphQlResponse(output, "Create pull request");
+	const response = parseGraphQLResponse(output, "Create pull request failed");
 	const data = response.data;
 	const mutation = isRecord(data) ? data.createPullRequest : undefined;
 	const pullRequest = isRecord(mutation) ? mutation.pullRequest : undefined;
@@ -234,7 +216,7 @@ export class PullRequestCreator {
 	}
 
 	private async requireCleanHead(): Promise<string> {
-		if (await inspectWorktree(this.exec, this.options()) !== "clean") {
+		if (await inspectWorktreeState(this.exec, this.options()) !== "clean") {
 			throw new Error("PR creation requires a clean worktree with no Git operation in progress");
 		}
 		return await readHead(this.exec, this.options());
