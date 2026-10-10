@@ -7,11 +7,15 @@ const DEFAULT_COMMAND = "code";
 export type OpenInConfig = { command: string };
 
 function parseOpenInConfig(value: unknown): OpenInConfig {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error('Invalid open-in config: expected exactly one non-empty string "command" property');
-	}
 	const config = value as Record<string, unknown>;
-	if (Object.keys(config).length !== 1 || typeof config.command !== "string" || !config.command.trim()) {
+	if (
+		!config ||
+		typeof config !== "object" ||
+		Array.isArray(config) ||
+		Object.keys(config).length !== 1 ||
+		typeof config.command !== "string" ||
+		!config.command.trim()
+	) {
 		throw new Error('Invalid open-in config: expected exactly one non-empty string "command" property');
 	}
 	return { command: config.command.trim() };
@@ -31,15 +35,15 @@ export function loadOpenInConfig(agentDir?: string): { source: "file" | "missing
 }
 
 export function configuredOpenUri(path: string): string | undefined {
-	let args: string[];
+	let command: string;
 	try {
-		const [executable, ...commandArgs] = loadOpenInConfig().value.command.split(/\s+/);
-		if (executable !== "code") return undefined;
-		args = commandArgs;
+		command = loadOpenInConfig().value.command;
 	} catch {
 		// Invalid config must not break footer render; just omit the URI.
 		return undefined;
 	}
+	const [executable, ...args] = command.split(/\s+/);
+	if (executable !== "code") return undefined;
 	const query = args.includes("-n") || args.includes("--new-window") ? "?windowId=_blank" : "";
 	if (path.startsWith("\\\\")) {
 		const [host, ...parts] = path.slice(2).split("\\");
