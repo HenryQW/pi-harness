@@ -544,15 +544,17 @@ export default function pullRequestExtension(
 			const params = checkedAction(UpdateBranchActions, raw);
 			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, async (selected) => {
 				switch (params.action) {
-					case "rebase": {
-						const result = await selected.workflow.rebase();
+					case "rebase":
+					case "continue": {
+						const result = params.action === "rebase"
+							? await selected.workflow.rebase()
+							: await selected.workflow.continue(params.resolvedPaths);
 						if (result.kind === "stale") {
 							selected.replan = result.reason;
 							selected.authority = cloneCurrentPullRequest(result.authority);
 						}
 						return result;
 					}
-					case "continue": return await selected.workflow.continue(params.resolvedPaths);
 					case "publish": {
 						const result = await selected.workflow.publish();
 						selected.completed = true;
