@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { lock } from "proper-lockfile";
 import { Container, Key, matchesKey, SelectList, Text } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -53,8 +54,8 @@ const MODEL_TASK_RESPONSE_EVENT = "@henryqw/pi-task-models:model-task-response";
 const registeredModelTasks = new WeakMap<object, Map<string, ModelTask>>();
 let modelTaskRequestNumber = 0;
 
-function isCodexProvider(provider: string | undefined): boolean {
-	return provider === "openai-codex" || Boolean(provider && CODEX_ALIAS.test(provider));
+function isCodexProvider(provider: string): boolean {
+	return provider === "openai-codex" || CODEX_ALIAS.test(provider);
 }
 
 function isProfileName(value: unknown): value is ProfileName {
@@ -92,26 +93,22 @@ function isNonEmptyText(value: unknown): value is string {
 }
 
 function parseModelTask(value: unknown): ModelTask | undefined {
-	try {
-		if (!value || typeof value !== "object" || Array.isArray(value)) return;
-		const task = value as Record<string, unknown>;
-		if (
-			!hasRequiredKeys(task, ["id", "label", "purpose", "defaultProfile"])
-			|| !isNonEmptyText(task.id)
-			|| !isTaskId(task.id)
-			|| !isNonEmptyText(task.label)
-			|| !isNonEmptyText(task.purpose)
-			|| !isProfileName(task.defaultProfile)
-		) return;
-		return {
-			id: task.id,
-			label: task.label,
-			purpose: task.purpose,
-			defaultProfile: task.defaultProfile,
-		};
-	} catch {
-		return;
-	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+	const task = value as Record<string, unknown>;
+	if (
+		!hasRequiredKeys(task, ["id", "label", "purpose", "defaultProfile"])
+		|| !isNonEmptyText(task.id)
+		|| !isTaskId(task.id)
+		|| !isNonEmptyText(task.label)
+		|| !isNonEmptyText(task.purpose)
+		|| !isProfileName(task.defaultProfile)
+	) return;
+	return {
+		id: task.id,
+		label: task.label,
+		purpose: task.purpose,
+		defaultProfile: task.defaultProfile,
+	};
 }
 
 function validatedModelTask(value: unknown): ModelTask {
@@ -223,8 +220,7 @@ function shouldPreferModel(candidate: AvailableModel, current: AvailableModel, p
 	if (preferredProvider && current.provider === preferredProvider && candidate.provider !== preferredProvider) return false;
 	const candidateAlias = CODEX_ALIAS.test(candidate.provider);
 	const currentAlias = CODEX_ALIAS.test(current.provider);
-	if (candidateAlias !== currentAlias) return candidateAlias;
-	return false;
+	return candidateAlias && !currentAlias;
 }
 
 export function resolveAvailableModel(
@@ -354,38 +350,23 @@ export function orderedProfileRoutes(profile: TaskModelProfile): TaskModelRoute[
 	return profile.fallback ? [profile.primary, profile.fallback] : [profile.primary];
 }
 
-function sameModelTask(left: ModelTask, right: ModelTask): boolean {
-	return left.id === right.id
-		&& left.label === right.label
-		&& left.purpose === right.purpose
-		&& left.defaultProfile === right.defaultProfile;
-}
-
 type ModelTaskDiscoveryRequest = { requestId: string };
 type ModelTaskDiscoveryResponse = ModelTaskDiscoveryRequest & { task: ModelTask };
 
 function parseModelTaskDiscoveryRequest(value: unknown): ModelTaskDiscoveryRequest | undefined {
-	try {
-		if (!value || typeof value !== "object" || Array.isArray(value)) return;
-		const request = value as Record<string, unknown>;
-		return hasRequiredKeys(request, ["requestId"]) && isNonEmptyText(request.requestId)
-			? { requestId: request.requestId }
-			: undefined;
-	} catch {
-		return;
-	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+	const request = value as Record<string, unknown>;
+	return hasRequiredKeys(request, ["requestId"]) && isNonEmptyText(request.requestId)
+		? { requestId: request.requestId }
+		: undefined;
 }
 
 function parseModelTaskDiscoveryResponse(value: unknown): ModelTaskDiscoveryResponse | undefined {
-	try {
-		if (!value || typeof value !== "object" || Array.isArray(value)) return;
-		const response = value as Record<string, unknown>;
-		if (!hasRequiredKeys(response, ["requestId", "task"]) || !isNonEmptyText(response.requestId)) return;
-		const task = parseModelTask(response.task);
-		return task ? { requestId: response.requestId, task } : undefined;
-	} catch {
-		return;
-	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+	const response = value as Record<string, unknown>;
+	if (!hasRequiredKeys(response, ["requestId", "task"]) || !isNonEmptyText(response.requestId)) return;
+	const task = parseModelTask(response.task);
+	return task ? { requestId: response.requestId, task } : undefined;
 }
 
 /** Register one consumer-owned declaration for on-demand control-plane discovery. */
@@ -398,7 +379,7 @@ export function registerModelTask(pi: Pick<ExtensionAPI, "events">, declaration:
 	}
 	const existing = tasks.get(task.id);
 	if (existing) {
-		if (!sameModelTask(existing, task)) throw new Error(`Conflicting Model Task declaration: ${task.id}.`);
+		if (!isDeepStrictEqual(existing, task)) throw new Error(`Conflicting Model Task declaration: ${task.id}.`);
 		return;
 	}
 	tasks.set(task.id, task);
@@ -419,7 +400,7 @@ function discoverModelTasks(pi: Pick<ExtensionAPI, "events">): ModelTask[] {
 		const response = parseModelTaskDiscoveryResponse(payload);
 		if (!response || response.requestId !== requestId) return;
 		const existing = tasks.get(response.task.id);
-		if (existing && !sameModelTask(existing, response.task)) conflicts.add(response.task.id);
+		if (existing && !isDeepStrictEqual(existing, response.task)) conflicts.add(response.task.id);
 		else tasks.set(response.task.id, response.task);
 	});
 	try {
@@ -504,6 +485,7 @@ export function createTaskModelsExtension(
 ): void {
 	const agentDir = options?.agentDir ?? getAgentDir();
 	const configStore = taskModelsConfigStore(agentDir);
+	const presetsPath = join(extensionConfigDir("pi-task-models", agentDir), "presets.json");
 	pi.on("session_start", (_event, ctx) => {
 		if (configStore.loadSync().source === "missing") {
 			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");
@@ -526,17 +508,16 @@ export function createTaskModelsExtension(
 			}
 
 			if (action === "preset") {
-				const path = join(extensionConfigDir("pi-task-models", agentDir), "presets.json");
 				let presets: ReturnType<typeof loadTaskModelPresets>;
 				try {
-					presets = loadTaskModelPresets(path);
+					presets = loadTaskModelPresets(presetsPath);
 				} catch (error) {
 					const message = error instanceof SyntaxError ? "Invalid JSON." : error instanceof Error ? error.message : String(error);
-					ctx.ui.notify(`Couldn't read task model presets at ${path}: ${message}`, "error");
+					ctx.ui.notify(`Couldn't read task model presets at ${presetsPath}: ${message}`, "error");
 					return;
 				}
 				if (!presets.size) {
-					ctx.ui.notify(`No presets found in ${path}.`, "info");
+					ctx.ui.notify(`No presets found in ${presetsPath}.`, "info");
 					return;
 				}
 				const selected = await ctx.ui.select("Task model preset", [...presets.keys()].sort());
@@ -581,7 +562,7 @@ export function createTaskModelsExtension(
 			]);
 			if (!selected) return;
 			if (selected === "save-preset") {
-				await saveTaskModelPreset(ctx, join(extensionConfigDir("pi-task-models", agentDir), "presets.json"), config.profiles);
+				await saveTaskModelPreset(ctx, presetsPath, config.profiles);
 				return;
 			}
 
