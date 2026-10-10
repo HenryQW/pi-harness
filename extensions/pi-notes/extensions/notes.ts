@@ -23,20 +23,12 @@ interface NotesRecord extends WorktreeIdentity {
 	notes: string[];
 }
 
-interface LoadedNotes {
-	notes: string[];
-	issue?: "malformed" | "stale";
-}
-
 const configDir = () => extensionConfigDir("pi-notes");
 const notesPath = (worktree: string) => join(configDir(), `${createHash("sha256").update(worktree).digest("hex")}.json`);
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
 
 const isSafeNote = (note: unknown): note is string =>
 	typeof note === "string" && note.trim().length > 0 && !CONTROL_CHARACTERS.test(note);
-
-const recordIdentity = ({ repository, worktree, gitDir, generation }: NotesRecord): WorktreeIdentity =>
-	({ repository, worktree, gitDir, generation });
 
 async function worktreeGeneration(gitDir: string): Promise<string> {
 	const metadata = await stat(gitDir, { bigint: true });
@@ -58,16 +50,10 @@ export function parseNotes(raw: string): NotesRecord {
 		|| !input.notes.every(isSafeNote)) {
 		throw new TypeError(`notes config must identify one worktree and contain at most ${MAX_NOTES} safe non-empty strings`);
 	}
-	return {
-		repository: input.repository,
-		worktree: input.worktree,
-		gitDir: input.gitDir,
-		generation: input.generation,
-		notes: input.notes.map((note) => note.replace(/\s+/g, " ").trim()),
-	};
+	return { ...input, notes: input.notes.map((note) => note.replace(/\s+/g, " ").trim()) } as NotesRecord;
 }
 
-export function renderNotes(notes: string[]): string[] {
+function renderNotes(notes: string[]): string[] {
 	return notes.map((note, i) => `${i + 1}. ${note}`);
 }
 
@@ -118,7 +104,7 @@ async function resolveWorktree(pi: ExtensionAPI, cwd: string): Promise<WorktreeI
 	};
 }
 
-async function loadNotes(identity: WorktreeIdentity): Promise<LoadedNotes> {
+async function loadNotes(identity: WorktreeIdentity): Promise<{ notes: string[]; message?: string }> {
 	let raw: string;
 	try {
 		raw = await readFile(notesPath(identity.worktree), "utf8");
@@ -130,32 +116,22 @@ async function loadNotes(identity: WorktreeIdentity): Promise<LoadedNotes> {
 	try {
 		record = parseNotes(raw);
 	} catch {
-		return { notes: [], issue: "malformed" };
+		return { notes: [], message: "Worktree notes file is malformed; fix it or run /note-clear to reset." };
 	}
-	return isDeepStrictEqual(recordIdentity(record), identity)
-		? { notes: record.notes }
-		: { notes: [], issue: "stale" };
+	const { notes, ...recordIdentity } = record;
+	return isDeepStrictEqual(recordIdentity, identity)
+		? { notes }
+		: { notes: [], message: "Worktree notes belong to an old worktree; run /note-clear to reset." };
 }
 
 async function persist(identity: WorktreeIdentity, notes: string[]): Promise<void> {
 	await writePrivateTextFileAtomically(notesPath(identity.worktree), `${JSON.stringify({ ...identity, notes }, null, "\t")}\n`);
 }
 
-function issueMessage(issue: LoadedNotes["issue"]): string | undefined {
-	if (issue === "malformed") return "Worktree notes file is malformed; fix it or run /note-clear to reset.";
-	if (issue === "stale") return "Worktree notes belong to an old worktree; run /note-clear to reset.";
-	return undefined;
-}
-
-async function loadCurrent(pi: ExtensionAPI, cwd: string) {
-	const identity = await resolveWorktree(pi, cwd);
-	const loaded = await loadNotes(identity);
-	return { identity, notes: loaded.notes, message: issueMessage(loaded.issue) };
-}
-
 async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ identity: WorktreeIdentity; notes: string[] } | undefined> {
 	try {
-		const { identity, notes, message } = await loadCurrent(pi, ctx.cwd);
+		const identity = await resolveWorktree(pi, ctx.cwd);
+		const { notes, message } = await loadNotes(identity);
 		if (message) {
 			ctx.ui.notify(message, "error");
 			return undefined;
@@ -169,7 +145,7 @@ async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ i
 
 async function refresh(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	try {
-		const { notes, message } = await loadCurrent(pi, ctx.cwd);
+		const { notes, message } = await loadNotes(await resolveWorktree(pi, ctx.cwd));
 		if (message) ctx.ui.setWidget(WIDGET_KEY, [message]);
 		else setNotesWidget(ctx, notes);
 	} catch {
@@ -218,7 +194,8 @@ async function pruneStale(pi: ExtensionAPI): Promise<void> {
 			} catch {
 				continue;
 			}
-			stale = !isDeepStrictEqual(current, recordIdentity(record));
+			const { notes, ...identity } = record;
+			stale = !isDeepStrictEqual(current, identity);
 		}
 		if (stale) await rm(path, { force: true });
 	}
@@ -276,12 +253,13 @@ export default function notesExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("No notes to remove.", "info");
 				return;
 			}
-			const choice = await ctx.ui.select("Remove note:", renderNotes(snapshot.notes));
+			const options = renderNotes(snapshot.notes);
+			const choice = await ctx.ui.select("Remove note:", options);
 			if (!choice) return;
 			const current = await readCurrent(pi, ctx);
 			if (!current) return;
-			const index = Number.parseInt(/^(\d+)\./.exec(choice)?.[1] ?? "", 10) - 1;
-			if (!isDeepStrictEqual(current, snapshot) || !Number.isInteger(index) || index < 0 || index >= current.notes.length) {
+			const index = options.indexOf(choice);
+			if (!isDeepStrictEqual(current, snapshot)) {
 				ctx.ui.notify("Notes changed elsewhere; try /note-rm again.", "warning");
 				return;
 			}
