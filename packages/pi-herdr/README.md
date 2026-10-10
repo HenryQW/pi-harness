@@ -8,7 +8,7 @@ Call the Herdr CLI from Node through one thin client. Extension authors share pr
 npm install @henryqw/pi-herdr
 ```
 
-Install the Herdr CLI and make `herdr` available on the calling process's `PATH`. Run `herdr --version` to verify it.
+Install the Herdr CLI and make `herdr` available on the calling process's `PATH`. Requires Herdr 0.9.3 or later. Run `herdr --version` to verify it.
 
 ## Use
 
@@ -31,6 +31,6 @@ For a ready-to-use Pi workflow, see [`@henryqw/pi-herdr-tools`](https://pi.henry
 | `run` | function | Requires a successful exit and returns stdout. |
 | `json` | function | Requires a successful exit and parses a JSON object. |
 | `hasHerdrErrorCode` | function | Detects structured CLI errors in stdout or stderr. |
-| `startPiAgent` | function | Validates and builds the shared `agent start --kind pi --pane ... --` boundary. Before each start it checks with `pane process-info` that the pane shell still owns the foreground process group, runs `pane run <pane> "echo <token>"`, and polls `pane read` for up to 20 seconds until the token appears as its own output line with a prompt drawn after it. That proves the shell is reading input; without it, a launch command longer than 1024 bytes typed into a shell that is still starting or running a prompt hook loses its Enter on macOS and the pane waits forever. An occupied pane is not probed, so `agent start` still reports `agent_pane_busy`. A failed probe is returned as the result without starting the agent. These commands exist in Herdr 0.7.4 and later. It retries structured `agent_pane_busy` responses allowed by the caller's result-aware policy, with a five-attempt limit, and returns the raw final result. |
+| `startPiAgent` | function | Validates and builds the shared `agent start --kind pi --pane ... --` boundary. Before each start it checks with `pane process-info` that the pane shell still owns the foreground process group, runs `pane run <pane> "echo <token>"`, and polls `pane read` for up to 20 seconds until the token appears as its own output line with a prompt drawn after it. That proves the shell is reading input; without it, a launch command longer than 1024 bytes typed into a shell that is still starting or running a prompt hook loses its Enter on macOS and the pane waits forever. An occupied pane is not probed, so `agent start` still reports `agent_pane_busy`. A failed probe is returned as the result without starting the agent. It retries structured `agent_pane_busy` responses allowed by the caller's result-aware policy, with a five-attempt limit, and returns the raw final result. |
 
 Callers build Pi-specific arguments and validate responses. The client does not mirror the Herdr command catalog. Herdr remains the source of truth for supported commands and response shapes.

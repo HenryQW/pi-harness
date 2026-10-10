@@ -121,7 +121,7 @@ importers:
         specifier: ^3.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
-        specifier: ^0.4.9
+        specifier: ^0.5.0
         version: link:../../packages/pi-herdr
       '@henryqw/pi-task-models':
         specifier: ^8.0.0
@@ -203,7 +203,7 @@ importers:
         specifier: ^3.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
-        specifier: ^0.4.5
+        specifier: ^0.5.0
         version: link:../../packages/pi-herdr
       '@henryqw/pi-process':
         specifier: ^0.2.0
@@ -272,7 +272,7 @@ importers:
         specifier: ^3.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
-        specifier: ^0.4.9
+        specifier: ^0.5.0
         version: link:../../packages/pi-herdr
       '@henryqw/pi-multi-codex':
         specifier: ^3.0.0

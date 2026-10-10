@@ -52,7 +52,7 @@ import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "./e
 import { assertPrivateLease, scanProcessLease } from "./process-lease.ts";
 import { exactDirectTerminalTurn } from "./direct-herdr.ts";
 
-const MIN_HERDR_VERSION = [0, 9, 0] as const;
+const MIN_HERDR_VERSION = [0, 9, 3] as const;
 const MIN_HERDR_PROTOCOL = 22;
 const HERDR_OPERATION_CAP_MS = 30_000;
 const LSOF_OPERATION_CAP_MS = 3_000;
@@ -358,7 +358,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		const versionOutput = await this.herdr.run(["--version"], this.processOptions(root, context, HERDR_OPERATION_CAP_MS));
 		const versionMatch = /^herdr (\S+)\s*$/.exec(versionOutput);
 		if (!versionMatch || !compareVersion(versionMatch[1]!, MIN_HERDR_VERSION)) {
-			throw new Error("Herdr client version must be at least 0.9.0.");
+			throw new Error("Herdr client version must be at least 0.9.3.");
 		}
 		const status = statusFields(await this.herdr.run(["status", "server"], this.processOptions(root, context, HERDR_OPERATION_CAP_MS)));
 		if (status.get("status") !== "running"
@@ -367,7 +367,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			|| status.get("private_protocol_compatible") !== "yes"
 			|| !/^\d+$/.test(status.get("private_protocol") ?? "")
 			|| Number(status.get("private_protocol")) < MIN_HERDR_PROTOCOL) {
-			throw new Error("Herdr server must be compatible version >=0.9.0 with private protocol >=22.");
+			throw new Error("Herdr server must be compatible version >=0.9.3 with private protocol >=22.");
 		}
 		const schema = await this.herdr.json(["api", "schema", "--json"], this.processOptions(root, context, HERDR_OPERATION_CAP_MS));
 		requireSchemaCapabilities(schema);

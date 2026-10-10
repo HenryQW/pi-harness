@@ -18,7 +18,7 @@ Requires Pi 1.1.0 or newer in the 1.x series, an authenticated GitHub CLI sessio
 | [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) | Required | Provides the Herdr CLI client when workspace renaming is available. |
 | [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs bounded child processes. |
 
-The required packages install with `pi-pr`; Herdr itself is optional.
+The required packages install with `pi-pr`; Herdr itself is optional; workspace renaming requires Herdr 0.9.3 or later.
 
 ## Use
 

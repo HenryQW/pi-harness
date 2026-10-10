@@ -36,6 +36,7 @@ This repository owns [pi-extension-workbench](.agents/skills/pi-extension-workbe
 
 - [GitHub issues](docs/agents/issue-tracker.md) and [triage labels](docs/agents/triage-labels.md)
 - [Pi version upgrades](docs/agents/pi-version-upgrade.md)
+- [Herdr version upgrades](docs/agents/herdr-version-upgrade.md)
 - [Domain terms, contexts, and ADRs](docs/agents/domain.md)
 
 ## Knowledge storage
