@@ -140,7 +140,6 @@ function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[
 	const userBoundaries = messages.flatMap((message, index) => message.role === "user" ? [index] : []);
 	if (userBoundaries.length === 0) return null;
 
-	let cutIndex = userBoundaries.at(-1) as number;
 	for (const boundary of userBoundaries) {
 		const removed = messages.slice(0, boundary).filter((message) => message.role !== "system");
 		if (removed.length === 0) continue;
@@ -149,25 +148,15 @@ function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[
 			content: `[Temporary context reduction: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) are omitted from this request while compaction runs. Continue with the current task.]`,
 			timestamp: Date.now(),
 		};
-		if (systemTokens + suffixTokens[boundary] + estimateMessageTokens(notice) <= keepTokens) {
-			cutIndex = boundary;
-			break;
+		if (systemTokens + suffixTokens[boundary] + estimateMessageTokens(notice) > keepTokens) continue;
+		const retained: AgentMessage[] = [];
+		for (let i = 0; i < messages.length; i++) {
+			if (i === boundary) retained.push(notice);
+			if (messages[i].role === "system" || i >= boundary) retained.push(messages[i]);
 		}
+		return retained;
 	}
-
-	const removed = messages.slice(0, cutIndex).filter((message) => message.role !== "system");
-	if (removed.length === 0) return null;
-	const notice: AgentMessage = {
-		role: "user",
-		content: `[Temporary context reduction: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) are omitted from this request while compaction runs. Continue with the current task.]`,
-		timestamp: Date.now(),
-	};
-	const retained: AgentMessage[] = [];
-	for (let i = 0; i < messages.length; i++) {
-		if (i === cutIndex) retained.push(notice);
-		if (messages[i].role === "system" || i >= cutIndex) retained.push(messages[i]);
-	}
-	return estimateTotalTokens(retained) <= keepTokens ? retained : null;
+	return null;
 }
 
 type BoundaryEvent = TurnEndEvent | AgentBeforeSettleEvent;
@@ -218,6 +207,20 @@ function fileOperations(messages: AgentMessage[], previous?: CompactionEntry) {
 		}
 	}
 	return { read, written, edited };
+}
+
+async function summarize(
+	ctx: ExtensionContext,
+	preparation: Parameters<typeof compact>[0],
+	model: NonNullable<ExtensionContext["model"]>,
+	thinking: ExtensionContext["thinkingLevel"],
+	signal: AbortSignal | undefined,
+) {
+	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (!auth.ok) throw new Error("Compaction model authentication failed.");
+	return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
+		auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
+		signal, thinking, registryStream(ctx), auth.env);
 }
 
 /** An unchanged, successful read result with a matching persisted assistant call. */
@@ -320,8 +323,7 @@ export default function (pi: ExtensionAPI) {
 		const history = messages(start, historyEnd);
 		const prefix = cut.isSplitTurn ? messages(cut.turnStartIndex, cut.firstKeptEntryIndex) : [];
 		if (!history.length && !prefix.length) return edits.length ? { entries: [...event.entries, ...edits] } : undefined;
-		const previous = prior >= 0 && projected[prior]!.sourceEntry.type === "compaction"
-			? projected[prior]!.sourceEntry as CompactionEntry : undefined;
+		const previous = prior >= 0 ? projected[prior]!.sourceEntry as CompactionEntry : undefined;
 		const preparation = {
 			firstKeptEntryId: kept.id,
 			messagesToSummarize: history,
@@ -335,25 +337,16 @@ export default function (pi: ExtensionAPI) {
 		const signal = ctx.signal;
 		try {
 			const routes = configuredTaskRoutes(ctx);
-			const summarize = async (model: NonNullable<ExtensionContext["model"]>, thinking: ExtensionContext["thinkingLevel"]) => {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-				if (!auth.ok) throw new Error("Compaction model authentication failed.");
-				return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
-					auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
-					signal, thinking, registryStream(ctx), auth.env);
-			};
 			let result: Awaited<ReturnType<typeof compact>> | undefined;
 			if (routes.length) {
 				try {
-					const routed = await executeTaskRoutes(routes, async (route) => ({
-						compaction: await summarize(route.model, route.thinkingLevel),
-					}), { signal, shouldFallback: () => true });
-					result = routed.compaction;
+					result = await executeTaskRoutes(routes, (route) =>
+						summarize(ctx, preparation, route.model, route.thinkingLevel, signal), { signal, shouldFallback: () => true });
 				} catch {
 					if (!signal?.aborted) ctx.ui.notify("Configured task model routes failed; using current session model.", "error");
 				}
 			}
-			if (!result && !signal?.aborted) result = await summarize(ctx.model, ctx.thinkingLevel);
+			if (!result && !signal?.aborted) result = await summarize(ctx, preparation, ctx.model, ctx.thinkingLevel, signal);
 			if (signal?.aborted || ctx.sessionManager.getSessionId() !== session || ctx.sessionManager.getLeafId() !== leaf) return;
 			if (!result?.summary.trim()) throw new Error("Compaction returned an empty summary.");
 			return { entries: [...event.entries, ...edits, {
@@ -409,7 +402,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message;
 		if (
-			!compactionPending ||
 			!compactionAbortExpected ||
 			!ctx.signal?.aborted ||
 			message.role !== "assistant" ||
@@ -431,7 +423,7 @@ export default function (pi: ExtensionAPI) {
 	// Runs before every provider request. Temporary truncation protects request
 	// size while asynchronous default compaction summarizes persisted history.
 	pi.on("context_with_system", (event, ctx) => {
-		if (!active || compactionPending || (failedBoundary && ctx.sessionManager &&
+		if (!active || compactionPending || (failedBoundary &&
 			failedBoundary.session === ctx.sessionManager.getSessionId() &&
 			failedBoundary.leaf === ctx.sessionManager.getLeafId())) return;
 
@@ -523,19 +515,9 @@ export default function (pi: ExtensionAPI) {
 
 		// Pi omits details from prior extension compactions when preparing next run.
 		const previous = [...event.branchEntries].reverse().find((entry) => entry.type === "compaction");
-		if (previous?.details && typeof previous.details === "object") {
-			const details = previous.details as { readFiles?: unknown; modifiedFiles?: unknown };
-			if (Array.isArray(details.readFiles)) {
-				for (const path of details.readFiles) {
-					if (typeof path === "string") event.preparation.fileOps.read.add(path);
-				}
-			}
-			if (Array.isArray(details.modifiedFiles)) {
-				for (const path of details.modifiedFiles) {
-					if (typeof path === "string") event.preparation.fileOps.edited.add(path);
-				}
-			}
-		}
+		const prior = fileOperations([], previous as CompactionEntry | undefined);
+		for (const path of prior.read) event.preparation.fileOps.read.add(path);
+		for (const path of prior.edited) event.preparation.fileOps.edited.add(path);
 
 		const routes = configuredTaskRoutes(ctx);
 		if (!routes.length) return;
@@ -543,25 +525,9 @@ export default function (pi: ExtensionAPI) {
 		try {
 			return await executeTaskRoutes(
 				routes,
-				async (route) => {
-					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(route.model);
-					if (!auth.ok) throw new Error("Configured task model authentication failed.");
-
-					const requestModel = auth.baseUrl ? { ...route.model, baseUrl: auth.baseUrl } : route.model;
-					return {
-						compaction: await compact(
-							event.preparation,
-							requestModel,
-							auth.apiKey,
-							withoutDeletedHeaders(auth.headers),
-							event.customInstructions,
-							event.signal,
-							route.thinkingLevel,
-							registryStream(ctx),
-							auth.env,
-						),
-					};
-				},
+				async (route) => ({
+					compaction: await summarize(ctx, event.preparation, route.model, route.thinkingLevel, event.signal),
+				}),
 				{ signal: event.signal, shouldFallback: () => true },
 			);
 		} catch {

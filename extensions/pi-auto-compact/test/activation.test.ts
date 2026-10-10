@@ -28,7 +28,6 @@ function taskModelsConfigFile(agentDir: string): string {
 function loadExtension(
 	commands = new Map<string, Command>(),
 	sendMessage: (message: SentMessage["message"], options?: SentMessage["options"]) => void = () => {},
-	sendUserMessage: (content: string) => void = () => {},
 ): Map<string, Handler> {
 	const handlers = new Map<string, Handler>();
 	autoCompact({
@@ -40,7 +39,6 @@ function loadExtension(
 			commands.set(name, options.handler);
 		},
 		sendMessage,
-		sendUserMessage,
 	} as unknown as ExtensionAPI);
 	return handlers;
 }
@@ -492,11 +490,9 @@ test("exceptional resume compaction sends a continuation after success", async (
 	try {
 		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
 		const messages: SentMessage[] = [];
-		const userMessages: string[] = [];
 		const handlers = loadExtension(
 			new Map(),
 			(message, options) => messages.push({ message, options }),
-			(content) => userMessages.push(content),
 		);
 		let onComplete: (() => void) | undefined;
 		const ctx = {
@@ -525,7 +521,6 @@ test("exceptional resume compaction sends a continuation after success", async (
 			},
 			options: { triggerTurn: true },
 		}]);
-		assert.deepEqual(userMessages, []);
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
