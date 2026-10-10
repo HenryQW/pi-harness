@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isBtwPayload, type BtwPayload } from "./core.ts";
-import { isMergeRequest, MERGE_REQUEST_FILE, type MergeRequest } from "./merge.ts";
+import { MERGE_REQUEST_FILE, type MergeRequest } from "./merge.ts";
 
 const PAYLOAD_FILE = "payload.json";
 const LAUNCH_PREFIX = "launch-";
@@ -104,7 +104,6 @@ export class ContextStore {
 	}
 
 	async writeMergeRequest(payloadPath: string, request: MergeRequest): Promise<void> {
-		if (!isMergeRequest(request)) throw new Error("Invalid /btw merge request");
 		await this.writeLaunchFile(payloadPath, MERGE_REQUEST_FILE, request);
 	}
 

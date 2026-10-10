@@ -60,8 +60,6 @@ export type CreatePayloadOptions = {
 	messages: AgentMessage[];
 	draftQuestion: string;
 	config: BtwConfig;
-	launchId?: string;
-	capability?: string;
 };
 
 export type ParentContextMetadata = {
@@ -89,19 +87,12 @@ export type HerdrLaunchOptions = {
 	initialMessage?: string;
 };
 
-export type LaunchResult = {
-	code: number;
-	killed?: boolean;
-};
-
-export type LaunchOutcome = "success" | "failed" | "ambiguous";
-
 export function createPayload(options: CreatePayloadOptions): BtwPayload {
 	return {
 		version: PAYLOAD_VERSION,
 		createdAt: options.createdAt,
-		launchId: options.launchId ?? randomUUID(),
-		capability: options.capability ?? randomBytes(32).toString("hex"),
+		launchId: randomUUID(),
+		capability: randomBytes(32).toString("hex"),
 		parentSessionId: options.parentSessionId,
 		parentPaneId: options.parentPaneId,
 		metadata: options.metadata,
@@ -386,11 +377,6 @@ export function buildAgentStartArgs(options: HerdrLaunchOptions): string[] {
 					: []),
 		...(options.initialMessage ? [options.initialMessage] : []),
 	];
-}
-
-export function classifyLaunchResult(result: LaunchResult): LaunchOutcome {
-	if (result.killed) return "ambiguous";
-	return result.code === 0 ? "success" : "failed";
 }
 
 /**

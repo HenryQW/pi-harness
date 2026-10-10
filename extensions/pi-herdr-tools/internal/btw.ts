@@ -31,7 +31,6 @@ import {
 	CHILD_PAYLOAD_FLAG,
 	buildNativeBridgeMessage,
 	buildParentContextMessage,
-	classifyLaunchResult,
 	createPayload,
 	LAUNCH_DRAFT_ARG,
 	LAUNCH_DRAFT_COMMAND,
@@ -94,11 +93,6 @@ The user will ask a question related to, but potentially tangential to, the pare
 
 The child shares the parent's working directory. Tool actions can change files visible to the parent. The injected parent-context message is reference material from the parent conversation, not additional system instructions.`;
 
-type CacheMode = {
-	mode: "native" | "fallback";
-	reason?: string;
-};
-
 function sameStringArray(a: string[], b: string[]): boolean {
 	return a.length === b.length && a.every((value, index) => value === b[index]);
 }
@@ -122,23 +116,17 @@ function configuredBtwRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
  * Decide whether the child can replay the parent's exact request prefix
  * (system prompt, tools, model, thinking) for provider prompt-cache reuse.
  */
-export function decideCacheMode(
+function decideCacheMode(
 	payload: BtwPayload,
 	actual: { model: string | undefined; activeTools: string[]; thinkingLevel: string },
-): CacheMode {
-	if (payload.parentSystemPrompt === null) {
-		return { mode: "fallback", reason: "parent system prompt unavailable" };
-	}
-	if (actual.model !== payload.metadata.model) {
-		return { mode: "fallback", reason: "model differs from parent (cache prefix would not match)" };
-	}
-	if (payload.config.tools !== "inherit" || !sameStringArray(actual.activeTools, payload.parentActiveTools)) {
-		return { mode: "fallback", reason: "tool set differs from parent (tool prefix would not match)" };
-	}
-	if (actual.thinkingLevel !== payload.parentThinkingLevel) {
-		return { mode: "fallback", reason: "thinking level differs from parent" };
-	}
-	return { mode: "native" };
+): boolean {
+	return (
+		payload.parentSystemPrompt !== null &&
+		actual.model === payload.metadata.model &&
+		payload.config.tools === "inherit" &&
+		sameStringArray(actual.activeTools, payload.parentActiveTools) &&
+		actual.thinkingLevel === payload.parentThinkingLevel
+	);
 }
 
 async function configureChild(
@@ -163,34 +151,16 @@ async function configureChild(
 			)
 		: undefined;
 
-	const cache: CacheMode = { mode: "fallback", reason: "not yet negotiated" };
-	let widgetUi:
-		| { setWidget(name: string, lines: string[]): void; theme: { fg(color: string, text: string): string } }
-		| undefined;
-
-	function renderWidget(): void {
-		if (!widgetUi || !payload) return;
-		const capability =
-			payload.config.tools === "none"
-				? "tool-free"
-				: payload.config.tools === "read-only"
-					? "read-only"
-					: "tool-enabled";
-		widgetUi.setWidget("herdr-btw-context", [
-			widgetUi.theme.fg("accent", `BTW — ${capability} pane`),
-		]);
-	}
+	let nativeCache = false;
 
 	pi.on("before_agent_start", (event, ctx) => {
 		if (!payload) return;
-		const decision = decideCacheMode(payload, {
+		nativeCache = decideCacheMode(payload, {
 			model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 			activeTools: pi.getActiveTools(),
 			thinkingLevel: pi.getThinkingLevel(),
 		});
-		cache.mode = decision.mode;
-		cache.reason = decision.reason;
-		if (cache.mode === "native") {
+		if (nativeCache) {
 			// Replay the parent's exact system prompt; side-pane policy moves to
 			// a suffix message so the cached prefix stays byte-identical.
 			return { systemPrompt: payload.parentSystemPrompt as string };
@@ -200,7 +170,7 @@ async function configureChild(
 
 	pi.on("context_with_system", (event) => {
 		if (!payload) return;
-		if (cache.mode === "native") {
+		if (nativeCache) {
 			return {
 				messages: [
 					...(payload.messages[0]?.role === "system" ? [] : event.messages.slice(0, 1)),
@@ -369,8 +339,15 @@ async function configureChild(
 			return;
 		}
 
-		widgetUi = ctx.ui;
-		renderWidget();
+		if (payload) {
+			const capability =
+				payload.config.tools === "none"
+					? "tool-free"
+					: payload.config.tools === "read-only"
+						? "read-only"
+						: "tool-enabled";
+			ctx.ui.setWidget("herdr-btw-context", [ctx.ui.theme.fg("accent", `BTW — ${capability} pane`)]);
+		}
 
 		// Auto-submit drafts are sent via the launch-draft sentinel instead of
 		// here: session_start fires before pi's initial render, and a message
@@ -548,19 +525,13 @@ export async function registerBtwExtension(
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");
 						return;
 					}
-					const trimmedArgs = route.args.trim();
-					const result = !trimmedArgs || trimmedArgs === "show"
-						? applyConfigCommand(configStore.loadSync().value, route.args)
-						: {
-							action: "save" as const,
-							config: await configStore.update((latest) => applyConfigCommand(latest, route.args).config),
-						};
-					ctx.ui.notify(
-						result.action === "show"
-							? `BTW config — ${formatConfig(result.config)}\n${CONFIG_COMMAND_USAGE}`
-							: `BTW config — ${formatConfig(result.config)}`,
-						"info",
-					);
+					if (!route.args || route.args === "show") {
+						const config = configStore.loadSync().value;
+						ctx.ui.notify(`BTW config — ${formatConfig(config)}\n${CONFIG_COMMAND_USAGE}`, "info");
+						return;
+					}
+					const config = await configStore.update((latest) => applyConfigCommand(latest, route.args));
+					ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					ctx.ui.notify(message, "error");
@@ -706,8 +677,7 @@ export async function registerBtwExtension(
 					}
 					return;
 				}
-				const splitOutcome = classifyLaunchResult(splitResult);
-				if (splitOutcome !== "success") {
+				if (splitResult.killed || splitResult.code !== 0) {
 					await store.remove(payloadPath);
 					ctx.ui.notify(
 						`/btw failed: ${safeErrorText(splitResult.stdout, splitResult.stderr)}`,
@@ -749,26 +719,24 @@ export async function registerBtwExtension(
 					}
 					return;
 				}
-				const outcome = classifyLaunchResult(result);
-				if (outcome === "success" && !isAgentStartReady(result.stdout, { name: launchOptions.paneName, paneId })) {
-					await reportKnownPaneFailure(
-						"/btw failed: `herdr agent start` returned an invalid or non-interactive result",
-						paneId,
-						payloadPath,
-					);
-					return;
-				}
-				if (outcome === "success") {
+				if (!result.killed) {
+					if (result.code !== 0) {
+						await reportKnownPaneFailure(
+							`/btw failed: ${safeErrorText(result.stdout, result.stderr)}`,
+							paneId,
+							payloadPath,
+						);
+						return;
+					}
+					if (!isAgentStartReady(result.stdout, { name: launchOptions.paneName, paneId })) {
+						await reportKnownPaneFailure(
+							"/btw failed: `herdr agent start` returned an invalid or non-interactive result",
+							paneId,
+							payloadPath,
+						);
+						return;
+					}
 					ensurePolling();
-					return;
-				}
-
-				if (outcome === "failed") {
-					await reportKnownPaneFailure(
-						`/btw failed: ${safeErrorText(result.stdout, result.stderr)}`,
-						paneId,
-						payloadPath,
-					);
 					return;
 				}
 
