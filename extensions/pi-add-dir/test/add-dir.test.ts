@@ -17,6 +17,7 @@ interface RegisteredTool {
 	exposure?: string;
 	outputSchema?: unknown;
 	execute: (...args: any[]) => Promise<any>;
+	renderResult?: (...args: any[]) => { render(width: number): string[] };
 }
 
 interface RegisteredCommand {
@@ -444,6 +445,17 @@ test("rejects an ancestor of the current working directory", async () => {
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("renders a failed add_directory result from its content text", () => {
+	const { tools } = loadExtension();
+	const theme = { fg: (_color: string, text: string) => text };
+	const rendered = tools.get("add_directory")!.renderResult!(
+		{ content: [{ type: "text", text: "boom" }], details: {} },
+		{ expanded: false },
+		theme,
+	);
+	assert.match(rendered.render(80).join("\n"), /boom/);
 });
 
 test("queues a resource reload when tree navigation changes added directories", async () => {

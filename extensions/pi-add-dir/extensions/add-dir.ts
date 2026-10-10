@@ -644,7 +644,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as AddDirectoryDetails | undefined;
-			if (!details) {
+			if (!details?.directory) {
 				const content = result.content[0];
 				const text = content?.type === "text" ? content.text : "Done";
 				return new Text(theme.fg("success", `✓ ${text}`), 0, 0);
