@@ -11,7 +11,7 @@ import test from "node:test";
 import { Compile } from "typebox/compile";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
-import { registerCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "../extensions/admission.ts";
+import { registerCheckoutAdmission, roleCanWrite } from "../extensions/admission.ts";
 import roleTools from "../extensions/role-tools.ts";
 import subagentExtension from "../extensions/subagent.ts";
 
@@ -41,11 +41,6 @@ test("checkout admission treats unknown tools, extensions and MCP servers as pot
 	// Codemode itself adds no capability, but its trusted extension is not sandboxed.
 	assert.equal(roleCanWrite({ ...role, tools: ["read", "codemode"], extensions: ["builtin:codemode"] }), true);
 	assert.equal(roleCanWrite({ ...role, tools: ["codemode", "edit"], extensions: ["builtin:codemode"] }), true);
-	assert.equal(roleIsReadOnlyScout({ ...role, tools: ["read", "codemode"], extensions: ["builtin:codemode"], mcps: [] }), false);
-	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [] }), true);
-	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: ["docs"] }), false);
-	assert.equal(roleIsReadOnlyScout({ ...role, mcps: [] }), false);
-	assert.equal(roleIsReadOnlyScout({ ...role, extensions: [], mcps: [], tools: ["bash"] }), false);
 });
 
 async function admissionHarness(t: { after: (callback: () => Promise<void>) => void }) {

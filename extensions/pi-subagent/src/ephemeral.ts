@@ -180,13 +180,7 @@ function validateRunInput(value: unknown): EphemeralSubagentRunInput {
 	if (input.onActivity !== undefined && typeof input.onActivity !== "function") {
 		throw new TypeError("run.onActivity must be a function.");
 	}
-	return {
-		signal: input.signal as AbortSignal | undefined,
-		prepare: input.prepare as EphemeralSubagentRunInput["prepare"],
-		onUpdate: input.onUpdate as EphemeralSubagentRunInput["onUpdate"],
-		onTokens: input.onTokens as EphemeralSubagentRunInput["onTokens"],
-		onActivity: input.onActivity as EphemeralSubagentRunInput["onActivity"],
-	};
+	return value as EphemeralSubagentRunInput;
 }
 
 function record(value: unknown, field: string): Record<string, unknown> {
@@ -288,7 +282,6 @@ export function createEphemeralSubagentExecutor(options: EphemeralSubagentExecut
 						cause,
 					);
 				}
-				if (input.signal?.aborted) throw abortError(input.signal);
 				return await runPi(prepared, input, validated, invocation);
 			} finally {
 				release();

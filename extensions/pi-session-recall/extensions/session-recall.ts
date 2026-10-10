@@ -69,40 +69,32 @@ function maxFittingCap(maxLen: number, budget: number, build: (cap: number) => u
 	return lo;
 }
 
-/** Build a result bounded to `budget`: largest uniform per-message cap across
- *  every WindowMessage array, or a metadata-only shape when nothing fits.
- *  build(null) must return the metadata-only variant with empty arrays. */
-function boundContent(
-	build: (cap: number | null) => Record<string, unknown>,
-	maxLen: number,
-	budget: number,
-): Record<string, unknown> {
-	const cap = maxFittingCap(maxLen, budget, (c) => build(c));
-	return cap === null ? build(null) : { ...build(cap), contentTruncated: true };
+/** Bound a read or scroll result to the output budget: the largest uniform
+ *  per-message content cap, or empty messages when even that does not fit.
+ *  contentTruncated is character-level truncation, distinct from `truncated`. */
+function boundMessages(base: Record<string, unknown>, messages: WindowMessage[]): Record<string, unknown> {
+	const result = { ...base, messages };
+	if (JSON.stringify(result).length <= OUTPUT_CHAR_BUDGET || messages.length === 0) return result;
+	const build = (cap: number) => ({ ...base, messages: truncateContent(messages, cap), contentTruncated: true });
+	const cap = maxFittingCap(Math.max(...messages.map((m) => m.content.length), 0), OUTPUT_CHAR_BUDGET, build);
+	return cap === null ? { ...base, messages: [], contentTruncated: true } : build(cap);
 }
 
-type InventoryCollection = "packageScripts" | "executableScripts" | "skills" | "agentInstructions";
-const INVENTORY_COLLECTIONS: InventoryCollection[] = ["packageScripts", "executableScripts", "skills", "agentInstructions"];
+const INVENTORY_COLLECTIONS = ["packageScripts", "executableScripts", "skills", "agentInstructions"] as const;
+type InventoryCollection = (typeof INVENTORY_COLLECTIONS)[number];
+type InventoryCollections = Record<InventoryCollection, unknown[]>;
 
-function inventoryShape(
-	source: RepositoryInventory,
-	kept: Record<InventoryCollection, unknown[]>,
-): Record<string, unknown> {
-	const omittedCounts = {
-		packageScripts: source.packageScripts.length - kept.packageScripts.length,
-		executableScripts: source.executableScripts.length - kept.executableScripts.length,
-		skills: source.skills.length - kept.skills.length,
-		agentInstructions: source.agentInstructions.length - kept.agentInstructions.length,
-	};
+const collectionRecord = <T>(value: (key: InventoryCollection) => T) =>
+	Object.fromEntries(INVENTORY_COLLECTIONS.map((key) => [key, value(key)])) as Record<InventoryCollection, T>;
+
+function inventoryShape(source: RepositoryInventory, kept: InventoryCollections): Record<string, unknown> {
+	const omittedCounts = collectionRecord((key) => source[key].length - kept[key].length);
 	return {
 		available: source.available,
 		...(source.reason ? { reason: source.reason } : {}),
 		...(source.provenance ? { provenance: source.provenance } : {}),
 		worktreeVerified: source.worktreeVerified,
-		packageScripts: kept.packageScripts,
-		executableScripts: kept.executableScripts,
-		skills: kept.skills,
-		agentInstructions: kept.agentInstructions,
+		...collectionRecord((key) => kept[key]),
 		truncated: Object.values(omittedCounts).some((count) => count > 0),
 		omittedCounts,
 	};
@@ -111,27 +103,16 @@ function inventoryShape(
 /** Keep stable prefixes from every inventory collection within one bounded,
  * round-robin allocation so a large first collection cannot starve the rest. */
 function boundInventory(source: RepositoryInventory, maxChars: number): Record<string, unknown> {
-	const all: Record<InventoryCollection, unknown[]> = {
-		packageScripts: source.packageScripts,
-		executableScripts: source.executableScripts,
-		skills: source.skills,
-		agentInstructions: source.agentInstructions,
-	};
-	const full = inventoryShape(source, all);
+	const full = inventoryShape(source, source);
 	if (JSON.stringify(full).length <= maxChars) return full;
 
-	const kept: Record<InventoryCollection, unknown[]> = {
-		packageScripts: [],
-		executableScripts: [],
-		skills: [],
-		agentInstructions: [],
-	};
+	const kept = collectionRecord((): unknown[] => []);
 	const blocked = new Set<InventoryCollection>();
 	for (;;) {
 		let advanced = false;
 		for (const key of INVENTORY_COLLECTIONS) {
-			if (blocked.has(key) || kept[key].length >= all[key].length) continue;
-			const candidate = { ...kept, [key]: [...kept[key], all[key][kept[key].length]] };
+			if (blocked.has(key) || kept[key].length >= source[key].length) continue;
+			const candidate = { ...kept, [key]: [...kept[key], source[key][kept[key].length]] };
 			if (JSON.stringify(inventoryShape(source, candidate)).length <= maxChars) {
 				kept[key] = candidate[key];
 				advanced = true;
@@ -223,13 +204,7 @@ function buildPreparationResult(
 		complete: syncResult.walkComplete && syncResult.backlogRemaining === 0,
 	};
 	const sessions = rows.map(hydratePreparationSession);
-	const emptyCollections: Record<InventoryCollection, unknown[]> = {
-		packageScripts: [],
-		executableScripts: [],
-		skills: [],
-		agentInstructions: [],
-	};
-	const minimumInventory = inventoryShape(repositoryInventory, emptyCollections);
+	const minimumInventory = inventoryShape(repositoryInventory, collectionRecord(() => []));
 	const build = (
 		preparedSessions: Record<string, unknown>[],
 		inventory: Record<string, unknown>,
@@ -443,47 +418,35 @@ export default function (pi: ExtensionAPI): void {
 		},
 		// Failures throw: Pi marks the result as an error for the model, and
 		// codemode scripts reject instead of receiving a success-shaped value.
-		async execute(_toolCallId, rawParams: ToolParams, signal, _onUpdate, ctx) {
-			if (rawParams.operation !== undefined && rawParams.operation !== "prepare-pattern-miner") {
-				throw new Error("Unsupported session_search operation.");
-			}
-			if (rawParams.scope !== undefined && rawParams.operation === undefined) {
+		async execute(_toolCallId, params: ToolParams, signal, _onUpdate, ctx) {
+			if (params.scope !== undefined && params.operation === undefined) {
 				throw new Error("scope requires operation: prepare-pattern-miner.");
 			}
-			if (rawParams.operation === "prepare-pattern-miner") {
+			if (params.operation === "prepare-pattern-miner") {
 				const incompatible = (["query", "sessionId", "aroundMessageId", "branchTip", "window"] as const)
-					.filter((key) => rawParams[key] !== undefined);
+					.filter((key) => params[key] !== undefined);
 				if (incompatible.length > 0) {
 					throw new Error(`prepare-pattern-miner does not accept: ${incompatible.join(", ")}.`);
 				}
-				if (rawParams.scope !== "repository" && rawParams.scope !== "all") {
+				if (params.scope !== "repository" && params.scope !== "all") {
 					throw new Error("prepare-pattern-miner requires scope: repository or all.");
 				}
-				const limit = clamp(rawParams.limit, 1, 10, 10);
+				const limit = clamp(params.limit, 1, 10, 10);
 				const inventory = await inventoryRepository(
 					pi,
 					{ cwd: ctx.cwd, signal },
-					rawParams.scope === "repository" ? "required" : "optional",
+					params.scope === "repository" ? "required" : "optional",
 				);
 				const sync = syncSessions(sessionsDir(), dbPath());
 				const currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
 				const rows = getPreparationRows(dbPath(), {
 					limit,
-					...(rawParams.scope === "repository" ? { repositoryRoot: inventory.gitRoot! } : {}),
+					...(params.scope === "repository" ? { repositoryRoot: inventory.gitRoot! } : {}),
 					currentSessionPath,
 				});
-				return textResult(buildPreparationResult(rawParams.scope, limit, inventory.gitRoot, sync, rows, inventory));
+				return textResult(buildPreparationResult(params.scope, limit, inventory.gitRoot, sync, rows, inventory));
 			}
 
-			// LLMs sometimes send numeric ids/queries despite the string schema.
-			const params: ToolParams = {
-				query: rawParams.query != null ? String(rawParams.query) : undefined,
-				sessionId: rawParams.sessionId != null ? String(rawParams.sessionId) : undefined,
-				aroundMessageId: rawParams.aroundMessageId != null ? String(rawParams.aroundMessageId) : undefined,
-				branchTip: rawParams.branchTip != null ? String(rawParams.branchTip) : undefined,
-				window: rawParams.window,
-				limit: rawParams.limit,
-			};
 			let sessionId = params.sessionId?.trim() || undefined;
 			const anchor = params.aroundMessageId?.trim() || undefined;
 			if (sessionId) {
@@ -519,39 +482,13 @@ export default function (pi: ExtensionAPI): void {
 					throw error;
 				}
 				const base = { mode: "scroll", sessionId, branchTip: win.branchTip, messagesBefore: win.messagesBefore, messagesAfter: win.messagesAfter };
-				let result: Record<string, unknown> = { ...base, messages: win.messages };
-				if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && win.messages.length > 0) {
-					result = boundContent(
-						(cap) => ({ ...base, messages: cap === null ? [] : truncateContent(win.messages, cap), contentTruncated: true }),
-						Math.max(...win.messages.map((m) => m.content.length), 0),
-						OUTPUT_CHAR_BUDGET,
-					);
-				}
-				return textResult(result);
+				return textResult(boundMessages(base, win.messages));
 			}
 
 			// --- READ ---
 			if (sessionId) {
-				const r = readSession(sessionId);
-				let result: Record<string, unknown> = { mode: "read", sessionId, ...r };
-				if (JSON.stringify(result).length > OUTPUT_CHAR_BUDGET && r.messages.length > 0) {
-					// contentTruncated is character-level truncation, distinct from
-					// the message-count `truncated`.
-					result = boundContent(
-						(cap) => ({
-							mode: "read",
-							sessionId,
-							branchTip: r.branchTip,
-							totalMessages: r.totalMessages,
-							truncated: r.truncated,
-							messages: cap === null ? [] : truncateContent(r.messages, cap),
-							contentTruncated: true,
-						}),
-						Math.max(...r.messages.map((m) => m.content.length), 0),
-						OUTPUT_CHAR_BUDGET,
-					);
-				}
-				return textResult(result);
+				const { messages, ...metadata } = readSession(sessionId);
+				return textResult(boundMessages({ mode: "read", sessionId, ...metadata }, messages));
 			}
 
 			// Lazy sync: drains any backlog the capped startup pass left. A partial
@@ -572,19 +509,10 @@ export default function (pi: ExtensionAPI): void {
 
 			// --- DISCOVERY ---
 			const limit = clamp(params.limit, 1, 10, 3);
-
-			// Exclude the whole current file when the session manager provides it.
-			// A missing or failing manager leaves discovery usable without exclusion.
-			let currentSessionPath: string | undefined;
-			try {
-				currentSessionPath = ctx.sessionManager.getSessionFile() ?? undefined;
-			} catch {
-				// Guard unavailable → continue without exclusion.
-			}
-
 			const { hits, backlogRemaining } = searchIndex(dbPath(), params.query, {
 				limit,
-				currentSessionPath,
+				// Exclude the whole current file.
+				currentSessionPath: ctx.sessionManager.getSessionFile() ?? undefined,
 			});
 
 			const resultQuery = params.query!.trim().slice(0, MAX_QUERY_CHARS);

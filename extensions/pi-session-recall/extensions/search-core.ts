@@ -11,8 +11,6 @@ import { buildFtsQueryPlan, buildLikeQueryPlan, foldCase, nearLike } from "./que
 import { MAX_SESSION_FILE_BYTES, readTranscriptEntries } from "./transcript.ts";
 import type { PreparationSessionRow, SearchHit, SessionRow, SyncResult } from "./types.ts";
 export const DEFAULT_SYNC_CAP = 50;
-/** Hard ceiling for the internal/test `opts.cap` work bound of syncSessions. */
-const MAX_SYNC_CAP = DEFAULT_SYNC_CAP * 10;
 const MAX_TEXT_CHARS = 20000;
 const SCAN_LIMIT = 300;
 /** Best-ranked candidate retained per session after SQL prefiltering. */
@@ -362,10 +360,7 @@ export function syncSessions(
 	dbPath: string,
 	opts?: { cap?: number; maxFileBytes?: number },
 ): SyncResult {
-	const requestedCap = opts?.cap ?? DEFAULT_SYNC_CAP;
-	const cap = Number.isFinite(requestedCap)
-		? Math.max(1, Math.min(MAX_SYNC_CAP, Math.floor(requestedCap)))
-		: DEFAULT_SYNC_CAP;
+	const cap = opts?.cap ?? DEFAULT_SYNC_CAP;
 	const db = openDb(dbPath);
 	try {
 
@@ -400,7 +395,7 @@ export function syncSessions(
 		const f = failures.get(p);
 		if (!f) return null;
 		const fp = fileFingerprint(stat);
-		return f.size === fp.size && f.mtime_ms === fp.mtimeMs && f.ctime_ms === fp.ctimeMs ? (f.attempts ?? 0) : null;
+		return f.size === fp.size && f.mtime_ms === fp.mtimeMs && f.ctime_ms === fp.ctimeMs ? f.attempts : null;
 	};
 	changed.sort((a, b) => {
 		const aRetry = retryAttempts(a.path, a.stat);
@@ -636,7 +631,7 @@ export function searchIndex(
 			            LIMIT ${SCAN_LIMIT}`).all(...likePlan.params, currentSessionPath, currentSessionPath) as any;
 			// Snippets anchor on operand terms only — operator words like OR would
 			// otherwise match common substrings and hide the real match.
-			for (const r of rows as any[]) r.snip = likeSnippet((r as any).head ?? "", (r as any).tail ?? "", likePlan.terms);
+			for (const r of rows as any[]) r.snip = likeSnippet(r.head, r.tail, likePlan.terms);
 		}
 
 		// Current-file and one-hop lineage suppression already happened in SQL,

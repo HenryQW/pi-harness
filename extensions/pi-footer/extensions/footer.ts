@@ -28,15 +28,10 @@ function isNonNegativeNumber(value: unknown): value is number {
 }
 
 function subagentBackgroundUsage(details: unknown): CountedUsage | undefined {
-	if (!details || typeof details !== "object" || Array.isArray(details)) return;
-	const usage = (details as Record<string, unknown>).usage;
-	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
-	const record = usage as Record<string, unknown>;
-	const cost = record.cost;
-	if (!cost || typeof cost !== "object" || Array.isArray(cost)) return;
-	const total = (cost as Record<string, unknown>).total;
-	if (!isNonNegativeNumber(record.input) || !isNonNegativeNumber(record.output) || !isNonNegativeNumber(total)) return;
-	return { input: record.input, output: record.output, cost: { total } };
+	const usage = (details as { usage?: { input?: unknown; output?: unknown; cost?: { total?: unknown } } } | undefined)?.usage;
+	const total = usage?.cost?.total;
+	if (!isNonNegativeNumber(usage?.input) || !isNonNegativeNumber(usage.output) || !isNonNegativeNumber(total)) return;
+	return { input: usage.input, output: usage.output, cost: { total } };
 }
 
 function formatTokens(count: number): string {
@@ -239,21 +234,9 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		if (finalizeActive()) pi.appendEntry(AGENT_TIME_ENTRY, activeMilliseconds);
 		await refreshGitStatus?.();
 	});
-	pi.on("session_shutdown", () => {
-		stopRuntimeTimer();
-		activeStartedAt = undefined;
-		promptPaused = false;
-		refreshGitStatus = undefined;
-		activeCodegraphCalls.clear();
-	});
+	pi.on("session_shutdown", stopRuntimeTimer);
 
 	pi.on("session_start", async (_event, ctx) => {
-		stopRuntimeTimer();
-		activeStartedAt = undefined;
-		promptPaused = false;
-		requestRuntimeRender = undefined;
-		refreshGitStatus = undefined;
-		activeCodegraphCalls.clear();
 		// Latest valid entry wins; stored data is untrusted.
 		activeMilliseconds = 0;
 		for (const entry of ctx.sessionManager.getEntries()) {

@@ -23,9 +23,7 @@ function lastAssistantText(entries: readonly SessionEntry[]): string | undefined
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		const message = entry.message;
-		if (message.stopReason === "aborted" && message.content.length === 0) continue;
-		const text = message.content
+		const text = entry.message.content
 			.filter((part): part is { type: "text"; text: string } => part.type === "text")
 			.map((part) => part.text)
 			.join("")
@@ -98,7 +96,6 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		runActive = true;
 		runOutcome = "finished";
 		pendingSettledPush?.abort();
-		pendingSettledPush = undefined;
 	});
 
 	pi.on("message_end", (event) => {
@@ -122,22 +119,20 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		const shouldSend = new Promise<boolean>((resolve) => {
 			setImmediate(() => resolve(ctx.isIdle()));
 		});
-		void queueStatus(title, ctx.cwd, shouldSend, controller.signal)
-			.catch((error) => {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
-			})
-			.finally(() => {
-				if (pendingSettledPush === controller) pendingSettledPush = undefined;
-			});
+		void queueStatus(title, ctx.cwd, shouldSend, controller.signal).catch((error) => {
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		});
 	});
 
 	pi.registerCommand("bark", {
 		description: "Configure automatic Bark status notifications",
 		handler: async (args, ctx) => {
 			const [first, second, extra] = args.trim().split(/\s+/);
-			if (extra || (first === "default" ? !["on", "off"].includes(second) : second)) {
-				throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
-			}
+			const valid =
+				first === "default"
+					? ["on", "off"].includes(second) && !extra
+					: ["on", "off", "inherit"].includes(first) && !second;
+			if (!valid) throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
 			if (first === "default") {
 				const enabled = second === "on";
 				await configStore.update((config) => ({
@@ -146,9 +141,6 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 				}));
 				ctx.ui.notify(`${enabled ? "Enabled" : "Disabled"} Bark status notifications by default.`, "info");
 				return;
-			}
-			if (!(["on", "off", "inherit"] as const).includes(first as "on" | "off" | "inherit")) {
-				throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
 			}
 			const cwd = resolve(ctx.cwd);
 			await configStore.update((config) => {

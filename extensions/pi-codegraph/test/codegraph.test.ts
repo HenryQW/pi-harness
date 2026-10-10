@@ -70,7 +70,6 @@ function harness(cwd: string, options: {
 			}
 		},
 	} as unknown as ExtensionAPI;
-	const widgets: { key: string; content: string | string[] | undefined }[] = [];
 	const statuses: (string | undefined)[] = [];
 	const ctx = {
 		cwd,
@@ -79,13 +78,12 @@ function harness(cwd: string, options: {
 		ui: {
 			theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
 			notify: (message: string, level: string) => notices.push({ message, level }),
-			setWidget: (_key: string, content: string | string[] | undefined) => widgets.push({ key: _key, content }),
 			setStatus: (_key: string, text: string | undefined) => { statuses.push(text); options.onStatus?.(text); },
 		},
 	} as unknown as ExtensionContext;
 	codegraphExtension(pi);
 	const explore = (params: Record<string, unknown>) => tool.execute("call", params, undefined, undefined, ctx as never);
-	return { start: () => start({}, ctx), shutdown: (reason = "quit") => shutdown({ reason }, ctx), explore, tool, notices, calls, widgets, statuses };
+	return { start: () => start({}, ctx), shutdown: (reason = "quit") => shutdown({ reason }, ctx), explore, tool, notices, calls, statuses };
 }
 
 test("initializes an opted-in linked worktree at its root once, including nested launches", async (t) => {
@@ -99,7 +97,6 @@ test("initializes an opted-in linked worktree at its root once, including nested
 	assert.deepEqual(run.calls.filter(({ command, args }) => command === "codegraph" && args[0] === "init"), [
 		{ command: "codegraph", args: ["init", "--yes", worktree], cwd: worktree },
 	]);
-	assert.deepEqual(run.widgets, []);
 	assert.ok(run.statuses.some((text) => text?.includes("CG · indexing")));
 	assert.equal(run.statuses.at(-1), "<success>✓</success> CG");
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
@@ -152,7 +149,6 @@ test("TUI indexing survives session replacement and replaces its dim animation w
 	const count = run.statuses.length;
 	t.mock.timers.tick(1000);
 	assert.equal(run.statuses.length, count);
-	assert.deepEqual(run.widgets, []);
 	assert.deepEqual(run.notices, []);
 });
 

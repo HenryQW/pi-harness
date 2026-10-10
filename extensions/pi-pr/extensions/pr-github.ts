@@ -347,16 +347,6 @@ function hasRepositoryMarker(cwd: string): boolean {
 	}
 }
 
-function parseCommandOutput(value: unknown, action: string): CommandOutput {
-	if (!isRecord(value)) fail(action, "invalid command result");
-	const { stdout, stderr, code, killed } = value;
-	if (
-		typeof stdout !== "string" || typeof stderr !== "string" || typeof code !== "number" ||
-		!Number.isSafeInteger(code) || code < 0 || typeof killed !== "boolean"
-	) fail(action, "invalid command result");
-	return { stdout, stderr, code, killed };
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 	const actual = Object.keys(value).sort();
 	const expected = [...keys].sort();
@@ -371,7 +361,7 @@ async function invoke(
 	args: string[],
 ): Promise<CommandOutput> {
 	const signal = context.signal;
-	let result: unknown;
+	let result: CommandOutput;
 	try {
 		result = await pi.exec(command, args, {
 			cwd: context.cwd,
@@ -381,11 +371,10 @@ async function invoke(
 	} catch {
 		fail(action, "command threw");
 	}
-	const output = parseCommandOutput(result, action);
-	if (output.killed) {
+	if (result.killed) {
 		fail(action, signal?.aborted ? "command was cancelled" : `command timed out after ${EXEC_TIMEOUT_MS} ms`);
 	}
-	return output;
+	return result;
 }
 
 function commandFailure(action: string, result: CommandOutput, command?: string): never {

@@ -23,7 +23,7 @@ function isMissingPathError(error: unknown): boolean {
 	return error.code === "ENOENT" || error.code === "ENOTDIR";
 }
 
-export function expandUserPath(input: string): string {
+function expandUserPath(input: string): string {
 	if (input === "~") return homedir();
 	if (input.startsWith("~/") || input.startsWith(`~${path.sep}`)) return path.join(homedir(), input.slice(2));
 	return input;
@@ -49,7 +49,7 @@ export function dirExists(dir: string): boolean {
 	}
 }
 
-export function readFileSafe(filePath: string): string | null {
+function readFileSafe(filePath: string): string | null {
 	try {
 		return readFileSync(filePath, "utf8");
 	} catch {
@@ -113,8 +113,6 @@ export function collectSkillPaths(dirs: AddedDir[]): string[] {
 }
 
 export function buildContextInjection(dirs: AddedDir[]): string {
-	if (dirs.length === 0) return "";
-
 	const sections = [
 		"\n\n## External Directories (added via pi-add-dir)",
 		`\nThe following ${dirs.length} external director${dirs.length === 1 ? "y is" : "ies are"} included in this session. You can read, edit, and write files in these directories using absolute paths.\n`,
@@ -154,7 +152,6 @@ export async function findFiles(
 
 	const directories = [root];
 	while (directories.length > 0) {
-		signal?.throwIfAborted();
 		const dir = directories.pop()!;
 		let entries;
 		try {
@@ -166,7 +163,6 @@ export async function findFiles(
 		}
 		signal?.throwIfAborted();
 		for (const entry of entries) {
-			signal?.throwIfAborted();
 			if (entry.isSymbolicLink()) continue;
 
 			const fullPath = path.join(dir, entry.name);

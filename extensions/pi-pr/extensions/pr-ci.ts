@@ -12,7 +12,7 @@ import {
 } from "./pr-github.ts";
 import {
 	extensionExecApi,
-	inspectWorktree,
+	inspectWorktreeState,
 	isAncestor,
 	parseSingleOutputLine,
 	readHead,
@@ -359,7 +359,7 @@ export class PullRequestCiFixer {
 			"current branch",
 		), "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("CI repair cancelled: current branch changed");
-		if (await inspectWorktree(this.exec, this.options()) !== "clean") {
+		if (await inspectWorktreeState(this.exec, this.options()) !== "clean") {
 			throw new Error("CI repair requires a clean worktree with no Git operation in progress");
 		}
 		const head = await readHead(this.exec, this.options());
@@ -716,7 +716,7 @@ export class PullRequestCiFixer {
 			"current branch",
 		), "current branch");
 		if (branch !== this.authority.target.branch) throw new Error("CI repair publish cancelled: current branch changed");
-		if (await inspectWorktree(this.exec, this.options()) !== "clean") {
+		if (await inspectWorktreeState(this.exec, this.options()) !== "clean") {
 			throw new Error("CI repair publish requires a clean worktree with no Git operation in progress");
 		}
 		const repairHead = await readHead(this.exec, this.options());

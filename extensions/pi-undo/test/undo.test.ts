@@ -60,23 +60,16 @@ test("/undo aborts, waits, and targets the latest actual user turn on the curren
 	assert.deepEqual(navigations, [["second", { summarize: false }]]);
 });
 
-test("/undo reports empty history after stopping work", async () => {
+test("/undo reports no user prompt on the current branch after stopping work", async () => {
 	const events: string[] = [];
-	const notifications: string[] = [];
-	await command()("", context([], events, [], notifications));
-
-	assert.deepEqual(events, ["abort", "idle", "branch", "notify"]);
-	assert.deepEqual(notifications, ["Nothing to undo."]);
-});
-
-test("/undo reports no user prompt on the current branch", async () => {
 	const notifications: string[] = [];
 	const navigations: Navigation[] = [];
 	await command()("", context([
 		{ id: "assistant", type: "message", message: { role: "assistant" } },
 		{ id: "continuation", type: "custom_message", customType: "extension/continuation" },
-	], [], navigations, notifications));
+	], events, navigations, notifications));
 
+	assert.deepEqual(events, ["abort", "idle", "branch", "notify"]);
 	assert.deepEqual(navigations, []);
 	assert.deepEqual(notifications, ["Nothing to undo."]);
 });

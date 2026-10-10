@@ -4,7 +4,7 @@ import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@
 import { availableTaskModels, loadTaskModelsConfig, modelReference, registerModelTask, resolveAvailableModel, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, formatDuration, loadRoles, prepareRoleLaunch, resolveRolePackageResources, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
 import { readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
-import { registerCheckoutAdmission, roleCanWrite, roleIsReadOnlyScout } from "./admission.ts";
+import { registerCheckoutAdmission, roleCanWrite } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
@@ -278,7 +278,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const snapshot = notices.join("\n");
 			if (Buffer.byteLength(snapshot, "utf8") > 32_000) throw new Error("Status exceeds the 32 KiB inspection limit; use subagent_status for exact evidence.");
 			const role = loadRoles().find((candidate) => candidate.name === "scout");
-			if (!role || !roleIsReadOnlyScout(role)) throw new Error("Status inspection requires a configured read-only scout Role without extensions or MCP servers.");
+			if (!role || roleCanWrite(role)) throw new Error("Status inspection requires a configured read-only scout Role without extensions or MCP servers.");
 			const prepared = prepareRoleLaunch(pi, ctx, { role, task: DELEGATE_TASK, modelClass: "fast" });
 			const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
 			const controller = new AbortController();
@@ -712,12 +712,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							throw error;
 						} finally { release(); }
 					}, controller.signal);
-				} catch (error) {
-					if (!controller.signal.aborted) {
-						const state = [...states.values()].find(({ status }) => status === "running" || status === "pending");
-						if (state) states.set(state.id, { id: state.id, index: state.index, name: state.name, role: state.role, status: "rejected", failure: capOutput(String(error)) });
-					}
-				} finally {
+				} catch { /* aborted */ } finally {
 					for (const [id, state] of states) {
 						if (state.status === "pending" || state.status === "running") states.set(id, {
 							id: state.id, index: state.index, name: state.name, role: state.role,

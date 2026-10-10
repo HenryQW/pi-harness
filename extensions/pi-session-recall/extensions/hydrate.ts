@@ -200,7 +200,6 @@ export function getWindow(
 	windowN: number,
 	opts?: { branchTip?: string },
 ): WindowResult {
-	const n = Math.max(0, Math.min(50, windowN));
 	const entries = parseSessionEntries(sessionPath);
 	const entriesById = new Map(entries.map((e) => [e.id, e]));
 	// A non-message branch-tip cursor centers on its nearest message ancestor;
@@ -223,8 +222,8 @@ export function getWindow(
 	const msgs = branchMessages(entriesById, tip);
 	const idx = msgs.findIndex((m) => m.entryId === anchorEntryIdMsg);
 	if (idx < 0) throw new Error(`anchor entry ${anchorEntryId} is not a message`);
-	const start = Math.max(0, idx - n);
-	const end = Math.min(msgs.length - 1, idx + n);
+	const start = Math.max(0, idx - windowN);
+	const end = Math.min(msgs.length - 1, idx + windowN);
 	return {
 		messages: msgs.slice(start, end + 1).map((m) =>
 			m.entryId === anchorEntryIdMsg ? { ...m, anchor: true } : m,

@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, opendir, realpath } from "node:fs/promises";
+import { lstat, mkdir, opendir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -23,6 +23,7 @@ import { Type } from "typebox";
 import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
 import {
 	ENTRY_DELIMITER,
+	isEnoent,
 	isReservedFrameLine,
 	MAX_BATCH_OPERATIONS,
 	MAX_FILE_BYTES,
@@ -109,14 +110,9 @@ type ValidatedMutation =
 	| { kind: "single"; operation: MemoryOperation }
 	| { kind: "batch"; operations: [MemoryOperation, ...MemoryOperation[]] };
 type ReviewSource = "system" | Target;
-type ReviewVerdict = "distinct" | "overlap" | "contradiction";
-type CandidateReview = {
-	verdict: ReviewVerdict;
-	explanation: string;
-	source?: ReviewSource;
-	evidence?: string;
-	proposedMerge?: string;
-};
+type CandidateReview =
+	| { verdict: "distinct"; explanation: string }
+	| { verdict: "overlap" | "contradiction"; explanation: string; source: ReviewSource; evidence: string; proposedMerge?: string };
 type MemoryMutation = {
 	action?: "add" | "replace" | "remove";
 	target?: Target;
@@ -127,26 +123,14 @@ type MemoryMutation = {
 
 class MemoryReviewError extends Error {}
 
-function isEnoent(error: unknown): boolean {
-	return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
-}
-
 async function readSystemSource(path: string): Promise<SystemSource> {
-	let handle: Awaited<ReturnType<typeof open>> | undefined;
-	let confirmedPresent = false;
 	try {
-		handle = await open(path, "r");
-		confirmedPresent = true;
-		const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
-		let total = 0;
-		for (;;) {
-			if (total > MAX_FILE_BYTES) return { state: "oversized", bytes: total };
-			const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
-			total += bytesRead;
-			if (bytesRead === 0) break;
-		}
-		return { state: "present", raw: new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, total)) };
+		return { state: "present", raw: await readTextFileBounded(path, MAX_FILE_BYTES) };
 	} catch (error) {
+		if (error instanceof Error && error.message === `Text file exceeds ${MAX_FILE_BYTES} bytes: ${path}`) {
+			return { state: "oversized", bytes: MAX_FILE_BYTES + 1 };
+		}
+		let confirmedPresent = false;
 		try {
 			await lstat(path);
 			confirmedPresent = true;
@@ -154,8 +138,6 @@ async function readSystemSource(path: string): Promise<SystemSource> {
 			if (isEnoent(error) && isEnoent(statError)) return { state: "absent", raw: "" };
 		}
 		return { state: "unreadable", confirmedPresent };
-	} finally {
-		await handle?.close().catch(() => {});
 	}
 }
 
@@ -296,6 +278,43 @@ function viableReviewRoutes(routes: ResolvedTaskRoute[], request: ReturnType<typ
 	throw new MemoryReviewError(`Memory review request needs ${requiredTokens.toLocaleString()} tokens (${inputTokens.toLocaleString()} input budget + ${REVIEW_MAX_TOKENS.toLocaleString()} output reserve), but no configured ${task.id} route can fit it: ${configured}. Configure a route with a larger context window in /task-models and retry.`);
 }
 
+function streamTaskRoute(
+	route: ResolvedTaskRoute,
+	request: ReturnType<typeof createReviewRequest>,
+	ctx: ExtensionContext,
+	signal: AbortSignal | undefined,
+) {
+	return ctx.modelRegistry.streamSimple(route.model, request, {
+		signal,
+		maxRetries: 0,
+		maxTokens: REVIEW_MAX_TOKENS,
+		...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }),
+	}).result();
+}
+
+async function requestTaskObject(
+	label: "preparation" | "promotion",
+	route: ResolvedTaskRoute,
+	request: ReturnType<typeof createReviewRequest>,
+	ctx: ExtensionContext,
+	signal: AbortSignal | undefined,
+): Promise<Record<string, unknown>> {
+	let response;
+	try { response = await streamTaskRoute(route, request, ctx, signal); }
+	catch (error) {
+		if (signal?.aborted) signal.throwIfAborted();
+		throw new MemoryReviewError(`Memory ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	signal?.throwIfAborted();
+	if (response.stopReason !== "stop") throw new MemoryReviewError(`Memory ${label} task did not complete.`);
+	const raw = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
+	if (raw.length > REVIEW_MAX_RESPONSE_CHARS) throw new MemoryReviewError(`Memory ${label} response is too long.`);
+	let parsed: unknown;
+	try { parsed = JSON.parse(raw); } catch { throw new MemoryReviewError(`Memory ${label} returned invalid JSON.`); }
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new MemoryReviewError(`Memory ${label} returned invalid JSON.`);
+	return parsed as Record<string, unknown>;
+}
+
 async function invokeReviewRoute(
 	route: ResolvedTaskRoute,
 	request: ReturnType<typeof createReviewRequest>,
@@ -306,12 +325,7 @@ async function invokeReviewRoute(
 	signal?.throwIfAborted();
 	let response;
 	try {
-		response = await ctx.modelRegistry.streamSimple(route.model, request, {
-			signal,
-			maxRetries: 0,
-			maxTokens: REVIEW_MAX_TOKENS,
-			...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }),
-		}).result();
+		response = await streamTaskRoute(route, request, ctx, signal);
 	} catch (error) {
 		if (signal?.aborted) signal.throwIfAborted();
 		throw new MemoryReviewError(error instanceof Error ? error.message : "Memory review task model failed.");
@@ -357,20 +371,7 @@ async function prepareRemember(candidate: string, entries: Record<Target, string
 	};
 	const routes = viableReviewRoutes(configuredReviewRoutes(ctx, MEMORY_PREPARE_TASK), request, MEMORY_PREPARE_TASK);
 	return executeTaskRoutes(routes, async (route) => {
-		let response;
-		try { response = await ctx.modelRegistry.streamSimple(route.model, request, { signal, maxRetries: 0, maxTokens: REVIEW_MAX_TOKENS, ...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }) }).result(); }
-		catch (error) {
-			if (signal?.aborted) signal.throwIfAborted();
-			throw new MemoryReviewError(`Memory preparation failed: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		signal?.throwIfAborted();
-		if (response.stopReason !== "stop") throw new MemoryReviewError("Memory preparation task did not complete.");
-		const raw = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
-		if (raw.length > REVIEW_MAX_RESPONSE_CHARS) throw new MemoryReviewError("Memory preparation response is too long.");
-		let parsed: unknown;
-		try { parsed = JSON.parse(raw); } catch { throw new MemoryReviewError("Memory preparation returned invalid JSON."); }
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new MemoryReviewError("Memory preparation returned invalid JSON.");
-		const value = parsed as Record<string, unknown>;
+		const value = await requestTaskObject("preparation", route, request, ctx, signal);
 		if (Object.keys(value).length === 1 && boundedString(value.skip, REVIEW_MAX_EXPLANATION_CHARS)) return { skip: value.skip };
 		if (Object.keys(value).length !== 2 || (value.target !== "user" && value.target !== "memory") || !boundedString(value.content, REVIEW_MAX_RESPONSE_CHARS)) {
 			throw new MemoryReviewError("Memory preparation returned an invalid entry proposal.");
@@ -390,20 +391,7 @@ async function proposeDream(snapshot: ReviewSnapshot, ctx: ExtensionContext, sig
 	};
 	const routes = viableReviewRoutes(configuredReviewRoutes(ctx, DREAM_TASK), request, DREAM_TASK);
 	return executeTaskRoutes(routes, async (route) => {
-		let response;
-		try { response = await ctx.modelRegistry.streamSimple(route.model, request, { signal, maxRetries: 0, maxTokens: REVIEW_MAX_TOKENS, ...(route.thinkingLevel === "off" ? {} : { reasoning: route.thinkingLevel }) }).result(); }
-		catch (error) {
-			if (signal?.aborted) signal.throwIfAborted();
-			throw new MemoryReviewError(`Memory promotion failed: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		signal?.throwIfAborted();
-		if (response.stopReason !== "stop") throw new MemoryReviewError("Memory promotion task did not complete.");
-		const raw = response.content.filter((part) => part.type === "text").map((part) => part.text).join("").trim();
-		if (raw.length > REVIEW_MAX_RESPONSE_CHARS) throw new MemoryReviewError("Memory promotion response is too long.");
-		let parsed: unknown;
-		try { parsed = JSON.parse(raw); } catch { throw new MemoryReviewError("Memory promotion returned invalid JSON."); }
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new MemoryReviewError("Memory promotion returned invalid JSON.");
-		const value = parsed as Record<string, unknown>;
+		const value = await requestTaskObject("promotion", route, request, ctx, signal);
 		if (Object.keys(value).length === 1 && boundedString(value.skip, REVIEW_MAX_EXPLANATION_CHARS)) return { skip: value.skip };
 		const edit = value.system as Record<string, unknown> | undefined;
 		const remove = value.remove as Record<string, unknown> | undefined;
@@ -495,7 +483,7 @@ function validateMutation(mutation: MemoryMutation): ValidatedMutation {
 }
 
 async function resolveReviewConflict(
-	review: CandidateReview & { source: ReviewSource; evidence: string },
+	review: Exclude<CandidateReview, { verdict: "distinct" }>,
 	candidate: ValidatedMutation,
 	target: Target,
 	snapshot: ReviewSnapshot,
@@ -601,8 +589,8 @@ function escapeDisplayControls(text: string): string {
 	});
 }
 
-function renderBlock(target: Target, entries: string[], config: MemoryConfig, warnings: string[]): { block: string } {
-	if (!entries.length) return { block: "" };
+function renderBlock(target: Target, entries: string[], config: MemoryConfig, warnings: string[]): string {
+	if (!entries.length) return "";
 	const limit = target === "user" ? config.userCharLimit : config.memoryCharLimit;
 	// Sanitize BEFORE budgeting: expansion from frame-token replacement must
 	// count against the cap, or many short reserved lines could inflate the
@@ -638,10 +626,10 @@ function renderBlock(target: Target, entries: string[], config: MemoryConfig, wa
 	}
 	// Everything omitted (e.g. one entry larger than the whole cap): no block,
 	// the standalone warning above still reaches the prompt.
-	if (!kept.length) return { block: "" };
+	if (!kept.length) return "";
 	const usageText = usage(used, limit);
 	const header = target === "user" ? "USER PROFILE (who the user is)" : "MEMORY (your personal notes)";
-	return { block: `${SEPARATOR}\n${header} [${usageText}]\n${SEPARATOR}\n${content}` };
+	return `${SEPARATOR}\n${header} [${usageText}]\n${SEPARATOR}\n${content}`;
 }
 
 export default function memoryExtension(pi: ExtensionAPI): void {
@@ -660,14 +648,14 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		sessionGeneration: number;
 	} = { conflictWarnings: [], observedReviewSystem: false, rememberQueue: [], conflictQueue: [], sessionGeneration: 0 };
 
-	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<Record<Target, string[]> | undefined> => {
+	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<boolean> => {
 		if (state.initError) {
 			warn(`Cannot run /${command}: persistent memory is disabled — ${sanitizeName(state.initError)}`);
-			return;
+			return false;
 		}
 		if (!state.config || !state.stores) {
 			warn(`Cannot run /${command}: persistent memory is not initialized.`);
-			return;
+			return false;
 		}
 		try {
 			const loaded = await Promise.all([
@@ -679,21 +667,22 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				const warnings = invalid.map(([, result]) => result.state === "unreadable" || result.state === "oversized" ? result.conflictWarning : "");
 				warn(`Cannot run /${command}: live memory state is unreadable or oversized. ${warnings.join(" ")}`);
 				onUnusable?.();
-				return;
+				return false;
 			}
 			if (!isIdle()) {
 				warn(`Cannot run /${command} while the agent is busy.`);
-				return;
+				return false;
 			}
 			const overLimit = loaded.filter(([target, result]) => result.entries.join(ENTRY_DELIMITER).length > (target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit));
 			if (overLimit.length) {
 				warn(`Cannot run /${command}: live ${overLimit.map(([target]) => target).join(" and ")} entries exceed the configured character limit. Consolidate them before using /${command}.`);
 				onUnusable?.();
-				return;
+				return false;
 			}
-			return Object.fromEntries(loaded.map(([target, result]) => [target, result.entries])) as Record<Target, string[]>;
+			return true;
 		} catch (error) {
 			warn(`Cannot run /${command}: ${error instanceof Error ? error.message : String(error)}`);
+			return false;
 		}
 	};
 
@@ -731,8 +720,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify(pending === 1 ? "Remember queued — will run after the current response." : `Remember queued — ${pending} pending.`, "info");
 				return;
 			}
-			const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => ctx.ui.notify(message, "warning"));
-			if (!entries) return;
+			if (!(await loadLiveEntries("remember", ctx.isIdle, (message) => ctx.ui.notify(message, "warning")))) return;
 			try { await processRemember(candidate, ctx); }
 			catch (error) { ctx.ui.notify(`Cannot run /remember: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 		},
@@ -745,8 +733,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Cannot run /dream while the agent is busy.", "warning");
 				return;
 			}
-			const entries = await loadLiveEntries("dream", ctx.isIdle, (message) => ctx.ui.notify(message, "warning"));
-			if (!entries) return;
+			if (!(await loadLiveEntries("dream", ctx.isIdle, (message) => ctx.ui.notify(message, "warning")))) return;
 			const systemPath = join(getAgentDir(), "SYSTEM.md");
 			const system = (await readSystemSource(systemPath)).state;
 			if (!ctx.isIdle()) {
@@ -823,7 +810,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		const sessionGeneration = state.sessionGeneration;
-		if (state.sessionGeneration !== sessionGeneration || !ctx.isIdle()) return;
+		if (!ctx.isIdle()) return;
 		const isCurrent = () => state.sessionGeneration === sessionGeneration && ctx.isIdle() && !ctx.signal?.aborted;
 		while (isCurrent() && state.conflictQueue.length) {
 			const pending = state.conflictQueue.shift()!;
@@ -840,12 +827,12 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 		}
 		while (isCurrent() && state.rememberQueue.length) {
-			const entries = await loadLiveEntries("remember", ctx.isIdle, (message) => {
+			const ready = await loadLiveEntries("remember", ctx.isIdle, (message) => {
 				if (state.sessionGeneration === sessionGeneration) ctx.ui.notify(message, "warning");
 			}, () => {
 				if (isCurrent()) state.rememberQueue.shift();
 			});
-			if (!entries || !isCurrent()) return;
+			if (!ready || !isCurrent()) return;
 			try { await processRemember(state.rememberQueue[0]!, ctx); }
 			catch (error) { if (isCurrent()) ctx.ui.notify(`Cannot run /remember: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
 			if (!isCurrent()) return;
@@ -939,10 +926,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				conflictWarnings.push(`WARNING: ${total} in the memory directory (${listed}). Only MEMORY.md and USER.md are loaded; reconcile or remove the rest.`);
 			}
 
-			const rendered = [renderBlock("memory", memory.entries, config, conflictWarnings), renderBlock("user", user.entries, config, conflictWarnings)];
+			const snapshotBlocks = [renderBlock("memory", memory.entries, config, conflictWarnings), renderBlock("user", user.entries, config, conflictWarnings)];
 			state.config = config;
 			state.stores = stores;
-			state.snapshotBlocks = rendered.map(({ block }) => block);
+			state.snapshotBlocks = snapshotBlocks;
 			state.conflictWarnings = conflictWarnings;
 
 			const memoryChars = memory.entries.join(ENTRY_DELIMITER).length;
@@ -1057,35 +1044,35 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			};
 			if (!needsReview) return withMemoryLock(store, write);
 
-			let snapshot: ReviewSnapshot | undefined;
-			const duplicate = await withMemoryLock(store, async () => {
-				snapshot = await loadReviewSnapshot(state.config!, state.stores!, state);
+			const { snapshot, duplicate } = await withMemoryLock(store, async () => {
+				const snapshot = await loadReviewSnapshot(state.config!, state.stores!, state);
 				const entries = snapshot.stores[target].entries;
 				const duplicateEntries = validated.kind === "single"
 					? validated.operation.action === "add" ? [normalizeEntry(validated.operation.content)] : undefined
 					: validated.operations.every((operation) => operation.action === "add")
 						? validated.operations.map((operation) => normalizeEntry(operation.action === "add" ? operation.content : ""))
 						: undefined;
-				if (!duplicateEntries || !duplicateEntries.every((content) => entries.includes(content))) return;
+				if (!duplicateEntries || !duplicateEntries.every((content) => entries.includes(content))) return { snapshot };
 				signal?.throwIfAborted();
 				store.resetOnSuccess();
 				const limit = target === "user" ? state.config!.userCharLimit : state.config!.memoryCharLimit;
-				return successResult({
-					usage: usage(entries.join(ENTRY_DELIMITER).length, limit),
-					entryCount: entries.length,
-					message: "Entry already exists (no duplicate added).",
-					writtenEntries: [...new Set(duplicateEntries)],
-				});
+				return {
+					snapshot,
+					duplicate: successResult({
+						usage: usage(entries.join(ENTRY_DELIMITER).length, limit),
+						entryCount: entries.length,
+						message: "Entry already exists (no duplicate added).",
+						writtenEntries: [...new Set(duplicateEntries)],
+					}),
+				};
 			});
 			if (duplicate) return duplicate;
-			if (!snapshot) throw new Error("Memory review snapshot was unavailable.");
 
 			const review = await reviewMutation(mutation, snapshot, ctx, signal);
 			signal?.throwIfAborted();
 			if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed during memory review; nothing was written.");
 			let resolved: Extract<MemoryOperation, { action: "replace" }> | undefined;
 			if (review.verdict !== "distinct") {
-				if (!review.source || !review.evidence) throw new Error("Memory review returned a conflict without verified evidence.");
 				if (ctx.mode === "tui" && !ctx.isIdle()) {
 					state.conflictQueue.push({ mutation, signal });
 					const status = "Conflict resolution queued until the response settles; nothing was written yet. Continue replying without retrying or asking the user yourself.";
@@ -1094,7 +1081,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 						details: { status, entries: [], queued: true },
 					};
 				}
-				resolved = await resolveReviewConflict({ ...review, source: review.source, evidence: review.evidence }, validated, target, snapshot, ctx, signal);
+				resolved = await resolveReviewConflict(review, validated, target, snapshot, ctx, signal);
 				if (!resolved) return {
 					content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, message: "User discarded the candidate; nothing was written." }) }],
 					details: { status: "User discarded the candidate; nothing was written.", entries: [] },
@@ -1109,7 +1096,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 			return withMemoryLock(store, async () => {
 				const current = await loadReviewSnapshot(state.config!, state.stores!, state);
-				if (!sameReviewSnapshot(snapshot!, current)) {
+				if (!sameReviewSnapshot(snapshot, current)) {
 					throw new MemoryReviewError("Memory add blocked: review sources changed while waiting. Nothing was written; retry to review current state.");
 				}
 				signal?.throwIfAborted();
@@ -1146,7 +1133,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			event.systemPromptOptions.sections[PROMPT_SECTION] = `WARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configPath()} and restart.`;
 			return;
 		}
-		if (!state.config || !state.stores || !state.snapshotBlocks) return;
+		if (!state.snapshotBlocks) return;
 		const blocks = [...state.snapshotBlocks, ...state.conflictWarnings].filter(Boolean).join("\n\n");
 		event.systemPromptOptions.sections[PROMPT_SECTION] = `${blocks ? `${blocks}\n\n` : ""}${MEMORY_CHECK}`;
 	});

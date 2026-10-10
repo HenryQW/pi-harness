@@ -540,7 +540,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		assertAgentIntent(allocation, input.attempt);
 		this.assertLeasePath(allocation.leasePath, input.intent.token);
 		try {
-			await this.assertPrivateLease(allocation.leasePath, false);
+			await assertPrivateLease(allocation.leasePath, false);
 			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => {
 				const name = agent.name;
 				if (name !== undefined && name !== null && typeof name !== "string") throw new Error("Herdr listed agent name is malformed.");
@@ -656,7 +656,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			assertAgentIntent(allocation, input.attempt);
 			if (input.workerId !== allocation.agentName) throw new Error("Worker termination identity does not match the exact saved agent.");
 			this.assertLeasePath(allocation.leasePath, allocation.token);
-			await this.assertPrivateLease(allocation.leasePath, false);
+			await assertPrivateLease(allocation.leasePath, false);
 			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
 				name: typeof agent.name === "string" ? agent.name : undefined,
 				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
@@ -717,7 +717,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			assertAgentIntent(allocation, input.attempt);
 			if (input.workerId !== allocation.agentName) throw new Error("Saved termination worker does not match the exact owned agent.");
 			this.assertLeasePath(allocation.leasePath, allocation.token);
-			await this.assertPrivateLease(allocation.leasePath, false);
+			await assertPrivateLease(allocation.leasePath, false);
 			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
 				name: typeof agent.name === "string" ? agent.name : undefined,
 				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
@@ -769,7 +769,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		assertAgentIntent(allocation, attempt);
 		this.assertLeasePath(allocation.leasePath, attempt.correlationToken);
 		await this.assertPrivateLeaseDirectories(allocation.leasePath, true);
-		await this.assertPrivateLease(allocation.leasePath, true);
+		await assertPrivateLease(allocation.leasePath, true);
 		const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
 			name: typeof agent.name === "string" ? agent.name : undefined,
 			paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
@@ -955,7 +955,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		assertAgentIntent(allocation, attempt);
 		if (!acquireLaunch) throw new Error("Agent start requires immediate Role launch acquisition.");
 		this.assertLeasePath(allocation.leasePath, allocation.token);
-		await this.assertPrivateLease(allocation.leasePath, false);
+		await assertPrivateLease(allocation.leasePath, false);
 		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
 			throw new Error("Agent start requires an empty exact process lease.");
 		}
@@ -1222,7 +1222,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		} finally {
 			await file?.close();
 		}
-		await this.assertPrivateLease(path, false);
+		await assertPrivateLease(path, false);
 	}
 
 	private async removeLeaseArtifacts(
@@ -1234,7 +1234,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	): Promise<void> {
 		this.assertLeasePath(allocation.leasePath, token);
 		await this.assertPrivateLeaseDirectories(allocation.leasePath, true);
-		const leaseWasPresent = await this.assertPrivateLease(allocation.leasePath, true);
+		const leaseWasPresent = await assertPrivateLease(allocation.leasePath, true);
 		if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context, undefined, true)).length) {
 			throw new Error("Exact process lease still has a holder during cleanup.");
 		}
@@ -1251,9 +1251,9 @@ export class HerdrHostRuntime implements HostRuntime {
 		const directoryPresent = await this.assertPrivateLeaseDirectories(allocation.leasePath, true);
 		if (leaseWasPresent) {
 			if (!directoryPresent) throw new Error("Exact process lease directory disappeared during cleanup.");
-			await this.assertPrivateLease(allocation.leasePath, false);
+			await assertPrivateLease(allocation.leasePath, false);
 			await unlink(allocation.leasePath);
-		} else if (await this.assertPrivateLease(allocation.leasePath, true)) {
+		} else if (await assertPrivateLease(allocation.leasePath, true)) {
 			throw new Error("Exact process lease appeared during cleanup.");
 		}
 		if (!directoryPresent) return;
@@ -1345,10 +1345,6 @@ export class HerdrHostRuntime implements HostRuntime {
 		if (candidate !== path || !candidate.startsWith(`${parent}${sep}`) || !/^[0-9a-f]{32}\.lease$/.test(candidate.slice(parent.length + 1))) {
 			throw new Error("Process lease path is not the exact random path owned by this task token.");
 		}
-	}
-
-	private async assertPrivateLease(path: string, allowMissing: boolean): Promise<boolean> {
-		return assertPrivateLease(path, allowMissing);
 	}
 
 	private async scanLease(path: string, cwd: string, context: OperationContext, pid?: number, allowMissing = false): Promise<number[]> {

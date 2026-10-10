@@ -589,15 +589,12 @@ function normalizeText(value: string, field: string): string {
 	return normalized;
 }
 
-function normalizeRole(value: string, field: string): RoleName {
-	return parseRoleName(value, field);
-}
 
 function normalizeJudgment(judgment: Judgment | undefined, field: string): Judgment | undefined {
 	if (!judgment) return;
 	return {
 		...judgment,
-		role: normalizeRole(judgment.role, `${field}.role`),
+		role: parseRoleName(judgment.role, `${field}.role`),
 		criterion: normalizeText(judgment.criterion, `${field}.criterion`),
 	};
 }
@@ -605,7 +602,7 @@ function normalizeJudgment(judgment: Judgment | undefined, field: string): Judgm
 function normalizeTask(task: TaskRequest, index: number): TaskRequest {
 	const fields = {
 		id: task.id,
-		role: normalizeRole(task.role, `tasks[${index}].role`),
+		role: parseRoleName(task.role, `tasks[${index}].role`),
 		modelClass: task.modelClass,
 		requirements: normalizeText(task.requirements, `tasks[${index}].requirements`),
 		deliverable: normalizeText(task.deliverable, `tasks[${index}].deliverable`),

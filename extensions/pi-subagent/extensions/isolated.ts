@@ -2,7 +2,6 @@ import type { JsonValue } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { EphemeralSubagentExecutor } from "../dist/ephemeral.js";
-import { ROLE_TOOL_POLICY_FLAG } from "../dist/index.js";
 import type { EffectiveExecutionPolicy } from "./config.ts";
 import {
 	createCanonicalGitRootResolver,
@@ -430,10 +429,6 @@ export interface RegisterIsolatedOptions {
 
 /** Register lifecycle surfaces; delegate_task remains the only start tool. */
 export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIsolatedOptions): IsolatedSurface {
-	if (process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`)) {
-		const denied = (): never => { throw new Error("Child Roles cannot access isolated delegation."); };
-		return { execute: async () => denied(), inventory: async () => denied(), recover: async () => denied(), inspect: async () => denied(), canFollowup: denied, enqueue: denied, drain: denied };
-	}
 	const componentsFactory = options.componentsFactory ?? createIsolatedComponents;
 	let latestCtx: ExtensionContext | undefined;
 	let components: IsolatedExtensionComponents | undefined;
