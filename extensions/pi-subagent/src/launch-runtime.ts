@@ -50,10 +50,6 @@ export interface LaunchRuntimeOptions {
 	randomToken?: () => string;
 }
 
-function abortIfNeeded(signal?: AbortSignal): void {
-	signal?.throwIfAborted();
-}
-
 function isMissing(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
 }
@@ -89,7 +85,7 @@ export async function materializeTransientLaunch<Launch extends { readonly args:
 	prepared: { launch: Launch; prompt: string; promptArgIndex: number },
 	signal?: AbortSignal,
 ): Promise<{ readonly launch: Launch; cleanup(): Promise<void> }> {
-	abortIfNeeded(signal);
+	signal?.throwIfAborted();
 	const promptBytes = Buffer.from(prepared.prompt, "utf8");
 	const created = await mkdtemp(join(tmpdir(), "pi-subagent-role-"));
 	let directory = normalize(created);
@@ -113,7 +109,7 @@ export async function materializeTransientLaunch<Launch extends { readonly args:
 		);
 		promptCreated = true;
 		await file.chmod(PROMPT_MODE);
-		abortIfNeeded(signal);
+		signal?.throwIfAborted();
 		await file.writeFile(promptBytes, { signal });
 		await file.sync();
 		await file.close();
@@ -177,7 +173,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		modelClass: ModelClass,
 		context: OperationContext,
 	): Promise<PreparedLaunch> {
-		abortIfNeeded(context.signal);
+		context.signal?.throwIfAborted();
 		const prepared = await resolveConfiguredRoleLaunch(this.options.pi, this.options.context(), { role, modelClass });
 		return Object.freeze({
 			launch: Object.freeze({
@@ -198,7 +194,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		root: string;
 		main: WorkspaceIdentity;
 	}> {
-		abortIfNeeded(context.signal);
+		context.signal?.throwIfAborted();
 		const resolvedRoot = await this.options.resolveRoot(input.cwd, context);
 		if (typeof resolvedRoot !== "string" || !isAbsolute(resolvedRoot) || resolvedRoot.includes("\0")) {
 			throw new Error("Pi Subagent root resolver must return an absolute canonical path.");
@@ -207,7 +203,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		if (root !== resolvedRoot) throw new Error("Pi Subagent root resolver returned a non-canonical path.");
 		const rootInfo = await lstat(root);
 		if (!rootInfo.isDirectory()) throw new Error("Pi Subagent root must be an existing local directory.");
-		abortIfNeeded(context.signal);
+		context.signal?.throwIfAborted();
 		if (input.request.tasks.some((task) => task.kind === "changeset")) {
 			await this.options.preflightHost?.({ request: input.request, cwd: input.cwd, root }, context);
 		}
