@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { Exec, ExecOptions } from "@henryqw/pi-process";
 import {
 	isRecord,
@@ -360,10 +361,6 @@ function transient(error: unknown): boolean {
 	return /\b5\d\d\b|tls|ssl|x509|certificate|handshake/i.test(error instanceof Error ? error.message : String(error));
 }
 
-async function defaultPause(milliseconds: number): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 class FeedbackClient {
 	private pages = 0;
 	private readonly options: FeedbackClientOptions;
@@ -405,7 +402,7 @@ class FeedbackClient {
 				return value.data;
 			} catch (error) {
 				if (!readOnly || attempt === READ_ATTEMPTS - 1 || !transient(error)) throw error;
-				await (this.options.pause ?? defaultPause)(250 * (attempt + 1));
+				await (this.options.pause ?? sleep)(250 * (attempt + 1));
 			}
 		}
 	}

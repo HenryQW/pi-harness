@@ -1,6 +1,6 @@
 import { validateCommitMessage, commitStagedPaths, stageCommitPaths } from "./git-commit.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { realpath, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
@@ -33,6 +33,7 @@ import {
 	type PullRequestLoadContext,
 } from "./pr-github.ts";
 import {
+	canonicalWorktree,
 	extensionExecApi,
 	inspectGitOperation,
 	isAncestor,
@@ -700,8 +701,7 @@ export class PullRequestCommentSweep {
 	}
 
 	private async location(): Promise<{ root: string; id: string; path: string }> {
-		const top = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--show-toplevel"], this.options())).stdout, "Git worktree root");
-		const root = await realpath(top);
+		const root = await canonicalWorktree(this.cwd, this.signal, this.exec);
 		const id = createHash("sha256").update(root).digest("hex");
 		return { root, id, path: join(extensionConfigDir("pi-pr", this.agentDir), "sweep", id, STATE_FILE) };
 	}

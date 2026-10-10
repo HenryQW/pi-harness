@@ -99,9 +99,30 @@ export async function inspectWorktreeState(exec: Exec, options: ExecOptions): Pr
 	return status.stdout === "" ? "clean" : "dirty";
 }
 
-/** Inspect both porcelain state and Git operation markers without mutating the repository. */
-export async function inspectWorktree(exec: Exec, options: ExecOptions): Promise<"clean" | "dirty"> {
-	return await inspectWorktreeState(exec, options) === "clean" ? "clean" : "dirty";
+/** Resolve the real path of the Git worktree root that contains cwd. */
+export async function canonicalWorktree(cwd: string, signal?: AbortSignal, exec: Exec = spawnBounded): Promise<string> {
+	const result = await runChecked(exec, "git", ["rev-parse", "--show-toplevel"], { cwd, signal });
+	return await realpath(parseSingleOutputLine(result.stdout, "Git worktree root resolution"));
+}
+
+export function parseGraphQLResponse(output: string, action: string): Record<string, unknown> {
+	let value: unknown;
+	try {
+		value = JSON.parse(output);
+	} catch {
+		throw new Error(`${action}: invalid GraphQL output`);
+	}
+	if (!isRecord(value)) throw new Error(`${action}: invalid GraphQL output`);
+	const errors = value.errors;
+	if (errors !== undefined) {
+		if (!Array.isArray(errors)) throw new Error(`${action}: invalid GraphQL output`);
+		if (errors.length > 0) {
+			const messages = errors.map((error) => isRecord(error) && typeof error.message === "string" && error.message ? error.message : undefined);
+			if (messages.some((message) => message === undefined)) throw new Error(`${action}: invalid GraphQL errors`);
+			throw new Error(`${action}: ${messages.join("; ")}`);
+		}
+	}
+	return value;
 }
 
 /** Exclude concurrent PR mutations for one canonical worktree and pi-pr namespace. */
@@ -111,9 +132,7 @@ export async function withWorktreeLock<T>(
 	options: { agentDir?: string; signal?: AbortSignal } = {},
 ): Promise<T> {
 	options.signal?.throwIfAborted();
-	const rootResult = await runChecked(spawnBounded, "git", ["rev-parse", "--show-toplevel"], { cwd, signal: options.signal });
-	const root = parseSingleOutputLine(rootResult.stdout, "Git worktree root resolution");
-	const canonical = await realpath(root);
+	const canonical = await canonicalWorktree(cwd, options.signal);
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", options.agentDir));
 	const lockDirectory = join(lockNamespace, "worktree-locks");
 	const identity = createHash("sha256").update(canonical).digest("hex");

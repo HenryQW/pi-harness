@@ -19,7 +19,7 @@ import {
 } from "../../../extensions/pr-github.ts";
 import { spawnBounded } from "@henryqw/pi-process";
 import {
-	inspectWorktree,
+	inspectWorktreeState,
 	readHead,
 } from "../../../extensions/pr-execution.ts";
 
@@ -108,7 +108,7 @@ async function current(cwd, signal, pr) {
 }
 
 async function requireCleanHead(cwd, signal, pullRequest, expectedHead = pullRequest.head.oid) {
-	if (await inspectWorktree(spawnBounded, { cwd, signal }) !== "clean") throw new Error("worktree must be clean with no Git operation in progress");
+	if (await inspectWorktreeState(spawnBounded, { cwd, signal }) !== "clean") throw new Error("worktree must be clean with no Git operation in progress");
 	const head = await readHead(spawnBounded, { cwd, signal });
 	if (head !== expectedHead || pullRequest.head.oid !== expectedHead || pullRequest.target.remoteOid !== expectedHead) {
 		throw new Error("local, pull request, and remote heads must match the expected head");

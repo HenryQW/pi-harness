@@ -8,7 +8,6 @@ import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { spawnBounded } from "@henryqw/pi-process";
 import {
 	assertOnlyDeclaredStatusChanged,
-	inspectWorktree,
 	inspectWorktreeState,
 	parseSingleOutputLine,
 	parseStatusSnapshot,
@@ -82,7 +81,6 @@ test("worktree inspection treats an empty-status Git operation as dirty", async 
 		killed: false,
 	});
 	assert.equal(await inspectWorktreeState(exec, { cwd: root }), "operation");
-	assert.equal(await inspectWorktree(exec, { cwd: root }), "dirty");
 });
 
 test("worktree inspection includes untracked files as ordinary dirty work", async (t) => {
