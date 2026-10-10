@@ -16,9 +16,7 @@ export default async function rtkTestExtension(pi: ExtensionAPI): Promise<void> 
 	try {
 		const { code, killed } = await pi.exec("rtk", ["test", "--help"], { timeout: 2_000 });
 		rtkAvailable = code === 0 && !killed;
-	} catch {
-		rtkAvailable = false;
-	}
+	} catch {}
 
 	pi.on("tool_call", (event) => {
 		if (event.toolName !== "bash" || typeof event.input.command !== "string") return undefined;
