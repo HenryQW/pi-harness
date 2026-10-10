@@ -23,7 +23,7 @@ For each listed package, read the matches and record each contact surface that i
 
 A package with only names, prose, or links to other packages is not a consumer. Record its exclusion. Packages in `deprecated/` are out of scope.
 
-For each consumer, record its minimum Herdr version from its README and from any runtime check, for example `MIN_HERDR_VERSION` in `pi-subagent`. If the two differ, or a required version is not stated, record a `change`.
+For each consumer that requires Herdr, record its minimum Herdr version from its README and from any runtime check, for example `MIN_HERDR_VERSION` in `pi-subagent`. If the two differ, or the minimum is not stated, record a `change`. An optional integration that works without Herdr, such as `pi-ask-question`'s `herdr:blocked` event, states no minimum; audit only its surface.
 
 ## 2. Inspect the target release
 
@@ -33,7 +33,8 @@ tmp="$(mktemp -d)"
 raw=https://raw.githubusercontent.com/herdrdev/herdr
 curl -fsSL "$raw/v$TARGET/CHANGELOG.md" -o "$tmp/CHANGELOG.md"
 for v in "$BASE" "$TARGET"; do
-  curl -fsSL "$raw/v$v/docs/next/api/herdr-api.schema.json" | jq -S . > "$tmp/schema-$v.json"
+  curl -fsSL "$raw/v$v/docs/next/api/herdr-api.schema.json" -o "$tmp/schema-raw-$v.json"
+  jq -S . "$tmp/schema-raw-$v.json" > "$tmp/schema-$v.json"
   curl -fsSL "$raw/v$v/docs/next/website/src/content/docs/cli-reference.mdx" -o "$tmp/cli-$v.mdx"
 done
 diff "$tmp/schema-$BASE.json" "$tmp/schema-$TARGET.json" || true
@@ -52,7 +53,7 @@ Read every changelog section in `(BASE, TARGET]`, including `Breaking Changes`. 
 | `change` | Adapt to changed commands, output, or errors, or use a new Herdr feature to remove probes, retries, polling, or subprocesses. |
 | `none` | No consumer is affected. |
 
-Raise a consumer's minimum Herdr version only to adopt a feature or a required fix. Use the first version that provides it. Put the same version in the README and in any runtime check. Choose version bumps with [the release runbook](../releasing.md).
+Raise a consumer's minimum Herdr version only to adopt a feature or a required fix. Use the first version that provides it. Put the same version in the README and in any runtime check. As with a raised Pi floor, this is a minor release of the consumer. Choose version bumps with [the release runbook](../releasing.md).
 
 ## 4. Test the target
 

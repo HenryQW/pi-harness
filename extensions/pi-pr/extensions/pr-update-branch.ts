@@ -371,12 +371,13 @@ export class PullRequestBranchUpdater {
 			};
 			await assertContext();
 			const discovery = await this.load(this.pi(), { ...this.context(), rebaseBranch: this.authority.target.branch });
+			// Undeclared edits block both continuation and abort, which would reset them.
+			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
+			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
 			const fresh = discovery.kind === "current" ? discovery.pullRequest : undefined;
 			if (!fresh || !sameAuthority(this.authority, fresh) || !(await this.baseAdvancedFromFrozen(fresh))) {
 				return await this.abandonRebase(fresh);
 			}
-			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
-			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
 			await assertContext();
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());

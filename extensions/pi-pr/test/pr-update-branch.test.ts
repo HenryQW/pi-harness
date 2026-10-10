@@ -469,7 +469,8 @@ test("authority change during a conflict aborts the unpublished rebase and rerou
 	git("config", "user.name", "Rebase Test");
 	git("config", "user.email", "rebase@example.test");
 	writeFileSync(join(worktree, "file.txt"), "original\n");
-	git("add", "file.txt");
+	writeFileSync(join(worktree, "other.txt"), "other\n");
+	git("add", "file.txt", "other.txt");
 	git("commit", "-m", "initial");
 	const initial = git("rev-parse", "HEAD");
 	git("branch", "feature");
@@ -503,6 +504,12 @@ test("authority change during a conflict aborts the unpublished rebase and rerou
 	const rewrittenBase = git("commit-tree", `${initial}^{tree}`, "-p", initial, "-m", "rewritten base");
 	git("push", "--force", remote, `${rewrittenBase}:refs/heads/main`);
 	live = { ...authority, base: { ...authority.base, oid: rewrittenBase } };
+	// Abort would reset an undeclared edit, so it blocks automatic cleanup.
+	writeFileSync(join(worktree, "other.txt"), "unrelated edit\n");
+	await assert.rejects(workflow.continue(["file.txt"]), /Worktree changed outside declared conflict paths: other.txt/);
+	assert.equal(readFileSync(join(worktree, "other.txt"), "utf8"), "unrelated edit\n");
+	assert.equal(existsSync(join(worktree, git("rev-parse", "--git-path", "rebase-merge"))), true);
+	writeFileSync(join(worktree, "other.txt"), "other\n");
 	const stale = await workflow.continue(["file.txt"]);
 	assert.equal(stale.kind, "stale");
 	assert.match(stale.kind === "stale" ? stale.reason : "", new RegExp(`rebase aborted and ${featureHead} restored`));
