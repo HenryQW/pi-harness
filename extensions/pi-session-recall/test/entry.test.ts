@@ -251,7 +251,7 @@ describe("session_search entry point", () => {
 		const { syncSessions } = await import("../extensions/search-core.ts");
 		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
 
-		const ctx = { sessionManager: {} };
+		const ctx = { sessionManager: { getSessionFile: () => undefined } };
 
 		const browse = await tool.execute("t1", {}, undefined, undefined, ctx);
 		const browseResult = structured(tool, browse);
@@ -459,7 +459,7 @@ describe("session_search entry point", () => {
 			let rejected = null;
 			try { await tools.session_search({ sessionId: "/nonexistent/file.jsonl" }); } catch (error) { rejected = error.message; }
 			return { browseMode: browse.mode, paths: browse.sessions.map((s) => s.path), hitPath: hits.results[0]?.path, rejected };
-		`, { sessionManager: {} });
+		`, { sessionManager: { getSessionFile: () => undefined } });
 		assert.deepEqual(value, {
 			browseMode: "browse",
 			paths: [session],
@@ -509,19 +509,14 @@ describe("session_search entry point", () => {
 			return realOpenSync(...args);
 		}) as typeof fs.openSync;
 		try {
-			for (const sessionManager of [
-				{},
-				{ getSessionFile: () => { throw new Error("session manager unavailable"); } },
-			]) {
-				const response = await tool.execute("metadata", { query: "metadata-only discovery marker" }, undefined, undefined, { sessionManager });
-				const parsed = JSON.parse(response.content[0].text);
-				const hit = parsed.results.find((result: { path: string }) => result.path === target);
-				assert.ok(hit);
-				assert.equal(hit.matchMessageId, "match");
-				assert.equal("messages" in hit, false);
-				assert.equal("bookends" in hit, false);
-				assert.doesNotMatch(response.content[0].text, /raw discovery secret/);
-			}
+			const response = await tool.execute("metadata", { query: "metadata-only discovery marker" }, undefined, undefined, { sessionManager: { getSessionFile: () => undefined } });
+			const parsed = JSON.parse(response.content[0].text);
+			const hit = parsed.results.find((result: { path: string }) => result.path === target);
+			assert.ok(hit);
+			assert.equal(hit.matchMessageId, "match");
+			assert.equal("messages" in hit, false);
+			assert.equal("bookends" in hit, false);
+			assert.doesNotMatch(response.content[0].text, /raw discovery secret/);
 		} finally {
 			fs.openSync = realOpenSync;
 		}
@@ -541,7 +536,7 @@ describe("session_search entry point", () => {
 		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-syncwarn`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
-		const ctx = { sessionManager: {} };
+		const ctx = { sessionManager: { getSessionFile: () => undefined } };
 
 		// Index one fixture so stale browse/discovery data exists.
 		msgCount = 1;
@@ -582,7 +577,7 @@ describe("session_search entry point", () => {
 		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-syncthrow`);
 		register(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
-		const ctx = { sessionManager: {} };
+		const ctx = { sessionManager: { getSessionFile: () => undefined } };
 
 		msgCount = 1;
 		writeSession("sync-throw/session.jsonl", [
@@ -664,7 +659,7 @@ describe("session_search entry point", () => {
 		const pi = makePi();
 		mod.default(pi as never);
 		const tool = (pi as any).tool as CapturedTool;
-		await tool.execute("t8", { query: "backlog drain unique topic number 2" }, undefined, undefined, { sessionManager: {} });
+		await tool.execute("t8", { query: "backlog drain unique topic number 2" }, undefined, undefined, { sessionManager: { getSessionFile: () => undefined } });
 		const { searchIndex: si } = await import(`../extensions/search-core.ts?bust=${Date.now()}-drain-after`);
 		const after = si(path.join(agentDir, "config", "pi-session-recall", "index.db"), `backlog drain unique topic number 2`);
 		// The direct capped pass indexes at most one file; lazy sync drains the rest.
