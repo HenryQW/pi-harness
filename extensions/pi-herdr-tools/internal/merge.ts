@@ -140,10 +140,7 @@ function tailBytes(text: string, maxBytes: number): string {
  * tool payloads) as the merge transcript. When over budget, whole turns are
  * dropped from the head so the most recent findings survive.
  */
-export function buildMergeTranscript(
-	messages: AgentMessage[],
-	budgetBytes = MERGE_TRANSCRIPT_BUDGET_BYTES,
-): string | undefined {
+export function buildMergeTranscript(messages: AgentMessage[]): string | undefined {
 	const turns: string[] = [];
 	for (const message of messages) {
 		const { role, content } = message as { role?: string; content?: unknown };
@@ -158,10 +155,10 @@ export function buildMergeTranscript(
 	for (let index = turns.length - 1; index >= 0; index -= 1) {
 		const turn = turns[index] as string;
 		const bytes = Buffer.byteLength(turn, "utf8") + 2;
-		if (used + bytes > budgetBytes) {
+		if (used + bytes > MERGE_TRANSCRIPT_BUDGET_BYTES) {
 			if (kept.length === 0) {
 				// A single oversized turn keeps its tail (the latest content).
-				kept.unshift(`${TRANSCRIPT_TRUNCATION_NOTE}\n${tailBytes(turn, budgetBytes)}`);
+				kept.unshift(`${TRANSCRIPT_TRUNCATION_NOTE}\n${tailBytes(turn, MERGE_TRANSCRIPT_BUDGET_BYTES)}`);
 			} else {
 				kept.unshift(TRANSCRIPT_TRUNCATION_NOTE);
 			}
@@ -271,12 +268,7 @@ export class MergeCoordinator {
 
 		// pi.sendUserMessage() is fire-and-forget. Keep the request pending when
 		// current model/auth state would reject its prompt.
-		try {
-			if (!(await this.session.canSubmitPrompt())) {
-				result.deferred += 1;
-				return;
-			}
-		} catch {
+		if (!(await this.session.canSubmitPrompt())) {
 			result.deferred += 1;
 			return;
 		}

@@ -58,16 +58,8 @@ export function formatConfig(config: BtwConfig): string {
 export const CONFIG_COMMAND_USAGE =
 	"/btw config [auto-submit on|off | tools inherit|all|read-only|none | split right|down | reset]";
 
-export type ConfigCommandResult = {
-	action: "show" | "save";
-	config: BtwConfig;
-};
-
-export function applyConfigCommand(current: BtwConfig, input: string): ConfigCommandResult {
-	const trimmed = input.trim();
-	if (!trimmed || trimmed === "show") return { action: "show", config: current };
-
-	const [key, value, ...extra] = trimmed.split(/\s+/);
+export function applyConfigCommand(current: BtwConfig, input: string): BtwConfig {
+	const [key, value, ...extra] = input.split(/\s+/);
 	if (!key || !value || extra.length > 0) throw new Error(CONFIG_COMMAND_USAGE);
 	const config = { ...current };
 
@@ -90,7 +82,7 @@ export function applyConfigCommand(current: BtwConfig, input: string): ConfigCom
 			throw new Error(CONFIG_COMMAND_USAGE);
 	}
 
-	return { action: "save", config };
+	return config;
 }
 
 export function createBtwConfigStore(agentDir?: string) {
