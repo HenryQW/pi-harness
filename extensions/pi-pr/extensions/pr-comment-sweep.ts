@@ -67,6 +67,8 @@ export type SweepLedgerEntry = {
 	kind: FeedbackKind;
 	disposition: SweepDisposition;
 	note: string;
+	/** Already-published PR commit that addressed the item; replies cite it instead of the sweep head. */
+	commit?: string;
 };
 type SweepRunGuard = {
 	epoch: number;
@@ -282,7 +284,7 @@ function parseOwnedPaths(value: unknown): string[] {
 
 function parseLedgerEntry(value: unknown, label: string): SweepLedgerEntry {
 	if (!isRecord(value)) throw new Error(`${label} is invalid`);
-	exactKeys(value, ["id", "kind", "disposition", "note"], label);
+	exactKeys(value, value.commit === undefined ? ["id", "kind", "disposition", "note"] : ["id", "kind", "disposition", "note", "commit"], label);
 	const id = requiredText(value.id, `${label} ID`);
 	if (!["conversation_comment", "review", "thread", "thread_comment"].includes(String(value.kind))) {
 		throw new Error(`${label} kind is invalid`);
@@ -291,7 +293,10 @@ function parseLedgerEntry(value: unknown, label: string): SweepLedgerEntry {
 	if (typeof value.note !== "string" || value.note.includes("\0") || Buffer.byteLength(value.note, "utf8") > LEDGER_NOTE_MAX_BYTES) {
 		throw new Error(`${label} note exceeds ${LEDGER_NOTE_MAX_BYTES} bytes or contains NUL`);
 	}
-	return { id, kind: value.kind as FeedbackKind, disposition: value.disposition as SweepDisposition, note: value.note };
+	const entry: SweepLedgerEntry = { id, kind: value.kind as FeedbackKind, disposition: value.disposition as SweepDisposition, note: value.note };
+	if (value.commit === undefined) return entry;
+	if (entry.disposition !== "addressed") throw new Error(`${label} commit requires an addressed disposition`);
+	return { ...entry, commit: requiredOid(value.commit, `${label} commit`) };
 }
 
 function exactLedger(value: unknown, snapshot: FeedbackSnapshot): SweepLedgerEntry[] {
@@ -1101,6 +1106,16 @@ export class PullRequestCommentSweep {
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
+	// A cited commit must already be published in this PR: reachable from the PR head but not from its base.
+	private async requireCitedCommits(ledger: SweepLedgerEntry[], head: string, base: string): Promise<void> {
+		for (const { id, commit } of ledger) {
+			if (commit && (!(await isAncestor(this.exec, this.options(), commit, head)) ||
+				await isAncestor(this.exec, this.options(), commit, base))) {
+				throw new Error(`Cited commit for ${id} is not a published commit of this pull request: ${commit}`);
+			}
+		}
+	}
+
 	async record(guard: SweepRunGuard, ledgerInput: SweepLedgerEntry[], ownedPathsInput?: string[]): Promise<SweepStatus> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
@@ -1111,6 +1126,7 @@ export class PullRequestCommentSweep {
 				await this.requireCleanPublication(state, state.original.head);
 				await this.currentAuthority(state.authority, state.original.lease, true);
 				state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
+				await this.requireCitedCommits(state.ledger, state.original.head, state.authority.base.oid);
 				state.approved = true;
 				state.approvalGeneration = state.feedback.generation;
 				state.ownedPaths = parseOwnedPaths(ownedPathsInput);
@@ -1120,6 +1136,7 @@ export class PullRequestCommentSweep {
 				await this.requireCleanPublication(state, state.publicationHead!);
 				await this.currentAuthority(state.authority, state.publicationHead!);
 				state.ledger = exactLedger(ledgerInput, state.feedback.snapshot);
+				await this.requireCitedCommits(state.ledger, state.publicationHead!, state.authority.base.oid);
 				state.approved = true;
 				state.approvalGeneration = state.feedback.generation;
 				state.projection = buildProjection(state.feedback.generation, state.feedback.snapshot, state.ledger);
@@ -1313,7 +1330,7 @@ export class PullRequestCommentSweep {
 			const replyBodies = new Map(threadIds.filter((threadId) => !hasReply(threadId)).map((threadId) => {
 				const entry = ledger.get(threadId)!;
 				return [threadId, entry.disposition === "addressed"
-					? state.publicationHead!
+					? entry.commit ?? state.publicationHead!
 					: entry.note.trim()] as const;
 			}));
 			const reserveBytes = [...replyBodies.values()].reduce((total, body) =>

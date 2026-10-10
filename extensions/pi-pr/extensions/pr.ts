@@ -79,6 +79,7 @@ const SweepLedgerEntry = Type.Object({
 	]),
 	disposition: Type.Union([Type.Literal("addressed"), Type.Literal("non-actionable"), Type.Literal("blocked")]),
 	note: Type.String({ maxLength: 2_048 }),
+	commit: Type.Optional(Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" })),
 }, CLOSED);
 const SweepLedger = Type.Array(SweepLedgerEntry, { maxItems: 1_000 });
 const SweepChecks = Type.Array(Type.Object({

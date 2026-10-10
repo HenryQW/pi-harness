@@ -583,6 +583,33 @@ test("a legacy non-actionable projection can resume and acknowledge its open thr
 	await workflow.finalize(resolved.guard, []);
 });
 
+test("an already-published fix is cited by its own commit, not the sweep head", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const commit = (content: string) => {
+		writeFileSync(join(app.root, "file.txt"), content);
+		git(app.root, "commit", "-am", content);
+		git(app.root, "push", "origin", "HEAD:refs/heads/feature");
+		return git(app.root, "rev-parse", "HEAD");
+	};
+	const fix = commit("fixed\n");
+	const head = commit("later\n");
+	const workflow = app.workflow();
+	const started = await workflow.start();
+	const cite = (commit: string) => ledger(started).map((entry) => entry.id === "thread-1" ? { ...entry, commit } : entry);
+	for (const outside of [app.initial, "f".repeat(40)]) {
+		await assert.rejects(workflow.record(started.guard, cite(outside), []), /not a published commit|merge-base/);
+	}
+	await assert.rejects(workflow.record(started.guard, ledger(started).map((entry) => entry.id === "thread-1"
+		? { ...entry, disposition: "non-actionable" as const, commit: fix } : entry), []), /requires an addressed disposition/);
+	const recorded = await workflow.record(started.guard, cite(fix), []);
+	const published = await publishRecorded(workflow, recorded);
+	assert.equal(published.publicationHead, head);
+	const refreshed = await workflow.refresh(published.guard);
+	await workflow.resolve(refreshed.guard);
+	assert.equal(app.world.replyBody, fix);
+});
+
 test("record refuses pre-plan edits without consuming the guard", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
