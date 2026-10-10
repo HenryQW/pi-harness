@@ -381,9 +381,6 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	await assert.rejects(inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }),
 		/unverified; recover manually/);
 	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
-	liveAuthority = { ...authority, base: { ...authority.base, oid: "d".repeat(40) } };
-	await assert.rejects(workflow.continue(["file.txt"]), /Branch rebase authority changed/);
-	liveAuthority = authority;
 	const pausedHead = git("rev-parse", "HEAD");
 	const markerPath = join(worktree, git("rev-parse", "--git-path", "rebase-merge/head-name"));
 	const marker = readFileSync(markerPath, "utf8");
@@ -399,6 +396,10 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 		writeFileSync(markerPath, marker);
 	}
 	duringDiscovery = undefined;
+	// A base that only advanced keeps the pinned rebase valid through continuation and publication.
+	const advancedBase = git("commit-tree", `${baseHead}^{tree}`, "-p", baseHead, "-m", "base advanced");
+	git("push", remote, `${advancedBase}:refs/heads/main`);
+	liveAuthority = { ...authority, base: { ...authority.base, oid: advancedBase } };
 	const verified = await workflow.continue(["file.txt"]);
 	assert.equal(verified.kind, "verified");
 	assert.equal(git("rev-parse", "unrelated-backup"), featureHead);
@@ -406,7 +407,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	assert.equal(git("status", "--porcelain"), "");
 	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
 	const resumed = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
-		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: liveAuthority }) });
 	assert.equal(await resumed.recoveryLaunchAction(), "rebase");
 	assert.deepEqual(await resumed.rebase(), verified);
 	assert.equal(rebases, 2); // Only the original rebase and its conflict continuation ran Git.
@@ -454,4 +455,68 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	await assert.rejects(inspectVerifiedRebaseRecovery(publishedAuthority, { cwd: worktree, agentDir: join(directory, "agent") }),
 		/Invalid branch update recovery is preserved/);
 	assert.equal(readFileSync(recoveryFile, "utf8"), "{malformed\n");
+});
+
+test("authority change during a conflict aborts the unpublished rebase and reroutes", async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-rebase-abandon-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const worktree = join(directory, "worktree");
+	const remote = join(directory, "remote.git");
+	const agentDir = join(directory, "agent");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+	execFileSync("git", ["init", "--bare", remote]);
+	execFileSync("git", ["init", "--initial-branch=main", worktree]);
+	git("config", "user.name", "Rebase Test");
+	git("config", "user.email", "rebase@example.test");
+	writeFileSync(join(worktree, "file.txt"), "original\n");
+	writeFileSync(join(worktree, "other.txt"), "other\n");
+	git("add", "file.txt", "other.txt");
+	git("commit", "-m", "initial");
+	const initial = git("rev-parse", "HEAD");
+	git("branch", "feature");
+	writeFileSync(join(worktree, "file.txt"), "base change\n");
+	git("commit", "-am", "base change");
+	const baseHead = git("rev-parse", "HEAD");
+	git("switch", "feature");
+	writeFileSync(join(worktree, "file.txt"), "feature change\n");
+	git("commit", "-am", "feature change");
+	const featureHead = git("rev-parse", "HEAD");
+	git("push", remote, `${featureHead}:refs/heads/feature`, `${baseHead}:refs/heads/main`);
+	const authority = pullRequest({
+		base: { repository: "acme/project", ref: "main", oid: baseHead },
+		head: { repository: "acme/fork", ref: "feature", oid: featureHead },
+		headFetchSource: remote,
+		target: { ...pullRequest().target, fetchSource: remote, remoteOid: featureHead },
+	});
+	const exec: Exec = async (command, args, options) => {
+		if (command === "gh") return result("ssh\n");
+		if (command === "git" && args[0] === "fetch") {
+			args = args.map((value) => value === "git@github.com:acme/project.git" ? remote : value);
+		}
+		return await spawnBounded(command, args, options);
+	};
+	let live = authority;
+	const workflow = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir,
+		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: live }) });
+	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"] });
+	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
+	// A rewritten base no longer contains the pinned base, so the paused rebase is obsolete.
+	const rewrittenBase = git("commit-tree", `${initial}^{tree}`, "-p", initial, "-m", "rewritten base");
+	git("push", "--force", remote, `${rewrittenBase}:refs/heads/main`);
+	live = { ...authority, base: { ...authority.base, oid: rewrittenBase } };
+	// Abort would reset an undeclared edit, so it blocks automatic cleanup.
+	writeFileSync(join(worktree, "other.txt"), "unrelated edit\n");
+	await assert.rejects(workflow.continue(["file.txt"]), /Worktree changed outside declared conflict paths: other.txt/);
+	assert.equal(readFileSync(join(worktree, "other.txt"), "utf8"), "unrelated edit\n");
+	assert.equal(existsSync(join(worktree, git("rev-parse", "--git-path", "rebase-merge"))), true);
+	writeFileSync(join(worktree, "other.txt"), "other\n");
+	const stale = await workflow.continue(["file.txt"]);
+	assert.equal(stale.kind, "stale");
+	assert.match(stale.kind === "stale" ? stale.reason : "", new RegExp(`rebase aborted and ${featureHead} restored`));
+	assert.equal(stale.kind === "stale" ? stale.authority.base.oid : "", rewrittenBase);
+	assert.equal(git("rev-parse", "HEAD"), featureHead);
+	assert.equal(git("branch", "--show-current"), "feature");
+	assert.equal(git("status", "--porcelain"), "");
+	assert.equal(existsSync(join(worktree, git("rev-parse", "--git-path", "rebase-merge"))), false);
+	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir }), false);
 });

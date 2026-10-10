@@ -1,5 +1,5 @@
 import type { PrRun } from "./pr-run.ts";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
@@ -64,8 +64,9 @@ export type UpdateBranchOptions = {
 	loadCurrentPullRequest?: Load;
 };
 
+// Base OID drift is checked separately: a base that only advanced keeps the frozen rebase valid.
 function sameAuthority(frozen: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
-	return samePullRequestSnapshot(frozen, fresh) && frozen.base.oid === fresh.base.oid &&
+	return samePullRequestSnapshot(frozen, fresh) &&
 		fresh.lifecycle === "open" && (fresh.conditions.conflict || fresh.conditions.baseUpdateRequired);
 }
 
@@ -169,7 +170,8 @@ export class PullRequestBranchUpdater {
 			target: { ...this.authority.target, remoteOid: beforeRebase ? fresh.target.remoteOid : expectedHead },
 		} : this.authority;
 		if (!samePullRequestSnapshot(comparison, fresh) || fresh.lifecycle !== "open" ||
-			(!beforeRebase && (this.authority.base.oid !== fresh.base.oid || !published && !(fresh.conditions.conflict || fresh.conditions.baseUpdateRequired)))) {
+			(!beforeRebase && (!published && !(fresh.conditions.conflict || fresh.conditions.baseUpdateRequired) ||
+				!(await this.baseAdvancedFromFrozen(fresh))))) {
 			throw new Error("Branch update cancelled: frozen pull request authority changed (identity, lifecycle, destination, or post-rebase authority)");
 		}
 		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
@@ -211,6 +213,35 @@ export class PullRequestBranchUpdater {
 			throw new StaleRebaseRoute(`${reasons.join("; ")}; cancelled before rebase or publication`, cloneCurrentPullRequest(fresh));
 		}
 		return fresh;
+	}
+
+	// After the rebase starts, GitHub rediscovers mergeability against a base that only advanced.
+	private async baseAdvancedFromFrozen(fresh: CurrentPullRequest): Promise<boolean> {
+		if (fresh.base.oid === this.authority.base.oid) return true;
+		const source = await resolveRepositoryFetchSource(this.exec, this.execOptions(), {
+			host: this.authority.host,
+			repository: this.authority.base.repository,
+		});
+		await runChecked(this.exec, "git", [
+			"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", source, fresh.base.oid,
+		], this.execOptions());
+		return await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, fresh.base.oid);
+	}
+
+	// Nothing is published while a conflict waits, so abort restores the frozen head for fresh routing.
+	private async abandonRebase(fresh: CurrentPullRequest | undefined): Promise<UpdateBranchResult> {
+		this.state.phase = "blocked";
+		const original = this.authority.head.oid;
+		await runChecked(this.exec, "git", ["rebase", "--abort"], this.execOptions());
+		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
+		if (branch !== this.authority.target.branch || await readHead(this.exec, this.execOptions()) !== original ||
+			await inspectWorktree(this.exec, this.execOptions()) !== "clean") {
+			throw new Error(`Branch rebase authority changed; abort did not restore clean ${original}; recover manually`);
+		}
+		await rm(recoveryPath(this.cwd, this.authority, this.agentDir), { force: true });
+		const reason = `Branch rebase authority changed; rebase aborted and ${original} restored before publication`;
+		if (!fresh) throw new Error(`${reason}; pull request is no longer current`);
+		return { kind: "stale", reason, authority: cloneCurrentPullRequest(fresh) };
 	}
 
 	private async writeRecovery(phase: RebaseRecovery["phase"], verified: string | null): Promise<void> {
@@ -340,11 +371,13 @@ export class PullRequestBranchUpdater {
 			};
 			await assertContext();
 			const discovery = await this.load(this.pi(), { ...this.context(), rebaseBranch: this.authority.target.branch });
-			if (discovery.kind !== "current" || !sameAuthority(this.authority, discovery.pullRequest)) {
-				throw new Error("Branch rebase authority changed");
-			}
+			// Undeclared edits block both continuation and abort, which would reset them.
 			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
+			const fresh = discovery.kind === "current" ? discovery.pullRequest : undefined;
+			if (!fresh || !sameAuthority(this.authority, fresh) || !(await this.baseAdvancedFromFrozen(fresh))) {
+				return await this.abandonRebase(fresh);
+			}
 			await assertContext();
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());

@@ -463,9 +463,9 @@ function currentWorkspaceResult(paths: Paths, worktreeOverrides: Record<string, 
 	});
 }
 
-function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: running\nversion: 0.9.0\nendpoint_compatible: yes\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"): Step[] {
+function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: running\nversion: 0.9.3\nendpoint_compatible: yes\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"): Step[] {
 	return [
-		{ command: "herdr", args: ["--version"], result: { code: 0, stdout: "herdr 0.9.0\n", stderr: "" } },
+		{ command: "herdr", args: ["--version"], result: { code: 0, stdout: "herdr 0.9.3\n", stderr: "" } },
 		{ command: "herdr", args: ["status", "server"], result: { code: 0, stdout: status, stderr: "" } },
 		{ command: "herdr", args: ["api", "schema", "--json"], result: { code: 0, stdout: JSON.stringify(schemaValue), stderr: "" } },
 		{ command: "lsof-test", args: ["-v"], result: { code: 0, stdout: "lsof 4.99", stderr: "" } },
@@ -554,10 +554,10 @@ test("preflight accepts linked Main only after Herdr capabilities and current-wo
 	});
 
 	for (const [name, mutate, error] of [
-		["old client", (steps: Step[]) => { (steps[0]!.result as ProcessResult).stdout = "herdr 0.8.9\n"; }, /client version/],
-		["prerelease client", (steps: Step[]) => { (steps[0]!.result as ProcessResult).stdout = "herdr 0.9.0-beta.1\n"; }, /client version/],
-		["incompatible endpoint", (steps: Step[]) => { (steps[1]!.result as ProcessResult).stdout = "status: running\nversion: 0.9.0\nendpoint_compatible: no\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"; }, /server must be compatible/],
-		["old protocol", (steps: Step[]) => { (steps[1]!.result as ProcessResult).stdout = "status: running\nversion: 0.9.0\nendpoint_compatible: yes\nprivate_protocol: 21\nprivate_protocol_compatible: yes\n"; }, /protocol >=22/],
+		["old client", (steps: Step[]) => { (steps[0]!.result as ProcessResult).stdout = "herdr 0.9.2\n"; }, /client version/],
+		["prerelease client", (steps: Step[]) => { (steps[0]!.result as ProcessResult).stdout = "herdr 0.9.3-beta.1\n"; }, /client version/],
+		["incompatible endpoint", (steps: Step[]) => { (steps[1]!.result as ProcessResult).stdout = "status: running\nversion: 0.9.3\nendpoint_compatible: no\nprivate_protocol: 22\nprivate_protocol_compatible: yes\n"; }, /server must be compatible/],
+		["old protocol", (steps: Step[]) => { (steps[1]!.result as ProcessResult).stdout = "status: running\nversion: 0.9.3\nendpoint_compatible: yes\nprivate_protocol: 21\nprivate_protocol_compatible: yes\n"; }, /protocol >=22/],
 		["missing env capability", (steps: Step[]) => { steps[2]!.result = {
 			code: 0,
 			stdout: JSON.stringify(schema({

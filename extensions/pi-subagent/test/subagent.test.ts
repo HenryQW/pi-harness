@@ -719,7 +719,8 @@ test("potential-writer parallel tasks serialize and invalid completion releases 
 				{ role: "writer", name: "Third", task: "third" },
 			] };
 			await app.handlers.get("tool_call")!({ toolCallId: "writers", toolName: "delegate_task", input: params }, app.ctx);
-			await app.tool.execute("writers", params, undefined, undefined, app.ctx);
+			const started = await app.tool.execute("writers", params, undefined, undefined, app.ctx);
+			assert.match(started.content[0].text, /use \/subagent D1 Close\/cancel-and-release/);
 			app.handlers.get("tool_result")!({ toolCallId: "writers" });
 			await waitFor(() => fake.calls.some(([kind, action]) => kind === "agent" && action === "wait"));
 			assert.equal(app.sessionEntries.length, 1, "second tab cannot launch before first finishes");

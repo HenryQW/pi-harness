@@ -1400,7 +1400,7 @@ test("manifest entrypoint and Main-side Skill ship with the unified tools", asyn
 		pi?: { extensions?: string[]; skills?: string[] };
 	};
 	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], undefined);
-	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.4.9");
+	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.5.0");
 	assert.deepEqual(manifest.pi?.extensions, ["./extensions/subagent.ts"]);
 	assert.deepEqual(manifest.pi?.skills, ["./skills"]);
 	for (const path of ["README.md", "CONTEXT.md", "skills"]) assert.ok(manifest.files?.includes(path));

@@ -658,6 +658,33 @@ for (const routes of [
 	} finally { await app.shutdown(ctx); }
 });
 
+test("a conflict continuation that aborts its rebase reroutes in the same /pr", async () => {
+	let loads = 0;
+	const ids = [1, 2].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
+	let runs = 0;
+	const app = harness({
+		async load() { loads++; return currentPullRequest({ conditions: { conflict: true } }); },
+		useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => ids[runs++]!,
+		async canonicalWorktree() { return "/repo"; },
+		createBranchUpdater: (options) => ({ state: { phase: "ready" }, async recoveryLaunchAction() { return "rebase"; },
+			async rebase() { return { kind: "conflict", paths: ["file.txt"] }; },
+			async continue() { return { kind: "stale", reason: "rebase aborted and original restored", authority: options.authority }; } }) as never,
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.beforeSettle(ctx);
+		await app.callTool("pi_pr_update_branch", { runId: ids[0], action: "rebase" }, ctx);
+		assert.equal(((await app.callTool("pi_pr_update_branch", { runId: ids[0], action: "continue", resolvedPaths: ["file.txt"] }, ctx)).details as { kind: string }).kind, "stale");
+		const before = loads;
+		const next = await app.beforeSettle(ctx);
+		assert.equal(next?.continue, true);
+		assert.equal(loads, before + 1);
+		assert.equal(runs, 2);
+	} finally { await app.shutdown(ctx); }
+});
+
 test("dirty diverged work is committed, synced onto the PR head, and published in one /pr", async () => {
 	const ids = [1, 2].map((n) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`);
 	const locals: Array<CurrentPullRequest["local"]> = [
