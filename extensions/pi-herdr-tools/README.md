@@ -1,6 +1,6 @@
 # `@henryqw/pi-herdr-tools`
 
-Clone a conversation into a Herdr tab or worktree, ask a side question and merge its answer back, name the conversation, and finish the worktree safely. One package and one extension entry point provide `/clone-tab`, `/clone-worktree`, `/btw`, `/rename`, and `/done`.
+Clone a conversation into a Herdr tab or worktree, ask a side question and merge its answer back, name the conversation, and finish the worktree safely. One package and one extension entry point provide `/clone-tab`, `/clone-worktree`, `/btw`, `/rename`, and `/done`. Herdr also shows the pane as blocked while a Pi dialog waits for your answer.
 
 ![Architecture overview showing one Pi extension entry point registering four internal handlers, with shared Herdr CLI and task-model routing dependencies.](./docs/workflow-overview.svg)
 
@@ -11,7 +11,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series and Herdr 0.7.4+. Herdr operations require a Herdr-managed Pi pane; outside Herdr, rename still sets the Pi session title. Run `/task-models`, configure `fast`, and verify it no longer says `not configured` before using title generation or side threads.
+Requires Pi 1.1.0 or later in the 1.x series and Herdr 0.7.4+. Herdr operations require a Herdr-managed Pi pane; outside Herdr, rename still sets the Pi session title. Run `/task-models`, configure `fast`, and verify it no longer says `not configured` before using title generation or side threads. Dialog status also requires Herdr's own Pi integration (`~/.pi/agent/extensions/herdr-agent-state.ts`), which Herdr installs; this package only publishes the status event.
 
 ### Migrating from the merged packages
 
@@ -58,6 +58,7 @@ Run `/clone-tab` to open a new Herdr tab with a clone of the active conversation
 | Rename progress and result widgets | ui | For people who run `/rename`: shows `renaming...`, then `renamed to <title>` for two seconds on success. |
 | First real user prompt | ui | For people in a new, untitled conversation: starts title generation once the expanded prompt is ready. |
 | `pi-herdr-rename/rename` | model task | Title-generation route; users configure its profile through `/task-models`. |
+| Dialog blocked status | ui | For people watching Herdr: while a TUI dialog is open, the pane shows blocked with the label `Input required`. |
 
 ### Clone conversations and finish worktrees
 
@@ -72,6 +73,18 @@ From a Herdr-managed Pi pane with a conversation, run `/btw Why is this test fai
 ### Name conversations
 
 In a new, untitled conversation, send the first real prompt. Pi generates a title in the background without delaying the reply.
+
+### Show open dialogs in Herdr
+
+When any extension opens a select, confirm, input, editor, or custom dialog in Pi's interactive TUI, Herdr marks the pane as blocked with the fixed label `Input required`. The status clears when the dialog is answered, cancelled, or fails. This covers dialogs from other packages too, for example `pi-memory` review conflicts, `/task-models`, `/pr`, and `/cron`. This bridge never sends dialog titles or content to Herdr.
+
+| Mode | Dialog status |
+| --- | --- |
+| Interactive TUI | Reported. |
+| RPC, even when the client provides UI | Not reported. |
+| JSON and print | Not reported. |
+
+Nested dialogs count as one block. `ask_question` from `@henryqw/pi-ask-question` publishes its own status; the two overlap without clearing each other early.
 
 ## Flow
 
@@ -205,3 +218,9 @@ Display titles are natural task phrases, preferably two or three words, and alwa
 A missing shared task-model config warns once at session start. Run `/task-models` to configure rename routing. No viable route leaves titles unchanged. `/rename` warns if the session has no user text to rename.
 
 Herdr and Git synchronization failures appear as warnings. Fix the reported issue, then run `/rename` to try again. Cancellation by a newer rename remains silent. Older titles receive no migration.
+
+### Dialog status
+
+- Without Herdr's Pi integration, the status event has no listener and Herdr shows no blocked state.
+- On `/reload`, session switch, or exit, this package clears any block it still holds once. Pi can hide a dialog that was open during reload; that old dialog no longer affects Herdr status, and late events from it are ignored.
+- Another listener of the same event can still show blocked status for its own reasons; this package clears only its own contribution.
