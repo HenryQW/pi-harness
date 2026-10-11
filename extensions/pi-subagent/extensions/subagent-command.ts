@@ -19,6 +19,8 @@ export interface DirectTask {
 	name: string;
 	status: string;
 	canClose?: boolean;
+	/** Entry IDs of running workers in a locally owned all-read workflow; each can be stopped alone. */
+	stoppable?: readonly string[];
 	recovery?: string;
 	/** Recorded workers by original index; empty for legacy records. */
 	workers: readonly DirectDisplay[];
@@ -52,6 +54,7 @@ export interface IsolatedInventory {
 export interface SubagentCommandAdapter {
 	direct(ctx: ExtensionContext): readonly DirectTask[];
 	closeDirect(task: DirectTask, current: () => boolean): Promise<string>;
+	stopDirect(task: DirectTask, entryId: string, current: () => boolean): Promise<string>;
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
 	/** Read-only Role catalog report with routes and per-file load errors. */
@@ -160,13 +163,21 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					const untabbed = task.workers.filter((worker) => !task.tabs.some((tab) => tab.display?.worker === worker.worker));
 					for (const worker of untabbed) ctx.ui.notify(`${clean(workerLabel(worker))} · no verified tab recorded`, "info");
 					if (task.workers[0] && task.workers.length < task.workers[0].workers) ctx.ui.notify(`${task.workers[0].workers - task.workers.length} other worker(s) in D${task.workers[0].workflow} have no recorded tab.`, "info");
-					if (task.canClose) {
-						const action = await choose(ctx, `Direct · ${label}`, [
-							{ label: "Close/cancel-and-release ALL owned workers in this workflow (preserve files and commits)", value: "close" },
-							{ label: "Back / refresh", value: "back" },
+					const stoppable = task.tabs.filter((tab) => task.stoppable?.includes(tab.entryId));
+					if (task.canClose || stoppable.length) {
+						const action = await choose<{ kind: "close" | "back" } | { kind: "stop"; entryId: string }>(ctx, `Direct · ${label}`, [
+							...(task.canClose ? [{ label: "Close/cancel-and-release ALL owned workers in this workflow (preserve files and commits)", value: { kind: "close" as const } }] : []),
+							...stoppable.map((tab) => ({ label: `Stop this worker: ${tab.display ? workerLabel(tab.display) : tab.name} (other workers continue)`, value: { kind: "stop" as const, entryId: tab.entryId } })),
+							{ label: "Back / refresh", value: { kind: "back" as const } },
 						]);
 						if (!valid()) return;
-						if (action === "close") {
+						if (action?.kind === "stop") {
+							try {
+								const report = await adapter.stopDirect(task, action.entryId, current);
+								if (valid()) ctx.ui.notify(report, "info");
+							} catch (error) { if (valid()) ctx.ui.notify(`Worker stop failed: ${errorText(error)}. Inspect the exact tab/session before retrying.`, "error"); }
+						}
+						if (action?.kind === "close") {
 							try {
 								const report = await adapter.closeDirect(task, current);
 								if (valid()) ctx.ui.notify(report, "info");

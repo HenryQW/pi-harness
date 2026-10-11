@@ -132,6 +132,16 @@ test("rejects invalid delegation values without cross-product duplication", () =
 	assert.equal(parseWorkflow({ ...delegation("first line\nsecond line") }).delegations[0]!.task, "first line\nsecond line");
 });
 
+test("continueFrom accepts direct references and continues each worker at most once", () => {
+	assert.equal(parseWorkflow({ ...delegation(), continueFrom: "D7.1" }).delegations[0]!.continueFrom, "D7.1");
+	assert.deepEqual(parseWorkflow({ chain: [delegation(), { ...delegation(), continueFrom: "D12.3" }] }).delegations.map(({ continueFrom }) => continueFrom), [undefined, "D12.3"]);
+	for (const continueFrom of ["D0.1", "D7", "d7.1", "D7.1 ", "I7.1", ""]) {
+		assert.throws(() => parseWorkflow({ ...delegation(), continueFrom }), /declared tool schema/, continueFrom);
+	}
+	assert.throws(() => parseWorkflow({ continueFrom: "D7.1", tasks: [delegation()] }), /exactly one/);
+	assert.throws(() => parseWorkflow({ tasks: [{ ...delegation(), continueFrom: "D7.1" }, { ...delegation(), continueFrom: "D7.1" }] }), /at most once/);
+});
+
 test("runs a single delegation exactly once", async () => {
 	const calls: string[] = [];
 	await runForegroundWorkflow("call", parseWorkflow(delegation()), (entry) => {

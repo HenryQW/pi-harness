@@ -85,6 +85,28 @@ export function exactDirectTerminalTurn(jsonl: string, prompt: string): boolean 
 	return reason === "stop" || reason === "error" || reason === "aborted";
 }
 
+const turnSuffix = (turn: string) => `\n\nTurn identity: ${turn}`;
+
+/** Refuse continuation unless the saved session's exact recorded turn is terminal and no later user turn exists. */
+export async function assertSettledDirectSession(sessionFile: string, turn: string): Promise<void> {
+	const info = await stat(sessionFile).catch((error: unknown) => {
+		throw new Error(`Saved Pi session ${sessionFile} is missing or unreadable`, { cause: error });
+	});
+	if (info.size > SESSION_LIMIT) throw new Error(`Saved Pi session ${sessionFile} exceeds 16 MiB`);
+	const jsonl = await readFile(sessionFile, "utf8");
+	let prompt: string | undefined;
+	for (const line of jsonl.trimEnd().split("\n")) {
+		const entry = JSON.parse(line) as Json;
+		const message = entry?.type === "message" ? entry.message as Json | undefined : undefined;
+		const text = message?.role === "user" && Array.isArray(message.content) && message.content.length === 1
+			? (message.content[0] as Json)?.text : undefined;
+		if (typeof text === "string" && text.endsWith(turnSuffix(turn))) prompt = text;
+	}
+	if (prompt === undefined || !exactDirectTerminalTurn(jsonl, prompt)) {
+		throw new Error(`Saved Pi session ${sessionFile} has no terminal final turn for the recorded prompt; the worker may still be running`);
+	}
+}
+
 export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSWER_LIMIT, requireSuccess = false): string {
 	const final = exactFinalTurn(jsonl, prompt);
 	if (!final || final.stopReason !== "stop" || !Array.isArray(final.content)) {
@@ -183,7 +205,8 @@ export function directPartialText(jsonl: string, prompt: string, maxChars: numbe
 	return chars.length <= maxChars ? chars.join("") : `…${chars.slice(-maxChars).join("")}`;
 }
 
-export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string };
+/** `turn` is the prompt's random turn identity; it proves which session turn a record owns. */
+export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string; turn: string };
 
 /** Allocation evidence is not ownership and must never authorize pane mutation. */
 export type DirectAllocation = Omit<DirectTab, "tabId" | "paneId"> & {
@@ -214,8 +237,9 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 	};
 	return {
 		/** Close only an exact owned pane, then prove it and its leased children stopped.
-		 * A task result or Ctrl-C acknowledgement is not termination evidence. */
-		async stop(tab: DirectTab, current: () => boolean = () => true): Promise<void> {
+		 * A task result or Ctrl-C acknowledgement is not termination evidence.
+		 * `settledOnly` refuses to close a listed agent that is not idle or done. */
+		async stop(tab: Omit<DirectTab, "turn">, current: () => boolean = () => true, settledOnly = false): Promise<void> {
 			const requireCurrent = () => { if (!current()) throw new Error("Direct task scope changed; reopen /subagent."); };
 			requireCurrent();
 			await assertPrivateLease(tab.leasePath, false);
@@ -241,6 +265,9 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				if (related.length !== 1 || agent.name !== tab.name || agent.pane_id !== tab.paneId
 					|| agent.tab_id !== tab.tabId || agent.workspace_id !== workspaceId || agent.cwd !== workingDir
 					|| tab.paneId === callerPane) throw new Error("Worker termination requires one exact owned agent, workspace, checkout, tab and pane match.");
+				if (settledOnly && agent.agent_status !== "idle" && agent.agent_status !== "done") {
+					throw new Error(`Herdr agent ${tab.name} is ${String(agent.agent_status)}, not idle or done; it was not closed`);
+				}
 				requireCurrent();
 				result(await herdr.json(["pane", "close", tab.paneId], options()), "ok");
 			}
@@ -254,22 +281,31 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			}
 			requireCurrent();
 		},
-		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false): Promise<DirectHandle> {
+		/** `resume` reuses a stopped worker's saved session and private lease instead of a new temp directory. */
+		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath">): Promise<DirectHandle> {
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
 			if (pane.pane_id !== callerPane || pane.workspace_id !== workspaceId) throw new Error("Herdr caller pane no longer matches the launching workspace.");
 			if (Object.keys(launch.env).length) throw new Error("Direct Herdr launch cannot transfer Role environment overrides.");
-			const sessionDir = await mkdtemp(join(tmpdir(), "pi-subagent-direct-"));
-			const sessionFile = join(sessionDir, "session.jsonl");
-			const leasePath = join(sessionDir, "process.lease");
-			await writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
+			let sessionFile: string;
+			let leasePath: string;
+			if (resume) {
+				({ sessionFile, leasePath } = resume);
+				await assertPrivateLease(leasePath, false);
+			} else {
+				const sessionDir = await mkdtemp(join(tmpdir(), "pi-subagent-direct-"));
+				sessionFile = join(sessionDir, "session.jsonl");
+				leasePath = join(sessionDir, "process.lease");
+				await writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
+			}
+			const turn = randomBytes(16).toString("hex");
 			// Pi's native session is the exact answer channel. Herdr screen output is diagnostic only.
 			const sessionArgs = launch.args.filter((arg) => arg !== "--no-session");
 			if (sessionArgs.length !== launch.args.length - 1) throw new Error("Role launch must contain exactly one --no-session option.");
 			signal.throwIfAborted();
 			// Tab creation is bounded but not session-cancellable: Herdr may create it
 			// before the CLI responds, and aborting the CLI loses the exact tab ID.
-			const allocation: DirectAllocation = { name, workspaceId, cwd: workingDir, label, sessionFile, leasePath };
+			const allocation: DirectAllocation = { name, workspaceId, cwd: workingDir, label, sessionFile, leasePath, turn };
 			let tabId: string;
 			let paneId: string;
 			try {
@@ -292,7 +328,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			} catch (error) { throw new DirectAllocationError(allocation, error); }
 			try {
 				// Record the tab before the agent start can outlive an aborted launch.
-				onTab({ name, tabId, paneId, sessionFile, leasePath });
+				onTab({ name, tabId, paneId, sessionFile, leasePath, turn });
 				signal.throwIfAborted();
 				const started = await startPiAgent(herdr, { name, pane: paneId,
 					args: [...sessionArgs, "--session", sessionFile], options: options(signal), shouldRetry: () => false });
@@ -304,7 +340,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				const completionInstruction = requireSuccess
 					? `\n\nWrite-access completion: Return exactly one JSON object without Markdown, {"outcome":"succeeded","answer":"summary"}. outcome must be ${DIRECT_OUTCOMES.join(", ")}. Use succeeded only when the entire authorized task, including requested checks and commits, completed successfully; a failed mutation, unresolved partial work, or missing authorization must be failed or blocked, even if your Pi turn ends normally. Describe changes, checks, commit identity, remaining risks, and checkout status in answer.`
 					: "";
-				const prompt = `${task}\n\nDirect shared-checkout boundary: use only your Role's resources for the explicitly authorized task and scope. Writes and commits affect Main's existing checkout immediately; preserve unrelated files and staged changes. Do not create or manage worktrees, change branches, push, or perform external mutations without explicit task authorization. There is no isolated integration, automatic validation, or rollback. If instructions conflict or authorization is missing, stop and report it. Report changes, commit identity if any, checks, remaining risks, and checkout status; never claim isolated guarantees.${completionInstruction}\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
+				const prompt = `${task}\n\nDirect shared-checkout boundary: use only your Role's resources for the explicitly authorized task and scope. Writes and commits affect Main's existing checkout immediately; preserve unrelated files and staged changes. Do not create or manage worktrees, change branches, push, or perform external mutations without explicit task authorization. There is no isolated integration, automatic validation, or rollback. If instructions conflict or authorization is missing, stop and report it. Report changes, commit identity if any, checks, remaining risks, and checkout status; never claim isolated guarantees.${completionInstruction}${turnSuffix(turn)}`;
 				// Native prompt without --wait acknowledges submission, not completion of the turn.
 				const accepted = await herdr.json(["agent", "prompt", name, prompt], options(signal));
 				const state = inspect(accepted, "agent_prompted", name, paneId, tabId);

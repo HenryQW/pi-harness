@@ -25,12 +25,14 @@ export const DIRECT_ACCESS = ["read", "write"] as const;
 export type DirectAccess = (typeof DIRECT_ACCESS)[number];
 const ACCESS_GUIDANCE = `Declare "write" when the task may change files, Git state, or external resources, otherwise "read". "read" is not enforced (no sandbox): it skips checkout admission and runs concurrently. Use mode isolated for checked writes.`;
 const AccessSchema = StringEnum(DIRECT_ACCESS, { description: ACCESS_GUIDANCE });
+const ContinueFromSchema = Type.String({ pattern: "^D[1-9][0-9]*\\.[1-9][0-9]*$", description: "Optional direct worker reference such as D7.1. Continues that finished worker's Pi session in a new tab with this task; role must equal the recorded Role." });
 
 export const DelegationSchema = Type.Object({
 	role: RoleSchema,
 	name: TaskNameSchema,
 	task: TaskSchema,
 	access: AccessSchema,
+	continueFrom: Type.Optional(ContinueFromSchema),
 	kind: Type.Optional(DirectKindSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -42,6 +44,7 @@ export const DirectWorkflowSchema = Type.Object({
 	name: Type.Optional(TaskNameSchema),
 	task: Type.Optional(TaskSchema),
 	access: Type.Optional(AccessSchema),
+	continueFrom: Type.Optional(ContinueFromSchema),
 	kind: Type.Optional(DirectKindSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -72,7 +75,7 @@ export type ParsedWorkflow =
 export type ParsedDelegateTask = { mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest };
 
 type DirectInput = Static<typeof DirectWorkflowSchema>;
-const DELEGATION_KEYS = ["role", "name", "task", "access", "kind", "model", "modelClass"] as const;
+const DELEGATION_KEYS = ["role", "name", "task", "access", "continueFrom", "kind", "model", "modelClass"] as const;
 
 function text(value: string, path: string): string {
 	const normalized = value.trim();
@@ -92,6 +95,7 @@ function normalizeDelegation(value: Static<typeof DelegationSchema>, path: strin
 		name: normalizeTaskName(value.name, `${path}.name`),
 		task: text(value.task, `${path}.task`),
 		access: value.access,
+		...(value.continueFrom === undefined ? {} : { continueFrom: value.continueFrom }),
 		kind: "text",
 		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
@@ -132,12 +136,13 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 	}
 	if (!mode) throw new Error("direct workflow must select exactly one of single, tasks, or chain.");
 	const input = value as DirectInput;
-	if (mode === "single") {
-		if (!hasDelegation(input)) throw new Error("direct workflow requires role, name, task, and access.");
-		return { mode, delegations: [normalizeDelegation(input, "workflow")] };
-	}
-	if (mode === "parallel") return { mode, delegations: input.tasks!.map((item, index) => normalizeDelegation(item, `tasks[${index}]`)) };
-	return { mode, delegations: input.chain!.map((item, index) => normalizeDelegation(item, `chain[${index}]`)) };
+	if (mode === "single" && !hasDelegation(input)) throw new Error("direct workflow requires role, name, task, and access.");
+	const workflow: ParsedWorkflow = mode === "single" ? { mode, delegations: [normalizeDelegation(input as Static<typeof DelegationSchema>, "workflow")] }
+		: mode === "parallel" ? { mode, delegations: input.tasks!.map((item, index) => normalizeDelegation(item, `tasks[${index}]`)) }
+		: { mode, delegations: input.chain!.map((item, index) => normalizeDelegation(item, `chain[${index}]`)) };
+	const continued = workflow.delegations.flatMap(({ continueFrom }) => continueFrom === undefined ? [] : [continueFrom]);
+	if (new Set(continued).size !== continued.length) throw new Error("A direct request may continue each worker at most once.");
+	return workflow;
 }
 
 /** A direct request is a writer request when any task declares write access. */

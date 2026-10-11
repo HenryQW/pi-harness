@@ -19,6 +19,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	let active = true;
 	let inspectCount = 0;
 	const closed: string[] = [];
+	const stopped: string[] = [];
 	let inventoryCount = 0;
 	let recoverCount = 0;
 	const messages: string[] = [];
@@ -27,6 +28,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	const adapter: SubagentCommandAdapter = {
 		direct: () => options.direct ?? [],
 		closeDirect: async (task, current) => { assert.equal(current(), true); closed.push(task.id); return "Stopped"; },
+		stopDirect: async (task, entryId, current) => { if (!current()) throw new Error("stale"); stopped.push(`${task.id}:${entryId}`); return "Worker stopped"; },
 		isolated: async (_cwd, current) => { inventoryCount++; assert.equal(current(), true); if (options.isolatedError) throw options.isolatedError; return inventory; },
 		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
 		roles: () => "scout · built-in",
@@ -75,7 +77,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick, closed,
+	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick, closed, stopped,
 		setRecoverPause: (pause: () => Promise<void>) => { recoverPause = pause; },
 		get recoverCount() { return recoverCount; },
 		setActive: (value: boolean) => { active = value; },
@@ -292,5 +294,25 @@ test("direct Close is exact and refuses stale branch/session/epoch dialogs", asy
 		h.responses.push(h.pick("Direct"), (dialog) => { h[change](); return h.pick("Close/cancel")(dialog); }, h.pick("Close"));
 		await h.run();
 		assert.deepEqual(h.closed, change === "append" ? ["owned"] : []);
+	}
+});
+
+test("Stop this worker targets one exact running worker and refuses stale dialogs", async () => {
+	const display = (worker: number, title: string) => ({ workflow: 4, worker, workers: 2, title, role: "scout" });
+	const tabs = [1, 2].map((n) => ({ entryId: `entry-${n}`, name: `d-${n}`, tabId: `tab-${n}`, paneId: `pane-${n}`, sessionFile: `/s${n}`, display: display(n, n === 1 ? "Scan" : "Trace") }));
+	for (const change of [undefined, "changeBranch", "shutdown"] as const) {
+		const h = harness({ direct: [{ id: "reads", name: "reads", status: "observed locally", canClose: true, stoppable: ["entry-2"], workers: tabs.map((tab) => tab.display), tabs }] });
+		h.responses.push(h.pick("D4 · 2 workers"), (dialog) => {
+			assert.deepEqual(dialog.options!.map((label) => label.replace(/ \[\d+\]$/, "")), [
+				"Close/cancel-and-release ALL owned workers in this workflow (preserve files and commits)",
+				"Stop this worker: D4.2 · scout · Trace (other workers continue)",
+				"Back / refresh",
+			]);
+			if (change) h[change]();
+			return h.pick("Stop this worker")(dialog);
+		}, h.pick("Close"));
+		await h.run();
+		assert.deepEqual(h.stopped, change ? [] : ["reads:entry-2"]);
+		assert.deepEqual(h.closed, []);
 	}
 });
