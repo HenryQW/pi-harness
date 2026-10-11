@@ -95,12 +95,35 @@ const priority = (status: string) => /attention|blocked|retained|failed/i.test(s
 
 const ignoredSummary = ({ ignored }: PruneItem) => !ignored.length ? "none"
 	: `${ignored.length} (${ignored.slice(0, 5).join(", ")}${ignored.length > 5 ? `, +${ignored.length - 5} more` : ""})`;
-function pruneReview({ root, items }: PrunePlan): string {
-	if (!items.length) return `No pi-subagent worktrees or branches in ${root}.`;
+const PRUNE_IGNORED_CONFIRM_CODE_POINTS = 4_000;
+const NOT_SHOWN = "they are not removed in this run; run /subagent prune again after this run.";
+
+/** Fit whole item lines within `max` code points; never cut silently, and report exactly which items were shown. */
+function fitItems<T>(header: string, items: readonly T[], line: (item: T) => string, max: number): { text: string; shown: T[] } {
+	const lines = [header];
+	const shown: T[] = [];
+	let size = [...header].length;
+	const reserve = [...NOT_SHOWN].length + 32;
+	for (const item of items) {
+		const text = line(item);
+		const length = [...text].length + 1;
+		if (size + length + reserve > max) break;
+		lines.push(text);
+		size += length;
+		shown.push(item);
+	}
+	if (shown.length < items.length) lines.push(`+${items.length - shown.length} more not shown; ${NOT_SHOWN}`);
+	return { text: lines.join("\n"), shown };
+}
+
+/** Prunable items come first so a long blocked list cannot hide them; only shown items may be removed. */
+function pruneReview({ root, items }: PrunePlan): { text: string; shown: PruneItem[] } {
+	if (!items.length) return { text: `No pi-subagent worktrees or branches in ${root}.`, shown: [] };
 	const prunable = items.filter((item) => item.prunable).length;
-	return [`Subagent prune review in ${root}: ${prunable} prunable, ${items.length - prunable} blocked.`,
-		...items.map((item) => clean(`${item.prunable ? "✓ prunable" : "✗ blocked"} · ${item.path ?? "(no checkout)"} · ${item.branch} · ${item.tip.slice(0, 12)} · ${item.reason} · ignored: ${ignoredSummary(item)}`, 600)),
-	].join("\n");
+	return fitItems(`Subagent prune review in ${root}: ${prunable} prunable, ${items.length - prunable} blocked.`,
+		[...items.filter((item) => item.prunable), ...items.filter((item) => !item.prunable)],
+		(item) => clean(`${item.prunable ? "✓ prunable" : "✗ blocked"} · ${item.path ?? "(no checkout)"} · ${item.branch} · ${item.tip.slice(0, 12)} · ${item.reason} · ignored: ${ignoredSummary(item)}`, 600),
+		ROLES_REPORT_CODE_POINTS);
 }
 
 type Choice<T> = { label: string; value: T };
@@ -153,23 +176,29 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			};
 			if (command === "prune") {
 				const plan = await adapter.prunePlan(ctx.cwd);
-				const review = clean(pruneReview(plan), ROLES_REPORT_CODE_POINTS, true);
+				const reviewed = pruneReview(plan);
+				const review = clean(reviewed.text, ROLES_REPORT_CODE_POINTS, true);
 				if (!ctx.hasUI) {
 					pi.sendMessage({ customType: "pi-subagent-prune", content: `${review}\nReport only: removal requires interactive confirmation.`, display: true });
 					return;
 				}
 				if (!valid()) return;
 				ctx.ui.notify(review, "info");
-				const prunable = plan.items.filter((item) => item.prunable);
+				const prunable = reviewed.shown.filter((item) => item.prunable);
 				if (!prunable.length) return;
 				const confirmed = await ctx.ui.confirm("Prune subagent worktrees", `Remove all ${prunable.length} prunable item(s) listed above? Each is re-verified first; unique commits, tracked or untracked changes, and unlisted items are never removed.`);
 				if (!valid() || !confirmed) return;
 				const ignored = prunable.filter((item) => item.ignored.length);
-				const allowIgnored = ignored.length > 0 && await ctx.ui.confirm("Delete ignored content",
-					clean(`Also remove ${ignored.length} checkout(s) with ignored files? This permanently deletes this ignored content:\n${ignored.map((item) => `${item.path}: ${ignoredSummary(item)}`).join("\n")}`, 4000, true));
+				// The header uses the full count's width so the shown count always fits.
+				const ignoredList = fitItems(`Also remove ${ignored.length} checkout(s) with ignored files? This permanently deletes this ignored content:`,
+					ignored, (item) => clean(`${item.path}: ${ignoredSummary(item)}`, 600), PRUNE_IGNORED_CONFIRM_CODE_POINTS);
+				const approvable = ignoredList.shown;
+				const allowIgnored = approvable.length > 0 && await ctx.ui.confirm("Delete ignored content",
+					clean(ignoredList.text.replace(`Also remove ${ignored.length} checkout(s)`, `Also remove ${approvable.length} checkout(s)`), PRUNE_IGNORED_CONFIRM_CODE_POINTS, true));
 				if (!valid()) return;
-				if (ignored.length && !allowIgnored) ctx.ui.notify(`Kept ${ignored.length} checkout(s) with ignored content; their deletion was not approved.`, "info");
-				const selected = allowIgnored ? prunable : prunable.filter((item) => !item.ignored.length);
+				const kept = ignored.length - (allowIgnored ? approvable.length : 0);
+				if (kept) ctx.ui.notify(`Kept ${kept} checkout(s) with ignored content; their deletion was not approved.`, "info");
+				const selected = prunable.filter((item) => !item.ignored.length || (allowIgnored && approvable.includes(item)));
 				if (!selected.length) return;
 				try {
 					const report = await adapter.prune(ctx.cwd, selected, allowIgnored, current);

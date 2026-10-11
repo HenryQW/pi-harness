@@ -366,3 +366,25 @@ test("prune removes listed prunable items after one confirmation; ignored conten
 	assert.deepEqual(all.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
 	assert.ok(all.notices.some(({ message }) => message === "Pi Subagent prune in /git: removed"));
 });
+
+test("prune removes only items its dialogs showed, never items cut from a long list", async () => {
+	const item = (index: number, prunable: boolean) => ({ branch: `pi-subagent/subagent-${String(index).padStart(3, "0")}`, tip: "d".repeat(40),
+		path: `/git/.worktrees/subagent-${"x".repeat(60)}-${index}`, prunable, reason: prunable ? "merged into Main HEAD; clean checkout" : "branch has commits not in Main HEAD",
+		ignored: prunable ? ["node_modules/", "dist/", ".codegraph/"] : [] });
+	// Blocked items sort first by branch; prunable ones must still be listed and selectable.
+	const plan: PrunePlan = { root: "/git", items: [...Array.from({ length: 30 }, (_, index) => item(index, false)), ...Array.from({ length: 60 }, (_, index) => item(100 + index, true))] };
+	const h = harness({ prune: plan });
+	h.confirms.push(true, true);
+	await h.run("prune");
+	const review = h.notices[0]!.message;
+	const shown = plan.items.filter(({ branch }) => review.includes(`${branch} `)).sort((left, right) => review.indexOf(`${left.branch} `) - review.indexOf(`${right.branch} `));
+	assert.ok(shown.length < plan.items.length && /\+\d+ more not shown; they are not removed/.test(review), "the review names omitted items");
+	assert.ok(shown.slice(0, 2).every(({ prunable }) => prunable), "prunable items are listed first");
+	const ignoredDialog = h.dialogs[1]!.options![0]!;
+	assert.match(ignoredDialog, /\+\d+ more not shown; they are not removed/);
+	assert.ok([...ignoredDialog].length <= 4_000);
+	const approved = shown.filter(({ path }) => ignoredDialog.includes(`${path}:`));
+	assert.match(ignoredDialog, new RegExp(`^Also remove ${approved.length} checkout\\(s\\)`));
+	assert.equal(h.pruned.length, 1);
+	assert.deepEqual(h.pruned[0]!.branches, approved.map(({ branch }) => branch), "only items shown in both dialogs are removed");
+});

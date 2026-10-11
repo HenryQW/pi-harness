@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import test from "node:test";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
@@ -871,6 +871,34 @@ test("abort during agent startup waits for durable ownership and terminates that
 	assert.equal(aborted.state.status, "aborted");
 	assert.deepEqual(result.state, aborted.state);
 	assertParsed(aborted.state);
+});
+
+test("prune reconciles only aborted requests that recorded a removed resource, through the guarded abort path", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	const checked = new CheckedGitRuntime();
+	runtime.main = await checked.inspectMain({ root }, { signal: new AbortController().signal });
+	runtime.allocateWorktree = checked.allocateWorktree.bind(checked);
+	runtime.inspectTaskCandidate = checked.inspectTaskCandidate.bind(checked);
+	// Distinct task IDs: worktree names derive from the task ID and an allocation token, deterministic here.
+	const retained = async (id: string, taskId: string) => {
+		runtime.workerResults.push({ outcome: "blocked", diagnostic: "No commit." }, { outcome: "blocked", diagnostic: "No commit." });
+		const stopped = await runner.execute(request(id, [changesetTask(taskId)]), root);
+		const worker = changesetState(stopped.state, taskId).attempts[0]!.allocations.find((item) => item.kind === "worktree")!.worktree!;
+		await writeFile(join(worker.path, "scratch.txt"), "retained\n");
+		assert.equal((await runner.abort(id, root)).state.status, "aborted");
+		return worker;
+	};
+	const pruned = await retained("prune-reconciled", "change"),
+		untouched = await retained("prune-untouched", "other");
+	assert.notEqual(pruned.branch, untouched.branch);
+	const status = async (id: string) => (await runner.listRequests(root)).requests.find((item) => item.id === id)!.status;
+	assert.deepEqual([await status("prune-reconciled"), await status("prune-untouched")], ["aborted · retained", "aborted · retained"]);
+	// Simulate /subagent prune removing exactly one recorded checkout and branch.
+	execFileSync("git", ["worktree", "remove", "--force", pruned.path], { cwd: root });
+	execFileSync("git", ["branch", "-D", pruned.branch], { cwd: root });
+	const lines = await runner.reconcilePrunedAborts([root], [basename(pruned.branch)]);
+	assert.deepEqual(lines, ["Reconciled cleanup of aborted request prune-reconciled."]);
+	assert.deepEqual([await status("prune-reconciled"), await status("prune-untouched")], ["aborted", "aborted · retained"]);
 });
 
 test("abort cleans unchanged no-candidate allocations and safely retries retained cleanup", async (t) => {
