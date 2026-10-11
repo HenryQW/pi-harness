@@ -50,6 +50,7 @@ import { FileRunStore, ProductiveRunLeaseBusyError, type ProductiveRunLease, typ
 const TRUNCATION_MARKER = "\n[truncated]";
 const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
 const CHANGESET_TASK_PROMPT_MAX_BYTES = 96 * 1024;
+const CORRECTION_DELIVERY_RESERVE_BYTES = 1024;
 const MAX_WORKER_PROMPTS = 32;
 const MAX_QUEUED_FOLLOWUPS = 16;
 /** One durable follow-up per attempt; the runner itself never commits, stages, stashes, or discards. */
@@ -2899,8 +2900,23 @@ export class IsolatedRunner {
 			if (attempt.prompts.some((prompt) => prompt.status === "ambiguous")) {
 				throw new Error("An ambiguous delivered prompt is never replayed.");
 			}
-			if (!this.correctionAllowed(handle.state, changesetTaskRequest(handle.state, task.taskId), attempt)) {
+			const request = changesetTaskRequest(handle.state, task.taskId);
+			if (!this.correctionAllowed(handle.state, request, attempt)) {
 				throw new Error("The same-agent correction is unavailable or already used.");
+			}
+			// Build the correction before it is recorded: an oversized prompt must not use up the only correction.
+			// The reserve covers the worktree path and turn identity the host adds before delivery.
+			const assignment = buildChangesetTaskPrompt({
+				goal: handle.state.request.goal,
+				contexts: resolveTextTaskContexts(handle.state, request),
+				task: request,
+				kind: "correction",
+				worktreeCwd: allocationByKind(attempt, "agent")?.worktreeCwd ?? "",
+				failure: task.failure,
+				...(instruction === undefined ? {} : { instruction }),
+			});
+			if (Buffer.byteLength(assignment, "utf8") + CORRECTION_DELIVERY_RESERVE_BYTES > CHANGESET_TASK_PROMPT_MAX_BYTES) {
+				throw new Error(`Worker assignment exceeds ${CHANGESET_TASK_PROMPT_MAX_BYTES} bytes with delivery overhead; shorten the retry instruction.`);
 			}
 			task.status = "working";
 			await this.driveWorkerSafely(handle, task, scope, "correction", instruction);

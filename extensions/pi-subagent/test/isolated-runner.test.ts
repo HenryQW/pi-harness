@@ -1651,6 +1651,8 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		assert.equal(changesetState(stopped.state, "change").attempts.length, 0);
 		assert.equal(runtime.workerCalls.length, 0);
 		assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "change" });
+		await assert.rejects(runner.resume({ id: definition.id, action: "retry", taskId: "change", instruction: "Fix it." }, root),
+			/requires a same-worker correction of a prompted attempt/);
 		assert.equal(Object.hasOwn(stopped.state, "deadline"), false);
 		runtime.clock += 31 * 60_000;
 
@@ -1662,14 +1664,18 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 
 	await t.test("same-worker correction", async (t) => {
 		const { root, runtime, runner } = await harness(t);
-		const definition = request("verify-change", [changesetTask("change", {
+		const definition = request("verify-change", [{ ...changesetTask("change", {
 			judgment: { role: "judge/manual", modelClass: "frontier", criterion: "The retained change is correct." },
-		})]);
+		}), requirements: `Implement the change. ${"Keep unrelated behavior unchanged. ".repeat(60)}`.trim() }]);
 		runtime.reviewVerdicts.push("NEEDS_WORK", "PASS");
 
 		const stopped = await runner.execute(definition, root);
 		assert.equal(stopped.state.status, "needs_attention");
 		assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "change" });
+		// 32000 three-byte characters pass the schema but overflow the assignment; the correction must stay available.
+		await assert.rejects(runner.resume({ id: definition.id, action: "retry", taskId: "change", instruction: "修".repeat(32_000) }, root),
+			/Worker assignment exceeds/);
+		assert.deepEqual(runtime.workerCalls, [{ taskId: "change", kind: "initial" }]);
 		const corrected = await runner.resume({ id: definition.id, action: "retry", taskId: "change", instruction: "Fix the reviewed finding." }, root);
 		assert.equal(corrected.state.accepted, false);
 		assert.deepEqual(runtime.workerCalls, [
@@ -1928,6 +1934,9 @@ test("an interrupted text task remains failed until its explicit retry", async (
 	assert.equal(failed.attempts[0]!.cleanup?.outcome, "pruned");
 	assert.equal(calls, 1);
 
+	await assert.rejects(runner.resume({ id: definition.id, action: "retry", taskId: "research", instruction: "Look again." }, root),
+		/cannot take a worker instruction/);
+	assert.equal(calls, 1);
 	const retried = await runner.resume({ id: definition.id, action: "retry", taskId: "research" }, root);
 	const completed = textState(retried.state, "research");
 	assert.equal(retried.state.accepted, true);
