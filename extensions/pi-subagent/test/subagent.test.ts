@@ -1439,8 +1439,9 @@ test("a failed task keeps a bounded partial answer marked as incomplete", async 
 			const { content, details } = app.sentMessages[0]!.message;
 			assert.equal(details.outcome, "failed");
 			assert.equal(details.entries[0].status, "rejected");
-			assert.match(content, /JSON completion object\.\nPartial output before failu/);
-			assert.match(content, /re \(incomplete; not a success\):\nEdited a\.txt; commit not attempted\./);
+			// The preview split point depends on the temp session path length; rejoin it with its remainder.
+			const evidence = content.replace("\nMore detail:\n- [1/1] Write · worker · failure:\n", "");
+			assert.match(evidence, /JSON completion object\.\nPartial output before failure \(incomplete; not a success\):\nEdited a\.txt; commit not attempted\./);
 		});
 	});
 });
