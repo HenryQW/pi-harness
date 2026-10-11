@@ -5,14 +5,15 @@ import { isRecord } from "./pr-execution.ts";
 export type PrCheck = { command: string; args: string[] };
 export type MergeMethod = "squash" | "merge" | "rebase";
 export const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
-export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; mergeMethod: MergeMethod };
-export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, mergeMethod: "squash" };
+export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; checkTimeoutMinutes: number; mergeMethod: MergeMethod };
+export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, checkTimeoutMinutes: 10, mergeMethod: "squash" };
 type NumericPolicyKey = Exclude<keyof PrPolicy, "mergeMethod">;
-const NUMERIC_KEYS: readonly NumericPolicyKey[] = ["maxPublicationCycles", "maxRepairAttempts", "ciPollSeconds", "ciWaitMinutes"];
+const NUMERIC_KEYS: readonly NumericPolicyKey[] = ["maxPublicationCycles", "maxRepairAttempts", "ciPollSeconds", "ciWaitMinutes", "checkTimeoutMinutes"];
 /** `ciWaitMinutes: 0` disables waiting for running CI; every other limit must be positive. */
 const ZERO_ALLOWED: ReadonlySet<NumericPolicyKey> = new Set(["ciWaitMinutes"]);
 /** Node replaces a timer delay above 2^31-1 ms with 1 ms, which would turn a long poll into a tight loop. */
 const MAX_CI_POLL_SECONDS = 2_147_483;
+const MAX_CHECK_TIMEOUT_MINUTES = 35_791;
 
 export function loadPrPolicy(agentDir?: string): PrPolicy {
 	const config = createConfigStore({
@@ -29,6 +30,7 @@ export function loadPrPolicy(agentDir?: string): PrPolicy {
 					const minimum = ZERO_ALLOWED.has(key) ? 0 : 1;
 					if (!Number.isSafeInteger(value[key]) || (value[key] as number) < minimum) throw new Error(`${key} must be an integer of at least ${minimum}`);
 					if (key === "ciPollSeconds" && (value[key] as number) > MAX_CI_POLL_SECONDS) throw new Error(`ciPollSeconds must be at most ${MAX_CI_POLL_SECONDS}`);
+					if (key === "checkTimeoutMinutes" && (value[key] as number) > MAX_CHECK_TIMEOUT_MINUTES) throw new Error(`checkTimeoutMinutes must be at most ${MAX_CHECK_TIMEOUT_MINUTES}`);
 					policy[key] = value[key] as number;
 				}
 			}
@@ -37,6 +39,11 @@ export function loadPrPolicy(agentDir?: string): PrPolicy {
 	});
 	try { return config.loadSync().value; }
 	catch (error) { throw new Error(`PR configuration is preserved at ${config.path}: ${error instanceof Error ? error.message : String(error)}`); }
+}
+
+/** Time limit for each caller-supplied validation check; Git and gh helpers keep their shorter limits. */
+export function checkTimeoutMs(run?: PrRun): number {
+	return (run?.policy ?? DEFAULT_PR_POLICY).checkTimeoutMinutes * 60_000;
 }
 
 /** One explicit /pr invocation; helper resumes never replenish these limits. */

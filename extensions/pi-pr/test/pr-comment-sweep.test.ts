@@ -376,9 +376,9 @@ test("validation survives resume, rejects changed HEAD, freezes failed checks, a
 
 for (const drift of ["head", "worktree", "lease"] as const) test(`validation does not save success after checks change ${drift}`, async (t) => {
 	const app = fixture(); t.after(app.cleanup);
-	const workflow = app.workflow(undefined, { exec: async (command, args, options) => {
+	const workflow = app.workflow(undefined, { run: new PrRun({ checkTimeoutMinutes: 2 }), exec: async (command, args, options) => {
 		if (command === "mutating-check") {
-			assert.equal(options?.timeoutMs, 10 * 60_000);
+			assert.equal(options?.timeoutMs, 2 * 60_000);
 			if (drift === "lease") git(app.root, "push", "origin", "HEAD:refs/heads/feature");
 			else {
 				writeFileSync(join(app.root, "file.txt"), "changed during checks\n");
