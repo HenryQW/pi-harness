@@ -8,7 +8,7 @@ import { registerCheckoutAdmission } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
-import { ENTRY_STATUS_PRESENTATION, formatWorkflowResult, workerOutputForMain, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
+import { compactTokens, ENTRY_STATUS_PRESENTATION, formatWorkflowResult, workerOutputForMain, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, writesCheckout, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
 import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
@@ -55,7 +55,7 @@ function statusLabel(status: WidgetStatus): string {
 }
 
 function tokenLabel(tokens: number | undefined): string {
-	return tokens === undefined ? "— tok" : `${tokens < 1_000 ? tokens : `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`} tok`;
+	return tokens === undefined ? "— tok" : compactTokens(tokens);
 }
 
 function activityLabel(activity: DirectToolActivity | undefined): string | undefined {
@@ -654,6 +654,11 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				id, index, role: delegation.role, status: "pending",
 				name: delegation.continueFrom === undefined ? delegation.name : `${delegation.name} (continued from ${delegation.continueFrom})`,
 			}]));
+			const startedAt = new Map<string, number>();
+			const measured = (id: string, tokens: number | undefined) => ({
+				...(tokens === undefined ? {} : { tokens }),
+				...(startedAt.has(id) ? { elapsedMs: Date.now() - startedAt.get(id)! } : {}),
+			});
 			const taskId = `direct-${++directSequence}-${Date.now().toString(36)}`;
 			const workflowNumber = nextWorkflow(ctx);
 			const ref = `D${workflowNumber}`;
@@ -717,6 +722,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				const prepared = await prepareDirectLaunch(role, latestCtx ?? ctx, {
 					...(modelClass === undefined ? {} : { modelClass }), ...(model === undefined ? {} : { model }) });
 				states.set(entry.id, { ...states.get(entry.id)!, model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
+				startedAt.set(entry.id, Date.now());
 				const display = displayOf(entry);
 				startWidgetItem(entry.id, taskId, display, prepared.model.id, prepared.thinkingLevel, ctx);
 				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
@@ -795,24 +801,26 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							if (writerFailed) throw new Error("Previous direct task did not complete exactly; inspect recorded tabs before new shared-checkout work.");
 							handle = entry.index === 0 ? first : await launch(entry, entrySignal(entry));
 							const answer = await handle.answer(Math.floor(40 * 1024 / entries.length));
+							let tokens: number | undefined;
 							try {
-								const tokens = await handle.usageTokens();
+								tokens = await handle.usageTokens();
 								const item = widgetItems.get(entry.id);
 								if (item) { item.tokens = tokens; item.activity = handle.activity; }
 							} catch { /* Optional telemetry. */ }
-							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer });
+							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer, ...measured(entry.id, tokens) });
 							finishWidgetItem(entry.id, "success");
 							return answer;
 						} catch (error) {
 							if (writes) writerFailed = true;
 							const { assistantOutput: _partial, ...base } = states.get(entry.id)!;
 							const partialOutput = await handle?.partialText(PARTIAL_OUTPUT_CHARS).catch(() => undefined);
+							const tokens = await handle?.usageTokens().catch(() => undefined);
 							const message = (value: unknown) => value instanceof Error ? value.message : String(value);
 							const stopped = await stopProofs.get(entry.id)?.then(() => STOPPED_BY_USER,
 								(stopError: unknown) => `${STOPPED_BY_USER}; termination unproved: ${message(stopError)}`);
 							const tab = tabByEntry.get(entry.id);
 							const recover = tab && stopped !== STOPPED_BY_USER ? `recover from Herdr tab ${tab.tabId}, agent ${tab.name}, session ${tab.sessionFile}: ` : "";
-							states.set(entry.id, { ...base, status: "rejected", ...(partialOutput ? { partialOutput } : {}), failure: `${recover}${capOutput(stopped ?? message(error))}` });
+							states.set(entry.id, { ...base, status: "rejected", ...(partialOutput ? { partialOutput } : {}), ...measured(entry.id, tokens), failure: `${recover}${capOutput(stopped ?? message(error))}` });
 							finishWidgetItem(entry.id, "failure");
 							throw error;
 						} finally { release(); }

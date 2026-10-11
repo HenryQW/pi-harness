@@ -1,4 +1,4 @@
-import { capEphemeralSubagentOutput } from "@henryqw/pi-subagent";
+import { capEphemeralSubagentOutput, formatDuration } from "@henryqw/pi-subagent";
 import type { WorkflowEntry, WorkflowMode } from "./workflow.ts";
 
 const EVIDENCE_PREVIEW_CODE_POINTS = 256;
@@ -22,6 +22,9 @@ export type WorkflowTransportEntry = {
 	role: WorkflowEntry["delegation"]["role"];
 	model?: string;
 	thinkingLevel?: string;
+	/** Measured session tokens; absent when usage was unavailable. */
+	tokens?: number;
+	elapsedMs?: number;
 	status: WorkflowTransportStatus;
 	assistantOutput?: string;
 	failure?: string;
@@ -76,6 +79,21 @@ export function displaySummary(text: string): string {
 	return Array.from(normalized).slice(0, 160).join("");
 }
 
+export function compactTokens(tokens: number): string {
+	return `${tokens < 1_000 ? tokens : `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`} tok`;
+}
+
+/** Launched workers carry a model; workers that never launched show no usage. */
+function usageFor(entry: WorkflowTransportEntry): string {
+	if (entry.model === undefined) return "";
+	return [
+		entry.model,
+		...(entry.thinkingLevel === undefined ? [] : [`thinking ${entry.thinkingLevel}`]),
+		entry.tokens === undefined ? "tokens unknown" : compactTokens(entry.tokens),
+		...(entry.elapsedMs === undefined ? [] : [formatDuration(entry.elapsedMs)]),
+	].map((part) => ` · ${part}`).join("");
+}
+
 export type WorkflowEntryStatusPresentation = { glyph: string; fallback: string };
 
 export const ENTRY_STATUS_PRESENTATION = {
@@ -120,7 +138,7 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 		...positioned.map(({ entry, position }) => {
 			const { glyph, fallback } = ENTRY_STATUS_PRESENTATION[entry.status];
 			const summary = displaySummary(sourceFor(entry) ?? "") || fallback;
-			return `${glyph} [${position}/${ordered.length}] ${entry.name} · ${entry.role} — ${summary}`;
+			return `${glyph} [${position}/${ordered.length}] ${entry.name} · ${entry.role}${usageFor(entry)} — ${summary}`;
 		}),
 		...(evidence.length ? [
 			"Results:",
@@ -146,6 +164,8 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 					...(source === undefined ? {} : { summary: displaySummary(source) }),
 					...(entry.model === undefined ? {} : { model: entry.model }),
 					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
+					...(entry.tokens === undefined ? {} : { tokens: entry.tokens }),
+					...(entry.elapsedMs === undefined ? {} : { elapsedMs: entry.elapsedMs }),
 				};
 			}),
 		},
