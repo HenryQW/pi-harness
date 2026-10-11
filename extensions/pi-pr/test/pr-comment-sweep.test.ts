@@ -197,6 +197,7 @@ function fixture(): Fixture {
 			}
 		}
 		if (command === "sweep-lost-check") {
+			assert.equal(options?.timeoutMs, 10 * 60_000);
 			world.checkCalls += 1;
 			if (world.loseCheckResponse) throw new Error("check response lost");
 			return result("", world.checkCode);
@@ -377,6 +378,7 @@ for (const drift of ["head", "worktree", "lease"] as const) test(`validation doe
 	const app = fixture(); t.after(app.cleanup);
 	const workflow = app.workflow(undefined, { exec: async (command, args, options) => {
 		if (command === "mutating-check") {
+			assert.equal(options?.timeoutMs, 10 * 60_000);
 			if (drift === "lease") git(app.root, "push", "origin", "HEAD:refs/heads/feature");
 			else {
 				writeFileSync(join(app.root, "file.txt"), "changed during checks\n");

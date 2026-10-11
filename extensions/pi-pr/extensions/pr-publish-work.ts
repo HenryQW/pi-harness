@@ -2,7 +2,7 @@ import { validateCommitMessage, commitStagedPaths, inspectPendingCommit, require
 import type { PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
+import { CHECK_TIMEOUT_MS, extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 type Check = { command: string; args: string[] };
 type Options = { run?: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
@@ -108,7 +108,7 @@ export class PullRequestWorkPublisher {
 			this.options.run?.beginChecks("publish-work", head, checks);
 			try {
 				await runChecked(this.exec, "git", ["diff", "--check", this.authority.head.oid, head], this.execOptions());
-				for (const check of checks) await runChecked(this.exec, check.command, check.args, this.execOptions());
+				for (const check of checks) await runChecked(this.exec, check.command, check.args, { ...this.execOptions(), timeoutMs: CHECK_TIMEOUT_MS });
 				await this.authorityCheck();
 				if (await readHead(this.exec, this.execOptions()) !== head || await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") throw new Error("Validation changed local HEAD or worktree");
 			} catch (error) {

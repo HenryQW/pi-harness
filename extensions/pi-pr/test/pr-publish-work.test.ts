@@ -46,6 +46,8 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	let loseCommitResponse = false;
 	let failCheck = true;
 	const exec: Exec = async (command, args, options) => {
+		if (command === "work-check") assert.equal(options?.timeoutMs, 10 * 60_000);
+		else assert.ok((options?.timeoutMs ?? 30_000) < 10 * 60_000, `${command} must keep a short limit`);
 		if (command === "work-check") return { ...result(), code: failCheck ? 7 : 0 };
 		if (command === "gh" && args[0] === "repo") return result(JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" }));
 		if (command === "git" && (args[0] === "push" || args[0] === "ls-remote") && args.includes("git@github.com:acme/project.git")) {

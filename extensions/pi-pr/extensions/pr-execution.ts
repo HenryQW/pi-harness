@@ -14,6 +14,9 @@ const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const GIT_OPERATION_STATES = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"];
 const WORKTREE_LOCK_OPTIONS = { realpath: false, stale: 30_000, update: 5_000, retries: 0 } as const;
 
+/** Time limit for each caller-supplied validation check; Git and gh helpers keep their shorter limits. */
+export const CHECK_TIMEOUT_MS = 10 * 60_000;
+
 export type AttemptState = "none" | "attempting" | "applied" | "blocked" | "unknown";
 export type GitWorktreeState = "clean" | "dirty" | "operation";
 
