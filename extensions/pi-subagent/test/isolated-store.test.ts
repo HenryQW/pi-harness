@@ -10,6 +10,7 @@ import {
 	type RunState,
 	type WorkspaceIdentity,
 } from "../src/schema.ts";
+import { IsolatedRunner } from "../src/runner.ts";
 import { FileRunStore } from "../src/store.ts";
 
 const STATE_MAX_BYTES = 128 * 1024 * 1024;
@@ -177,6 +178,37 @@ test("invalid and oversized state files are rejected without replacement", async
 		});
 		assert.equal((await stat(oversizedPath)).size, STATE_MAX_BYTES + 1);
 		assert.match(await readFile(handle.path, "utf8"), /request-one/);
+	} finally {
+		await rm(sandbox, { recursive: true, force: true });
+	}
+});
+
+test("prune ownership treats non-terminal and unreadable states as owners and reports a live lease", async () => {
+	const sandbox = await mkdtemp(join(tmpdir(), "pi-subagent-store-"));
+	await mkdir(join(sandbox, "repo"));
+	const root = await realpath(join(sandbox, "repo"));
+	try {
+		const store = new FileRunStore(join(sandbox, "agent"));
+		const runner = new IsolatedRunner({} as never, {} as never, {} as never, store, {} as never);
+		const name = `subagent-${"b".repeat(24)}`;
+		const other = `subagent-${"c".repeat(24)}`;
+		const pending = state(root);
+		pending.request.goal = `Recorded resource ${name}.`;
+		const handle = await store.create(pending);
+		let ownership = await runner.pruneOwnership([root]);
+		assert.equal(ownership.owner(name), "owned by pending request request-one");
+		assert.equal(ownership.owner(other), undefined);
+		assert.equal(ownership.lease, undefined);
+		handle.state.status = "aborted";
+		await handle.save();
+		assert.equal((await runner.pruneOwnership([root])).owner(name), undefined, "terminal requests own nothing");
+		await writeFile(store.statePath(root, "broken"), `{"note":"${name}"`);
+		ownership = await runner.pruneOwnership([root]);
+		assert.equal(ownership.owner(name), `unreadable state broken in ${root} may own it`);
+		assert.equal(ownership.owner(other), undefined);
+		await store.withProductiveRunLease(root, async () => {
+			assert.equal((await runner.pruneOwnership([root])).lease, `productive lease is held by a live run in ${root}`);
+		});
 	} finally {
 		await rm(sandbox, { recursive: true, force: true });
 	}

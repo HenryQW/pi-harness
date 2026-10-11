@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { runGit, type GitResult } from "./git-process.ts";
 import { CheckedGitRuntime } from "./git-runtime.ts";
-import { createChildWorktree, inspectWorktreeDirty, WorktreeSetupError, type WorktreeInfo } from "./worktree.ts";
+import { createChildWorktree, inspectWorktreeDirty, OWNED_BRANCH_PATTERN, WORKTREES_DIRNAME, WorktreeSetupError, type WorktreeInfo } from "./worktree.ts";
 import {
 	checkBatchPasses, reviewEvidencePasses, sameIdentity, type CheckBatchEvidence,
 	type CheckCommand, type ReviewEvidence, type WorkspaceIdentity,
@@ -61,8 +61,8 @@ async function ownershipMetadata(root: string, info: WorktreeInfo, signal: Abort
 	const repoRoot = await realpath(primary.slice("worktree ".length));
 	if (await realpath(await requireGit(["rev-parse", "--show-toplevel"], root, signal)) !== canonical
 		|| info.repoRoot !== repoRoot || info.cwd !== info.path
-		|| !/^pi-subagent\/subagent-[0-9a-f]{24}$/.test(info.branch)
-		|| info.path !== join(repoRoot, ".worktrees", basename(info.branch))) {
+		|| !OWNED_BRANCH_PATTERN.test(info.branch)
+		|| info.path !== join(repoRoot, WORKTREES_DIRNAME, basename(info.branch))) {
 		throw new Error("Git worktree is not an exact owned checkout of Main.");
 	}
 }

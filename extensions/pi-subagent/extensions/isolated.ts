@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
@@ -12,6 +13,7 @@ import {
 	type DirectProcessRunner,
 } from "../dist/git-runtime.js";
 import { HerdrHostRuntime } from "../dist/herdr-runtime.js";
+import { inspectPruneCandidates, listHerdrPanes, removePruneCandidates, type PruneGuards, type PruneItem } from "../dist/prune.js";
 import { runProcess as directRunProcess } from "../dist/process.js";
 import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../dist/launch-runtime.js";
 import { IsolatedRunner, type OperationContext, type RunResponse } from "../dist/runner.js";
@@ -36,7 +38,7 @@ import {
 } from "../dist/schema.js";
 import { FileRunStore } from "../dist/store.js";
 import { workerOutputForMain } from "./result-transport.ts";
-import type { IsolatedInventory } from "./subagent-command.ts";
+import type { IsolatedInventory, PrunePlan } from "./subagent-command.ts";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
 const PUBLIC_EVIDENCE_MAX_BYTES = 512;
@@ -175,6 +177,21 @@ function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState, row
 	} catch (error) {
 		console.error("Pi Subagent workspace widget update failed.", error);
 	}
+}
+
+/** Join report lines within a follow-up budget, naming how many were omitted. */
+function boundedReport(lines: readonly string[], omitted: string): string {
+	const report: string[] = [];
+	let bytes = 0;
+	let skipped = 0;
+	for (const line of lines.flatMap((entry) => entry.split("\n"))) {
+		const size = Buffer.byteLength(`${line}\n`, "utf8");
+		if (bytes + size > 7_900) { skipped++; continue; }
+		report.push(line);
+		bytes += size;
+	}
+	if (skipped) report.push(`[${skipped} ${omitted}]`);
+	return report.join("\n");
 }
 
 function boundedPublicText(value: string, maxBytes = PUBLIC_EVIDENCE_MAX_BYTES): string {
@@ -425,6 +442,8 @@ export interface IsolatedSurface {
 	execute(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string, current?: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
+	prunePlan(cwd: string): Promise<PrunePlan>;
+	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<string>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
@@ -497,6 +516,10 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.on("model_select", (event, ctx) => { latestCtx = { ...ctx, model: event.model } as ExtensionContext; });
 	pi.on("agent_settled", (_event, ctx) => { latestCtx = ctx; });
 
+	const pruneGuards = (root: string): PruneGuards => ({
+		ownership: async (checkouts) => await getComponents().runner.pruneOwnership(checkouts),
+		panes: async () => await listHerdrPanes(root),
+	});
 	const requireCurrent = (current: () => boolean) => {
 		if (!current() || sessionClosed) throw new Error("Session or branch changed; reopen /subagent.");
 	};
@@ -761,17 +784,25 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			leaseBusy ? "Wait for the active productive run; use subagent_status to inspect its current state. No work was taken over."
 				: "Main: inspect subagent_status for exact identities and blockers before deciding stage, promote, resume, or guarded release. No worker prompt, merge, promotion, or cleanup was replayed.",
 			];
-			const report: string[] = [];
-			let bytes = 0;
-			let omitted = 0;
-			for (const line of lines.flatMap((entry) => entry.split("\n"))) {
-				const size = Buffer.byteLength(`${line}\n`, "utf8");
-				if (bytes + size > 7_900) { omitted++; continue; }
-				report.push(line);
-				bytes += size;
-			}
-			if (omitted) report.push(`[${omitted} recovery report lines omitted; use subagent_status for exact request evidence.]`);
-			return report.join("\n");
+			return boundedReport(lines, "recovery report lines omitted; use subagent_status for exact request evidence.");
+		},
+		async prunePlan(cwd) {
+			const root = await lookupRoot(cwd);
+			return { root, items: await inspectPruneCandidates(root, cwd, pruneGuards(root)) };
+		},
+		async prune(cwd, items, allowIgnored, current) {
+			requireCurrent(current);
+			const root = await lookupRoot(cwd);
+			const { removals, checkouts } = await removePruneCandidates(root, cwd, items, allowIgnored, pruneGuards(root));
+			const removed = removals.filter(({ outcome }) => outcome === "removed");
+			const reconciled = removed.length
+				? await getComponents().runner.reconcilePrunedAborts(checkouts, removed.map(({ item }) => basename(item.branch))) : [];
+			const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
+			return boundedReport([
+				`Pi Subagent prune in ${root}: ${removed.length} removed, ${count("skipped")} skipped, ${count("failed")} failed.`,
+				...removals.map(({ outcome, item, reason }) => `${outcome}: ${item.path ?? "(no checkout)"} · ${item.branch} · ${reason}`),
+				...reconciled,
+			], "prune report lines omitted.");
 		},
 		async inspect(root, requestId) {
 			const response = await getComponents().runner.status(requestId, root);
