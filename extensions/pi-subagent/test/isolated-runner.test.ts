@@ -102,6 +102,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	readonly workerResults: WorkerResult[] = [];
 	workerPause?: (call: WorkerCall) => Promise<void>;
 	readonly correctionFailures: string[] = [];
+	readonly correctionInstructions: string[] = [];
 	readonly followupInstructions: string[] = [];
 	readonly terminationCalls: Array<{ workerId: string; candidate: WorkspaceIdentity }> = [];
 	readonly terminationResults: Array<{ outcome: "terminated" } | { outcome: "unknown"; failure: string }> = [];
@@ -299,6 +300,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 		this.workerCalls.push(call);
 		this.workerContextCalls.push({ taskId: input.task.id, contexts: structuredClone(input.contexts) });
 		if (input.kind === "correction" && input.failure !== undefined) this.correctionFailures.push(input.failure);
+		if (input.kind === "correction" && input.instruction !== undefined) this.correctionInstructions.push(input.instruction);
 		if (input.kind === "followup" && input.instruction !== undefined) this.followupInstructions.push(input.instruction);
 		this.changesetCallOrder.push(`worker:${input.kind}:${input.workerId}`);
 		this.activeWorkers += 1;
@@ -1640,12 +1642,14 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		const stopped = await runner.execute(definition, root);
 		assert.equal(stopped.state.status, "needs_attention");
 		assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "change" });
-		const corrected = await runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root);
+		const corrected = await runner.resume({ id: definition.id, action: "retry", taskId: "change", instruction: "Fix the reviewed finding." }, root);
 		assert.equal(corrected.state.accepted, false);
 		assert.deepEqual(runtime.workerCalls, [
 			{ taskId: "change", kind: "initial" },
 			{ taskId: "change", kind: "correction" },
 		]);
+		assert.deepEqual(runtime.correctionInstructions, ["Fix the reviewed finding."]);
+		assert.equal(changesetState(corrected.state, "change").attempts[0]!.prompts[1]?.instruction, "Fix the reviewed finding.");
 		assert.deepEqual(runtime.reviewCalls.map(({ scope, taskId }) => ({ scope, taskId })), [
 			{ scope: "task", taskId: "change" },
 			{ scope: "task", taskId: "change" },

@@ -636,7 +636,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_resume",
 		label: "Subagent resume",
-		description: "Resume one unfinished isolated request without resetting its recorded policy or correction count.",
+		description: "Resume one unfinished isolated request without resetting its recorded policy or correction count. For a retry that sends a same-worker correction, optional instruction (at most 32000 characters) is appended to that prompt as Main's instruction after the saved check or review failure; use it to name the exact fixes, including the review findings the worker must address. Other actions reject instruction.",
 		parameters: ResumeRequestParameters,
 		prepareArguments: parseResumeRequest,
 		exposure: "model-only",

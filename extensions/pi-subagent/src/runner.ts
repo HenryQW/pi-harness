@@ -706,10 +706,10 @@ export function buildChangesetTaskPrompt(input: {
 		&& (typeof input.failure !== "string" || !input.failure.trim() || input.failure.trim() !== input.failure || input.failure.includes("\0"))) {
 		throw new Error("correction failure must be a non-empty exact string.");
 	}
-	if (input.kind === "followup"
+	if ((input.kind === "followup" || input.instruction !== undefined)
 		&& (typeof input.instruction !== "string" || !input.instruction.trim() || input.instruction.trim() !== input.instruction
 			|| input.instruction.includes("\0") || input.instruction.length > 32_000)) {
-		throw new Error("follow-up instruction must be non-empty exact text of at most 32000 characters.");
+		throw new Error(`${input.kind} instruction must be non-empty exact text of at most 32000 characters.`);
 	}
 	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
 	const upstreamTaskData = input.contexts.length
@@ -743,6 +743,7 @@ export function buildChangesetTaskPrompt(input: {
 		"Required checks (direct command/argv):",
 		checks,
 		...(input.kind === "correction" ? ["", "Correction failure:", input.failure!] : []),
+		...(input.kind === "correction" && input.instruction ? ["", "Main's instruction:", input.instruction] : []),
 		"",
 		"Work only in the exact worktree above. Commit the complete result and leave that worktree clean.",
 	].join("\n");
@@ -1080,6 +1081,7 @@ export class IsolatedRunner {
 				if (task.kind === "text") {
 					if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
 					if (request.action === "verify") throw new Error(`Text task ${task.taskId} cannot be verified.`);
+					if (request.instruction !== undefined) throw new Error(`Text task ${task.taskId} retry cannot take a worker instruction.`);
 					if (!textRetryEligible(state, task)) {
 						const attempt = task.attempts.at(-1);
 						if ((attempt && !["failed", "superseded"].includes(attempt.status)) || task.attempts.length >= 2) {
@@ -1092,7 +1094,7 @@ export class IsolatedRunner {
 					return await this.run(handle, scope, task.taskId);
 				}
 				if (task.status !== "needs_attention") throw new Error(`Task ${task.taskId} is not waiting for deliberate attention.`);
-				if (request.action === "retry") return await this.retry(handle, task, scope);
+				if (request.action === "retry") return await this.retry(handle, task, scope, request.instruction);
 				return await this.verifyRetainedTask(handle, task, scope);
 			} catch (error) {
 				if (error instanceof DurableRunStopped) return this.response(handle.state);
@@ -2491,7 +2493,7 @@ export class IsolatedRunner {
 				kind,
 				status: "submitting",
 				preCandidate,
-				...(kind === "followup" ? { instruction } : {}),
+				...(instruction !== undefined ? { instruction } : {}),
 				at: nextAttemptEventAt(attempt, this.coordinatorRuntime.now()),
 			};
 			attempt.prompts.push(prompt);
@@ -2832,8 +2834,12 @@ export class IsolatedRunner {
 		handle: RunStateHandle,
 		task: ChangesetTaskState,
 		scope: RuntimeScope,
+		instruction?: string,
 	): Promise<RunResponse> {
 		const attempt = task.attempts.at(-1);
+		if (instruction !== undefined && !attempt?.prompts.length) {
+			throw new Error("A retry instruction requires a same-worker correction of a prompted attempt.");
+		}
 		if (!attempt) {
 			for (const pending of handle.state.tasks) {
 				if (pending.status === "needs_attention" && pending.attempts.length === 0) {
@@ -2852,7 +2858,7 @@ export class IsolatedRunner {
 				throw new Error("The same-agent correction is unavailable or already used.");
 			}
 			task.status = "working";
-			await this.driveWorkerSafely(handle, task, scope, "correction");
+			await this.driveWorkerSafely(handle, task, scope, "correction", instruction);
 		} else {
 			if (attempt.termination || allocationByKind(attempt, "agent")) {
 				throw new Error("A promptless attempt with a terminated or potentially active saved agent cannot be retried productively.");

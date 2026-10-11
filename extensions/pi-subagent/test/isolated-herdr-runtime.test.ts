@@ -1647,7 +1647,7 @@ test("worker prompts preserve ordered upstream task data and reject oversized fu
 	script.done();
 });
 
-test("initial and correction prompts include the exact request goal", async (t) => {
+test("initial and correction prompts include the exact request goal and Main's correction instruction", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	let inspections = 0;
@@ -1681,7 +1681,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 		{ command: "herdr", args: (args) => {
 			assert.deepEqual(args.slice(0, 3), ["agent", "prompt", AGENT_NAME]);
 			assert.ok(args[3]!.includes(`Goal:\n${GOAL}\nWorktree:`));
-			assert.ok(args[3]!.includes("Correction failure:\nA declared check failed."));
+			assert.ok(args[3]!.includes("Correction failure:\nA declared check failed.\n\nMain's instruction:\nFix the failing check."));
 		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "corrected", stderr: "" } },
 	);
@@ -1694,6 +1694,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 		kind: "correction",
 		preCandidate: baseIdentity(),
 		failure: "A declared check failed.",
+		instruction: "Fix the failing check.",
 	}, operation);
 	assert.equal(correction.outcome, "candidate");
 	assert.equal(inspections, 2);

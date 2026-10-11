@@ -327,6 +327,18 @@ test("tool request validation reports one bounded field path without echoing val
 	});
 });
 
+test("only retry accepts a bounded exact worker instruction", () => {
+	assert.deepEqual(parseResumeRequest({ id: "request-one", action: "retry", taskId: "change", instruction: "Fix the finding." }),
+		{ id: "request-one", action: "retry", taskId: "change", instruction: "Fix the finding." });
+	for (const value of [
+		{ id: "request-one", action: "verify", taskId: "change", instruction: "Fix it." },
+		{ id: "request-one", action: "finalize", instruction: "Fix it." },
+		{ id: "request-one", action: "retry", taskId: "change", instruction: "x".repeat(32_001) },
+		{ id: "request-one", action: "retry", taskId: "change", instruction: "Fix\0it." },
+		{ id: "request-one", action: "retry", taskId: "change", instruction: " Fix it." },
+	]) assert.throws(() => parseResumeRequest(value));
+});
+
 test("the graph rejects invalid context edges and detects context cycles", () => {
 	const invalidGraphs: TaskRequest[][] = [
 		Array.from({ length: MAX_TASKS + 1 }, (_, index) => textTask(`task-${index}`)),
@@ -344,7 +356,7 @@ test("the graph rejects invalid context edges and detects context cycles", () =>
 	for (const tasks of invalidGraphs) assert.throws(() => parseExecuteRequest(request(tasks)));
 });
 
-test("follow-up prompt evidence requires exact bounded instructions", () => {
+test("prompt evidence requires exact bounded follow-up and correction instructions", () => {
 	const valid = retainedChangesetState();
 	const attempt = retainedChangesetAttempt(valid);
 	const candidate = attempt.candidate!;
@@ -361,8 +373,18 @@ test("follow-up prompt evidence requires exact bounded instructions", () => {
 	for (const instruction of [" padded ", "bad\0instruction"]) {
 		const invalid = structuredClone(valid);
 		retainedChangesetAttempt(invalid).prompts.at(-1)!.instruction = instruction;
-		assert.throws(() => parseRunState(invalid), /Follow-up prompt instruction.*exact non-empty text/);
+		assert.throws(() => parseRunState(invalid), /Prompt instruction.*exact non-empty text/);
 	}
+	const corrected = structuredClone(valid);
+	retainedChangesetAttempt(corrected).prompts.at(-1)!.kind = "correction";
+	corrected.correctionCount = 1;
+	assert.doesNotThrow(() => parseRunState(structuredClone(corrected)));
+	const missing = structuredClone(valid);
+	delete retainedChangesetAttempt(missing).prompts.at(-1)!.instruction;
+	assert.throws(() => parseRunState(missing), /invalid instruction evidence/);
+	const initial = structuredClone(valid);
+	retainedChangesetAttempt(initial).prompts[0]!.instruction = "Not an assignment.";
+	assert.throws(() => parseRunState(initial), /invalid instruction evidence/);
 
 	const repeatedCorrection = retainedChangesetState();
 	const repeatedAttempt = retainedChangesetAttempt(repeatedCorrection);
