@@ -1647,7 +1647,7 @@ test("worker prompts preserve ordered upstream task data and reject oversized fu
 	script.done();
 });
 
-test("initial and correction prompts include the exact request goal", async (t) => {
+test("initial and correction prompts include the exact request goal and Main's correction instruction", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	let inspections = 0;
@@ -1681,7 +1681,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 		{ command: "herdr", args: (args) => {
 			assert.deepEqual(args.slice(0, 3), ["agent", "prompt", AGENT_NAME]);
 			assert.ok(args[3]!.includes(`Goal:\n${GOAL}\nWorktree:`));
-			assert.ok(args[3]!.includes("Correction failure:\nA declared check failed."));
+			assert.ok(args[3]!.includes("Correction failure:\nA declared check failed.\n\nMain's instruction:\nFix the failing check."));
 		}, result: success({ type: "agent_prompted", agent: agentInfo("done", true, { cwd: fixture.worktree }) }) },
 		{ command: "herdr", args: ["agent", "read", AGENT_NAME, "--source", "recent", "--lines", "80", "--format", "text"], result: { code: 0, stdout: "corrected", stderr: "" } },
 	);
@@ -1694,6 +1694,7 @@ test("initial and correction prompts include the exact request goal", async (t) 
 		kind: "correction",
 		preCandidate: baseIdentity(),
 		failure: "A declared check failed.",
+		instruction: "Fix the failing check.",
 	}, operation);
 	assert.equal(correction.outcome, "candidate");
 	assert.equal(inspections, 2);
@@ -1827,31 +1828,34 @@ test("normal prompt accepts a changed clean candidate from real in-flight Git in
 	script.done();
 });
 
-test("finished worker without a commit reports blocked instead of waiting for a candidate", async (t) => {
-	const fixture = await paths(t);
-	const script = new ScriptedProcess();
-	const delays: number[] = [];
-	const host = runtime(fixture, script, async () => baseIdentity(), {
-		delay: async (milliseconds) => { delays.push(milliseconds); },
-		inspectInFlightTaskCandidate: async () => ({ candidate: baseIdentity(), clean: true, valid: true }),
+test("finished worker without a commit reports blocked, or uncommitted when its worktree is dirty", async (t) => {
+	for (const [clean, outcome] of [[true, "blocked"], [false, "uncommitted"]] as const) await t.test(outcome, async (t) => {
+		const fixture = await paths(t);
+		const script = new ScriptedProcess();
+		const delays: number[] = [];
+		const host = runtime(fixture, script, async () => baseIdentity(), {
+			delay: async (milliseconds) => { delays.push(milliseconds); },
+			inspectInFlightTaskCandidate: async () => ({ candidate: baseIdentity(), clean, valid: true }),
+		});
+		const { attempt } = await fullAttempt(fixture, host, script);
+		const lease = attempt.allocations.find((item): item is AgentAllocationIntent => item.kind === "agent")!.leasePath;
+		await privateLease(lease);
+		const prompt = `${buildChangesetTaskPrompt({ goal: GOAL, contexts: [], task, kind: "initial", worktreeCwd: fixture.worktree })}\n\nTurn identity: ${attempt.correlationToken}:${attempt.prompts.length}`;
+		await writeFile(`${lease}.session.jsonl`, [
+			JSON.stringify({ type: "message", id: "user-one", parentId: null, message: { role: "user", content: [{ type: "text", text: prompt }] } }),
+			JSON.stringify({ type: "message", id: "answer-one", parentId: "user-one", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "No safe change was made." }] } }),
+		].join("\n") + "\n", { mode: 0o600 });
+		script.push(
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+		);
+		const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
+		assert.equal(result.outcome, outcome);
+		assert.deepEqual(delays, []);
+		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+		script.done();
 	});
-	const { attempt } = await fullAttempt(fixture, host, script);
-	const lease = attempt.allocations.find((item): item is AgentAllocationIntent => item.kind === "agent")!.leasePath;
-	await privateLease(lease);
-	const prompt = `${buildChangesetTaskPrompt({ goal: GOAL, contexts: [], task, kind: "initial", worktreeCwd: fixture.worktree })}\n\nTurn identity: ${attempt.correlationToken}:${attempt.prompts.length}`;
-	await writeFile(`${lease}.session.jsonl`, [
-		JSON.stringify({ type: "message", id: "user-one", parentId: null, message: { role: "user", content: [{ type: "text", text: prompt }] } }),
-		JSON.stringify({ type: "message", id: "answer-one", parentId: "user-one", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "No safe change was made." }] } }),
-	].join("\n") + "\n", { mode: 0o600 });
-	script.push(
-		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
-		{ command: "herdr", args: () => {}, result: success({ type: "agent_prompted", agent: agentInfo("working", true, { cwd: fixture.worktree }) }) },
-		{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
-	);
-	const result = await host.runWorker({ goal: GOAL, contexts: [], task, attempt, workerId: AGENT_NAME, kind: "initial", preCandidate: baseIdentity() }, context());
-	assert.equal(result.outcome, "blocked");
-	assert.deepEqual(delays, []);
-	script.done();
 });
 
 test("an exact failed terminal turn without a commit reports attention after a stalled prompt", async (t) => {

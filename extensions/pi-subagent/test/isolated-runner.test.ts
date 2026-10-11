@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { EphemeralSubagentExecutor } from "@henryqw/pi-subagent";
 import {
+	COMMIT_NUDGE_INSTRUCTION,
 	IsolatedRunner,
 	STATUS_INSPECTION_BUDGET_MS,
 	withTransientLaunch,
@@ -34,6 +35,7 @@ import {
 	type ExecuteRequest,
 	type HostAllocationPlan,
 	type ModelClass,
+	type PromptRecord,
 	type RunState,
 	type TaskRequest,
 	type WorkspaceIdentity,
@@ -100,6 +102,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	readonly workerResults: WorkerResult[] = [];
 	workerPause?: (call: WorkerCall) => Promise<void>;
 	readonly correctionFailures: string[] = [];
+	readonly correctionInstructions: string[] = [];
 	readonly followupInstructions: string[] = [];
 	readonly terminationCalls: Array<{ workerId: string; candidate: WorkspaceIdentity }> = [];
 	readonly terminationResults: Array<{ outcome: "terminated" } | { outcome: "unknown"; failure: string }> = [];
@@ -297,6 +300,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 		this.workerCalls.push(call);
 		this.workerContextCalls.push({ taskId: input.task.id, contexts: structuredClone(input.contexts) });
 		if (input.kind === "correction" && input.failure !== undefined) this.correctionFailures.push(input.failure);
+		if (input.kind === "correction" && input.instruction !== undefined) this.correctionInstructions.push(input.instruction);
 		if (input.kind === "followup" && input.instruction !== undefined) this.followupInstructions.push(input.instruction);
 		this.changesetCallOrder.push(`worker:${input.kind}:${input.workerId}`);
 		this.activeWorkers += 1;
@@ -1296,6 +1300,55 @@ test("a blocked diagnostic is normalized before same-worker correction", async (
 	assertParsed(result.state);
 });
 
+test("a dirty finished turn gets one commit nudge without consuming its correction", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	runtime.workerResults.push({ outcome: "uncommitted", diagnostic: "dirty" });
+	runtime.failPreliminaryChecks = 1;
+	let nudgeIntent: PromptRecord | undefined;
+	runtime.workerPause = async (call) => {
+		if (call.kind === "followup") nudgeIntent = changesetState((await store.load(root, "commit-nudge")).state, "change").attempts[0]!.prompts[1];
+	};
+
+	const result = await runner.execute(request("commit-nudge", [changesetTask("change")]), root);
+	const attempt = changesetState(result.state, "change").attempts[0]!;
+
+	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial", "followup", "correction"]);
+	assert.deepEqual(runtime.followupInstructions, [COMMIT_NUDGE_INSTRUCTION]);
+	assert.equal(nudgeIntent?.status, "submitting");
+	assert.equal(attempt.prompts[0]?.failure, "dirty");
+	assert.deepEqual(attempt.prompts[1]?.preCandidate, attempt.prompts[0]?.preCandidate);
+	assert.equal(attempt.prompts[1]?.instruction, COMMIT_NUDGE_INSTRUCTION);
+	assert.equal(result.state.correctionCount, 1);
+	assert.equal(changesetState(result.state, "change").status, "ready_to_integrate");
+	assertParsed(result.state);
+});
+
+test("a turn still dirty after its commit nudge needs attention without another nudge", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerResults.push({ outcome: "uncommitted", diagnostic: "dirty" }, { outcome: "uncommitted", diagnostic: "still dirty" });
+
+	const result = await runner.execute(request("nudge-still-dirty", [changesetTask("change")]), root);
+	const task = changesetState(result.state, "change");
+
+	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial", "followup"]);
+	assert.equal(task.status, "needs_attention");
+	assert.match(task.failure ?? "", /commit nudge was sent.*uncommitted changes/);
+	assert.equal(task.attempts[0]!.prompts[1]?.failure, "still dirty");
+	assert.equal(result.state.correctionCount, 0);
+	assertParsed(result.state);
+});
+
+test("an ambiguous commit nudge is never replayed", async (t) => {
+	const { root, runtime, runner } = await harness(t);
+	runtime.workerResults.push({ outcome: "uncommitted", diagnostic: "dirty" }, { outcome: "unknown", diagnostic: "lost" });
+
+	const result = await runner.execute(request("ambiguous-nudge", [changesetTask("change")]), root);
+	assert.equal(changesetState(result.state, "change").attempts[0]!.prompts[1]?.status, "ambiguous");
+	await assert.rejects(runner.resume({ id: "ambiguous-nudge", action: "retry", taskId: "change" }, root), /never replayed/);
+	assert.deepEqual(runtime.workerCalls.map(({ kind }) => kind), ["initial", "followup"]);
+	assertParsed((await runner.status("ambiguous-nudge", root)).state);
+});
+
 test("a follow-up queued during a failing follow-up is honored", async (t) => {
 	for (const failure of ["blocked", "check"] as const) {
 		await t.test(failure, async (t) => {
@@ -1589,12 +1642,14 @@ test("failures enter needs_attention and require explicit recovery actions", asy
 		const stopped = await runner.execute(definition, root);
 		assert.equal(stopped.state.status, "needs_attention");
 		assert.deepEqual(stopped.continuation, { id: definition.id, action: "retry", taskId: "change" });
-		const corrected = await runner.resume({ id: definition.id, action: "retry", taskId: "change" }, root);
+		const corrected = await runner.resume({ id: definition.id, action: "retry", taskId: "change", instruction: "Fix the reviewed finding." }, root);
 		assert.equal(corrected.state.accepted, false);
 		assert.deepEqual(runtime.workerCalls, [
 			{ taskId: "change", kind: "initial" },
 			{ taskId: "change", kind: "correction" },
 		]);
+		assert.deepEqual(runtime.correctionInstructions, ["Fix the reviewed finding."]);
+		assert.equal(changesetState(corrected.state, "change").attempts[0]!.prompts[1]?.instruction, "Fix the reviewed finding.");
 		assert.deepEqual(runtime.reviewCalls.map(({ scope, taskId }) => ({ scope, taskId })), [
 			{ scope: "task", taskId: "change" },
 			{ scope: "task", taskId: "change" },

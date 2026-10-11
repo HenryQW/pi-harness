@@ -61,7 +61,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - Promotion requires exact unchanged clean Main and a passing combined generation. Durable promotion evidence precedes selected-worker termination and cleanup; recovery never rolls back a proven promotion.
 - Rejected workers and superseded generations stay retained until Main explicitly releases their exact clean, proved-owned resources. At most two unreleased integration checkouts coexist.
 - Failures, ambiguity, interruption, review findings, conflicts, drift, unproved termination, or cleanup failure enter `needs_attention` and preserve evidence.
-- `subagent_status` is read-only, callable from `codemode` scripts, and returns the bounded public projection as structured content, never raw run state. `delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. `subagent_resume` accepts only strict `retry`, `verify`, or `finalize` continuations. `subagent_abort` terminates only exact owned workers.
+- `subagent_status` is read-only, callable from `codemode` scripts, and returns the bounded public projection as structured content, never raw run state. `delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. `subagent_resume` accepts only strict `retry`, `verify`, or `finalize` continuations; only a correcting `retry` takes Main's optional instruction. `subagent_abort` terminates only exact owned workers.
 - The extension never pushes, opens a pull request, publishes, deploys, stashes, resets, force-cleans, or deletes unproved recoverable work.
 
 ### Resource and launch policy

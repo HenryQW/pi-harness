@@ -352,6 +352,7 @@ function expectedPublicState() {
 			failedReview: {
 				phase: "preliminary",
 				verdict: "NEEDS_WORK",
+				verdictTruncated: false,
 				identityChanged: false,
 			},
 			cleanup: [
@@ -467,6 +468,33 @@ test("status hands codemode scripts the bounded public projection while mutating
 	assert.deepEqual(structured.state, expectedPublicState());
 	assert.equal(structured.main.status, "drifted");
 	assert.equal(JSON.stringify(result.structuredContent).includes("PRIVATE"), false);
+});
+
+test("status returns the full failed review verdict while follow-ups keep a preview", async () => {
+	type Review = { verdict: string; verdictTruncated: boolean };
+	type Projection = { state: { needsAttention: { failedReview: Review } } };
+	const state = structuredClone(PRIVATE_STATE);
+	const verdict = `NEEDS_WORK\n${"Finding: fix the exact regression. ".repeat(120)}`.trim();
+	const task = state.tasks[0]!;
+	if (task.kind !== "changeset") throw new Error("Expected a changeset task.");
+	task.attempts[0]!.preliminaryReview!.verdict = verdict;
+	const harness = createHarness({ responseState: state });
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+
+	const status = await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, undefined, ctx);
+	assert.ok(Check(StatusOutputSchema, JSON.parse(JSON.stringify(status.structuredContent))));
+	assert.deepEqual((status.structuredContent as Projection).state.needsAttention.failedReview,
+		{ phase: "preliminary", verdict, verdictTruncated: false, identityChanged: false });
+
+	await executeTool(namedTool(harness, "subagent_resume"), { id: "request-one", action: "finalize" }, undefined, ctx);
+	await new Promise(setImmediate);
+	const message = harness.sent.at(-1)!.message;
+	const preview = (message.details as Projection).state.needsAttention.failedReview;
+	assert.equal(preview.verdictTruncated, true);
+	assert.ok(verdict.startsWith(preview.verdict.replace(/\n\[truncated\]$/, "")));
+	assert.ok(Buffer.byteLength(preview.verdict, "utf8") < 600);
+	assert.match(message.content, /run subagent_status for the full verdict\.$/);
 });
 
 test("aborted request keeps mixed task evidence distinct in status and widget", async () => {
