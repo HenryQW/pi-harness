@@ -205,13 +205,12 @@ export function directPartialText(jsonl: string, prompt: string, maxChars: numbe
 	return chars.length <= maxChars ? chars.join("") : `…${chars.slice(-maxChars).join("")}`;
 }
 
-/** `turn` is the prompt's random turn identity; it proves which session turn a record owns. */
-export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string; turn: string };
+/** `turn` is the prompt's random turn identity; it proves which session turn a record owns.
+ * `workspaceId` and `cwd` bind the record to its launching Herdr workspace and checkout. */
+export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string; turn: string; workspaceId: string; cwd: string };
 
 /** Allocation evidence is not ownership and must never authorize pane mutation. */
-export type DirectAllocation = Omit<DirectTab, "tabId" | "paneId"> & {
-	workspaceId: string; cwd: string; label: string; tabId?: string; paneId?: string;
-};
+export type DirectAllocation = Omit<DirectTab, "tabId" | "paneId"> & { label: string; tabId?: string; paneId?: string };
 export class DirectAllocationError extends Error {
 	readonly allocation: DirectAllocation;
 	constructor(allocation: DirectAllocation, cause: unknown) {
@@ -236,10 +235,12 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 		return field(agent.agent_status, "agent state");
 	};
 	return {
+		workspaceId,
+		cwd: workingDir,
 		/** Close only an exact owned pane, then prove it and its leased children stopped.
 		 * A task result or Ctrl-C acknowledgement is not termination evidence.
 		 * `settledOnly` refuses to close a listed agent that is not idle or done. */
-		async stop(tab: Omit<DirectTab, "turn">, current: () => boolean = () => true, settledOnly = false): Promise<void> {
+		async stop(tab: Pick<DirectTab, "name" | "tabId" | "paneId" | "leasePath">, current: () => boolean = () => true, settledOnly = false): Promise<void> {
 			const requireCurrent = () => { if (!current()) throw new Error("Direct task scope changed; reopen /subagent."); };
 			requireCurrent();
 			await assertPrivateLease(tab.leasePath, false);
@@ -328,7 +329,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			} catch (error) { throw new DirectAllocationError(allocation, error); }
 			try {
 				// Record the tab before the agent start can outlive an aborted launch.
-				onTab({ name, tabId, paneId, sessionFile, leasePath, turn });
+				onTab({ name, tabId, paneId, sessionFile, leasePath, turn, workspaceId, cwd: workingDir });
 				signal.throwIfAborted();
 				const started = await startPiAgent(herdr, { name, pane: paneId,
 					args: [...sessionArgs, "--session", sessionFile], options: options(signal), shouldRetry: () => false });

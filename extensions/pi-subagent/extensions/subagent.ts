@@ -129,8 +129,9 @@ const DIRECT_TAB_TYPE = "subagent-direct-tab";
 const DIRECT_ALLOCATION_TYPE = "subagent-direct-allocation";
 // Legacy records have no display metadata.
 type DirectAllocationRecord = DirectAllocation & { taskId: string; entryId: string; failure: string; display?: DirectDisplay };
-// Records saved before continuation support have no turn identity and cannot be continued.
-type DirectTabRecord = Omit<DirectTab, "turn"> & { turn?: string; taskId: string; entryId: string; display?: DirectDisplay };
+// Records saved before continuation support lack turn, workspace, and checkout identity and cannot be continued.
+type DirectTabRecord = Omit<DirectTab, "turn" | "workspaceId" | "cwd"> & Partial<Pick<DirectTab, "turn" | "workspaceId" | "cwd">>
+	& { taskId: string; entryId: string; display?: DirectDisplay };
 
 function boundedError(error: unknown): Error {
 	const message = capOutput(error instanceof Error ? error.message : String(error));
@@ -561,7 +562,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		if (stale) return;
 		const transport = formatWorkflowResult(mode, entries);
 		const outcome: BackgroundWorkflowTransportDetails["outcome"] = transport.failed ? "failed" : "completed";
-		const content = [workerOutputForMain(transport.text), ...(recovery ? [`Checkout admission retained: ${recovery}. Open /subagent, select ${ref} (${taskId}), and follow its recovery guidance (Close/cancel-and-release of all its owned workers only when offered); never blindly retry work.`] : []), ...(tabs.length ? ["Recovery (also available via /subagent):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile, display }) =>
+		const content = [workerOutputForMain(transport.text), ...(recovery ? [`Worker termination unproved; ownership retained (write requests also keep checkout admission): ${recovery}. Open /subagent, select ${ref} (${taskId}), and follow its recovery guidance (Close/cancel-and-release of all its owned workers only when offered); never blindly retry work.`] : []), ...(tabs.length ? ["Recovery (also available via /subagent):", ...tabs.map(({ taskId, entryId, name, tabId, paneId, sessionFile, display }) =>
 			`- ${display ? `${directRef(display)} · ` : ""}${taskId} · ${entryId} · tab ${tabId} · pane ${paneId} · agent ${name} · session ${sessionFile}`)] : [])].join("\n");
 		const details: BackgroundWorkflowTransportDetails & { tabs: readonly DirectTabRecord[] } = {
 			...transport.details,
@@ -627,6 +628,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			// Resolve continuations from this branch's records synchronously, before admission or Herdr calls.
 			const branchTabs = ctx.sessionManager.getBranch().flatMap((entry) =>
 				entry.type === "custom" && entry.customType === DIRECT_TAB_TYPE && entry.data ? [entry.data as DirectTabRecord] : []);
+			const policy = currentPolicy();
+			const herdr = createDirectHerdr(pi, ctx.cwd, policy.childIdleMs);
 			const sources = new Map<number, DirectTabRecord & { turn: string }>();
 			for (const [index, { continueFrom, role }] of workflow.delegations.entries()) {
 				if (continueFrom === undefined) continue;
@@ -637,14 +640,15 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				const source = matches[0]!;
 				if (source.display!.role !== role) throw refuse(`it ran with Role ${source.display!.role}, not ${role}; use the recorded Role`);
 				if (source.turn === undefined) throw refuse("its record has no turn identity (saved by an older pi-subagent), so it is not continuable; start a fresh task");
+				if (source.workspaceId !== herdr.workspaceId || source.cwd !== herdr.cwd) {
+					throw refuse(`it ran in ${source.cwd ?? "an unrecorded checkout"} (Herdr workspace ${source.workspaceId ?? "unrecorded"}), not this checkout and workspace; start a fresh task here`);
+				}
 				if ([...directTasks.values()].some(({ tabs, continues }) => continues?.has(source.sessionFile)
 					|| tabs.some(({ sessionFile }) => sessionFile === source.sessionFile))) throw refuse("a locally active direct task still owns its session");
 				if ([...sources.values()].some(({ sessionFile }) => sessionFile === source.sessionFile)) throw refuse("this request already continues its session");
 				sources.set(index, { ...source, turn: source.turn });
 			}
 			const writes = writesCheckout(workflow);
-			const policy = currentPolicy();
-			const herdr = createDirectHerdr(pi, ctx.cwd, policy.childIdleMs);
 			const entries = identifyWorkflowEntries(toolCallId, workflow);
 			const states = new Map<string, WorkflowTransportEntry>(entries.map(({ id, index, delegation }) => [id, {
 				id, index, role: delegation.role, status: "pending",
@@ -820,7 +824,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							status: "skipped",
 						});
 					}
-					if (writes || controller.signal.aborted) {
+					// An unproved per-worker stop keeps ownership so /subagent can retry the guarded Close.
+					const stopUnproved = (await Promise.all([...stopProofs.values()].map((proof) => proof.then(() => false, () => true)))).some(Boolean);
+					if (writes || controller.signal.aborted || stopUnproved) {
 						try { await local.close!(() => directTasks.get(taskId) === local); }
 						catch { /* Retain ownership and admission for an explicit guarded retry. */ }
 					} else directTasks.delete(taskId);

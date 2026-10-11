@@ -784,7 +784,7 @@ test("failed direct termination retains admission and exact Close retries withou
 				app.handlers.get("tool_result")!({ toolCallId: failure });
 				await waitFor(() => app.sentMessages.length === 1);
 				const sessionFile = app.sessionEntries[0].data.sessionFile;
-				assert.match(app.sentMessages[0]!.message.content, /Checkout admission retained:.*Close\/cancel-and-release/s);
+				assert.match(app.sentMessages[0]!.message.content, /ownership retained \(write requests also keep checkout admission\):.*Close\/cancel-and-release/s);
 				const write = () => app.handlers.get("tool_call")!({ toolCallId: "main-write", toolName: "add_directory", input: {} }, app.ctx);
 				assert.equal((await write()).block, true);
 				if (failure === "identity") assert.ok(!fake.calls.some((args) => args[1] === "close"), "mismatched workers are never touched");
@@ -1530,6 +1530,9 @@ test("continueFrom refuses owned, unknown, mismatched, working, unsettled, legac
 			app.sessionEntries.push({ type: "custom", customType: "subagent-direct-tab", data: {
 				...source, turn: undefined, taskId: "legacy", tabId: "t-legacy", display: { ...source.display, workflow: 5 } } });
 			await refuse({ continueFrom: "D5.1" }, /no turn identity .*not continuable/);
+			app.sessionEntries.push({ type: "custom", customType: "subagent-direct-tab", data: {
+				...source, cwd: "/elsewhere", taskId: "elsewhere", tabId: "t-elsewhere", display: { ...source.display, workflow: 6 } } });
+			await refuse({ continueFrom: "D6.1" }, /ran in \/elsewhere .*not this checkout and workspace/);
 			await rm(source.sessionFile);
 			await refuse({ continueFrom: "D1.1" }, /missing or unreadable/);
 		});
@@ -1584,6 +1587,55 @@ test("Stop this worker ends one read worker while siblings finish and Main gets 
 			const { content, details } = app.sentMessages[0]!.message;
 			assert.deepEqual(details.entries.map(({ status }: any) => status), ["succeeded", "rejected"]);
 			assert.match(content, /✗ \[2\/2\] Second · worker — Stopped by user from \/subagent\n/);
+		});
+	});
+});
+
+test("an unproved Stop this worker keeps ownership so Close stays available", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			let waiting = 0;
+			const fake = fakeHerdr(cwd, () => "answer", gate);
+			const app = harness({ cwd, ui: true, lsof: async () => ({ code: 0, stdout: "p4242\n", stderr: "" }), herdr: async (args, options) => {
+				if (args[0] === "agent" && args[1] === "wait") {
+					waiting++;
+					const signal = options!.signal!;
+					await Promise.race([gate, new Promise<void>((resolve) => signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true }))]);
+					if (signal.aborted) return { code: -1, stdout: "", stderr: "", killed: true };
+				}
+				return fake.exec(args);
+			} });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			await app.tool.execute("reads", { tasks: [
+				{ role: "worker", name: "First", task: "first", access: "read" },
+				{ role: "worker", name: "Second", task: "second", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => waiting === 2);
+			let menu = 0;
+			let actions: string[] = [];
+			app.ctx.ui.select = async (_title: string, choices: string[]) => {
+				menu++;
+				if (menu === 1) return choices.find((choice) => choice.startsWith("Direct · D1 · 2 workers"));
+				if (menu === 2) { actions = choices; return choices.find((choice) => choice.startsWith("Stop this worker: D1.2")); }
+				return undefined;
+			};
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.ok(app.notifications.some(({ message }) => message.startsWith("Worker stop failed:") && message.includes("still has holders")));
+			release();
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.match(app.sentMessages[0]!.message.content, /Stopped by user from \/subagent; termination unproved.*ownership retained/s);
+			menu = 0;
+			app.ctx.ui.select = async (_title: string, choices: string[]) => {
+				menu++;
+				if (menu === 1) return choices.find((choice) => choice.startsWith("Direct · D1 · 2 workers"));
+				if (menu === 2) actions = choices;
+				return undefined;
+			};
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.ok(actions.some((choice) => choice.startsWith("Close/cancel-and-release ALL owned workers")), "the workflow stays locally owned");
 		});
 	});
 });
