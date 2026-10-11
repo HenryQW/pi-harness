@@ -51,6 +51,8 @@ const TEXT_TASK_PROMPT_MAX_BYTES = 64 * 1024;
 const CHANGESET_TASK_PROMPT_MAX_BYTES = 96 * 1024;
 const MAX_WORKER_PROMPTS = 32;
 const MAX_QUEUED_FOLLOWUPS = 16;
+/** One durable follow-up per attempt; the runner itself never commits, stages, stashes, or discards. */
+export const COMMIT_NUDGE_INSTRUCTION = "Your turn ended with uncommitted changes in your worktree. Commit the intended changes now so the worktree is clean, or explain in your reply why they must not be committed. Do not discard work.";
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
 export const STATUS_INSPECTION_BUDGET_MS = 5_000;
@@ -108,6 +110,8 @@ export type AllocationReconciliation<Kind extends AllocationKind = AllocationKin
 export type WorkerResult =
 	| { outcome: "candidate"; candidate: WorkspaceIdentity; diagnostic?: string }
 	| { outcome: "blocked" | "not_prompted"; diagnostic: string }
+	/** The exact turn finished in its valid owned worktree with tracked or untracked changes. */
+	| { outcome: "uncommitted"; diagnostic: string }
 	| { outcome: "unknown" | "interrupted"; diagnostic: string };
 
 export interface CheckRunResult {
@@ -652,17 +656,23 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 	});
 }
 
+function isCommitNudge(prompt: PromptRecord): boolean {
+	return prompt.kind === "followup" && prompt.instruction === COMMIT_NUDGE_INSTRUCTION;
+}
+
 function correctionEligible(request: ChangesetTaskRequest, attempt: TaskAttempt): boolean {
 	const initial = attempt.prompts[0];
 	if (initial?.kind !== "initial" || attempt.prompts.some((prompt) => prompt.kind === "correction" || prompt.status === "ambiguous")
 		|| attempt.termination) return false;
 	const latestPrompt = attempt.prompts.at(-1)!;
 	if (latestPrompt.status !== "settled") return false;
+	// A commit nudge continues its turn; it never consumes the correction window.
+	const assignments = attempt.prompts.filter((prompt) => !isCommitNudge(prompt)).length;
 	if (!attempt.candidate) {
-		return attempt.prompts.length === 1 && !attempt.preliminaryChecks && Boolean(initial.failure?.trim());
+		return assignments === 1 && !attempt.preliminaryChecks && Boolean(initial.failure?.trim());
 	}
 	const checks = attempt.preliminaryChecks;
-	return attempt.prompts.length === 1 && Boolean(checks
+	return assignments === 1 && Boolean(checks
 		&& checks.phase === "preliminary"
 		&& exactCommandResults(checks.results, request.checks)
 		&& sameIdentity(checks.candidate, attempt.candidate)
@@ -2425,6 +2435,8 @@ export class IsolatedRunner {
 		let kind: "initial" | "correction" | "followup" = initialKind;
 		let failure = task.failure;
 		let instruction = initialInstruction;
+		// A nudge keeps its dirty turn's exact clean pre-prompt lineage.
+		let nudgeFrom: WorkspaceIdentity | undefined;
 		for (;;) {
 			if (kind === "followup" && instruction === undefined) {
 				throw new Error("Follow-up worker execution requires an exact queued instruction.");
@@ -2441,11 +2453,12 @@ export class IsolatedRunner {
 			}
 			let preCandidate: WorkspaceIdentity;
 			try {
-				preCandidate = runtimeIdentity(await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectTaskCandidate({
+				preCandidate = nudgeFrom ?? runtimeIdentity(await this.callProductive(handle, scope, async (context) => await this.gitRuntime.inspectTaskCandidate({
 					root: state.root,
 					task: request,
 					attempt,
 				}, context)), "Pre-prompt candidate identity");
+				nudgeFrom = undefined;
 			} catch (error) {
 				this.rethrowStopped(error);
 				this.attention(task, `Pre-prompt candidate identity is unavailable: ${errorText(error)}`);
@@ -2521,6 +2534,19 @@ export class IsolatedRunner {
 				return;
 			}
 			prompt.status = "settled";
+			if (worker.outcome === "uncommitted") {
+				prompt.failure = boundedRuntimeDiagnostic(worker.diagnostic, "uncommitted worker diagnostic");
+				if (attempt.prompts.some(isCommitNudge)) {
+					this.attention(task, "The commit nudge was sent, but the worker turn still left uncommitted changes in its worktree; they are retained for inspection.");
+					await this.saveProductive(handle);
+					return;
+				}
+				await this.saveProductive(handle);
+				kind = "followup";
+				instruction = COMMIT_NUDGE_INSTRUCTION;
+				nudgeFrom = preCandidate;
+				continue;
+			}
 			if (worker.outcome === "blocked") {
 				failure = boundedRuntimeDiagnostic(worker.diagnostic, "blocked worker diagnostic");
 				prompt.failure = failure;

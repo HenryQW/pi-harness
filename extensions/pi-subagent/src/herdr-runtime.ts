@@ -1055,7 +1055,9 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (SETTLED_AGENT_STATES.has(lifecycle.status)) {
 				try {
 					if (await this.workerTurnFinished(allocation, prompt)) {
-						return { outcome: "blocked", diagnostic: "Worker finished without an exact changed clean committed candidate." };
+						return inspection.valid && !inspection.clean
+							? { outcome: "uncommitted", diagnostic: "Worker finished with uncommitted changes in its owned worktree." }
+							: { outcome: "blocked", diagnostic: "Worker finished without an exact changed clean committed candidate." };
 					}
 				} catch (error) {
 					return { outcome: "unknown", diagnostic: `Worker session evidence cannot be verified: ${error instanceof SyntaxError ? "malformed JSONL" : safeText(error)}` };
