@@ -319,6 +319,11 @@ export class FileRunStore {
 		return { states, invalidIds };
 	}
 
+	/** Raw text of a state file, for evidence when it does not parse. */
+	async readRaw(root: string, id: string): Promise<string> {
+		return await readTextFileBounded(this.statePath(root, id), STATE_MAX_BYTES);
+	}
+
 	private handle(state: RunState, path: string): RunStateHandle {
 		return new RunStateHandle(state, path, async (contents) => {
 			await this.assertSafeDestination(state.root, path);

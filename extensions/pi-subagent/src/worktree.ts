@@ -17,8 +17,10 @@ export type WorktreePayload =
 	| { outcome: "retained"; path: string; branch: string; commits: number; dirty: boolean }
 	| { outcome: "recovery"; path: string; branch: string; note: string; commits?: number; dirty?: boolean };
 
-const WORKTREES_DIRNAME = ".worktrees";
+export const WORKTREES_DIRNAME = ".worktrees";
 const BRANCH_NAMESPACE = "pi-subagent";
+/** Branches `createChildWorktree` creates for workers and integration checkouts, at `<primary>/.worktrees/<branch basename>`. */
+export const OWNED_BRANCH_PATTERN = new RegExp(`^${BRANCH_NAMESPACE}/subagent-[0-9a-f]{24}$`);
 
 export class WorktreeSetupError extends Error {
 	override name = "WorktreeSetupError";

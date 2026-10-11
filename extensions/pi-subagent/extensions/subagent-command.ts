@@ -49,6 +49,22 @@ export interface IsolatedInventory {
 	invalidIds: readonly string[];
 }
 
+/** One pi-subagent branch and its checkout as reviewed by /subagent prune. */
+export interface PruneItem {
+	branch: string;
+	tip: string;
+	path?: string;
+	prunable: boolean;
+	/** Why the item is prunable, or every exact blocker. */
+	reason: string;
+	/** Ignored entries that removing the checkout deletes. */
+	ignored: readonly string[];
+}
+export interface PrunePlan {
+	root: string;
+	items: readonly PruneItem[];
+}
+
 /** Mutation adapters MUST check current() synchronously alongside their live ownership
  * validation and queue operation. They must not await between those operations. */
 export interface SubagentCommandAdapter {
@@ -57,6 +73,10 @@ export interface SubagentCommandAdapter {
 	stopDirect(task: DirectTask, entryId: string, current: () => boolean): Promise<string>;
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
+	/** Read-only review of pi-subagent worktrees and branches in the canonical repository. */
+	prunePlan(cwd: string): Promise<PrunePlan>;
+	/** Re-verify and remove reviewed prunable items; returns a bounded report. */
+	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<string>;
 	/** Read-only Role catalog report with routes and per-file load errors. */
 	roles(ctx: ExtensionContext): string;
 	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ ref: string; tabId: string; name: string; sessionFile: string }>;
@@ -73,6 +93,16 @@ const errorText = (error: unknown): string => clean(error instanceof Error ? err
 const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
 
+const ignoredSummary = ({ ignored }: PruneItem) => !ignored.length ? "none"
+	: `${ignored.length} (${ignored.slice(0, 5).join(", ")}${ignored.length > 5 ? `, +${ignored.length - 5} more` : ""})`;
+function pruneReview({ root, items }: PrunePlan): string {
+	if (!items.length) return `No pi-subagent worktrees or branches in ${root}.`;
+	const prunable = items.filter((item) => item.prunable).length;
+	return [`Subagent prune review in ${root}: ${prunable} prunable, ${items.length - prunable} blocked.`,
+		...items.map((item) => clean(`${item.prunable ? "✓ prunable" : "✗ blocked"} · ${item.path ?? "(no checkout)"} · ${item.branch} · ${item.tip.slice(0, 12)} · ${item.reason} · ignored: ${ignoredSummary(item)}`, 600)),
+	].join("\n");
+}
+
 type Choice<T> = { label: string; value: T };
 async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[]): Promise<T | undefined> {
 	// Numeric suffixes are UI-only. Never parse display text into an identity.
@@ -84,10 +114,10 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 
 export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentCommandAdapter): void {
 	pi.registerCommand("subagent", {
-		description: "Inspect direct and isolated work, list Roles with /subagent roles, or recover orphaned isolated requests with /subagent recover",
+		description: "Inspect direct and isolated work, list Roles with /subagent roles, recover orphaned isolated requests with /subagent recover, or remove merged leftover worktrees with /subagent prune",
 		handler: async (args, ctx) => {
 			const command = args.trim();
-			if (command && command !== "recover" && command !== "roles") throw new Error("Usage: /subagent [recover|roles]");
+			if (command && !["prune", "recover", "roles"].includes(command)) throw new Error("Usage: /subagent [prune|recover|roles]");
 			if (command === "roles") {
 				const report = clean(adapter.roles(ctx), ROLES_REPORT_CODE_POINTS, true);
 				if (ctx.hasUI) ctx.ui.notify(report, "info");
@@ -121,6 +151,32 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				ctx.ui.notify("Session or branch changed; reopen /subagent in the current context.", "warning");
 				return false;
 			};
+			if (command === "prune") {
+				const plan = await adapter.prunePlan(ctx.cwd);
+				const review = clean(pruneReview(plan), ROLES_REPORT_CODE_POINTS, true);
+				if (!ctx.hasUI) {
+					pi.sendMessage({ customType: "pi-subagent-prune", content: `${review}\nReport only: removal requires interactive confirmation.`, display: true });
+					return;
+				}
+				if (!valid()) return;
+				ctx.ui.notify(review, "info");
+				const prunable = plan.items.filter((item) => item.prunable);
+				if (!prunable.length) return;
+				const confirmed = await ctx.ui.confirm("Prune subagent worktrees", `Remove all ${prunable.length} prunable item(s) listed above? Each is re-verified first; unique commits, tracked or untracked changes, and unlisted items are never removed.`);
+				if (!valid() || !confirmed) return;
+				const ignored = prunable.filter((item) => item.ignored.length);
+				const allowIgnored = ignored.length > 0 && await ctx.ui.confirm("Delete ignored content",
+					clean(`Also remove ${ignored.length} checkout(s) with ignored files? This permanently deletes this ignored content:\n${ignored.map((item) => `${item.path}: ${ignoredSummary(item)}`).join("\n")}`, 4000, true));
+				if (!valid()) return;
+				if (ignored.length && !allowIgnored) ctx.ui.notify(`Kept ${ignored.length} checkout(s) with ignored content; their deletion was not approved.`, "info");
+				const selected = allowIgnored ? prunable : prunable.filter((item) => !item.ignored.length);
+				if (!selected.length) return;
+				try {
+					const report = await adapter.prune(ctx.cwd, selected, allowIgnored, current);
+					if (valid()) ctx.ui.notify(clean(report, ROLES_REPORT_CODE_POINTS, true), "info");
+				} catch (error) { if (valid()) ctx.ui.notify(`Prune failed: ${errorText(error)}`, "error"); }
+				return;
+			}
 			let history = false;
 			for (;;) {
 				if (!valid()) return;

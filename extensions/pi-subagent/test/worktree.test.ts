@@ -3,10 +3,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import test from "node:test";
 import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type WorktreeInfo, type WorktreePayload } from "../src/worktree.ts";
 import type { GitRunner } from "../src/git-process.ts";
+import { inspectPruneCandidates, removePruneCandidates, type PruneGuards } from "../src/prune.ts";
 import { loadRoleCatalog } from "../src/index.ts";
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
@@ -769,4 +770,83 @@ test("loadRoleCatalog rejects retired Role isolation values", async (t) => {
 	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 
 	for (const dir of [acceptDir, rejectDir]) assert.match(loadRoleCatalog(dir).errors[0]!.message, /Role isolation is retired.*mode "isolated"/i);
+});
+
+function pruneGuards(options: { owner?: string; panes?: { paneId: string; cwds: string[] }[] | Error } = {}): PruneGuards {
+	return {
+		ownership: async () => ({ owner: (name) => name === options.owner ? "owned by running request r" : undefined }),
+		panes: async () => {
+			if (options.panes instanceof Error) throw options.panes;
+			return options.panes ?? [];
+		},
+	};
+}
+
+test("prune removes only a merged clean worktree and names each blocker", async (t) => {
+	const repo = await realpath(await initializedRepository(t));
+	const add = async (id: string) => (await createChildWorktree(repo, id))!;
+	const [merged, unique, dirty, owned, paned] = [await add("merged"), await add("unique"), await add("dirty"), await add("owned"), await add("paned")];
+	await writeFile(join(unique.path, "work.txt"), "unique\n");
+	git(unique.path, "add", "work.txt");
+	git(unique.path, "commit", "-qm", "unique");
+	await writeFile(join(dirty.path, "draft.txt"), "draft\n");
+	git(repo, "branch", `pi-subagent/subagent-${"a".repeat(32)}`);
+	const guards = pruneGuards({ owner: basename(owned.branch), panes: [{ paneId: "w1:p2", cwds: ["/elsewhere", join(paned.path, "src")] }] });
+	const items = await inspectPruneCandidates(repo, repo, guards);
+	const reason = (branch: string) => items.find((item) => item.branch === branch)?.reason;
+	assert.equal(items.length, 5, "only helper-shaped branches are candidates");
+	assert.deepEqual(items.filter((item) => item.prunable).map(({ branch, path }) => ({ branch, path })), [{ branch: merged.branch, path: merged.path }]);
+	assert.equal(reason(merged.branch), "merged into Main HEAD; clean checkout");
+	assert.equal(reason(unique.branch), "branch has commits not in Main HEAD");
+	assert.equal(reason(dirty.branch), "checkout has tracked or untracked changes");
+	assert.equal(reason(owned.branch), "owned by running request r");
+	assert.equal(reason(paned.branch), "Herdr pane w1:p2 works inside the checkout");
+
+	const { removals, checkouts } = await removePruneCandidates(repo, repo, items.filter((item) => item.prunable), false, guards);
+	assert.deepEqual(removals.map(({ outcome, item }) => [outcome, item.branch]), [["removed", merged.branch]]);
+	assert.equal(existsSync(merged.path), false);
+	assert.equal(git(repo, "branch", "--list", merged.branch), "");
+	assert.deepEqual([...checkouts].sort(), [repo, unique.path, dirty.path, owned.path, paned.path].sort());
+	for (const kept of [unique, dirty, owned, paned]) assert.equal(existsSync(kept.path), true);
+
+	const unavailable = await inspectPruneCandidates(repo, repo, pruneGuards({ panes: new Error("herdr pane list failed: server not running") }));
+	assert.match(unavailable.find((item) => item.branch === owned.branch)!.reason, /^Herdr unavailable \(herdr pane list failed: server not running\); cannot prove no pane uses the checkout$/);
+});
+
+test("prune deletes ignored content only after approval", async (t) => {
+	const repo = await realpath(await initializedRepository(t));
+	await writeFile(join(repo, ".gitignore"), "node_modules/\n");
+	git(repo, "add", ".gitignore");
+	git(repo, "commit", "-qm", "ignore");
+	const worktree = (await createChildWorktree(repo, "ignored"))!;
+	await mkdir(join(worktree.path, "node_modules", "pkg"), { recursive: true });
+	await writeFile(join(worktree.path, "node_modules", "pkg", "index.js"), "x\n");
+	const [item] = await inspectPruneCandidates(repo, repo, pruneGuards());
+	assert.equal(item!.prunable, true);
+	assert.deepEqual(item!.ignored, ["node_modules/"]);
+	const declined = await removePruneCandidates(repo, repo, [item!], false, pruneGuards());
+	assert.deepEqual(declined.removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "ignored content was not approved or changed since review"]]);
+	assert.equal(existsSync(join(worktree.path, "node_modules", "pkg", "index.js")), true);
+	await mkdir(join(worktree.path, "dist"));
+	await writeFile(join(repo, ".git", "info", "exclude"), "/.worktrees/\ndist/\n");
+	await writeFile(join(worktree.path, "dist", "out.js"), "x\n");
+	const grown = await removePruneCandidates(repo, repo, [item!], true, pruneGuards());
+	assert.equal(grown.removals[0]!.outcome, "skipped", "unreviewed ignored entries are not approved");
+	await rm(join(worktree.path, "dist"), { recursive: true });
+	const approved = await removePruneCandidates(repo, repo, [item!], true, pruneGuards());
+	assert.deepEqual(approved.removals.map(({ outcome }) => outcome), ["removed"]);
+	assert.equal(existsSync(worktree.path), false);
+});
+
+test("prune skips a branch whose ref moved after review", async (t) => {
+	const repo = await realpath(await initializedRepository(t));
+	const worktree = (await createChildWorktree(repo, "moved"))!;
+	git(repo, "worktree", "remove", worktree.path);
+	const [item] = await inspectPruneCandidates(repo, repo, pruneGuards());
+	assert.deepEqual({ prunable: item!.prunable, reason: item!.reason, path: item!.path }, { prunable: true, reason: "merged into Main HEAD; no checkout", path: undefined });
+	git(repo, "commit", "--allow-empty", "-qm", "advance");
+	git(repo, "update-ref", `refs/heads/${worktree.branch}`, "HEAD");
+	const { removals } = await removePruneCandidates(repo, repo, [item!], false, pruneGuards());
+	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "branch was deleted or moved since review"]]);
+	assert.equal(git(repo, "rev-parse", `refs/heads/${worktree.branch}`), git(repo, "rev-parse", "HEAD"));
 });

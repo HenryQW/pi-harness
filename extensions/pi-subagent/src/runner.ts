@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import type { EphemeralSubagentExecutor } from "./ephemeral.ts";
 import { createChildWorktree, finalizeChildWorktree, inspectWorktreeDirty, type WorktreeInfo } from "./worktree.ts";
+import type { PruneOwnership } from "./prune.ts";
 import { runGit } from "./git-process.ts";
 import { IntegrationGit, type StageReceipt } from "./integration-git.ts";
 import {
@@ -881,6 +882,50 @@ export class IsolatedRunner {
 			}
 		}
 		return { requests, invalidIds: inventory.invalidIds, leaseBusy };
+	}
+
+	/** Prune evidence across checkouts. A non-terminal state owns every resource name its saved text
+	 * mentions; an unreadable state owns every name its raw text mentions, or every name when unreadable. */
+	async pruneOwnership(checkouts: readonly string[]): Promise<PruneOwnership> {
+		const owners: { label: string; text?: string }[] = [];
+		let lease: string | undefined;
+		for (const checkout of checkouts) {
+			const root = realpathSync.native(checkout);
+			if (!lease && await this.store.hasProductiveRunLease(root)) lease = `productive lease is held by a live run in ${root}`;
+			const { states, invalidIds } = await this.store.list(root);
+			for (const { state } of states) {
+				if (!terminal(state)) owners.push({ label: `owned by ${state.status} request ${state.request.id}`, text: JSON.stringify(state) });
+			}
+			for (const id of invalidIds) {
+				let text: string | undefined;
+				try { text = await this.store.readRaw(root, id); } catch { /* It may own any name. */ }
+				owners.push({ label: `unreadable state ${id} in ${root} may own it`, text });
+			}
+		}
+		return { ...(lease ? { lease } : {}), owner: (name) => owners.find(({ text }) => text === undefined || text.includes(name))?.label };
+	}
+
+	/** After pruning, reconcile aborted requests that recorded a removed resource through the guarded abort path. */
+	async reconcilePrunedAborts(checkouts: readonly string[], names: readonly string[]): Promise<string[]> {
+		const lines: string[] = [];
+		for (const checkout of checkouts) {
+			const root = realpathSync.native(checkout);
+			const { requests, states } = await this.listRequests(root);
+			for (const [index, state] of states.entries()) {
+				const id = state.request.id;
+				const text = JSON.stringify(state);
+				if (requests[index]!.status !== "aborted · retained" || !names.some((name) => text.includes(name))) continue;
+				try {
+					await this.abort(id, root);
+					const after = (await this.listRequests(root)).requests.find((request) => request.id === id);
+					lines.push(after?.status === "aborted" ? `Reconciled cleanup of aborted request ${id}.`
+						: `Aborted request ${id} still has pending cleanup; inspect subagent_status.`);
+				} catch (error) {
+					lines.push(`Aborted request ${id} could not be reconciled: ${errorText(error)}`);
+				}
+			}
+		}
+		return lines;
 	}
 
 	canFollowup(root: string, requestId: string, taskId: string): boolean {

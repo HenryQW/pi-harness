@@ -304,6 +304,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 		isolated: isolatedSurface.inventory,
 		recover: (cwd) => isolatedSurface.recover(cwd),
+		prunePlan: (cwd) => isolatedSurface.prunePlan(cwd),
+		prune: (cwd, items, allowIgnored, current) => isolatedSurface.prune(cwd, items, allowIgnored, current),
 		async inspectInTab(root, id, ctx, current) {
 			const notices = await isolatedSurface.inspect(root, id);
 			if (!current()) throw new Error("Session or branch changed before status inspection.");
