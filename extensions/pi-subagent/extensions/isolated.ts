@@ -350,6 +350,16 @@ function publicState(state: RunState, verdictMaxBytes: number, preferredTaskId?:
 	};
 }
 
+/** Model-visible failed review verdicts; Pi shows the model `content`, not `structuredContent`. */
+function failedReviewText(state: ReturnType<typeof publicState>): string {
+	const attention = state.needsAttention && "failedReview" in state.needsAttention ? state.needsAttention.failedReview : undefined;
+	const reviews = [
+		...(attention ? [{ label: "Needs attention", review: attention }] : []),
+		...state.integration.generations.flatMap(({ number, failedReview }) => failedReview ? [{ label: `Integration generation ${number}`, review: failedReview }] : []),
+	].filter(({ review }, index, all) => all.findIndex((other) => other.review.verdict === review.verdict) === index);
+	return reviews.map(({ label, review }) => `\n\n${label}: failed ${review.phase} review verdict${review.verdictTruncated ? " (truncated)" : ""}:\n${workerOutputForMain(review.verdict)}`).join("");
+}
+
 function hasTruncatedVerdict(state: ReturnType<typeof publicState>): boolean {
 	const attention = state.needsAttention;
 	return Boolean(attention && "failedReview" in attention && attention.failedReview?.verdictTruncated)
@@ -665,8 +675,9 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
 			const result = toolResult(await getComponents().runner.status(params.id, root, signal), ctx, workspaceRowsByRequest);
+			const content = [{ type: "text" as const, text: `${result.content[0]!.text}${failedReviewText(result.details.state)}` }];
 			// The projection is plain JSON; its conditional fields are typed optional rather than absent.
-			return { ...result, structuredContent: result.details as JsonValue };
+			return { ...result, content, structuredContent: result.details as JsonValue };
 		},
 	});
 	pi.registerTool({
