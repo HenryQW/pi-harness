@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadRoles, parseRoleName, type RoleName } from "../src/index.ts";
+import { findRole, loadRoleCatalog, parseRoleName, type RoleName } from "../src/index.ts";
 import { parseExecuteRequest } from "../src/schema.ts";
 
 test("README isolated request passes production graph admission", async () => {
@@ -15,6 +15,12 @@ test("README isolated request passes production graph admission", async () => {
 });
 
 
+function roleError(agentDir: string): string {
+	const { errors } = loadRoleCatalog(agentDir);
+	assert.equal(errors.length, 1, JSON.stringify(errors));
+	return errors[0]!.message;
+}
+
 async function isolatedAgentDir(t: import("node:test").TestContext): Promise<string> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-examples-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
@@ -23,7 +29,7 @@ async function isolatedAgentDir(t: import("node:test").TestContext): Promise<str
 
 test("missing config directory still returns validated built-in implementer, reviewer, and scout roles", async (t) => {
 	const agentDir = await isolatedAgentDir(t);
-	const roles = loadRoles(agentDir);
+	const roles = loadRoleCatalog(agentDir).roles;
 	const [implementer, reviewer, scout] = roles;
 
 	assert.deepEqual(roles.map(({ name, tools, extensions, skills, mcps }) => ({ name, tools, extensions, skills, mcps })), [
@@ -83,7 +89,7 @@ skills: []
 Custom scout body.
 `);
 
-	const roles = loadRoles(agentDir);
+	const roles = loadRoleCatalog(agentDir).roles;
 	assert.deepEqual(roles.map(({ name }) => name), ["implementer", "reviewer", "scout"]);
 	assert.deepEqual(roles.find(({ name }) => name === "implementer"), {
 		name: "implementer",
@@ -131,10 +137,10 @@ test("Role display fields reject C0/C1 controls while system prompts stay multil
 		const name = field === "name" ? value : "role";
 		const description = field === "description" ? value : "Visible role";
 		await writeFile(rolePath, `---\nname: ${name}\ndescription: ${description}\ntools: []\nextensions: []\nskills: []\n---\nFirst line.\nSecond line.\n`);
-		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} must not contain C0/C1 control characters\\.`));
+		assert.match(roleError(agentDir), new RegExp(`role\\.md: ${field} must not contain C0/C1 control characters\\.`));
 	}
 	await writeFile(rolePath, "---\nname: role\ndescription: Visible role\ntools: []\nextensions: []\nskills: []\n---\nFirst line.\nSecond line.\n");
-	assert.equal(loadRoles(agentDir).find(({ name }) => name === "role")!.systemPrompt, "First line.\nSecond line.");
+	assert.equal(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "role")!.systemPrompt, "First line.\nSecond line.");
 });
 
 test("Role isolation is rejected because mode owns checkout policy", async (t) => {
@@ -142,7 +148,7 @@ test("Role isolation is rejected because mode owns checkout policy", async (t) =
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
 	await writeFile(join(rolesDir, "role.md"), "---\nname: role\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-	assert.throws(() => loadRoles(agentDir), /Role isolation is retired.*mode "isolated"/i);
+	assert.match(roleError(agentDir), /Role isolation is retired.*mode "isolated"/i);
 });
 
 test("Role capability lists are required arrays", async (t) => {
@@ -154,16 +160,16 @@ test("Role capability lists are required arrays", async (t) => {
 		const fields = ["tools: []", "extensions: []", "skills: []"]
 			.filter((value) => !value.startsWith(`${field}:`));
 		await writeFile(rolePath, `---\nname: role\ndescription: d\n${fields.join("\n")}\n---\nBody.\n`);
-		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} is required\\.`));
+		assert.match(roleError(agentDir), new RegExp(`role\\.md: ${field} is required\\.`));
 	}
 	for (const [field, value] of [["tools", "read, grep"], ["extensions", "/role.ts"], ["skills", "review"]]) {
 		const fields = ["tools: []", "extensions: []", "skills: []"]
 			.map((entry) => entry.startsWith(`${field}:`) ? `${field}: ${value}` : entry);
 		await writeFile(rolePath, `---\nname: role\ndescription: d\n${fields.join("\n")}\n---\nBody.\n`);
-		assert.throws(() => loadRoles(agentDir), new RegExp(`role\\.md: ${field} must be an array of strings\\.`));
+		assert.match(roleError(agentDir), new RegExp(`role\\.md: ${field} must be an array of strings\\.`));
 	}
 	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-	const role = loadRoles(agentDir).find((candidate) => candidate.name === "role")!;
+	const role = loadRoleCatalog(agentDir).roles.find((candidate) => candidate.name === "role")!;
 	assert.deepEqual([role.tools, role.extensions, role.skills], [[], [], []]);
 });
 
@@ -173,10 +179,10 @@ test("Role MCP allowlists default to deny, normalize names, and reject duplicate
 	const rolePath = join(rolesDir, "role.md");
 	await mkdir(rolesDir, { recursive: true });
 	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\nmcps: [real-browser, codegraph]\n---\nBody.\n");
-	assert.deepEqual(loadRoles(agentDir).find(({ name }) => name === "role")!.mcps, ["real-browser", "codegraph"]);
+	assert.deepEqual(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "role")!.mcps, ["real-browser", "codegraph"]);
 
 	await writeFile(rolePath, "---\nname: role\ndescription: d\ntools: []\nextensions: []\nskills: []\nmcps: [codegraph, codegraph]\n---\nBody.\n");
-	assert.throws(() => loadRoles(agentDir), /role\.md: mcps contains duplicate MCP server names\./);
+	assert.match(roleError(agentDir), /role\.md: mcps contains duplicate MCP server names\./);
 });
 
 test("Role modelClass accepts shared profiles and rejects invalid values", async (t) => {
@@ -185,10 +191,10 @@ test("Role modelClass accepts shared profiles and rejects invalid values", async
 	const rolePath = join(rolesDir, "role.md");
 	await mkdir(rolesDir, { recursive: true });
 	await writeFile(rolePath, "---\nname: role\ndescription: d\nmodelClass: frontier\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-	assert.equal(loadRoles(agentDir).find(({ name }) => name === "role")!.modelClass, "frontier");
+	assert.equal(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "role")!.modelClass, "frontier");
 
 	await writeFile(rolePath, "---\nname: role\ndescription: d\nmodelClass: slow\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-	assert.throws(() => loadRoles(agentDir), /role\.md: modelClass must be one of fast, balanced, frontier, fav\./);
+	assert.match(roleError(agentDir), /role\.md: modelClass must be one of fast, balanced, frontier, fav\./);
 });
 
 test("duplicate names among user role files remain an error", async (t) => {
@@ -199,5 +205,44 @@ test("duplicate names among user role files remain an error", async (t) => {
 	await writeFile(join(rolesDir, "a.md"), role);
 	await writeFile(join(rolesDir, "b.md"), role);
 
-	assert.throws(() => loadRoles(agentDir), /Duplicate Subagent role: dup\./);
+	const catalog = loadRoleCatalog(agentDir);
+	assert.deepEqual(catalog.errors.map(({ file, name }) => [file, name]), [[join(rolesDir, "a.md"), "dup"], [join(rolesDir, "b.md"), "dup"]]);
+	assert.match(catalog.errors[0]!.message, /Duplicate Subagent role: dup/);
+	assert.deepEqual(catalog.roles.map(({ name }) => name), ["implementer", "reviewer", "scout"]);
+	assert.throws(() => findRole(catalog, "dup"), /Subagent role dup is unavailable: .*a\.md: Duplicate/);
+});
+
+test("unknown Role frontmatter keys are rejected per file without hiding valid Roles", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(join(rolesDir, "good.md"), "---\nname: good\ndescription: d\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
+	await writeFile(join(rolesDir, "scout.md"), "---\nname: scout\ndescription: d\ntools: []\nextensions: []\nskills: []\nreadOnly: true\n---\nBody.\n");
+	await writeFile(join(rolesDir, "garbled.md"), "not frontmatter");
+	const catalog = loadRoleCatalog(agentDir);
+	assert.deepEqual(catalog.roles.map(({ name }) => name), ["implementer", "reviewer", "good"], "an invalid override blocks the built-in it claims");
+	assert.deepEqual(catalog.errors.map(({ name }) => name), ["garbled", "scout"]);
+	assert.equal(catalog.errors[1]!.message, `${join(rolesDir, "scout.md")}: unknown Role frontmatter key "readOnly"; expected name, description, modelClass, tools, extensions, skills, mcps.`);
+	assert.deepEqual([...catalog.sources], [["implementer", "built-in"], ["reviewer", "built-in"], ["good", "user"]]);
+	assert.throws(() => findRole(catalog, "scout"), /scout\.md: unknown Role frontmatter key "readOnly"/);
+	assert.throws(() => findRole(catalog, "missing"), /Unknown Subagent role: missing\. Available roles: implementer, reviewer, good\. 2 invalid Role file\(s\)/);
+});
+
+test("roleDefaults merge into every Role first and deduplicate", async (t) => {
+	const agentDir = await isolatedAgentDir(t);
+	const rolesDir = join(agentDir, "config", "pi-subagent");
+	await mkdir(rolesDir, { recursive: true });
+	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ maxSubagents: 2, roleDefaults: { extensions: ["/provider.ts"], tools: ["read", "codegraph_explore"], skills: ["house-style"] } }));
+	await writeFile(join(rolesDir, "scout.md"), "---\nname: scout\ndescription: d\ntools: [grep, read]\nextensions: [/provider.ts, /other.ts]\nskills: []\n---\nBody.\n");
+	const catalog = loadRoleCatalog(agentDir);
+	assert.deepEqual(catalog.sources.get("scout"), "user override");
+	assert.deepEqual(catalog.roles.map(({ name, tools, extensions, skills }) => ({ name, tools, extensions, skills })), [
+		{ name: "implementer", tools: ["read", "codegraph_explore", "bash", "edit", "write", "grep", "find", "ls"], extensions: ["/provider.ts"], skills: ["house-style"] },
+		{ name: "reviewer", tools: ["read", "codegraph_explore", "grep", "find", "ls", "git_read"], extensions: ["/provider.ts"], skills: ["house-style"] },
+		{ name: "scout", tools: ["read", "codegraph_explore", "grep"], extensions: ["/provider.ts", "/other.ts"], skills: ["house-style"] },
+	]);
+	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { extensions: ["relative.ts"] } }));
+	assert.throws(() => loadRoleCatalog(agentDir), /config\.json: roleDefaults: extensions entries must be absolute paths/);
+	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { mcps: [] } }));
+	assert.throws(() => loadRoleCatalog(agentDir), /roleDefaults: unknown key "mcps"; expected extensions, tools, skills/);
 });

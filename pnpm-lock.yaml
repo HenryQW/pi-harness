@@ -80,7 +80,7 @@ importers:
         specifier: ^3.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
-        specifier: ^25.0.0 || ^26.0.0
+        specifier: ^27.0.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^8.0.0
@@ -231,7 +231,7 @@ importers:
         specifier: ^3.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
-        specifier: ^22.0.0 || ^23.0.0 || ^24.0.0 || ^25.0.0 || ^26.0.0
+        specifier: ^22.0.0 || ^23.0.0 || ^24.0.0 || ^25.0.0 || ^26.0.0 || ^27.0.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
         specifier: ^8.0.0

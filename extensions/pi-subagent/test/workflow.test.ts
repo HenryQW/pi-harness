@@ -10,7 +10,7 @@ import {
 	type ParsedWorkflow,
 } from "../extensions/workflow.ts";
 
-const delegation = (task = "work") => ({ role: "worker", name: "Test work", task, kind: "text" as const });
+const delegation = (task = "work") => ({ role: "worker", name: "Test work", task, access: "read" as const, kind: "text" as const });
 const parseWorkflow = (value: unknown) => parseDirectWorkflow(
 	value && typeof value === "object" && !Array.isArray(value) ? { mode: "direct", ...value } : value,
 );
@@ -32,6 +32,7 @@ test("parses and normalizes each explicit workflow mode", () => {
 		role: " worker ",
 		name: " Inspect auth flow ",
 		task: " inspect ",
+		access: "write",
 		model: " provider/model ",
 		modelClass: "fast",
 	}), {
@@ -41,6 +42,7 @@ test("parses and normalizes each explicit workflow mode", () => {
 			kind: "text",
 			name: "Inspect auth flow",
 			task: "inspect",
+			access: "write",
 			model: "provider/model",
 			modelClass: "fast",
 		}],
@@ -87,7 +89,7 @@ test("rejects malformed workflow shape boundaries", () => {
 		{ tasks: [{ ...delegation(), background: true }] },
 		{ chain: [{ ...delegation(), tasks: [delegation()] }] },
 		{ tasks: [{ ...delegation(), chain: [delegation()] }] },
-		{ tasks: [{ role: "worker" }] },
+		{ tasks: [{ role: "worker", access: "read" }] },
 	]) assert.throws(() => parseWorkflow(value), /declared tool schema/);
 
 	for (const value of [
@@ -98,8 +100,8 @@ test("rejects malformed workflow shape boundaries", () => {
 		{ ...delegation(), tasks: [delegation()], chain: [delegation()] },
 	]) assert.throws(() => parseWorkflow(value), /exactly one/);
 
-	for (const value of [{ role: "worker" }, { name: "Test work" }, { task: "work" }, { role: "worker", task: "work" }]) {
-		assert.throws(() => parseWorkflow(value), /requires role, name, and task/);
+	for (const value of [{ role: "worker", access: "read" }, { name: "Test work", access: "read" }, { task: "work", access: "read" }, { role: "worker", task: "work", access: "read" }]) {
+		assert.throws(() => parseWorkflow(value), /requires role, name, task, and access/);
 	}
 });
 

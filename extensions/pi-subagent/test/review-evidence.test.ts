@@ -5,7 +5,7 @@ import fs, { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
-import { loadBuiltinRole, loadRoles, prepareExactReviewEvidence, REVIEW_MAX_PATCH_BYTES, ROLE_TOOL_POLICY_FLAG } from "../src/index.ts";
+import { loadBuiltinRole, loadRoleCatalog, prepareExactReviewEvidence, REVIEW_MAX_PATCH_BYTES, ROLE_TOOL_POLICY_FLAG } from "../src/index.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import gitRead from "../extensions/git-read.ts";
 
@@ -395,7 +395,7 @@ test("loadBuiltinRole bypasses same-name user overrides", async (t) => {
 	await mkdir(rolesDir, { recursive: true });
 	await writeFile(join(rolesDir, "implementer.md"), "---\nname: implementer\ndescription: override\ntools: []\nextensions: []\nskills: []\n---\nOverride.\n");
 
-	assert.equal(loadRoles(agentDir).find((role) => role.name === "implementer")!.description, "override");
+	assert.equal(loadRoleCatalog(agentDir).roles.find((role) => role.name === "implementer")!.description, "override");
 	assert.equal(loadBuiltinRole("implementer").description, "Implements and validates one bounded change in the checkout selected by Main");
 	assert.equal(loadBuiltinRole("reviewer").name, "reviewer");
 });

@@ -197,3 +197,13 @@ test("effective maxMinutes must exceed idleMinutes when one field is omitted", a
 		assert.match(loaded.error!, /timeout\.maxMinutes \(30\) must be greater than timeout\.idleMinutes \(30\)/);
 	});
 });
+
+test("roleDefaults are validated like Role fields and reject unknown keys", async () => {
+	await withAgentDir(async (agentDir) => {
+		await configDir(agentDir);
+		await writeFile(configPath(agentDir), JSON.stringify({ roleDefaults: { extensions: ["/provider.ts"], tools: ["read"], skills: [] } }));
+		assert.deepEqual(readSubagentConfig(agentDir), { source: "file", config: { roleDefaults: { extensions: ["/provider.ts"], tools: ["read"], skills: [] } } });
+		await writeFile(configPath(agentDir), JSON.stringify({ roleDefaults: { tools: "read", sandbox: true } }));
+		assert.match(readSubagentConfig(agentDir).error!, /roleDefaults: unknown key "sandbox"; expected extensions, tools, skills/);
+	});
+});

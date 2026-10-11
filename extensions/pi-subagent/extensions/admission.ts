@@ -1,16 +1,11 @@
 import { realpath } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Role } from "../dist/index.js";
 
-// `codemode` mutates nothing itself: its sandbox reaches a checkout only through nested tool calls,
-// which are admitted by their own names here and limited to the Role's active tools in children.
-const READ_ONLY_TOOLS = new Set([
-	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status", "codemode", "git_read",
+// Main's own tools that never change a checkout; every other Main call may write.
+// `codemode` mutates nothing itself: its nested tool calls are admitted by their own names.
+const MAIN_NON_WRITING_TOOLS = new Set([
+	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status", "codemode",
 ]);
-
-export function roleCanWrite(role: Role): boolean {
-	return role.tools.some((tool) => !READ_ONLY_TOOLS.has(tool)) || role.extensions.length > 0 || Boolean(role.mcps?.length);
-}
 
 async function checkoutKey(pi: ExtensionAPI, ctx: ExtensionContext): Promise<string> {
 	const cwd = await realpath(ctx.cwd);
@@ -38,7 +33,7 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 	};
 	pi.on("tool_call", async (event, ctx) => {
 		const direct = event.toolName === "delegate_task";
-		if (direct ? !directCanWrite(event.input) : READ_ONLY_TOOLS.has(event.toolName)) return;
+		if (direct ? !directCanWrite(event.input) : MAIN_NON_WRITING_TOOLS.has(event.toolName)) return;
 		const call: { direct: boolean; key?: string } = { direct };
 		calls.set(event.toolCallId, call);
 		const key = await checkoutKey(pi, ctx);
@@ -67,7 +62,7 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 	return (toolCallId) => {
 		const call = calls.get(toolCallId);
 		if (!call?.direct || !call.key) {
-			throw new Error(`Direct call ${toolCallId} was not admitted as a checkout writer; delegate again with the current Role resources.`);
+			throw new Error(`Direct call ${toolCallId} was not admitted as a checkout writer; delegate again.`);
 		}
 		heldCalls.add(toolCallId);
 		return () => { heldCalls.delete(toolCallId); release(toolCallId); };

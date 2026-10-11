@@ -38,6 +38,8 @@ export interface DirectHandle {
 	prompt: string;
 	answer(maxBytes: number): Promise<string>;
 	usageTokens(): Promise<number | undefined>;
+	/** Bounded assistant text from this turn so far; failure evidence only, never completion. */
+	partialText(maxChars: number): Promise<string | undefined>;
 	/** Display-only activity from the last usageTokens() sample. */
 	readonly activity?: DirectToolActivity;
 	cancel(): Promise<void>;
@@ -97,11 +99,11 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 	if (!requireSuccess) return text;
 	let completion: Json;
 	try { completion = JSON.parse(text) as Json; }
-	catch (error) { throw new Error("Pi potential-writer final answer must be a JSON completion object.", { cause: error }); }
+	catch (error) { throw new Error("Pi write-access final answer must be a JSON completion object.", { cause: error }); }
 	if (!completion || typeof completion !== "object" || Array.isArray(completion)
 		|| !DIRECT_OUTCOMES.some((outcome) => outcome === completion.outcome)
 		|| typeof completion.answer !== "string" || !completion.answer.trim()) {
-		throw new Error("Pi potential-writer completion must have a valid outcome and a non-empty answer.");
+		throw new Error("Pi write-access completion must have a valid outcome and a non-empty answer.");
 	}
 	if (completion.outcome !== "succeeded") throw new Error(`Direct task reported ${completion.outcome}: ${completion.answer}`);
 	return completion.answer;
@@ -157,6 +159,29 @@ export function directSessionUsage(jsonl: string, prompt: string): { tokens?: nu
 		activity: pending.size || latest ? { pending: [...pending.values()], latest } : undefined };
 }
 
+
+/** The last `maxChars` of assistant text in the exact prompt's turn; ignores a partial trailing entry. */
+export function directPartialText(jsonl: string, prompt: string, maxChars: number): string | undefined {
+	let active = false;
+	let texts: string[] = [];
+	for (const line of jsonl.split("\n")) {
+		if (!line.trim()) continue;
+		let entry: Json;
+		try { entry = JSON.parse(line) as Json; } catch { break; }
+		if (!entry || entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+		const message = entry.message as Json;
+		if (message.role === "user") {
+			active = Array.isArray(message.content) && message.content.length === 1
+				&& (message.content[0] as Json)?.text === prompt;
+			if (active) texts = [];
+		} else if (active && message.role === "assistant" && Array.isArray(message.content)) {
+			for (const part of message.content) if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) texts.push(part.text);
+		}
+	}
+	const chars = Array.from(texts.join("\n").trim());
+	if (!chars.length) return undefined;
+	return chars.length <= maxChars ? chars.join("") : `…${chars.slice(-maxChars).join("")}`;
+}
 
 export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string };
 
@@ -277,7 +302,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				// never submit a new prompt after cancellation.
 				signal.throwIfAborted();
 				const completionInstruction = requireSuccess
-					? `\n\nPotential-writer completion: Return exactly one JSON object without Markdown, {"outcome":"succeeded","answer":"summary"}. outcome must be ${DIRECT_OUTCOMES.join(", ")}. Use succeeded only when the entire authorized task, including requested checks and commits, completed successfully; a failed mutation, unresolved partial work, or missing authorization must be failed or blocked, even if your Pi turn ends normally. Describe changes, checks, commit identity, remaining risks, and checkout status in answer.`
+					? `\n\nWrite-access completion: Return exactly one JSON object without Markdown, {"outcome":"succeeded","answer":"summary"}. outcome must be ${DIRECT_OUTCOMES.join(", ")}. Use succeeded only when the entire authorized task, including requested checks and commits, completed successfully; a failed mutation, unresolved partial work, or missing authorization must be failed or blocked, even if your Pi turn ends normally. Describe changes, checks, commit identity, remaining risks, and checkout status in answer.`
 					: "";
 				const prompt = `${task}\n\nDirect shared-checkout boundary: use only your Role's resources for the explicitly authorized task and scope. Writes and commits affect Main's existing checkout immediately; preserve unrelated files and staged changes. Do not create or manage worktrees, change branches, push, or perform external mutations without explicit task authorization. There is no isolated integration, automatic validation, or rollback. If instructions conflict or authorization is missing, stop and report it. Report changes, commit identity if any, checks, remaining risks, and checkout status; never claim isolated guarantees.${completionInstruction}\n\nTurn identity: ${randomBytes(16).toString("hex")}`;
 				// Native prompt without --wait acknowledges submission, not completion of the turn.
@@ -297,6 +322,10 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 						lastUsageSize = info.size;
 					}
 					return lastUsage.tokens;
+				},
+				async partialText(maxChars) {
+					if ((await stat(sessionFile)).size > SESSION_LIMIT) return undefined;
+					return directPartialText(await readFile(sessionFile, "utf8"), prompt, maxChars);
 				},
 				async answer(maxBytes) {
 					const readAnswer = async () => {

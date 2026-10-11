@@ -43,14 +43,14 @@ test("direct completion follows exact ancestry through non-message session entri
 	}
 });
 
-test("potential-writer final turns require an explicit successful completion", () => {
+test("write-access final turns require an explicit successful completion", () => {
 	const session = (text: string) => lines([{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] } }]);
 	assert.equal(exactDirectAnswer(session(JSON.stringify({ outcome: "succeeded", answer: "Scoped commit completed." })), prompt, 1024, true), "Scoped commit completed.");
 	for (const outcome of ["failed", "blocked"]) {
 		assert.throws(() => exactDirectAnswer(session(JSON.stringify({ outcome, answer: "Partial changes remain." })), prompt, 1024, true), /Direct task reported .*Partial changes remain/);
 	}
 	for (const text of ["Commit failed; partial changes remain.", "null", JSON.stringify({ answer: "Turn finished." }), JSON.stringify({ outcome: "succeeded", answer: "" })]) {
-		assert.throws(() => exactDirectAnswer(session(text), prompt, 1024, true), /Pi potential-writer/);
+		assert.throws(() => exactDirectAnswer(session(text), prompt, 1024, true), /Pi write-access/);
 	}
 });
 

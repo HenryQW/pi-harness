@@ -35,6 +35,7 @@ import {
 	type WorkspaceAllocationIntent,
 } from "../dist/schema.js";
 import { FileRunStore } from "../dist/store.js";
+import { workerOutputForMain } from "./result-transport.ts";
 import type { IsolatedInventory } from "./subagent-command.ts";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
@@ -286,7 +287,7 @@ function publicState(state: RunState, preferredTaskId?: string) {
 			const textAttempt = task.kind === "text" ? task.attempts.at(-1) : undefined;
 			return {
 				taskId: task.taskId, status: task.status,
-				...(task.status === "completed" && textAttempt?.output ? { output: boundedPublicText(textAttempt.output.text) } : {}),
+				...(task.status === "completed" && textAttempt?.output ? { output: workerOutputForMain(boundedPublicText(textAttempt.output.text)) } : {}),
 				...(textAttempt?.cleanup ? { cleanup: {
 					...textAttempt.cleanup,
 					...(textAttempt.cleanup.outcome === "recovery" ? { note: boundedPublicText(textAttempt.cleanup.note) } : {}),

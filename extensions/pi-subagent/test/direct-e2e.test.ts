@@ -147,14 +147,14 @@ test("real Pi and Herdr deliver single, parallel, and chain direct results", { s
 	assert.ok(model.includes("/"), "A configured fast model is required for this E2E test.");
 	const token = randomUUID().slice(0, 8);
 	const tasks = [
-		{ mode: "direct", role: "scout", name: "E2E single", task: `Reply with exactly SINGLE-${token}.`, model },
+		{ mode: "direct", role: "scout", name: "E2E single", task: `Reply with exactly SINGLE-${token}.`, access: "read", model },
 		{ mode: "direct", tasks: [
-			{ role: "scout", name: "E2E parallel A", task: `Reply with exactly PARALLEL-A-${token}.`, model },
-			{ role: "scout", name: "E2E parallel B", task: `Reply with exactly PARALLEL-B-${token}.`, model },
+			{ role: "scout", name: "E2E parallel A", task: `Reply with exactly PARALLEL-A-${token}.`, access: "read", model },
+			{ role: "scout", name: "E2E parallel B", task: `Reply with exactly PARALLEL-B-${token}.`, access: "read", model },
 		] },
 		{ mode: "direct", chain: [
-			{ role: "scout", name: "E2E chain first", task: `Reply with exactly CHAIN-${token}.`, model },
-			{ role: "scout", name: "E2E chain second", task: "Repeat this prior answer verbatim: {previous}", model },
+			{ role: "scout", name: "E2E chain first", task: `Reply with exactly CHAIN-${token}.`, access: "read", model },
+			{ role: "scout", name: "E2E chain second", task: "Repeat this prior answer verbatim: {previous}", access: "read", model },
 		] },
 	];
 	const modes = ["single", "parallel", "chain"];

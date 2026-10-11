@@ -1,6 +1,7 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, extensionConfigPath } from "@henryqw/pi-config-store";
 import type { ExecutionPolicySnapshot } from "../dist/schema.js";
+import { parseRoleDefaults, type RoleDefaults } from "@henryqw/pi-subagent";
 
 export interface SubagentTimeoutConfig {
 	/** Minutes a child may stay idle before it is asked to stop. */
@@ -15,6 +16,8 @@ export interface SubagentConfig {
 	maxTokens?: number;
 	maxCorrections?: number;
 	timeout?: SubagentTimeoutConfig;
+	/** Merged into every Role by `loadRoleCatalog`; validated here so malformed values block delegation. */
+	roleDefaults?: RoleDefaults;
 }
 
 export interface LoadedSubagentConfig {
@@ -53,9 +56,13 @@ function parseSubagentConfig(parsed: unknown, path: string): ParsedSubagentConfi
 	const problems: string[] = [];
 	const config: SubagentConfig = {};
 	for (const key of Object.keys(record)) {
-		if (![...INTEGER_FIELDS, ...POLICY_FIELDS, "timeout"].includes(key as never)) {
-			problems.push(`unknown config key ${JSON.stringify(key)}; expected ${[...INTEGER_FIELDS, ...POLICY_FIELDS].join(", ")}, timeout`);
+		if (![...INTEGER_FIELDS, ...POLICY_FIELDS, "timeout", "roleDefaults"].includes(key as never)) {
+			problems.push(`unknown config key ${JSON.stringify(key)}; expected ${[...INTEGER_FIELDS, ...POLICY_FIELDS].join(", ")}, timeout, roleDefaults`);
 		}
+	}
+	if (record.roleDefaults !== undefined) {
+		try { config.roleDefaults = parseRoleDefaults(record.roleDefaults); }
+		catch (error) { problems.push(error instanceof Error ? error.message : String(error)); }
 	}
 	for (const key of INTEGER_FIELDS) {
 		const value = record[key];

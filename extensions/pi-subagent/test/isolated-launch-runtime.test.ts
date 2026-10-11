@@ -274,7 +274,7 @@ test("Pi Subagent rejects missing or ambiguous Role, Skill, and MCP configuratio
 		const fixture = await harness(t);
 		await assert.rejects(
 			preflight(fixture, request([changesetTask("task-a", "missing role", "fast")])),
-			/Required configured Role missing role is missing or ambiguous\./,
+			/Unknown Subagent role: missing role\./,
 		);
 	});
 
@@ -284,7 +284,7 @@ test("Pi Subagent rejects missing or ambiguous Role, Skill, and MCP configuratio
 		await fixture.setRole("second.md", { name: "duplicate role" });
 		await assert.rejects(
 			preflight(fixture, request([changesetTask("task-a", "duplicate role", "fast")])),
-			/Duplicate Subagent role: duplicate role\./,
+			/Subagent role duplicate role is unavailable: .*Duplicate Subagent role: duplicate role/,
 		);
 	});
 

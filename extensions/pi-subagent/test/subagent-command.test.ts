@@ -29,6 +29,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		closeDirect: async (task, current) => { assert.equal(current(), true); closed.push(task.id); return "Stopped"; },
 		isolated: async (_cwd, current) => { inventoryCount++; assert.equal(current(), true); if (options.isolatedError) throw options.isolatedError; return inventory; },
 		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
+		roles: () => "scout · built-in",
 		inspectInTab: async (_root, id, _ctx, current) => {
 			assert.equal(current(), true); inspectCount++;
 			return { ref: "D9.1", tabId: `tab-${id}`, name: "status-scout", sessionFile: "/status/session.jsonl" };

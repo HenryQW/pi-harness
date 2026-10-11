@@ -20,11 +20,17 @@ const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet
 const ModelSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Designated model as provider/modelId; replaces the selected route model" });
 const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
 const DirectKindSchema = StringEnum(["text"] as const);
+/** Main's honest per-task classification; only `write` reserves the checkout. Nothing enforces `read`. */
+export const DIRECT_ACCESS = ["read", "write"] as const;
+export type DirectAccess = (typeof DIRECT_ACCESS)[number];
+const ACCESS_GUIDANCE = `Declare "write" when the task may change files, Git state, or external resources, otherwise "read". "read" is not enforced (no sandbox): it skips checkout admission and runs concurrently. Use mode isolated for checked writes.`;
+const AccessSchema = StringEnum(DIRECT_ACCESS, { description: ACCESS_GUIDANCE });
 
 export const DelegationSchema = Type.Object({
 	role: RoleSchema,
 	name: TaskNameSchema,
 	task: TaskSchema,
+	access: AccessSchema,
 	kind: Type.Optional(DirectKindSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -35,6 +41,7 @@ export const DirectWorkflowSchema = Type.Object({
 	role: Type.Optional(RoleSchema),
 	name: Type.Optional(TaskNameSchema),
 	task: Type.Optional(TaskSchema),
+	access: Type.Optional(AccessSchema),
 	kind: Type.Optional(DirectKindSchema),
 	model: Type.Optional(ModelSchema),
 	modelClass: Type.Optional(ModelClassSchema),
@@ -65,7 +72,7 @@ export type ParsedWorkflow =
 export type ParsedDelegateTask = { mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest };
 
 type DirectInput = Static<typeof DirectWorkflowSchema>;
-const DELEGATION_KEYS = ["role", "name", "task", "kind", "model", "modelClass"] as const;
+const DELEGATION_KEYS = ["role", "name", "task", "access", "kind", "model", "modelClass"] as const;
 
 function text(value: string, path: string): string {
 	const normalized = value.trim();
@@ -84,6 +91,7 @@ function normalizeDelegation(value: Static<typeof DelegationSchema>, path: strin
 		role: text(value.role, `${path}.role`),
 		name: normalizeTaskName(value.name, `${path}.name`),
 		task: text(value.task, `${path}.task`),
+		access: value.access,
 		kind: "text",
 		...(value.model === undefined ? {} : { model: text(value.model, `${path}.model`) }),
 		...(value.modelClass === undefined ? {} : { modelClass: value.modelClass }),
@@ -92,6 +100,14 @@ function normalizeDelegation(value: Static<typeof DelegationSchema>, path: strin
 
 function hasDelegation(value: DirectInput): value is DirectInput & Static<typeof DelegationSchema> {
 	return Object.hasOwn(value, "role") && Object.hasOwn(value, "name") && Object.hasOwn(value, "task");
+}
+
+function requireAccess(value: unknown, path: string): void {
+	if (!value || typeof value !== "object") return; // The schema rejects non-object tasks.
+	const { access } = value as { access?: unknown };
+	if (!DIRECT_ACCESS.some((candidate) => candidate === access)) {
+		throw new Error(`${path}.access must be ${DIRECT_ACCESS.map((candidate) => JSON.stringify(candidate)).join(" or ")}${access === undefined ? " (missing)" : `, got ${JSON.stringify(access)}`}. ${ACCESS_GUIDANCE}`);
+	}
 }
 
 function workflowMode(value: unknown): WorkflowMode | undefined {
@@ -105,6 +121,11 @@ function workflowMode(value: unknown): WorkflowMode | undefined {
 
 export function parseWorkflow(value: unknown): ParsedWorkflow {
 	const mode = workflowMode(value);
+	if (mode === "single") requireAccess(value, "workflow");
+	else if (mode) {
+		const items = (value as Record<string, unknown>)[mode === "parallel" ? "tasks" : "chain"];
+		if (Array.isArray(items)) items.forEach((item, index) => requireAccess(item, `${mode === "parallel" ? "tasks" : "chain"}[${index}]`));
+	}
 	if (!Check(DirectWorkflowSchema, value)) {
 		const issue = Errors(DirectWorkflowSchema, value)[0];
 		throw new Error(`direct workflow must match the declared tool schema${issue ? ` at ${issue.instancePath || "/"}: ${issue.message}` : ""}. Direct mode returns task answers without checked integration; use mode isolated for changesets.`);
@@ -112,12 +133,15 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 	if (!mode) throw new Error("direct workflow must select exactly one of single, tasks, or chain.");
 	const input = value as DirectInput;
 	if (mode === "single") {
-		if (!hasDelegation(input)) throw new Error("direct workflow requires role, name, and task.");
+		if (!hasDelegation(input)) throw new Error("direct workflow requires role, name, task, and access.");
 		return { mode, delegations: [normalizeDelegation(input, "workflow")] };
 	}
 	if (mode === "parallel") return { mode, delegations: input.tasks!.map((item, index) => normalizeDelegation(item, `tasks[${index}]`)) };
 	return { mode, delegations: input.chain!.map((item, index) => normalizeDelegation(item, `chain[${index}]`)) };
 }
+
+/** A direct request is a writer request when any task declares write access. */
+export const writesCheckout = (workflow: ParsedWorkflow): boolean => workflow.delegations.some(({ access }) => access === "write");
 
 export function parseDelegateTask(value: unknown): ParsedDelegateTask {
 	if (value && typeof value === "object" && !Array.isArray(value) && (value as { mode?: unknown }).mode === "isolated") {

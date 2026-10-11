@@ -6,7 +6,8 @@ import { readTextFileBounded } from "@henryqw/pi-config-store";
 import {
 	createEphemeralSubagentExecutor,
 	finalizeRoleLaunch,
-	loadRoles,
+	findRole,
+	loadRoleCatalog,
 	prepareRoleLaunch,
 	type EphemeralSubagentExecutor,
 	type ResolvedRoleLaunch,
@@ -145,8 +146,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			signal.throwIfAborted();
 			const prompt = job.prompt ?? await readTextFileBounded(job.promptFile!, MAX_PROMPT_BYTES, { signal });
 			if (!prompt.trim()) throw new Error(`prompt file ${job.promptFile} is empty.`);
-			const role = loadRoles(agentDir).find((candidate) => candidate.name === job.role);
-			if (!role) throw new Error(`Role ${job.role} is not configured.`);
+			const role = findRole(loadRoleCatalog(agentDir), job.role);
 			const launch = prepareLaunch(ctx, job, role);
 			await mkdir(dirname(sessionFile), { recursive: true, mode: 0o700 });
 			const executor = options.executor?.(limits) ?? createEphemeralSubagentExecutor({

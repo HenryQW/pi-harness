@@ -54,6 +54,8 @@ export interface SubagentCommandAdapter {
 	closeDirect(task: DirectTask, current: () => boolean): Promise<string>;
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
+	/** Read-only Role catalog report with routes and per-file load errors. */
+	roles(ctx: ExtensionContext): string;
 	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ ref: string; tabId: string; name: string; sessionFile: string }>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
@@ -63,6 +65,7 @@ export interface SubagentCommandAdapter {
 }
 
 const clean = (text: string, max = 110, multiline = false): string => [...text.replace(multiline ? /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g : /[\u0000-\u001f\u007f-\u009f]/g, " ")].slice(0, max).join("");
+const ROLES_REPORT_CODE_POINTS = 16_000;
 const errorText = (error: unknown): string => clean(error instanceof Error ? error.message : String(error), 500);
 const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
@@ -78,10 +81,16 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 
 export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentCommandAdapter): void {
 	pi.registerCommand("subagent", {
-		description: "Inspect direct and isolated work, or recover orphaned isolated requests with /subagent recover",
+		description: "Inspect direct and isolated work, list Roles with /subagent roles, or recover orphaned isolated requests with /subagent recover",
 		handler: async (args, ctx) => {
 			const command = args.trim();
-			if (command && command !== "recover") throw new Error("Usage: /subagent [recover]");
+			if (command && command !== "recover" && command !== "roles") throw new Error("Usage: /subagent [recover|roles]");
+			if (command === "roles") {
+				const report = clean(adapter.roles(ctx), ROLES_REPORT_CODE_POINTS, true);
+				if (ctx.hasUI) ctx.ui.notify(report, "info");
+				else pi.sendMessage({ customType: "pi-subagent-roles", content: report, display: true });
+				return;
+			}
 			if (!command && !ctx.hasUI) throw new Error("/subagent requires interactive UI (TUI or RPC); use the subagent agent tools in non-interactive mode.");
 			const manager = ctx.sessionManager;
 			const session = manager.getSessionId();

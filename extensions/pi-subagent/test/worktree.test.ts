@@ -7,7 +7,7 @@ import { join, sep } from "node:path";
 import test from "node:test";
 import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type WorktreeInfo, type WorktreePayload } from "../src/worktree.ts";
 import type { GitRunner } from "../src/git-process.ts";
-import { loadRoles } from "../src/index.ts";
+import { loadRoleCatalog } from "../src/index.ts";
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
 const fail = (stderr = "") => ({ code: 1, stdout: "", stderr });
@@ -758,7 +758,7 @@ test("finalizeChildWorktree counts the dedicated branch when the checkout is gon
 	assert.equal(unproven.dirty, undefined);
 });
 
-test("loadRoles rejects retired Role isolation values", async (t) => {
+test("loadRoleCatalog rejects retired Role isolation values", async (t) => {
 	const acceptDir = join(tmpdir(), "pi-subagent-iso-ok-");
 	const rejectDir = join(tmpdir(), "pi-subagent-iso-bad-");
 	await Promise.all([acceptDir, rejectDir].map((dir) => mkdir(join(dir, "config", "pi-subagent"), { recursive: true })));
@@ -768,6 +768,5 @@ test("loadRoles rejects retired Role isolation values", async (t) => {
 	await writeFile(join(acceptDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
 
-	assert.throws(() => loadRoles(acceptDir), /Role isolation is retired.*mode "isolated"/i);
-	assert.throws(() => loadRoles(rejectDir), /Role isolation is retired.*mode "isolated"/i);
+	for (const dir of [acceptDir, rejectDir]) assert.match(loadRoleCatalog(dir).errors[0]!.message, /Role isolation is retired.*mode "isolated"/i);
 });

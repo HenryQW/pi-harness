@@ -237,7 +237,7 @@ test("pre-launch failures record no session and the menu explains its absence", 
 	await h.settle(() => h.notices.some((notice) => notice.includes("no session created")));
 	const record = JSON.parse(await readFile(join(agentDir, "config", "pi-cron", "state.json"), "utf8")).jobs["missing-role"];
 	assert.equal(record.lastSession, undefined);
-	assert.ok(h.notices.some((notice) => notice.includes("no session created") && notice.includes("not configured")));
+	assert.ok(h.notices.some((notice) => notice.includes("no session created") && notice.includes("Unknown Subagent role: not-configured")));
 	h.select("missing-role · disabled", "Show last run");
 	await h.command("");
 	assert.ok(h.notices.some((notice) => notice.includes("Session: none created")));
