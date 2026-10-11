@@ -594,7 +594,7 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			assert.match(result.content[0].text, /Herdr tab: w-test:t2/);
 			await waitFor(() => app.sentMessages.length === 1);
 			const message = app.sentMessages[0]!.message;
-			assert.ok(message.content.slice(message.content.indexOf("\n") + 1).startsWith("Delegation completed · 1 completed\n✓ [1/1] Check · worker — exact answer\nResults:\n- [1/1] Check · worker · result:\nexact answer\nRecovery (also available via /subagent):\n"));
+			assert.match(message.content.slice(message.content.indexOf("\n") + 1), /^Delegation completed · 1 completed\n✓ \[1\/1\] Check · worker · test\/text-model · thinking low · 1\.5k tok · \d+s — exact answer\nResults:\n- \[1\/1\] Check · worker · result:\nexact answer\nRecovery \(also available via \/subagent\):\n/);
 			assert.match(message.content, /tab w-test:t2 · pane w-test:p2/);
 			assert.deepEqual(message.details.entries.map(({ id, index, name, role, status, summary }: any) => ({ id, index, name, role, status, summary })), [
 				{ id: "call:single:0", index: 0, name: "Check", role: "worker", status: "succeeded", summary: "exact answer" },
@@ -1116,6 +1116,11 @@ test("parallel direct delegation returns after first verified tab and delivers o
 			]);
 			assert.equal(message.details.entries[0].summary, "exact answer");
 			assert.match(message.details.entries[1].summary, /recover from Herdr tab w-test:t3/);
+			for (const entry of message.details.entries) {
+				assert.deepEqual({ model: entry.model, thinkingLevel: entry.thinkingLevel, tokens: entry.tokens }, { model: "test/text-model", thinkingLevel: "low", tokens: 1_540 });
+				assert.equal(typeof entry.elapsedMs, "number");
+			}
+			assert.match(message.content, /✗ \[2\/2\] Second · worker · test\/text-model · thinking low · 1\.5k tok · \d+s — /);
 			assert.match(message.content, /empty final answer/);
 			assert.match(message.content, /recover from Herdr tab/);
 			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
@@ -1486,7 +1491,7 @@ test("continueFrom relaunches a finished worker in a new tab with the same sessi
 			assert.ok(create.includes(`PI_SUBAGENT_PROCESS_LEASE=${source.leasePath}`) && create.includes("--no-focus"));
 			const start = fake.calls.filter(([kind, action]) => kind === "agent" && action === "start").at(-1)!;
 			assert.equal(start[start.indexOf("--session") + 1], source.sessionFile);
-			assert.match(app.sentMessages[1]!.message.content, /✓ \[1\/1\] Scan more \(continued from D1\.1\) · worker — second answer/);
+			assert.match(app.sentMessages[1]!.message.content, /✓ \[1\/1\] Scan more \(continued from D1\.1\) · worker · test\/text-model · thinking low · 1\.5k tok · \d+s — second answer/);
 		});
 	});
 });
@@ -1586,7 +1591,7 @@ test("Stop this worker ends one read worker while siblings finish and Main gets 
 			await waitFor(() => app.sentMessages.length === 1);
 			const { content, details } = app.sentMessages[0]!.message;
 			assert.deepEqual(details.entries.map(({ status }: any) => status), ["succeeded", "rejected"]);
-			assert.match(content, /✗ \[2\/2\] Second · worker — Stopped by user from \/subagent\n/);
+			assert.match(content, /✗ \[2\/2\] Second · worker · test\/text-model · thinking low · tokens unknown · \d+s — Stopped by user from \/subagent\n/);
 		});
 	});
 });
