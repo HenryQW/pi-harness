@@ -563,6 +563,7 @@ export const StatusOutputSchema = Type.Object({
 			scope: Type.Union([Type.Literal("task"), Type.Literal("final"), Type.Literal("request")]),
 			taskId: Type.Optional(IdSchema),
 			failure: Type.Optional(Type.String()),
+			failedReview: Type.Optional(Type.Object({ verdict: Type.String(), verdictTruncated: Type.Boolean() })),
 		})),
 		createdAt: TimestampSchema,
 		updatedAt: TimestampSchema,

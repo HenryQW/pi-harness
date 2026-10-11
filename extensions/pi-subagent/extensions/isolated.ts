@@ -40,6 +40,8 @@ import type { IsolatedInventory } from "./subagent-command.ts";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
 const PUBLIC_EVIDENCE_MAX_BYTES = 512;
+/** Tool results return failed review verdicts in full up to this bound; follow-ups keep the short preview. */
+const PUBLIC_REVIEW_VERDICT_MAX_BYTES = 32 * 1024;
 const WORKSPACE_WIDGET_KEY = "pi-subagent-workspaces";
 const WIDGET_FIELD_MAX_CHARS = 32;
 const MAX_WORKSPACE_WIDGET_LINES = 6;
@@ -175,10 +177,10 @@ function updateWorkspaceWidgetSafely(ctx: ExtensionContext, state: RunState, row
 	}
 }
 
-function boundedPublicText(value: string): string {
-	if (Buffer.byteLength(value, "utf8") <= PUBLIC_EVIDENCE_MAX_BYTES) return value;
-	let end = Math.min(value.length, PUBLIC_EVIDENCE_MAX_BYTES);
-	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > PUBLIC_EVIDENCE_MAX_BYTES) end -= 1;
+function boundedPublicText(value: string, maxBytes = PUBLIC_EVIDENCE_MAX_BYTES): string {
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	let end = Math.min(value.length, maxBytes);
+	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
 	return `${value.slice(0, end)}\n[truncated]`;
 }
 
@@ -199,16 +201,18 @@ function publicFailedCheck(evidence: CheckBatchEvidence | undefined) {
 	};
 }
 
-function publicFailedReview(evidence: ReviewEvidence | undefined) {
+function publicFailedReview(evidence: ReviewEvidence | undefined, verdictMaxBytes: number) {
 	if (!evidence || evidence.passed) return undefined;
+	const verdict = boundedPublicText(evidence.verdict, verdictMaxBytes);
 	return {
 		phase: evidence.phase,
-		verdict: boundedPublicText(evidence.verdict),
+		verdict,
+		verdictTruncated: verdict !== evidence.verdict,
 		identityChanged: !sameIdentity(evidence.tip, evidence.identityAfter),
 	};
 }
 
-function publicTaskRecovery(task: RunState["tasks"][number]) {
+function publicTaskRecovery(task: RunState["tasks"][number], verdictMaxBytes: number) {
 	if (task.kind === "text") {
 		const attempt = task.attempts.at(-1);
 		return {
@@ -225,7 +229,7 @@ function publicTaskRecovery(task: RunState["tasks"][number]) {
 
 	const attempt = task.attempts.at(-1);
 	const failedCheck = publicFailedCheck(attempt?.preliminaryChecks);
-	const failedReview = publicFailedReview(attempt?.preliminaryReview);
+	const failedReview = publicFailedReview(attempt?.preliminaryReview, verdictMaxBytes);
 	const cleanup = attempt?.cleanup
 		.filter((step) => step.status !== "completed")
 		.map((step) => ({
@@ -254,14 +258,14 @@ function publicTaskRecovery(task: RunState["tasks"][number]) {
 	};
 }
 
-function publicNeedsAttention(state: RunState, preferredTaskId?: string) {
+function publicNeedsAttention(state: RunState, verdictMaxBytes: number, preferredTaskId?: string) {
 	if (state.status !== "needs_attention") return undefined;
 	const task = state.tasks.find((candidate) => candidate.status === "needs_attention" && candidate.taskId === preferredTaskId)
 		?? state.tasks.find((candidate) => candidate.status === "needs_attention");
-	if (task) return publicTaskRecovery(task);
+	if (task) return publicTaskRecovery(task, verdictMaxBytes);
 	if (state.final.failure || state.final.checks?.passed === false || state.final.review?.passed === false) {
 		const failedCheck = publicFailedCheck(state.final.checks);
-		const failedReview = publicFailedReview(state.final.review);
+		const failedReview = publicFailedReview(state.final.review, verdictMaxBytes);
 		return {
 			scope: "final" as const,
 			...(state.final.failure ? { failure: boundedPublicText(state.final.failure) } : {}),
@@ -275,8 +279,8 @@ function publicNeedsAttention(state: RunState, preferredTaskId?: string) {
 	};
 }
 
-function publicState(state: RunState, preferredTaskId?: string) {
-	const needsAttention = publicNeedsAttention(state, preferredTaskId);
+function publicState(state: RunState, verdictMaxBytes: number, preferredTaskId?: string) {
+	const needsAttention = publicNeedsAttention(state, verdictMaxBytes, preferredTaskId);
 	return {
 		version: state.version,
 		id: state.request.id,
@@ -313,7 +317,7 @@ function publicState(state: RunState, preferredTaskId?: string) {
 				...(combinedTip ? { combinedTip } : {}),
 				...(correction ? { correction } : {}),
 				...(checks ? { checked: checks.passed, failedCheck: publicFailedCheck(checks) } : {}),
-				...(review ? { reviewed: review.passed, failedReview: publicFailedReview(review) } : {}),
+				...(review ? { reviewed: review.passed, failedReview: publicFailedReview(review, verdictMaxBytes) } : {}),
 				...(promotion ? { promotion: promotion.status, ...(promotion.mainAfter ? { mainAfter: promotion.mainAfter } : {}),
 					...(promotion.failure ? { promotionFailure: boundedPublicText(promotion.failure) } : {}) } : {}),
 				...(failure ? { failure: boundedPublicText(failure) } : {}),
@@ -329,6 +333,12 @@ function publicState(state: RunState, preferredTaskId?: string) {
 	};
 }
 
+function hasTruncatedVerdict(state: ReturnType<typeof publicState>): boolean {
+	const attention = state.needsAttention;
+	return Boolean(attention && "failedReview" in attention && attention.failedReview?.verdictTruncated)
+		|| state.integration.generations.some((generation) => generation.failedReview?.verdictTruncated);
+}
+
 function inspectionNotices({ state, main, continuation }: RunResponse): string[] {
 	const lines = [
 		`Isolated request ${state.request.id}: ${state.status}; accepted: ${state.accepted}; final: ${state.final.status}; Main: ${main?.status ?? "not checked"}.`,
@@ -338,7 +348,7 @@ function inspectionNotices({ state, main, continuation }: RunResponse): string[]
 		? `Main inspection unavailable: ${boundedPublicText(main.failure)}; expected: ${JSON.stringify(main.expected)}`
 		: `Main ${main.status}: ${JSON.stringify({ expected: main.expected, actual: main.actual })}`);
 	if (state.integration.refresh) lines.push(`Integration refresh: ${state.integration.refresh.status}${state.integration.refresh.failure ? `; blockage: ${boundedPublicText(state.integration.refresh.failure)}` : ""}.`);
-	const attention = publicNeedsAttention(state);
+	const attention = publicNeedsAttention(state, PUBLIC_EVIDENCE_MAX_BYTES);
 	if (attention) lines.push(`Reported blockage: ${JSON.stringify({ scope: attention.scope, failure: attention.failure, failedCheck: "failedCheck" in attention ? attention.failedCheck : undefined, failedReview: "failedReview" in attention ? attention.failedReview : undefined })}`);
 	if (state.final.failure) lines.push(`Final blockage: ${boundedPublicText(state.final.failure)}`);
 	for (const task of state.tasks) {
@@ -404,7 +414,7 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 	return {
 		content: [{ type: "text" as const, text }],
 		details: {
-			state: publicState(response.state, preferredTaskId),
+			state: publicState(response.state, PUBLIC_REVIEW_VERDICT_MAX_BYTES, preferredTaskId),
 			...(response.main ? { main: response.main } : {}),
 			...(response.continuation ? { continuation: response.continuation } : {}),
 		},
@@ -551,14 +561,17 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			}
 			const state = response?.state ?? latestState;
 			try {
-				const details = state ? {
-					state: publicState(state, response?.continuation && "taskId" in response.continuation
-						? response.continuation.taskId : undefined),
+				const preview = state ? publicState(state, PUBLIC_EVIDENCE_MAX_BYTES, response?.continuation && "taskId" in response.continuation
+					? response.continuation.taskId : undefined) : undefined;
+				const details = preview ? {
+					state: preview,
 					...(response?.continuation ? { continuation: response.continuation } : {}),
 				} : { id };
 				pi.sendMessage({
 					customType: "pi-subagent-isolated-result",
-					content: text,
+					content: preview && hasTruncatedVerdict(preview)
+						? `${text}\n\nReview verdicts here are previews; run subagent_status for the full verdict.`
+						: text,
 					display: true,
 					details,
 				}, { triggerTurn: true, deliverAs: "followUp" });
@@ -597,7 +610,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 					reject(new Error(`Pi Subagent ${id} finished without a durable acknowledgement.`));
 					return;
 				}
-				deliver("terminal", `${response.text}\n\nState: ${JSON.stringify(publicState(response.state))}`, response);
+				deliver("terminal", `${response.text}\n\nState: ${JSON.stringify(publicState(response.state, PUBLIC_EVIDENCE_MAX_BYTES))}`, response);
 			},
 			(error: unknown) => {
 				finish();
