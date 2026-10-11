@@ -709,7 +709,7 @@ export function buildChangesetTaskPrompt(input: {
 	if ((input.kind === "followup" || input.instruction !== undefined)
 		&& (typeof input.instruction !== "string" || !input.instruction.trim() || input.instruction.trim() !== input.instruction
 			|| input.instruction.includes("\0") || input.instruction.length > 32_000)) {
-		throw new Error(`${input.kind} instruction must be non-empty exact text of at most 32000 characters.`);
+		throw new Error(`${input.kind === "followup" ? "follow-up" : "correction"} instruction must be non-empty exact text of at most 32000 characters.`);
 	}
 	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
 	const upstreamTaskData = input.contexts.length
