@@ -784,7 +784,7 @@ test("runs exact coverage, guarded publication, fresh resolution, checks, and fi
 	assert.equal(app.world.replyBody, published.publicationHead);
 
 	app.world.body = "late edit";
-	await assert.rejects(workflow.finalize(resolved.guard, []), /declared final projection/);
+	await assert.rejects(workflow.finalize(resolved.guard, []), /Feedback changed after refresh/);
 	app.world.body = "please fix";
 	assert.deepEqual(await workflow.finalize(resolved.guard, []), {
 		kind: "finalized", pullRequestUrl: "https://github.com/acme/project/pull/42", head: published.publicationHead, checks: 0,
@@ -916,6 +916,52 @@ test("published sweep retains only Bot body edits as non-actionable", async (t) 
 		await workflow.finalize(resolved.guard, []);
 		assert.equal(await needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec,
 			load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), authorType !== "Bot", authorType);
+	}
+});
+
+test("finalize requires resolve and applies refresh rules to later status edits", async (t) => {
+	for (const authorType of ["Bot", "User"]) {
+		await t.test(authorType, async (t) => {
+			const app = fixture();
+			t.after(app.cleanup);
+			app.world.extraBody = "Deploy: build in progress";
+			// Shaped like a real PR: edited status comments, two reviews, and an already-resolved thread.
+			const exec: Exec = async (command, args, options) => {
+				const response = await app.exec(command, args, options);
+				if (command !== "gh" || !options.stdin?.includes("query Feedback(")) return response;
+				const value = JSON.parse(response.stdout);
+				const pullRequest = value.data.repository.pullRequest;
+				for (const node of pullRequest.comments.nodes) node.author.__typename = authorType;
+				pullRequest.reviews.nodes.push(review("review-2"));
+				pullRequest.reviewThreads.nodes.unshift(thread("thread-0", true));
+				return result(JSON.stringify(value));
+			};
+			const workflow = app.workflow(undefined, { exec });
+			const started = await workflow.start();
+			const decisions = ledger(started).map((entry) => entry.kind === "conversation_comment" || entry.id.startsWith("thread-0")
+				? { ...entry, disposition: "non-actionable" as const, note: "Status report only" } : entry);
+			const published = await publishRecorded(workflow, await workflow.record(started.guard, decisions, []));
+			const refreshed = await workflow.refresh(published.guard);
+			// The projection is the state after resolve, not live GitHub state.
+			assert.deepEqual(refreshed.projection?.threads, [{ id: "thread-0", isResolved: true }, { id: "thread-1", isResolved: true }]);
+			await assert.rejects(workflow.finalize(refreshed.guard, []), /Call resolve before finalize; review threads are still unresolved: thread-1$/);
+			const resolved = await workflow.resolve(refreshed.guard);
+			assert.equal(app.world.mutationCalls, 1);
+			app.world.body = "Review: completed";
+			app.world.extraBody = "Deploy: successful";
+			app.world.threadLocation = { line: null, startLine: null, isOutdated: true };
+			if (authorType === "User") {
+				await assert.rejects(workflow.finalize(resolved.guard, []), /Feedback changed after refresh; call refresh, then resolve and finalize/);
+				const again = await workflow.refresh(resolved.guard);
+				assert.equal(again.plan?.ledger.find(({ id }) => id === "conversation-2")?.disposition, "blocked");
+				await workflow.finalize((await workflow.resolve(again.guard)).guard, []);
+			} else {
+				await workflow.finalize(resolved.guard, []);
+			}
+			assert.equal(existsSync(await workflow.recoveryPath()), false);
+			assert.equal(await needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec,
+				load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), authorType === "User");
+		});
 	}
 });
 

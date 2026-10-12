@@ -382,7 +382,10 @@ function parseProjection(value: unknown): SweepFinalProjection {
 }
 
 function projectionMatches(snapshot: FeedbackSnapshot, projection: SweepFinalProjection): boolean {
-	if (feedbackContentFingerprint(snapshot) !== projection.contentFingerprint) return false;
+	return feedbackContentFingerprint(snapshot) === projection.contentFingerprint && projectionStatesMatch(snapshot, projection);
+}
+
+function projectionStatesMatch(snapshot: FeedbackSnapshot, projection: SweepFinalProjection): boolean {
 	const items = feedbackEntries(snapshot).map(({ id, kind }) => ({ id, kind })).sort((left, right) =>
 		left.id.localeCompare(right.id) || left.kind.localeCompare(right.kind));
 	const threads = snapshot.reviewThreads.map(({ id, isResolved }) => ({ id, isResolved })).sort((left, right) => left.id.localeCompare(right.id));
@@ -1431,8 +1434,17 @@ export class PullRequestCommentSweep {
 		const snapshot = await this.collect(state.authority, state.publicationHead);
 		await this.currentAuthority(state.authority, state.publicationHead);
 		await this.requireCleanPublication(state, state.publicationHead);
-		if (!projectionMatches(snapshot, state.projection)) throw new Error("Fresh complete feedback does not match the declared final projection");
+		// Accept exactly the changes refresh would carry forward unchanged, such as Bot status edits and moved anchors.
+		const carried = carryLedger(state.feedback.snapshot, snapshot, state.ledger!);
+		const unchanged = isDeepStrictEqual(carried, state.ledger);
+		if (!unchanged || !projectionStatesMatch(snapshot, state.projection)) {
+			const pending = unchanged ? state.projection.threads.filter(({ id, isResolved }) => isResolved &&
+				[state.feedback.snapshot, snapshot].every(({ reviewThreads }) => reviewThreads.some((thread) => thread.id === id && !thread.isResolved))) : [];
+			if (pending.length) throw new Error(`Call resolve before finalize; review threads are still unresolved: ${pending.map(({ id }) => id).join(", ")}`);
+			throw new Error("Feedback changed after refresh; call refresh, then resolve and finalize");
+		}
 		this.setFeedback(state, snapshot);
+		state.projection = { ...state.projection, contentFingerprint: state.feedback.contentFingerprint };
 		state.phase = "resolved";
 	}
 
