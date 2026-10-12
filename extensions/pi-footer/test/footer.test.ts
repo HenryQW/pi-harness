@@ -403,6 +403,24 @@ test("shows TPS and active session time", async () => {
 		await handlers.get("message_end")!({ message: assistantMessage });
 		assert.match(footer.render(100)[1]!, /⚡ — /);
 
+		// A burst (non-streamed fallback or one large chunk) has no measurable rate.
+		const burstMessage = { role: "assistant", usage: { output: 1_000 } };
+		for (const at of [10_000, 10_001, 10_028]) {
+			now = at;
+			await handlers.get("message_update")!({ message: burstMessage });
+		}
+		await handlers.get("message_end")!({ message: burstMessage });
+		assert.match(footer.render(100)[1]!, /⚡ — /);
+
+		// A short, fast stream at the minimum window still shows its rate.
+		const shortMessage = { role: "assistant", usage: { output: 50 } };
+		now = 11_000;
+		await handlers.get("message_update")!({ message: shortMessage });
+		now = 11_250;
+		await handlers.get("message_update")!({ message: shortMessage });
+		await handlers.get("message_end")!({ message: shortMessage });
+		assert.match(footer.render(100)[1]!, /⚡ 200\.0 t\/s/);
+
 		await handlers.get("message_end")!({ message: { role: "assistant", usage: { output: 10 } } });
 		assert.match(footer.render(100)[1]!, /⚡ — /);
 
