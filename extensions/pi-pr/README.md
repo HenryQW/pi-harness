@@ -1,6 +1,6 @@
 # `@henryqw/pi-pr`
 
-See the current branch pull request in the Pi footer. Run `/pr` for the full PR lifecycle, or ask the agent to commit local work or create/update a PR without authorizing repair or merge.
+See the current-branch pull request in the Pi footer. Run `/pr` for all PR workflows, from creation to merge. Or ask the agent to commit local work or to create or update a PR, without authority for repair or merge.
 
 ## Install
 
@@ -8,29 +8,29 @@ See the current branch pull request in the Pi footer. Run `/pr` for the full PR 
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`. CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequences`; upgrade `gh` if that flag is unavailable.
+Requires an authenticated GitHub CLI session (`gh auth login`) and a GitHub.com or GitHub Enterprise checkout. Verify authentication with `gh auth status`. CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequences`. If that flag is not available, upgrade `gh`.
 
 ## Works with
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
-| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows current-branch pull-request status in the shared footer. |
+| [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows the PR footer status in the shared footer. |
 | [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) | Required | Provides the Herdr CLI client when workspace renaming is available. |
 | [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs bounded child processes. |
 
-The required packages install with `pi-pr`. Herdr itself is optional; workspace renaming requires Herdr 0.9.3 or later.
+The required packages install together with `pi-pr`. Herdr is optional. Workspace renaming requires Herdr 0.9.3 or later.
 
 ## Use
 
-Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state, takes the next safe route, and continues until it needs external input, hits a blocker, waits for CI or review, or merges. After you fix a blocker, run `/pr` again. It works outside Herdr.
+Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state and does the PR next step. It continues until it needs external input, finds a blocker, waits for CI or review, or merges. After you fix a blocker, run `/pr` again. It works outside Herdr.
 
-The command is for you; the tools are for the agent. Skills tell the agent how to use the tools.
+The command is for you. The tools are for the agent. Skills tell the agent how to use the tools.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/pr` | command | Inspect and act on the current branch's pull request. Accepts no flags, prose, or base argument. |
-| `pi_git_commit` | tool | Local inspection and scoped commits; never pushes. |
-| `pi_git_pr` | tool | PR creation/publication only; no feedback, CI repair, base rebase, or merge. |
+| `/pr` | command | Examine the current-branch pull request and do its PR next step. It accepts no flags, prose, or base argument. |
+| `pi_git_commit` | tool | Local inspection and scoped commits. It never pushes. |
+| `pi_git_pr` | tool | Only PR creation and publication. No feedback, CI repair, base rebase, or merge. |
 | `pi_pr_create` | tool | Guarded creation steps selected by `/pr`. |
 | `pi_pr_fix_ci` | tool | Guarded GitHub Actions repair. |
 | `pi_pr_publish_work` | tool | Scoped local work publication. |
@@ -44,41 +44,41 @@ The command is for you; the tools are for the agent. Skills tell the agent how t
 | `pi-pr-fix-ci` | skill | Failed GitHub Actions. |
 | `pi-pr-publish-work` | skill | Local change publication. |
 | `pi-pr-update-branch` | skill | Confirmed merge conflicts. |
-| Footer | ui | Linked PR number and plain-language status. |
-| Widget | ui | Action hint or transient routing status. |
+| Footer | ui | PR footer status: linked PR number and plain-language lifecycle or condition. |
+| Widget | ui | PR next-step widget action hint, or transient PR routing widget status. |
 
-Only `/pr` and `pi_git_pr` establish authority for the `pi_pr_*` helpers; a direct `pi_pr_*` call cannot. The authority is bound to the current session and worktree and ends with the invocation. While Pi is busy, workflow guidance continues through hidden session context at settlement, not the editor queue; cancelling does not restore it to the editor.
+Only `/pr` and `pi_git_pr` give authority to the `pi_pr_*` helpers. A direct `pi_pr_*` call cannot give this authority. The authority is bound to the current session and worktree, and it ends with the invocation. While Pi is busy, workflow guidance continues through hidden session context at settlement, not through the editor queue. If you cancel, Pi does not put the guidance back in the editor.
 
-The `pi_git_*` and `pi_pr_*` tools are model-only and run one action at a time. Codemode scripts and other tools cannot call them, so a script cannot batch guarded actions or filter results the model needs for its next safety decision. With `codemode.mode` set to `only`, these tools stay declared, so `/pr` still works. Their parameter schemas are plain objects so providers that omit root-union tools can expose them; action arguments are still checked.
+Only the model can call the `pi_git_*` and `pi_pr_*` tools, and they run one action at a time. Codemode scripts and other tools cannot call them. Thus, a script cannot batch guarded actions or filter results that the model needs for its next safety decision. When `codemode.mode` is `only`, these tools stay declared, so `/pr` still works. Their parameter schemas are plain objects, so providers that omit root-union tools can show them. The tools still check action arguments.
 
 ### Local commits and PR publication
 
-Ask the agent to commit a scoped change. `git-commit` resolves an explicit local target, the PR base, or the repository default branch. `pi_git_commit` inspects that target and pending work, then commits only reviewed paths. It requires an existing commit and an attached branch. It never fetches, pushes, amends, bypasses hooks, or changes Git configuration.
+Ask the agent to commit a scoped change. `git-commit` resolves an explicit local target, the PR base, or the repository default branch. `pi_git_commit` inspects that target and pending work. Then it commits only reviewed paths. It requires an existing commit and an attached branch. It never fetches, pushes, amends, bypasses hooks, or changes Git configuration.
 
-Ask the agent to create or update a PR. `pi_git_pr` permits creation, local publication, and local sync onto the proven PR head (fast-forward or rebase onto the PR head, never onto the base). It stops before feedback, CI repair, base rebase, CI waiting, and merge. It never retargets a PR or changes an existing PR's base, title, or body. An explicit `base` must match the existing PR base or the configured/default creation base. To use another creation base, first authorize the branch's repository-local `gh-merge-base` setting. An inferred target needs specific permission to configure this repository's branch upstream; `allowUpstream: true` records that consent for one invocation and never permits global configuration changes.
+Ask the agent to create or update a PR. `pi_git_pr` permits creation, local publication, and local sync onto the proven PR head (fast-forward or rebase onto the PR head, never onto the base). It stops before feedback, CI repair, base rebase, CI wait, and merge. It never retargets a PR. It never changes the base, title, or body of an existing PR. An explicit `base` must match the existing PR base or the configured or default creation base. To use another creation base, first authorize the repository-local `gh-merge-base` setting of the branch. An inferred PR target needs specific permission to configure the branch upstream of this repository. `allowUpstream: true` records that consent for one invocation. It never permits global configuration changes.
 
-Every commit path uses the same literal-path staging and parent/tree checks, and detects file-byte and index changes even when Git status letters stay the same. Unrelated staging, partial staging, `.context/`, and common secret filenames block a commit. Filename checks cannot detect every secret: the agent must inspect content and ownership. Hooks run normally. Never replay an uncertain commit or push without checking its actual outcome.
+Each commit path uses the same literal-path staging and the same parent and tree checks. It finds file-byte and index changes, also when Git status letters do not change. Unrelated staging, partial staging, `.context/`, and common secret filenames block a commit. Filename checks cannot find all secrets. The agent must examine content and ownership. Hooks run normally. Never replay an uncertain commit or push before you check its actual outcome.
 
 ### Agent arguments
 
-- `pi_git_commit`: `{ action: "inspect", target: "<local-ref-or-OID>" }` returns `inspectionId`, `head`, `targetOid`, `mergeBase`, and `paths`. Then use `{ action: "commit", inspectionId: "<returned-ID>", ownedPaths: ["<exact-path>"], message: "fix: <subject>" }`. A successful commit returns `head` and consumes the inspection; inspect again for another group. Subjects are limited to 72 characters; bodies and footers are allowed.
-- `pi_git_pr`: `{ base?: "<exact-base-ref>", allowUpstream?: true }`. Omit `base` when the user gave no explicit base. Set `allowUpstream` only after specific consent. The result has `nextStep` and can include a proven `url`, `blocker`, or `handoff`. With `handoff`, end the turn: settlement loads the reserved package skill with its run ID. Do not guess IDs or start another PR entry.
+- `pi_git_commit`: `{ action: "inspect", target: "<local-ref-or-OID>" }` returns `inspectionId`, `head`, `targetOid`, `mergeBase`, and `paths`. Then use `{ action: "commit", inspectionId: "<returned-ID>", ownedPaths: ["<exact-path>"], message: "fix: <subject>" }`. A successful commit returns `head` and consumes the inspection. For another group, inspect again. Subjects have a maximum of 72 characters. Bodies and footers are permitted.
+- `pi_git_pr`: `{ base?: "<exact-base-ref>", allowUpstream?: true }`. Omit `base` when the user gave no explicit base. Set `allowUpstream` only after specific consent. The result has `nextStep` and can include a proven `url`, `blocker`, or `handoff`. With `handoff`, end the turn. Settlement loads the reserved package skill with its run ID. Do not guess IDs. Do not start another PR entry.
 
 ### Standalone merge from main
 
-Ask to update the current branch from main. `update-from-main` runs its packaged Python helper once. It requires Python 3.9 or newer and Git with `fetch --porcelain`. Unlike the `/pr` base-update route, this helper **merges**, not rebases. It fetches before any local change, uses the exact OID from fetch output, and never pushes.
+Ask the agent to update the current branch from main. `update-from-main` runs its packaged Python helper one time. It requires Python 3.9 or newer and Git with `fetch --porcelain`. This helper **merges**. It does not rebase like the `/pr` base-update route. It fetches before it makes a local change, uses the exact OID from the fetch output, and never pushes.
 
-Before merging, it backs up tracked and untracked changes (and ignored files when they collide with the source tree) to a stash with a unique reflog message. It records ownership in the per-worktree ref `refs/worktree/update-from-main/pending/<token>`, then replaces it with `refs/worktree/update-from-main/backup` at the captured OID. Restoration always applies the captured OID with `--index`. The helper never pops or drops a stash, and keeps the backup after success and after conflict, hook, or submodule failures.
+Before it merges, it makes a backup of tracked and untracked changes in a stash with a unique reflog message. The backup also includes ignored files that collide with the source tree. It records ownership in the per-worktree ref `refs/worktree/update-from-main/pending/<token>`. Then it replaces that ref with `refs/worktree/update-from-main/backup` at the captured OID. Restoration always applies the captured OID with `--index`. The helper never pops or drops a stash. It keeps the backup after success and after conflict, hook, or submodule failures.
 
-A retained backup blocks further runs only in the worktree that owns it, even after a branch switch. Report the backup OID and restore from it, not from a later `origin/main`. After the user verifies restored bytes and staging and explicitly asks, complete recovery with `git update-ref -d refs/worktree/update-from-main/backup <oid>`; this keeps the stash entry. An interrupted run leaves the `pending` ref and blocks its worktree until recovery. Backups from earlier helper versions have no recorded owner and block every worktree until the user drops them or the confirmed owner adopts them; adoption keeps the stash entry. Removing a worktree removes its ownership refs but not its stash entries. See the packaged `update-from-main` skill for exact recovery and adoption commands.
+A retained backup blocks more runs only in the worktree that owns it, also after a branch switch. Report the backup OID and restore from it, not from a later `origin/main`. The user must verify the restored bytes and staging and explicitly ask. Then complete recovery with `git update-ref -d refs/worktree/update-from-main/backup <oid>`. This keeps the stash entry. An interrupted run leaves the `pending` ref and blocks its worktree until recovery. Backups from earlier helper versions have no recorded owner. They block all worktrees until the user drops them or the confirmed owner adopts them. Adoption keeps the stash entry. When you remove a worktree, Git removes its ownership refs but not its stash entries. For exact recovery and adoption commands, see the packaged `update-from-main` skill.
 
 ### Local acceptance checks
 
-From this source checkout, run `pnpm --filter @henryqw/pi-pr test:git-workflows`. It uses Node tests, temporary real Git repositories, and controlled GitHub responses, with no live GitHub writes. See [executed cases and independent acceptance instructions](./docs/git-workflows-tested.md).
+From this source checkout, run `pnpm --filter @henryqw/pi-pr test:git-workflows`. It uses Node tests, temporary real Git repositories, and controlled GitHub responses. It does not write to live GitHub. See [executed cases and independent acceptance instructions](./docs/git-workflows-tested.md).
 
 ### Licences
 
-Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-from-main` skills and the Python helper/validator use Apache-2.0, including their modifications. See [licence scope, source identity, and modification notices](./NOTICE.md). Both licence files are included in the package.
+Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-from-main` skills and the Python helper/validator use Apache-2.0, including their modifications. See [licence scope, source identity, and modification notices](./NOTICE.md). The package includes both licence files.
 
 ## Flow
 
@@ -86,43 +86,43 @@ Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-f
 
 | Current condition | `/pr` action |
 | --- | --- |
-| No PR and a commit ahead or ordinary pending work | Create a PR, provided the destination is unambiguous and safe. |
-| One matching published open PR without a configured upstream, including a draft | Link its exact remote ref, then rediscover. A draft stops after linking. |
-| Local HEAD behind the PR head, or clean local commits that diverged from it | Fast-forward, or rebase the local commits onto the PR head. Overlapping uncommitted work or a rebase conflict stops with the original HEAD kept. |
-| Intended uncommitted or ahead local work on an open PR | Publish only owned paths after validation. On a diverged branch, commit first, sync onto the PR head, then validate and publish. Ambiguous ownership stops. |
-| GitHub is still computing mergeability | Re-read up to three times, five seconds apart, then stop and ask you to rerun. |
-| Confirmed merge conflict, or a base GitHub reports behind | Rebase onto the pinned base and push with an exact lease; unclear conflict resolutions stop. |
+| No current-branch pull request, and a commit ahead or ordinary pending work | Create a PR if the destination is unambiguous and safe. |
+| One matching published open PR without a configured PR target, including a draft | Link its exact remote ref. Then rediscover. A draft stops after the link. |
+| Local HEAD behind the PR head, or clean local commits that diverged from it | Fast-forward, or rebase the local commits onto the PR head. Overlapping uncommitted work or a rebase conflict stops the route, and the original HEAD stays. |
+| Intended uncommitted or ahead local work on an open PR | Publish only owned paths after validation. On a diverged branch, commit first. Then sync onto the PR head, validate, and publish. Ambiguous ownership stops the route. |
+| GitHub has not calculated mergeability yet | Re-read a maximum of three times, five seconds apart. Then stop and ask you to run `/pr` again. |
+| Confirmed merge conflict, or a base GitHub reports behind | Rebase onto the pinned base and push with an exact lease. Unclear conflict resolutions stop. |
 | Failed GitHub Actions job | Inspect failure evidence, make a scoped fix, validate, and publish. Other failed checks block. |
-| Changes requested, unresolved threads, or new feedback | Triage and address actionable feedback; leave blocked threads open. |
-| CI running and nothing else blocks | Wait inside the same `/pr`, re-reading GitHub every `ciPollSeconds` for up to `ciWaitMinutes`, then route the fresh state. |
-| Draft, closed, merged, or review still required | Report the state without changes. |
-| Merge-ready | Recheck fresh state and merge with the configured `mergeMethod`. |
+| Changes requested, unresolved threads, or new feedback | Triage actionable feedback and make the necessary changes. Leave blocked threads open. |
+| CI running and nothing else blocks | Wait in the same `/pr`. Re-read GitHub every `ciPollSeconds` for a maximum of `ciWaitMinutes`. Then route the fresh state. |
+| Draft, closed, merged, or review still required | Report the PR lifecycle or condition, and make no changes. |
+| Merge-ready | Check fresh state again and merge with the configured `mergeMethod`. |
 
-Creation chooses the base from `branch.<branch>.gh-merge-base` or the validated `origin` default branch, and needs a commit ahead or ordinary pending work, including untracked files. It stays silent on the base branch itself. The head may be in a fork on the same GitHub host; other fork relationships, a published ref without a PR, multiple candidate remotes or PRs, and unsafe push configuration block creation.
+Creation selects the base from `branch.<branch>.gh-merge-base` or the validated `origin` default branch. It needs a commit ahead or ordinary pending work, including untracked files. It stays silent on the base branch. The head can be in a fork on the same GitHub host. These conditions block creation: other fork relationships, a published ref without a PR, multiple candidate remotes or PRs, and unsafe push configuration.
 
-An inferred open PR is linked before the draft check, and fresh discovery must confirm the configured PR identity, destination, and head before routing continues. A configured draft only reports its state; it does not sync, publish, rebase, fix CI, sweep, or merge.
+`/pr` links an inferred open PR before the draft check. Before routing continues, fresh discovery must confirm the configured PR identity, destination, and head. For a configured draft, `/pr` only reports its PR condition. It does not sync, publish, rebase, fix CI, sweep, or merge.
 
-For a configured, open, non-draft PR, `/pr` first normalizes local state, unless verified matching recovery for a branch update or sweep exists; that recovery resumes first. Syncing never pushes, stashes, or resets. GitHub reports a behind base only when policy requires an up-to-date branch, so `/pr` treats it like a conflict. Running CI blocks only merging. After waiting, `/pr` re-reads GitHub, so comments or conflicts that arrived meanwhile go to their workflows instead of a merge. Merging happens only inside an explicit `/pr`; GitHub auto-merge is never enabled.
+For a configured, open, non-draft PR, `/pr` first normalizes local state. If verified matching recovery for a branch update or sweep exists, that recovery resumes first. Sync never pushes, stashes, or resets. GitHub reports a behind base only when policy requires an up-to-date branch. Thus, `/pr` processes it as a conflict. Running CI blocks only the merge. After the wait, `/pr` re-reads GitHub. Thus, PR feedback items or conflicts that arrived during the wait go to their workflows, not to a merge. The merge occurs only in an explicit `/pr`. `/pr` never enables GitHub auto-merge.
 
 ### Feedback sweeps
 
-Standalone comments and review bodies are assessed before merge or waiting; GitHub cannot resolve them, so they are triaged, not marked resolved. A sweep makes scoped fixes without a second approval. Its `commit` action stages only changed owned paths, and checks run on the clean committed HEAD before publication. A sweep with no edits creates no commit. Unrelated changes block the commit, and an interrupted commit must be reconciled through `resume` before continuing. Feedback that arrives after publication waits for the next `/pr` cycle.
+`/pr` assesses standalone comments and review bodies before a merge or a wait. GitHub cannot resolve them. Thus, the sweep triages them and does not mark them resolved. A sweep makes scoped fixes without a second approval. Its `commit` action stages only changed owned paths. Checks run on the clean committed HEAD before publication. A sweep with no edits creates no commit. Unrelated changes block the commit. Before the sweep continues, use `resume` to reconcile an interrupted commit. Feedback that arrives after publication waits for the next `/pr` cycle.
 
-For each addressed review thread, the sweep replies with only the full fixing commit hash: its published head, or an already-published PR commit that the ledger cites. For a non-actionable thread, it replies with a one-sentence rebuttal. It verifies the reply and then resolves the thread, even when the fix made it outdated. After publication, a body-only edit to a standalone comment keeps its `non-actionable` decision only when GitHub identifies the same `Bot` author in both snapshots and nothing else changed.
+For each fixed review thread, the sweep replies with only the full hash of the fixing commit. This is its published head, or an already-published PR commit that the ledger cites. For a non-actionable thread, it replies with a one-sentence rebuttal. It verifies the reply and then resolves the thread, also when the fix made the thread outdated. After publication, a body-only edit to a standalone comment keeps its `non-actionable` decision only in this condition: GitHub identifies the same `Bot` author in both snapshots, and nothing else changed.
 
 ### Footer and widget
 
-For an identified PR, the footer shows a linked `PR #number` and a text status such as `N unresolved`, `CI failed`, `merge conflict`, `local behind`, or `merge-ready`. Blocked discovery and unavailable status show generic `PR` text without a number or link. The widget shows a route hint without repeating the footer. Status text is meaningful without color. When `/pr` begins, the widget shows `⠋ Checking pull request…` until route selection; errors use `✗`, warnings `!`, success `✓`, and neutral routes `●`.
+For an identified PR, the PR footer status shows a linked `PR #number` and a text status such as `N unresolved`, `CI failed`, `merge conflict`, `local behind`, or `merge-ready`. A PR discovery blocker or unavailable status shows generic `PR` text without a number or link. The PR next-step widget shows a route hint and does not repeat the footer. Status text has meaning without color. When `/pr` starts, the PR routing widget shows `⠋ Checking pull request…` until route selection. Errors use `✗`, warnings use `!`, success uses `✓`, and neutral routes use `●`.
 
-Discovery starts in the background when a session starts and refreshes after local commits, PR creation, pushes, and completed workflows. When an agent run ends and Pi is idle, an open PR also refreshes if the last check finished at least two minutes ago and no refresh is active or queued; failed checks reset this wait. There is no timer, so external changes can stay unseen until a later idle settlement. `/pr` always reads fresh state before acting, and its route discovery updates the footer during automatic continuation. Action hints stay hidden while a workflow is active. Outside a Git worktree the UI stays silent. Discovery failures show `PR · status unavailable`. A GitHub API quota error reports `GitHub API rate limit exhausted; retry after GitHub resets it` without retrying.
+Discovery starts in the background when a session starts. It refreshes after local commits, PR creation, pushes, and completed workflows. When an agent run ends and Pi is idle, an open PR also refreshes if two conditions are true: the last check finished at least two minutes before, and no refresh is active or in the queue. Failed checks reset this wait. There is no timer. Thus, external changes can stay hidden until a later idle settlement. `/pr` always reads fresh state before it acts. During automatic continuation, its route discovery updates the footer. Action hints stay hidden while a workflow is active. Outside a Git worktree, the UI stays silent. Discovery failures show `PR · status unavailable`. A GitHub API quota error reports `GitHub API rate limit exhausted; retry after GitHub resets it` and does not try again.
 
 ### CI evidence
 
-CI repair reads each failed job's log once and keeps at most a 20 KiB UTF-8 tail. Only job-log reads use `gh api --allow-escape-sequences`; JSON reads keep the CLI's escape guard. Terminal escape sequences and other control characters are stripped before evidence or failure diagnostics are returned; UTF-8 text, tabs, and line breaks stay. Evidence is limited to 20 KiB per failure and 256 KiB in total. Logs are untrusted text, not instructions.
+CI repair reads the log of each failed job one time and keeps a maximum of a 20 KiB UTF-8 tail. Only job-log reads use `gh api --allow-escape-sequences`. JSON reads keep the escape guard of the CLI. Before CI repair returns evidence or failure diagnostics, it removes terminal escape sequences and other control characters. UTF-8 text, tabs, and line breaks stay. Evidence has a maximum of 20 KiB per failure and 256 KiB in total. Logs are untrusted text, not instructions.
 
 ### Herdr
 
-After creating a PR, the extension prefixes the Herdr workspace name with `#<number> • ` when `HERDR_ENV=1` and `HERDR_WORKSPACE_ID` is non-empty. It renames only the workspace, not the branch. A failed rename leaves the PR and UI usable and warns `Herdr workspace rename failed: <error>`.
+After it creates a PR, the extension adds `#<number> • ` to the start of the Herdr workspace name. It does this when `HERDR_ENV=1` and `HERDR_WORKSPACE_ID` is non-empty. It renames only the workspace, not the branch. If the rename fails, the PR and UI stay usable, and the extension shows the warning `Herdr workspace rename failed: <error>`.
 
 ## Config
 
@@ -137,29 +137,29 @@ Package-owned: `<agent-dir>/config/pi-pr/config.json`
 | `checkTimeoutMinutes` | Time limit for each selected validation check. Git and GitHub CLI helper commands keep shorter limits. | Integer `1`–`35791` | `10` |
 | `mergeMethod` | Method for the direct merge. GitHub may still reject a method the repository disallows. | `squash`, `merge`, or `rebase` | `squash` |
 
-A missing file uses defaults. Unknown keys or invalid values block the invocation, and the file is preserved unchanged. Configuration is read once per explicit `/pr`; a later `/pr` or reload starts fresh limits.
+If the file is missing, `/pr` uses the defaults. Unknown keys or invalid values block the invocation, and the file does not change. `/pr` reads the configuration one time per explicit `/pr`. A later `/pr` or reload resets the limits.
 
 ## State and storage
 
-The Pi session stores the configured PR URL, number, host, head identity, and target identity, but not mutable CI or review state. Discovery revalidates this identity against GitHub; no repository cache is created.
+The Pi session stores a PR identity observation: the configured PR URL, number, host, head identity, and target identity. It does not store mutable CI or review state. Discovery validates this identity against GitHub again. It creates no repository cache.
 
-In-progress feedback sweeps keep private recovery under `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`; branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect in-progress decisions and remote mutation attempts. A fresh `/pr` resumes only matching, verified recovery. Base tip movement does not block planning, commits, publication, or recovery, but PR identity, base repository/ref, head/lease, destination, and ownership must still match. The sweep keeps its frozen feedback and plan until the post-publish `refresh` binds the current base. If you manually committed and pushed a recorded sweep's fixes, `/pr` recognizes that publication when the clean local HEAD equals the live PR head, descends from the original commit, changes only recorded owned paths, and has no uncertain mutation; it refreshes feedback and does not push again. Mismatched or malformed records stay unchanged and block routing; do not delete them or replay an uncertain mutation to force continuation.
+Active feedback sweeps keep private recovery data in `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`. Branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect active decisions and remote mutation attempts. A fresh `/pr` resumes only matching, verified recovery. Base tip movement does not block plans, commits, publication, or recovery. But the PR identity, base repository and ref, head and lease, destination, and ownership must still match. The sweep keeps its frozen feedback and plan until the post-publish `refresh` binds the current base. If you manually committed and pushed the fixes of a recorded sweep, `/pr` can recognize that publication. The clean local HEAD must equal the live PR head, descend from the original commit, change only recorded owned paths, and have no uncertain mutation. `/pr` then refreshes feedback and does not push again. Mismatched or malformed records do not change, and they block routing. Do not delete them or replay an uncertain mutation to force continuation.
 
 ### Sweep scope and validation
 
-A matching sweep resumes before local publication. If clean, already-committed work extends its recorded scope, resume returns `pendingScope` with the exact HEAD and unexpected paths. The agent reviews the complete committed diff against your requested PR work and adopts **all** intended paths through guarded `adopt`, without asking you for a path list. Being on the branch or appearing in PR feedback does not establish ownership. Unrelated or unclear work stops without publishing any of it. Pending scope blocks commit, validation, and publication. Adoption rechecks the reviewed HEAD, outside paths, clean worktree, ancestry, PR identity, and original lease, and extends only owned paths. Dirty outside work, uncertain mutations, changed authority, and already-published scope cannot be adopted.
+A matching sweep resumes before local publication. Clean, already-committed work can extend its recorded scope. In that case, resume returns `pendingScope` with the exact HEAD and unexpected paths. The agent compares the complete committed diff with the PR work that you requested. It then adopts **all** intended paths through guarded `adopt` and does not ask you for a path list. A path on the branch or in PR feedback is not proof of ownership. Unrelated or unclear work stops, and none of it is published. Pending scope blocks commit, validation, and publication. Adoption checks the reviewed HEAD, outside paths, clean worktree, ancestry, PR identity, and original lease again. It extends only owned paths. The agent cannot adopt dirty outside work, uncertain mutations, changed authority, or already-published scope.
 
-Before publishing a changed sweep HEAD, `validate` runs `git diff --check` plus selected non-destructive checks, then verifies that HEAD and worktree did not change; publication requires that saved validation. Version 3 sweeps run no checks after publication, and `finalize` takes `checks: []`. Unpublished v1/v2 recovery migrates to v3 with no validation. Published legacy recovery keeps its saved checks and attempts: failed legacy checks cannot be replaced or dropped, and unknown results stay blocked. A later `/pr` can retry unknown local checks only after you explicitly confirm they are safe to repeat on the published HEAD. This never authorizes replaying uncertain GitHub or push mutations.
+Before the sweep publishes a changed sweep HEAD, `validate` runs `git diff --check` and selected non-destructive checks. Then it verifies that HEAD and the worktree did not change. Publication requires that saved validation. Version 3 sweeps run no checks after publication, and `finalize` takes `checks: []`. Unpublished v1/v2 recovery migrates to v3 without validation. Published legacy recovery keeps its saved checks and attempts. You cannot replace or drop failed legacy checks, and unknown results stay blocked. A later `/pr` can run unknown local checks again only after you explicitly confirm that they are safe to repeat on the published HEAD. This never authorizes a replay of uncertain GitHub or push mutations.
 
 ## Limits and recovery
 
-- `/pr` does not open a browser, run `/done` or `/sweep`, enable auto-merge, or use a merge queue. It starts workflows only when explicitly invoked.
-- Each route freezes its check set. A check set runs once per HEAD per invocation, including failures; repairs must change HEAD without dropping checks. A check that exceeds `checkTimeoutMinutes` fails with a timeout error naming the command and limit. Limits, frozen check sets, executed HEADs, and completed route/head keys survive helper resumes and automatic continuations. Repeating a completed route on the same entry head stops.
-- Failed or unknown check sets spend repair attempts. Confirmed PR-head movements spend publication cycles once; duplicate observations, no-ops, and failed pushes do not. Exhaustion prevents another push, not published-sweep cleanup or readiness/merge. When the CI wait budget is spent, `/pr` stops with `still waiting for CI`; a later explicit `/pr` waits again. Waiting for human review never polls.
-- If rebase preflight, sweep startup, or initial CI preflight proves that clean local HEAD advanced from the frozen PR head before any rebase, recovery write, or CI evidence read, `/pr` cancels that run, reports the observed change, and rediscovers in the same invocation. Rebase preflight also reroutes when the same base ref's OID changes or the conflict and required base update both clear; it adopts an already-published fast-forward only when local HEAD, the fresh PR head, and the remote lease agree and the frozen head is an ancestor. Initial CI preflight also cancels when only the base tip changed. Base movement during or after CI evidence collection blocks repair.
-- After a conflict rebase starts, a base tip that only advanced does not stop publication; `/pr` then rediscovers mergeability. Any other authority change while a conflict waits aborts the unpublished rebase, restores the original head, removes its pending recovery record, and rediscovers. An unpublished local merge goes through inspection and validation, not another rebase. No stale CI evidence or consumed collect action is reused.
-- Automatic handoff reserves a fresh run ID before settlement; expired IDs are never revived. Rediscovery is limited to two attempts per invocation, without resetting budgets, and requires the same PR identity, destination, and validated remote head. Another head change during rediscovery stops the handoff. Rerouting never bypasses unreconciled rebase or sweep recovery. Dirty or divergent state, changed branches or destinations, aborts, and uncertain mutations stop; no mutation is blindly retried.
-- Pushes use a saved exact remote OID lease and revalidate the destination, so concurrent updates block publication instead of being overwritten. Creation does not change the base branch, and a configured push target does not change upstream settings.
-- Direct merge requires a clean, safe local Git state and a fresh matching head. No branch or worktree is deleted. A Git operation in progress blocks it.
-- A paused conflict rebase keeps checking the recorded branch's PR authority while Git detaches HEAD. A verified rebase can resume through `/pr`; an unverified one interrupted by a restart needs manual recovery. Rebasing leaves other local branch refs unchanged, even with `rebase.updateRefs=true`. Branches with merge commits since the fork point need manual rebase resolution.
-- Only authenticated GitHub.com and GitHub Enterprise repositories are supported. Resolve ambiguous remotes, unrelated local changes, or GitHub blockers before retrying `/pr`.
+- `/pr` does not open a browser, run `/done` or `/sweep`, enable auto-merge, or use a merge queue. It starts workflows only when you explicitly start it.
+- Each route freezes its check set. A check set runs one time per HEAD per invocation, also when it fails. Repairs must change HEAD and must not drop checks. A check that runs longer than `checkTimeoutMinutes` fails with a timeout error. The error names the command and the limit. Limits, frozen check sets, executed HEADs, and completed route and head keys stay after helper resumes and automatic continuations. If a completed route repeats on the same entry head, `/pr` stops.
+- Failed or unknown check sets use repair attempts. Each confirmed PR-head movement uses one publication cycle. Duplicate observations, no-ops, and failed pushes do not use publication cycles. When the budget is spent, `/pr` cannot push again, but published-sweep cleanup, readiness checks, and merge stay possible. When the CI wait budget is spent, `/pr` stops with `still waiting for CI`. A later explicit `/pr` waits again. A wait for human review never polls.
+- Rebase preflight, sweep startup, or initial CI preflight can prove that the clean local HEAD advanced from the frozen PR head. If this occurs before a rebase, recovery write, or CI evidence read, `/pr` cancels that run. It reports the observed change and rediscovers in the same invocation. Rebase preflight also reroutes in two conditions: the OID of the same base ref changes, or the conflict and the required base update both clear. It adopts an already-published fast-forward only when local HEAD, the fresh PR head, and the remote lease agree, and the frozen head is an ancestor. Initial CI preflight also cancels when only the base tip changed. Base movement during or after CI evidence collection blocks repair.
+- After a conflict rebase starts, a base tip that only advanced does not stop publication. `/pr` then rediscovers mergeability. If any other authority change occurs while a conflict waits, `/pr` aborts the unpublished rebase, restores the original head, removes its pending recovery record, and rediscovers. An unpublished local merge goes through inspection and validation, not another rebase. `/pr` does not use stale CI evidence or a consumed collect action again.
+- Automatic handoff reserves a fresh run ID before settlement. Pi never uses expired IDs again. Rediscovery has a maximum of two attempts per invocation and does not reset budgets. It requires the same PR identity, destination, and validated remote head. Another head change during rediscovery stops the handoff. Rerouting never bypasses unreconciled rebase or sweep recovery. Dirty or divergent state, changed branches or destinations, aborts, and uncertain mutations stop the invocation. `/pr` never retries a mutation blindly.
+- Pushes use a saved exact remote OID lease and validate the destination again. Thus, concurrent updates block publication, and the push does not overwrite them. Creation does not change the base branch. A configured PR target does not change upstream settings.
+- Direct merge requires a clean, safe local Git state and a fresh matching head. `/pr` deletes no branch or worktree. An active Git operation blocks the merge.
+- While Git detaches HEAD, a paused conflict rebase continues to check the PR authority of the recorded branch. A verified rebase can resume through `/pr`. An unverified rebase that a restart interrupted needs manual recovery. The rebase does not change other local branch refs, also with `rebase.updateRefs=true`. Branches with merge commits after the fork point need manual rebase resolution.
+- `/pr` supports only authenticated GitHub.com and GitHub Enterprise repositories. Resolve ambiguous remotes, unrelated local changes, or GitHub blockers before you run `/pr` again.
