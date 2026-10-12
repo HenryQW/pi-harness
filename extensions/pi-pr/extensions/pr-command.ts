@@ -4,7 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { setTimeout as delay } from "node:timers/promises";
 import { executeGitHubMerge } from "./pr-merge.ts";
-import type { MergeMethod, PrRun } from "./pr-run.ts";
+import { DEFAULT_PR_POLICY, type MergeMethod, type PrRun } from "./pr-run.ts";
 import { syncLocalHead } from "./pr-sync.ts";
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
@@ -173,7 +173,7 @@ async function mergePullRequest(
 	current: CurrentPullRequest,
 	load: typeof loadCurrentPullRequest,
 	needsFeedback: typeof needsFeedbackAttention,
-	mergeMethod: MergeMethod | undefined,
+	mergeMethod: MergeMethod,
 ): Promise<void> {
 	await executeGitHubMerge({
 		mergeMethod,
@@ -356,7 +356,23 @@ export function createPrCommandHandler(
 		}
 		if (nextStep === "merge") {
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
-			await mergePullRequest(pi, ctx, discovery.pullRequest, load, needsFeedback, onRouteResolved?.run?.policy.mergeMethod);
+			const current = discovery.pullRequest;
+			const mergeMethod = onRouteResolved?.run?.policy.mergeMethod ?? DEFAULT_PR_POLICY.mergeMethod;
+			if (!ctx.hasUI) {
+				ctx.ui.notify(`PR #${current.number} is merge-ready; merge needs confirmation in an interactive session`, "info");
+				return "none";
+			}
+			const confirmed = await ctx.ui.confirm(
+				`Merge PR #${current.number}?`,
+				`${current.url.href}\nHead ${current.head.oid.slice(0, 12)} into ${current.base.ref} with ${mergeMethod}.`,
+				{ signal: ctx.signal },
+			);
+			onRouteResolved?.assertCurrent();
+			if (!confirmed) {
+				ctx.ui.notify(`PR #${current.number} is merge-ready; merge declined`, "info");
+				return "none";
+			}
+			await mergePullRequest(pi, ctx, current, load, needsFeedback, mergeMethod);
 			return "merge";
 		}
 

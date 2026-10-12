@@ -162,7 +162,7 @@
       <text x="200" y="603" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">CONDITION</text>
       <text x="200" y="619" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Merge-ready</text>
       <text x="728" y="603" fill="#1d4ed8" font-size="8" font-weight="500" font-family="'Geist Mono', monospace" letter-spacing="0.12em">ROUTE</text>
-      <text x="728" y="619" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Recheck, merge</text>
+      <text x="728" y="619" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif">Confirm, recheck, merge</text>
       <text x="1136" y="603" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">configured mergeMethod; expected-head mutation</text>
 
       <!-- Legend strip -->

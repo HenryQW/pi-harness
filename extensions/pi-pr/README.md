@@ -1,6 +1,6 @@
 # `@henryqw/pi-pr`
 
-See the current-branch pull request in the Pi footer. Run `/pr` for all PR workflows, from creation to merge. Or ask the agent to commit local work or to create or update a PR, without authority for repair or merge.
+See the current-branch pull request in the Pi footer. Run `/pr` for all PR workflows, from creation to a merge that you confirm. Or ask the agent to commit local work or to create or update a PR, without authority for repair or merge.
 
 ## Install
 
@@ -22,7 +22,7 @@ The required packages install together with `pi-pr`. Herdr is optional. Workspac
 
 ## Use
 
-Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state and does the PR next step. It continues until it needs external input, finds a blocker, waits for CI or review, or merges. After you fix a blocker, run `/pr` again. It works outside Herdr.
+Run `/pr` in a GitHub checkout. It reads fresh local and GitHub state and does the PR next step. It continues until it needs external input, finds a blocker, waits for CI or review, or asks you to confirm the merge. After you fix a blocker, run `/pr` again. It works outside Herdr.
 
 The command is for you. The tools are for the agent. Skills tell the agent how to use the tools.
 
@@ -96,13 +96,13 @@ Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-f
 | Changes requested, unresolved threads, or new feedback | Triage actionable feedback and make the necessary changes. Leave blocked threads open. |
 | CI running and nothing else blocks | Wait in the same `/pr`. Re-read GitHub every `ciPollSeconds` for a maximum of `ciWaitMinutes`. Then route the fresh state. |
 | Draft, closed, merged, or review still required | Report the PR lifecycle or condition, and make no changes. |
-| Merge-ready | Check fresh state again and merge with the configured `mergeMethod`. |
+| Merge-ready | Ask you to confirm the merge. The dialog shows the PR number, URL, short head OID, base ref, and `mergeMethod`. If you accept, check fresh state again and merge with the configured `mergeMethod`. If you decline, or the session has no UI, report the PR as merge-ready and make no changes. |
 
 Creation selects the base from `branch.<branch>.gh-merge-base` or the validated `origin` default branch. It needs a commit ahead or ordinary pending work, including untracked files. It stays silent on the base branch. The head can be in a fork on the same GitHub host. These conditions block creation: other fork relationships, a published ref without a PR, multiple candidate remotes or PRs, and unsafe push configuration.
 
 `/pr` links an inferred open PR before the draft check. Before routing continues, fresh discovery must confirm the configured PR identity, destination, and head. For a configured draft, `/pr` only reports its PR condition. It does not sync, publish, rebase, fix CI, sweep, or merge.
 
-For a configured, open, non-draft PR, `/pr` first normalizes local state. If verified matching recovery for a branch update or sweep exists, that recovery resumes first. Sync never pushes, stashes, or resets. GitHub reports a behind base only when policy requires an up-to-date branch. Thus, `/pr` processes it as a conflict. Running CI blocks only the merge. After the wait, `/pr` re-reads GitHub. Thus, PR feedback items or conflicts that arrived during the wait go to their workflows, not to a merge. The merge occurs only in an explicit `/pr`. `/pr` never enables GitHub auto-merge.
+For a configured, open, non-draft PR, `/pr` first normalizes local state. If verified matching recovery for a branch update or sweep exists, that recovery resumes first. Sync never pushes, stashes, or resets. GitHub reports a behind base only when policy requires an up-to-date branch. Thus, `/pr` processes it as a conflict. Running CI blocks only the merge. After the wait, `/pr` re-reads GitHub. Thus, PR feedback items or conflicts that arrived during the wait go to their workflows, not to a merge. The merge occurs only in an explicit `/pr`, and only after you confirm it. This also applies when `/pr` continues automatically after a sweep, CI fix, publication, or CI wait. `/pr` never enables GitHub auto-merge.
 
 ### Feedback sweeps
 
@@ -160,6 +160,6 @@ Before the sweep publishes a changed sweep HEAD, `validate` runs `git diff --che
 - After a conflict rebase starts, a base tip that only advanced does not stop publication. `/pr` then rediscovers mergeability. If any other authority change occurs while a conflict waits, `/pr` aborts the unpublished rebase, restores the original head, removes its pending recovery record, and rediscovers. An unpublished local merge goes through inspection and validation, not another rebase. `/pr` does not use stale CI evidence or a consumed collect action again.
 - Automatic handoff reserves a fresh run ID before settlement. Pi never uses expired IDs again. Rediscovery has a maximum of two attempts per invocation and does not reset budgets. It requires the same PR identity, destination, and validated remote head. Another head change during rediscovery stops the handoff. Rerouting never bypasses unreconciled rebase or sweep recovery. Dirty or divergent state, changed branches or destinations, aborts, and uncertain mutations stop the invocation. `/pr` never retries a mutation blindly.
 - Pushes use a saved exact remote OID lease and validate the destination again. Thus, concurrent updates block publication, and the push does not overwrite them. Creation does not change the base branch. A configured PR target does not change upstream settings.
-- Direct merge requires a clean, safe local Git state and a fresh matching head. `/pr` deletes no branch or worktree. An active Git operation blocks the merge.
+- Direct merge requires your confirmation, a clean, safe local Git state, and a fresh matching head. If the PR head changes while the dialog is open, `/pr` cancels the merge. `/pr` deletes no branch or worktree. An active Git operation blocks the merge.
 - While Git detaches HEAD, a paused conflict rebase continues to check the PR authority of the recorded branch. A verified rebase can resume through `/pr`. An unverified rebase that a restart interrupted needs manual recovery. The rebase does not change other local branch refs, also with `rebase.updateRefs=true`. Branches with merge commits after the fork point need manual rebase resolution.
 - `/pr` supports only authenticated GitHub.com and GitHub Enterprise repositories. Resolve ambiguous remotes, unrelated local changes, or GitHub blockers before you run `/pr` again.
