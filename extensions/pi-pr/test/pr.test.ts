@@ -784,6 +784,39 @@ test("one /pr continues from a final answer through hidden boundaries until exte
 	} finally { await app.shutdown(ctx); }
 });
 
+for (const answer of [false, true]) test(`a finalized sweep continuation asks before merge and ${answer ? "reaches merge safety after yes" : "stops after no"}`, async () => {
+	let finalized = false;
+	const runId = "11111111-1111-4111-8111-111111111111";
+	const confirmations: string[] = [];
+	const merges: unknown[] = [];
+	const app = harness({
+		async load() { return currentPullRequest({ conditions: { unresolvedThreads: finalized ? 0 : 1 } }); },
+		useDefaultCommandHandler: true, newRunId: () => runId,
+		async canonicalWorktree() { return "/repo"; },
+		createCommentSweep() { return {
+			async recoveryLaunchAction() { return "start" as const; },
+			async finalize() { finalized = true; return { kind: "finalized" }; },
+		} as never; },
+		async exec(command, args) {
+			if (command === "gh" && args.some((arg) => arg.includes("mergePullRequest"))) merges.push(args);
+			throw new Error(`merge safety stops here: ${command} ${args.join(" ")}`);
+		},
+	});
+	const base = app.context();
+	const ctx = { ...base, ui: { ...base.ui, async confirm(title: string) { confirmations.push(title); return answer; } } } as ExtensionContext;
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(app.messages, [`/skill:pi-pr-comment-sweep runId=${runId} action=start`]);
+		assert.deepEqual(confirmations, [], "routine sweep dispatch does not ask");
+		await app.callTool("pi_pr_sweep", { runId, action: "finalize", guard: { epoch: 1, runId: "run", generation: 1, fingerprint: "a".repeat(64) }, checks: [] }, ctx);
+		assert.equal(await app.beforeSettle(ctx), undefined);
+		assert.deepEqual(confirmations, ["Merge PR #42?"]);
+		assert.deepEqual(merges, []);
+		assert.match(app.notifications.at(-1)!.message, answer ? /continuation stopped: merge safety stops here: git/ : /PR #42 is merge-ready; merge declined/);
+	} finally { await app.shutdown(ctx); }
+});
+
 for (const quotaExhausted of [false, true]) test(quotaExhausted
 	? "creation continuation does not retry an exhausted GitHub quota at settlement"
 	: "creation continuation refreshes the footer when it stops for CI", async () => {
@@ -2527,7 +2560,7 @@ test("keeps the create hint cleared until the workflow settles", async () => {
 		assert.equal(loads, 2);
 		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
 		assert.match(app.statuses.at(-1) ?? "", /\x1b\]8;;https:\/\/github\.com\/acme\/project\/pull\/42\x1b\\/);
-		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to confirm and merge pull request"));
 
 	} finally {
 		setCapabilities(previousCapabilities);
@@ -2582,7 +2615,7 @@ test("normalizes the Herdr workspace label after a create workflow settles", asy
 				},
 			]);
 			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
-			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to confirm and merge pull request"));
 		} finally {
 			await app.shutdown(ctx);
 		}
@@ -2710,7 +2743,7 @@ test("warns without hiding the refreshed PR when Herdr labeling fails", async ()
 				type: "warning",
 			}]);
 			assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
-			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+			assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to confirm and merge pull request"));
 
 			await app.tool({
 				toolName: "bash",
@@ -2809,7 +2842,7 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 		await app.settle(ctx);
 		await flush();
 		assert.equal(loads, 3, "workflow settlement must not add a stale refresh");
-		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to confirm and merge pull request"));
 	} finally {
 		await app.shutdown(ctx);
 	}
@@ -3056,7 +3089,7 @@ test("requires a newly ahead commit before offering creation after a merge", asy
 
 	try {
 		await app.start(ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to merge pull request"));
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✓ Run /pr to confirm and merge pull request"));
 
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		await flush();

@@ -891,17 +891,6 @@ test("a session without UI stops at merge-ready without a merge mutation", async
 	assert.equal(mutationCalls(app.calls).length, 0);
 });
 
-test("continuation after a completed helper action confirms before merging", async () => {
-	for (const route of ["sweep", "fix-ci", "publish-work"] as const) {
-		const run = new PrRun();
-		run.complete(route, localHead);
-		const app = harness({ states: [{}], confirm: false });
-		assert.equal(await app.handler("", app.context, Object.assign(() => {}, { sessionGeneration: 1, run, assertCurrent() {} })), "none", route);
-		assert.equal(app.confirmations.length, 1, route);
-		assert.equal(mutationCalls(app.calls).length, 0, route);
-	}
-});
-
 test("flagless /pr routes freshly detected standalone feedback before merge", async () => {
 	const app = harness({ states: [{}], commands: [packageCommand("skill:pi-pr-comment-sweep")] });
 	const handler = createPrCommandHandler(app.pi, {

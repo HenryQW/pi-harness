@@ -191,7 +191,7 @@ test("projects normal runnable, merge, and no-action states", () => {
 			nextStep: "merge",
 			footer: "merge-ready",
 			color: "success",
-			widget: "Run /pr to merge pull request",
+			widget: "Run /pr to confirm and merge pull request",
 		},
 		{
 			name: "approved but waiting",
@@ -383,7 +383,7 @@ test("prefixes plain actions with themed semantic icons", () => {
 			display: projectPrDisplay(pullRequest({ conditions: { ci: "success" } })),
 			color: "success",
 			icon: "✓",
-			text: "Run /pr to merge pull request",
+			text: "Run /pr to confirm and merge pull request",
 		},
 		{
 			name: "accent",

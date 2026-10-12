@@ -111,7 +111,7 @@ function widgetText(nextStep: NextStep): string | undefined {
 		case "wait-ci":
 			return "Run /pr to wait for CI, then continue";
 		case "merge":
-			return "Run /pr to merge pull request";
+			return "Run /pr to confirm and merge pull request";
 		case "link-branch":
 			return "Run /pr to link pull request branch";
 		case "create":
