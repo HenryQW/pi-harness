@@ -6,8 +6,14 @@ import { collectPullRequestFeedback, feedbackAuthorityFromCurrent, feedbackEntri
 import { loadCurrentPullRequest, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
 import { canonicalWorktree, extensionExecApi, isRecord } from "./pr-execution.ts";
 
+// Bot conversation comments are status output (deploys, review progress); bot findings arrive as reviews and threads.
+function attentionEntries(snapshot: FeedbackSnapshot) {
+	return feedbackEntries(snapshot).filter(({ kind, node }) =>
+		kind !== "conversation_comment" || !("author" in node) || node.author?.__typename !== "Bot");
+}
+
 function fingerprint(snapshot: FeedbackSnapshot, blockedIds: ReadonlySet<string> = new Set()): string {
-	const entries = feedbackEntries(snapshot).filter(({ id }) => !blockedIds.has(id)).map(({ id, kind, node }) => ({
+	const entries = attentionEntries(snapshot).filter(({ id }) => !blockedIds.has(id)).map(({ id, kind, node }) => ({
 		id, kind, body: "body" in node ? node.body : null,
 	})).sort((a, b) => a.id.localeCompare(b.id));
 	return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
@@ -49,8 +55,7 @@ export async function needsFeedbackAttention(
 		throw new Error("Feedback discovery cancelled: pull request authority changed");
 	}
 	const marker = await readMarker(await markerPath(cwd, agentDir, signal, exec), signal);
-	const entries = feedbackEntries(snapshot);
-	if (!entries.length) return false;
+	if (!attentionEntries(snapshot).length) return false;
 	return !marker || marker.url !== current.url.href || marker.fingerprint !== fingerprint(snapshot);
 }
 

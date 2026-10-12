@@ -1569,6 +1569,43 @@ test("blocked standalone feedback remains attention-worthy after finalization", 
 	assert.equal(await needsFeedbackAttention(app.current(), options), true);
 });
 
+test("bot conversation comments neither start nor restart feedback attention", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	let botOnly = true;
+	const exec: Exec = async (command, args, options) => {
+		const response = await app.exec(command, args, options);
+		if (command !== "gh" || !options.stdin?.includes("query Feedback(")) return response;
+		const value = JSON.parse(response.stdout);
+		const pullRequest = value.data.repository.pullRequest;
+		for (const node of pullRequest.comments.nodes) if (node.id === "conversation-2") node.author.__typename = "Bot";
+		if (botOnly) {
+			pullRequest.comments.nodes = pullRequest.comments.nodes.filter(({ id }: { id: string }) => id === "conversation-2");
+			pullRequest.reviews.nodes = [];
+			pullRequest.reviewThreads.nodes = [];
+		}
+		return result(JSON.stringify(value));
+	};
+	const options = { cwd: app.root, agentDir: app.agentDir, exec, load: async () => ({ kind: "current" as const, pullRequest: app.current() }) };
+	app.world.extraBody = "Deploy: in progress";
+	assert.equal(await needsFeedbackAttention(app.current(), options), false);
+	botOnly = false;
+	app.world.extraBody = null;
+	assert.equal(await needsFeedbackAttention(app.current(), options), true);
+	const workflow = app.workflow(undefined, { exec });
+	const started = await workflow.start();
+	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
+	const refreshed = await workflow.refresh(published.guard);
+	await workflow.finalize((await workflow.resolve(refreshed.guard)).guard, []);
+	assert.equal(await needsFeedbackAttention(app.current(), options), false);
+	app.world.extraBody = "Deploy: in progress";
+	assert.equal(await needsFeedbackAttention(app.current(), options), false);
+	app.world.extraBody = "Deploy: successful";
+	assert.equal(await needsFeedbackAttention(app.current(), options), false);
+	app.world.body = "please also fix the other file";
+	assert.equal(await needsFeedbackAttention(app.current(), options), true);
+});
+
 test("finalization preserves a malformed existing feedback marker and its recovery", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
