@@ -1,6 +1,6 @@
 # `@henryqw/pi-session-recall`
 
-Search past Pi sessions locally to find prior decisions and context without injecting saved transcripts on every turn. The active tool registration still adds standing prompt cost through its schema, descriptions, and guideline. Returned content enters active model context.
+Search past Pi sessions locally to find prior decisions and context. The extension does not inject saved transcripts on every turn. The active tool registration still adds standing prompt cost through its schema, descriptions, and guideline. Returned content enters active model context.
 
 ## Install
 
@@ -8,7 +8,7 @@ Search past Pi sessions locally to find prior decisions and context without inje
 pi install npm:@henryqw/pi-session-recall
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series and Node.js 22.19.0 or later.
+This package requires Pi 1.1.0 or later in the 1.x series and Node.js 22.19.0 or later.
 
 ## Use
 
@@ -30,12 +30,12 @@ The tool supports these modes. Agents use `session_search`; users can invoke the
 | Mode | Call | Result |
 | --- | --- | --- |
 | Pattern preparation | `operation:"prepare-pattern-miner"` + `scope:"repository"` or `scope:"all"` | Up to ten recent lineage-unique sessions plus repository inventory. `limit` defaults to 10 and is clamped to [1,10]. Repository scope includes exact and descendant `cwd` values, filters before the limit, and excludes the current session file. |
-| Discovery | `query` | BM25-ranked metadata and snippets. Each result includes `path` and `matchMessageId` for a follow-up scroll. Start with keywords, then narrow the query before scrolling. `limit` defaults to 3 and is clamped to [1,10]. |
-| Scroll | `sessionId` + `aroundMessageId` | Raw message roles, including tool results, within ±`window` ([1,20], default 5) of the anchor on the selected branch. Re-anchor on the last or first message ID to scroll. Across forks, pass the previous response's `branchTip`; `aroundMessageId` must lie on that branch. |
+| Discovery | `query` | BM25-ranked metadata and snippets. Each result includes `path` and `matchMessageId` for a follow-up scroll. Start with keywords. Then narrow the query before you scroll. `limit` defaults to 3 and is clamped to [1,10]. |
+| Scroll | `sessionId` + `aroundMessageId` | Raw message roles, including tool results, within ±`window` ([1,20], default 5) of the anchor on the selected branch. To scroll, anchor again on the last or first message ID. Across forks, pass the `branchTip` of the previous response. `aroundMessageId` must be on that branch. |
 | Read | `sessionId` | Raw message roles, including tool results, from the session. Large sessions return head 20 + tail 10. Oversized content is bounded to 50k characters and marked with `contentTruncated`. |
 | Browse | no args | Recent sessions with path, name, cwd, started date, and preview. `limit` defaults to 3 and is clamped to [1,10]. |
 
-BM25 is a text-ranking method. Discovery returns index metadata; READ and SCROLL retrieve messages from saved session files.
+BM25 is a text-ranking method. Discovery returns index metadata. READ and SCROLL retrieve messages from saved session files.
 
 To scroll directly to a discovery hit, pass its `path` and `matchMessageId`:
 
@@ -69,19 +69,19 @@ In the interactive TUI, the collapsed tool block shows the last five visual line
 
 Failures are tool errors, not success-shaped JSON. The model sees an error result, and codemode scripts reject with the error message. Rejected session paths and scroll identifiers cannot expand an error message beyond the same 50,000-character budget. This covers invalid or conflicting arguments, a `sessionId` that is missing or outside the Pi sessions directory, an unknown scroll anchor, session files over 32 MiB, failed required repository inventory, cancelled preparation, and results whose metadata alone exceeds the output budget.
 
-The tool keeps Pi's default `direct` exposure: it is declared to the model while active and callable from scripts while active. It is annotated read-only; it writes only its own derived index. This package does not enable codemode.
+The tool keeps Pi's default `direct` exposure. While the tool is active, Pi declares it to the model, and scripts can call it. The tool has a read-only annotation. It writes only its own derived index. This package does not enable codemode.
 
 ### Pattern-miner skill
 
 Invoke `/skill:pi-session-pattern-miner` to find repeated workflows in past sessions. The skill makes exactly one preparation call before interpretation.
 
-It treats one lineage as one source and requires two independent examples before recommending automation. A requested topic gets a focused confirmation search even when the prepared sample does not contain it.
+It treats one lineage as one source and requires two independent examples before it recommends automation. A requested topic gets a focused confirmation search even when the prepared sample does not contain it.
 
-After clustering, the skill always checks current candidate-relevant package manifests, scripts, skills, and instructions. It abstains if it cannot check them safely.
+After the skill groups episodes into clusters, it always checks current candidate-relevant package manifests, scripts, skills, and instructions. It abstains if it cannot check them safely.
 
 ### Repository inventory
 
-Repository inventory contains discovery hints. It is never proof that a file owns a workflow and does not verify the current worktree.
+Repository inventory contains discovery hints. It never proves that a file owns a workflow. It does not verify the current worktree.
 
 Package scripts, executable paths, and instruction paths come from stage-0 entries in the Git index. Package content comes from indexed blobs. Git reads the objects locally in one check batch and one content batch. Lazy object fetching and replacement refs are disabled. Inventory never opens working-tree package paths.
 
@@ -98,7 +98,7 @@ Available inventory includes this provenance:
 }
 ```
 
-It also sets `worktreeVerified:false`. Staged adds, changes, and deletes affect the Git-index collections. Unstaged changes, deletions, mode changes, symlinks, and untracked files do not affect those collections. Skills come from Pi's effective registry and can include untracked files. Inspect current candidate files before assigning ownership; abstain if targeted current-file checks cannot be done safely.
+It also sets `worktreeVerified:false`. Staged adds, changes, and deletes affect the Git-index collections. Unstaged changes, deletions, mode changes, symlinks, and untracked files do not affect those collections. Skills come from Pi's effective registry and can include untracked files. Inspect current candidate files before you assign ownership. If you cannot do targeted current-file checks safely, abstain.
 
 ## Flow
 
@@ -108,9 +108,9 @@ Search makes no model calls.
 
 ### Query and index
 
-- Discovery trims the query, then truncates it to 512 characters before matching; text beyond that cap is ignored.
-- Prefer distinctive identifiers, package names, issue numbers, or uncommon terms. Use quoted phrases only when exact wording is known.
-- The FTS5 trigram index uses AND for multiple words by default. Use `OR` for breadth, quoted phrases for exact matches, and `NOT` to exclude. Wildcards help only stems at least three characters long.
+- Discovery trims the query. Then it truncates the query to 512 characters before it finds matches. Discovery ignores text after that limit.
+- Prefer distinctive identifiers, package names, issue numbers, or uncommon terms. Use quoted phrases only when you know the exact wording.
+- The FTS5 trigram index uses AND for multiple words by default. Use `OR` for breadth, quoted phrases for exact matches, and `NOT` to exclude. Wildcards help only with stems of three or more characters.
 - Only user and assistant text is indexed. Thinking blocks and tool output are not searchable.
 - For message text over the 20,000-character indexing budget, only the first and last regions are indexed. The middle is omitted. Phrases and `NEAR` cannot cross those regions, but ordinary AND terms can.
 - `sessionId` must be a `.jsonl` file under the Pi sessions directory.
@@ -119,27 +119,27 @@ Search makes no model calls.
 
 Discovery excludes the current session file when its path is available. Forked sessions collapse into their parent when both match.
 
-Before browse, discovery, or pattern preparation, the extension lazily syncs the index from the session tree. Pattern preparation reports `sync.walkComplete`, `sync.backlogRemaining`, and `sync.complete`; `sync.complete` is true only after a complete walk with no backlog.
+Before browse, discovery, or pattern preparation, the extension lazily syncs the index from the session tree. Pattern preparation reports `sync.walkComplete`, `sync.backlogRemaining`, and `sync.complete`. `sync.complete` is true only after a complete walk with no backlog.
 
 ### Retrieval safety
 
-Discovery returns short snippets from indexed user and assistant transcript text. Use a result's `path` and `matchMessageId` with SCROLL for targeted context; READ and SCROLL retrieve raw messages, including tool-result messages when present.
+Discovery returns short snippets from indexed user and assistant transcript text. Use a result's `path` and `matchMessageId` with SCROLL for targeted context. READ and SCROLL retrieve raw messages, including tool-result messages when present.
 
-Pattern preparation returns only non-empty user and assistant text. It never returns thinking blocks or tool-result content, and preserves citation and lineage metadata when a source cannot be read.
+Pattern preparation returns only non-empty user and assistant text. It never returns thinking blocks or tool-result content. When it cannot read a source, it keeps the citation and lineage metadata.
 
 Historical tool output may contain secrets or other sensitive data. Raw retrieval places that output in active model context.
 
 ## State and storage
 
-The extension maintains its derived SQLite search index at `~/.pi/agent/config/pi-session-recall/index.db`. Delete this derived state to rebuild it from your session files; no migration or recovery machinery is needed.
+The extension keeps its derived SQLite search index at `~/.pi/agent/config/pi-session-recall/index.db`. To rebuild the index from your session files, delete this derived state. You do not need migration or recovery machinery.
 
 The index and transcript reads stay local. Transcripts are read in place. Returned content follows the data path of your configured model provider.
 
 ## Limits and recovery
 
-Lazy index sync can fail while walking the session tree. Results still come from the current index and can be partly updated or stale. Files found before failure may have new content, while rows for files the walk did not reach stay stale.
+Lazy index sync can fail during the walk of the session tree. Results still come from the current index and can be partly updated or stale. Files found before the failure can have new content. Rows for files that the walk did not reach stay stale.
 
-- A partial walk returns top-level `syncWarning`: `{kind:"incomplete-walk"}`. Indexed-but-unseen paths are never purged in that case.
+- A partial walk returns top-level `syncWarning`: `{kind:"incomplete-walk"}`. In that case, the extension never purges indexed paths that the walk did not see.
 - A total sync failure returns top-level `syncWarning`: `{kind:"sync-failed", error}` with the capped failure message.
 - The warning is omitted after a completed sync.
 
@@ -149,7 +149,7 @@ Session files over 32 MiB are excluded from indexing and hydration, so discovery
 
 Pattern preparation runs one sync pass. A positive backlog or incomplete walk limits the sample and sets `sync.complete:false`. A total sync or required repository-inventory failure returns an explicit tool error.
 
-Repository scope fails outside Git or when repository inventory fails. All scope still returns its corpus when Git-root lookup exits nonzero (`inventory.available:false`, `reason:"not-a-git-repository"`) or inventory fails after the root is resolved (`reason:"inventory-failed"`). If the working directory cannot be resolved, Git cannot start, root lookup overflows or produces invalid output or unexpected stderr, or the call is cancelled, preparation fails even with all scope; these failures do not return unavailable inventory.
+Repository scope fails outside Git or when repository inventory fails. All scope still returns its corpus in two cases: Git-root lookup exits nonzero (`inventory.available:false`, `reason:"not-a-git-repository"`), or inventory fails after the root is resolved (`reason:"inventory-failed"`). Preparation fails, even with all scope, in these cases: the working directory cannot be resolved, Git cannot start, root lookup overflows or produces invalid output or unexpected stderr, or the call is cancelled. These failures do not return unavailable inventory.
 
 Preparation rejects `query`, session cursors, or `window` in the same call. It also rejects `scope` without the operation.
 
@@ -169,4 +169,4 @@ To return to the older 2.1.1 behavior, pin that release:
 pi install npm:@henryqw/pi-session-recall@2.1.1
 ```
 
-No index migration or cleanup is needed.
+You do not need an index migration or cleanup.

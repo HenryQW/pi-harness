@@ -22,7 +22,7 @@ For each new public package, check whether it exists on npm before finishing. If
 
 ## Documentation
 
-Write user-facing READMEs in plain English: lead with the user outcome, keep commands, paths, API names, and errors exact, and state requirements, limits, failures, and safety risks. After an extension change, update its README if user-visible behavior or guidance changed. For extension READMEs, follow [the canonical template](extensions/README-template.md); use H3 for package-specific topics. `pnpm run docs:validate` enforces H2 names and order against the template.
+Write user-facing READMEs in ASD-STE100 Simplified Technical English with the package's `CONTEXT.md` terms: lead with the user outcome, keep commands, paths, API names, and errors exact, and state requirements, limits, failures, and safety risks. After an extension change, update its README if user-visible behavior or guidance changed. For extension READMEs, follow [the canonical template](extensions/README-template.md); use H3 for package-specific topics. `pnpm run docs:validate` enforces H2 names and order against the template.
 
 Follow [the diagram guide](docs/diagram-style.md). Set each README-linked SVG root's `width` and `height` to its `viewBox` dimensions. Include local files linked from a published README in the package allowlist and verify them with `npm pack --dry-run`.
 

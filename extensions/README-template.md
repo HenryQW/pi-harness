@@ -7,7 +7,7 @@ README contract:
 - Keep retained H2 headings in this canonical order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.
 - Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
 - Limits and recovery, when present, must be last.
-- Keep simple packages short. Use simple English. Preserve exact commands, paths, errors, safety advice, and recovery steps.
+- Keep simple packages short. Write in ASD-STE100 Simplified Technical English. Use the terms in the package's `CONTEXT.md` as approved technical names with their defined meanings, and do not use the synonyms that it lists under _Avoid_. When a package has no `CONTEXT.md`, use ASD-STE100 only. Preserve exact commands, paths, errors, safety advice, and recovery steps.
 - Prefer tables for structured information with multiple comparable rows (interfaces, settings, modes, limits, or recovery cases). Use prose for explanations and numbered lists for ordered workflows; do not force narrative or single items into tables.
 - When a package exposes two or more discoverable interfaces, include exactly one complete interface-discovery table near the start of Use. Include every package-owned command, agent tool, skill, shortcut, and UI entry point; distinguish their types and explain their audience. Do not split the inventory by mode, normal use, or recovery. Keep detailed behavior in prose or H3 subsections, and public library exports in API.
 - Start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.

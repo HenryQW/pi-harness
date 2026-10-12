@@ -1,12 +1,12 @@
 # `@henryqw/pi-prompt-creator`
 
-Turn repeated requests or corrections in the current conversation into a reviewed global Pi prompt. A tool-free child drafts one candidate, while Main and the user control review and saving.
+Turn repeated requests or corrections in the current conversation into a reviewed global Pi prompt. A tool-free child drafts one Prompt Candidate. Main and the user control Prompt Review and the save.
 
-Automatic analysis only prepares a candidate; the extension never saves it without your approval.
+Automatic analysis only prepares a candidate. The extension never saves it without your approval.
 
 ## Install
 
-Requires Pi 1.1.0 or later in the 1.x series. Older Pi releases are no longer supported.
+This package requires Pi 1.1.0 or later in the 1.x series. Older Pi releases are no longer supported.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
@@ -29,25 +29,25 @@ Run `/promptor` in the interactive TUI after a repeated request or correction ap
 2. Ask Main to refine it and return only the complete Final Prompt Draft.
 3. Run `/promptor save` to save under the suggested name, or `/promptor save <name>` to rename it.
 
-The prompt is created at `~/.pi/agent/prompts/<name>.md`, then Pi reloads its resources. No selection menu or name prompt is required.
+The prompt is created at `~/.pi/agent/prompts/<name>.md`. Then Pi reloads its resources. No selection menu or name prompt is required.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/promptor [analyze|dismiss|save [name]|automatic <on\|off>]` | command | For users in the interactive TUI: start or show analysis, dismiss a pending candidate, save a reviewed prompt, or control automatic analysis. |
-| `pi-prompt-creator/draft` | task | For users configuring `/task-models`: choose the child model and thinking level for drafting. |
-| Analysis status widget and candidate message | ui | Show analysis progress, readiness, or failure; a displayed candidate is marked as untrusted. |
+| `pi-prompt-creator/draft` | task | For users who configure `/task-models`: choose the child model and thinking level for the draft. |
+| Analysis status widget and candidate message | ui | Show analysis progress, readiness, or failure. A displayed candidate is marked as untrusted. |
 
 ## Flow
 
 ![Automatic prompt analysis waits for user display before Main review and approved saving; manual candidates display immediately](./docs/prompt-lifecycle.svg)
 
-The diagram shows the automatic path. Manual analysis displays its candidate immediately, without the WAIT stage. Both paths require Main review and your approval before saving.
+The diagram shows the automatic path. Manual analysis displays its candidate immediately, without the WAIT stage. Both paths require Main review and your approval before the save.
 
 ### Automatic analysis
 
 Automatic mode waits for the configured number of non-empty user inputs. The default is three.
 
-It starts at the next idle `agent_settled` event that is not aborted. It starts at most once per extension runtime.
+It starts at the next idle `agent_settled` event that is not aborted. It starts at most one time per extension runtime.
 
 An aborted run does not start automatic analysis. It keeps the input count and the automatic opportunity, so a later eligible normal settlement can start analysis. `aborted: false` does not prove that the provider completed successfully.
 
@@ -57,7 +57,7 @@ Branch changes reset the input counter. Automatic analysis and candidate widgets
 
 Only one analysis can run at a time. A pending candidate blocks another analysis.
 
-Manual and automatic analysis send Pi's current model-visible session context to the child model configured through `/task-models`. Session context edits that omit or replace messages are honored; original text removed from model context is not sent to the child. Request-local `context` and `context_with_system` transformations are not included.
+Manual and automatic analysis send Pi's current model-visible session context to the child model configured through `/task-models`. Session context edits that omit or replace messages are honored. Original text removed from model context is not sent to the child. Request-local `context` and `context_with_system` transformations are not included.
 
 Its payload includes the active compaction or branch summary, user text, successfully completed assistant text, and effective prompt names and descriptions.
 
@@ -69,17 +69,17 @@ New user input does not stop a running child. Branch navigation discards its old
 
 ### Review and save
 
-A manually requested analysis displays its completed candidate immediately. Automatic analysis shows a running widget, then keeps a completed candidate behind the `Prompt ready — /promptor` widget until you run `/promptor` or `/promptor dismiss`, so background work never interrupts the conversation.
+A manually requested analysis displays its completed candidate immediately. Automatic analysis shows a running widget. Then it keeps a completed candidate behind the `Prompt ready — /promptor` widget until you run `/promptor` or `/promptor dismiss`. Thus, background work never interrupts the conversation.
 
 Displayed candidates are visible messages marked as untrusted.
 
-Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft before saving it with `/promptor save [name]`.
+Refine the candidate with Main. Ask Main to return only the complete Final Prompt Draft. Then save it with `/promptor save [name]`.
 
-Saving is allowed only after you show a candidate and Main then completes a valid Markdown review reply. Saving uses that latest retained Main reply as the entire file. Replies before the active compaction or branch summary cannot be saved.
+You can save only after you show a candidate and Main then completes a valid Markdown review reply. The save uses that latest retained Main reply as the entire file. Replies before the active compaction or branch summary cannot be saved.
 
 An interrupted, failed, empty, or tool-use reply cannot be saved. The extension never falls back to an older reply.
 
-A successful save ends that review. Show another candidate and complete another Main review reply before saving again.
+A successful save ends that review. Show another candidate and complete another Main review reply before you save again.
 
 `/promptor save` uses the suggested candidate name. Pass `/promptor save <name>` to choose another. Names must be lowercase kebab-case, start with a letter, and contain at most 64 ASCII characters. Existing command names and prompt files are rejected.
 
@@ -100,27 +100,27 @@ Package-owned: `~/.pi/agent/config/pi-prompt-creator/config.json`
 | `automatic` | Runs automatic analysis after enough user inputs. | Boolean. | `true` |
 | `inputThreshold` | Sets the number of non-empty user inputs before automatic analysis. | Positive safe integer (`1`–`9007199254740991`). | `3` |
 
-Edit either field, then run `/reload` to apply the change. Omitted fields use their defaults.
+Edit either field. Then run `/reload` to apply the change. Omitted fields use their defaults.
 
 A missing file quietly uses both defaults. Startup never creates or rewrites the file.
 
 Malformed config or unknown keys disable automatic analysis. Pi warns once and leaves the file unchanged.
 
-Only `/promptor automatic on` or `/promptor automatic off` writes the config. Toggling preserves the configured threshold.
+Only `/promptor automatic on` or `/promptor automatic off` writes the config. A toggle keeps the configured threshold.
 
 ## State and storage
 
 A pending candidate stays in memory only. Automatic mode persists, but counters and candidates do not.
 
-Saved prompts live at `~/.pi/agent/prompts/<name>.md`. Saving never replaces an existing file.
+Saved prompts are at `~/.pi/agent/prompts/<name>.md`. A save never replaces an existing file.
 
 ## Limits and recovery
 
 The child payload stays within 30,000 characters, including its JSON envelope and prompt metadata.
 
-It prioritizes the active summary, then the newest complete messages. It omits excess prompt metadata before conversation context.
+It gives priority to the active summary, then to the newest complete messages. It omits excess prompt metadata before conversation context.
 
-Old messages may be omitted. Individual messages are never cut.
+Old messages can be omitted. Individual messages are never cut.
 
 Generated candidate names use lowercase kebab-case and stay within 64 ASCII characters.
 
@@ -128,7 +128,7 @@ Candidate and Final Prompt Draft Markdown must be non-empty and at most 16 KiB.
 
 Candidate and saved Markdown reject NUL and other terminal controls. Ordinary tabs and line feeds are allowed.
 
-No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`. Failed analysis is not retried automatically; run `/promptor` or `/promptor analyze` to start again.
+If analysis finds no candidate, the running widget clears without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`. Failed analysis is not retried automatically. Run `/promptor` or `/promptor analyze` to start again.
 
 The failure widget clears after the next non-empty user input. Analysis has a two-minute idle timeout and five-minute hard timeout.
 

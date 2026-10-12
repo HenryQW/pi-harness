@@ -1,13 +1,13 @@
 # `@henryqw/pi-task-models`
 
-Choose shared model and thinking routes for extension tasks named `fast`, `balanced`, `frontier`, and `fav`. Users configure routes once while each extension keeps ownership of its task and default.
+Configure shared Task Routes for the Task Profiles `fast`, `balanced`, `frontier`, and `fav`. A Task Route is one model and one thinking level. You configure the routes one time, and each extension keeps ownership of its Model Task and default.
 
 ![Pi showing task model profiles and task routes](./example.png)
 ![Task routing from consumer declaration to route or error](./docs/task-routing-architecture.svg)
 
 ## Install
 
-Requires Pi 1.1.0 or later in the 1.x series. Upgrade Pi before installing version 8.1 or later of this package.
+This package requires Pi 1.1.0 or later in the 1.x series. Upgrade Pi before you install version 8.1 or later of this package.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
@@ -22,16 +22,16 @@ Run `/task-models` after installation. Configure each profile that your installe
 | [`@henryqw/pi-auto-compact`](https://pi.henry.wang/extensions/pi-auto-compact) | Consumer | Its local compaction task defaults to `fast`. |
 | [`@henryqw/pi-herdr-tools`](https://pi.henry.wang/extensions/pi-herdr-tools) | Consumer | Its side-thread and rename tasks default to `fast`. |
 | [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Consumer | Its local candidate-review task defaults to `balanced`. |
-| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Numbered Codex slots dedupe to one route. |
+| [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Numbered Codex slots become one route. |
 | [`@henryqw/pi-prompt-creator`](https://pi.henry.wang/extensions/pi-prompt-creator) | Consumer | Its local prompt-drafting task defaults to `fast`. |
-| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Consumer | Its local delegation task defaults to `fast`; callers can declare their own task. |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Consumer | Its local delegation task defaults to `fast`. Callers can declare their own task. |
 
 ## Use
 
 Run `/task-models` to complete the first setup:
 
 1. Select `fast`.
-2. Choose a primary model from Pi's effective registry, then choose its thinking level.
+2. Choose a primary model from Pi's effective registry. Then choose its thinking level.
 3. Choose a different fallback model and thinking level, or choose `None`.
 4. Reopen `/task-models`. The `fast` row now shows the saved route instead of `not configured`.
 
@@ -44,23 +44,23 @@ Run `/task-models` to complete the first setup:
 
 Repeat these steps for `balanced`, `frontier`, or `fav` when a consumer needs them. The `fav` profile has no fallback.
 
-Select an active task to override its declared profile. Choosing that task's declared default removes the override.
+Select an active task to override its declared profile. If you choose the declared default of that task, `/task-models` removes the override.
 
 ## Flow
 
 Consumers register declarations at extension load. When `/task-models` opens, the shared control plane asks active extensions for declarations. Extension load order does not matter.
 
-The control plane lists each active task's effective profile. Hidden explicit assignments stay stored when a consumer is disabled.
+The control plane lists each active task's effective profile. When you disable a consumer, the control plane hides its explicit assignments but keeps them stored.
 
-Menus and resolution use the current session's `ctx.scopedModels`, including pinned thinking. An empty scope uses available text models from Pi's registry. Numbered Codex account aliases are deduplicated.
+Menus and route resolution use `ctx.scopedModels` of the current session, including pinned thinking. An empty scope uses available text models from Pi's registry. The control plane removes duplicate numbered Codex account aliases.
 
-Fallback choices exclude the selected primary. BTW selects the first authenticated viable route before pane launch.
+Fallback choices exclude the selected primary. BTW selects the first authenticated viable route before it starts the pane.
 
 ## Config
 
 The shared JSON file is at `~/.pi/agent/config/pi-task-models/config.json`. Only explicit `/task-models` actions save it.
 
-The following JSON shows structure only. Every model ID is a placeholder and must not be copied.
+The following JSON shows structure only. Every model ID is a placeholder. Do not copy it.
 
 ```json
 {
@@ -89,7 +89,7 @@ Use exact model IDs offered by `/task-models`. Pi's registry, not this example, 
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `profiles` | Stores configured shared routes by profile name. | Object keyed by `fast`, `balanced`, `frontier`, or `fav`; unknown profile names are rejected. | `{}` (no profiles configured) |
+| `profiles` | Stores configured shared routes by profile name. | Object keyed by `fast`, `balanced`, `frontier`, or `fav`. Task Models rejects unknown profile names. | `{}` (no profiles configured) |
 | `profiles.<profile>.primary.model` | Selects the primary model. Required within a configured `primary` route. | Canonical `provider/model` reference without whitespace or NUL; available models come from Pi's model registry or session-scoped models. | — |
 | `profiles.<profile>.primary.thinkingLevel` | Sets the primary model's thinking level. Required within a configured `primary` route. | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; the model must support the level when the route resolves. | — |
 | `profiles.<profile>.fallback` | Sets the route to try when the primary route is unavailable. | Object requiring `model` and `thinkingLevel` under the same rules as `primary`; not allowed for `fav`. | No fallback route. |
@@ -98,17 +98,17 @@ Use exact model IDs offered by `/task-models`. Pi's registry, not this example, 
 
 Pi's model registry, including session-scoped models, is the source of available models. This file does not contain a model catalog.
 
-Task defaults live only in consumer declarations. Existing explicit assignments, including one equal to a declaration's default, remain valid.
+Task defaults are only in consumer declarations. Existing explicit assignments, including one equal to a declaration's default, remain valid.
 
-Model references use canonical `provider/model`. Numbered Codex account aliases (`openai-codex-N`) resolve through Pi's registry and store canonically as `openai-codex/<model>`.
+Model references use canonical `provider/model`. Pi's registry resolves numbered Codex account aliases (`openai-codex-N`). Task Models stores them canonically as `openai-codex/<model>`.
 
 ### Presets
 
-Run `/task-models preset` and choose a name from the list to apply a saved setup. All four profiles (`fast`, `balanced`, `frontier`, and `fav`) are optional: omitted profiles keep their current values. Each included profile replaces its complete routes, including thinking levels and optional fallbacks, in one atomic config update. Task assignments stay unchanged. Cancelling the picker writes nothing.
+To apply a saved setup, run `/task-models preset`. Then choose a name from the list. All four profiles (`fast`, `balanced`, `frontier`, and `fav`) are optional. An omitted profile keeps its current values. Each included profile replaces its complete routes, including thinking levels and optional fallbacks, in one atomic config update. Task assignments stay unchanged. If you cancel the picker, Task Models writes nothing.
 
-To create a preset, open `/task-models` and press **Option+S** (macOS) or **Alt+S** in the main menu, then enter a name. This saves all currently configured profiles, including their thinking levels and fallbacks, but not task assignments. At least one profile must be configured. Reusing a name asks for confirmation before replacing that preset; other presets stay unchanged. Cancelling either prompt writes nothing.
+To create a preset, open `/task-models`. In the main menu, press **Option+S** (macOS) or **Alt+S**. Then enter a name. The preset contains all configured profiles with their thinking levels and fallbacks. It does not contain task assignments. You must configure at least one profile. If you use an existing name, Task Models asks for confirmation before it replaces that preset. Other presets stay unchanged. If you cancel either prompt, Task Models writes nothing.
 
-The shortcut requires interactive terminal mode and a terminal configured to send Option/Alt as Meta (Escape). RPC does not support this shortcut. You can also edit `~/.pi/agent/config/pi-task-models/presets.json` yourself. The file maps preset names to any subset of the four profiles, using the same route format as the active config:
+The shortcut requires interactive terminal mode. The terminal must send Option/Alt as Meta (Escape). RPC does not support this shortcut. You can also edit `~/.pi/agent/config/pi-task-models/presets.json` manually. The file maps preset names to any subset of the four profiles. It uses the same route format as the active config:
 
 ```json
 {
@@ -129,9 +129,9 @@ The shortcut requires interactive terminal mode and a terminal configured to sen
 }
 ```
 
-Replace every placeholder with an exact reference from `/task-models`; add more named objects for more setups. For an included profile, omit `fallback` for no fallback; `fav` never accepts a fallback. Omit the whole profile to leave its existing routes unchanged. Preset names must be non-empty, have no surrounding whitespace, and contain no control characters. Names appear alphabetically in the picker.
+Replace every placeholder with an exact reference from `/task-models`. Add more named objects for more setups. For an included profile, omit `fallback` if you want no fallback. `fav` never accepts a fallback. To keep the existing routes of a profile, omit the full profile. Preset names must not be empty, must not start or end with whitespace, and must not contain control characters. The picker shows names in alphabetical order.
 
-A missing, empty, or invalid preset file leaves the active config unchanged. The file must be valid UTF-8 JSON and no larger than 64 KiB; any invalid preset prevents the picker from opening. Read and save failures are reported without overwriting malformed files. Saving creates a missing preset file and uses a private atomic write under a lock; if another session is saving, retry after it finishes. Applying a preset can create a missing active config, but cannot overwrite an invalid one. Switching stores routes without checking current authentication, model availability, or thinking support; the usual scope and route-resolution rules still apply when a task runs.
+A missing, empty, or invalid preset file does not change the active config. The file must be valid UTF-8 JSON and 64 KiB or smaller. If one preset is invalid, the picker does not open. Task Models reports read and save failures. It does not overwrite malformed files. A save creates the preset file if it is missing. The save uses a private atomic write under a lock. If another session saves at the same time, try again after it finishes. When you apply a preset, Task Models can create a missing active config. It cannot overwrite an invalid active config. A preset switch stores routes and does not check current authentication, model availability, or thinking support. When a task runs, the usual scope and route-resolution rules apply.
 
 ## API
 
@@ -153,10 +153,10 @@ A missing, empty, or invalid preset file leaves the active config unchanged. The
 | `loadTaskModelsConfig(agentDir?)` | function | Reads and validates the owner config file when present. |
 | `canonicalModelReference(model)` | function | Validates and canonicalizes `provider/model`, including numbered Codex aliases. |
 | `modelReference(model)` | function | Formats a model as `provider/model`. |
-| `dedupeAvailableModels(models, preferredProvider?)` | function | Deduplicates canonical model references, preferring a provider when requested. |
+| `dedupeAvailableModels(models, preferredProvider?)` | function | Removes duplicate canonical model references. Prefers a provider when requested. |
 | `resolveAvailableModel(models, reference, preferredProvider?)` | function | Finds a model by reference, including numbered Codex aliases. |
 | `availableTaskModels(ctx)` | function | Lists usable text models from the current session scope or, when empty, Pi's registry. |
-| `taskThinkingLevels(ctx, model)` | function | Lists supported thinking levels, honoring any session-pinned level. |
+| `taskThinkingLevels(ctx, model)` | function | Lists supported thinking levels and applies any session-pinned level. |
 | `resolveTaskModelRoute(ctx, route, thinking?)` | function | Resolves one route against the current session, if available. |
 | `resolveConfiguredTaskRoute(ctx, task, agentDir?, thinking?)` | function | Resolves the first usable route for a task. |
 | `resolveConfiguredTaskRoutes(ctx, task, agentDir?, thinking?)` | function | Resolves the task's configured route candidates. |
@@ -178,16 +178,16 @@ Consumers never read or write the shared file directly.
 
 At session start, Task Models warns when the shared config is missing. Run `/task-models` to configure task routes.
 
-Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values cause config loading to fail; the file is preserved. Repair or restore the file before reopening `/task-models`, which cannot load or overwrite an invalid config.
+Malformed JSON, unknown keys, invalid task IDs, unknown profiles, or invalid profile or route values cause the config load to fail. Task Models keeps the file. Repair or restore the file before you open `/task-models` again. `/task-models` cannot load or overwrite an invalid config.
 
 Resolution errors are `TaskRouteError` values. Check `taskRouteCode`:
 
 | Code | Meaning |
 | --- | --- |
 | `config-missing` | The optional shared config file is absent. |
-| `config-read` | A present shared config file cannot be read or validated; repair its contents or permissions before using `/task-models`. |
-| `profile-missing` | The selected profile is not configured; set it in `/task-models`. |
-| `no-route` | The selected profile has no available route; choose an available model and thinking level in `/task-models`. |
+| `config-read` | Task Models cannot read or validate the existing shared config file. Repair its contents or permissions before you use `/task-models`. |
+| `profile-missing` | The selected profile is not configured. Set it in `/task-models`. |
+| `no-route` | The selected profile has no available route. Choose an available model and thinking level in `/task-models`. |
 
 For `config-missing`, run `/task-models` to create the file. A consumer may silence only `config-missing` when it has a safe current-session fallback.
 
