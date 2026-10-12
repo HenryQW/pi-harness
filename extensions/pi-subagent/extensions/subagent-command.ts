@@ -191,7 +191,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				const ignored = prunable.filter((item) => item.ignored.length);
 				// The header uses the full count's width so the shown count always fits.
 				const ignoredList = fitItems(`Also remove ${ignored.length} checkout(s) with ignored files? This permanently deletes these ignored entries and everything inside them:`,
-					ignored, (item) => clean(`${item.path}: ${ignoredSummary(item)}`, 600), PRUNE_IGNORED_CONFIRM_CODE_POINTS);
+					// Approval names every ignored entry; a checkout whose full list does not fit is left out of this run.
+					ignored, (item) => clean(`${item.path}: ${item.ignored.join(", ")}`, Number.MAX_SAFE_INTEGER), PRUNE_IGNORED_CONFIRM_CODE_POINTS);
 				const approvable = ignoredList.shown;
 				const allowIgnored = approvable.length > 0 && await ctx.ui.confirm("Delete ignored content",
 					clean(ignoredList.text.replace(`Also remove ${ignored.length} checkout(s)`, `Also remove ${approvable.length} checkout(s)`), PRUNE_IGNORED_CONFIRM_CODE_POINTS, true));

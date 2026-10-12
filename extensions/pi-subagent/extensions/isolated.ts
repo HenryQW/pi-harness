@@ -360,7 +360,13 @@ function failedReviewText(state: RunState): string {
 		}),
 		...(state.final.review && !state.final.review.passed ? [{ label: "Final", review: state.final.review }] : []),
 		...state.integration.generations.flatMap(({ number, review }) => review && !review.passed ? [{ label: `Integration generation ${number}`, review }] : []),
-	].filter(({ review }, index, all) => all.findIndex((other) => other.review.verdict === review.verdict) === index);
+	].reduce<{ label: string; review: ReviewEvidence }[]>((merged, entry) => {
+		// Show an identical verdict once, but keep every scope that failed with it.
+		const same = merged.find(({ review }) => review.verdict === entry.review.verdict);
+		if (same) same.label = `${same.label}, ${entry.label}`;
+		else merged.push({ ...entry });
+		return merged;
+	}, []);
 	let budget = PUBLIC_REVIEW_VERDICT_MAX_BYTES;
 	let omitted = 0;
 	const parts: string[] = [];

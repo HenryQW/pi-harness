@@ -527,6 +527,21 @@ test("status text shows task review verdicts while siblings run, within one shar
 	assert.ok(verdictBytes < 32 * 1024 + 2_048, `verdict text stays within the shared budget (${verdictBytes} bytes)`);
 });
 
+test("status text shows an identical verdict once with every failing scope", async () => {
+	const state = structuredClone(PRIVATE_STATE);
+	const first = state.tasks[0]!;
+	if (first.kind !== "changeset") throw new Error("Expected a changeset task.");
+	const sibling = structuredClone(first);
+	sibling.taskId = "unit-two";
+	state.tasks.push(sibling);
+	const harness = createHarness({ responseState: state });
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	harness.handlers.get("session_start")!({}, ctx);
+	const text = (await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" }, undefined, ctx)).content[0]!.text;
+	assert.match(text, /Task unit-one, Task unit-two: failed preliminary review verdict:/);
+	assert.equal(text.split("NEEDS_WORK").length - 1, 1, "the shared verdict is shown once");
+});
+
 test("aborted request keeps mixed task evidence distinct in status and widget", async () => {
 	const state = structuredClone(PRIVATE_STATE);
 	state.status = "aborted";

@@ -94,8 +94,11 @@ async function classify(snap: Snapshot, branch: string, mainCwd: string, ownersh
 	panes: Awaited<ReturnType<PruneGuards["panes"]>> | string, run: GitRunner, root: string): Promise<PruneItem> {
 	const tip = snap.branches.get(branch)!;
 	const name = basename(branch);
-	const checkout = snap.checkouts.find((item) => item.branch === branch);
+	const ownedPath = join(snap.primary, WORKTREES_DIRNAME, name);
+	// A detached or switched owned checkout no longer names the branch; find it by its owned path too.
+	const checkout = snap.checkouts.find((item) => item.branch === branch) ?? snap.checkouts.find((item) => item.path === ownedPath);
 	const blockers: string[] = [];
+	if (checkout && checkout.branch !== branch) blockers.push(`owned checkout is ${checkout.branch ? `on branch ${checkout.branch}` : "detached"}; inspect it manually`);
 	let ignored: string[] = [];
 	const owner = ownership.owner(name);
 	if (owner) blockers.push(owner);
@@ -109,7 +112,7 @@ async function classify(snap: Snapshot, branch: string, mainCwd: string, ownersh
 	if (!merged) blockers.push(`branch has commits not in ${snap.targets.map(({ label }) => label).join(" or ")}`);
 	if (checkout) {
 		const path = checkout.path;
-		if (path !== join(snap.primary, WORKTREES_DIRNAME, name)) blockers.push("checkout is not at its owned .worktrees path");
+		if (path !== ownedPath) blockers.push("checkout is not at its owned .worktrees path");
 		if (checkout.locked) blockers.push("checkout is locked");
 		if (checkout.missing || !existsSync(path)) blockers.push("checkout directory is missing; inspect it, then run git worktree prune");
 		else {

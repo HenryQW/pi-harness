@@ -858,6 +858,23 @@ test("prune blocks initialized submodules and stops when the session changes", a
 	assert.notEqual(git(repo, "branch", "--list", plain.branch), "");
 });
 
+test("prune blocks an owned checkout that is detached or on another branch", async (t) => {
+	const repo = await realpath(await initializedRepository(t));
+	const detached = (await createChildWorktree(repo, "detached"))!;
+	git(detached.path, "checkout", "-q", "--detach");
+	const switched = (await createChildWorktree(repo, "switched"))!;
+	git(switched.path, "switch", "-q", "-c", "elsewhere");
+	const items = await inspectPruneCandidates(repo, repo, pruneGuards());
+	const reason = (branch: string) => items.find((item) => item.branch === branch)!;
+	assert.deepEqual([reason(detached.branch).prunable, reason(detached.branch).path], [false, detached.path]);
+	assert.match(reason(detached.branch).reason, /owned checkout is detached; inspect it manually/);
+	assert.match(reason(switched.branch).reason, /owned checkout is on branch elsewhere; inspect it manually/);
+	const { removals } = await removePruneCandidates(repo, repo, items, false, pruneGuards());
+	assert.ok(removals.every(({ outcome }) => outcome === "skipped"));
+	assert.notEqual(git(repo, "branch", "--list", detached.branch), "");
+	assert.equal(existsSync(detached.path), true);
+});
+
 test("prune skips a branch whose ref moved after review", async (t) => {
 	const repo = await realpath(await initializedRepository(t));
 	const worktree = (await createChildWorktree(repo, "moved"))!;

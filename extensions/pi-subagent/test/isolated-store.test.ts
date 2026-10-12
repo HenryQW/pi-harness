@@ -206,6 +206,13 @@ test("prune ownership treats non-terminal and unreadable states as owners and re
 		ownership = await runner.pruneOwnership([root]);
 		assert.equal(ownership.owner(name), `unreadable state broken in ${root} may own it`);
 		assert.equal(ownership.owner(other), undefined);
+		await rm(store.statePath(root, "broken"));
+		// A non-regular entry is unreadable state: it may own any name, never nothing.
+		await mkdir(store.statePath(root, "folder"));
+		assert.deepEqual((await store.list(root)).invalidIds, ["folder"]);
+		ownership = await runner.pruneOwnership([root]);
+		assert.equal(ownership.owner(other), `unreadable state folder in ${root} may own it`);
+		await rm(store.statePath(root, "folder"), { recursive: true });
 		await store.withProductiveRunLease(root, async () => {
 			assert.equal((await runner.pruneOwnership([root])).lease, `productive lease is held by a live run in ${root}`);
 		});

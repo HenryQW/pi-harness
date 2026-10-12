@@ -357,7 +357,7 @@ test("prune removes listed prunable items after one confirmation; ignored conten
 	keepIgnored.confirms.push(true, false);
 	await keepIgnored.run("prune");
 	assert.deepEqual(keepIgnored.dialogs.map(({ title }) => title), ["Prune subagent worktrees", "Delete ignored content"]);
-	assert.match(keepIgnored.dialogs[1]!.options![0]!, /permanently deletes[\s\S]*\/git\/\.worktrees\/subagent-b: 2 \(node_modules\/, dist\/\)/);
+	assert.match(keepIgnored.dialogs[1]!.options![0]!, /permanently deletes[\s\S]*\/git\/\.worktrees\/subagent-b: node_modules\/, dist\/$/);
 	assert.deepEqual(keepIgnored.pruned, [{ branches: ["pi-subagent/subagent-a"], allowIgnored: false }]);
 
 	const all = harness({ prune: prunePlan });
@@ -365,6 +365,24 @@ test("prune removes listed prunable items after one confirmation; ignored conten
 	await all.run("prune");
 	assert.deepEqual(all.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
 	assert.ok(all.notices.some(({ message }) => message === "Pi Subagent prune in /git: removed"));
+});
+
+test("prune approval names every ignored entry and leaves out a checkout whose list does not fit", async () => {
+	const many = Array.from({ length: 8 }, (_, index) => `generated-${index}/`);
+	const plan: PrunePlan = { root: "/git", items: [
+		{ branch: "pi-subagent/subagent-many", tip: "e".repeat(40), path: "/git/.worktrees/subagent-many", prunable: true, reason: "merged into Main HEAD; clean checkout", ignored: many },
+		{ branch: "pi-subagent/subagent-huge", tip: "f".repeat(40), path: "/git/.worktrees/subagent-huge", prunable: true, reason: "merged into Main HEAD; clean checkout",
+			ignored: Array.from({ length: 400 }, (_, index) => `huge-${index}/`) },
+	] };
+	const h = harness({ prune: plan });
+	h.confirms.push(true, true);
+	await h.run("prune");
+	const dialog = h.dialogs[1]!.options![0]!;
+	assert.ok(many.every((entry) => dialog.includes(entry)), "every ignored entry is named");
+	assert.doesNotMatch(dialog, /\+\d+ more\)/);
+	assert.equal(dialog.includes("huge-399/"), false);
+	assert.match(dialog, /\+1 more not shown; they are not removed/);
+	assert.deepEqual(h.pruned, [{ branches: ["pi-subagent/subagent-many"], allowIgnored: true }]);
 });
 
 test("prune removes only items its dialogs showed, never items cut from a long list", async () => {

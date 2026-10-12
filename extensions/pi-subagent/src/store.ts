@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { mkdir, open, readdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { check, lock } from "proper-lockfile";
@@ -308,8 +308,10 @@ export class FileRunStore {
 		const entries = await this.stateEntries(root);
 		const states: RunStateHandle[] = [];
 		const invalidIds: string[] = [];
-		for (const entry of entries.filter((item) => item.isFile())) {
+		for (const entry of entries) {
 			const id = entry.name.slice(0, -5);
+			// A symlink, directory, or other non-regular entry is unreadable state, never absent state.
+			if (!entry.isFile()) { invalidIds.push(id); continue; }
 			try {
 				states.push(await this.load(root, id));
 			} catch {
@@ -321,7 +323,9 @@ export class FileRunStore {
 
 	/** Raw text of a state file, for evidence when it does not parse. */
 	async readRaw(root: string, id: string): Promise<string> {
-		return await readTextFileBounded(this.statePath(root, id), STATE_MAX_BYTES);
+		const path = this.statePath(root, id);
+		if (!(await lstat(path)).isFile()) throw new Error(`State entry ${id} is not a regular file.`);
+		return await readTextFileBounded(path, STATE_MAX_BYTES);
 	}
 
 	private handle(state: RunState, path: string): RunStateHandle {
