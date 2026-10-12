@@ -133,7 +133,7 @@ Package-owned: `<agent-dir>/config/pi-pr/config.json`
 | `maxPublicationCycles` | Confirmed PR-head pushes per `/pr` invocation. | Integer ≥ 1 | `3` |
 | `maxRepairAttempts` | Failed or unknown check sets per `/pr` invocation. | Integer ≥ 1 | `3` |
 | `ciPollSeconds` | Interval between GitHub re-reads while CI runs. | Integer `1`–`2147483` | `30` |
-| `ciWaitMinutes` | Total CI wait per `/pr` invocation, shared across all waits. | Integer ≥ 0; `0` disables waiting | `10` |
+| `ciWaitMinutes` | Total CI wait per `/pr` invocation, including waits after a later fix or sweep pushes. | Integer ≥ 0; `0` disables waiting | `10` |
 | `checkTimeoutMinutes` | Time limit for each selected validation check. Git and GitHub CLI helper commands keep shorter limits. | Integer `1`–`35791` | `10` |
 | `mergeMethod` | Method for the direct merge. GitHub may still reject a method the repository disallows. | `squash`, `merge`, or `rebase` | `squash` |
 
