@@ -5,8 +5,8 @@ The package owns the footer and open commands as independently selectable Pi res
 ## Language
 
 **Footer identity**:
-Concise repository and branch label identifying current checkout. Actionable local Git state follows the branch in brackets and stays hidden when clean and synchronized. It shows active operations, conflicts, staged, unstaged, and untracked path counts, upstream divergence, and detached HEAD. A non-empty `pi-pr` pull-request status follows checkout identity; CodeGraph appears separately on the third line. Generated `worktree/` branch prefix is display noise. When the open command executable is `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI. The `-n` and `--new-window` flags make that link open a new window; otherwise unsupported executables render as plain text.
-_Avoid_: Working-directory path, worktree path, clean badge, remote fetch
+Concise repository and branch label identifying current checkout. Actionable local Git state follows the branch in brackets and stays hidden when clean and synchronized. It shows active operations, conflicts, staged, unstaged, and untracked path counts, upstream divergence, and detached HEAD. A non-empty `pi-pr` pull-request status follows footer identity; CodeGraph appears separately on the third line. Generated `worktree/` branch prefix is display noise. When the open command executable is `code`, including a missing config that silently defaults to `code`, and Pi reports hyperlink support, identity links to current path through a safe VS Code URI. The `-n` and `--new-window` flags make that link open a new window; otherwise unsupported executables render as plain text.
+_Avoid_: Checkout identity, working-directory path, worktree path, clean badge, remote fetch
 
 **Usage line**:
 Cumulative session input, output, and estimated cost, including reported tool usage and finished `pi-subagent` background workflows, plus latest cache-hit rate and current context usage. Right-aligned active model and thinking level follow. `off` matches dim model text, active levels follow a distinct green-to-red gradient ending with red `max`, and `ultra` is rainbow when runtime supports it.
@@ -17,7 +17,7 @@ Cumulative duration Pi spends processing agent runs, counted from `agent_start` 
 _Avoid_: Session age, response duration, session time
 
 **Family status**:
-Right side of the first footer line, reserved only for the non-empty `pi-multi-codex` quota status. `pi-pr` remains beside checkout identity, and CodeGraph is shown separately on the third line.
+Right side of the first footer line, reserved only for the non-empty `pi-multi-codex` quota status. `pi-pr` remains beside footer identity, and CodeGraph is shown separately on the third line.
 _Avoid_: External extension status, plugin summary, rewritten status
 
 **External status line**:

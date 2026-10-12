@@ -91,4 +91,4 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 - Durable state: `<agent-dir>/config/pi-subagent/state/<repository-hash>/`
 - Shared model routes: `<agent-dir>/config/pi-task-models/config.json`
 
-State version 4 is strict. Older or malformed files are rejected rather than rewritten or migrated silently.
+State version 5 is strict. Older or malformed files are rejected rather than rewritten or migrated silently.

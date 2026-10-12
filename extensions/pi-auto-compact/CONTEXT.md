@@ -8,6 +8,10 @@ Pi Auto Compact protects ongoing Pi work from context-window pressure. It compac
 Proactive compaction of a Pi session before context pressure interrupts active work.
 _Avoid_: Automatic summarization, context reset
 
+**Read trim**:
+Context edit before summary compaction that replaces an older `read` result when an identical later full read remains in recent context. When it frees enough context, no summary runs.
+_Avoid_: Pruning, summarization, trim step
+
 **Task resumption**:
 Continuation of the current task after auto-compaction, without asking the user to repeat the request.
 _Avoid_: Retry, restart, new task

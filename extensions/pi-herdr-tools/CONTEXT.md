@@ -32,6 +32,10 @@ _Avoid_: parent agent
 Separate Pi process and Herdr pane opened for a bounded question, sharing Main's working directory.
 _Avoid_: child agent
 
+**Side pane**:
+Herdr pane that hosts a side thread.
+_Avoid_: child pane, BTW tab
+
 **Side-thread transcript**:
 User/assistant text turns returned to Main, excluding tool payloads.
 _Avoid_: full child context
@@ -51,6 +55,10 @@ _Avoid_: display title, arbitrary Git mutation
 **Generated worktree label**:
 Herdr's default linked-worktree name, eligible for automatic replacement by the display title. A custom workspace name changes only on explicit rename.
 _Avoid_: semantic branch, custom workspace name
+
+**Custom workspace name**:
+Workspace name that a user chose. It changes only on explicit rename.
+_Avoid_: generated worktree label
 
 **Sole-pane tab**:
 Tab containing the current pane and no siblings, whose label can represent the current conversation without misrepresenting another pane.

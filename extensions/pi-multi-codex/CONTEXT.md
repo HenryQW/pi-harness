@@ -4,10 +4,10 @@
 
 **Codex account**:
 ChatGPT identity authenticated through Codex OAuth and returning seven-day usage data. Free accounts qualify; API-key identities do not.
-_Avoid_: API account, provider
+_Avoid_: API account; provider as a name for the account
 
 **Account slot**:
-Position through which Pi authenticates one Codex account. Base slot is native Codex position; additional slots are numbered.
+Position through which Pi authenticates one Codex account. Base slot is native Codex position; additional slots are numbered. Each additional slot appears in Pi as its own `OpenAI Codex #<n>` provider.
 _Avoid_: Account, pool member
 
 **Remaining quota**:
