@@ -1247,6 +1247,50 @@ test("resume permits retry only after proving a lost thread mutation was not app
 	assert.equal(app.world.mutationCalls, 2);
 });
 
+test("resolve and its recovery apply refresh rules to status edits", async (t) => {
+	for (const scenario of ["before", "human", "during", "lost", "unapplied"] as const) {
+		await t.test(scenario, async (t) => {
+			const app = fixture();
+			t.after(app.cleanup);
+			const exec: Exec = async (command, args, options) => {
+				if (options.stdin?.includes("resolveReviewThread")) app.world.body = "Deploy: successful";
+				const response = await app.exec(command, args, options);
+				if (command !== "gh" || !options.stdin?.includes("query Feedback(")) return response;
+				const value = JSON.parse(response.stdout);
+				value.data.repository.pullRequest.comments.nodes[0].author.__typename = scenario === "human" ? "User" : "Bot";
+				return result(JSON.stringify(value));
+			};
+			const workflow = app.workflow(undefined, { exec });
+			const started = await workflow.start();
+			const decisions = ledger(started).map((entry) => entry.id === "conversation-1"
+				? { ...entry, disposition: "non-actionable" as const, note: "Status report only" } : entry);
+			const published = await publishRecorded(workflow, await workflow.record(started.guard, decisions, []));
+			if (scenario !== "human") app.world.body = "Deploy: in progress";
+			let guard = (await workflow.refresh(published.guard)).guard;
+			if (scenario === "before" || scenario === "human") app.world.body = "Deploy: successful";
+			if (scenario === "human") {
+				await assert.rejects(workflow.resolve(guard), /Feedback changed before thread resolution; call refresh/);
+				assert.equal(app.world.replyCalls + app.world.mutationCalls, 0);
+				guard = (await workflow.refresh(guard)).guard;
+			}
+			app.world.loseMutationResponse = scenario === "lost" || scenario === "unapplied";
+			app.world.applyMutation = scenario !== "unapplied";
+			if (app.world.loseMutationResponse) {
+				await assert.rejects(workflow.resolve(guard), /mutation response lost/);
+				const resumed = await workflow.resume();
+				assert.deepEqual(resumed.attempts.resolutions.map(({ step }) => step), scenario === "lost" ? ["reply", "resolve"] : ["reply"]);
+				app.world.loseMutationResponse = false;
+				app.world.applyMutation = true;
+				guard = resumed.guard;
+			}
+			const resolved = await workflow.resolve(guard);
+			assert.equal(resolved.phase, "resolved");
+			assert.equal(app.world.mutationCalls, scenario === "unapplied" ? 2 : 1);
+			await workflow.finalize(resolved.guard, []);
+		});
+	}
+});
+
 test("non-actionable threads receive the approved reason before resolution", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
