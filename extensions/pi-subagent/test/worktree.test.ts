@@ -838,6 +838,26 @@ test("prune deletes ignored content only after approval", async (t) => {
 	assert.equal(existsSync(worktree.path), false);
 });
 
+test("prune blocks initialized submodules and stops when the session changes", async (t) => {
+	const source = await initializedRepository(t);
+	const repo = await realpath(await initializedRepository(t));
+	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
+	git(repo, "commit", "-qm", "add submodule");
+	const withModule = (await createChildWorktree(repo, "with-module"))!;
+	git(withModule.path, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q");
+	const plain = (await createChildWorktree(repo, "plain"))!;
+	const items = await inspectPruneCandidates(repo, repo, pruneGuards());
+	const module = items.find((item) => item.branch === withModule.branch)!;
+	assert.equal(module.prunable, false);
+	assert.match(module.reason, /initialized submodules; Git cannot remove it without force/);
+	const item = items.find((entry) => entry.branch === plain.branch)!;
+	assert.equal(item.prunable, true);
+	const { removals } = await removePruneCandidates(repo, repo, [item], false, { ...pruneGuards(), current: () => false });
+	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "session or branch changed before removal; reopen /subagent prune"]]);
+	assert.equal(existsSync(plain.path), true);
+	assert.notEqual(git(repo, "branch", "--list", plain.branch), "");
+});
+
 test("prune skips a branch whose ref moved after review", async (t) => {
 	const repo = await realpath(await initializedRepository(t));
 	const worktree = (await createChildWorktree(repo, "moved"))!;

@@ -32,6 +32,8 @@ export interface PruneGuards {
 	ownership(checkouts: readonly string[]): Promise<PruneOwnership>;
 	/** Every Herdr pane; rejects when Herdr cannot be inspected. */
 	panes(): Promise<readonly { paneId: string; cwds: readonly string[] }[]>;
+	/** The confirming session still owns the command; checked immediately before each removal step. */
+	current?(): boolean;
 }
 
 export type PruneRemoval = { outcome: "removed" | "skipped" | "failed"; item: PruneItem; reason: string };
@@ -119,6 +121,7 @@ async function classify(snap: Snapshot, branch: string, mainCwd: string, ownersh
 			const dirty = await inspectWorktreeDirty(path, run, false);
 			if (dirty.failure) blockers.push(`checkout could not be inspected: ${dirty.failure}`);
 			else if (dirty.dirty) blockers.push("checkout has tracked or untracked changes");
+			else if (dirty.initializedSubmodules) blockers.push("checkout has initialized submodules; Git cannot remove it without force, so remove it manually");
 			if (typeof panes === "string") blockers.push(`Herdr unavailable (${panes}); cannot prove no pane uses the checkout`);
 			else {
 				const used = panes.filter((pane) => pane.cwds.some((cwd) => within(path, cwd) || within(real, cwd)));
@@ -162,12 +165,15 @@ async function removeOne(root: string, mainCwd: string, reviewed: PruneItem, all
 	if (!fresh.prunable) return skip(fresh.reason);
 	if (fresh.path !== reviewed.path) return skip("checkout registration changed since review");
 	if (fresh.ignored.some((entry) => !allowIgnored || !reviewed.ignored.includes(entry))) return skip("ignored content was not approved or changed since review");
+	const stale = () => guards.current !== undefined && !guards.current();
 	if (fresh.path) {
+		if (stale()) return skip("session or branch changed before removal; reopen /subagent prune");
 		// Git removes ignored content without --force; the checks above approved it.
 		const removed = await run(["worktree", "remove", fresh.path], root);
 		if (removed.code !== 0) return fail(`git worktree remove failed: ${removed.stderr.trim().slice(0, 200)}`);
 		if (existsSync(fresh.path)) return fail("git worktree remove succeeded but the checkout remains");
 	}
+	if (stale()) return skip(`${fresh.path ? "checkout removed; " : ""}session or branch changed before branch deletion; branch kept`);
 	const deleted = await run(["update-ref", "-d", `refs/heads/${reviewed.branch}`, reviewed.tip], root);
 	if (deleted.code !== 0) return fail(`${fresh.path ? "checkout removed; " : ""}branch kept: ${deleted.stderr.trim().slice(0, 200)}`);
 	return { outcome: "removed", item: reviewed, reason: fresh.reason };

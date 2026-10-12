@@ -350,14 +350,28 @@ function publicState(state: RunState, verdictMaxBytes: number, preferredTaskId?:
 	};
 }
 
-/** Model-visible failed review verdicts; Pi shows the model `content`, not `structuredContent`. */
-function failedReviewText(state: ReturnType<typeof publicState>): string {
-	const attention = state.needsAttention && "failedReview" in state.needsAttention ? state.needsAttention.failedReview : undefined;
+/** Model-visible failed review verdicts from every task, the final gate, and each generation, within one shared budget.
+ * Pi shows the model `content`, not `structuredContent`; task reviews appear even while sibling tasks still run. */
+function failedReviewText(state: RunState): string {
 	const reviews = [
-		...(attention ? [{ label: "Needs attention", review: attention }] : []),
-		...state.integration.generations.flatMap(({ number, failedReview }) => failedReview ? [{ label: `Integration generation ${number}`, review: failedReview }] : []),
+		...state.tasks.flatMap((task) => {
+			const review = task.kind === "changeset" ? task.attempts.at(-1)?.preliminaryReview : undefined;
+			return review && !review.passed ? [{ label: `Task ${task.taskId}`, review }] : [];
+		}),
+		...(state.final.review && !state.final.review.passed ? [{ label: "Final", review: state.final.review }] : []),
+		...state.integration.generations.flatMap(({ number, review }) => review && !review.passed ? [{ label: `Integration generation ${number}`, review }] : []),
 	].filter(({ review }, index, all) => all.findIndex((other) => other.review.verdict === review.verdict) === index);
-	return reviews.map(({ label, review }) => `\n\n${label}: failed ${review.phase} review verdict${review.verdictTruncated ? " (truncated)" : ""}:\n${workerOutputForMain(review.verdict)}`).join("");
+	let budget = PUBLIC_REVIEW_VERDICT_MAX_BYTES;
+	let omitted = 0;
+	const parts: string[] = [];
+	for (const { label, review } of reviews) {
+		if (budget <= 0) { omitted++; continue; }
+		const verdict = boundedPublicText(review.verdict, budget);
+		budget -= Buffer.byteLength(verdict, "utf8");
+		parts.push(`\n\n${label}: failed ${review.phase} review verdict${verdict !== review.verdict ? " (truncated)" : ""}:\n${workerOutputForMain(verdict)}`);
+	}
+	if (omitted) parts.push(`\n\n${omitted} more failed review verdict(s) omitted from this text; structuredContent lists each one.`);
+	return parts.join("");
 }
 
 function hasTruncatedVerdict(state: ReturnType<typeof publicState>): boolean {
@@ -674,8 +688,9 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			latestCtx = ctx;
 			const root = await lookupRoot(ctx.cwd, signal);
-			const result = toolResult(await getComponents().runner.status(params.id, root, signal), ctx, workspaceRowsByRequest);
-			const content = [{ type: "text" as const, text: `${result.content[0]!.text}${failedReviewText(result.details.state)}` }];
+			const response = await getComponents().runner.status(params.id, root, signal);
+			const result = toolResult(response, ctx, workspaceRowsByRequest);
+			const content = [{ type: "text" as const, text: `${result.content[0]!.text}${failedReviewText(response.state)}` }];
 			// The projection is plain JSON; its conditional fields are typed optional rather than absent.
 			return { ...result, content, structuredContent: result.details as JsonValue };
 		},
@@ -804,7 +819,8 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		async prune(cwd, items, allowIgnored, current) {
 			requireCurrent(current);
 			const root = await lookupRoot(cwd);
-			const { removals, checkouts } = await removePruneCandidates(root, cwd, items, allowIgnored, pruneGuards(root));
+			const { removals, checkouts } = await removePruneCandidates(root, cwd, items, allowIgnored,
+				{ ...pruneGuards(root), current: () => current() && !sessionClosed });
 			const removed = removals.filter(({ outcome }) => outcome === "removed");
 			const reconciled = removed.length
 				? await getComponents().runner.reconcilePrunedAborts(checkouts, removed.map(({ item }) => basename(item.branch))) : [];
