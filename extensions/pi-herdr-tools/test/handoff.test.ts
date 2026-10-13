@@ -108,6 +108,20 @@ test("herdr_handoff creates nothing when a precondition fails or the call is can
 	}
 });
 
+test("herdr_handoff names the retained worktree when launch preparation fails", async () => {
+	await withPane("pane-linked", async () => {
+		const app = harness((command, args) => args[0] === "tab" && args[1] === "create"
+			? { stdout: "", stderr: "tab create failed", code: 1, killed: false }
+			: linkedWorktree(command, args, "pi"));
+		await assert.rejects(app.run(), (error: Error) => {
+			for (const pattern of [/workspace-new/, /tab-new/, /pane-root/, /fix\/login/, /\/repos\/fix-login/, /tab create failed/]) {
+				assert.match(error.message, pattern);
+			}
+			return true;
+		});
+	});
+});
+
 test("herdr_handoff names every retained resource when prompt delivery fails", async () => {
 	await withPane("pane-linked", async () => {
 		const app = harness((command, args) => args[0] === "agent" && args[1] === "prompt"

@@ -231,7 +231,7 @@ The Pi session stores each generated display title and semantic branch in a `pi-
 | No local `main`, an existing branch, a different repository, missing Herdr environment, or failed worktree creation | Nothing. The tool stops before it creates a worktree. |
 | Tool call cancelled | Before worktree creation, nothing remains. After it, the tool does not start the agent or submit the prompt, and the error names the resources that remain. |
 | Killed or incomplete worktree creation | Herdr can keep partial workspace state. The error reports all returned IDs and tells you to examine `herdr workspace list`. |
-| Agent start or prompt delivery failed | The worktree, branch, workspace, tab, and pane remain. The error names each of them and the agent. The tool does no cleanup. Examine the workspace, then send the prompt again with `herdr agent prompt` or run `/done` in the new worktree. |
+| Agent start or prompt delivery failed | The worktree, branch, workspace, tab, and pane remain. The error names each of them and the agent. The tool does no cleanup. A stalled or timed-out prompt can still be delivered. Before you send it again, examine the agent with `herdr agent get` and `herdr agent read`. Send the prompt again with `herdr agent prompt` only when the agent did not get it. Or run `/done` in the new worktree. |
 | Agent was already blocked, or did not start to work | Herdr reports `agent_blocked` or `agent_prompt_stalled`. The tool reports this as a prompt delivery failure. |
 
 If you also keep a personal prompt template with the name `handoff-worktree.md`, Pi loads only one of the two and reports a name collision. Remove the personal copy to use the package prompt.

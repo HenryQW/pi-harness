@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="workflow-overview-title workflow-overview-desc" id="workflow-overview-root">
-      <title id="workflow-overview-title">Herdr tools: one extension, four workflows</title>
-      <desc id="workflow-overview-desc">One Pi extension registers clone, side-question, title, and completion handlers that share the Herdr CLI library, with task-model routing used only for side questions and titles.</desc>
+      <title id="workflow-overview-title">Herdr tools: one extension, five workflows</title>
+      <desc id="workflow-overview-desc">One Pi extension registers clone, handoff, side-question, title, and completion handlers that share the Herdr CLI library, with task-model routing used only for side questions and titles.</desc>
       <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
       #workflow-overview-root { color: #101828; }
@@ -31,15 +31,16 @@
         <marker id="workflow-overview-arrow-accent" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0 0 L8 3 L0 6 Z" fill="#1d4ed8"/></marker>
       </defs>
       <rect width="1280" height="720" fill="#f0eee9"/>
-      <text class="title" x="40" y="56">One extension, four workflows</text>
+      <text class="title" x="40" y="56">One extension, five workflows</text>
       <text class="technical" x="1240" y="56" text-anchor="end">@henryqw/pi-herdr-tools</text>
       <rect x="552" y="76" width="288" height="540" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity=".12"/>
       <text class="tag" x="568" y="92">INTERNAL HANDLERS</text>
       <path class="primary" d="M208 336 H248"/>
-      <path class="edge" d="M464 288 H488 Q496 288 496 280 V168 Q496 160 504 160 H568"/>
-      <path class="edge" d="M464 320 H500 Q508 320 508 312 V296 Q508 288 516 288 H568"/>
-      <path class="edge" d="M464 352 H524 Q532 352 532 360 V408 Q532 416 540 416 H568"/>
-      <path class="edge" d="M464 384 H512 Q520 384 520 392 V536 Q520 544 528 544 H568"/>
+      <path class="edge" d="M464 272 H488 Q496 272 496 264 V156 Q496 148 504 148 H568"/>
+      <path class="edge" d="M464 304 H500 Q508 304 508 296 V260 Q508 252 516 252 H568"/>
+      <path class="edge" d="M464 336 H512 Q520 336 520 344 V348 Q520 356 528 356 H568"/>
+      <path class="edge" d="M464 368 H536 Q544 368 544 376 V452 Q544 460 552 460 H568"/>
+      <path class="edge" d="M464 400 H524 Q532 400 532 408 V556 Q532 564 540 564 H568"/>
       <path class="edge" d="M840 256 H1040"/>
       <path class="edge" d="M840 436 H1040"/>
       <rect x="896" y="232" width="88" height="14" rx="2" fill="#f0eee9"/>
@@ -57,38 +58,44 @@
         <text class="tag" x="264" y="280">ONE LOADED EXTENSION</text>
         <text class="name" x="264" y="316">Herdr tools</text>
         <text class="technical" x="264" y="340">extensions/index.ts</text>
-        <text class="body" x="264" y="372">Registers all four handlers.</text>
+        <text class="body" x="264" y="372">Registers all five handlers.</text>
         <text class="body" x="264" y="392">Not separate resources.</text>
       </g>
       <g>
-        <rect class="node" x="568" y="112" width="240" height="96" rx="6"/>
-        <text class="technical" x="584" y="136">internal/clone-tab.ts</text>
-        <text class="name" x="584" y="160">Clone conversations</text>
-        <text class="technical" x="584" y="184">/clone-tab · /clone-worktree</text>
+        <rect class="node" x="568" y="104" width="240" height="88" rx="6"/>
+        <text class="technical" x="584" y="128">internal/clone-tab.ts</text>
+        <text class="name" x="584" y="152">Clone conversations</text>
+        <text class="technical" x="584" y="176">/clone-tab · /clone-worktree</text>
       </g>
       <g>
-        <rect class="node" x="568" y="240" width="240" height="96" rx="6"/>
-        <text class="technical" x="584" y="264">internal/btw.ts</text>
-        <text class="name" x="584" y="288">Ask and merge side questions</text>
-        <text class="technical" x="584" y="312">/btw · /btw merge</text>
+        <rect class="node" x="568" y="208" width="240" height="88" rx="6"/>
+        <text class="technical" x="584" y="232">internal/handoff.ts</text>
+        <text class="name" x="584" y="256">Hand off issues</text>
+        <text class="technical" x="584" y="280">/handoff-worktree · herdr_handoff</text>
       </g>
       <g>
-        <rect class="node" x="568" y="368" width="240" height="96" rx="6"/>
-        <text class="technical" x="584" y="392">internal/rename.ts</text>
-        <text class="name" x="584" y="416">Name conversations</text>
-        <text class="technical" x="584" y="440">/rename · automatic titles</text>
+        <rect class="node" x="568" y="312" width="240" height="88" rx="6"/>
+        <text class="technical" x="584" y="336">internal/btw.ts</text>
+        <text class="name" x="584" y="360">Ask and merge side questions</text>
+        <text class="technical" x="584" y="384">/btw · /btw merge</text>
       </g>
       <g>
-        <rect class="node" x="568" y="496" width="240" height="96" rx="6"/>
-        <text class="technical" x="584" y="520">internal/done.ts</text>
-        <text class="name" x="584" y="544">Finish worktrees</text>
-        <text class="technical" x="584" y="568">/done [--force]</text>
+        <rect class="node" x="568" y="416" width="240" height="88" rx="6"/>
+        <text class="technical" x="584" y="440">internal/rename.ts</text>
+        <text class="name" x="584" y="464">Name conversations</text>
+        <text class="technical" x="584" y="488">/rename · automatic titles</text>
+      </g>
+      <g>
+        <rect class="node" x="568" y="520" width="240" height="88" rx="6"/>
+        <text class="technical" x="584" y="544">internal/done.ts</text>
+        <text class="name" x="584" y="568">Finish worktrees</text>
+        <text class="technical" x="584" y="592">/done [--force]</text>
       </g>
       <g>
         <rect class="node" x="1040" y="208" width="200" height="96" rx="6"/>
         <text class="technical" x="1056" y="232">@henryqw/pi-herdr</text>
         <text class="name" x="1056" y="256">Shared Herdr CLI library</text>
-        <text class="body" x="1056" y="280">Used by all four handlers.</text>
+        <text class="body" x="1056" y="280">Used by all five handlers.</text>
       </g>
       <g>
         <rect class="node" x="1040" y="388" width="200" height="96" rx="6"/>

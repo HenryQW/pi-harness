@@ -3,6 +3,7 @@ import { createHerdrClient, herdrCommandFailure } from "@henryqw/pi-herdr";
 import { Type } from "typebox";
 import {
 	createWorktree,
+	errorMessage,
 	launchPiAgent,
 	prepareWorktreeLaunch,
 	requiredString,
@@ -72,7 +73,12 @@ export default function herdrHandoffExtension(pi: ExtensionAPI): void {
 				"--branch", branch, "--base", "main", "--label", label, "--no-focus",
 			], "Handoff");
 			const { workspaceId, checkoutPath } = worktree;
-			const { target, onPaneBusy } = await prepareWorktreeLaunch(herdr, ctx.cwd, worktree);
+			const { target, onPaneBusy } = await prepareWorktreeLaunch(herdr, ctx.cwd, worktree).catch((error: unknown) => {
+				throw new Error(
+					`Handoff launch preparation failed; retained Herdr workspace ${workspaceId}, tab ${worktree.tabId}, root pane ${worktree.rootPaneId}, branch ${branch}, checkout ${checkoutPath}: ${errorMessage(error)}`,
+					{ cause: error },
+				);
+			});
 			const retained = () =>
 				`Herdr workspace ${workspaceId}, tab ${target.tabId}, pane ${target.paneId}, branch ${branch}, checkout ${checkoutPath}`;
 			if (signal?.aborted) throw new Error(`Handoff was cancelled before agent start; retained ${retained()}.`);
