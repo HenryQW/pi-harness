@@ -1,6 +1,6 @@
 # `@henryqw/pi-herdr-tools`
 
-Clone a conversation into a Herdr tab or worktree. Ask a side question and merge its answer back into Main. Give the conversation a name, and finish the worktree safely. One package and one extension entry point supply `/clone-tab`, `/clone-worktree`, `/btw`, `/rename`, and `/done`. Herdr also shows the pane as blocked while a Pi dialog waits for your answer.
+Clone a conversation into a Herdr tab or worktree. Hand off a separate issue to a new agent in a new worktree. Ask a side question and merge its answer back into Main. Give the conversation a name, and finish the worktree safely. One package and one extension entry point supply `/clone-tab`, `/clone-worktree`, `/handoff-worktree`, `herdr_handoff`, `/btw`, `/rename`, and `/done`. Herdr also shows the pane as blocked while a Pi dialog waits for your answer.
 
 ![Architecture overview showing one Pi extension entry point registering four internal handlers, with shared Herdr CLI and task-model routing dependencies.](./docs/workflow-overview.svg)
 
@@ -43,10 +43,14 @@ The shared [`@henryqw/pi-herdr`](https://pi.henry.wang/packages/pi-herdr) CLI li
 
 Run `/clone-tab` to open a clone tab with an active-path clone. The original session stays open.
 
+Commands and prompts are for humans. Tools are for agents.
+
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/clone-tab` | command | Clone the current conversation into a new tab of the current Herdr workspace. |
 | `/clone-worktree` | command | Clone the current conversation into a new Herdr Git worktree workspace. |
+| `/handoff-worktree <issue>` | prompt | For humans: tell the agent to write a self-contained task prompt for the issue and send it with `herdr_handoff`. |
+| `herdr_handoff` | tool | For agents inside Herdr: create a worktree from local `main`, start Pi in it, and submit a task prompt. Focus does not change. |
 | `/done [-f]` | command | Remove the current worktree and close its Herdr workspace tabs. `-f` (alias `--force`) skips confirmation. It permits forced removal and does not look for tabs in other workspaces. |
 | `/btw [<question...>]` | command | For humans in Main: open an empty side pane, or start with an editable question draft. |
 | `/btw ask <question...>` | command | For humans in Main: ask a question whose first word is `ask`, `config`, `merge`, or `help`. |
@@ -65,6 +69,19 @@ Run `/clone-tab` to open a clone tab with an active-path clone. The original ses
 The active path goes from the session root to its current leaf at the time that you start the command. It does not include sibling branches or assistant output that Pi still streams. Both clone commands require a Pi session in a Herdr pane (`HERDR_ENV=1` and `HERDR_PANE_ID`). Before they create a target, they validate the pane, session path, and current leaf. If Pi has not written the session file yet, the commands clone the live session state. The commands have no configuration, and Pi stays in the original session.
 
 Commit or discard changes in a Herdr-managed linked worktree. Then run `/done` and confirm. Normal removal does not remove dirty worktrees or worktrees that another Herdr workspace uses. **`/done -f` can irreversibly delete uncommitted work and leave other workspaces' tabs pointing at the removed checkout.**
+
+### Hand off an issue
+
+In a Herdr-managed Pi pane, run `/handoff-worktree Fix the flaky login test`. The agent collects the missing facts and writes one self-contained task prompt. It asks one question only when the repository, expected outcome, or a critical constraint is not clear. Then it calls `herdr_handoff` and reports the workspace, branch, checkout path, and agent name. It does not wait for the new agent to finish. A worktree handoff does not copy the current conversation.
+
+`herdr_handoff` requires `HERDR_ENV=1`, `HERDR_PANE_ID`, and a local `main` branch. Pi registers the tool only when `HERDR_ENV=1`. It takes these parameters, and each must be a non-empty string:
+
+| Parameter | Purpose |
+| --- | --- |
+| `branch` | New Git branch. Herdr creates it from local `main`. |
+| `label` | Herdr workspace label. |
+| `agentName` | Unique Herdr agent name for the new Pi agent. |
+| `prompt` | Self-contained task prompt. |
 
 ### Ask and merge side questions
 
@@ -107,6 +124,15 @@ Nested dialogs count as one block. `ask_question` from `@henryqw/pi-ask-question
 4. Copy the active path into an active-path clone. Its working directory is the new checkout path.
 5. Start Pi in the chosen pane with `--session <absolute-clone-file>`.
 6. Focus the tab of the clone after Pi starts successfully.
+
+#### Hand off to a worktree
+
+1. Make sure that the repository has a local `main` branch. If not, stop before Herdr changes.
+2. Find the parent workspace of the repository, as `/clone-worktree` does.
+3. Run `herdr worktree create --workspace <parent> --branch <branch> --base main --label <label> --no-focus`.
+4. Select the root pane, or an additional tab when a worktree-layout plugin uses the root pane, as `/clone-worktree` does. Start Pi with the agent name and no session arguments.
+5. Submit the prompt with `herdr agent prompt <agentName> <prompt> --wait --until working --timeout 30000`. The prompt goes to Herdr as one argument, not through a shell or a file.
+6. Return the workspace ID, tab, pane, branch, checkout path, and agent name. Focus does not change.
 
 #### Finish a worktree
 
@@ -197,6 +223,17 @@ The Pi session stores each generated display title and semantic branch in a `pi-
 | Incomplete tab-creation response | The error reports known IDs. For `/clone-tab`, the extension keeps the clone session and reports its path. For `/clone-worktree`, the extension keeps the worktree, and no clone session exists yet. Examine the target before manual cleanup. |
 | Agent start attempted | The launch outcome can be unknown. Keep the target tab, panes, and session file. The error reports known IDs for recovery. |
 | Focus failed after Pi started | Show a warning, but do not report the clone that already started as failed. If necessary, focus the clone tab in Herdr. |
+
+### Worktree handoff
+
+| Outcome | What remains and how to recover |
+| --- | --- |
+| No local `main`, missing Herdr environment, or failed worktree creation | Nothing. The tool stops before it creates a worktree. |
+| Killed or incomplete worktree creation | Herdr can keep partial workspace state. The error reports all returned IDs and tells you to examine `herdr workspace list`. |
+| Agent start or prompt delivery failed | The worktree, branch, workspace, tab, and pane remain. The error names each of them and the agent. The tool does no cleanup. Examine the workspace, then send the prompt again with `herdr agent prompt` or run `/done` in the new worktree. |
+| Agent was already blocked, or did not start to work | Herdr reports `agent_blocked` or `agent_prompt_stalled`. The tool reports this as a prompt delivery failure. |
+
+If you also keep a personal prompt template with the name `handoff-worktree.md`, Pi loads only one of the two and reports a name collision. Remove the personal copy to use the package prompt.
 
 ### Worktree completion
 

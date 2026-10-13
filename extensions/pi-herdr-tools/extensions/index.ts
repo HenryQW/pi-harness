@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import registerBtwExtension from "../internal/btw.ts";
 import herdrCloneExtension from "../internal/clone-tab.ts";
 import herdrDoneExtension from "../internal/done.ts";
+import herdrHandoffExtension from "../internal/handoff.ts";
 import herdrRenameExtension from "../internal/rename.ts";
 
 export default async function herdrToolsExtension(pi: ExtensionAPI): Promise<void> {
@@ -9,6 +10,7 @@ export default async function herdrToolsExtension(pi: ExtensionAPI): Promise<voi
 	await registerBtwExtension(pi);
 	herdrCloneExtension(pi);
 	herdrDoneExtension(pi);
+	herdrHandoffExtension(pi);
 	registerDialogStatus(pi);
 }
 

@@ -1,6 +1,6 @@
 # Pi Herdr Tools
 
-Human-directed conversation workflows in Herdr: active-path clones, side questions, shared conversation titles, and explicit worktree completion.
+Human-directed conversation workflows in Herdr: active-path clones, worktree handoffs, side questions, shared conversation titles, and explicit worktree completion.
 
 ## Language
 
@@ -15,6 +15,10 @@ _Avoid_: worker tab, worktree tab
 **Worktree clone**:
 Active-path clone in a fresh Herdr Git worktree workspace, using the new checkout as its working directory. It coexists with any agent already started by a worktree-layout plugin.
 _Avoid_: branch clone, repo copy
+
+**Worktree handoff**:
+New task sent as one self-contained prompt to a new Pi agent in a fresh Herdr worktree created from local `main`. It does not copy the current conversation, and focus does not change.
+_Avoid_: worktree clone, delegation
 
 **Ambiguous launch**:
 Launch whose response cannot establish whether Herdr created or started the target. Its known resources are retained for inspection rather than treated as safe to delete.
