@@ -208,6 +208,9 @@ test("automatic rename uses expanded first prompt instead of raw input shorthand
 		app.handlers.get("input")?.({ source: "interactive", text: "/fix-login" }, app.ctx);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		assert.equal(app.completionCalls.length, 0);
+		await app.handlers.get("before_agent_start")?.({ messageType: "custom", message: {} }, app.ctx);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert.equal(app.completionCalls.length, 0);
 
 		await app.handlers.get("before_agent_start")?.({ prompt: "Fix login redirect loop after token expiry" }, app.ctx);
 		await eventually(() => app.names.length === 1);

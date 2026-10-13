@@ -394,7 +394,8 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		if (automaticStarted || !automaticPending || !event.prompt.trim()) return;
+		// Runs started by a custom message have no prompt; wait for the user prompt run.
+		if (automaticStarted || !automaticPending || !("prompt" in event) || !event.prompt.trim()) return;
 		automaticPending = false;
 		automaticStarted = true;
 		latestUserText = event.prompt.slice(0, MAX_MESSAGE_CHARS);
