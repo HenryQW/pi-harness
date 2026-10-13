@@ -15,7 +15,7 @@ Root-only changes and package test-only changes do not require a bump. Classify 
 
 ## Prepare versions
 
-Before version bumps, fetch and merge current `origin/main` with `update-from-main`. Resolve source conflicts first; regenerate `pnpm-lock.yaml` instead of hand-merging it. Record the final main SHA and use it as the release baseline.
+Before version bumps, fetch and merge current `origin/main` with `update-from-main`. Resolve source conflicts first; regenerate `pnpm-lock.yaml` instead of hand-merging it. When a merge or rebase stops on `package.json` version or `pnpm-lock.yaml` conflicts, run `pnpm run versions:rebump`. The script applies the branch's bump level to the main version, regenerates the lockfile, and lists the files that you must resolve manually; it does not continue the merge or rebase. Record the final main SHA and use it as the release baseline.
 
 Bump each affected package exactly once. Classify the package's own documented public contract, not the size of the diff or the version of a dependency:
 
