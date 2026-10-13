@@ -17,7 +17,11 @@ const nonEmpty = (description: string) => Type.String({ description, minLength: 
 const HandoffParams = Type.Object({
 	branch: nonEmpty("New Git branch for the worktree, created from local main"),
 	label: nonEmpty("Short Herdr workspace label"),
-	agentName: nonEmpty("Unique Herdr agent name for the new Pi agent"),
+	// Herdr agent names must match this pattern; checking it here fails before any mutation.
+	agentName: Type.String({
+		description: "Unique Herdr agent name for the new Pi agent: lowercase letter, then up to 31 of a-z, 0-9, _ or -",
+		pattern: "^[a-z][a-z0-9_-]{0,31}$",
+	}),
 	prompt: nonEmpty("Self-contained task prompt for the new agent"),
 });
 
@@ -37,15 +41,32 @@ export default function herdrHandoffExtension(pi: ExtensionAPI): void {
 		parameters: HandoffParams,
 		executionMode: "sequential",
 
-		async execute(_toolCallId, { branch, label, agentName, prompt }, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, { branch, label, agentName, prompt }, signal, _onUpdate, ctx) {
 			const paneId = requiredString(process.env.HERDR_PANE_ID, "HERDR_PANE_ID");
-			const main = await pi.exec("git", ["rev-parse", "--verify", "--quiet", "refs/heads/main"], { cwd: ctx.cwd });
+			const workspace = await resolveWorkspace(herdr, ctx.cwd, paneId);
+			const checkout = requiredString(workspace.checkout, `Git checkout of Herdr workspace ${workspace.workspaceId}`);
+			const git = (cwd: string, args: string[]) => pi.exec("git", args, { cwd });
+			const repository = async (cwd: string) => {
+				const result = await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+				if (result.code !== 0 || result.killed) throw new Error(`herdr_handoff: ${cwd} is not in a Git repository; nothing was created.`);
+				return result.stdout.trim();
+			};
+			// The worktree comes from the pane's workspace, so it must be the repository checked here.
+			if (await repository(ctx.cwd) !== await repository(checkout)) {
+				throw new Error(`herdr_handoff: ${ctx.cwd} and Herdr workspace ${workspace.workspaceId} (${checkout}) are different Git repositories; nothing was created.`);
+			}
+			const main = await git(ctx.cwd, ["rev-parse", "--verify", "--quiet", "refs/heads/main"]);
 			if (main.code !== 0 || main.killed) {
 				throw new Error(`herdr_handoff requires a local main branch in ${ctx.cwd}; nothing was created.`);
 			}
-			const workspace = await resolveWorkspace(herdr, ctx.cwd, paneId);
+			// Herdr checks out an existing branch instead of creating it from --base.
+			const existing = await git(ctx.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+			if (existing.code !== 1 || existing.killed) {
+				throw new Error(`herdr_handoff: branch ${branch} already exists or could not be checked; choose a new branch. Nothing was created.`);
+			}
 			const parentId = await worktreeParentWorkspace(herdr, ctx.cwd, workspace);
 
+			signal?.throwIfAborted();
 			const worktree = await createWorktree(herdr, ctx.cwd, [
 				"worktree", "create", "--workspace", parentId,
 				"--branch", branch, "--base", "main", "--label", label, "--no-focus",
@@ -54,11 +75,13 @@ export default function herdrHandoffExtension(pi: ExtensionAPI): void {
 			const { target, onPaneBusy } = await prepareWorktreeLaunch(herdr, ctx.cwd, worktree);
 			const retained = () =>
 				`Herdr workspace ${workspaceId}, tab ${target.tabId}, pane ${target.paneId}, branch ${branch}, checkout ${checkoutPath}`;
+			if (signal?.aborted) throw new Error(`Handoff was cancelled before agent start; retained ${retained()}.`);
 			await launchPiAgent(herdr, ctx.cwd, { action: "Handoff", name: agentName, pane: target.paneId, args: [], retained, onPaneBusy });
 
 			const promptArgs = [
 				"agent", "prompt", agentName, prompt, "--wait", "--until", "working", "--timeout", String(PROMPT_TIMEOUT_MS),
 			];
+			if (signal?.aborted) throw new Error(`Handoff was cancelled before prompt delivery; retained ${retained()}, and agent ${agentName}.`);
 			const delivered = await herdr.exec(promptArgs, { cwd: ctx.cwd });
 			if (delivered.code !== 0 || delivered.killed) {
 				throw new Error(

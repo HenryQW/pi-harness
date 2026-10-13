@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import herdrHandoffExtension from "../internal/handoff.ts";
 import { shellProbe, success, withPane, type ExecResult } from "./helper.ts";
 
-type Execute = (id: string, params: Record<string, string>, signal: undefined, onUpdate: undefined, ctx: { cwd: string }) =>
+type Execute = (id: string, params: Record<string, string>, signal: AbortSignal | undefined, onUpdate: undefined, ctx: { cwd: string }) =>
 	Promise<{ content: Array<{ text: string }>; details: Record<string, string> }>;
 
 const params = { branch: "fix/login", label: "Fix login", agentName: "login-fixer", prompt: "Fix the login bug.\nRun npm test." };
@@ -23,11 +23,18 @@ function harness(respond: (command: string, args: string[]) => ExecResult | unde
 	} as unknown as ExtensionAPI;
 	herdrHandoffExtension(api);
 	assert.ok(execute);
-	return { run: () => execute!("call-1", params, undefined, undefined, { cwd: "/repos/main-wt" }), calls };
+	const run = (signal?: AbortSignal) => execute!("call-1", params, signal, undefined, { cwd: "/repos/main-wt" });
+	const created = () => calls.some((call) => call.args[0] === "worktree" && call.args[1] === "create");
+	return { run, calls, created };
 }
 
+const failure: ExecResult = { stdout: "", stderr: "", code: 1, killed: false };
+
 function linkedWorktree(command: string, args: string[], rootAgent?: string): ExecResult | undefined {
-	if (command === "git") return success("abc123\n");
+	if (command === "git") {
+		if (args[0] === "show-ref") return failure;
+		return success(args.includes("--git-common-dir") ? "/repos/main/.git\n" : "abc123\n");
+	}
 	if (args[0] === "pane" && args[1] === "get") {
 		return args[2] === "pane-root"
 			? success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new", agent: rootAgent } } })
@@ -82,13 +89,23 @@ test("herdr_handoff creates the worktree from main through the parent workspace 
 	});
 });
 
-test("herdr_handoff fails without a local main branch before any Herdr call", async () => {
-	await withPane("pane-linked", async () => {
-		const app = harness((command, args) =>
-			command === "git" ? { stdout: "", stderr: "", code: 1, killed: false } : linkedWorktree(command, args));
-		await assert.rejects(app.run(), /local main branch.*nothing was created/);
-		assert.deepEqual(app.calls.map((call) => call.command), ["git"]);
-	});
+test("herdr_handoff creates nothing when a precondition fails or the call is cancelled", async () => {
+	let commonDirCalls = 0;
+	const cases: Array<[string, (command: string, args: string[]) => ExecResult | undefined, RegExp, AbortSignal?]> = [
+		["no local main", (command, args) => command === "git" && args.includes("refs/heads/main") ? failure : undefined, /local main branch/],
+		["existing branch", (command, args) => command === "git" && args[0] === "show-ref" ? success() : undefined, /fix\/login already exists/],
+		["other repository", (command, args) => command === "git" && args.includes("--git-common-dir")
+			? success(`/repos/${++commonDirCalls === 1 ? "other" : "main"}/.git\n`)
+			: undefined, /different Git repositories/],
+		["cancelled", () => undefined, /abort/i, AbortSignal.abort()],
+	];
+	for (const [name, override, pattern, signal] of cases) {
+		await withPane("pane-linked", async () => {
+			const app = harness((command, args) => override(command, args) ?? linkedWorktree(command, args));
+			await assert.rejects(app.run(signal), pattern, name);
+			assert.equal(app.created(), false, name);
+		});
+	}
 });
 
 test("herdr_handoff names every retained resource when prompt delivery fails", async () => {
