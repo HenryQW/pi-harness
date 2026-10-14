@@ -220,11 +220,18 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. If the file is mi
 | `maxCorrections` | Same-worker automatic corrections per isolated request | Safe integer ≥ 0 | `1` |
 | `timeout.idleMinutes` | Direct worker and ephemeral child idle timeout | Positive and within Node's timer range | `10` |
 | `timeout.maxMinutes` | Ephemeral child hard runtime | Greater than idle and within Node's timer range | `30` |
-| `roleDefaults` | Optional `extensions`, `tools`, and `skills` arrays merged into every built-in and user Role, with the same validation as Role fields | Object; unknown keys rejected | None |
+| `roleDefaults` | Optional `extensions`, `tools`, and `skills` arrays merged into every built-in and user Role, with the same validation as Role fields | Object with `extensions`, `tools`, or `skills` | None |
 
 In each merged list, `roleDefaults` entries come first, and the entries of the Role follow. The merge removes duplicates and occurs before resource resolution. Use `roleDefaults` for the provider extension that every child needs. Limits come only from this global file. Request fields cannot override or replenish them. Existing durable requests keep their recorded policy, but a lower current correction limit can tighten recovery. Intentionally, there is no whole-run timeout setting.
 
-Malformed or unreadable JSON, unknown keys, and invalid values block delegation with one actionable warning. The extension preserves the file and never rewrites it automatically.
+A bad config never stops the extension. At launch, and again at each `delegate_task` call, the extension shows each new problem one time:
+
+- An unknown key, including a misspelled key, shows a warning. The extension ignores the key.
+- An invalid value in `maxSubagents`, `maxTurns`, `maxCorrections`, or `timeout` shows a warning. The extension uses the default for that key. If `timeout.maxMinutes` is not greater than `timeout.idleMinutes`, the extension uses the default `timeout`.
+- An unknown or invalid key in `roleDefaults` shows a warning. The extension ignores only that key, so Roles get fewer default resources.
+- An invalid `maxTokens`, malformed JSON, invalid UTF-8, a file larger than 64 KiB, or an unreadable file shows an error and blocks delegation. The default token limit is unlimited, so the extension does not use a default in these cases. `/subagent` stays available. Correct the file to enable delegation again.
+
+No key is required. The extension preserves the file and never rewrites it automatically.
 
 ### Roles
 

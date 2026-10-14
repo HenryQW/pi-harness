@@ -241,8 +241,8 @@ test("roleDefaults merge into every Role first and deduplicate", async (t) => {
 		{ name: "reviewer", tools: ["read", "codegraph_explore", "grep", "find", "ls", "git_read"], extensions: ["/provider.ts"], skills: ["house-style"] },
 		{ name: "scout", tools: ["read", "codegraph_explore", "grep"], extensions: ["/provider.ts", "/other.ts"], skills: ["house-style"] },
 	]);
-	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { extensions: ["relative.ts"] } }));
-	assert.throws(() => loadRoleCatalog(agentDir), /config\.json: roleDefaults: extensions entries must be absolute paths/);
-	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { mcps: [] } }));
-	assert.throws(() => loadRoleCatalog(agentDir), /roleDefaults: unknown key "mcps"; expected extensions, tools, skills/);
+	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { extensions: ["relative.ts"], skills: ["house-style"], mcps: [] } }));
+	assert.deepEqual(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "implementer")!.skills, ["house-style"], "invalid roleDefaults keys are dropped");
+	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ maxTokens: "many", roleDefaults: { skills: ["house-style"] } }));
+	assert.throws(() => loadRoleCatalog(agentDir), /config\.json: maxTokens: must be an integer >= 1/);
 });

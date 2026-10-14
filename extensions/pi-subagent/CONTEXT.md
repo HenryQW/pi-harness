@@ -36,6 +36,7 @@ Own Role-configured Pi delegation through one `delegate_task` surface:
 ### Global limits
 
 - `config/pi-subagent/config.json` is the only user execution-policy source. It owns `maxSubagents`, `maxTurns`, optional `maxTokens`, `maxCorrections`, and child idle/hard timeout.
+- The config loads through `@henryqw/pi-config-store` fields. An unknown key or an invalid bounded limit, timeout, or `roleDefaults` key warns at launch and uses its finite default. An invalid `maxTokens`, or a file that cannot be read or parsed, disables delegation with an error, because the token default is unlimited. Role Markdown files keep per-file exclusion; durable state stays strict.
 - Request fields cannot override or replenish policy. Durable requests store the policy snapshot and cumulative correction count; current config may tighten the correction allowance.
 - Productive execution has no whole-run wall-clock deadline. Long productive work and later resume remain valid. Direct Herdr observation also has no whole-task elapsed deadline; worker idleness is bounded.
 - Child idle/hard runtime, turn/token handling, outer abort, process I/O, status inspection, termination, and cleanup remain independently bounded. Direct Herdr workers use idle limits, not ephemeral child hard runtime.

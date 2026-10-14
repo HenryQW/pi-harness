@@ -64,7 +64,7 @@ Each package is one bounded runtime unit. It owns its source, tests, and README.
 | `pi-cron` | `pi-cron` | fixed fields | `jobs` `array(job, { unique: (job) => job.id })` with the custom job parser; `limits` custom object parser with the `maxMinutes > idleMinutes` rule. Keep run state strict. |
 | `pi-herdr-tools` | `pi-herdr-btw` | fixed fields | `autoSubmit` `boolean()`, `tools` `oneOf(TOOL_MODES)`, `split` `oneOf(["right", "down"])`. `/btw config` keeps `update`; reset uses `save`. |
 | `pi-add-dir` | `pi-add-dir` | fixed fields | `directories` `array(absolutePath(), { unique: (dir) => dir })`. |
-| `pi-subagent` | `pi-subagent` | fixed fields | Execution limits use `integer`/`number` with `onInvalid: "disable"` so that delegation stays blocked on bad safety settings; `timeout` `object` plus the idle/max rule; `roleDefaults` custom parser from `parseRoleDefaults`. Replace the raw `readFileSync` in `readRoleDefaults` (`src/index.ts`) with the same store. |
+| `pi-subagent` | `pi-subagent` | fixed fields | Bounded execution limits use `integer`/`number` and fall back to their finite defaults; `maxTokens` uses `onInvalid: "disable"` because its default is unlimited, so delegation stays blocked; `timeout` `object` plus the idle/max rule; `roleDefaults` custom parser from `parseRoleDefaults` that drops bad keys. Replace the raw `readFileSync` in `readRoleDefaults` (`src/index.ts`) with the same store. |
 | `pi-pr` | `pi-pr` | fixed fields | `mergeMethod` `oneOf(MERGE_METHODS)`, `codexReview` `boolean()`, numeric limits `integer` with the current bounds. `loadPrPolicy` stops throwing for bad optional values. |
 
 `pi-notes` and `pi-session-recall` own only generated state; they need no runtime change.
