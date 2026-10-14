@@ -3,6 +3,7 @@ import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { registerConfigReporting } from "@henryqw/pi-config-store";
+import { createOpenInConfigStore, registerOpenInConfigReporting } from "./open-in-config.ts";
 import { configuredOpenUri } from "./open.ts";
 import { createFooterConfigStore, paintFooter } from "./footer-config.ts";
 
@@ -183,6 +184,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 	const colorStore = createFooterConfigStore();
 	// Launch reporting shows color config issues; the session-start read below sees the same file.
 	registerConfigReporting(pi, [colorStore]);
+	// Renders read the open-in config for the checkout link but never notify, so its issues show at session start.
+	registerOpenInConfigReporting(pi, createOpenInConfigStore());
 	let activeMilliseconds = 0;
 	let activeStartedAt: number | undefined;
 	let promptPaused = false;
