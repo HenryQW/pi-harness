@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { calledTimes, callsTo, check, finalTextMatches, git, notCalled } from "../graders.ts";
 import type { EvalCase, Trace } from "../types.ts";
-import { type Message, type Session, sessionsFile } from "./session-search.ts";
+import { type Message, type Session, sessionsPath } from "./session-search.ts";
 
 const skill = "extensions/pi-session-recall/skills/pi-session-pattern-miner";
 const extensions = ["evals/pi-session-pattern-miner/session-search.ts"];
@@ -83,7 +83,7 @@ const setup = (prepared: Session[], hits: Session[]) => (cwd: string) => {
 	git(cwd, "init", "-q");
 	git(cwd, "add", ".");
 	git(cwd, "commit", "-qm", "init");
-	writeFileSync(join(cwd, sessionsFile), JSON.stringify({ prepared, hits }));
+	writeFileSync(sessionsPath(cwd), JSON.stringify({ prepared, hits }));
 };
 
 /** Checks every case shares: one preparation call first, no file changes, no direct session file access. */
@@ -102,7 +102,12 @@ function protocol(trace: Trace) {
 const contractLabels = [/trigger and inputs?/i, /deterministic steps/i, /outputs? and side effects/i, /failure behaviou?r/i, /runnable check/i, /files to (add|change)/i];
 const contractLabelCount = (text: string) => contractLabels.filter((label) => label.test(text)).length;
 
-/** Abstention is behavior, not wording: no implementation contract and no pattern counted with 2+ independent sessions. */
+const ABSTAIN = /not enough|insufficient|fewer than two|only one|single (?:independent )?session|one independent|doesn't meet|does not meet/i;
+
+/**
+ * Abstention in any wording: the final text says the evidence is too thin, has no implementation contract,
+ * and counts no pattern with 2+ independent sessions.
+ */
 function abstains(trace: Trace) {
 	const lines = trace.finalText.split("\n");
 	const header = lines.findIndex((line) => line.trim().startsWith("|") && /independent sessions/i.test(line));
@@ -110,6 +115,8 @@ function abstains(trace: Trace) {
 	const column = header < 0 ? -1 : cells(lines[header]).findIndex((cell) => /independent sessions/i.test(cell));
 	const counted = header < 0 ? [] : lines.slice(header + 2).filter((line) => line.trim().startsWith("|")).filter((line) => Number.parseInt(cells(line)[column] ?? "", 10) >= 2);
 	return [
+		trace.finalText.trim() ? undefined : "final text is empty",
+		ABSTAIN.test(trace.finalText) ? undefined : `final text does not match ${ABSTAIN}`,
 		contractLabelCount(trace.finalText) >= 3 ? "final text contains an implementation contract" : undefined,
 		counted.length ? `report counts 2+ independent sessions: ${counted[0].trim().slice(0, 200)}` : undefined,
 	];

@@ -98,7 +98,7 @@ A stub registers a Pi tool with the given `name`, `description`, and JSON Schema
 - When a queue has no more replies, the last reply repeats.
 - A missing queue returns a tool error.
 - `{ text, isError: true }` returns a tool error.
-- A stub keeps no state. When a reply must depend on earlier calls or on the fixture, write a suite tool extension and load it with `extensions`. For example, [`pi-pr-comment-sweep/sweep-tool.ts`](pi-pr-comment-sweep/sweep-tool.ts) makes real fixture commits, and [`pi-session-pattern-miner/session-search.ts`](pi-session-pattern-miner/session-search.ts) reads and scrolls synthetic sessions. The extension reads its scripted data from a file that `setup` writes in `.git/`.
+- A stub keeps no state. When a reply must depend on earlier calls or on the fixture, write a suite tool extension and load it with `extensions`. For example, [`pi-pr-comment-sweep/sweep-tool.ts`](pi-pr-comment-sweep/sweep-tool.ts) makes real fixture commits, and [`pi-session-pattern-miner/session-search.ts`](pi-session-pattern-miner/session-search.ts) reads and scrolls synthetic sessions. The extension reads its scripted data from a file that `setup` writes in the trial directory, the parent of `cwd`, so the model does not find it in the fixture.
 - `{{cwd}}` in a reply becomes the trial directory. `{{<name>}}` becomes the string argument `<name>`, for example `{{query}}`. The runner escapes both values for a JSON string. An unknown token stays unchanged.
 
 ### Grader helpers

@@ -1,13 +1,14 @@
 // Session-search tool for evals. The real `session_search` reads the user's Pi session index.
-// This tool serves the case's synthetic sessions from `.git/pi-eval-sessions.json` with the result shapes and
+// This tool serves the case's synthetic sessions from sessionsPath with the result shapes and
 // errors of extensions/pi-session-recall/extensions/session-recall.ts (OUTPUT_SCHEMA): preparation returns the
 // prepared corpus, `query` returns one discovery hit per hit session, `sessionId` reads or scrolls a known session,
 // and an unknown session or anchor gets the real error. Paths under /home/eval do not exist.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export const sessionsFile = join(".git", "pi-eval-sessions.json");
+/** The data lives in the trial directory, the parent of the fixture cwd, so tools in cwd cannot find it. */
+export const sessionsPath = (cwd: string) => join(dirname(cwd), "pi-eval-sessions.json");
 
 export type Message = [entryId: string, role: "user" | "assistant", content: string];
 export interface Session {
@@ -129,7 +130,7 @@ export default function (pi: ExtensionAPI) {
 		} as never,
 		async execute(_id, raw, _signal, _onUpdate, ctx) {
 			const params = raw as Params;
-			const spec: SessionSpec = JSON.parse(readFileSync(join(ctx.cwd, sessionsFile), "utf8"));
+			const spec: SessionSpec = JSON.parse(readFileSync(sessionsPath(ctx.cwd), "utf8"));
 			const reply = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} });
 			if (params.scope !== undefined && params.operation === undefined) throw new Error("scope requires operation: prepare-pattern-miner.");
 			if (params.operation === "prepare-pattern-miner") {

@@ -1,25 +1,37 @@
 // Comment-sweep route tool for evals. The real `pi_pr_sweep` needs GitHub and a reserved /pr route.
-// Replies come from the case's scripted spec in `.git/pi-eval-sweep.json`, keyed like stub queues
-// (`<action>:<id>` before `<action>`; the last reply repeats). Where later judgment depends on earlier calls,
-// the tool follows pr-comment-sweep.ts instead of the script:
+// Replies come from the case's scripted spec, which setup writes outside the fixture repository (see specPath),
+// keyed like stub queues (`<action>:<id>` before `<action>`; the last reply repeats). Where later judgment depends
+// on earlier calls, the tool follows pr-comment-sweep.ts instead of the script:
+// - The last status reply is the route state. Out-of-order `record`, `commit`, `validate`, and `publish`
+//   calls fail with the real messages.
 // - After `record`, each status carries the recorded plan, with `ledgerComplete` and `approved` true.
-// - `validate` saves its checks on the current HEAD; later statuses with a validation carry them.
+// - `validate` requires a clean worktree and saves its checks on the current HEAD; `commit` clears them.
 // - `commit` stages the changed owned paths, creates a real commit in the fixture, and returns its HEAD.
-//   It fails like the real action without a plan, with pending scope, outside paths, or no changes.
+// - `publish` of a changed HEAD requires a clean worktree and validation on that HEAD.
 // - `{{head}}` in a reply becomes the current HEAD.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export const specFile = join(".git", "pi-eval-sweep.json");
+/** The spec lives in the trial directory, the parent of the fixture cwd, so tools in cwd cannot find it. */
+export const specPath = (cwd: string) => join(dirname(cwd), "pi-eval-sweep.json");
 export const ACTIONS = ["start", "resume", "show", "record", "adopt", "commit", "validate", "publish", "refresh", "resolve", "finalize"];
 
 /** Scripted replies by queue key. A string is returned as is, `{ error }` is a tool error, and other values are JSON. */
 export type SweepSpec = Record<string, unknown[]>;
 
 type Plan = { ledger: unknown[]; ownedPaths: string[] };
-type Status = { phase: string; guard: unknown; plan: Plan | null; pendingScope: unknown; validation: unknown };
+type Validation = { head: string; checks: unknown[] };
+type Status = {
+	phase: string;
+	guard: unknown;
+	originalHead: string;
+	plan: Plan | null;
+	pendingScope: unknown;
+	validation: Validation | null;
+	attempts: { push: string };
+};
 
 // Flat object root equivalent to flatRoot(SweepActions) in extensions/pi-pr/extensions/pr.ts.
 const OID = { type: "string", pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" };
@@ -83,7 +95,8 @@ const lines = (text: string) => (text ? text.split("\n") : []);
 export default function (pi: ExtensionAPI) {
 	const cursors = new Map<string, number>();
 	let recorded: Plan | undefined;
-	let validation: { head: string; checks: unknown[] } | undefined;
+	// Undefined until the model validates or commits; then it replaces the scripted validation.
+	let validation: Validation | null | undefined;
 	let current: Status | undefined;
 	pi.registerTool({
 		name: "pi_pr_sweep",
@@ -95,18 +108,40 @@ export default function (pi: ExtensionAPI) {
 			const params = raw as { action: string; id?: string; ledger?: unknown[]; ownedPaths?: string[]; message?: string; checks?: unknown[] };
 			const git = (...args: string[]) => execFileSync("git", args, { cwd: ctx.cwd, encoding: "utf8" }).trim();
 			const text = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
+			const dirty = () => git("status", "--porcelain", "--untracked-files=all") !== "";
+			const unpublished = current?.phase === "recorded" && !!current.plan && current.attempts.push === "none";
+			if (params.action === "record" && !(current && ["triage", "refresh-pending"].includes(current.phase) && !current.plan)) {
+				throw new Error("Comment sweep ledger was already recorded or is not ready");
+			}
+			if (params.action === "validate") {
+				if (!unpublished) throw new Error("Scope repair requires recorded unpublished recovery with no unresolved mutation");
+				if (current!.pendingScope) throw new Error("Review and adopt pending scope before validation");
+				if (dirty()) throw new Error("Comment sweep requires a clean worktree");
+			}
+			if (params.action === "publish") {
+				if (!unpublished) throw new Error("Comment sweep is not ready to publish");
+				if (current!.pendingScope) throw new Error("Review and adopt pending scope before publication");
+				if (dirty()) throw new Error("Comment sweep publish requires a clean worktree; use the commit action for owned fixes first");
+				const head = git("rev-parse", "HEAD");
+				const validated = validation === undefined ? current!.validation : validation;
+				if (head !== current!.originalHead && validated?.head !== head) {
+					throw new Error("Comment sweep requires validation on the exact clean HEAD before publication");
+				}
+			}
 			if (params.action === "commit") {
-				if (!current?.plan) throw new Error("Comment sweep is not ready to commit");
-				if (current.pendingScope) throw new Error("Review and adopt pending scope before committing");
-				const owned = current.plan.ownedPaths;
+				if (!unpublished) throw new Error("Comment sweep is not ready to commit");
+				if (current!.pendingScope) throw new Error("Review and adopt pending scope before committing");
+				const owned = current!.plan!.ownedPaths;
 				const paths = [...new Set([...lines(git("diff", "--name-only", "HEAD")), ...lines(git("ls-files", "--others", "--exclude-standard"))])];
 				if (paths.some((path) => !owned.includes(path))) throw new Error("Comment sweep found changes outside owned paths before staging");
 				if (!paths.length) throw new Error("Comment sweep has no pending changes to commit; validate and publish the existing HEAD");
+				validation = null;
+				current!.validation = null;
 				git("add", "-A", "--", ...paths);
 				git("commit", "-q", "-m", params.message ?? "");
 				return text(JSON.stringify({ head: git("rev-parse", "HEAD") }));
 			}
-			const spec: SweepSpec = JSON.parse(readFileSync(join(ctx.cwd, specFile), "utf8"));
+			const spec: SweepSpec = JSON.parse(readFileSync(specPath(ctx.cwd), "utf8"));
 			const byId = params.id === undefined ? undefined : `${params.action}:${params.id}`;
 			const key = byId !== undefined && spec[byId] ? byId : params.action;
 			const queue = spec[key];
@@ -122,7 +157,7 @@ export default function (pi: ExtensionAPI) {
 				reply = current = {
 					...reply,
 					...(recorded && { ledgerComplete: true, plan: recorded, approved: true }),
-					...(validation && reply.validation !== null && { validation }),
+					...(validation !== undefined && { validation }),
 				};
 			}
 			return text(typeof reply === "string" ? reply : JSON.stringify(reply).replaceAll("{{head}}", head));

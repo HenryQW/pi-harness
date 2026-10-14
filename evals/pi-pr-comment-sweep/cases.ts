@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { callsTo, calledWith, check, git, gitStatus, noBash, notCalled, finalTextMatches } from "../graders.ts";
 import type { EvalCase, ToolCall, Trace } from "../types.ts";
-import { ACTIONS, specFile, type SweepSpec } from "./sweep-tool.ts";
+import { ACTIONS, specPath, type SweepSpec } from "./sweep-tool.ts";
 
 const SKILL = "extensions/pi-pr/skills/pi-pr-comment-sweep";
 // /pr sends `/${skill} runId=${runId} action=${action}` (extensions/pi-pr/extensions/pr-command.ts).
@@ -118,7 +118,7 @@ function setupRepo(extra: Commit[], expectedHead: string, spec: SweepSpec) {
 	return (cwd: string) => {
 		const head = buildRepo(cwd, extra).at(-1);
 		if (head !== expectedHead) throw new Error(`fixture HEAD ${head} does not match precomputed ${expectedHead}`);
-		writeFileSync(join(cwd, specFile), JSON.stringify(spec));
+		writeFileSync(specPath(cwd), JSON.stringify(spec));
 	};
 }
 
@@ -268,6 +268,15 @@ function exactCoverage(ledger: Ledger | undefined, threads: Thread[]): string | 
 	return undefined;
 }
 
+/** A successful validate follows the successful commit and precedes the first publish. */
+function validatedBeforePublish(trace: Trace): string | undefined {
+	const ok = (call: ToolCall, action: string) => call.name === "pi_pr_sweep" && call.args.action === action && !call.isError;
+	const commit = trace.calls.findLastIndex((call) => ok(call, "commit"));
+	const publish = indexOf(trace, "publish");
+	const validate = trace.calls.findIndex((call, index) => index > commit && ok(call, "validate"));
+	return commit !== -1 && validate !== -1 && (publish === -1 || validate < publish) ? undefined : "no successful validate between the commit and the first publish";
+}
+
 function disposition(ledger: Ledger | undefined, id: string, expected: string | RegExp): string | undefined {
 	const actual = ledger?.find((entry) => entry.id === id)?.disposition;
 	const ok = typeof expected === "string" ? actual === expected : actual !== undefined && expected.test(actual);
@@ -414,6 +423,7 @@ export default [
 				averageOf(cwd, [2, 4]) === "3" ? undefined : `average([2, 4]) is ${averageOf(cwd, [2, 4])}, expected 3`,
 				git(cwd, "diff", "HEAD", "--", "src/config.js") === "" ? undefined : "src/config.js changed although a published commit already fixed it",
 				sweepCalls(trace, "commit").some((call) => !call.isError) ? undefined : "no successful pi_pr_sweep commit",
+				validatedBeforePublish(trace),
 				committed.includes("src/stats.js") && !committed.includes("src/config.js") ? undefined : `committed paths ${JSON.stringify(committed)} lack src/stats.js or include src/config.js`,
 				noBash(trace, SHELL_MUTATION),
 			);
@@ -539,4 +549,3 @@ export default [
 		},
 	},
 ] satisfies EvalCase[];
-
