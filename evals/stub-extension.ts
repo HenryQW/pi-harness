@@ -22,8 +22,11 @@ export default function (pi: ExtensionAPI) {
 			async execute(_id, params: Record<string, unknown>, _signal, _onUpdate, ctx) {
 				const action = typeof params.action === "string" ? params.action : undefined;
 				const byAction = Array.isArray(tool.responses) ? undefined : tool.responses;
-				const queue = byAction ? (action === undefined ? undefined : byAction[action]) : (tool.responses as StubResponse[]);
-				const key = byAction ? `action:${action}` : "default";
+				// A `<action>:<id>` queue for a string `id` argument takes precedence over the `<action>` queue.
+				const byId = action !== undefined && typeof params.id === "string" ? `${action}:${params.id}` : undefined;
+				const selected = byId !== undefined && byAction?.[byId] ? byId : action;
+				const queue = byAction ? (selected === undefined ? undefined : byAction[selected]) : (tool.responses as StubResponse[]);
+				const key = byAction ? `action:${selected}` : "default";
 				const response = queue?.length ? next(key, queue) : { text: `stub ${tool.name}: no scripted response for ${key}`, isError: true };
 				const { text: scripted, isError } = typeof response === "string" ? { text: response, isError: false } : response;
 				// `{{cwd}}` and `{{<string argument>}}` become JSON-escaped values, so fixtures can echo trial-specific text.
