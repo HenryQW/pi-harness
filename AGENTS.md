@@ -11,6 +11,7 @@ When `.codegraph/codegraph.db` exists, use `codegraph_explore` for symbol lookup
 - Compatibility covers each package's documented public contract, not its internals or undocumented behavior. Breaking internal changes need no major release.
 - Use Pi's effective skill and model registries and model metadata as authority. Resolve resources at launch; store names or classes, not paths or copied catalogs.
 - For extension config homes, follow [ADR 018](docs/adr/018-extension-config-homes.md). Use `extensionConfigDir` and `extensionConfigPath` from `@henryqw/pi-config-store`, validate untrusted JSON, preserve malformed files, and write only after explicit user action.
+- User-edited extension config must load through `@henryqw/pi-config-store` fields (`createConfigStore` with `fields` or `entries`) and report issues with `registerConfigReporting`; do not read config files with direct JSON parsing. Follow [ADR 004](docs/adr/004-extension-config-safety.md) for warn and disable rules.
 
 ## Package releases
 
