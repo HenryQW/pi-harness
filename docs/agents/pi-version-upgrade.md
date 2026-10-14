@@ -50,7 +50,7 @@ Before you release, test the final commit at the target. Each workspace resolves
 )
 ```
 
-If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimumReleaseAgeExclude` in the same temporary edit. Fix failures in a new commit and repeat the target test. Run live or interactive TUI tests only when the changed behavior needs them. Then release with [docs/releasing.md](../releasing.md).
+If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimumReleaseAgeExclude` in the same temporary edit. Fix failures in a new commit and repeat the target test. Run live or interactive TUI tests only when the changed behavior needs them. Run the skill evals at the target with `node evals/run.ts` (see [evals/README.md](../../evals/README.md)) and report failing cases. Then release with [docs/releasing.md](../releasing.md).
 
 Add an audit log entry, even when every decision is `none`. Report decisions, the target-run result, untested live or interactive behavior, and npm deprecations pending maintainer action.
 

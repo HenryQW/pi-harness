@@ -32,6 +32,8 @@ For README/template-only changes, preserve unique guidance and verify structure,
 
 This repository owns [pi-extension-workbench](.agents/skills/pi-extension-workbench/SKILL.md); maintain it here, not in `HenryQW/skills` or `skills-lock.json`. Keep installed Pi docs, examples, and declarations as runtime authority. Validate skill changes with `python3 .agents/skills/pi-extension-workbench/scripts/validate.py`.
 
+After you change a package skill that has a suite in [evals/](evals/README.md), run `node evals/run.ts --skill <name>` and report the results. Evals call a model, so CI does not run them.
+
 ## Task runbooks
 
 - [GitHub issues](docs/agents/issue-tracker.md) and [triage labels](docs/agents/triage-labels.md)
