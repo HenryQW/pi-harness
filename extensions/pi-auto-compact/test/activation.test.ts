@@ -33,7 +33,8 @@ function loadExtension(
 	autoCompact({
 		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: Handler) {
-			handlers.set(event, handler);
+			const previous = handlers.get(event);
+			handlers.set(event, previous ? (event, ctx) => { previous(event, ctx); return handler(event, ctx); } : handler);
 		},
 		registerCommand(name: string, options: { handler: Command }) {
 			commands.set(name, options.handler);
@@ -104,7 +105,7 @@ test("suppresses only empty abort caused by pending extension compaction", async
 	}
 });
 
-test("configures threshold and ignores obsolete model fields", async () => {
+test("configures threshold and warns about obsolete model fields", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-"));
 	const configFile = autoCompactConfigFile(tempRoot);
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -127,6 +128,7 @@ test("configures threshold and ignores obsolete model fields", async () => {
 		const notices: string[] = [];
 		const ctx = {
 			cwd: tempRoot,
+			hasUI: true,
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
 			compact: () => { compactions++; },
@@ -140,6 +142,9 @@ test("configures threshold and ignores obsolete model fields", async () => {
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
+		assert.deepEqual(notices, [
+			`pi-auto-compact config issues (${configFile}): compactionModel: unknown key; compactionThinkingLevel: unknown key; defaults replace invalid settings.`,
+		]);
 		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), legacyConfig);
 		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
 		assert.equal(compactions, 0);
@@ -182,6 +187,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 		let prompt = "";
 		const ctx = {
 			cwd: tempRoot,
+			hasUI: true,
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
 			compact() {},
@@ -198,7 +204,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
-		assert.deepEqual(notices, []);
+		assert.equal(notices.length, 0);
 		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
 		await assert.rejects(() => readFile(sharedConfigFile, "utf8"), { code: "ENOENT" });
 		assert.equal(await readFile(legacyConfigFile, "utf8"), legacy);
@@ -209,15 +215,25 @@ test("uses only config homes and preserves invalid local config", async () => {
 		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
 
 		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		for (const invalid of ["{ not json\n", '{"autoCompactThreshold":20}']) {
-			await writeFile(configFile, invalid);
+		for (const [invalid, reason] of [
+			["{ not json\n", "invalid JSON: "],
+			['{"autoCompactThreshold":20}', "autoCompactThreshold: must be a number >= 25 and < 100"],
+		]) {
+			await writeFile(configFile, invalid!);
 			notices.length = 0;
-			const invalidHandlers = loadExtension();
+			const invalidCommands = new Map<string, Command>();
+			const invalidHandlers = loadExtension(invalidCommands);
 			invalidHandlers.get("session_start")?.(
 				{ type: "session_start", reason: "startup" } as never,
 				ctx,
 			);
-			assert.deepEqual(notices, [["Couldn't read pi-auto-compact config; using 70%.", "error"]]);
+			assert.equal(notices.length, 1);
+			const [message, level] = notices[0]!;
+			assert.equal(level, "warning");
+			assert.ok(message.startsWith(`pi-auto-compact config issues (${configFile}): ${reason}`), message);
+			await invalidCommands.get("auto-compact")?.("", ctx);
+			assert.equal(prompt, "Auto-compact threshold (%) · current: 70");
+			assert.equal(notices.length, 1, "the command does not repeat a shown issue");
 			assert.equal(await readFile(configFile, "utf8"), invalid);
 		}
 	} finally {

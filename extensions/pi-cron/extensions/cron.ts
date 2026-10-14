@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readTextFileBounded } from "@henryqw/pi-config-store";
+import { readTextFileBounded, registerConfigReporting } from "@henryqw/pi-config-store";
 import {
 	createEphemeralSubagentExecutor,
 	finalizeRoleLaunch,
@@ -57,6 +57,8 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	const agentDir = options.agentDir ?? getAgentDir();
 	const now = options.now ?? Date.now;
 	const configStore = cronConfigStore(agentDir);
+	// Registered before this extension's session_start handler so that its first tick shares the launch deduplication.
+	const reporter = registerConfigReporting(pi, [configStore]);
 	const home = cronHome(agentDir);
 	const state = new StateStore(join(home, "state.json"));
 	const owner = `${process.pid}-${randomUUID()}`;
@@ -64,25 +66,17 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let ticking = false;
 	let running = false;
-	let lastConfigError: string | undefined;
 	let lastStateError: string | undefined;
 	// Renewed on session start so a session switch in the same Pi process revives scheduling.
 	let shutdown = new AbortController();
 
 	registerModelTask(pi, CRON_JOB_TASK);
 
-	/** Background ticks show each distinct error once; an explicit command always shows it. */
-	const loadConfig = (ctx: ExtensionContext, repeat = false): CronConfig | undefined => {
-		try {
-			const loaded = configStore.loadSync().value;
-			lastConfigError = undefined;
-			return loaded;
-		} catch (error) {
-			const message = `pi-cron config at ${configStore.path} is invalid; jobs are paused until it is fixed: ${errorText(error)}`;
-			if ((repeat || message !== lastConfigError) && ctx.hasUI) ctx.ui.notify(message, "error");
-			lastConfigError = message;
-			return undefined;
-		}
+	/** Each config issue shows once per session; bad jobs are dropped and bad limits use defaults. */
+	const loadConfig = (ctx: ExtensionContext): CronConfig | undefined => {
+		const loaded = configStore.loadSync();
+		reporter.report(ctx, configStore, loaded);
+		return loaded.status === "ok" ? loaded.value : undefined;
 	};
 
 	const prepareLaunch = (ctx: ExtensionContext, job: Job, role: Role): ResolvedRoleLaunch => {
@@ -228,7 +222,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 		description: "list scheduled jobs, run one now, or enable/disable it",
 		handler: async (args, ctx) => {
 			latestCtx = ctx;
-			const config = loadConfig(ctx, true);
+			const config = loadConfig(ctx);
 			if (!config) return;
 			const [verb, target] = args.trim().split(/\s+/);
 			if (verb === "run") {
