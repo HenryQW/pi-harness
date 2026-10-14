@@ -71,7 +71,7 @@ On each `session_start`, `registerConfigReporting(pi, stores)` loads each store.
 | `disabled` | `error` | `<extension-id> disabled (<path>): <issues>` |
 | `ok` with issues | `warning` | `<extension-id> config issues (<path>): <issues>; defaults replace invalid settings.` |
 
-When `ctx.hasUI` is false, the reporter writes the same text to stderr. Each issue shows one time in each session. The reporter identifies an issue by its file path, kind, key, and message.
+When `ctx.hasUI` is false, the reporter writes the same text to stderr. Each issue shows one time in each session. The reporter identifies an issue by its file path, kind, key, and message. All reporters in the Pi process share this record, also the reporters of other extensions. Thus, when two extensions report the same file, each issue shows one time. A new `session_start` event starts a new record.
 
 ## API
 
@@ -94,6 +94,7 @@ When `ctx.hasUI` is false, the reporter writes the same text to stderr. Each iss
 | `store.loadSync()` | `ConfigLoad<T>` | Loads and validates the current file. |
 | `store.save(value: T)` | `Promise<void>` | Validates `value` strictly and replaces the whole file under a lock. |
 | `store.update(mutator: (current: T) => T)` | `Promise<T>` | Locks a read-modify-write operation and returns the written value. |
+| `store.replaceIfUnchanged(snapshot, value: T)` | `Promise<void>` | Validates `value` strictly and replaces the whole file under a lock, but only when the file has not changed since `snapshot`. |
 | `store.remove()` | `Promise<void>` | Removes only the store's file. |
 | `extensionConfigDir(extensionId, agentDir?)` | function | Returns an extension's config home. |
 | `extensionConfigPath(extensionId, agentDir?)` | function | Returns the home's `config.json` path. |
@@ -149,3 +150,5 @@ A direct text write creates or restricts its parent directory to mode `0700` whe
 Repository default: most extension owners can assume one active config writer. Under that assumption, reload the extension after a manual or external edit before its next write. A stale in-memory full replacement is outside the supported workflow.
 
 `store.save(value)` locks and replaces the whole config. The lock serializes writes, but does not merge fields from stale values. Use `store.update(mutator)` when an extension supports multiple processes, sessions, or writers, or to keep concurrent field changes. It reads the latest config under the store lock.
+
+To repair a file that has issues from a value that the user confirmed earlier, use `store.replaceIfUnchanged(snapshot, value)`. `snapshot` must be a `loadSync()` result of a store for the same file; another object throws a `TypeError`. Under the lock, the store reads the file again and compares its bytes with the bytes that `snapshot` read. A missing file matches only a missing file. If the file changed, the method throws `Config at <path> changed since it was read; nothing was written. Read it again and retry.` and does not change the file.

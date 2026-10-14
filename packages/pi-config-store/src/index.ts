@@ -35,9 +35,8 @@ function decodeBounded(chunks: Buffer[], bytesRead: number, path: string, maxByt
 	return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytesRead));
 }
 
-/** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes synchronously. */
-export function readTextFileBoundedSync(path: string, maxBytes: number): string {
-	assertMaxBytes(maxBytes);
+/** Read at most maxBytes + 1 bytes synchronously. */
+function readBytesBoundedSync(path: string, maxBytes: number): Buffer {
 	let file: number | undefined;
 	const chunks: Buffer[] = [];
 	let bytesRead = 0;
@@ -50,10 +49,17 @@ export function readTextFileBoundedSync(path: string, maxBytes: number): string 
 			chunks.push(chunk.subarray(0, count));
 			bytesRead += count;
 		}
-		return decodeBounded(chunks, bytesRead, path, maxBytes);
+		return Buffer.concat(chunks, bytesRead);
 	} finally {
 		if (file !== undefined) closeSync(file);
 	}
+}
+
+/** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes synchronously. */
+export function readTextFileBoundedSync(path: string, maxBytes: number): string {
+	assertMaxBytes(maxBytes);
+	const bytes = readBytesBoundedSync(path, maxBytes);
+	return decodeBounded([bytes], bytes.length, path, maxBytes);
 }
 
 /** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes. */
@@ -451,6 +457,16 @@ function readIssue(error: unknown): ConfigIssue {
 	return { kind: "unreadable", key: "", message: `cannot read file: ${errorMessage(error)}` };
 }
 
+/** The bytes a load read, `null` for a missing file, or a read error message. */
+type Revision = Buffer | string | null;
+
+/** What each `loadSync()` result read, so `replaceIfUnchanged` can detect a later change. */
+const revisions = new WeakMap<object, { path: string; revision: Revision }>();
+
+function sameRevision(left: Revision, right: Revision): boolean {
+	return Buffer.isBuffer(left) && Buffer.isBuffer(right) ? left.equals(right) : left === right;
+}
+
 class ConfigStore<T> {
 	readonly extensionId: string;
 	readonly path: string;
@@ -464,11 +480,28 @@ class ConfigStore<T> {
 
 	/** Read and validate the file. Never throws for file content or I/O problems, and never writes. */
 	loadSync(): ConfigLoad<T> {
-		let contents: string | undefined;
+		const revision = this.readRevision();
+		const result = this.load(revision);
+		revisions.set(result, { path: this.path, revision });
+		return result;
+	}
+
+	/** The file's bytes, `null` when it is missing, or the read error message. */
+	private readRevision(): Revision {
 		try {
-			contents = readTextFileBoundedSync(this.path, MAX_CONFIG_BYTES);
+			return readBytesBoundedSync(this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
-			if (isMissing(error)) return this.validate({}, "missing");
+			return isMissing(error) ? null : readIssue(error).message;
+		}
+	}
+
+	private load(revision: Revision): ConfigLoad<T> {
+		if (revision === null) return this.validate({}, "missing");
+		if (typeof revision === "string") return this.fallback("file", [{ kind: "unreadable", key: "", message: revision }]);
+		let contents: string;
+		try {
+			contents = decodeBounded([revision], revision.length, this.path, MAX_CONFIG_BYTES);
+		} catch (error) {
 			return this.fallback("file", [readIssue(error)]);
 		}
 		let raw: unknown;
@@ -484,6 +517,22 @@ class ConfigStore<T> {
 	async save(value: T): Promise<void> {
 		const { contents } = this.strict(value);
 		await withLock(this.path, async () => {
+			await writePrivateTextFileAtomically(this.path, contents);
+		});
+	}
+
+	/**
+	 * Validate `value` strictly and replace the whole file under a lock, but only when the file is unchanged
+	 * since `snapshot`, a `loadSync()` result of a store for the same file. A changed file throws and stays unchanged.
+	 */
+	async replaceIfUnchanged(snapshot: ConfigLoad<unknown>, value: T): Promise<void> {
+		const expected = revisions.get(snapshot);
+		if (expected?.path !== this.path) throw new TypeError(`snapshot must be a loadSync() result for ${this.path}`);
+		const { contents } = this.strict(value);
+		await withLock(this.path, async () => {
+			if (!sameRevision(this.readRevision(), expected.revision)) {
+				throw new Error(`Config at ${this.path} changed since it was read; nothing was written. Read it again and retry.`);
+			}
 			await writePrivateTextFileAtomically(this.path, contents);
 		});
 	}
@@ -563,15 +612,29 @@ export interface ConfigReporter {
 	report(ctx: Pick<ExtensionContext, "hasUI" | "ui">, store: Pick<ReportableConfig, "extensionId" | "path">, result: ConfigLoad<unknown>): void;
 }
 
+const REPORTED = Symbol.for("@henryqw/pi-config-store/reported");
+
+/**
+ * Issues shown in this session. Pi loads each extension, and so each copy of this module, separately,
+ * so process state lets every reporter share one set. Pi passes one event object to all `session_start`
+ * handlers; the first handler of a new event starts a new set.
+ */
+function reported(event?: { value: unknown }): Set<string> {
+	const state = globalThis as { [REPORTED]?: { event: unknown; shown: Set<string> } };
+	state[REPORTED] ??= { event: undefined, shown: new Set() };
+	if (event && state[REPORTED].event !== event.value) state[REPORTED] = { event: event.value, shown: new Set() };
+	return state[REPORTED].shown;
+}
+
 /**
  * On each `session_start`, load every store and show one notification per file with issues:
  * `error` when the config is disabled, otherwise `warning`. Without UI, write the text to stderr.
- * Issues show once per session; the returned reporter shares that deduplication.
+ * Each issue shows once per session, across every reporter of every extension.
  */
 export function registerConfigReporting(pi: Pick<ExtensionAPI, "on">, stores: readonly ReportableConfig[]): ConfigReporter {
-	let shown = new Set<string>();
 	const reporter: ConfigReporter = {
 		report(ctx, store, result) {
+			const shown = reported();
 			const fresh = result.issues.filter((issue) => {
 				const fingerprint = JSON.stringify([store.path, issue.kind, issue.key, issue.message]);
 				if (shown.has(fingerprint)) return false;
@@ -587,8 +650,8 @@ export function registerConfigReporting(pi: Pick<ExtensionAPI, "on">, stores: re
 			else process.stderr.write(`${text}\n`);
 		},
 	};
-	pi.on("session_start", (_event, ctx) => {
-		shown = new Set();
+	pi.on("session_start", (event, ctx) => {
+		reported({ value: event });
 		for (const store of stores) reporter.report(ctx, store, store.loadSync());
 	});
 	return reporter;

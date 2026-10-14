@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { lock } from "proper-lockfile";
 import {
 	createConfigStore,
 	extensionConfigDir,
@@ -369,6 +370,45 @@ test("launch reporting shows one deduplicated notification per file", async () =
 		const ok: ConfigLoad<unknown> = { status: "ok", source: "missing", value: {}, issues: [] };
 		reporter.report(ui as never, warned, ok);
 		assert.equal(notices.length, 3);
+
+		// Reporters of other extensions share the session's deduplication; Pi passes one event to every handler.
+		let otherStart: ((event: unknown, ctx: never) => void) | undefined;
+		registerConfigReporting({ on: (_event: string, handler: typeof otherStart) => { otherStart = handler; } } as never, [warned]);
+		const event = {};
+		sessionStart!(event, ui as never);
+		otherStart!(event, ui as never);
+		assert.equal(notices.length, 5);
+		assert.match(notices[4]![0], /^pi-test-store disabled/);
+	});
+});
+
+test("replaceIfUnchanged writes under the lock only when the file still matches the snapshot", async () => {
+	await withAgentDir(async (agentDir) => {
+		const store = createStore(agentDir);
+		const missing = store.loadSync();
+		await assert.rejects(store.replaceIfUnchanged({ ...missing }, { count: 1 }), /snapshot must be a loadSync\(\) result/);
+		await assert.rejects(createStore(join(agentDir, "other")).replaceIfUnchanged(missing, { count: 1 }), TypeError);
+		await store.replaceIfUnchanged(missing, { count: 1 });
+		assert.equal(await readFile(store.path, "utf8"), '{\n  "count": 1\n}\n');
+
+		await writeFile(store.path, '{"count":-1}');
+		const snapshot = store.loadSync();
+		// Another writer edits the file after the snapshot.
+		await writeFile(store.path, '{"count":-1 }');
+		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 2 }), (error: Error) =>
+			error.message === `Config at ${store.path} changed since it was read; nothing was written. Read it again and retry.`);
+		assert.equal(await readFile(store.path, "utf8"), '{"count":-1 }');
+
+		// The file changes after the caller's check but while the replacement waits for the lock.
+		const fresh = store.loadSync();
+		const release = await lock(store.path, { lockfilePath: `${store.path}.lock`, realpath: false });
+		const replaced = store.replaceIfUnchanged(fresh, { count: 8 });
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		await writeFile(store.path, '{"count":7}');
+		await release();
+		await assert.rejects(replaced, /changed since it was read/);
+		assert.equal(await readFile(store.path, "utf8"), '{"count":7}');
+		await assert.rejects(store.replaceIfUnchanged(store.loadSync(), { count: -1 }), /count: must be an integer >= 0/);
 	});
 });
 
