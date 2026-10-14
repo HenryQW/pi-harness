@@ -305,16 +305,18 @@ test("a result recorded after shutdown is not sent into a tearing-down session",
 	assert.equal(h.messages.length, 0);
 });
 
-test("an invalid config pauses jobs with one visible error", async () => {
-	await writeFile(join(agentDir, "config", "pi-cron", "config.json"), JSON.stringify({ jobs: [{ id: "x" }] }));
+test("a bad job is reported once across ticks and commands while valid jobs still run", async () => {
+	const path = join(agentDir, "config", "pi-cron", "config.json");
+	await writeFile(path, JSON.stringify({ jobs: [{ id: "x" }, ...["good", "other"].map((id) => ({ id, every: "1d", role: "scout", cwd: agentDir, prompt: "Go." }))] }));
+	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
 	const h = harness(async () => ({ outcome: "success", output: "" }));
 	await h.emit("session_start");
-	await h.emit("session_start");
-	assert.equal(h.notices.filter((notice) => notice.includes("is invalid; jobs are paused")).length, 1, h.notices.join("\n"));
-	assert.equal(h.prepared.length, 0);
+	await h.settle();
 	await h.command("");
-	await h.command("run x");
-	assert.equal(h.notices.filter((notice) => notice.includes("is invalid; jobs are paused")).length, 3, "each command shows the error again");
+	await h.command("run good");
+	await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job good finished")));
+	const issues = h.notices.filter((notice) => notice.startsWith("pi-cron config issues"));
+	assert.deepEqual(issues, [`pi-cron config issues (${path}): jobs[0]: Job x needs exactly one of every or at; defaults replace invalid settings.`], h.notices.join("\n"));
 	await h.emit("session_shutdown");
 });
 

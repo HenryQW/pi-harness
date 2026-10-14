@@ -7,7 +7,7 @@ import {
 	getAgentDir,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { createConfigStore } from "@henryqw/pi-config-store";
+import { createConfigStore, field, parsers, registerConfigReporting } from "@henryqw/pi-config-store";
 import type {
 	AgentBeforeSettleEvent,
 	CompactionEntry,
@@ -44,21 +44,9 @@ export const AUTO_COMPACT_TASK = {
 	purpose: "Compact session context before it is exhausted.",
 	defaultProfile: "fast",
 } as const satisfies ModelTask;
-type AutoCompactConfig = { autoCompactThreshold: number };
 
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
-}
-
-function parseAutoCompactConfig(value: unknown): AutoCompactConfig {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error("Config must be an object.");
-	}
-	const threshold = (value as Record<string, unknown>).autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	if (!isValidThreshold(threshold)) {
-		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
-	}
-	return { autoCompactThreshold: threshold };
 }
 
 function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
@@ -244,11 +232,22 @@ function readResult(entry: ProjectedSessionEntry, projected: ProjectedSessionEnt
 
 export default function (pi: ExtensionAPI) {
 	registerModelTask(pi, AUTO_COMPACT_TASK);
-	const configStore = createConfigStore<AutoCompactConfig>({
+	const configStore = createConfigStore({
 		extensionId: "pi-auto-compact",
-		defaults: () => ({ autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT }),
-		parse: parseAutoCompactConfig,
+		fields: {
+			autoCompactThreshold: field(
+				parsers.number({ min: MIN_COMPACT_THRESHOLD_PERCENT, lessThan: 100 }),
+				DEFAULT_COMPACT_THRESHOLD_PERCENT,
+			),
+		},
 	});
+	// Registered before this extension's session_start handler so launch issues show first.
+	const reporter = registerConfigReporting(pi, [configStore]);
+	/** The config has no required or unsafe field, so a load is never disabled. */
+	const loadThreshold = () => {
+		const loaded = configStore.loadSync();
+		return { loaded, threshold: loaded.status === "ok" ? loaded.value.autoCompactThreshold : DEFAULT_COMPACT_THRESHOLD_PERCENT };
+	};
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	// Emergency compaction interrupts a run; boundary maintenance never does.
@@ -455,13 +454,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			let currentThreshold: number;
-			try {
-				currentThreshold = configStore.loadSync().value.autoCompactThreshold;
-			} catch {
-				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
-				return;
-			}
+			const { loaded, threshold: currentThreshold } = loadThreshold();
+			reporter.report(ctx, configStore, loaded);
 
 			const input = await ctx.ui.input(
 				`Auto-compact threshold (%) · current: ${currentThreshold}`,
@@ -489,13 +483,8 @@ export default function (pi: ExtensionAPI) {
 	// Pi's built-in automatic compaction competes with this extension. Refuse
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
-		try {
-			const config = configStore.loadSync();
-			autoCompactThreshold = config.value.autoCompactThreshold;
-		} catch {
-			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-			ctx.ui.notify(`Couldn't read pi-auto-compact config; using ${DEFAULT_COMPACT_THRESHOLD_PERCENT}%.`, "error");
-		}
+		// Launch reporting shows config issues; invalid values use the default.
+		autoCompactThreshold = loadThreshold().threshold;
 
 		active = !SettingsManager.create(ctx.cwd, getAgentDir(), {
 			projectTrusted: ctx.isProjectTrusted(),
