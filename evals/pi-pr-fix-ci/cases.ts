@@ -4,11 +4,10 @@ import { devNull } from "node:os";
 import { dirname, join } from "node:path";
 import { calledTimes, calledWith, check, finalTextMatches, git, gitStatus, noBash, notCalled } from "../graders.ts";
 import type { EvalCase, Trace } from "../types.ts";
-import { collectFile } from "./route-tools.ts";
+import { collectFile, ROUTE_RUN_ID as runId } from "./route-tools.ts";
 
 const skill = "extensions/pi-pr/skills/pi-pr-fix-ci";
 const extensions = ["evals/pi-pr-fix-ci/route-tools.ts"];
-const runId = "3f2b8c1e-7a4d-4e6f-9b2a-5c8d1e0f7a93";
 // The route launch message from pr-command.ts `dispatchWorkflow`.
 const prompt = `/skill:pi-pr-fix-ci runId=${runId} action=collect`;
 

@@ -513,8 +513,11 @@ export default [
 			const outside = Array.isArray(adopt?.args.outsidePaths) ? [...(adopt.args.outsidePaths as string[])].sort() : undefined;
 			const first = indexOf(trace, "adopt");
 			const early = ["commit", "validate", "publish"].filter((action) => { const at = indexOf(trace, action); return at !== -1 && at < first; });
+			// The skill requires inspection of the pending commits and diff before adoption.
+			const inspected = trace.calls.slice(0, Math.max(first, 0)).some((call) => call.name === "bash" && !call.isError && /\bgit\b[^\n]*\b(?:log|diff|show)\b/.test(String(call.args.command)));
 			return check(
 				calledWith(trace, "pi_pr_sweep", { action: "adopt", head: TEST_HEAD }),
+				inspected ? undefined : "no successful git log, diff, or show before adopt",
 				JSON.stringify(outside) === JSON.stringify(["test/stats.test.js"]) ? undefined : `adopt outsidePaths ${JSON.stringify(outside)}, expected ["test/stats.test.js"]`,
 				early.length ? `called ${early.join(", ")} before adopt` : undefined,
 				noBash(trace, SHELL_MUTATION),

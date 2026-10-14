@@ -9,6 +9,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { GitCommitter } from "../../extensions/pi-pr/extensions/git-commit.ts";
 
 export const collectFile = join(".git", "pi-eval-collect.json");
+/** The reserved /pr run ID. The real route rejects any other ID. */
+export const ROUTE_RUN_ID = "3f2b8c1e-7a4d-4e6f-9b2a-5c8d1e0f7a93";
 
 type CommitParams = { action: "inspect"; target: string } | { action: "commit"; inspectionId: string; ownedPaths: string[]; message: string };
 
@@ -56,7 +58,8 @@ export default function (pi: ExtensionAPI) {
 		} as never,
 		executionMode: "sequential",
 		async execute(_id, raw, _signal, _onUpdate, ctx) {
-			const { action } = raw as { action: "collect" | "publish" };
+			const { runId, action } = raw as { runId: string; action: "collect" | "publish" };
+			if (runId !== ROUTE_RUN_ID) throw new Error("PR workflow runId is wrong or stale");
 			return result(action === "collect"
 				? JSON.parse(readFileSync(join(ctx.cwd, collectFile), "utf8"))
 				: { kind: "published", head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: ctx.cwd, encoding: "utf8" }).trim(), attempt: "applied" });

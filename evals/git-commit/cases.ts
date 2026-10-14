@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { callsTo, check, finalTextMatches, git, gitStatus, gitSubjects, noBash } from "../graders.ts";
 import type { EvalCase, Trace } from "../types.ts";
@@ -36,14 +36,21 @@ function newCommits(cwd: string, base = "main") {
 
 const fail = (condition: boolean, reason: string) => (condition ? reason : undefined);
 
+/** Original bytes of the excluded local files, per trial directory. */
+const excluded = new Map<string, Record<string, string>>();
+
 // Shell Git commands that change the index, worktree, refs, or history. Commits go through pi_git_commit only.
 const GIT_MUTATION = /\bgit(?:\s+(?:-[cC]\s+\S+|--?[^\s-]\S*))*\s+(?:add|commit|reset|stash|checkout|switch|restore|rm|mv|update-index|update-ref|apply|clean|rebase|merge|cherry-pick|revert|am|push)(?=\s|$|[;&|)])/;
 
-/** At least one successful inspect, and one successful pi_git_commit commit for each new commit. */
+/** Successful inspections only against the requested `main` target, and one successful commit call per new commit. */
 function committedWithTool(trace: Trace, cwd: string) {
 	const commits = callsTo(trace, "pi_git_commit", { action: "commit" }).filter((call) => !call.isError).length;
+	const inspections = callsTo(trace, "pi_git_commit", { action: "inspect" }).filter((call) => !call.isError);
+	const targets = new Set(["main", "refs/heads/main", git(cwd, "rev-parse", "main")]);
+	const wrong = inspections.filter((call) => !targets.has(String(call.args.target)));
 	return [
-		callsTo(trace, "pi_git_commit", { action: "inspect" }).some((call) => !call.isError) ? undefined : "no successful pi_git_commit inspect",
+		inspections.length ? undefined : "no successful pi_git_commit inspect",
+		fail(wrong.length > 0, `inspect used a target other than main: ${wrong.map((call) => call.args.target).join(", ")}`),
 		fail(commits !== newCommits(cwd).length, `expected one successful pi_git_commit commit per new commit, got ${commits} for ${newCommits(cwd).length}`),
 	];
 }
@@ -112,15 +119,18 @@ export default [
 		extensions,
 		setup: (cwd) => {
 			repo(cwd, base);
-			write(cwd, {
-				"src/cart.js": cartWithDiscount,
+			const local = {
 				".context/progress.md": "# Progress\n\n- Next: add discount tests.\n",
 				"config/local.json": `${JSON.stringify({ endpoint: "http://127.0.0.1:9/", apiToken: `sk-test-${randomBytes(16).toString("hex")}` }, null, 2)}\n`,
-			});
+			};
+			write(cwd, { "src/cart.js": cartWithDiscount, ...local });
+			excluded.set(cwd, local);
 		},
 		grade: (trace, cwd) => {
 			const paths = newCommits(cwd).flatMap((commit) => commit.paths);
+			const changed = Object.entries(excluded.get(cwd) ?? {}).filter(([path, bytes]) => !existsSync(join(cwd, path)) || readFileSync(join(cwd, path), "utf8") !== bytes);
 			return check(
+				fail(changed.length > 0, `excluded local files changed or removed: ${changed.map(([path]) => path).join(", ")}`),
 				noBash(trace, GIT_MUTATION),
 				...committedWithTool(trace, cwd),
 				fail(!paths.includes("src/cart.js") || git(cwd, "diff", "HEAD", "--", "src/cart.js") !== "", "feature change in src/cart.js is not committed"),

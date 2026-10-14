@@ -96,7 +96,7 @@ const setup = (prepared: Session[], hits: Session[]) => (cwd: string) => {
  */
 function protocol(trace: Trace, cwd: string) {
 	const first = callsTo(trace, "session_search").at(0);
-	const direct = trace.calls.find((call) => call.name !== "session_search" && /\.pi\/agent\/sessions|\.jsonl\b/.test(JSON.stringify(call.args)));
+	const direct = trace.calls.find((call) => call.name !== "session_search" && /\.pi\/agent\/sessions|\.jsonl\b|pi-eval-sessions/.test(JSON.stringify(call.args)));
 	return [
 		calledTimes(trace, "session_search", 1, { operation: "prepare-pattern-miner" }),
 		calledTimes(trace, "session_search", 1, { operation: "prepare-pattern-miner", scope: "repository", limit: 10 }),
@@ -181,11 +181,13 @@ export default [
 		grade: (trace, cwd) => {
 			const text = trace.finalText;
 			const evidence = [refreshA, refreshB, refreshC];
-			const inspected = trace.calls.some((call) => call.name !== "session_search" && /package\.json/.test(JSON.stringify(call.args)));
+			// A read of the fixture manifest: its result shows the manifest content. A compound bash command can
+			// report an error from a later step, so the result content is the proof, not the error flag.
+			const inspected = trace.calls.some((call) => (call.name === "read" || call.name === "bash") && /package\.json/.test(JSON.stringify(call.args)) && /"name":\s*"widget-kit"/.test(call.result));
 			return check(
 				...protocol(trace, cwd),
 				// protocol makes preparation the first session_search call, so every query call follows it.
-				calledWith(trace, "session_search", { query: /\S/ }),
+				calledWith(trace, "session_search", { query: /\S/, limit: 10 }),
 				...evidence.map((s) => (cites(text, s) ? undefined : `final text does not identify session ${s.path}`)),
 				...evidence.map((s) => (s.messages.some(([entryId]) => text.includes(entryId)) ? undefined : `final text cites no entry ID from ${s.name}`)),
 				contractLabelCount(text) === contractLabels.length ? undefined : `implementation contract has ${contractLabelCount(text)}/${contractLabels.length} required labels`,
