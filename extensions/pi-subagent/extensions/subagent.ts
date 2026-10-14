@@ -239,6 +239,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		executor,
 		policy: initialPolicy,
 		currentPolicy,
+		reportConfig,
 	});
 	let directSequence = 0;
 	const directTasks = new Map<string, {
@@ -738,6 +739,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			directTasks.set(taskId, local);
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
+				// A later chain worker launches after earlier ones finish; report config edits made meanwhile.
+				reportConfig(latestCtx ?? ctx);
 				const role = findRole(loadRoleCatalog(), entry.delegation.role);
 				const { modelClass, model } = entry.delegation;
 				const prepared = await prepareDirectLaunch(role, latestCtx ?? ctx, {

@@ -224,7 +224,7 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. If the file is mi
 
 In each merged list, `roleDefaults` entries come first, and the entries of the Role follow. The merge removes duplicates and occurs before resource resolution. Use `roleDefaults` for the provider extension that every child needs. Limits come only from this global file. Request fields cannot override or replenish them. Existing durable requests keep their recorded policy, but a lower current correction limit can tighten recovery. Intentionally, there is no whole-run timeout setting.
 
-A bad config never stops the extension. At launch, and again each time it reads the file (a `delegate_task` call, `/subagent roles`, a status inspection, or an isolated run), the extension shows each new problem one time:
+A bad config never stops the extension. At launch, and again each time it reads the file (a `delegate_task` call, each later worker of a direct chain, each isolated Role launch, `/subagent roles`, or a status inspection), the extension shows each new problem one time:
 
 - An unknown key shows a warning. The extension ignores the key.
 - A misspelled key that is near a missing key, such as `maxToken` for `maxTokens`, counts as an invalid value of that key. The warning gives the likely key.

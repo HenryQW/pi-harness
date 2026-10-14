@@ -1094,6 +1094,28 @@ test("direct chain waits for exact prior result and admits declared writer Roles
 	});
 });
 
+test("a later direct chain worker reports config edited while earlier workers ran", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const path = join(agentDir, "config", "pi-subagent", "config.json");
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				if (prompt.includes("first")) await writeFile(path, JSON.stringify({ roleDefaults: { mcps: [] } }));
+				return "exact answer";
+			});
+			const app = harness({ ui: true, cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("chain", { chain: [
+				{ role: "worker", name: "First", task: "first", access: "read" },
+				{ role: "worker", name: "Second", task: "next: {previous}", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.ok(app.notifications.some(({ message }) =>
+				message === `pi-subagent config issues (${path}): roleDefaults.mcps: unknown key; defaults replace invalid settings.`), JSON.stringify(app.notifications));
+		});
+	});
+});
+
 test("parallel direct delegation returns after first verified tab and delivers one ordered partial failure", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);

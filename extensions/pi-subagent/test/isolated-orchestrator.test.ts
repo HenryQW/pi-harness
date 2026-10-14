@@ -193,6 +193,7 @@ function createHarness(options: {
 	responseState?: RunState;
 	inventoryStates?: RunState[];
 	onCreate?: (options: Parameters<CreateIsolatedComponents>[0]) => void;
+	reportConfig?: (ctx: ExtensionContext) => void;
 } = {}): Harness {
 	const tools: RegisteredTool[] = [];
 	const commands = new Map<string, RegisteredCommand>();
@@ -285,6 +286,7 @@ function createHarness(options: {
 		executor: {} as never,
 		policy: POLICY,
 		currentPolicy: () => POLICY,
+		...(options.reportConfig ? { reportConfig: options.reportConfig } : {}),
 		componentsFactory: createComponents,
 	});
 	tools.unshift({
@@ -825,6 +827,19 @@ test("inspection exposes late retained resources without dumping irrelevant stat
 	assert.ok(notices.length < 15);
 	assert.doesNotMatch(text, /IRRELEVANT_PRIVATE_OUTPUT|PRIVATE IMPLEMENTER PROMPT|SECRET_TOKEN/);
 	assert.deepEqual(harness.runnerCalls.map(({ method }) => method), ["status"]);
+});
+
+test("each deferred Role launch reports config with the session context first", async () => {
+	const reported: ExtensionContext[] = [];
+	const harness = createHarness({ reportConfig: (ctx) => reported.push(ctx) });
+	const initial = context("/nested/initial", { id: "initial-model" });
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, new AbortController().signal, initial);
+	reported.length = 0;
+	assert.equal(harness.getRoleContext(), initial);
+	const settled = context("/settled", { id: "settled-model" });
+	harness.handlers.get("agent_settled")!({ type: "agent_settled" }, settled);
+	assert.equal(harness.getRoleContext(), settled);
+	assert.deepEqual(reported, [initial, settled]);
 });
 
 test("lazily creates one component graph and supplies fresh session context", async () => {
