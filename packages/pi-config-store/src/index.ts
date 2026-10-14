@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync } from "node:fs";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { dirname, isAbsolute, join } from "node:path";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { lock } from "proper-lockfile";
 
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -150,43 +150,315 @@ export async function writePrivateTextFileAtomically(
 	}
 }
 
-class ConfigStore<T> {
-	readonly path: string;
-	private readonly defaults: () => T;
-	private readonly parse: (value: unknown) => T;
+export type ConfigIssueKind =
+	| "unreadable"
+	| "too-large"
+	| "invalid-utf8"
+	| "invalid-json"
+	| "invalid-root"
+	| "unknown-key"
+	| "invalid-value"
+	| "missing-required"
+	| "invalid-config";
 
-	constructor(path: string, defaults: () => T, parse: (value: unknown) => T) {
+/** One config problem. `key` is the formatted key path, such as `jobs[2].cwd`; it is empty for the whole file. */
+export interface ConfigIssue {
+	kind: ConfigIssueKind;
+	key: string;
+	message: string;
+}
+
+export type KeyPath = readonly (string | number)[];
+
+/** Record a problem at `path`, relative to the value being parsed. Use it for entries that a parser drops. */
+export type Report = (path: KeyPath, message: string, kind?: "unknown-key" | "invalid-value") => void;
+
+/** Parse one untrusted JSON value. Throw to reject the whole value; report and drop bad nested entries. */
+export type FieldParser<T> = (raw: unknown, report: Report) => T;
+
+export interface Field<T> {
+	readonly parse: FieldParser<T>;
+	/** Absent for a required field. */
+	readonly fallback?: { readonly value: T };
+	/** True when an invalid value disables the config instead of using the default. */
+	readonly disableOnInvalid: boolean;
+}
+
+// Field tables mix value types, so entries use `any`.
+export type Fields = Readonly<Record<string, Field<any>>>;
+export type FieldsValue<F extends Fields> = { [K in keyof F]: F[K] extends Field<infer T> ? T : never };
+
+/** An optional field. A missing value uses `fallback`; an invalid value uses it too unless `onInvalid` is `"disable"`. */
+export function field<T>(parse: FieldParser<T>, fallback: NoInfer<T>, options: { onInvalid?: "default" | "disable" } = {}): Field<T> {
+	return { parse, fallback: { value: fallback }, disableOnInvalid: options.onInvalid === "disable" };
+}
+
+/** A required field. A missing or invalid value disables the config. */
+export function required<T>(parse: FieldParser<T>): Field<T> {
+	return { parse, disableOnInvalid: true };
+}
+
+type Sink = (path: KeyPath, message: string, kind: ConfigIssueKind) => void;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function formatKey(path: KeyPath): string {
+	return path.map((segment, index) => {
+		if (typeof segment === "number") return `[${segment}]`;
+		if (/^[A-Za-z_$][\w$]*$/.test(segment)) return index === 0 ? segment : `.${segment}`;
+		return `[${JSON.stringify(segment)}]`;
+	}).join("");
+}
+
+/** Run a parser; keep its reports only when it succeeds, so a rejected value yields one issue. */
+function parseValue<T>(parse: FieldParser<T>, raw: unknown, path: KeyPath, sink: Sink): { ok: true; value: T } | { ok: false; message: string } {
+	const reports: [KeyPath, string, ConfigIssueKind][] = [];
+	try {
+		const value = parse(raw, (child, message, kind = "invalid-value") => reports.push([[...path, ...child], message, kind]));
+		for (const report of reports) sink(...report);
+		return { ok: true, value };
+	} catch (error) {
+		return { ok: false, message: errorMessage(error) };
+	}
+}
+
+/** Apply a field table; `blocked` is true when a required or unsafe field has no usable value. */
+function applyFields(raw: Record<string, unknown>, fields: Fields, path: KeyPath, sink: Sink): { value: Record<string, unknown>; blocked: boolean } {
+	for (const key of Object.keys(raw)) {
+		if (!Object.hasOwn(fields, key)) sink([...path, key], "unknown key", "unknown-key");
+	}
+	const value: Record<string, unknown> = {};
+	let blocked = false;
+	for (const [key, spec] of Object.entries(fields)) {
+		let parsed: { ok: true; value: unknown } | undefined;
+		if (!Object.hasOwn(raw, key)) {
+			if (!spec.fallback) {
+				sink([...path, key], "required", "missing-required");
+				blocked = true;
+			}
+		} else {
+			const result = parseValue(spec.parse, raw[key], [...path, key], sink);
+			if (result.ok) parsed = result;
+			else {
+				sink([...path, key], result.message, "invalid-value");
+				blocked ||= spec.disableOnInvalid;
+			}
+		}
+		if (parsed) value[key] = parsed.value;
+		else if (spec.fallback) value[key] = structuredClone(spec.fallback.value);
+	}
+	return { value, blocked };
+}
+
+/** Reusable field parsers. Each throws on an invalid value. */
+export const parsers = {
+	boolean(): FieldParser<boolean> {
+		return (raw) => {
+			if (typeof raw !== "boolean") throw new Error("must be true or false");
+			return raw;
+		};
+	},
+
+	/** A finite number in range. `min`/`max` are inclusive; `greaterThan`/`lessThan` are exclusive. */
+	number(range: NumberRange = {}): FieldParser<number> {
+		return (raw) => {
+			if (typeof raw !== "number" || !Number.isFinite(raw)) throw new Error(`must be a number${describeRange(range)}`);
+			return checkRange(raw, range, "a number");
+		};
+	},
+
+	/** A safe integer in range. */
+	integer(range: NumberRange = {}): FieldParser<number> {
+		return (raw) => {
+			if (typeof raw !== "number" || !Number.isSafeInteger(raw)) throw new Error(`must be an integer${describeRange(range)}`);
+			return checkRange(raw, range, "an integer");
+		};
+	},
+
+	/** A string with non-whitespace text. `trim` returns it without surrounding whitespace. */
+	string(options: { trim?: boolean } = {}): FieldParser<string> {
+		return (raw) => {
+			if (typeof raw !== "string" || !raw.trim()) throw new Error("must be non-empty text");
+			return options.trim ? raw.trim() : raw;
+		};
+	},
+
+	/** An absolute path without control characters. */
+	absolutePath(): FieldParser<string> {
+		return (raw) => {
+			if (typeof raw !== "string" || !isAbsolute(raw) || /\p{C}/u.test(raw)) {
+				throw new Error("must be an absolute path without control characters");
+			}
+			return raw;
+		};
+	},
+
+	oneOf<const V extends readonly (string | number | boolean)[]>(values: V): FieldParser<V[number]> {
+		return (raw) => {
+			if (!values.includes(raw as V[number])) throw new Error(`must be one of ${values.join(", ")}`);
+			return raw as V[number];
+		};
+	},
+
+	nullable<T>(parse: FieldParser<T>): FieldParser<T | null> {
+		return (raw, report) => raw === null ? null : parse(raw, report);
+	},
+
+	/** A nested object with its own field table. Unknown keys are reported and ignored. */
+	object<F extends Fields>(fields: F): FieldParser<FieldsValue<F>> {
+		return (raw, report) => {
+			if (!isRecord(raw)) throw new Error("must be a JSON object");
+			const issues: [KeyPath, string, ConfigIssueKind][] = [];
+			const { value, blocked } = applyFields(raw, fields, [], (...issue) => issues.push(issue));
+			// A blocked nested object rejects its parent value, which then follows the parent field's policy.
+			if (blocked) throw new Error(issues.map(([path, message]) => `${formatKey(path)}: ${message}`).join("; "));
+			for (const [path, message, kind] of issues) report(path, message, kind as "unknown-key" | "invalid-value");
+			return value as FieldsValue<F>;
+		};
+	},
+
+	/** A map. A bad key is reported as unknown and a bad value as invalid; either entry is dropped. */
+	record<V, K extends string = string>(
+		value: FieldParser<V>,
+		options: { key?: FieldParser<K> } = {},
+	): FieldParser<string extends K ? Record<string, V> : Partial<Record<K, V>>> {
+		return (raw, report) => {
+			if (!isRecord(raw)) throw new Error("must be a JSON object");
+			const entries: [string, V][] = [];
+			for (const [name, entry] of Object.entries(raw)) {
+				if (options.key) {
+					try {
+						options.key(name, () => {});
+					} catch (error) {
+						report([name], errorMessage(error), "unknown-key");
+						continue;
+					}
+				}
+				const parsed = parseValue(value, entry, [name], (path, message, kind) => report(path, message, kind as "unknown-key" | "invalid-value"));
+				if (parsed.ok) entries.push([name, parsed.value]);
+				else report([name], parsed.message);
+			}
+			return Object.fromEntries(entries) as string extends K ? Record<string, V> : Partial<Record<K, V>>;
+		};
+	},
+
+	/** An array. A bad item is reported and dropped; with `unique`, a later item with a repeated identity is dropped. */
+	array<T>(item: FieldParser<T>, options: { unique?: (item: T) => unknown } = {}): FieldParser<T[]> {
+		return (raw, report) => {
+			if (!Array.isArray(raw)) throw new Error("must be an array");
+			const items: T[] = [];
+			const seen = new Set<unknown>();
+			raw.forEach((entry, index) => {
+				const parsed = parseValue(item, entry, [index], (path, message, kind) => report(path, message, kind as "unknown-key" | "invalid-value"));
+				if (!parsed.ok) return report([index], parsed.message);
+				if (options.unique) {
+					const identity = options.unique(parsed.value);
+					if (seen.has(identity)) return report([index], `duplicates ${JSON.stringify(identity)}`);
+					seen.add(identity);
+				}
+				items.push(parsed.value);
+			});
+			return items;
+		};
+	},
+};
+
+export type NumberRange = { min?: number; max?: number; greaterThan?: number; lessThan?: number };
+
+function describeRange({ min, max, greaterThan, lessThan }: NumberRange): string {
+	const bounds = [
+		min === undefined ? undefined : `>= ${min}`,
+		greaterThan === undefined ? undefined : `> ${greaterThan}`,
+		max === undefined ? undefined : `<= ${max}`,
+		lessThan === undefined ? undefined : `< ${lessThan}`,
+	].filter(Boolean);
+	return bounds.length ? ` ${bounds.join(" and ")}` : "";
+}
+
+function checkRange(value: number, range: NumberRange, noun: string): number {
+	if (
+		(range.min !== undefined && value < range.min)
+		|| (range.max !== undefined && value > range.max)
+		|| (range.greaterThan !== undefined && value <= range.greaterThan)
+		|| (range.lessThan !== undefined && value >= range.lessThan)
+	) throw new Error(`must be ${noun}${describeRange(range)}`);
+	return value;
+}
+
+export type ConfigLoad<T> =
+	| { status: "ok"; source: "file" | "missing"; value: T; issues: ConfigIssue[] }
+	| { status: "disabled"; source: "file" | "missing"; issues: ConfigIssue[] };
+
+/** Format issues as `key: message; ...`. */
+export function formatConfigIssues(issues: readonly ConfigIssue[]): string {
+	return issues.map(({ key, message }) => key ? `${key}: ${message}` : message).join("; ");
+}
+
+type RootSchema<T> =
+	| { kind: "fields"; fields: Fields; check?: (value: T) => void }
+	| { kind: "entries"; entries: FieldParser<T>; check?: (value: T) => void };
+
+function readIssue(error: unknown): ConfigIssue {
+	if (error instanceof BoundedTextFileTooLargeError) return { kind: "too-large", key: "", message: `file exceeds ${MAX_CONFIG_BYTES} bytes` };
+	if ((error as NodeJS.ErrnoException).code === "ERR_ENCODING_INVALID_ENCODED_DATA") {
+		return { kind: "invalid-utf8", key: "", message: "file is not valid UTF-8" };
+	}
+	return { kind: "unreadable", key: "", message: `cannot read file: ${errorMessage(error)}` };
+}
+
+class ConfigStore<T> {
+	readonly extensionId: string;
+	readonly path: string;
+	private readonly schema: RootSchema<T>;
+
+	constructor(extensionId: string, path: string, schema: RootSchema<T>) {
+		this.extensionId = extensionId;
 		this.path = path;
-		this.defaults = defaults;
-		this.parse = parse;
+		this.schema = schema;
 	}
 
-	loadSync(): { source: "file" | "missing"; value: T } {
-		let contents: string;
+	/** Read and validate the file. Never throws for file content or I/O problems, and never writes. */
+	loadSync(): ConfigLoad<T> {
+		let contents: string | undefined;
 		try {
 			contents = readTextFileBoundedSync(this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
-			if (isMissing(error)) return { source: "missing", value: this.parse(this.defaults()) };
-			if (error instanceof BoundedTextFileTooLargeError) {
-				throw new Error(`Config exceeds ${MAX_CONFIG_BYTES} bytes: ${this.path}`);
-			}
-			throw error;
+			if (isMissing(error)) return this.validate({}, "missing");
+			return this.fallback("file", [readIssue(error)]);
 		}
-		return { source: "file", value: this.parse(JSON.parse(contents)) };
+		let raw: unknown;
+		try {
+			raw = JSON.parse(contents);
+		} catch (error) {
+			return this.fallback("file", [{ kind: "invalid-json", key: "", message: `invalid JSON: ${errorMessage(error)}` }]);
+		}
+		return this.validate(raw, "file");
 	}
 
+	/** Validate `value` strictly and replace the whole file, even a malformed one. */
 	async save(value: T): Promise<void> {
-		const contents = serialize(this.parse(value));
+		const { contents } = this.strict(value);
 		await withLock(this.path, async () => {
 			await writePrivateTextFileAtomically(this.path, contents);
 		});
 	}
 
+	/** Locked read-modify-write. Refuses when the current file has any issue or the config is disabled. */
 	async update(mutator: (value: T) => T): Promise<T> {
 		return await withLock(this.path, async () => {
-			const next = this.parse(mutator(this.loadSync().value));
-			await writePrivateTextFileAtomically(this.path, serialize(next));
-			return next;
+			const current = this.loadSync();
+			if (current.status === "disabled" || current.issues.length) {
+				throw new Error(`Config at ${this.path} has issues; fix or replace it before updating: ${formatConfigIssues(current.issues)}`);
+			}
+			const next = this.strict(mutator(current.value));
+			await writePrivateTextFileAtomically(this.path, next.contents);
+			return next.value;
 		});
 	}
 
@@ -195,6 +467,92 @@ class ConfigStore<T> {
 			await rm(this.path, { force: true });
 		});
 	}
+
+	/** Validate a value to write with the read rules; any issue rejects it. */
+	private strict(value: T): { value: T; contents: string } {
+		const result = this.validate(JSON.parse(serialize(value)), "file");
+		if (result.status === "disabled" || result.issues.length) {
+			throw new Error(`Invalid config for ${this.path}: ${formatConfigIssues(result.issues)}`);
+		}
+		return { value: result.value, contents: serialize(result.value) };
+	}
+
+	/** True when defaults cannot replace the file's values. */
+	private unsafeFallback(): boolean {
+		return this.schema.kind === "fields" && Object.values(this.schema.fields).some((spec) => spec.disableOnInvalid);
+	}
+
+	private defaults(): T {
+		if (this.schema.kind === "entries") return {} as T;
+		return Object.fromEntries(Object.entries(this.schema.fields).map(([key, spec]) => [key, structuredClone(spec.fallback?.value)])) as T;
+	}
+
+	private fallback(source: "file" | "missing", issues: ConfigIssue[]): ConfigLoad<T> {
+		return this.unsafeFallback() ? { status: "disabled", source, issues } : { status: "ok", source, value: this.defaults(), issues };
+	}
+
+	private validate(raw: unknown, source: "file" | "missing"): ConfigLoad<T> {
+		if (!isRecord(raw)) return this.fallback(source, [{ kind: "invalid-root", key: "", message: "file must contain a JSON object" }]);
+		const issues: ConfigIssue[] = [];
+		const sink: Sink = (path, message, kind) => issues.push({ kind, key: formatKey(path), message });
+		let value: T;
+		if (this.schema.kind === "fields") {
+			const applied = applyFields(raw, this.schema.fields, [], sink);
+			if (applied.blocked) return { status: "disabled", source, issues };
+			value = applied.value as T;
+		} else {
+			const parsed = parseValue(this.schema.entries, raw, [], sink);
+			if (!parsed.ok) return this.fallback(source, [...issues, { kind: "invalid-root", key: "", message: parsed.message }]);
+			value = parsed.value;
+		}
+		try {
+			this.schema.check?.(value);
+		} catch (error) {
+			return this.fallback(source, [...issues, { kind: "invalid-config", key: "", message: errorMessage(error) }]);
+		}
+		return { status: "ok", source, value, issues };
+	}
+}
+
+export type { ConfigStore };
+
+/** The part of a store that launch reporting needs. */
+export type ReportableConfig = Pick<ConfigStore<unknown>, "extensionId" | "path" | "loadSync">;
+
+export interface ConfigReporter {
+	/** Show issues in `result` that this session has not shown yet. Use it after lazy per-command or per-render reads. */
+	report(ctx: Pick<ExtensionContext, "hasUI" | "ui">, store: Pick<ReportableConfig, "extensionId" | "path">, result: ConfigLoad<unknown>): void;
+}
+
+/**
+ * On each `session_start`, load every store and show one notification per file with issues:
+ * `error` when the config is disabled, otherwise `warning`. Without UI, write the text to stderr.
+ * Issues show once per session; the returned reporter shares that deduplication.
+ */
+export function registerConfigReporting(pi: Pick<ExtensionAPI, "on">, stores: readonly ReportableConfig[]): ConfigReporter {
+	let shown = new Set<string>();
+	const reporter: ConfigReporter = {
+		report(ctx, store, result) {
+			const fresh = result.issues.filter((issue) => {
+				const fingerprint = JSON.stringify([store.path, issue.kind, issue.key, issue.message]);
+				if (shown.has(fingerprint)) return false;
+				shown.add(fingerprint);
+				return true;
+			});
+			if (!fresh.length) return;
+			const disabled = result.status === "disabled";
+			const text = disabled
+				? `${store.extensionId} disabled (${store.path}): ${formatConfigIssues(fresh)}`
+				: `${store.extensionId} config issues (${store.path}): ${formatConfigIssues(fresh)}; defaults replace invalid settings.`;
+			if (ctx.hasUI) ctx.ui.notify(text, disabled ? "error" : "warning");
+			else process.stderr.write(`${text}\n`);
+		},
+	};
+	pi.on("session_start", (_event, ctx) => {
+		shown = new Set();
+		for (const store of stores) reporter.report(ctx, store, store.loadSync());
+	});
+	return reporter;
 }
 
 /** Return the directory owned by an extension under Pi's agent config home. */
@@ -208,11 +566,36 @@ export function extensionConfigPath(extensionId: string, agentDir?: string): str
 	return join(extensionConfigDir(extensionId, agentDir), "config.json");
 }
 
-export function createConfigStore<T>(options: {
+type StoreLocation = {
 	extensionId: string;
 	agentDir?: string;
-	defaults: () => T;
-	parse: (value: unknown) => T;
-}): ConfigStore<T> {
-	return new ConfigStore(extensionConfigPath(options.extensionId, options.agentDir), options.defaults, options.parse);
+	/** A JSON file name in the extension's config home. Defaults to `config.json`. */
+	fileName?: string;
+};
+
+function storePath({ extensionId, agentDir, fileName = "config.json" }: StoreLocation): string {
+	if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(fileName)) throw new TypeError("fileName must be one JSON file name");
+	return join(extensionConfigDir(extensionId, agentDir), fileName);
+}
+
+/** Create a store for a JSON object with a fixed field table. */
+export function createConfigStore<F extends Fields>(options: StoreLocation & {
+	fields: F;
+	/** Cross-field rule; throw to reject the whole config. */
+	check?: (value: FieldsValue<F>) => void;
+}): ConfigStore<FieldsValue<F>>;
+/** Create a store for a JSON object whose keys are entry names, such as a map built with `parsers.record`. */
+export function createConfigStore<T extends Record<string, unknown>>(options: StoreLocation & {
+	entries: FieldParser<T>;
+	check?: (value: T) => void;
+}): ConfigStore<T>;
+export function createConfigStore(options: StoreLocation & {
+	fields?: Fields;
+	entries?: FieldParser<Record<string, unknown>>;
+	check?: (value: Record<string, unknown>) => void;
+}): ConfigStore<Record<string, unknown>> {
+	const schema: RootSchema<Record<string, unknown>> = options.entries
+		? { kind: "entries", entries: options.entries, check: options.check }
+		: { kind: "fields", fields: options.fields ?? {}, check: options.check };
+	return new ConfigStore(options.extensionId, storePath(options), schema);
 }
