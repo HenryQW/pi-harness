@@ -52,7 +52,7 @@ Each package is one bounded runtime unit. It owns its source, tests, and README.
 
 | Package | Store | Root shape | Field notes |
 | --- | --- | --- | --- |
-| `pi-bark` | `pi-bark` | fixed fields | `serverUrl` custom (`parseServerUrl`); `deviceKey` `nullable(string({ trim: true }))`; `encryption` custom strict parser with `onInvalid: "disable"` (a `null` fallback would send unencrypted); `statusNotifications` `object` with `cwdOverrides` `record(boolean, { key: absolutePath() })`. |
+| `pi-bark` | `pi-bark` | fixed fields | `serverUrl` custom (`parseServerUrl`) with `onInvalid: "disable"` (the default server would receive the Device Key); `deviceKey` `required(string({ trim: true }))`; `encryption` custom strict parser with `onInvalid: "disable"` (a `null` fallback would send unencrypted); `statusNotifications` `object` with `cwdOverrides` `record(boolean, { key: absolutePath() })`. Repair commands read a second store over the same file with defaults for every field and `deviceKey` `nullable`, then `save`. |
 | `pi-footer` | `pi-footer` | fixed fields | `colors` `record(colorValue, { key: oneOf(FOOTER_COLOR_ROLES) })`. Report per-render reads. |
 | `pi-footer` (open-in) | `pi-open-in` | fixed fields | `command` `field(string({ trim: true }), "code")`. Report per-call and per-render reads; `configuredOpenUri` must not throw. |
 | `pi-task-models` | `pi-task-models` `config.json` | fixed fields | `profiles` `record(profile, { key: oneOf(PROFILE_NAMES) })`; `tasks` `record(oneOf(PROFILE_NAMES), { key: taskId })`. Profile parser keeps route normalization and the `fav` no-fallback rule. Keep the owner API result shape explicit for consumers. |
