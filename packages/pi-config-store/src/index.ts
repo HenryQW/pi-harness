@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, openSync, readSync } from "node:fs";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
@@ -35,8 +35,38 @@ function decodeBounded(chunks: Buffer[], bytesRead: number, path: string, maxByt
 	return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytesRead));
 }
 
-/** Read at most maxBytes + 1 bytes synchronously. */
-function readBytesBoundedSync(path: string, maxBytes: number): Buffer {
+/**
+ * Read the whole file in one pass: keep at most maxBytes + 1 bytes to parse, and hash every byte, so the
+ * revision identifies the exact file even when it is too large to parse.
+ */
+function readRevisionSync(path: string, maxBytes: number): { bytes: Buffer; size: number; digest: string } {
+	const file = openSync(path, "r");
+	try {
+		const hash = createHash("sha256");
+		const chunks: Buffer[] = [];
+		let kept = 0;
+		let size = 0;
+		for (;;) {
+			const chunk = Buffer.allocUnsafe(64 * 1024);
+			const count = readSync(file, chunk, 0, chunk.length, null);
+			if (count === 0) break;
+			hash.update(chunk.subarray(0, count));
+			size += count;
+			if (kept <= maxBytes) {
+				const keep = chunk.subarray(0, Math.min(count, maxBytes + 1 - kept));
+				chunks.push(keep);
+				kept += keep.length;
+			}
+		}
+		return { bytes: Buffer.concat(chunks, kept), size, digest: hash.digest("hex") };
+	} finally {
+		closeSync(file);
+	}
+}
+
+/** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes synchronously. */
+export function readTextFileBoundedSync(path: string, maxBytes: number): string {
+	assertMaxBytes(maxBytes);
 	let file: number | undefined;
 	const chunks: Buffer[] = [];
 	let bytesRead = 0;
@@ -49,17 +79,10 @@ function readBytesBoundedSync(path: string, maxBytes: number): Buffer {
 			chunks.push(chunk.subarray(0, count));
 			bytesRead += count;
 		}
-		return Buffer.concat(chunks, bytesRead);
+		return decodeBounded(chunks, bytesRead, path, maxBytes);
 	} finally {
 		if (file !== undefined) closeSync(file);
 	}
-}
-
-/** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes synchronously. */
-export function readTextFileBoundedSync(path: string, maxBytes: number): string {
-	assertMaxBytes(maxBytes);
-	const bytes = readBytesBoundedSync(path, maxBytes);
-	return decodeBounded([bytes], bytes.length, path, maxBytes);
 }
 
 /** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes. */
@@ -457,14 +480,15 @@ function readIssue(error: unknown): ConfigIssue {
 	return { kind: "unreadable", key: "", message: `cannot read file: ${errorMessage(error)}` };
 }
 
-/** The bytes a load read, `null` for a missing file, or a read error message. */
-type Revision = Buffer | string | null;
+/** A read file's parse prefix and exact identity (size and SHA-256 of all bytes), `null` for a missing file, or a read error message. */
+type Revision = { bytes: Buffer; size: number; digest: string } | string | null;
 
 /** What each `loadSync()` result read, so `replaceIfUnchanged` can detect a later change. */
 const revisions = new WeakMap<object, { path: string; revision: Revision }>();
 
 function sameRevision(left: Revision, right: Revision): boolean {
-	return Buffer.isBuffer(left) && Buffer.isBuffer(right) ? left.equals(right) : left === right;
+	if (left && right && typeof left === "object" && typeof right === "object") return left.size === right.size && left.digest === right.digest;
+	return left === right;
 }
 
 class ConfigStore<T> {
@@ -486,10 +510,10 @@ class ConfigStore<T> {
 		return result;
 	}
 
-	/** The file's bytes, `null` when it is missing, or the read error message. */
+	/** The file's revision, `null` when it is missing, or the read error message. */
 	private readRevision(): Revision {
 		try {
-			return readBytesBoundedSync(this.path, MAX_CONFIG_BYTES);
+			return readRevisionSync(this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
 			return isMissing(error) ? null : readIssue(error).message;
 		}
@@ -500,7 +524,7 @@ class ConfigStore<T> {
 		if (typeof revision === "string") return this.fallback("file", [{ kind: "unreadable", key: "", message: revision }]);
 		let contents: string;
 		try {
-			contents = decodeBounded([revision], revision.length, this.path, MAX_CONFIG_BYTES);
+			contents = decodeBounded([revision.bytes], revision.bytes.length, this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
 			return this.fallback("file", [readIssue(error)]);
 		}

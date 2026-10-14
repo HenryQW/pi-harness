@@ -412,6 +412,28 @@ test("replaceIfUnchanged writes under the lock only when the file still matches 
 	});
 });
 
+test("replaceIfUnchanged compares every byte of a file too large to parse", async () => {
+	await withAgentDir(async (agentDir) => {
+		const store = createStore(agentDir);
+		const large = Buffer.alloc(200 * 1024, " ");
+		await writeConfig(store.path, large);
+		const snapshot = store.loadSync();
+		assert.deepEqual(snapshot.issues.map(({ kind }) => kind), ["too-large"]);
+		// Same size, one byte changed far past the parse limit.
+		const edited = Buffer.from(large);
+		edited[150 * 1024] = 0x0a;
+		await writeFile(store.path, edited);
+		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), /changed since it was read/);
+		await writeFile(store.path, Buffer.concat([large, Buffer.from(" ")]));
+		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), /changed since it was read/);
+		assert.equal((await readFile(store.path)).length, large.length + 1);
+		// An unchanged oversized file can be repaired.
+		await writeFile(store.path, large);
+		await store.replaceIfUnchanged(snapshot, { count: 1 });
+		assert.deepEqual(store.loadSync(), { status: "ok", source: "file", value: { count: 1 }, issues: [] });
+	});
+});
+
 test("concurrent updates do not lose changes", async () => {
 	await withAgentDir(async (agentDir) => {
 		const first = createStore(agentDir);
