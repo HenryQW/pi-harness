@@ -19,6 +19,7 @@ Turn repetition and correction in the current Pi conversation into one editable 
 | --- | --- |
 | Cross-session evidence and historical search | `@henryqw/pi-session-recall` |
 | Scripts, Skills, and other automation | Their owning package or repository |
+| User config load rules and launch reporting | `@henryqw/pi-config-store` ([ADR 004](../../docs/adr/004-extension-config-safety.md)) |
 | This extension | Current-conversation Signal detection, Prompt Candidate generation, and Prompt Review |
 
 The extension stays silent when it finds no Prompt Candidate. Background analysis remains visible while it is running. Manually requested candidates display when ready; automatic candidates wait for explicit user display, so background work never steals editor focus.

@@ -10,7 +10,7 @@ import {
 	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { createConfigStore } from "@henryqw/pi-config-store";
+import { createConfigStore, field, parsers, registerConfigReporting } from "@henryqw/pi-config-store";
 import {
 	createEphemeralSubagentExecutor,
 	resolveRoleLaunch,
@@ -60,7 +60,6 @@ or
 The object must have exactly these keys. name must start with a lowercase ASCII letter, use only lowercase ASCII letters, digits, and single hyphens, and be at most ${MAX_NAME_CHARS} characters. markdown must be nonempty, at most ${MAX_MARKDOWN_BYTES} UTF-8 bytes, and contain no C0 or C1 controls except tab and LF.`,
 } satisfies Role;
 
-type Config = { automatic: boolean; inputThreshold: number };
 type PromptCandidate = { name: string; markdown: string };
 type ConversationItem = { role: "summary" | "user" | "assistant"; text: string };
 type ContextMessage = ReturnType<typeof buildSessionContext>["messages"][number];
@@ -78,21 +77,6 @@ interface PromptCreatorOptions {
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
 	const actual = Object.keys(value);
 	return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-}
-
-function parseConfig(value: unknown): Config {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Config must be an object.");
-	const config = value as Record<string, unknown>;
-	const validKeys = Object.keys(config).every((key) => key === "automatic" || key === "inputThreshold");
-	const { automatic = true, inputThreshold = DEFAULT_INPUT_THRESHOLD } = config;
-	if (
-		!validKeys
-		|| typeof automatic !== "boolean"
-		|| typeof inputThreshold !== "number"
-		|| !Number.isSafeInteger(inputThreshold)
-		|| inputThreshold < 1
-	) throw new Error("Config may contain automatic:boolean and inputThreshold:positive integer.");
-	return { automatic, inputThreshold };
 }
 
 function isPromptName(value: unknown): value is string {
@@ -253,17 +237,19 @@ async function createPromptFile(path: string, markdown: string): Promise<void> {
 export default function promptCreatorExtension(pi: ExtensionAPI, options: PromptCreatorOptions = {}): void {
 	registerModelTask(pi, DRAFT_TASK);
 	const agentDir = options.agentDir ?? getAgentDir();
-	const configStore = createConfigStore<Config>({
+	const configStore = createConfigStore({
 		extensionId: EXTENSION_ID,
 		agentDir,
-		defaults: () => ({ automatic: true, inputThreshold: DEFAULT_INPUT_THRESHOLD }),
-		parse: parseConfig,
+		fields: {
+			automatic: field(parsers.boolean(), true),
+			inputThreshold: field(parsers.integer({ min: 1 }), DEFAULT_INPUT_THRESHOLD),
+		},
 	});
+	const configReporter = registerConfigReporting(pi, [configStore]);
 	let executor = options.executor;
 	let automatic = false;
 	let inputThreshold = DEFAULT_INPUT_THRESHOLD;
 	let automaticConsumed = false;
-	let configWarned = false;
 	let inputCount = 0;
 	let branchGeneration = 0;
 	let candidate: PromptCandidate | undefined;
@@ -397,18 +383,10 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		activeRun?.controller.abort(new Error("Prompt Creator session changed."));
 		activeRun = undefined;
 		resetBranch(ctx);
-		try {
-			const config = configStore.loadSync().value;
-			automatic = config.automatic;
-			inputThreshold = config.inputThreshold;
-		} catch {
-			automatic = false;
-			inputThreshold = DEFAULT_INPUT_THRESHOLD;
-			if (!configWarned) {
-				configWarned = true;
-				ctx.ui.notify("Prompt Creator config is invalid. Automatic analysis is disabled; the file was left unchanged.", "warning");
-			}
-		}
+		const loaded = configStore.loadSync();
+		configReporter.report(ctx, configStore, loaded);
+		automatic = loaded.status === "ok" && loaded.value.automatic;
+		inputThreshold = loaded.status === "ok" ? loaded.value.inputThreshold : DEFAULT_INPUT_THRESHOLD;
 	});
 
 	pi.on("input", (event, ctx) => {
