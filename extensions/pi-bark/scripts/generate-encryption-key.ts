@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 import {
-	createBarkConfigStore,
 	ENCRYPTION_ALGORITHM,
 	ENCRYPTION_MODE,
 	ENCRYPTION_PADDING,
+	writeBarkConfig,
 } from "../src/config.ts";
 import { generateEncryptionKey } from "../src/encryption.ts";
 
@@ -16,14 +16,14 @@ if (args.length > 1 || (args.length === 1 && !force && !disable)) {
 	console.error("Usage: pi-bark-key [--force | --disable]");
 	process.exitCode = 1;
 } else {
-	const store = createBarkConfigStore();
 	try {
 		if (disable) {
-			await store.update((config) => ({ ...config, encryption: null }));
+			await writeBarkConfig(undefined, ["encryption"], (config) => ({ ...config, encryption: null }));
 			console.log("Disabled Bark push encryption.");
 		} else {
 			let key = "";
-			await store.update((config) => {
+			// Without --force, an invalid existing key blocks the write instead of being replaced.
+			await writeBarkConfig(undefined, force ? ["encryption"] : [], (config) => {
 				if (config.encryption && !force) {
 					throw new Error("A Bark Custom Encryption Key already exists. Use --force to replace it.");
 				}

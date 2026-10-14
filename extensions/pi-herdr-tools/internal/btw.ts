@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrClient, hasHerdrErrorCode, startPiAgent } from "@henryqw/pi-herdr";
 import { registerModelTask, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
 import {
@@ -78,7 +79,7 @@ export type ContextStorePort = Pick<
 >;
 export type ConfigStorePort = Pick<
 	ReturnType<typeof createBtwConfigStore>,
-	"loadSync" | "save" | "update"
+	"extensionId" | "path" | "loadSync" | "save" | "update"
 >;
 
 const SIDE_PANE_INSTRUCTIONS = `You are running in a focused /btw side pane spawned from another Pi session.
@@ -373,6 +374,13 @@ export async function registerBtwExtension(
 	}
 
 	const configStore = options.configStore ?? createBtwConfigStore();
+	const configReporter = registerConfigReporting(pi, [configStore]);
+	const loadConfig = (ctx: ExtensionContext): BtwConfig => {
+		const loaded = configStore.loadSync();
+		configReporter.report(ctx, configStore, loaded);
+		// No field disables this config: invalid keys fall back to their defaults.
+		return loaded.status === "ok" ? loaded.value : { ...DEFAULT_CONFIG };
+	};
 	const herdr = createHerdrClient<HerdrOptions>(pi.exec.bind(pi));
 
 	// --- Parent-side merge coordination ---------------------------------
@@ -493,7 +501,7 @@ export async function registerBtwExtension(
 						return;
 					}
 					if (!route.args || route.args === "show") {
-						const config = configStore.loadSync().value;
+						const config = loadConfig(ctx);
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}\n${CONFIG_COMMAND_USAGE}`, "info");
 						return;
 					}
@@ -559,7 +567,7 @@ export async function registerBtwExtension(
 
 			let payloadPath: string | undefined;
 			try {
-				const config: BtwConfig = configStore.loadSync().value;
+				const config = loadConfig(ctx);
 				await store.removeStale();
 				const createdAt = new Date().toISOString();
 				const sessionId = ctx.sessionManager.getSessionId();

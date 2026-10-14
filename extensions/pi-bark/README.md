@@ -107,7 +107,7 @@ Package-owned: `~/.pi/agent/config/pi-bark/config.json`
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
 | `serverUrl` | Base URL of the Bark server that accepts push requests. | HTTP or HTTPS URL with an optional path and no query or fragment. | `"https://api.day.app"` |
-| `deviceKey` | Identifies the Bark App installation that receives the push notification. | Non-empty string or `null`. | `null` |
+| `deviceKey` | Identifies the Bark App installation that receives the push notification. | Non-empty string. | Required |
 | `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | `null` |
 | `statusNotifications` | Controls automatic status notifications by CWD. | Global boolean default and absolute-CWD boolean overrides. | Enabled with no overrides. |
 
@@ -193,6 +193,7 @@ Set `encryption` to `null` when Push Encryption is disabled.
 
 - A missing config file stays missing until a command or the key script writes it.
 - `/set-bark` preserves Push Encryption and status notification settings.
+- `pi-bark-key` can run before `/set-bark`. It then writes `"deviceKey": null`, and pi-bark stays disabled until you run `/set-bark`.
 - The Server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter. Use HTTPS when possible. HTTP sends the Device Key over the network without encryption. Without Push Encryption, HTTP also sends the push content without encryption. Push Encryption does not protect the Device Key.
 - Config writes are private and atomic.
 - Pi commands never print the Device Key, Server URL, or Custom Encryption Key.
@@ -203,6 +204,16 @@ Bark and Apple Push Notification service limit the payload size of a push notifi
 
 `/copyb` waits for a maximum of 15 seconds for the Bark server. If the push request fails after the clipboard copy, your clipboard still contains the message.
 
-An invalid config file causes a visible error, and pi-bark does not change the file. Fix or move the malformed file. Then run the command again.
+pi-bark checks its config when Pi starts and each time it reads the config. It does not change the file. Each problem shows one time in each session:
+
+| Problem | Result |
+| --- | --- |
+| Unknown key, or invalid `statusNotifications` value | A warning shows. pi-bark ignores the key or uses the default for that value, and continues to send. |
+| Missing or invalid `deviceKey`, including a missing config file | An error shows, and pi-bark is disabled. It sends no push notifications. Run `/set-bark` to repair it. |
+| Invalid `serverUrl` | An error shows, and pi-bark is disabled. pi-bark does not use the default server, because that server would receive your Device Key. Run `/set-bark` with the correct server URL. |
+| Invalid `encryption` | An error shows, and pi-bark is disabled. pi-bark does not send without encryption. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
+| Malformed JSON or a non-object file | An error shows, and pi-bark is disabled. Fix or move the file. |
+
+`/bark`, `/set-bark`, and `pi-bark-key` work while pi-bark is disabled. If the file has a problem, they replace the whole file. They do not replace a file that has an invalid `serverUrl` or `encryption` that the command does not set, or a malformed file. In that case, they show the problem and do not change the file. They also remove unknown keys and invalid `statusNotifications` entries.
 
 See Bark's [Push Encryption documentation](https://github.com/Finb/Bark/blob/master/docs/en-us/encryption.md) for the encryption model.

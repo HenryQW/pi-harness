@@ -196,11 +196,11 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 | `split` | Sets the side-pane placement. | `right` or `down`. | `right` |
 
 - All fields are optional.
-- The extension rejects unknown keys and non-object files.
-- `/btw config show` prints effective values.
-- `/btw config reset` saves the defaults.
 - The config file is optional. If it is missing, the extension uses the defaults.
-- A malformed config file causes a visible failure, and the file does not change.
+- At launch, the extension shows a warning for each unknown key and each invalid value. An invalid value uses its default. A malformed file uses all defaults. `/btw` continues to work, and the file does not change.
+- `/btw config show` prints effective values.
+- `/btw config <option> <value>` fails while the file has an issue. Fix the file, or run `/btw config reset`.
+- `/btw config reset` replaces the whole file with the defaults.
 
 ## State and storage
 
