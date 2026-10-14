@@ -154,11 +154,11 @@ test("a new job waits for its slot, then runs once in a persisted session with t
 test("/cron run forces a run, refuses a concurrent claim, and follow-up delivery goes through sendMessage", async () => {
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
-	await writeJobs([{ id: "digest", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", notify: "followUp" }]);
+	// Disabled, so the session-start tick never holds the local admission while it claims this job.
+	await writeJobs([{ id: "digest", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false, notify: "followUp" }]);
 	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
 	const h = harness(async () => { await gate; return { outcome: "failure", output: "boom" }; });
 	await h.emit("session_start");
-	await h.settle();
 	await h.command("run digest");
 	await h.settle(() => h.prepared.length === 1);
 	assert.ok(h.notices.some((notice) => notice.startsWith("Started digest")), h.notices.join("\n"));
@@ -309,7 +309,7 @@ test("a result recorded after shutdown is not sent into a tearing-down session",
 
 test("a bad job is reported once across ticks and commands while valid jobs still run", async () => {
 	const path = join(agentDir, "config", "pi-cron", "config.json");
-	await writeFile(path, JSON.stringify({ jobs: [{ id: "x" }, ...["good", "other"].map((id) => ({ id, every: "1d", role: "scout", cwd: agentDir, prompt: "Go." }))] }));
+	await writeFile(path, JSON.stringify({ jobs: [{ id: "x" }, ...["good", "other"].map((id) => ({ id, every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false }))] }));
 	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
 	const h = harness(async () => ({ outcome: "success", output: "" }));
 	await h.emit("session_start");
@@ -323,11 +323,10 @@ test("a bad job is reported once across ticks and commands while valid jobs stil
 });
 
 test("a job start reports roleDefaults and task-model config issues added during the session", async () => {
-	await writeJobs([{ id: "edited", at: "07:30", timezone: "Asia/Hong_Kong", role: "scout", cwd: agentDir, prompt: "Go." }]);
+	await writeJobs([{ id: "edited", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false }]);
 	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
 	const h = harness(async () => ({ outcome: "success", output: "" }));
 	await h.emit("session_start");
-	await h.settle();
 	const subagentPath = join(agentDir, "config", "pi-subagent", "config.json");
 	const taskModelsPath = join(agentDir, "config", "pi-task-models", "config.json");
 	const taskModels = await readFile(taskModelsPath, "utf8");
