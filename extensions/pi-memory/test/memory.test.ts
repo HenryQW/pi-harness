@@ -836,6 +836,14 @@ test("declares a balanced review task and invokes the configured primary route",
 			/Run \/task-models/,
 		);
 		assert.equal(calls.length, 0);
+
+		// A disabled shared config keeps the pi-task-models message with the path and the problem.
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), "{");
+		await assert.rejects(
+			() => tool.execute("disabled", { action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/Task model config at .*config\.json is disabled: invalid JSON/,
+		);
+		assert.equal(calls.length, 0);
 	});
 });
 

@@ -95,9 +95,9 @@ Package-owned: `~/.pi/agent/config/pi-memory/config.json`. You write this option
 | `memoryCharLimit` | Caps `MEMORY.md` by character count. | Safe integer from 1 to 100000. | `8800` |
 | `userCharLimit` | Caps `USER.md` by character count. | Safe integer from 1 to 100000. | `5500` |
 
-At session start, Pi shows a warning with the file path and each problem for an unknown key, including a misspelled key, or an invalid `memoryCharLimit` or `userCharLimit`. pi-memory ignores the unknown key and uses the default for the invalid limit.
+At session start, Pi shows a warning with the file path and each problem for an unknown key or an invalid `memoryCharLimit` or `userCharLimit`. pi-memory ignores the unknown key and uses the default for the invalid limit. A misspelled key near a missing key counts as an invalid value of that key. Thus, `memoryCharLimt` gives the default `memoryCharLimit`.
 
-An invalid `directory`, malformed JSON, invalid UTF-8, a file over 64 KiB, an unreadable file, or a non-object root disables persistent memory for that session. pi-memory never uses the default directory in place of an invalid `directory`. Pi shows an error with the file path and each problem. Fix the file and start a new session. pi-memory never rewrites the file.
+An invalid or misspelled `directory` (for example, `directroy` when `directory` is not in the file), malformed JSON, invalid UTF-8, a file over 64 KiB, an unreadable file, or a non-object root disables persistent memory for that session. pi-memory never uses the default directory in place of an invalid `directory`. Pi shows an error with the file path and each problem. Fix the file and start a new session. pi-memory never rewrites the file.
 
 ## State and storage
 

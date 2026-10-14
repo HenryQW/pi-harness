@@ -68,7 +68,7 @@ test("unknown keys and invalid limits warn and fall back per key", async () => {
 
 test("invalid directory or unreadable file disables memory instead of using the default directory", async () => {
 	await withAgentDir(async (agentDir) => {
-		for (const contents of [JSON.stringify({ directory: "relative/dir" }), JSON.stringify({ directory: "/tmp/\nx" }), "{ not json"]) {
+		for (const contents of [JSON.stringify({ directory: "relative/dir" }), JSON.stringify({ directory: "/tmp/\nx" }), JSON.stringify({ directroy: "/tmp/memory" }), "{ not json"]) {
 			const path = await writeConfig(agentDir, contents);
 			const loaded = memoryConfigStore(agentDir).loadSync();
 			assert.equal(loaded.status, "disabled", contents);

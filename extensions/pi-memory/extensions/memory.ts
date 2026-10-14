@@ -194,12 +194,11 @@ function configuredReviewRoutes(ctx: ExtensionContext, task: ModelTask = MEMORY_
 		return resolveConfiguredTaskRoutes(ctx, task);
 	} catch (error) {
 		const { taskRouteCode, profileName } = error as TaskRouteError;
+		// pi-task-models messages give the path and the problems; only `no-route` gets memory-specific wording.
 		throw new MemoryReviewError(
-			taskRouteCode === "profile-missing"
-				? `${task.id} profile ${profileName} is not configured. Run /task-models.`
-				: taskRouteCode === "no-route"
-					? `${task.id} profile ${profileName} has no available route. Run /task-models.`
-					: "Couldn't read task model config. Run /task-models.",
+			taskRouteCode === "no-route"
+				? `${task.id} profile ${profileName} has no available route. Run /task-models.`
+				: error instanceof Error ? error.message : String(error),
 		);
 	}
 }
@@ -876,9 +875,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				if (loadTaskModelsConfig().source === "missing") {
 					ctx.ui.notify("Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");
 				}
-			} catch {
+			} catch (error) {
 				// A broken review route must not disable otherwise usable memory snapshots.
-				ctx.ui.notify("Couldn't read task model config. Run /task-models.", "warning");
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 			}
 			await mkdir(BACKUP_DIR(), { recursive: true });
 			await mkdir(config.directory, { recursive: true });
