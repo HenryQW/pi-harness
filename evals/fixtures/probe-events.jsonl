@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"01a1397a-5308-7563-bb91-41fa59db61b4","timestamp":"2026-10-14T08:14:40.392Z","cwd":"/private/tmp/pi-eval/cwd"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"toolu_0146qkhBqzPLUPix8hswcef3","name":"pi_pr_sweep","arguments":{"action":"scan"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-haiku-5-5","providerThinkingLevel":"medium","stopReason":"toolUse","timestamp":1791965680482,"responseId":"msg_011Cg1o7wSqW764LrhR3wySw","rawStopReason":"tool_use","durationMs":2018,"thinkingLevel":"medium"}}
+{"type":"tool_execution_start","toolCallId":"toolu_0146qkhBqzPLUPix8hswcef3","toolName":"pi_pr_sweep","args":{"action":"scan"}}
+{"type":"tool_execution_end","toolCallId":"toolu_0146qkhBqzPLUPix8hswcef3","toolName":"pi_pr_sweep","result":{"content":[{"type":"text","text":"STUB-SCAN-OK 42"}],"details":{}},"isError":false,"durationMs":0}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"STUB-SCAN-OK 42"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-haiku-5-5","providerThinkingLevel":"medium","stopReason":"stop","timestamp":1791965682507,"responseId":"msg_011Cg1o85WGA59bnwv8F3au7","rawStopReason":"end_turn","durationMs":1650,"thinkingLevel":"medium"}}
+{"type":"agent_settled","aborted":false}
