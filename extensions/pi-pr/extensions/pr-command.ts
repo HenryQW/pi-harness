@@ -245,7 +245,7 @@ export function createPrCommandHandler(
 		onRouteResolved?: PrCommandInvocation,
 		linkedAuthority?: CurrentPullRequest,
 		refreshes = 0,
-		ciWaits = 0,
+		waiting?: "wait-ci" | "wait-review",
 	): Promise<NextStep> => {
 		if (args.trim()) throw new Error("/pr does not accept arguments");
 		const discovery = await load(pi, ctx);
@@ -277,7 +277,7 @@ export function createPrCommandHandler(
 			nextStep = "sweep";
 			onRouteResolved?.assertCurrent();
 		}
-		if (!publication && discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci") &&
+		if (!publication && discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci" || nextStep === "wait-review") &&
 			discovery.pullRequest.lifecycle === "open" && !discovery.pullRequest.conditions.draft &&
 			discovery.pullRequest.target.provenance === "configured" &&
 			discovery.pullRequest.local.worktree === "clean" && discovery.pullRequest.local.head === "equal") {
@@ -335,24 +335,28 @@ export function createPrCommandHandler(
 			onRouteResolved?.assertCurrent();
 			return await handle("", ctx, onRouteResolved, undefined, refreshes + 1);
 		}
-		if (nextStep === "wait-ci") {
+		if (nextStep === "wait-ci" || nextStep === "wait-review") {
 			if (discovery.kind !== "current") throw new Error("/pr wait failed: pull request is unavailable");
 			const current = discovery.pullRequest;
 			const run = onRouteResolved?.run;
+			// CI and Codex review waits share one per-invocation budget.
 			const interval = run?.consumeCiWait() ?? null;
 			if (interval === null) {
 				const budget = run?.policy.ciWaitMinutes ?? 0;
-				ctx.ui.notify(budget > 0
+				ctx.ui.notify(nextStep === "wait-review"
+					? `PR #${current.number} is still waiting for the Codex review; comment "@codex review" if it did not start, then run /pr again`
+					: budget > 0
 					? `PR #${current.number} is still waiting for CI after ${budget} min; run /pr again later`
 					: `PR #${current.number} is waiting for CI`, "warning");
 				return "none";
 			}
-			if (ciWaits === 0) {
-				ctx.ui.notify(`PR #${current.number}: CI is running; checking every ${run!.policy.ciPollSeconds} s for up to ${run!.policy.ciWaitMinutes} min`, "info");
+			if (waiting !== nextStep) {
+				const subject = nextStep === "wait-review" ? "waiting for the Codex review" : "CI is running";
+				ctx.ui.notify(`PR #${current.number}: ${subject}; checking every ${run!.policy.ciPollSeconds} s for up to ${run!.policy.ciWaitMinutes} min`, "info");
 			}
 			await delay(dependencies.ciPollMs ?? interval, undefined, { signal: ctx.signal });
 			onRouteResolved?.assertCurrent();
-			return await handle("", ctx, onRouteResolved, undefined, 0, ciWaits + 1);
+			return await handle("", ctx, onRouteResolved, undefined, 0, nextStep);
 		}
 		if (nextStep === "merge") {
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
@@ -379,7 +383,10 @@ export function createPrCommandHandler(
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
 		const route = nextStep as WorkflowNextStep;
 		if (onRouteResolved?.run?.hasCompleted(route, discovery.kind === "current" ? discovery.pullRequest.head.oid : null)) {
-			ctx.ui.notify(`PR ${route} already ran; inspect fresh state before retrying`, "warning");
+			const codexFindings = discovery.kind === "current" && discovery.pullRequest.conditions.codex?.findings;
+			ctx.ui.notify(route === "sweep" && codexFindings
+				? `PR sweep already ran; ${codexFindings} unresolved Codex P0/P1 findings block the merge prompt`
+				: `PR ${route} already ran; inspect fresh state before retrying`, "warning");
 			return "none";
 		}
 		const reservation = workflowReservation(route, discovery);

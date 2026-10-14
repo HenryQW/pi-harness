@@ -13,6 +13,7 @@ import {
 } from "./pr-execution.ts";
 import type {
 	CiStatus,
+	CodexReview,
 	LocalMergeSafety,
 	PullRequest,
 	PullRequestConditions,
@@ -30,6 +31,13 @@ const PR_FIELDS = "id,number,url,state,isDraft,baseRefName,baseRefOid,headRefNam
 const PR_PUBLICATION_FIELDS = "number,url,state,baseRefName,headRefName,headRefOid,headRepository,title,body";
 const PR_DISCOVERY_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!,$endCursor:String){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name associatedPullRequests(first:100,after:$endCursor){totalCount edges{cursor node{__typename number url state baseRepository{nameWithOwner}headRepository{nameWithOwner}headRefName headRefOid}}pageInfo{hasNextPage startCursor endCursor}}}}}";
 const REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved}pageInfo{hasNextPage endCursor}}}}}";
+const CODEX_REVIEW_THREADS_QUERY = "query($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{reviewThreads(first:100,after:$endCursor){nodes{isResolved comments(first:1){nodes{author{login}body}}}pageInfo{hasNextPage endCursor}}}}}";
+/** GitHub reports the Codex bot as this GraphQL author login and as `<login>[bot]` in REST. */
+const CODEX_LOGIN = "chatgpt-codex-connector";
+const CODEX_REST_LOGIN = `${CODEX_LOGIN}[bot]`;
+const CODEX_BLOCKING_BADGE = /!\[P[01] Badge\]\(/;
+const CODEX_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->";
+const CODEX_SUMMARY_COMPLETED = /\*\*Code Review\*\*\s*\|[^|\n]*\*\*Completed\*\*/;
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const FAILED_CHECK_STATES = new Set([
@@ -116,7 +124,8 @@ export type PullRequestObservation = {
 	target: { repository: string; branch: string; remote: string; ref: string };
 };
 
-export type PullRequestLoadContext = { cwd: string; signal?: AbortSignal; rebaseBranch?: string };
+/** `codexReview` adds the Codex review gate reads to open pull request discovery. */
+export type PullRequestLoadContext = { cwd: string; signal?: AbortSignal; rebaseBranch?: string; codexReview?: boolean };
 
 type PullRequestCreationPreflight = {
 	head: string;
@@ -846,6 +855,7 @@ function ciStatus(checks: CheckState[]): CiStatus {
 function conditions(
 	candidate: ListedPullRequest,
 	unresolvedThreads: number,
+	codex: CodexReview | undefined,
 ): PullRequestConditions {
 	if (
 		(candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "DIRTY") ||
@@ -871,15 +881,17 @@ function conditions(
 		mergeability: !conflict && (candidate.mergeable === "UNKNOWN" || candidate.mergeStateStatus === "UNKNOWN")
 			? "pending"
 			: "known",
+		...(codex ? { codex } : {}),
 	};
 }
 
-function parseUnresolvedReviewThreads(output: string): number {
+function parseUnresolvedReviewThreads(output: string): { unresolved: number; codexFindings: number } {
 	const pages = parseJson(output, "Read unresolved review threads");
 	if (!Array.isArray(pages) || !pages.length) {
 		fail("Read unresolved review threads", "invalid GitHub CLI output");
 	}
 	let total = 0;
+	let codexFindings = 0;
 	for (const [index, page] of pages.entries()) {
 		if (!isRecord(page)) fail("Read unresolved review threads", "invalid GitHub CLI output");
 		if (page.errors !== undefined) {
@@ -904,11 +916,36 @@ function parseUnresolvedReviewThreads(output: string): number {
 			if (!isRecord(thread) || typeof thread.isResolved !== "boolean") {
 				fail("Read unresolved review threads", "invalid GitHub CLI output");
 			}
-			if (!thread.isResolved) total += 1;
+			if (thread.isResolved) continue;
+			total += 1;
+			if (thread.comments === undefined) continue;
+			if (!isRecord(thread.comments) || !Array.isArray(thread.comments.nodes)) {
+				fail("Read unresolved review threads", "invalid GitHub CLI output");
+			}
+			const [first] = thread.comments.nodes;
+			if (first === undefined) continue;
+			if (!isRecord(first) || typeof first.body !== "string" || (first.author !== null && !isRecord(first.author))) {
+				fail("Read unresolved review threads", "invalid GitHub CLI output");
+			}
+			if (isRecord(first.author) && first.author.login === CODEX_LOGIN && CODEX_BLOCKING_BADGE.test(first.body)) codexFindings += 1;
 		}
 	}
 	if (!Number.isSafeInteger(total)) fail("Read unresolved review threads", "invalid GitHub CLI output");
-	return total;
+	return { unresolved: total, codexFindings };
+}
+
+function parseRestItems(output: string, action: string): Record<string, unknown>[] {
+	const pages = parseJson(output, action);
+	if (!Array.isArray(pages) || !pages.every(Array.isArray)) fail(action, "invalid GitHub CLI output");
+	const items = pages.flat();
+	if (!items.every((item) => isRecord(item) && (item.user === null || isRecord(item.user)))) {
+		fail(action, "invalid GitHub CLI output");
+	}
+	return items as Record<string, unknown>[];
+}
+
+function isCodexAuthor(item: Record<string, unknown>): boolean {
+	return isRecord(item.user) && item.user.login === CODEX_REST_LOGIN;
 }
 
 function parseBaseRefAuthority(
@@ -1471,7 +1508,7 @@ async function readUnresolvedReviewThreads(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	candidate: ListedPullRequest,
-): Promise<number> {
+): Promise<{ unresolved: number; codexFindings: number }> {
 	const result = await execute(pi, context, "Read unresolved review threads", "gh", [
 		"api",
 		"graphql",
@@ -1480,11 +1517,34 @@ async function readUnresolvedReviewThreads(
 		"--paginate",
 		"--slurp",
 		"-f",
-		`query=${REVIEW_THREADS_QUERY}`,
+		`query=${context.codexReview ? CODEX_REVIEW_THREADS_QUERY : REVIEW_THREADS_QUERY}`,
 		"-F",
 		`id=${candidate.id}`,
 	]);
 	return parseUnresolvedReviewThreads(result.stdout);
+}
+
+/**
+ * Codex adds EYES while it reviews, then THUMBS_UP for a clean review or a Completed summary row.
+ * Without either signal it has not started yet, which also counts as running.
+ */
+async function readCodexReviewStatus(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	candidate: ListedPullRequest,
+): Promise<CodexReview["status"]> {
+	const issue = `repos/${candidate.base.repository}/issues/${candidate.number}`;
+	const read = async (action: string, endpoint: string) => parseRestItems((await execute(pi, context, action, "gh", [
+		"api", "--hostname", candidate.url.hostname, "--paginate", "--slurp", `${issue}/${endpoint}?per_page=100`,
+	])).stdout, action);
+	const reactions = (await read("Read Codex review reactions", "reactions")).filter(isCodexAuthor);
+	if (reactions.some((reaction) => reaction.content === "eyes")) return "running";
+	if (reactions.some((reaction) => reaction.content === "+1")) return "complete";
+	const comments = await read("Read Codex review summary", "comments");
+	return comments.some((comment) => isCodexAuthor(comment) && typeof comment.body === "string" &&
+		comment.body.startsWith(CODEX_SUMMARY_MARKER) && CODEX_SUMMARY_COMPLETED.test(comment.body))
+		? "complete"
+		: "running";
 }
 
 async function readBaseRefOid(
@@ -1541,13 +1601,16 @@ async function loadPullRequestDetails(
 		`refs/heads/${candidate.base.ref}`,
 	]);
 
-	const unresolvedThreads = candidate.lifecycle === "open"
+	const threads = candidate.lifecycle === "open"
 		? await readUnresolvedReviewThreads(pi, context, candidate)
-		: 0;
+		: { unresolved: 0, codexFindings: 0 };
+	const codex: CodexReview | undefined = candidate.lifecycle === "open" && context.codexReview
+		? { status: await readCodexReviewStatus(pi, context, candidate), findings: threads.codexFindings }
+		: undefined;
 	const liveBaseOid = candidate.lifecycle === "open"
 		? await readBaseRefOid(pi, context, candidate)
 		: null;
-	const pullRequestConditions = conditions(candidate, unresolvedThreads);
+	const pullRequestConditions = conditions(candidate, threads.unresolved, codex);
 	const inspected = inspectedLocal ?? await inspectLocalMergeSafety({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,

@@ -89,7 +89,9 @@ function footerStatus(input: PrDisplayInput): Pick<PrFooter, "text" | "color"> {
 	if (conditions.ci === "running") return { text: "CI running", color: "warning" };
 	if (conditions.mergeability === "pending") return { text: "mergeability pending", color: "warning" };
 	if (input.local.head === "behind" || input.local.head === "diverged") return { text: `local ${input.local.head}`, color: "warning" };
-	if (derivePullRequestNextStep(input) === "merge") return { text: "merge-ready", color: "success" };
+	const nextStep = derivePullRequestNextStep(input);
+	if (nextStep === "wait-review") return { text: "Codex review pending", color: "warning" };
+	if (nextStep === "merge") return { text: "merge-ready", color: "success" };
 	if (input.approved) return { text: "approved", color: "success" };
 	return { text: "open", color: "accent" };
 }
@@ -110,6 +112,8 @@ function widgetText(nextStep: NextStep): string | undefined {
 			return "Run /pr to fix CI";
 		case "wait-ci":
 			return "Run /pr to wait for CI, then continue";
+		case "wait-review":
+			return "Run /pr to wait for the Codex review, then continue";
 		case "merge":
 			return "Run /pr to confirm and merge pull request";
 		case "link-branch":

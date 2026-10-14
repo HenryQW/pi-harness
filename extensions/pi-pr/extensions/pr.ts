@@ -290,7 +290,11 @@ export default function pullRequestExtension(
 	const load: typeof loadCurrentPullRequest = async (api, loadContext, inspectedLocal) => {
 		const generation = sessionGeneration;
 		try {
-			const discovery = await discover(api, loadContext, inspectedLocal, observation);
+			// The latest /pr policy also gates footer refreshes; the session default leaves the Codex gate off.
+			const scoped = prRun.policy.codexReview
+				? { cwd: loadContext.cwd, signal: loadContext.signal, rebaseBranch: loadContext.rebaseBranch, codexReview: true }
+				: loadContext;
+			const discovery = await discover(api, scoped, inspectedLocal, observation);
 			if (generation !== sessionGeneration) return discovery;
 			if (context?.cwd === loadContext.cwd && !loadContext.signal?.aborted) {
 				lastDiscoveryOpen = discovery.kind === "current" && discovery.pullRequest.lifecycle === "open";

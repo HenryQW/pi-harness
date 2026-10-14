@@ -53,6 +53,11 @@ test("routes exactly one highest-priority next step", () => {
 		{ name: "pending review waits", pullRequest: pullRequest({ conditions: { ci: "success", review: "pending" } }), expected: "none" },
 		{ name: "pending policy waits", pullRequest: pullRequest({ conditions: { policy: "pending", mergeability: "known" } }), expected: "none" },
 		{ name: "successful merge-ready PR merges", pullRequest: pullRequest({ conditions: { ci: "success" } }), expected: "merge" },
+		{ name: "running Codex review waits at the merge gate", pullRequest: pullRequest({ conditions: { ci: "success", codex: { status: "running", findings: 0 } } }), expected: "wait-review" },
+		{ name: "running CI precedes the Codex review wait", pullRequest: pullRequest({ conditions: { ci: "running", codex: { status: "running", findings: 0 } } }), expected: "wait-ci" },
+		{ name: "pending policy precedes the Codex review wait", pullRequest: pullRequest({ conditions: { policy: "pending", codex: { status: "running", findings: 0 } } }), expected: "none" },
+		{ name: "unresolved Codex findings route to sweep", pullRequest: pullRequest({ conditions: { unresolvedThreads: 1, codex: { status: "complete", findings: 1 } } }), expected: "sweep" },
+		{ name: "complete Codex review merges", pullRequest: pullRequest({ conditions: { ci: "success", codex: { status: "complete", findings: 0 } } }), expected: "merge" },
 	];
 
 	for (const { name, pullRequest: candidate, expected } of cases) {

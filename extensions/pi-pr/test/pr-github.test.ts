@@ -77,6 +77,8 @@ type HarnessOptions = {
 	creationFetchResult?: ReturnType<typeof result>;
 	creationDefaultBranch?: string;
 	repositoryApiResults?: Record<string, ReturnType<typeof result>>;
+	codexReactions?: unknown[];
+	codexComments?: unknown[];
 };
 
 const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed });
@@ -350,6 +352,12 @@ function harness(options: HarnessOptions = {}) {
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "--hostname") {
 				const endpoint = args.at(-1) ?? "";
+				if (options.codexReactions && endpoint === "repos/acme/project/issues/42/reactions?per_page=100") {
+					return result(JSON.stringify([options.codexReactions]));
+				}
+				if (options.codexComments && endpoint === "repos/acme/project/issues/42/comments?per_page=100") {
+					return result(JSON.stringify([options.codexComments]));
+				}
 				if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
 					const configuredResult = options.repositoryApiResults?.[endpoint];
 					if (configuredResult) return configuredResult;
@@ -2209,4 +2217,50 @@ test("classifies behind, ahead, and diverged only after fetching the exact PR he
 		const compareIndex = calls.findIndex(({ command, args }) => command === "git" && args[0] === "merge-base");
 		assert.ok(fetchIndex >= 0 && compareIndex > fetchIndex, ancestry);
 	}
+});
+
+test("derives the opt-in Codex review gate from reactions, the summary comment, and P0/P1 threads", async () => {
+	const codex = { login: "chatgpt-codex-connector[bot]" };
+	const summary = "<!-- codex-pull-request-review-summary -->\n| Task | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n" +
+		"| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-10-01T00:00:00Z\"></relative-time> | `36e8693` | PR opened |";
+	const cases: Array<{ name: string; reactions: unknown[]; comments?: unknown[]; status: "running" | "complete" }> = [
+		{ name: "EYES means running", reactions: [{ content: "+1", user: codex }, { content: "eyes", user: codex }], status: "running" },
+		{ name: "no Codex activity means running", reactions: [{ content: "+1", user: { login: "octocat" } }], comments: [], status: "running" },
+		{ name: "THUMBS_UP completes", reactions: [{ content: "+1", user: codex }], status: "complete" },
+		{ name: "a Completed summary completes", reactions: [], comments: [{ user: null, body: "note" }, { user: codex, body: summary }], status: "complete" },
+		{ name: "another author's summary does not complete", reactions: [], comments: [{ user: { login: "octocat" }, body: summary }], status: "running" },
+	];
+	for (const { name, reactions, comments, status } of cases) {
+		const app = harness({ codexReactions: reactions, codexComments: comments });
+		app.context.codexReview = true;
+		const loaded = await loadCurrentPullRequest(app.pi, app.context);
+		assert.deepEqual(loaded?.conditions.codex, { status, findings: 0 }, name);
+		assert.equal(app.calls.some(({ args }) => args.at(-1)?.includes("/comments?")), comments !== undefined, name);
+		assert.ok(app.calls.find(({ args }) => args.at(-1)?.includes("/reactions?"))?.args.includes("--paginate"), name);
+	}
+
+	const thread = (login: string, badge: string, isResolved = false) => ({
+		isResolved,
+		comments: { nodes: [{ author: { login }, body: `**![${badge} Badge](https://img.shields.io/badge/${badge}-orange?style=flat)** Fix it` }] },
+	});
+	const findings = harness({
+		codexReactions: [{ content: "+1", user: codex }],
+		threads: reviewThreadOutput(reviewThreadPage([
+			thread("chatgpt-codex-connector", "P1"),
+			thread("chatgpt-codex-connector", "P0", true),
+			thread("chatgpt-codex-connector", "P2"),
+			thread("octocat", "P0"),
+			{ isResolved: false, comments: { nodes: [{ author: null, body: "deleted" }] } },
+		])),
+	});
+	findings.context.codexReview = true;
+	const blocked = await loadCurrentPullRequest(findings.pi, findings.context);
+	assert.equal(blocked?.conditions.unresolvedThreads, 4);
+	assert.deepEqual(blocked?.conditions.codex, { status: "complete", findings: 1 });
+	assert.ok(blocked && derivePullRequestNextStep({ ...blocked, local: { worktree: "clean", head: "equal" } }) === "sweep");
+	assert.match(findings.calls.find(({ args }) => args.some((arg) => arg.includes("reviewThreads")))?.args.join(" ") ?? "", /comments\(first:1\)/);
+
+	const invalid = harness({ codexReactions: [{ content: "eyes", user: "chatgpt-codex-connector[bot]" }] });
+	invalid.context.codexReview = true;
+	await assert.rejects(loadCurrentPullRequest(invalid.pi, invalid.context), /Read Codex review reactions failed: invalid GitHub CLI output/);
 });

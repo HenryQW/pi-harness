@@ -95,6 +95,7 @@ Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-f
 | Failed GitHub Actions job | Inspect failure evidence, make a scoped fix, validate, and publish. Other failed checks block. |
 | Changes requested, unresolved threads, or new feedback | Triage actionable feedback and make the necessary changes. Leave blocked threads open. |
 | CI running and nothing else blocks | Wait in the same `/pr`. Re-read GitHub every `ciPollSeconds` for a maximum of `ciWaitMinutes`. Then route the fresh state. |
+| `codexReview` is `true`, the Codex review is not complete, and nothing else blocks | Wait in the same `/pr` with the CI wait interval and budget. Then route the fresh state. Refer to [Codex review gate](#codex-review-gate). |
 | Draft, closed, merged, or review still required | Report the PR lifecycle or condition, and make no changes. |
 | Merge-ready | Ask you to confirm the merge. The dialog shows the PR number, URL, short head OID, base ref, and `mergeMethod`. If you accept, check fresh state again and merge with the configured `mergeMethod`. If you decline, or the session has no UI, report the PR as merge-ready and make no changes. |
 
@@ -109,6 +110,16 @@ For a configured, open, non-draft PR, `/pr` first normalizes local state. If ver
 `/pr` assesses standalone comments and review bodies before a merge or a wait. GitHub cannot resolve them. Thus, the sweep triages them and does not mark them resolved. A conversation comment from a GitHub `Bot` author, such as a deploy or review-progress status, does not start a sweep. Bot reviews and review threads start a sweep. A sweep makes scoped fixes without a second approval. Its `commit` action stages only changed owned paths. Checks run on the clean committed HEAD before publication. A sweep with no edits creates no commit. Unrelated changes block the commit. Before the sweep continues, use `resume` to reconcile an interrupted commit. Feedback that arrives after publication waits for the next `/pr` cycle.
 
 For each fixed review thread, the sweep replies with only the full hash of the fixing commit. This is its published head, or an already-published PR commit that the ledger cites. For a non-actionable thread, it replies with a one-sentence rebuttal. It verifies the reply and then resolves the thread, also when the fix made the thread outdated. After publication, a body-only edit to a standalone comment keeps its `non-actionable` decision only in this condition: GitHub identifies the same `Bot` author in both snapshots, and nothing else changed. Thread resolution, its recovery, and finalization apply the same rule to edits after `refresh`. Thus, a bot status update does not block them. Any other change requires another `refresh`.
+
+### Codex review gate
+
+Set `codexReview` to `true` to make `/pr` wait for the ChatGPT Codex GitHub review before it shows the merge dialog. `/pr` then reads the PR reactions and conversation comments of the `chatgpt-codex-connector` bot. The Codex review is complete when the bot has no EYES (👀) reaction on the PR, and the bot has a THUMBS_UP (👍) reaction or a summary comment that shows `Completed`. In all other conditions, `/pr` waits. The wait uses `ciPollSeconds` and the same `ciWaitMinutes` budget as CI waits. When the budget is spent, `/pr` stops with `still waiting for the Codex review` and does not show the merge dialog.
+
+Codex reviews one time when a PR opens or becomes ready for review, and when a person comments `@codex review`. It does not review again after later pushes, and it does not review some PRs. Thus, a complete review can apply to an older head. If the review did not start, comment `@codex review` on the PR, then run `/pr` again. `/pr` never posts this comment.
+
+An unresolved Codex review thread with a P0 or P1 badge starts a sweep, as all unresolved threads do. If the sweep already ran in this `/pr` and such a thread stays unresolved, `/pr` stops with `unresolved Codex P0/P1 findings block the merge prompt`.
+
+When the Codex review is the only blocker, the footer shows `Codex review pending`. Background refreshes use the configuration of the last `/pr` in the session. Before the first `/pr`, the footer does not show the Codex review state.
 
 ### Footer and widget
 
@@ -132,10 +143,11 @@ Package-owned: `<agent-dir>/config/pi-pr/config.json`
 | --- | --- | --- | --- |
 | `maxPublicationCycles` | Confirmed PR-head pushes per `/pr` invocation. | Integer ≥ 1 | `3` |
 | `maxRepairAttempts` | Failed or unknown check sets per `/pr` invocation. | Integer ≥ 1 | `3` |
-| `ciPollSeconds` | Interval between GitHub re-reads while CI runs. | Integer `1`–`2147483` | `30` |
-| `ciWaitMinutes` | Total CI wait per `/pr` invocation, including waits after a later fix or sweep pushes. | Integer ≥ 0; `0` disables waiting | `10` |
+| `ciPollSeconds` | Interval between GitHub re-reads while CI or the Codex review runs. | Integer `1`–`2147483` | `30` |
+| `ciWaitMinutes` | Total CI and Codex review wait per `/pr` invocation, including waits after a later fix or sweep pushes. | Integer ≥ 0; `0` disables waiting | `10` |
 | `checkTimeoutMinutes` | Time limit for each selected validation check. Git and GitHub CLI helper commands keep shorter limits. | Integer `1`–`35791` | `10` |
 | `mergeMethod` | Method for the direct merge. GitHub may still reject a method the repository disallows. | `squash`, `merge`, or `rebase` | `squash` |
+| `codexReview` | Wait for a complete ChatGPT Codex GitHub review before the merge dialog. When `true`, each discovery of an open PR reads a maximum of two more GitHub endpoints. | `true` or `false` | `false` |
 
 If the file is missing, `/pr` uses the defaults. Unknown keys or invalid values block the invocation, and the file does not change. `/pr` reads the configuration one time per explicit `/pr`. A later `/pr` or reload resets the limits.
 
@@ -155,7 +167,7 @@ Before the sweep publishes a changed sweep HEAD, `validate` runs `git diff --che
 
 - `/pr` does not open a browser, run `/done` or `/sweep`, enable auto-merge, or use a merge queue. It starts workflows only when you explicitly start it.
 - Each route freezes its check set. A check set runs one time per HEAD per invocation, also when it fails. Repairs must change HEAD and must not drop checks. A check that runs longer than `checkTimeoutMinutes` fails with a timeout error. The error names the command and the limit. Limits, frozen check sets, executed HEADs, and completed route and head keys stay after helper resumes and automatic continuations. If a completed route repeats on the same entry head, `/pr` stops.
-- Failed or unknown check sets use repair attempts. Each confirmed PR-head movement uses one publication cycle. Duplicate observations, no-ops, and failed pushes do not use publication cycles. When the budget is spent, `/pr` cannot push again, but published-sweep cleanup, readiness checks, and merge stay possible. When the CI wait budget is spent, `/pr` stops with `still waiting for CI`. A later explicit `/pr` waits again. A wait for human review never polls.
+- Failed or unknown check sets use repair attempts. Each confirmed PR-head movement uses one publication cycle. Duplicate observations, no-ops, and failed pushes do not use publication cycles. When the budget is spent, `/pr` cannot push again, but published-sweep cleanup, readiness checks, and merge stay possible. When the wait budget is spent, `/pr` stops with `still waiting for CI` or `still waiting for the Codex review`. A later explicit `/pr` waits again. A wait for human review never polls.
 - Rebase preflight, sweep startup, or initial CI preflight can prove that the clean local HEAD advanced from the frozen PR head. If this occurs before a rebase, recovery write, or CI evidence read, `/pr` cancels that run. It reports the observed change and rediscovers in the same invocation. Rebase preflight also reroutes in two conditions: the OID of the same base ref changes, or the conflict and the required base update both clear. It adopts an already-published fast-forward only when local HEAD, the fresh PR head, and the remote lease agree, and the frozen head is an ancestor. Initial CI preflight also cancels when only the base tip changed. Base movement during or after CI evidence collection blocks repair.
 - After a conflict rebase starts, a base tip that only advanced does not stop publication. `/pr` then rediscovers mergeability. If any other authority change occurs while a conflict waits, `/pr` aborts the unpublished rebase, restores the original head, removes its pending recovery record, and rediscovers. An unpublished local merge goes through inspection and validation, not another rebase. `/pr` does not use stale CI evidence or a consumed collect action again.
 - Automatic handoff reserves a fresh run ID before settlement. Pi never uses expired IDs again. Rediscovery has a maximum of two attempts per invocation and does not reset budgets. It requires the same PR identity, destination, and validated remote head. Another head change during rediscovery stops the handoff. Rerouting never bypasses unreconciled rebase or sweep recovery. Dirty or divergent state, changed branches or destinations, aborts, and uncertain mutations stop the invocation. `/pr` never retries a mutation blindly.

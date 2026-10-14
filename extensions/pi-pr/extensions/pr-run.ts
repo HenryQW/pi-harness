@@ -5,9 +5,9 @@ import { isRecord } from "./pr-execution.ts";
 export type PrCheck = { command: string; args: string[] };
 export type MergeMethod = "squash" | "merge" | "rebase";
 export const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
-export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; checkTimeoutMinutes: number; mergeMethod: MergeMethod };
-export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, checkTimeoutMinutes: 10, mergeMethod: "squash" };
-type NumericPolicyKey = Exclude<keyof PrPolicy, "mergeMethod">;
+export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; checkTimeoutMinutes: number; mergeMethod: MergeMethod; codexReview: boolean };
+export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, checkTimeoutMinutes: 10, mergeMethod: "squash", codexReview: false };
+type NumericPolicyKey = Exclude<keyof PrPolicy, "mergeMethod" | "codexReview">;
 const NUMERIC_KEYS: readonly NumericPolicyKey[] = ["maxPublicationCycles", "maxRepairAttempts", "ciPollSeconds", "ciWaitMinutes", "checkTimeoutMinutes"];
 /** `ciWaitMinutes: 0` disables waiting for running CI; every other limit must be positive. */
 const ZERO_ALLOWED: ReadonlySet<NumericPolicyKey> = new Set(["ciWaitMinutes"]);
@@ -24,6 +24,10 @@ export function loadPrPolicy(agentDir?: string): PrPolicy {
 			if (value.mergeMethod !== undefined) {
 				if (!MERGE_METHODS.includes(value.mergeMethod as MergeMethod)) throw new Error(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
 				policy.mergeMethod = value.mergeMethod as MergeMethod;
+			}
+			if (value.codexReview !== undefined) {
+				if (typeof value.codexReview !== "boolean") throw new Error("codexReview must be true or false");
+				policy.codexReview = value.codexReview;
 			}
 			for (const key of NUMERIC_KEYS) {
 				if (value[key] !== undefined) {

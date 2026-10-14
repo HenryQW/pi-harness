@@ -194,6 +194,14 @@ test("projects normal runnable, merge, and no-action states", () => {
 			widget: "Run /pr to confirm and merge pull request",
 		},
 		{
+			name: "waiting for the Codex review",
+			input: pullRequest({ conditions: { ci: "success", codex: { status: "running", findings: 0 } } }),
+			nextStep: "wait-review",
+			footer: "Codex review pending",
+			color: "warning",
+			widget: "Run /pr to wait for the Codex review, then continue",
+		},
+		{
 			name: "approved but waiting",
 			input: pullRequest({ approved: true, conditions: { policy: "pending", mergeability: "known" } }),
 			nextStep: "none",

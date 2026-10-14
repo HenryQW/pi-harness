@@ -33,7 +33,7 @@ Whether a pull request is `open`, `merged`, or `closed`.
 _Avoid_: PR state, PR condition
 
 **PR condition**:
-An independently observable fact about an open pull request, such as draft status, required base update, merge conflict, review feedback, CI outcome, or policy readiness. Several conditions may coexist.
+An independently observable fact about an open pull request, such as draft status, required base update, merge conflict, review feedback, CI outcome, policy readiness, or, when the `codexReview` policy is enabled, the Codex review status and its unresolved P0/P1 findings. Several conditions may coexist.
 _Avoid_: PR state, lifecycle
 
 **PR feedback item**:
@@ -41,7 +41,7 @@ A conversation comment, review body, inline review comment, or reply that may re
 _Avoid_: Comment or unresolved thread as a name for all feedback
 
 **Merge-ready pull request**:
-An open, non-draft pull request with a clean worktree and no unpublished or divergent local commits. No required base update, merge conflict, changes-requested review, unresolved review thread, failed or running CI, pending review, or blocked merge policy remains.
+An open, non-draft pull request with a clean worktree and no unpublished or divergent local commits. No required base update, merge conflict, changes-requested review, unresolved review thread, failed or running CI, pending review, blocked merge policy, or, when the `codexReview` policy is enabled, incomplete Codex review remains.
 _Avoid_: No failures, no comments, approved PR
 
 **PR next step**:
@@ -61,7 +61,7 @@ A transient one-line `Checking pull request…` status replaces the next-step wi
 _Avoid_: Model working indicator, modal, routing result
 
 **PR workflow routing**:
-`/pr` is flagless. A fresh discovery chooses creation on a validated unpublished branch with committed or ordinary pending work, links one exact inferred target and rediscovers the same configured PR before continuing, or routes a configured open PR. Local state is normalized first: a behind or clean diverged local HEAD selects local sync, then a dirty tree or ahead local HEAD selects scoped local publication. Mergeability that GitHub has not finished computing selects a bounded re-read. A confirmed conflict or a base GitHub reports behind selects the pinned-base branch update. Failed GitHub Actions CI, review changes, and unresolved threads select their guarded workflows. Running CI with no other blocker selects a bounded wait that re-reads GitHub every `ciPollSeconds` for at most `ciWaitMinutes` per invocation; running CI with review still required waits for a person instead. Before waiting or merge, `/pr` compares a complete fresh feedback snapshot against the last finalized sweep marker so new standalone comments and review bodies select triage automatically. Merged, closed, and draft PRs are no-action. The helper run is bound to the session and canonical worktree; one `/pr` continues after a completed helper action. After each published mutation the invocation reads fresh GitHub mergeability, feedback, and CI. Direct merge requires explicit user confirmation, fresh readiness after it, and an exact expected head, and happens only inside an explicit `/pr` with UI; GitHub auto-merge is never enabled.
+`/pr` is flagless. A fresh discovery chooses creation on a validated unpublished branch with committed or ordinary pending work, links one exact inferred target and rediscovers the same configured PR before continuing, or routes a configured open PR. Local state is normalized first: a behind or clean diverged local HEAD selects local sync, then a dirty tree or ahead local HEAD selects scoped local publication. Mergeability that GitHub has not finished computing selects a bounded re-read. A confirmed conflict or a base GitHub reports behind selects the pinned-base branch update. Failed GitHub Actions CI, review changes, and unresolved threads select their guarded workflows. Running CI with no other blocker selects a bounded wait that re-reads GitHub every `ciPollSeconds` for at most `ciWaitMinutes` per invocation; running CI with review still required waits for a person instead. With the `codexReview` policy enabled, an incomplete Codex review with no other blocker selects the same bounded wait and shares its budget; `/pr` never requests the review. Before waiting or merge, `/pr` compares a complete fresh feedback snapshot against the last finalized sweep marker so new standalone comments and review bodies select triage automatically. Merged, closed, and draft PRs are no-action. The helper run is bound to the session and canonical worktree; one `/pr` continues after a completed helper action. After each published mutation the invocation reads fresh GitHub mergeability, feedback, and CI. Direct merge requires explicit user confirmation, fresh readiness after it, and an exact expected head, and happens only inside an explicit `/pr` with UI; GitHub auto-merge is never enabled.
 _Avoid_: User-facing `/pr` flags, stale mergeability, unsolicited conflict resolution
 
 **PR presentation refresh**:

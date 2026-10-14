@@ -1,6 +1,8 @@
 export type PullRequestLifecycle = "open" | "merged" | "closed";
 export type CiStatus = "none" | "running" | "success" | "failure" | "failure-blocked";
 export type ReviewReadiness = "ready" | "pending";
+/** Codex review state; `findings` counts unresolved Codex P0/P1 threads, a subset of `unresolvedThreads`. */
+export type CodexReview = { status: "running" | "complete"; findings: number };
 type PolicyReadiness = "ready" | "pending";
 /** GitHub computes mergeability asynchronously; `pending` is transient, not a blocker. */
 type Mergeability = "known" | "pending";
@@ -17,6 +19,8 @@ export type PullRequestConditions = {
 	review: ReviewReadiness;
 	policy: PolicyReadiness;
 	mergeability: Mergeability;
+	/** Present only when the `codexReview` policy is enabled. */
+	codex?: CodexReview;
 };
 
 export type LocalMergeSafety = {
@@ -65,7 +69,7 @@ export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
 
 export type NextStep =
 	| "create" | "link-branch" | "blocked" | "none"
-	| "sync-local" | "publish-work" | "refresh" | "update-branch" | "sweep" | "fix-ci" | "wait-ci" | "merge";
+	| "sync-local" | "publish-work" | "refresh" | "update-branch" | "sweep" | "fix-ci" | "wait-ci" | "wait-review" | "merge";
 
 /**
  * Priority ladder for an open pull request. Local state is normalized first
@@ -86,6 +90,8 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 	// Running checks usually leave merge policy BLOCKED, so the wait decision comes before the policy gate.
 	if (conditions.ci === "running") return conditions.review === "pending" ? "none" : "wait-ci";
 	if (conditions.review === "pending" || conditions.policy === "pending") return "none";
+	// Unresolved Codex findings are review threads, so the sweep above already precedes this gate.
+	if (conditions.codex?.status === "running") return "wait-review";
 	return "merge";
 }
 

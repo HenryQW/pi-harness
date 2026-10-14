@@ -862,6 +862,20 @@ for (const quotaExhausted of [false, true]) test(quotaExhausted
 	} finally { await app.shutdown(ctx); }
 });
 
+test("the codexReview policy reaches PR discovery after /pr loads it", async () => {
+	const gates: Array<boolean | undefined> = [];
+	const app = harness({
+		async load(_pi, context) { gates.push(context.codexReview); return currentPullRequest({ conditions: { draft: true } }); },
+		useDefaultCommandHandler: true, policy: { codexReview: true },
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		assert.deepEqual(gates.slice(0, 2), [undefined, true]);
+	} finally { await app.shutdown(ctx); }
+});
+
 test("a completed helper does not repeat its route when fresh evidence is unchanged", async () => {
 	const pr = currentPullRequest({ conditions: { ci: "failure" } });
 	const app = harness({
