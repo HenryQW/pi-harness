@@ -215,7 +215,7 @@ pi-bark checks its config when Pi starts and each time it reads the config. It d
 | Missing or invalid `encryption`, including a misspelled key such as `encyption` | An error shows, and pi-bark is disabled. pi-bark does not send without encryption. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
 | Malformed JSON or a non-object file | An error shows, and pi-bark is disabled. Fix or move the file. |
 
-`/bark`, `/set-bark`, and `pi-bark-key` work while pi-bark is disabled. Before a write, they show each new problem in the file: the Pi commands show a notification, and `pi-bark-key` writes to stderr. If the file has a problem, they replace the whole file. They remove unknown keys and invalid `statusNotifications` entries.
+`/bark`, `/set-bark`, and `pi-bark-key` work while pi-bark is disabled. Before a write, they show each new problem in the file: the Pi commands show a notification, and `pi-bark-key` writes to stderr. If the file has a problem, they replace the whole file. They remove unknown keys and invalid `statusNotifications` entries. They hold the file lock while they compare the file with the version that they read. If another session changed the file in the meantime, they stop, show the error, and do not change the file. Run the command again.
 
 They do not change a malformed file, or a file with a missing or invalid `serverUrl` or `encryption` that the command does not set. `/set-bark` sets `serverUrl`. `pi-bark-key --force` and `pi-bark-key --disable` set `encryption`. In that case, they show the problem and stop. Fix the file, or run the command that sets the key.
 

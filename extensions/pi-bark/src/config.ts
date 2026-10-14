@@ -120,7 +120,7 @@ function createBarkDraftStore(agentDir?: string) {
 
 /**
  * Write config for a repair command. `report` receives the issues of the current file before any write.
- * A clean file uses a locked update. A file with issues is replaced. A missing or invalid server URL or
+ * A clean file uses a locked update. A file with issues is replaced if it is unchanged under the lock. A missing or invalid server URL or
  * encryption setting blocks the write unless the command sets it (`replaces`), so no safety setting is lost.
  */
 export async function writeBarkConfig(
@@ -143,5 +143,6 @@ export async function writeBarkConfig(
 	const draft = (config: BarkConfigDraft): BarkConfigDraft =>
 		current.source === "missing" ? { ...config, serverUrl: config.serverUrl ?? DEFAULT_SERVER_URL, encryption: config.encryption ?? null } : config;
 	if (!current.issues.length) await store.update((config) => change(draft(config)));
-	else await store.save(change(draft(current.value)));
+	// The change uses the snapshot, so the replacement refuses a file that another session changed meanwhile.
+	else await store.replaceIfUnchanged(current, change(draft(current.value)));
 }

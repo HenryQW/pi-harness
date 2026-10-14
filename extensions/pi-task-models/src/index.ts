@@ -522,7 +522,7 @@ export function createTaskModelsExtension(
 			const snapshot = repairStore.loadSync();
 			const config: TaskModelsConfig = snapshot.status === "ok" ? snapshot.value : { profiles: {}, tasks: {} };
 			const save = (mutator: (current: TaskModelsConfig) => TaskModelsConfig) =>
-				saveTaskModelsConfig(ctx, configStore, repairStore, snapshot, config, mutator);
+				saveTaskModelsConfig(ctx, configStore, snapshot, config, mutator);
 
 			if (action === "preset") {
 				const presets = presetsStore.loadSync();
@@ -611,12 +611,11 @@ export function createTaskModelsExtension(
 /**
  * Merge into the latest clean config under the store lock. A config with issues is replaced
  * only after the user confirms, keeping just the settings that loaded, and only when the file
- * still matches the snapshot, so a repair from another session is never overwritten.
+ * still matches the snapshot under the lock, so a repair from another session is never overwritten.
  */
 async function saveTaskModelsConfig(
 	ctx: ExtensionContext,
 	store: TaskModelsConfigStore,
-	repairStore: TaskModelsConfigStore,
 	snapshot: ReturnType<TaskModelsConfigStore["loadSync"]>,
 	config: TaskModelsConfig,
 	mutator: (current: TaskModelsConfig) => TaskModelsConfig,
@@ -630,10 +629,7 @@ async function saveTaskModelsConfig(
 			"Replace task model config?",
 			`${store.path} has issues: ${formatConfigIssues(snapshot.issues)}. Saving removes the settings with issues.`,
 		)) return false;
-		if (!isDeepStrictEqual(repairStore.loadSync(), snapshot)) {
-			throw new Error(`${store.path} changed while /task-models was open; nothing was saved. Run /task-models again.`);
-		}
-		await store.save(mutator(config));
+		await store.replaceIfUnchanged(snapshot, mutator(config));
 		return true;
 	} catch (error) {
 		ctx.ui.notify(`Couldn't save task model config: ${errorMessage(error)}`, "error");

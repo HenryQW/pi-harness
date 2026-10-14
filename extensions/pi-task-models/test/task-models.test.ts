@@ -239,7 +239,7 @@ test("/task-models repair keeps the tasks that loaded and refuses a file changed
 		onConfirm = () => writeFileSync(configFile(dir), repaired);
 		await run();
 		assert.equal(readFileSync(configFile(dir), "utf8"), repaired);
-		assert.match(notices.at(-1)!, /config\.json changed while \/task-models was open; nothing was saved/);
+		assert.match(notices.at(-1)!, /config\.json changed since it was read; nothing was written/);
 
 		writeFileSync(configFile(dir), JSON.stringify({ profiles: [], tasks: { "pi-example/review": "frontier" } }));
 		onConfirm = () => {};
