@@ -228,16 +228,55 @@ function parseValue<T>(parse: FieldParser<T>, raw: unknown, path: KeyPath, sink:
 	}
 }
 
-/** Apply a field table; `blocked` is true when a required or unsafe field has no usable value. */
+/** Case-insensitive optimal string alignment distance (Damerau-Levenshtein without repeated edits of one substring). */
+function editDistance(left: string, right: string): number {
+	const a = left.toLowerCase();
+	const b = right.toLowerCase();
+	const rows = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => i || j));
+	for (let i = 1; i <= a.length; i++) {
+		for (let j = 1; j <= b.length; j++) {
+			rows[i][j] = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+			if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) rows[i][j] = Math.min(rows[i][j], rows[i - 2][j - 2] + 1);
+		}
+	}
+	return rows[a.length][b.length];
+}
+
+/**
+ * The absent declared key that an unknown key most likely misspells: equal except for letter case, or at most
+ * one edit for each three characters of the declared key, and at most two edits. Ties keep declaration order.
+ */
+function nearMiss(key: string, absent: readonly string[]): string | undefined {
+	let best: { name: string; distance: number } | undefined;
+	for (const name of absent) {
+		const distance = editDistance(key, name);
+		if (distance <= Math.min(2, Math.floor(name.length / 3)) && (!best || distance < best.distance)) best = { name, distance };
+	}
+	return best?.name;
+}
+
+/**
+ * Apply a field table; `blocked` is true when a required or unsafe field has no usable value.
+ * A near-miss unknown key counts as an invalid value of the absent field that it misspells.
+ */
 function applyFields(raw: Record<string, unknown>, fields: Fields, path: KeyPath, sink: Sink): { value: Record<string, unknown>; blocked: boolean } {
+	const absent = Object.keys(fields).filter((key) => !Object.hasOwn(raw, key));
+	const misspelled = new Map<string, string[]>();
 	for (const key of Object.keys(raw)) {
-		if (!Object.hasOwn(fields, key)) sink([...path, key], "unknown key", "unknown-key");
+		if (Object.hasOwn(fields, key)) continue;
+		const match = nearMiss(key, absent);
+		if (match === undefined) sink([...path, key], "unknown key", "unknown-key");
+		else misspelled.set(match, [...misspelled.get(match) ?? [], key]);
 	}
 	const value: Record<string, unknown> = {};
 	let blocked = false;
 	for (const [key, spec] of Object.entries(fields)) {
 		let parsed: { ok: true; value: unknown } | undefined;
-		if (!Object.hasOwn(raw, key)) {
+		const misses = misspelled.get(key);
+		if (misses) {
+			for (const miss of misses) sink([...path, key], `unknown key ${JSON.stringify(miss)}; did you mean ${JSON.stringify(key)}?`, "invalid-value");
+			blocked ||= spec.disableOnInvalid;
+		} else if (!Object.hasOwn(raw, key)) {
 			if (!spec.fallback) {
 				sink([...path, key], "required", "missing-required");
 				blocked = true;

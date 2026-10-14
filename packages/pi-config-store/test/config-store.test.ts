@@ -209,6 +209,42 @@ test("unsafe and required fields disable the config instead of defaulting", asyn
 	});
 });
 
+test("a near-miss key is an invalid value of the absent field that it misspells", async () => {
+	await withAgentDir(async (agentDir) => {
+		const store = createConfigStore({
+			extensionId: "pi-test-store",
+			agentDir,
+			fields: {
+				maxTokens: field<number | undefined>(parsers.integer({ min: 1 }), undefined, { onInvalid: "disable" }),
+				retries: field(parsers.integer({ min: 0 }), 1),
+				id: field(parsers.string(), "x"),
+				limits: field(parsers.object({ token: required(parsers.string()) }), { token: "t" }),
+			},
+		});
+		const nearMiss = (miss: string, key: string) => ({ kind: "invalid-value", key, message: `unknown key "${miss}"; did you mean "${key}"?` });
+
+		await writeConfig(store.path, JSON.stringify({ maxToken: 5 }));
+		assert.deepEqual(store.loadSync(), { status: "disabled", source: "file", issues: [nearMiss("maxToken", "maxTokens")] });
+		await writeFile(store.path, JSON.stringify({ MAXTOKENS: 5 }));
+		assert.deepEqual(store.loadSync(), { status: "disabled", source: "file", issues: [nearMiss("MAXTOKENS", "maxTokens")] });
+
+		// Optional fields use their defaults; distant keys, short keys, and keys beside the real one stay unknown.
+		await writeFile(store.path, JSON.stringify({ maxTokens: 5, maxToken: 6, reTires: 4, ix: "y", limits: { tokn: "z" }, unrelated: 1 }));
+		assert.deepEqual(store.loadSync(), {
+			status: "ok",
+			source: "file",
+			value: { maxTokens: 5, retries: 1, id: "x", limits: { token: "t" } },
+			issues: [
+				{ kind: "unknown-key", key: "maxToken", message: "unknown key" },
+				{ kind: "unknown-key", key: "ix", message: "unknown key" },
+				{ kind: "unknown-key", key: "unrelated", message: "unknown key" },
+				nearMiss("reTires", "retries"),
+				{ kind: "invalid-value", key: "limits", message: 'token: unknown key "tokn"; did you mean "token"?' },
+			],
+		});
+	});
+});
+
 test("cross-field checks fall back to all defaults", async () => {
 	await withAgentDir(async (agentDir) => {
 		const store = createConfigStore({

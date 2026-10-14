@@ -47,13 +47,16 @@ export default function (pi: ExtensionAPI) {
 
 | Problem | Result |
 | --- | --- |
-| Unknown key, including a misspelled key | The store ignores the key and reports an `unknown-key` issue. |
+| Unknown key | The store ignores the key and reports an `unknown-key` issue. |
+| Near-miss key: an unknown key that misspells a declared key that is not in the file | The store reports an `invalid-value` issue on the declared key, such as `maxTokens: unknown key "maxToken"; did you mean "maxTokens"?`. It then applies the rule of that field: the default, or a disabled config for a `required` field or a field with `onInvalid: "disable"`. |
 | Invalid optional value | The store uses the field default and reports an `invalid-value` issue. |
 | Invalid nested entry in `parsers.record`, `parsers.array`, or `parsers.object` | The store drops only that entry and reports it. |
 | Invalid value in a field with `onInvalid: "disable"` | The config is disabled. |
 | Missing or invalid `required` field | The config is disabled. This includes a missing file. |
 | `check` failure | The store reports an `invalid-config` issue and uses all defaults. The config is disabled when a field is required or has `onInvalid: "disable"`. |
 | Malformed JSON, invalid UTF-8, file larger than 64 KiB, unreadable path, or non-object root | The store reports one issue for the file and uses all defaults. The config is disabled when a field is required or has `onInvalid: "disable"`. |
+
+A near-miss key is equal to the declared key except for letter case, or it has a small edit distance from the declared key. The limit is one edit (insert, delete, replace, or swap of two adjacent characters) for each three characters of the declared key, and a maximum of two edits. Thus, a declared key of one or two characters matches only a different letter case. The rule applies to each field table, also in `parsers.object`, but not to the keys of `parsers.record` or `entries`.
 
 `loadSync()` does not throw for file content or I/O problems, and it never writes.
 
