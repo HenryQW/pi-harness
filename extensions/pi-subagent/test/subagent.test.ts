@@ -1653,11 +1653,19 @@ test("bad config never stops the extension: launch warns on a typo, and invalid 
 		const app = harness({ ui: true });
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		assert.deepEqual(app.notifications.filter(({ message }) => message.startsWith("pi-subagent")), [{
-			message: `pi-subagent config issues (${path}): maxSubagent: unknown key; defaults replace invalid settings.`, type: "warning",
+			message: `pi-subagent config issues (${path}): maxSubagents: unknown key "maxSubagent"; did you mean "maxSubagents"?; defaults replace invalid settings.`, type: "warning",
 		}]);
 		await writeFile(path, JSON.stringify({ maxTokens: 0 }));
 		await assert.rejects(() => app.tool.execute("blocked", { role: "scout", name: "Blocked", task: "inspect", access: "read" }, undefined, undefined, app.ctx),
 			/maxTokens: must be an integer >= 1/);
 		assert.deepEqual(app.notifications.at(-1), { message: `pi-subagent disabled (${path}): maxTokens: must be an integer >= 1`, type: "error" });
+
+		// A session that started disabled built its executor without the file's token limit, so a repair needs a reload.
+		await writeFile(path, JSON.stringify({ maxToken: 1_000 }));
+		const launchedDisabled = harness({ ui: true });
+		await launchedDisabled.handlers.get("session_start")?.({}, launchedDisabled.ctx);
+		await writeFile(path, JSON.stringify({ maxTokens: 1_000 }));
+		await assert.rejects(() => launchedDisabled.tool.execute("repaired", { role: "scout", name: "Repaired", task: "inspect", access: "read" }, undefined, undefined, launchedDisabled.ctx),
+			/was disabled when the session started; run \/reload/);
 	});
 });

@@ -82,14 +82,27 @@ test("timeout that breaks the idle/max rule falls back to the default timeout", 
 	});
 });
 
-test("invalid maxTokens or malformed JSON disables delegation instead of removing the token limit", async () => {
+test("invalid or misspelled maxTokens or malformed JSON disables delegation instead of removing the token limit", async () => {
 	await withStore(async (store) => {
-		for (const contents of [JSON.stringify({ maxTokens: 0, maxTurns: 3 }), "{ maxSubagents: "]) {
+		for (const contents of [JSON.stringify({ maxTokens: 0, maxTurns: 3 }), JSON.stringify({ maxToken: 1_000 }), JSON.stringify({ MaxTokens: 1_000 }), "{ maxSubagents: "]) {
 			await writeFile(store.path, contents);
 			const loaded = store.loadSync();
 			assert.equal(loaded.status, "disabled");
 			assert.throws(() => resolveExecutionPolicy(store.path, loaded), /delegation is blocked until this file is corrected\.$/);
 			assert.equal(await readFile(store.path, "utf8"), contents);
 		}
+	});
+});
+
+test("a misspelled bounded limit warns and keeps its finite default", async () => {
+	await withStore(async (store) => {
+		await writeFile(store.path, JSON.stringify({ maxTurn: 500, timeout: { maxMinute: 600 } }));
+		const loaded = store.loadSync();
+		assert.equal(loaded.status, "ok");
+		assert.deepEqual(loaded.issues.map(({ key, message }) => [key, message]), [
+			["maxTurns", 'unknown key "maxTurn"; did you mean "maxTurns"?'],
+			["timeout.maxMinutes", 'unknown key "maxMinute"; did you mean "maxMinutes"?'],
+		]);
+		assert.deepEqual(loaded.status === "ok" && loaded.value, DEFAULT_SUBAGENT_CONFIG);
 	});
 });

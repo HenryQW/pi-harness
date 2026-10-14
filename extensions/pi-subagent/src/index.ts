@@ -525,12 +525,8 @@ export function resolveTaskRoute(
 	profileName: ProfileName,
 	agentDir = getAgentDir(),
 ): ResolvedTaskRoute {
-	let config;
-	try {
-		config = loadTaskModelsConfig(agentDir).value;
-	} catch {
-		throw new Error("Couldn't read task model config. Run /task-models.");
-	}
+	// A disabled config throws with the path and the problems.
+	const config = loadTaskModelsConfig(agentDir).value;
 	return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName]);
 }
 

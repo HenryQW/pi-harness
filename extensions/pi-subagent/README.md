@@ -226,10 +226,11 @@ In each merged list, `roleDefaults` entries come first, and the entries of the R
 
 A bad config never stops the extension. At launch, and again at each `delegate_task` call, the extension shows each new problem one time:
 
-- An unknown key, including a misspelled key, shows a warning. The extension ignores the key.
-- An invalid value in `maxSubagents`, `maxTurns`, `maxCorrections`, or `timeout` shows a warning. The extension uses the default for that key. If `timeout.maxMinutes` is not greater than `timeout.idleMinutes`, the extension uses the default `timeout`.
+- An unknown key shows a warning. The extension ignores the key.
+- A misspelled key that is near a missing key, such as `maxToken` for `maxTokens`, counts as an invalid value of that key. The warning gives the likely key.
+- An invalid value in `maxSubagents`, `maxTurns`, `maxCorrections`, or `timeout` shows a warning. The extension uses the finite default for that key. If `timeout.maxMinutes` is not greater than `timeout.idleMinutes`, the extension uses the default `timeout`.
 - An unknown or invalid key in `roleDefaults` shows a warning. The extension ignores only that key, so Roles get fewer default resources.
-- An invalid `maxTokens`, malformed JSON, invalid UTF-8, a file larger than 64 KiB, or an unreadable file shows an error and blocks delegation. The default token limit is unlimited, so the extension does not use a default in these cases. `/subagent` stays available. Correct the file to enable delegation again.
+- An invalid or misspelled `maxTokens`, malformed JSON, invalid UTF-8, a file larger than 64 KiB, or an unreadable file shows an error and blocks delegation. The default token limit is unlimited, so the extension does not use a default in these cases. `/subagent` stays available. Correct the file to enable delegation again. If the file had the problem when the session started, also run `/reload`, because the session took its execution limits from the defaults.
 
 No key is required. The extension preserves the file and never rewrites it automatically.
 

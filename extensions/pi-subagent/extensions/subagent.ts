@@ -193,7 +193,14 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		maxTokens: initialPolicy.maxTokens,
 		timeout: { idleMs: initialPolicy.childIdleMs, maxMs: initialPolicy.childMaxMs },
 	});
-	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(configStore.path, configStore.loadSync());
+	const currentPolicy = (): EffectiveExecutionPolicy => {
+		const policy = resolveExecutionPolicy(configStore.path, configStore.loadSync());
+		// The executor took its limits from the defaults, which can be unlimited, so a repaired file needs a reload.
+		if (loadedConfig.status === "disabled") {
+			throw new Error(`${configStore.path} was disabled when the session started; run /reload to apply its execution limits.`);
+		}
+		return policy;
+	};
 	const canWrite = (input: unknown): boolean => {
 		try {
 			const parsed = parseDelegateTask(input);
@@ -511,8 +518,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (loadTaskModelsConfig().source === "missing") {
 				ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");
 			}
-		} catch {
-			// Route resolution retains the existing malformed shared-config error.
+		} catch (error) {
+			// A disabled shared config throws; its message gives the path and the problems.
+			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
