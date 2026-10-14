@@ -149,7 +149,7 @@ Package-owned: `<agent-dir>/config/pi-pr/config.json`
 | `mergeMethod` | Method for the direct merge. GitHub may still reject a method the repository disallows. | `squash`, `merge`, or `rebase` | `squash` |
 | `codexReview` | Wait for a complete ChatGPT Codex GitHub review before the merge dialog. When `true`, each discovery of an open PR reads a maximum of two more GitHub endpoints. | `true` or `false` | `false` |
 
-If the file is missing, `/pr` uses the defaults. Unknown keys or invalid values block the invocation, and the file does not change. `/pr` reads the configuration one time per explicit `/pr`. A later `/pr` or reload resets the limits.
+If the file is missing, `/pr` uses the defaults. An unknown key, including a misspelled key, or an invalid value shows a warning with the path and the reason. That key then uses its default, and the other keys keep their values. A malformed file uses all defaults. `/pr` continues, and the file does not change. Each issue shows one time in each session, at session start or at the next `/pr`. Fix the file, then run `/pr` again. `/pr` reads the configuration one time per explicit `/pr`. A later `/pr` or reload resets the limits.
 
 ## State and storage
 
