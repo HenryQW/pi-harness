@@ -382,11 +382,19 @@ export function createSubagentConfigStore(agentDir = getAgentDir()) {
 	});
 }
 
+/**
+ * Read only `roleDefaults`. The extension reports and enforces the execution limits, so a bad limit does not
+ * break the Role catalog of other consumers. A file that cannot load has no trusted `roleDefaults` and throws.
+ */
 function readRoleDefaults(agentDir: string): RoleDefaults {
-	const store = createSubagentConfigStore(agentDir);
+	const store = createConfigStore({
+		extensionId: "pi-subagent",
+		agentDir,
+		fields: { roleDefaults: field(roleDefaultsField, DEFAULT_SUBAGENT_CONFIG.roleDefaults) },
+	});
 	const loaded = store.loadSync();
-	// The extension reports issues; a disabled config has no trusted roleDefaults.
-	if (loaded.status === "disabled") throw new Error(`${store.path}: ${formatConfigIssues(loaded.issues)}`);
+	const fileIssues = loaded.issues.filter(({ key }) => !key);
+	if (loaded.status !== "ok" || fileIssues.length) throw new Error(`${store.path}: ${formatConfigIssues(fileIssues)}`);
 	return loaded.value.roleDefaults;
 }
 
@@ -463,7 +471,7 @@ function claimedRoleName(file: string): RoleName {
  * `roleDefaults` merged in. A user Role overrides a same-named built-in. Each
  * invalid or duplicate user file is reported and makes its claimed name
  * unavailable without hiding valid Roles. Invalid `roleDefaults` keys are
- * dropped; a disabled `config.json` throws.
+ * dropped; a `config.json` that cannot load (for example, malformed JSON) throws.
  */
 export function loadRoleCatalog(agentDir = getAgentDir()): RoleCatalog {
 	const defaults = readRoleDefaults(agentDir);

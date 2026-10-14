@@ -243,6 +243,9 @@ test("roleDefaults merge into every Role first and deduplicate", async (t) => {
 	]);
 	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { extensions: ["relative.ts"], skills: ["house-style"], mcps: [] } }));
 	assert.deepEqual(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "implementer")!.skills, ["house-style"], "invalid roleDefaults keys are dropped");
+	// The extension blocks delegation for a bad limit; the Role catalog of other consumers stays available.
 	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ maxTokens: "many", roleDefaults: { skills: ["house-style"] } }));
-	assert.throws(() => loadRoleCatalog(agentDir), /config\.json: maxTokens: must be an integer >= 1/);
+	assert.deepEqual(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "implementer")!.skills, ["house-style"]);
+	await writeFile(join(rolesDir, "config.json"), "{ not json");
+	assert.throws(() => loadRoleCatalog(agentDir), /config\.json: invalid JSON/);
 });
