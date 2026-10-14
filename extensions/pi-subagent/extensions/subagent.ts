@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, type ProfileName, registerModelTask, resolveAvailableModel, resolveConfiguredTaskRoute, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
-import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
-import { readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
+import { registerConfigReporting } from "@henryqw/pi-config-store";
+import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
+import { resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
 import { registerCheckoutAdmission } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
@@ -180,20 +181,19 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	const tokenHandles = new Map<string, DirectHandle>();
 	const samplingTokens = new Set<string>();
-	const loadedConfig = readSubagentConfig();
-	let initialPolicy: EffectiveExecutionPolicy;
-	try {
-		initialPolicy = resolveExecutionPolicy(loadedConfig);
-	} catch {
-		initialPolicy = resolveExecutionPolicy({ source: "missing", config: {} });
-	}
+	const configStore = createSubagentConfigStore();
+	const configReporter = registerConfigReporting(pi, [configStore]);
+	const loadedConfig = configStore.loadSync();
+	// A disabled config blocks each delegation; the executor still needs finite limits.
+	const initialPolicy = resolveExecutionPolicy(configStore.path, loadedConfig.status === "ok" ? loadedConfig
+		: { status: "ok", source: loadedConfig.source, value: DEFAULT_SUBAGENT_CONFIG, issues: [] });
 	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: initialPolicy.maxSubagents,
 		maxTurns: initialPolicy.maxTurns,
 		maxTokens: initialPolicy.maxTokens,
 		timeout: { idleMs: initialPolicy.childIdleMs, maxMs: initialPolicy.childMaxMs },
 	});
-	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(readSubagentConfig());
+	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(configStore.path, configStore.loadSync());
 	const canWrite = (input: unknown): boolean => {
 		try {
 			const parsed = parseDelegateTask(input);
@@ -507,7 +507,6 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		}
 		latestCtx = ctx;
 		ensureWidget(ctx);
-		if (loadedConfig.error !== undefined) ctx.ui.notify(loadedConfig.error, "warning");
 		try {
 			if (loadTaskModelsConfig().source === "missing") {
 				ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");
@@ -620,6 +619,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			signal?.throwIfAborted();
+			configReporter.report(ctx, configStore, configStore.loadSync());
 			const parsed = parseDelegateTask(params);
 			if (parsed.mode === "isolated") return await isolatedSurface.execute(parsed.request, signal, ctx);
 			const workflow = parsed.workflow;

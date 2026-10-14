@@ -1644,3 +1644,20 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 		});
 	});
 });
+
+test("bad config never stops the extension: launch warns on a typo, and invalid maxTokens blocks delegation with an error", async () => {
+	await environment(async (agentDir) => {
+		const path = join(agentDir, "config", "pi-subagent", "config.json");
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(path, JSON.stringify({ maxSubagent: 2 }));
+		const app = harness({ ui: true });
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.deepEqual(app.notifications.filter(({ message }) => message.startsWith("pi-subagent")), [{
+			message: `pi-subagent config issues (${path}): maxSubagent: unknown key; defaults replace invalid settings.`, type: "warning",
+		}]);
+		await writeFile(path, JSON.stringify({ maxTokens: 0 }));
+		await assert.rejects(() => app.tool.execute("blocked", { role: "scout", name: "Blocked", task: "inspect", access: "read" }, undefined, undefined, app.ctx),
+			/maxTokens: must be an integer >= 1/);
+		assert.deepEqual(app.notifications.at(-1), { message: `pi-subagent disabled (${path}): maxTokens: must be an integer >= 1`, type: "error" });
+	});
+});
