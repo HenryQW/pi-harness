@@ -19,13 +19,18 @@ export default function (pi: ExtensionAPI) {
 			description: tool.description,
 			promptSnippet: tool.promptSnippet,
 			parameters: (tool.parameters ?? { type: "object", additionalProperties: true }) as never,
-			async execute(_id, params: Record<string, unknown>) {
+			async execute(_id, params: Record<string, unknown>, _signal, _onUpdate, ctx) {
 				const action = typeof params.action === "string" ? params.action : undefined;
 				const byAction = Array.isArray(tool.responses) ? undefined : tool.responses;
 				const queue = byAction ? (action === undefined ? undefined : byAction[action]) : (tool.responses as StubResponse[]);
 				const key = byAction ? `action:${action}` : "default";
 				const response = queue?.length ? next(key, queue) : { text: `stub ${tool.name}: no scripted response for ${key}`, isError: true };
-				const { text, isError } = typeof response === "string" ? { text: response, isError: false } : response;
+				const { text: scripted, isError } = typeof response === "string" ? { text: response, isError: false } : response;
+				// `{{cwd}}` and `{{<string argument>}}` become JSON-escaped values, so fixtures can echo trial-specific text.
+				const text = scripted.replace(/\{\{(\w+)\}\}/g, (token, key: string) => {
+					const value = key === "cwd" ? ctx.cwd : params[key];
+					return typeof value === "string" ? JSON.stringify(value).slice(1, -1) : token;
+				});
 				if (isError) throw new Error(text);
 				return { content: [{ type: "text", text }], details: {} };
 			},
