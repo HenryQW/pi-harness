@@ -9,11 +9,12 @@ import {
 	findRole,
 	loadRoleCatalog,
 	prepareRoleLaunch,
+	registerRoleDefaultsReporting,
 	type EphemeralSubagentExecutor,
 	type ResolvedRoleLaunch,
 	type Role,
 } from "@henryqw/pi-subagent";
-import { modelReference, registerModelTask, resolveTaskModelRoute, type ModelTask } from "@henryqw/pi-task-models";
+import { modelReference, registerModelTask, registerTaskModelsConfigReporting, resolveTaskModelRoute, type ModelTask } from "@henryqw/pi-task-models";
 import {
 	cronConfigStore,
 	cronHome,
@@ -59,6 +60,9 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	const configStore = cronConfigStore(agentDir);
 	// Registered before this extension's session_start handler so that its first tick shares the launch deduplication.
 	const reporter = registerConfigReporting(pi, [configStore]);
+	// A job loads the Role catalog and task routes; report their owners' config issues too.
+	const reportRoleDefaults = registerRoleDefaultsReporting(pi, agentDir);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi, agentDir);
 	const home = cronHome(agentDir);
 	const state = new StateStore(join(home, "state.json"));
 	const owner = `${process.pid}-${randomUUID()}`;
@@ -142,7 +146,9 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			signal.throwIfAborted();
 			const prompt = job.prompt ?? await readTextFileBounded(job.promptFile!, MAX_PROMPT_BYTES, { signal });
 			if (!prompt.trim()) throw new Error(`prompt file ${job.promptFile} is empty.`);
+			reportRoleDefaults(ctx);
 			const role = findRole(loadRoleCatalog(agentDir), job.role);
+			if (job.model === undefined) reportTaskModels(ctx);
 			const launch = prepareLaunch(ctx, job, role);
 			await mkdir(dirname(sessionFile), { recursive: true, mode: 0o700 });
 			const executor = options.executor?.(limits) ?? createEphemeralSubagentExecutor({

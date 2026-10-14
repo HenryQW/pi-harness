@@ -282,6 +282,7 @@ The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. In
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `loadRoleCatalog`, `findRole`, `parseRoleName`, `parseRoleDefaults` | functions | Load built-in and user Roles with `roleDefaults` and per-file errors, then select one by name. |
+| `registerRoleDefaultsReporting(pi, agentDir?)` | function | Reports `roleDefaults` problems at each session start. Returns `report(ctx)`; call it before a lazy `loadRoleCatalog`. Each problem shows one time in each session. |
 | `resolveRoleSkills`, `resolveRoleLaunch`, `resolveConfiguredRoleLaunch` | functions | Resolve effective Pi resources and model routes. |
 | `prepareRoleLaunch`, `finalizeRoleLaunch` | functions | Prepare Role prompts, arguments, and tool policy. |
 | `createEphemeralSubagentExecutor` | function | Run bounded no-session Pi children through a FIFO pool. |

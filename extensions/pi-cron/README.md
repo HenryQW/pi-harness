@@ -101,7 +101,9 @@ Do not put secrets in this file. The run inherits the environment of the current
 
 ## Limits and recovery
 
-Jobs run only while a Pi session with this extension is open. There is no background daemon. A slot missed while Pi was closed runs one time at the next check.
+Jobs run only while a Pi session with this extension is open. There is no background daemon.
+
+At session start and when a job starts, pi-cron also shows problems in the pi-subagent `roleDefaults` and in the shared task-model config. Each problem shows one time in each session, also when pi-subagent or Task Models shows it. A slot missed while Pi was closed runs one time at the next check.
 
 A run cannot answer approval prompts or questions. Thus, a Role that needs interactive confirmation stays blocked until the idle timeout. A failed or timed-out run records `failure` with the error text. If the run created a run session file, open it. Pre-launch failures have no run session, and `/cron` says `Session: none created`. Use `/cron run <job-id>` to retry.
 

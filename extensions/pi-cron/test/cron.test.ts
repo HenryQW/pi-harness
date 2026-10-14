@@ -93,8 +93,10 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 		},
 	};
 	cronExtension(pi, { agentDir, executor: (limits) => { policies.push(limits); return fakeExecutor; }, now: () => now, tickMs: 3_600_000 });
+	// Pi passes one event object to every handler of an event.
 	const emit = async (event: string) => {
-		for (const handler of handlers.get(event) ?? []) await handler({}, ctx);
+		const payload = {};
+		for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
 	};
 	return {
 		notices, messages, prepared, policies, emit, ctx, pi,
@@ -318,6 +320,30 @@ test("a bad job is reported once across ticks and commands while valid jobs stil
 	const issues = h.notices.filter((notice) => notice.startsWith("pi-cron config issues"));
 	assert.deepEqual(issues, [`pi-cron config issues (${path}): jobs[0]: Job x needs exactly one of every or at; defaults replace invalid settings.`], h.notices.join("\n"));
 	await h.emit("session_shutdown");
+});
+
+test("a job start reports roleDefaults and task-model config issues added during the session", async () => {
+	await writeJobs([{ id: "edited", at: "07:30", timezone: "Asia/Hong_Kong", role: "scout", cwd: agentDir, prompt: "Go." }]);
+	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
+	const h = harness(async () => ({ outcome: "success", output: "" }));
+	await h.emit("session_start");
+	await h.settle();
+	const subagentPath = join(agentDir, "config", "pi-subagent", "config.json");
+	const taskModelsPath = join(agentDir, "config", "pi-task-models", "config.json");
+	const taskModels = await readFile(taskModelsPath, "utf8");
+	await mkdir(join(subagentPath, ".."), { recursive: true });
+	await writeFile(subagentPath, JSON.stringify({ roleDefaults: { mcps: [] } }));
+	await writeFile(taskModelsPath, JSON.stringify({ ...JSON.parse(taskModels), extra: 1 }));
+	try {
+		await h.command("run edited");
+		await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job edited finished")));
+		assert.ok(h.notices.includes(`pi-subagent config issues (${subagentPath}): roleDefaults.mcps: unknown key; defaults replace invalid settings.`), h.notices.join("\n"));
+		assert.ok(h.notices.includes(`pi-task-models config issues (${taskModelsPath}): extra: unknown key; defaults replace invalid settings.`), h.notices.join("\n"));
+	} finally {
+		await rm(subagentPath, { force: true });
+		await writeFile(taskModelsPath, taskModels);
+		await h.emit("session_shutdown");
+	}
 });
 
 test("an invalid state file shows one error across jobs and ticks", async () => {

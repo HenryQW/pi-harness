@@ -9,7 +9,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { createConfigStore, extensionConfigDir, field, formatConfigIssues, parsers, type FieldParser } from "@henryqw/pi-config-store";
+import { createConfigStore, extensionConfigDir, field, formatConfigIssues, parsers, registerConfigReporting, type FieldParser } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
 import { DEFAULT_MAX_TURNS } from "./ephemeral.ts";
 import { loadRoleMcpConfig, parseRoleMcpAllowlist } from "./mcp-role.ts";
@@ -384,18 +384,42 @@ export function createSubagentConfigStore(agentDir = getAgentDir()) {
 
 /**
  * Read only `roleDefaults`. The extension reports and enforces the execution limits, so a bad limit does not
- * break the Role catalog of other consumers. A file that cannot load has no trusted `roleDefaults` and throws.
+ * break the Role catalog of other consumers; other keys are not this reader's issues.
  */
-function readRoleDefaults(agentDir: string): RoleDefaults {
+function loadRoleDefaults(agentDir: string) {
 	const store = createConfigStore({
 		extensionId: "pi-subagent",
 		agentDir,
 		fields: { roleDefaults: field(roleDefaultsField, DEFAULT_SUBAGENT_CONFIG.roleDefaults) },
 	});
 	const loaded = store.loadSync();
-	const fileIssues = loaded.issues.filter(({ key }) => !key);
-	if (loaded.status !== "ok" || fileIssues.length) throw new Error(`${store.path}: ${formatConfigIssues(fileIssues)}`);
+	const issues = loaded.issues.filter(({ key }) => !key || /^roleDefaults(?![\w$])/.test(key));
+	// A file that cannot load has no trusted `roleDefaults`.
+	return issues.some(({ key }) => !key)
+		? { store, loaded: { status: "disabled" as const, source: loaded.source, issues } }
+		: { store, loaded: { ...loaded, issues } };
+}
+
+function readRoleDefaults(agentDir: string): RoleDefaults {
+	const { store, loaded } = loadRoleDefaults(agentDir);
+	if (loaded.status !== "ok") throw new Error(`${store.path}: ${formatConfigIssues(loaded.issues)}`);
 	return loaded.value.roleDefaults;
+}
+
+/**
+ * Report `roleDefaults` issues at each session start, and return a function that reports them after a lazy
+ * Role catalog load, such as `loadRoleCatalog` or `resolveRoleLaunch`. Every pi-config-store reporter shares
+ * one record, so each issue shows one time in each session, also with the pi-subagent extension active.
+ */
+export function registerRoleDefaultsReporting(
+	pi: Pick<ExtensionAPI, "on">,
+	agentDir = getAgentDir(),
+): (ctx: Pick<ExtensionContext, "hasUI" | "ui">) => void {
+	const target = loadRoleDefaults(agentDir).store;
+	const reporter = registerConfigReporting(pi, []);
+	const report = (ctx: Pick<ExtensionContext, "hasUI" | "ui">) => reporter.report(ctx, target, loadRoleDefaults(agentDir).loaded);
+	pi.on("session_start", (_event, ctx) => report(ctx));
+	return report;
 }
 
 const withDefaults = (defaults: readonly string[] | undefined, values: readonly string[]): string[] => [...new Set([...(defaults ?? []), ...values])];
