@@ -119,6 +119,13 @@ test("built key generator stores, protects, replaces, and disables Bark push enc
 	assert.match(blocked.stderr, /^pi-bark config issues \(.*\): encryption: expected AES256/);
 	assert.match(blocked.stderr, /Fix the Bark config at .* first: encryption: expected AES256/);
 	assert.equal(readFileSync(configPath, "utf8"), invalid);
+	// A missing Device Key is reported and never silently written as null.
+	const noDeviceKey = `${JSON.stringify({ serverUrl: "https://api.day.app", encryption: null })}\n`;
+	writeFileSync(configPath, noDeviceKey);
+	const keptDeviceKey = runKeyGenerator(agentDir, "--force");
+	assert.equal(keptDeviceKey.status, 1);
+	assert.match(keptDeviceKey.stderr, /Fix the Bark config at .* first: deviceKey: required/);
+	assert.equal(readFileSync(configPath, "utf8"), noDeviceKey);
 	// A write never drops a missing safety setting that the command does not set.
 	const noServer = `${JSON.stringify({ deviceKey: "device-key", encryption: null })}\n`;
 	writeFileSync(configPath, noServer);
@@ -577,6 +584,17 @@ test("bad config disables or warns once, and /set-bark repairs a disabled config
 		message: `pi-bark config issues (${configPath}): sound: unknown key; statusNotifications.defaultEnabled: must be true or false; statusNotifications.cwdOverrides.relative: must be an absolute path without control characters; defaults replace invalid settings.`,
 		type: "warning",
 	});
+
+	// A status setting is refused while pi-bark stays disabled, so it never reports a change that sends nothing.
+	const removedKey = `${JSON.stringify({ serverUrl: "https://api.day.app", encryption: null })}\n`;
+	writeFileSync(configPath, removedKey);
+	await assert.rejects(() => commands.get("bark")!("on", ctx), /Bark is not configured \(deviceKey: required\)/);
+	assert.equal(readFileSync(configPath, "utf8"), removedKey);
+	assert.ok(!notices.some(({ message }) => message.startsWith("Enabled Bark status notifications")));
+	const unsetKey = `${JSON.stringify({ serverUrl: "https://api.day.app", deviceKey: null, encryption: null })}\n`;
+	writeFileSync(configPath, unsetKey);
+	await assert.rejects(() => commands.get("bark")!("default on", ctx), /Bark is not configured \(deviceKey: must be non-empty text\)/);
+	assert.equal(readFileSync(configPath, "utf8"), unsetKey);
 
 	// A repair write reports new issues before it replaces the file.
 	writeFileSync(configPath, `${JSON.stringify({ serverUrl: "https://api.day.app", deviceKey: "device-key", encryption: null, volume: 3 })}\n`);

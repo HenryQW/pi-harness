@@ -24,10 +24,10 @@ export type BarkConfig = {
 	};
 };
 
-/** Config that repair commands write. The Device Key can still be unset; an absent safety key stays undefined. */
+/** Config that repair commands write. The Device Key can be `null` (unset); an absent required key stays undefined. */
 export type BarkConfigDraft = Omit<BarkConfig, "serverUrl" | "deviceKey" | "encryption"> & {
 	serverUrl: string | undefined;
-	deviceKey: string | null;
+	deviceKey: string | null | undefined;
 	encryption: BarkEncryption | null | undefined;
 };
 
@@ -102,16 +102,16 @@ export function createBarkConfigStore(agentDir?: string) {
 	});
 }
 
-const SAFETY_KEYS = ["serverUrl", "encryption"] as const;
+const REQUIRED_KEYS = ["serverUrl", "deviceKey", "encryption"] as const;
 
-/** Same file; every field has a default, so repair commands can read a disabled config. An absent safety key stays unset. */
+/** Same file; every field has a default, so repair commands can read a disabled config. An absent or invalid required key stays undefined. */
 function createBarkDraftStore(agentDir?: string) {
 	return createConfigStore({
 		extensionId: "pi-bark",
 		agentDir,
 		fields: {
 			serverUrl: field<string | undefined>(serverUrl, undefined),
-			deviceKey: field(parsers.nullable(parsers.string({ trim: true })), null),
+			deviceKey: field<string | null | undefined>(parsers.nullable(parsers.string({ trim: true })), undefined),
 			encryption: field<BarkEncryption | null | undefined>(parsers.nullable(encryption), undefined),
 			statusNotifications,
 		},
@@ -120,8 +120,9 @@ function createBarkDraftStore(agentDir?: string) {
 
 /**
  * Write config for a repair command. `report` receives the issues of the current file before any write.
- * A clean file uses a locked update. A file with issues is replaced if it is unchanged under the lock. A missing or invalid server URL or
- * encryption setting blocks the write unless the command sets it (`replaces`), so no safety setting is lost.
+ * A clean file uses a locked update. A file with issues is replaced if it is unchanged under the lock. A missing or invalid
+ * server URL, Device Key, or encryption setting blocks the write unless the command sets it (`replaces`), so no required
+ * setting is lost or silently unset.
  */
 export async function writeBarkConfig(
 	agentDir: string | undefined,
@@ -135,13 +136,14 @@ export async function writeBarkConfig(
 	// The draft store has no disabling field, so it always loads a value.
 	if (current.status !== "ok") throw new Error(formatConfigIssues(current.issues));
 	const fileIssues = current.issues.filter(({ key }) => !key);
-	const blocking = current.source === "missing" ? [] : fileIssues.length ? fileIssues : SAFETY_KEYS
+	const blocking = current.source === "missing" ? [] : fileIssues.length ? fileIssues : REQUIRED_KEYS
 		.filter((key) => current.value[key] === undefined && !replaces.includes(key))
 		.map((key) => current.issues.find((issue) => issue.key === key) ?? { kind: "missing-required" as const, key, message: "required" });
 	if (blocking.length) throw new Error(`Fix the Bark config at ${store.path} first: ${formatConfigIssues(blocking)}`);
-	// A missing file has no safety settings to keep, so it starts from the defaults.
-	const draft = (config: BarkConfigDraft): BarkConfigDraft =>
-		current.source === "missing" ? { ...config, serverUrl: config.serverUrl ?? DEFAULT_SERVER_URL, encryption: config.encryption ?? null } : config;
+	// A missing file has no settings to keep, so it starts from the defaults with an unset Device Key.
+	const draft = (config: BarkConfigDraft): BarkConfigDraft => current.source === "missing"
+		? { ...config, serverUrl: config.serverUrl ?? DEFAULT_SERVER_URL, deviceKey: config.deviceKey ?? null, encryption: config.encryption ?? null }
+		: config;
 	if (!current.issues.length) await store.update((config) => change(draft(config)));
 	// The change uses the snapshot, so the replacement refuses a file that another session changed meanwhile.
 	else await store.replaceIfUnchanged(current, change(draft(current.value)));

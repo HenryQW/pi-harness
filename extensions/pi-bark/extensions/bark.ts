@@ -137,6 +137,12 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 					? ["on", "off"].includes(second) && !extra
 					: ["on", "off", "inherit"].includes(first) && !second;
 			if (!valid) throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
+			// A status setting fixes nothing that disables pi-bark, so do not report a change that sends nothing.
+			const loaded = configStore.loadSync();
+			configReporter.report(ctx, configStore, loaded);
+			if (loaded.status === "disabled") {
+				throw new Error(`Bark is not configured (${formatConfigIssues(loaded.issues)}). Run /set-bark <device-key> [server-url] or fix ${configStore.path} first.`);
+			}
 			const report: Parameters<typeof writeBarkConfig>[3] = (store, result) => configReporter.report(ctx, store, result);
 			if (first === "default") {
 				const enabled = second === "on";
