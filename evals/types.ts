@@ -8,7 +8,8 @@ export interface StubTool {
 	/** JSON Schema for the arguments. Default: any object. */
 	parameters?: Record<string, unknown>;
 	/**
-	 * Replies in call order. A record selects the queue by the string `action` argument.
+	 * Replies in call order. A record selects the queue by the string `action` argument. A `<action>:<id>` key,
+	 * for a string `id` argument, takes precedence over the `<action>` key.
 	 * After a queue runs out, its last reply repeats. A missing queue returns a tool error.
 	 */
 	responses: StubResponse[] | Record<string, StubResponse[]>;

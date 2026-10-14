@@ -86,6 +86,7 @@ A stub registers a Pi tool with the given `name`, `description`, and JSON Schema
 
 - `responses` as an array gives replies in call order.
 - `responses` as a record selects the queue by the string `action` argument.
+- A record key `<action>:<id>` selects the queue by the `action` and string `id` arguments. This key has priority over the `<action>` key.
 - When a queue has no more replies, the last reply repeats.
 - A missing queue returns a tool error.
 - `{ text, isError: true }` returns a tool error.
