@@ -486,9 +486,10 @@ type Revision = { bytes: Buffer; size: number; digest: string } | string | null;
 /** What each `loadSync()` result read, so `replaceIfUnchanged` can detect a later change. */
 const revisions = new WeakMap<object, { path: string; revision: Revision }>();
 
+/** A read error proves nothing about the bytes, so an error revision never equals another revision. */
 function sameRevision(left: Revision, right: Revision): boolean {
 	if (left && right && typeof left === "object" && typeof right === "object") return left.size === right.size && left.digest === right.digest;
-	return left === right;
+	return left === null && right === null;
 }
 
 class ConfigStore<T> {

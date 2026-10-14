@@ -412,6 +412,22 @@ test("replaceIfUnchanged writes under the lock only when the file still matches 
 	});
 });
 
+test("replaceIfUnchanged refuses a snapshot or reread that could not read the file", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+	await withAgentDir(async (agentDir) => {
+		const store = createStore(agentDir);
+		await writeConfig(store.path, '{"count":-1}');
+		await chmod(store.path, 0o000);
+		const snapshot = store.loadSync();
+		assert.deepEqual(snapshot.issues.map(({ kind }) => kind), ["unreadable"]);
+		// Another unreadable file with other bytes gives the same error text, so the error must not compare equal.
+		await rm(store.path);
+		await writeFile(store.path, '{"count":5}', { mode: 0o000 });
+		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), /changed since it was read/);
+		await chmod(store.path, 0o600);
+		assert.equal(await readFile(store.path, "utf8"), '{"count":5}');
+	});
+});
+
 test("replaceIfUnchanged compares every byte of a file too large to parse", async () => {
 	await withAgentDir(async (agentDir) => {
 		const store = createStore(agentDir);
