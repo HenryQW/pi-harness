@@ -210,6 +210,20 @@ export function loadTaskModelsConfig(agentDir = getAgentDir()): { source: "file"
 	return { source: loaded.source, value: loaded.value };
 }
 
+/**
+ * Report task-model config issues at each session start, and return a function that reports them after
+ * a lazy route resolution. Consumers register it so issues show also without the task-models extension.
+ * Every pi-config-store reporter shares one record, so each issue shows one time in each session.
+ */
+export function registerTaskModelsConfigReporting(
+	pi: Pick<ExtensionAPI, "on">,
+	agentDir = getAgentDir(),
+): (ctx: Pick<ExtensionContext, "hasUI" | "ui">) => void {
+	const store = taskModelsConfigStore(agentDir);
+	const reporter = registerConfigReporting(pi, [store]);
+	return (ctx) => reporter.report(ctx, store, store.loadSync());
+}
+
 export function canonicalModelReference(model: { provider: string; id: string } | string): string {
 	const reference = typeof model === "string" ? model : `${model.provider}/${model.id}`;
 	if (!isModelReference(reference)) throw new Error("Model reference must be provider/model without whitespace.");

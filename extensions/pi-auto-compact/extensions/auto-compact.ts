@@ -21,6 +21,7 @@ import type {
 import {
 	executeTaskRoutes,
 	registerModelTask,
+	registerTaskModelsConfigReporting,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
 	type ResolvedTaskRoute,
@@ -49,7 +50,9 @@ function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
 }
 
-function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
+/** `report` shows new task-model config issues before the routes resolve. */
+function configuredTaskRoutes(ctx: ExtensionContext, report: (ctx: ExtensionContext) => void): ResolvedTaskRoute[] {
+	report(ctx);
 	try {
 		return resolveConfiguredTaskRoutes(ctx, AUTO_COMPACT_TASK);
 	} catch (error) {
@@ -241,6 +244,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	// Registered before this extension's session_start handler so launch issues show first.
 	const reporter = registerConfigReporting(pi, [configStore]);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi);
 	/** The config has no required or unsafe field, so a load is never disabled. */
 	const loadThreshold = () => {
 		const loaded = configStore.loadSync();
@@ -333,7 +337,7 @@ export default function (pi: ExtensionAPI) {
 		};
 		const signal = ctx.signal;
 		try {
-			const routes = configuredTaskRoutes(ctx);
+			const routes = configuredTaskRoutes(ctx, reportTaskModels);
 			let result: Awaited<ReturnType<typeof compact>> | undefined;
 			if (routes.length) {
 				try {
@@ -506,7 +510,7 @@ export default function (pi: ExtensionAPI) {
 		for (const path of prior.read) event.preparation.fileOps.read.add(path);
 		for (const path of prior.edited) event.preparation.fileOps.edited.add(path);
 
-		const routes = configuredTaskRoutes(ctx);
+		const routes = configuredTaskRoutes(ctx, reportTaskModels);
 		if (!routes.length) return;
 
 		try {

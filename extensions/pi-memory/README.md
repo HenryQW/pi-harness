@@ -53,7 +53,7 @@ A SYSTEM file proven present during review cannot disappear later in that sessio
 
 It resolves the configured Pi registry primary route, then fallback, through `/task-models`. It never substitutes the current session model. It accepts only verified bounded JSON evidence.
 
-If the shared task-model config is missing, pi-memory shows a warning one time at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before you add memory.
+If the shared task-model config is missing, pi-memory shows a warning one time at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before you add memory. pi-memory also shows each problem in the shared task-model config one time in each session, at session start or before a review.
 
 An overlap or contradiction found during an active response queues the question instead of blocking the agent. The tool reports `queued: true` and `saved: false`. Nothing is written yet. The agent must finish its reply. It must not retry or ask you itself. After the response fully settles (`agent_settled`), pi-memory drains conflicts in FIFO order. It reviews live sources again. If a conflict remains, it uses the shared `ask_question` UI. An idle `/remember` request can ask immediately. Choose **Merge with existing entries**, **Discard the new entry, keep current**, or **Replace current entry**. The UI also offers **Something else.** for a custom answer. The recommended choice comes first: merge for overlap, replace for contradiction, and discard for SYSTEM conflicts. pi-memory never edits SYSTEM.md.
 

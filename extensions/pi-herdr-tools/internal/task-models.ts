@@ -10,8 +10,12 @@ import {
 // Pi reloads extensions without a module cache, so process state keeps the warning once per session.
 const WARNED_SESSION = Symbol.for("pi-herdr-tools/task-models-warned-session");
 
-/** Resolve routes for `task`; `no-route` names the feature, other errors keep pi-task-models' message and detail. */
-export function configuredTaskRoutes(ctx: ExtensionContext, task: ModelTask, label: string): ResolvedTaskRoute[] {
+/**
+ * Resolve routes for `task` after `report` shows new task-model config issues (from `registerTaskModelsConfigReporting`).
+ * `no-route` names the feature; other errors keep pi-task-models' message and detail.
+ */
+export function configuredTaskRoutes(ctx: ExtensionContext, task: ModelTask, label: string, report: (ctx: ExtensionContext) => void): ResolvedTaskRoute[] {
+	report(ctx);
 	try {
 		return resolveConfiguredTaskRoutes(ctx, task);
 	} catch (error) {
@@ -37,9 +41,8 @@ export function registerTaskModelsWarning(pi: ExtensionAPI, tasks: readonly Mode
 					.filter((profile) => !config.value.profiles[profile]);
 				if (missing.length) message = `Task model profile ${missing.join(", ")} is not configured. Run /task-models.`;
 			}
-		} catch (error) {
-			// A disabled config throws with the path and the problems.
-			message = error instanceof Error ? error.message : String(error);
+		} catch {
+			// A disabled config throws; the task-models config reporter already shows its path and problems.
 		}
 		if (!message) return;
 		state[WARNED_SESSION] = sessionId;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrClient, hasHerdrErrorCode, startPiAgent } from "@henryqw/pi-herdr";
-import { registerModelTask, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
+import { registerModelTask, registerTaskModelsConfigReporting, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
 import {
 	buildSessionContext,
 	convertToLlm,
@@ -375,6 +375,7 @@ export async function registerBtwExtension(
 
 	const configStore = options.configStore ?? createBtwConfigStore();
 	const configReporter = registerConfigReporting(pi, [configStore]);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi);
 	const loadConfig = (ctx: ExtensionContext): BtwConfig => {
 		const loaded = configStore.loadSync();
 		configReporter.report(ctx, configStore, loaded);
@@ -574,7 +575,7 @@ export async function registerBtwExtension(
 				const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
 				const thinkingLevel = pi.getThinkingLevel();
 				let launchRoute: ResolvedTaskRoute | undefined;
-				for (const route of configuredTaskRoutes(ctx, BTW_TASK, "BTW")) {
+				for (const route of configuredTaskRoutes(ctx, BTW_TASK, "BTW", reportTaskModels)) {
 					try {
 						const authenticated = (await ctx.modelRegistry.getApiKeyAndHeaders(route.model)).ok;
 						if (launchGeneration !== sessionGeneration) return;

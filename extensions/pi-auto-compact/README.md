@@ -31,7 +31,7 @@ Restart Pi after you install the package or change settings. Trusted `.pi/settin
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared compaction routes. |
 
-Task Models owns the shared `~/.pi/agent/config/pi-task-models/config.json` file. By default, the `pi-auto-compact/autoCompact` task of this extension uses the `fast` profile. A task entry is an explicit user override.
+Task Models owns the shared `~/.pi/agent/config/pi-task-models/config.json` file. At session start and before each compaction, this extension shows each problem in that file one time in each session. By default, the `pi-auto-compact/autoCompact` task of this extension uses the `fast` profile. A task entry is an explicit user override.
 
 ## Use
 

@@ -73,10 +73,17 @@ test("package startup warns once per session about a shared unconfigured profile
 	assert.deepEqual(await startupWarnings(t, JSON.stringify({ profiles: {} })), ["warning: Task model profile fast is not configured. Run /task-models."]);
 });
 
-test("package startup warns once per session about an unreadable task-model config", async (t) => {
+test("package startup reports an unreadable task-model config once per session start through the owner reporter", async (t) => {
 	const warnings = await startupWarnings(t, "{");
-	assert.equal(warnings.length, 1);
-	assert.match(warnings[0]!, /^warning: Task model config at .*config\.json is disabled: invalid JSON: .*Fix the file or run \/task-models\.$/);
+	// Rename and BTW both register the owner reporter; the shared record shows the issue once for each session_start event.
+	assert.equal(warnings.length, 2);
+	for (const warning of warnings) assert.match(warning, /^error: pi-task-models disabled \(.*config\.json\): invalid JSON: /);
+});
+
+test("package startup reports nonblocking task-model config issues", async (t) => {
+	const warnings = await startupWarnings(t, JSON.stringify({ profiles: { fast: { primary: { model: "a/b", thinkingLevel: "off" } } }, extra: 1 }));
+	assert.equal(warnings.length, 2);
+	for (const warning of warnings) assert.match(warning, /^warning: pi-task-models config issues \(.*config\.json\): extra: unknown key; /);
 });
 
 type Kind = "select" | "confirm" | "input" | "editor" | "custom";

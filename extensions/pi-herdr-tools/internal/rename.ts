@@ -4,7 +4,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
-import { executeTaskRoutes, registerModelTask, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
+import { executeTaskRoutes, registerModelTask, registerTaskModelsConfigReporting, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
 import { configuredTaskRoutes } from "./task-models.ts";
 
 const WIDGET_KEY = "pi-herdr-rename";
@@ -150,7 +150,7 @@ function recentUserMessages(ctx: ExtensionContext, fallback?: string): string | 
 	return selected.reverse().join("\n\n");
 }
 
-async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal): Promise<GeneratedTitle> {
+async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal, reportTaskModels: (ctx: ExtensionContext) => void): Promise<GeneratedTitle> {
 	const prompt = text.slice(0, MAX_CONTEXT_CHARS);
 	const complete = async (route: ResolvedTaskRoute, messages: Array<{ role: "user"; content: string; timestamp: number }>) => {
 		let response;
@@ -170,7 +170,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 	};
 
 	return executeTaskRoutes(
-		configuredTaskRoutes(ctx, RENAME_TASK, "Rename"),
+		configuredTaskRoutes(ctx, RENAME_TASK, "Rename", reportTaskModels),
 		async (route) => {
 			const firstMessages = [{ role: "user" as const, content: prompt, timestamp: Date.now() }];
 			const response = await complete(route, firstMessages);
@@ -203,6 +203,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 
 export default function herdrRenameExtension(pi: ExtensionAPI): void {
 	registerModelTask(pi, RENAME_TASK);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi);
 	const herdr = createHerdrClient<{ signal: AbortSignal }>(pi.exec.bind(pi));
 	let latestUserText: string | undefined;
 	let automaticStarted = false;
@@ -304,7 +305,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		}
 		const { request, controller } = begin();
 		try {
-			const title = await generateTitle(text, ctx, controller.signal);
+			const title = await generateTitle(text, ctx, controller.signal, reportTaskModels);
 			if (!isCurrent(request, controller)) return;
 			const saved = savedTitle(ctx);
 			const previousDisplayTitle = saved && pi.getSessionName() === saved.display ? saved.display : undefined;

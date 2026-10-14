@@ -152,7 +152,7 @@ Normal cleanup does these steps. It checks whether a tab in another Herdr worksp
 - The consumer-owned `pi-herdr-btw/btw` task defaults to `fast`.
 - Before the pane starts, `/btw` selects the first authenticated viable effective profile route.
 
-`~/.pi/agent/config/pi-task-models/config.json` is shared, and `@henryqw/pi-task-models` owns it. A task entry is an explicit user override. Routes resolve before the pane starts. If this file is missing or unreadable, or a task profile is not configured, the package shows one warning one time per session.
+`~/.pi/agent/config/pi-task-models/config.json` is shared, and `@henryqw/pi-task-models` owns it. A task entry is an explicit user override. Routes resolve before the pane starts. If this file is missing, or a task profile is not configured, the package shows one warning one time per session. At session start and before each route resolution, the package also shows each problem in this file, such as an unknown key or malformed JSON, one time in each session.
 
 #### Merge delivery
 

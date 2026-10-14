@@ -19,6 +19,7 @@ import {
 } from "@henryqw/pi-subagent";
 import {
 	registerModelTask,
+	registerTaskModelsConfigReporting,
 	type ModelTask,
 } from "@henryqw/pi-task-models";
 
@@ -246,6 +247,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		},
 	});
 	const configReporter = registerConfigReporting(pi, [configStore]);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi, agentDir);
 	let executor = options.executor;
 	let automatic = false;
 	let inputThreshold = DEFAULT_INPUT_THRESHOLD;
@@ -314,6 +316,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		void Promise.resolve().then(() => getExecutor().run({
 			signal: run.controller.signal,
 			prepare: async () => {
+				reportTaskModels(ctx);
 				const launch = resolveRoleLaunch(pi, ctx, {
 					role: DRAFT_ROLE,
 					task: DRAFT_TASK,

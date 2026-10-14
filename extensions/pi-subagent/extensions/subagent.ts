@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { availableTaskModels, loadTaskModelsConfig, modelReference, type ProfileName, registerModelTask, resolveAvailableModel, resolveConfiguredTaskRoute, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
+import { availableTaskModels, loadTaskModelsConfig, modelReference, type ProfileName, registerModelTask, registerTaskModelsConfigReporting, resolveAvailableModel, resolveConfiguredTaskRoute, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
 import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
 import { resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
@@ -183,6 +183,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const samplingTokens = new Set<string>();
 	const configStore = createSubagentConfigStore();
 	const configReporter = registerConfigReporting(pi, [configStore]);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi);
 	const loadedConfig = configStore.loadSync();
 	// A disabled config blocks each delegation; the executor still needs finite limits.
 	const initialPolicy = resolveExecutionPolicy(configStore.path, loadedConfig.status === "ok" ? loadedConfig
@@ -518,9 +519,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (loadTaskModelsConfig().source === "missing") {
 				ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");
 			}
-		} catch (error) {
-			// A disabled shared config throws; its message gives the path and the problems.
-			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+		} catch {
+			// A disabled shared config throws; the task-models config reporter already shows the path and the problems.
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -628,6 +628,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			signal?.throwIfAborted();
 			configReporter.report(ctx, configStore, configStore.loadSync());
+			reportTaskModels(ctx);
 			const parsed = parseDelegateTask(params);
 			if (parsed.mode === "isolated") return await isolatedSurface.execute(parsed.request, signal, ctx);
 			const workflow = parsed.workflow;

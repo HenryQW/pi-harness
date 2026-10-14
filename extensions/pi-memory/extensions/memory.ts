@@ -14,6 +14,7 @@ import {
 	executeTaskRoutes,
 	loadTaskModelsConfig,
 	registerModelTask,
+	registerTaskModelsConfigReporting,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
 	type ResolvedTaskRoute,
@@ -189,7 +190,11 @@ function sameReviewSnapshot(left: ReviewSnapshot, right: ReviewSnapshot): boolea
 		);
 }
 
+// Set by the extension factory; Pi loads each extension instance with its own module copy.
+let reportTaskModels: (ctx: ExtensionContext) => void = () => {};
+
 function configuredReviewRoutes(ctx: ExtensionContext, task: ModelTask = MEMORY_REVIEW_TASK): ResolvedTaskRoute[] {
+	reportTaskModels(ctx);
 	try {
 		return resolveConfiguredTaskRoutes(ctx, task);
 	} catch (error) {
@@ -642,6 +647,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	registerModelTask(pi, DREAM_TASK);
 	const configStore = memoryConfigStore();
 	const configReporter = registerConfigReporting(pi, [configStore]);
+	reportTaskModels = registerTaskModelsConfigReporting(pi);
 	const state: {
 		config?: MemoryConfig;
 		stores?: Record<Target, MemoryStore>;
@@ -875,9 +881,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				if (loadTaskModelsConfig().source === "missing") {
 					ctx.ui.notify("Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");
 				}
-			} catch (error) {
-				// A broken review route must not disable otherwise usable memory snapshots.
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+			} catch {
+				// A broken review route must not disable otherwise usable memory snapshots;
+				// the task-models config reporter already shows the path and the problems.
 			}
 			await mkdir(BACKUP_DIR(), { recursive: true });
 			await mkdir(config.directory, { recursive: true });

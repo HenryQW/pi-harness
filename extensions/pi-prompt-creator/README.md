@@ -89,7 +89,7 @@ A successful save reloads Pi resources. If reload fails, the prompt remains save
 
 The extension registers `pi-prompt-creator/draft`. Its default task profile is `fast`.
 
-Use `/task-models` to select the model and thinking level. The extension owns no model configuration.
+Use `/task-models` to select the model and thinking level. The extension owns no model configuration. At session start and before each analysis, it shows each problem in the shared task-model config one time in each session.
 
 ## Config
 

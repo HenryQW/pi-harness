@@ -151,6 +151,7 @@ A missing, empty, or invalid preset file does not change the active config. The 
 | `TaskRouteError` | type | Carries a route error code and optional profile name. |
 | `registerModelTask(pi, task)` | function | Registers a consumer's task declaration at extension load. |
 | `loadTaskModelsConfig(agentDir?)` | function | Reads and validates the owner config file when present. Throws when the config is disabled. |
+| `registerTaskModelsConfigReporting(pi, agentDir?)` | function | Reports config problems at each session start. Returns `report(ctx)`, which reports new problems after a lazy route resolution. |
 | `canonicalModelReference(model)` | function | Validates and canonicalizes `provider/model`, including numbered Codex aliases. |
 | `modelReference(model)` | function | Formats a model as `provider/model`. |
 | `dedupeAvailableModels(models, preferredProvider?)` | function | Removes duplicate canonical model references. Prefers a provider when requested. |
@@ -167,6 +168,8 @@ A missing, empty, or invalid preset file does not change the active config. The 
 Model and route helpers use only `ctx.model`, `ctx.scopedModels`, and `ctx.modelRegistry.getAvailable()`. They do not require UI methods, so consumers can use different supported Pi 1.x versions.
 
 Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use. When the config is disabled, it throws an error that gives the file path and the problems.
+
+A consumer must call `registerTaskModelsConfigReporting(pi)` in its extension factory, and call the returned `report(ctx)` before it resolves a route. Thus, config problems show also when the Task Models extension is not active. All reporters share one record, so each problem shows one time in each session, also when several consumers report it.
 
 Profile thinking is authoritative. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
 

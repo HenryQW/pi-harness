@@ -9,6 +9,7 @@ import {
 	availableTaskModels,
 	executeTaskRoutes,
 	loadTaskModelsConfig,
+	registerTaskModelsConfigReporting,
 	registerModelTask,
 	resolveConfiguredTaskRoute,
 	resolveConfiguredTaskRoutes,
@@ -171,6 +172,30 @@ test("reports config issues at launch: warnings fall back, a broken profile tabl
 		writeFileSync(file, JSON.stringify({ profile: {} }));
 		sessionStart({}, ctx);
 		assert.deepEqual(notices[0], [`pi-task-models disabled (${file}): profiles: unknown key "profile"; did you mean "profiles"?`, "error"]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("consumers report task-model config issues at launch and after a lazy read, once per session", () => {
+	const dir = tempDir();
+	try {
+		const file = configFile(dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(file, JSON.stringify({ extra: 1 }));
+		const handlers: Array<(event: unknown, ctx: unknown) => void> = [];
+		const pi = { on: (_event: string, handler: (event: unknown, ctx: unknown) => void) => { handlers.push(handler); } };
+		const first = registerTaskModelsConfigReporting(pi as never, dir);
+		const second = registerTaskModelsConfigReporting(pi as never, dir);
+		const notices: Array<[string, string]> = [];
+		const ctx = { hasUI: true, ui: { notify(message: string, level: string) { notices.push([message, level]); } } };
+		const event = {};
+		for (const handler of handlers) handler(event, ctx);
+		assert.deepEqual(notices, [[`pi-task-models config issues (${file}): extra: unknown key; defaults replace invalid settings.`, "warning"]]);
+		writeFileSync(file, JSON.stringify({ extra: 1, tasks: { "pi-example/review": "slow" } }));
+		first(ctx);
+		second(ctx);
+		assert.deepEqual(notices.slice(1), [[`pi-task-models config issues (${file}): tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"]]);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
