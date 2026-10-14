@@ -168,13 +168,14 @@ const parseTaskId: FieldParser<string> = (raw) => {
 	return raw;
 };
 
-function taskModelsConfigStore(agentDir = getAgentDir()) {
+/** `repair` reads the same file without the disable rule, so `/task-models` keeps the settings that loaded. */
+function taskModelsConfigStore(agentDir = getAgentDir(), repair = false) {
 	return createConfigStore({
 		extensionId: "pi-task-models",
 		agentDir,
 		fields: {
 			// No default route exists, so a profile table that cannot load disables routing instead of hiding it.
-			profiles: field(parseProfiles, {}, { onInvalid: "disable" }),
+			profiles: field(parseProfiles, {}, { onInvalid: repair ? "default" : "disable" }),
 			tasks: field(parsers.record(profileNameParser, { key: parseTaskId }), {}),
 		},
 	});
@@ -500,6 +501,7 @@ export function createTaskModelsExtension(
 ): void {
 	const agentDir = options?.agentDir ?? getAgentDir();
 	const configStore = taskModelsConfigStore(agentDir);
+	const repairStore = taskModelsConfigStore(agentDir, true);
 	const presetsStore = taskModelPresetsStore(agentDir);
 	const reporter = registerConfigReporting(pi, [configStore, presetsStore]);
 	pi.on("session_start", (_event, ctx) => {
@@ -515,11 +517,12 @@ export function createTaskModelsExtension(
 				ctx.ui.notify("Usage: /task-models [preset]", "error");
 				return;
 			}
-			const loaded = configStore.loadSync();
-			reporter.report(ctx, configStore, loaded);
-			// A disabled config shows no settings; saving from this command repairs it.
-			const config: TaskModelsConfig = loaded.status === "ok" ? loaded.value : { profiles: {}, tasks: {} };
-			const save = (mutator: (current: TaskModelsConfig) => TaskModelsConfig) => saveTaskModelsConfig(ctx, configStore, loaded, config, mutator);
+			reporter.report(ctx, configStore, configStore.loadSync());
+			// The repair store never disables, so a disabled config still shows and keeps the settings that loaded.
+			const snapshot = repairStore.loadSync();
+			const config: TaskModelsConfig = snapshot.status === "ok" ? snapshot.value : { profiles: {}, tasks: {} };
+			const save = (mutator: (current: TaskModelsConfig) => TaskModelsConfig) =>
+				saveTaskModelsConfig(ctx, configStore, repairStore, snapshot, config, mutator);
 
 			if (action === "preset") {
 				const presets = presetsStore.loadSync();
@@ -607,24 +610,29 @@ export function createTaskModelsExtension(
 
 /**
  * Merge into the latest clean config under the store lock. A config with issues is replaced
- * only after the user confirms, keeping just the settings that loaded.
+ * only after the user confirms, keeping just the settings that loaded, and only when the file
+ * still matches the snapshot, so a repair from another session is never overwritten.
  */
 async function saveTaskModelsConfig(
 	ctx: ExtensionContext,
 	store: TaskModelsConfigStore,
-	loaded: ReturnType<TaskModelsConfigStore["loadSync"]>,
+	repairStore: TaskModelsConfigStore,
+	snapshot: ReturnType<TaskModelsConfigStore["loadSync"]>,
 	config: TaskModelsConfig,
 	mutator: (current: TaskModelsConfig) => TaskModelsConfig,
 ): Promise<boolean> {
 	try {
-		if (loaded.status === "ok" && !loaded.issues.length) {
+		if (!snapshot.issues.length) {
 			await store.update(mutator);
 			return true;
 		}
 		if (!await ctx.ui.confirm(
 			"Replace task model config?",
-			`${store.path} has issues: ${formatConfigIssues(loaded.issues)}. Saving removes the settings with issues.`,
+			`${store.path} has issues: ${formatConfigIssues(snapshot.issues)}. Saving removes the settings with issues.`,
 		)) return false;
+		if (!isDeepStrictEqual(repairStore.loadSync(), snapshot)) {
+			throw new Error(`${store.path} changed while /task-models was open; nothing was saved. Run /task-models again.`);
+		}
 		await store.save(mutator(config));
 		return true;
 	} catch (error) {

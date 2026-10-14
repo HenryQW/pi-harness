@@ -150,13 +150,13 @@ test("reports config issues at launch: warnings fall back, a broken profile tabl
 		const file = configFile(dir);
 		const presets = join(dir, "config", "pi-task-models", "presets.json");
 		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
-		writeFileSync(file, JSON.stringify({ profile: {}, tasks: { "pi-example/review": "slow" } }));
+		writeFileSync(file, JSON.stringify({ extra: {}, tasks: { "pi-example/review": "slow" } }));
 		writeFileSync(presets, JSON.stringify({ " bad": {} }));
 		const notices: Array<[string, string]> = [];
 		const ctx = { hasUI: true, ui: { notify(message: string, level: string) { notices.push([message, level]); } } };
 		sessionStart({}, ctx);
 		assert.deepEqual(notices, [
-			[`pi-task-models config issues (${file}): profile: unknown key; tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"],
+			[`pi-task-models config issues (${file}): extra: unknown key; tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"],
 			[`pi-task-models config issues (${presets}): [" bad"]: preset names must be non-empty text without surrounding whitespace or control characters; defaults replace invalid settings.`, "warning"],
 		]);
 
@@ -165,6 +165,12 @@ test("reports config issues at launch: warnings fall back, a broken profile tabl
 		sessionStart({}, ctx);
 		assert.equal(notices[0]![1], "error");
 		assert.match(notices[0]![0], /^pi-task-models disabled \(.*config\.json\): invalid JSON/);
+
+		// A misspelled `profiles` key is an invalid profile table, so routing is disabled.
+		notices.length = 0;
+		writeFileSync(file, JSON.stringify({ profile: {} }));
+		sessionStart({}, ctx);
+		assert.deepEqual(notices[0], [`pi-task-models disabled (${file}): profiles: unknown key "profile"; did you mean "profiles"?`, "error"]);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -203,6 +209,45 @@ test("/task-models repairs a disabled config only after confirmation", async () 
 			profiles: { fast: { primary: { model: "test/model", thinkingLevel: "off" } } }, tasks: {},
 		});
 		assert.equal(notices.at(-1), "fast profile saved.");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("/task-models repair keeps the tasks that loaded and refuses a file changed after the snapshot", async () => {
+	const dir = tempDir();
+	try {
+		const { handler } = controlPlane(eventBus(), dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(configFile(dir), JSON.stringify({ profiles: [], tasks: { "pi-example/review": "frontier" } }));
+		let onConfirm = () => {};
+		const notices: string[] = [];
+		const run = () => {
+			const selections = ["fast · not configured", "test/model", "off", "None"];
+			return handler("", {
+				hasUI: true,
+				ui: {
+					select: async () => selections.shift(),
+					confirm: async () => { onConfirm(); return true; },
+					notify(message: string) { notices.push(message); },
+				},
+				scopedModels: [],
+				modelRegistry: { getAvailable: () => [{ provider: "test", id: "model", input: ["text"], reasoning: false }] },
+			});
+		};
+		const repaired = JSON.stringify({ profiles: {}, tasks: {} });
+		onConfirm = () => writeFileSync(configFile(dir), repaired);
+		await run();
+		assert.equal(readFileSync(configFile(dir), "utf8"), repaired);
+		assert.match(notices.at(-1)!, /config\.json changed while \/task-models was open; nothing was saved/);
+
+		writeFileSync(configFile(dir), JSON.stringify({ profiles: [], tasks: { "pi-example/review": "frontier" } }));
+		onConfirm = () => {};
+		await run();
+		assert.deepEqual(loadTaskModelsConfig(dir).value, {
+			profiles: { fast: { primary: { model: "test/model", thinkingLevel: "off" } } },
+			tasks: { "pi-example/review": "frontier" },
+		});
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
