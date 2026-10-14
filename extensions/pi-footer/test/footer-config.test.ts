@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
+	createFooterConfigStore,
 	FOOTER_COLOR_ROLES,
 	type FooterColorConfig,
-	footerConfigPath,
-	loadFooterConfig,
 	paintFooter,
-	parseFooterColorConfig,
+	parseFooterColor,
 } from "../extensions/footer-config.ts";
 
 type FakeTheme = {
@@ -35,16 +34,27 @@ function fakeTheme(): FakeTheme {
 	return theme;
 }
 
-test("missing file returns empty colors and does not create the file", (t) => {
+function storeWith(t: { after(fn: () => void): void }, contents?: string) {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-footer-config-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	assert.deepEqual(loadFooterConfig(agentDir), {});
-	assert.equal(loadFooterConfig(agentDir).input, undefined);
-	assert.equal(loadFooterConfig(mkdtempSync(join(tmpdir(), "pi-footer-config-"))).input, undefined);
+	const store = createFooterConfigStore(agentDir);
+	if (contents !== undefined) {
+		mkdirSync(dirname(store.path), { recursive: true });
+		writeFileSync(store.path, contents);
+	}
+	return store;
+}
+
+const noReport = () => {};
+
+test("missing file returns empty colors and does not create the file", (t) => {
+	const store = storeWith(t);
+	assert.deepEqual(store.loadSync(), { status: "ok", source: "missing", value: { colors: {} }, issues: [] });
+	assert.equal(existsSync(dirname(store.path)), false);
 });
 
-test("full config accepts every color role", () => {
-	const raw: Record<string, unknown> = {
+test("full config accepts every color role", (t) => {
+	const colors: Record<string, unknown> = {
 		repository: "muted",
 		branch: "accent",
 		gitStatus: "warning",
@@ -59,62 +69,62 @@ test("full config accepts every color role", () => {
 		codegraphActive: "accent",
 		separator: "dim",
 	};
-	const parsed = parseFooterColorConfig({ colors: raw });
-	assert.deepEqual(Object.keys(parsed.colors).sort(), [...FOOTER_COLOR_ROLES].sort());
-});
-
-test("partial config only overrides provided roles", (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-footer-config-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const path = footerConfigPath(agentDir);
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify({ colors: { input: "#4ec9b0" } }));
-	const colors = loadFooterConfig(agentDir);
-	assert.deepEqual(Object.keys(colors), ["input"]);
-	assert.equal(colors.input?.kind, "color");
+	const loaded = storeWith(t, JSON.stringify({ colors })).loadSync();
+	assert.equal(loaded.status, "ok");
+	assert.deepEqual(loaded.issues, []);
+	if (loaded.status === "ok") assert.deepEqual(Object.keys(loaded.value.colors).sort(), [...FOOTER_COLOR_ROLES].sort());
 });
 
 test("accepts theme tokens, hex, oklch, okhsl and ANSI boundaries", () => {
 	for (const token of ["accent", "dim", "muted", "text", "success", "warning", "error", "thinkingText"]) {
-		assert.equal(parseFooterColorConfig({ colors: { input: token } }).colors.input?.kind, "token", token);
+		assert.equal(parseFooterColor(token, noReport).kind, "token", token);
 	}
 	for (const value of ["#0af", "#00aaff", "oklch(62% 0.1 200)", "okhsl(250 60% 55%)", 0, 255]) {
-		assert.equal(parseFooterColorConfig({ colors: { input: value } }).colors.input?.kind, "color", String(value));
+		assert.equal(parseFooterColor(value, noReport).kind, "color", String(value));
 	}
 });
 
-test("rejects unknown root fields, roles and invalid colors", () => {
+test("rejects invalid color values", () => {
 	const invalid: [unknown, RegExp][] = [
-		["not an object", /JSON object/],
-		[{}, /missing "colors"/],
-		[{ extra: true, colors: {} }, /unknown field/],
-		[{ colors: [] }, /must be an object/],
-		[{ colors: { nope: "accent" } }, /unknown color role/],
-		[{ colors: { input: "" } }, /expected a theme token/],
-		[{ colors: { input: "not-a-color" } }, /invalid color/],
-		[{ colors: { input: 1.5 } }, /ANSI index/],
-		[{ colors: { input: 256 } }, /ANSI index/],
-		[{ colors: { input: -1 } }, /ANSI index/],
+		["", /expected a theme token/],
+		["not-a-color", /invalid color/],
+		[1.5, /ANSI index/],
+		[256, /ANSI index/],
+		[-1, /ANSI index/],
 	];
 	for (const [value, pattern] of invalid) {
-		assert.throws(() => parseFooterColorConfig(value), pattern, JSON.stringify(value));
+		assert.throws(() => parseFooterColor(value, noReport), pattern, JSON.stringify(value));
 	}
 });
 
-test("invalid file makes loadFooterConfig throw", (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-footer-config-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const path = footerConfigPath(agentDir);
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, "{ broken json");
-	assert.throws(() => loadFooterConfig(agentDir));
+test("unknown keys and roles warn, and an invalid role keeps the other roles", (t) => {
+	const contents = JSON.stringify({ extra: true, colors: { input: "#4ec9b0", nope: "accent", output: "not-a-color" } });
+	const store = storeWith(t, contents);
+	const loaded = store.loadSync();
+	assert.equal(loaded.status, "ok");
+	if (loaded.status === "ok") assert.deepEqual(Object.keys(loaded.value.colors), ["input"]);
+	assert.deepEqual(loaded.issues.map(({ kind, key }) => [kind, key]), [
+		["unknown-key", "extra"],
+		["unknown-key", "colors.nope"],
+		["invalid-value", "colors.output"],
+	]);
+	assert.equal(readFileSync(store.path, "utf8"), contents);
+});
+
+test("malformed file warns, uses built-in colors, and stays unchanged", (t) => {
+	const store = storeWith(t, "{ broken json");
+	const loaded = store.loadSync();
+	assert.equal(loaded.status, "ok");
+	if (loaded.status === "ok") assert.deepEqual(loaded.value.colors, {});
+	assert.equal(loaded.issues[0]?.kind, "invalid-json");
+	assert.equal(readFileSync(store.path, "utf8"), "{ broken json");
 });
 
 test("paintFooter: token uses theme.fg, concrete color uses theme.style, missing falls back", () => {
 	const theme = fakeTheme();
-	const tokenValue = parseFooterColorConfig({ colors: { input: "success" } }).colors.input;
-	const colorValue = parseFooterColorConfig({ colors: { input: "#4ec9b0" } }).colors.input;
-	const fallbackValue = parseFooterColorConfig({ colors: {} }).colors.input;
+	const tokenValue = parseFooterColor("success", noReport);
+	const colorValue = parseFooterColor("#4ec9b0", noReport);
+	const fallbackValue: FooterColorConfig["input"] = undefined;
 
 	assert.equal(paintFooter(theme as never, tokenValue, "dim", "x"), "<success>x</>");
 	assert.equal(paintFooter(theme as never, colorValue, "dim", "x"), "<color>x</>");
@@ -128,8 +138,7 @@ test("paintFooter: token uses theme.fg, concrete color uses theme.style, missing
 });
 
 test("concrete ANSI value produces a Color object", () => {
-	const colors: FooterColorConfig = parseFooterColorConfig({ colors: { input: 39 } }).colors;
-	const value = colors.input;
-	assert.equal(value?.kind, "color");
-	if (value?.kind === "color") assert.equal(value.color.kind, "indexed");
+	const value = parseFooterColor(39, noReport);
+	assert.equal(value.kind, "color");
+	if (value.kind === "color") assert.equal(value.color.kind, "indexed");
 });
