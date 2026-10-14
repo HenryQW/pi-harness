@@ -82,13 +82,14 @@ test("update rejects invalid config without writing", async () => {
 test("an invalid or unknown key falls back per key and is reported", async () => {
 	await withStore(async (_agentDir, store) => {
 		await mkdir(dirname(store.path), { recursive: true });
-		await writeFile(store.path, JSON.stringify({ autoSubmit: true, split: "left", tool: "none" }));
+		await writeFile(store.path, JSON.stringify({ autoSubmit: true, split: "left", tool: "none", volume: 3 }));
 		assert.deepEqual(store.loadSync(), {
 			status: "ok",
 			source: "file",
 			value: { ...DEFAULT_CONFIG, autoSubmit: true },
 			issues: [
-				{ kind: "unknown-key", key: "tool", message: "unknown key" },
+				{ kind: "unknown-key", key: "volume", message: "unknown key" },
+				{ kind: "invalid-value", key: "tools", message: 'unknown key "tool"; did you mean "tools"?' },
 				{ kind: "invalid-value", key: "split", message: "must be one of right, down" },
 			],
 		});

@@ -55,12 +55,10 @@ function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
 	} catch (error) {
 		const { taskRouteCode, profileName } = error as TaskRouteError;
 		if (taskRouteCode === "config-missing") return [];
-		const cause = taskRouteCode === "profile-missing"
-			? `Task model profile ${profileName} is not configured`
-			: taskRouteCode === "no-route"
-				? `No usable ${profileName} task model route`
-				: "Couldn't read task model config";
-		ctx.ui.notify(`${cause}; using current session model.`, "error");
+		// pi-task-models messages give the path and the problems; only `no-route` gets compaction wording.
+		ctx.ui.notify(taskRouteCode === "no-route"
+			? `No usable ${profileName} task model route; using current session model.`
+			: `${error instanceof Error ? error.message : String(error)} Using current session model.`, "error");
 		return [];
 	}
 }

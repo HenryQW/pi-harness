@@ -74,7 +74,9 @@ test("package startup warns once per session about a shared unconfigured profile
 });
 
 test("package startup warns once per session about an unreadable task-model config", async (t) => {
-	assert.deepEqual(await startupWarnings(t, "{"), ["warning: Couldn't read task model config. Run /task-models."]);
+	const warnings = await startupWarnings(t, "{");
+	assert.equal(warnings.length, 1);
+	assert.match(warnings[0]!, /^warning: Task model config at .*config\.json is disabled: invalid JSON: .*Fix the file or run \/task-models\.$/);
 });
 
 type Kind = "select" | "confirm" | "input" | "editor" | "custom";

@@ -289,13 +289,15 @@ test("silences missing shared task-model config but reports present config error
 		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
 		await writeFile(taskModelsFile, malformed);
 		await beforeCompact();
-		assert.deepEqual(notices, [["Couldn't read task model config; using current session model.", "error"]]);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0]![0], /^Task model config at .*config\.json is disabled: invalid JSON: .*Fix the file or run \/task-models\. Using current session model\.$/);
+		assert.equal(notices[0]![1], "error");
 		assert.equal(await readFile(taskModelsFile, "utf8"), malformed);
 
 		await writeFile(taskModelsFile, "{}\n");
 		notices.length = 0;
 		await beforeCompact();
-		assert.deepEqual(notices, [["Task model profile fast is not configured; using current session model.", "error"]]);
+		assert.deepEqual(notices, [["Task pi-auto-compact/autoCompact profile fast is not configured. Run /task-models. Using current session model.", "error"]]);
 
 		await writeFile(taskModelsFile, JSON.stringify({
 			profiles: { fast: { primary: { model: "unavailable/model", thinkingLevel: "off" } } },
