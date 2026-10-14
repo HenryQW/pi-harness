@@ -89,6 +89,7 @@ A stub registers a Pi tool with the given `name`, `description`, and JSON Schema
 - When a queue has no more replies, the last reply repeats.
 - A missing queue returns a tool error.
 - `{ text, isError: true }` returns a tool error.
+- `{{cwd}}` in a reply becomes the trial directory. `{{<name>}}` becomes the string argument `<name>`, for example `{{query}}`. The runner escapes both values for a JSON string. An unknown token stays unchanged.
 
 ### Grader helpers
 
