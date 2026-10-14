@@ -47,7 +47,7 @@
   "dependencies": {
     "@henryqw/pi-config-store": "^4.0.0",
     "@henryqw/pi-subagent": "^22.0.0 || ^23.0.0 || ^24.0.0 || ^25.0.0 || ^26.0.0 || ^27.0.0",
-    "@henryqw/pi-task-models": "^8.0.0"
+    "@henryqw/pi-task-models": "^9.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0"

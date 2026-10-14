@@ -20,7 +20,7 @@
   "dependencies": {
     "@henryqw/pi-config-store": "^4.0.0",
     "@henryqw/pi-herdr": "^0.5.0",
-    "@henryqw/pi-task-models": "^8.0.0"
+    "@henryqw/pi-task-models": "^9.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "1.1.0",
