@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { createConfigStore, field, type FieldParser, formatConfigIssues, parsers, required } from "@henryqw/pi-config-store";
+import { type ConfigLoad, createConfigStore, field, type FieldParser, formatConfigIssues, parsers, required } from "@henryqw/pi-config-store";
 
 export const DEFAULT_SERVER_URL = "https://api.day.app";
 export const ENCRYPTION_ALGORITHM = "AES256";
@@ -24,8 +24,12 @@ export type BarkConfig = {
 	};
 };
 
-/** Config that repair commands write. The Device Key can still be unset. */
-export type BarkConfigDraft = Omit<BarkConfig, "deviceKey"> & { deviceKey: string | null };
+/** Config that repair commands write. The Device Key can still be unset; an absent safety key stays undefined. */
+export type BarkConfigDraft = Omit<BarkConfig, "serverUrl" | "deviceKey" | "encryption"> & {
+	serverUrl: string | undefined;
+	deviceKey: string | null;
+	encryption: BarkEncryption | null | undefined;
+};
 
 export function parseServerUrl(value: string): string {
 	const input = value.trim();
@@ -69,68 +73,75 @@ const encryption: FieldParser<BarkEncryption> = (raw) => {
 	return value as BarkEncryption;
 };
 
-// A default server would receive the Device Key, and a null encryption default would send plaintext.
-const sharedFields = {
-	serverUrl: field(serverUrl, DEFAULT_SERVER_URL, { onInvalid: "disable" }),
-	encryption: field(parsers.nullable(encryption), null, { onInvalid: "disable" }),
-	statusNotifications: field(
-		parsers.object({
-			defaultEnabled: field(parsers.boolean(), true),
-			cwdOverrides: field(parsers.record(parsers.boolean(), { key: parsers.absolutePath() }), {}),
-		}),
-		{ defaultEnabled: true, cwdOverrides: {} },
-	),
-};
+const statusNotifications = field(
+	parsers.object({
+		defaultEnabled: field(parsers.boolean(), true),
+		cwdOverrides: field(parsers.record(parsers.boolean(), { key: parsers.absolutePath() }), {}),
+	}),
+	{ defaultEnabled: true, cwdOverrides: {} },
+);
 
 export function statusNotificationsEnabled(config: BarkConfig, cwd: string): boolean {
 	return config.statusNotifications.cwdOverrides[resolve(cwd)] ?? config.statusNotifications.defaultEnabled;
 }
 
-/** Bark cannot send without a Device Key, so a missing or invalid one disables pi-bark. */
+/**
+ * Bark cannot send without a Device Key. A default server would receive the Device Key, and a default `null`
+ * encryption would send plaintext, so each of these keys is required and a missing or invalid one disables pi-bark.
+ */
 export function createBarkConfigStore(agentDir?: string) {
 	return createConfigStore({
 		extensionId: "pi-bark",
 		agentDir,
-		fields: { ...sharedFields, deviceKey: required(parsers.string({ trim: true })) },
+		fields: {
+			serverUrl: required(serverUrl),
+			deviceKey: required(parsers.string({ trim: true })),
+			encryption: required(parsers.nullable(encryption)),
+			statusNotifications,
+		},
 	});
 }
 
-/** Same file; every field falls back to its default, so repair commands can read a disabled config. */
+const SAFETY_KEYS = ["serverUrl", "encryption"] as const;
+
+/** Same file; every field has a default, so repair commands can read a disabled config. An absent safety key stays unset. */
 function createBarkDraftStore(agentDir?: string) {
 	return createConfigStore({
 		extensionId: "pi-bark",
 		agentDir,
 		fields: {
-			serverUrl: field(serverUrl, DEFAULT_SERVER_URL),
+			serverUrl: field<string | undefined>(serverUrl, undefined),
 			deviceKey: field(parsers.nullable(parsers.string({ trim: true })), null),
-			encryption: field(parsers.nullable(encryption), null),
-			statusNotifications: sharedFields.statusNotifications,
+			encryption: field<BarkEncryption | null | undefined>(parsers.nullable(encryption), undefined),
+			statusNotifications,
 		},
 	});
 }
 
 /**
- * Write config for a repair command. A clean file uses a locked update. A file with issues is replaced,
- * but only when the change sets each invalid server URL or encryption setting, so no safety setting is lost.
+ * Write config for a repair command. `report` receives the issues of the current file before any write.
+ * A clean file uses a locked update. A file with issues is replaced. A missing or invalid server URL or
+ * encryption setting blocks the write unless the command sets it (`replaces`), so no safety setting is lost.
  */
 export async function writeBarkConfig(
 	agentDir: string | undefined,
 	replaces: readonly (keyof BarkConfig)[],
 	change: (config: BarkConfigDraft) => BarkConfigDraft,
+	report: (store: { extensionId: string; path: string }, result: ConfigLoad<unknown>) => void,
 ): Promise<void> {
 	const store = createBarkDraftStore(agentDir);
 	const current = store.loadSync();
+	report(store, current);
 	// The draft store has no disabling field, so it always loads a value.
 	if (current.status !== "ok") throw new Error(formatConfigIssues(current.issues));
-	if (!current.issues.length) {
-		await store.update(change);
-		return;
-	}
-	const unsafe = current.issues.filter(({ key }) => {
-		if (!key) return true;
-		const root = key.split(/[.[]/, 1)[0];
-		return (root === "serverUrl" || root === "encryption") && !(replaces as readonly string[]).includes(root);
-	});
-	if (unsafe.length) throw new Error(`Fix the Bark config at ${store.path} first: ${formatConfigIssues(unsafe)}`);
-	await store.save(change(current.value));
+	const fileIssues = current.issues.filter(({ key }) => !key);
+	const blocking = current.source === "missing" ? [] : fileIssues.length ? fileIssues : SAFETY_KEYS
+		.filter((key) => current.value[key] === undefined && !replaces.includes(key))
+		.map((key) => current.issues.find((issue) => issue.key === key) ?? { kind: "missing-required" as const, key, message: "required" });
+	if (blocking.length) throw new Error(`Fix the Bark config at ${store.path} first: ${formatConfigIssues(blocking)}`);
+	// A missing file has no safety settings to keep, so it starts from the defaults.
+	const draft = (config: BarkConfigDraft): BarkConfigDraft =>
+		current.source === "missing" ? { ...config, serverUrl: config.serverUrl ?? DEFAULT_SERVER_URL, encryption: config.encryption ?? null } : config;
+	if (!current.issues.length) await store.update((config) => change(draft(config)));
+	else await store.save(change(draft(current.value)));
 }

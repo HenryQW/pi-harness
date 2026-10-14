@@ -106,9 +106,9 @@ Package-owned: `~/.pi/agent/config/pi-bark/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `serverUrl` | Base URL of the Bark server that accepts push requests. | HTTP or HTTPS URL with an optional path and no query or fragment. | `"https://api.day.app"` |
+| `serverUrl` | Base URL of the Bark server that accepts push requests. | HTTP or HTTPS URL with an optional path and no query or fragment. | Required. `/set-bark` writes `"https://api.day.app"` when you do not give a server URL. |
 | `deviceKey` | Identifies the Bark App installation that receives the push notification. | Non-empty string. | Required |
-| `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | `null` |
+| `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | Required. `null` disables Push Encryption. The commands write `null` to a new file. |
 | `statusNotifications` | Controls automatic status notifications by CWD. | Global boolean default and absolute-CWD boolean overrides. | Enabled with no overrides. |
 
 Config changes take effect on the next command or status event. You do not need to restart Pi. A status notification that is already in the queue uses the settings that pi-bark read when its event occurred.
@@ -209,11 +209,14 @@ pi-bark checks its config when Pi starts and each time it reads the config. It d
 | Problem | Result |
 | --- | --- |
 | Unknown key, or invalid `statusNotifications` value | A warning shows. pi-bark ignores the key or uses the default for that value, and continues to send. |
-| Missing or invalid `deviceKey`, including a missing config file | An error shows, and pi-bark is disabled. It sends no push notifications. Run `/set-bark` to repair it. |
-| Invalid `serverUrl` | An error shows, and pi-bark is disabled. pi-bark does not use the default server, because that server would receive your Device Key. Run `/set-bark` with the correct server URL. |
-| Invalid `encryption` | An error shows, and pi-bark is disabled. pi-bark does not send without encryption. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
+| Missing config file | An error shows, and pi-bark is disabled. It sends no push notifications. Run `/set-bark` to create the file. |
+| Missing or invalid `deviceKey` | An error shows, and pi-bark is disabled. Run `/set-bark` to repair it. |
+| Missing or invalid `serverUrl`, including a misspelled key such as `serverURL` | An error shows, and pi-bark is disabled. pi-bark does not use the public server, because that server would receive your Device Key. Run `/set-bark` with the correct server URL. |
+| Missing or invalid `encryption`, including a misspelled key such as `encyption` | An error shows, and pi-bark is disabled. pi-bark does not send without encryption. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
 | Malformed JSON or a non-object file | An error shows, and pi-bark is disabled. Fix or move the file. |
 
-`/bark`, `/set-bark`, and `pi-bark-key` work while pi-bark is disabled. If the file has a problem, they replace the whole file. They do not replace a file that has an invalid `serverUrl` or `encryption` that the command does not set, or a malformed file. In that case, they show the problem and do not change the file. They also remove unknown keys and invalid `statusNotifications` entries.
+`/bark`, `/set-bark`, and `pi-bark-key` work while pi-bark is disabled. Before a write, they show each new problem in the file: the Pi commands show a notification, and `pi-bark-key` writes to stderr. If the file has a problem, they replace the whole file. They remove unknown keys and invalid `statusNotifications` entries.
+
+They do not change a malformed file, or a file with a missing or invalid `serverUrl` or `encryption` that the command does not set. `/set-bark` sets `serverUrl`. `pi-bark-key --force` and `pi-bark-key --disable` set `encryption`. In that case, they show the problem and stop. Fix the file, or run the command that sets the key.
 
 See Bark's [Push Encryption documentation](https://github.com/Finb/Bark/blob/master/docs/en-us/encryption.md) for the encryption model.

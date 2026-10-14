@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { formatConfigIssues } from "@henryqw/pi-config-store";
 import {
 	ENCRYPTION_ALGORITHM,
 	ENCRYPTION_MODE,
@@ -11,6 +12,10 @@ import { generateEncryptionKey } from "../src/encryption.ts";
 const args = process.argv.slice(2);
 const force = args.length === 1 && args[0] === "--force";
 const disable = args.length === 1 && args[0] === "--disable";
+// The CLI has no Pi session, so it prints the issues that a write finds before it replaces the file.
+const report: Parameters<typeof writeBarkConfig>[3] = (store, result) => {
+	if (result.issues.length) console.error(`${store.extensionId} config issues (${store.path}): ${formatConfigIssues(result.issues)}`);
+};
 
 if (args.length > 1 || (args.length === 1 && !force && !disable)) {
 	console.error("Usage: pi-bark-key [--force | --disable]");
@@ -18,7 +23,7 @@ if (args.length > 1 || (args.length === 1 && !force && !disable)) {
 } else {
 	try {
 		if (disable) {
-			await writeBarkConfig(undefined, ["encryption"], (config) => ({ ...config, encryption: null }));
+			await writeBarkConfig(undefined, ["encryption"], (config) => ({ ...config, encryption: null }), report);
 			console.log("Disabled Bark push encryption.");
 		} else {
 			let key = "";
@@ -37,7 +42,7 @@ if (args.length > 1 || (args.length === 1 && !force && !disable)) {
 						key,
 					},
 				};
-			});
+			}, report);
 			console.log("Generated and saved a Bark Custom Encryption Key.");
 			console.log(`Algorithm: ${ENCRYPTION_ALGORITHM}`);
 			console.log(`Mode: ${ENCRYPTION_MODE}`);

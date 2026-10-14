@@ -137,12 +137,13 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 					? ["on", "off"].includes(second) && !extra
 					: ["on", "off", "inherit"].includes(first) && !second;
 			if (!valid) throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
+			const report: Parameters<typeof writeBarkConfig>[3] = (store, result) => configReporter.report(ctx, store, result);
 			if (first === "default") {
 				const enabled = second === "on";
 				await writeBarkConfig(options.agentDir, [], (config) => ({
 					...config,
 					statusNotifications: { ...config.statusNotifications, defaultEnabled: enabled },
-				}));
+				}), report);
 				ctx.ui.notify(`${enabled ? "Enabled" : "Disabled"} Bark status notifications by default.`, "info");
 				return;
 			}
@@ -155,7 +156,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 					...config,
 					statusNotifications: { ...config.statusNotifications, cwdOverrides },
 				};
-			});
+			}, report);
 			ctx.ui.notify(
 				first === "inherit"
 					? "This CWD now inherits the default Bark notification setting."
@@ -191,7 +192,8 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 			const [deviceKey, serverUrl = DEFAULT_SERVER_URL, extra] = args.trim().split(/\s+/);
 			if (!deviceKey || extra) throw new Error("Usage: /set-bark <device-key> [server-url]");
 			const url = parseServerUrl(serverUrl);
-			await writeBarkConfig(options.agentDir, ["serverUrl", "deviceKey"], (config) => ({ ...config, serverUrl: url, deviceKey }));
+			await writeBarkConfig(options.agentDir, ["serverUrl", "deviceKey"], (config) => ({ ...config, serverUrl: url, deviceKey }), (store, result) =>
+				configReporter.report(ctx, store, result));
 			ctx.ui.notify("Saved the Bark Device Key and server URL.", "info");
 		},
 	});
