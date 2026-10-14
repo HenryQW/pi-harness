@@ -332,7 +332,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		try {
 			footerColors = loadFooterConfig();
 		} catch (error) {
-			ctx.ui.notify(`Footer colors ignored (${footerConfigPath()}): ${(error as Error).message}`, "error");
+			ctx.ui.notify(`Footer colors ignored (${footerConfigPath()}): ${(error as Error).message}`, "warning");
 		}
 
 		ctx.ui.setFooter((tui, theme, data) => {
