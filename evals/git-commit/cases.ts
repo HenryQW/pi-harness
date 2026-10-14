@@ -173,10 +173,12 @@ export default [
 			git(cwd, "branch", "release/2.x", "release/1.x");
 			write(cwd, { "src/cart.js": cartWithDiscount });
 		},
-		grade: (_trace, cwd) =>
+		grade: (trace, cwd) =>
 			check(
 				fail(newCommits(cwd, "release/1.x").length > 0, `expected no commit, got: ${gitSubjects(cwd, "release/1.x..HEAD").join(" | ")}`),
 				onlyUnstaged(cwd, "src/cart.js"),
+				// A run that never engages also leaves no commit; the stop must name the unresolved target.
+				finalTextMatches(trace, /release\/[12]\.x|\btarget\b|\bbase\b/i),
 			),
 	},
 ] satisfies EvalCase[];

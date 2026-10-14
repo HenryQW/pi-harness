@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { devNull, homedir, tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { EvalCase, Grade, ToolCall, Trace } from "./types.ts";
 
@@ -99,6 +99,7 @@ export function validateSuite(suite: Suite): string[] {
 		if (typeof c?.grade !== "function") fail("grade must be a function");
 		if (c?.setup !== undefined && typeof c.setup !== "function") fail("setup must be a function");
 		if (c?.builtinTools !== undefined && typeof c.builtinTools !== "boolean") fail("builtinTools must be a boolean");
+		if (c?.timeoutMs !== undefined && (!Number.isInteger(c.timeoutMs) || c.timeoutMs < 1)) fail("timeoutMs must be a positive integer");
 		for (const path of c?.extensions ?? []) if (!existsSync(join(repoRoot, path))) fail(`extension not found: ${path}`);
 		const names = new Set<string>();
 		for (const stub of c?.stubs ?? []) {
@@ -113,12 +114,19 @@ export function validateSuite(suite: Suite): string[] {
 	return errors;
 }
 
-/** Creates the shared run directory: an empty global Git config, empty gh config, and an agent dir with provider auth only. */
+/**
+ * Creates the shared run directory: an empty home, global Git config, and gh config, a failing `herdr` shim,
+ * and an agent dir with provider auth only.
+ */
 export function prepareRunRoot(): string {
 	const root = mkdtempSync(join(tmpdir(), "pi-eval-"));
 	writeFileSync(join(root, "gitconfig"), "");
 	mkdirSync(join(root, "gh"));
 	mkdirSync(join(root, "agent"));
+	mkdirSync(join(root, "home"));
+	mkdirSync(join(root, "bin"));
+	writeFileSync(join(root, "bin", "herdr"), "#!/bin/sh\necho 'herdr: not available in evals' >&2\nexit 1\n");
+	chmodSync(join(root, "bin", "herdr"), 0o755);
 	const userAgentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 	for (const file of ["auth.json", "models.json"]) {
 		if (existsSync(join(userAgentDir, file))) symlinkSync(join(userAgentDir, file), join(root, "agent", file));
@@ -126,19 +134,29 @@ export function prepareRunRoot(): string {
 	return root;
 }
 
-/** Makes this process and its children hermetic: no GitHub/npm tokens or SSH agent, fixed Git identity, no signing. */
+/**
+ * Makes this process and its children hermetic: an empty home, no GitHub/npm tokens, SSH agent, or Herdr session,
+ * fixed Git identity, no signing, and no global Git ignore or attributes. Call after reading user settings.
+ */
 export function applyHermeticEnv(root: string): void {
 	for (const key of Object.keys(process.env)) {
-		if (/^(GIT_|GH_|GITHUB_)|^(NPM_TOKEN|NODE_AUTH_TOKEN|SSH_AUTH_SOCK|SSH_ASKPASS)$/.test(key)) delete process.env[key];
+		if (/^(GIT_|GH_|GITHUB_|HERDR_)|^(NPM_TOKEN|NODE_AUTH_TOKEN|SSH_AUTH_SOCK|SSH_ASKPASS)$/.test(key)) delete process.env[key];
 	}
 	Object.assign(process.env, {
+		HOME: join(root, "home"),
+		XDG_CONFIG_HOME: join(root, "home", ".config"),
+		PATH: `${join(root, "bin")}${delimiter}${process.env.PATH}`,
 		GIT_CONFIG_GLOBAL: join(root, "gitconfig"),
 		GIT_CONFIG_NOSYSTEM: "1",
-		GIT_CONFIG_COUNT: "2",
+		GIT_CONFIG_COUNT: "4",
 		GIT_CONFIG_KEY_0: "commit.gpgsign",
 		GIT_CONFIG_VALUE_0: "false",
 		GIT_CONFIG_KEY_1: "tag.gpgsign",
 		GIT_CONFIG_VALUE_1: "false",
+		GIT_CONFIG_KEY_2: "core.excludesFile",
+		GIT_CONFIG_VALUE_2: devNull,
+		GIT_CONFIG_KEY_3: "core.attributesFile",
+		GIT_CONFIG_VALUE_3: devNull,
 		GIT_AUTHOR_NAME: "Pi Eval",
 		GIT_AUTHOR_EMAIL: "pi-eval@example.invalid",
 		GIT_COMMITTER_NAME: "Pi Eval",
@@ -174,7 +192,7 @@ function killGroup(pid: number): void {
 	}
 }
 
-function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
+function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) {
 	return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolve, reject) => {
 		const child = spawn("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
@@ -186,7 +204,7 @@ function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv) {
 		const timer = setTimeout(() => {
 			timedOut = true;
 			killGroup(child.pid!);
-		}, TIMEOUT_MS);
+		}, timeoutMs);
 		child.on("error", reject);
 		// Kill leftover tool processes so they cannot hold the pipes open.
 		child.on("exit", () => killGroup(child.pid!));
@@ -227,11 +245,16 @@ export async function runTrial(
 	let stderr = "";
 	try {
 		await c.setup?.(cwd);
-		const run = await runPi(args, cwd, env);
+		const timeoutMs = c.timeoutMs ?? TIMEOUT_MS;
+		const run = await runPi(args, cwd, env, timeoutMs);
 		({ stdout, stderr } = run);
-		parsed = parseEvents(stdout);
-		const error = run.timedOut ? `timed out after ${TIMEOUT_MS / 1000} s` : run.code !== 0 ? `pi exited ${run.code}: ${stderr.trim().slice(-500)}` : parsed.error;
-		grade = error ? { pass: false, reasons: [error] } : await c.grade(parsed.trace, cwd);
+		// A killed run can end mid-record, so report the exit before parsing its events.
+		if (run.timedOut) grade = { pass: false, reasons: [`timed out after ${timeoutMs / 1000} s`] };
+		else if (run.code !== 0) grade = { pass: false, reasons: [`pi exited ${run.code}: ${stderr.trim().slice(-500)}`] };
+		else {
+			parsed = parseEvents(stdout);
+			grade = parsed.error ? { pass: false, reasons: [parsed.error] } : await c.grade(parsed.trace, cwd);
+		}
 	} catch (error) {
 		grade = { pass: false, reasons: [`harness error: ${error instanceof Error ? error.message : String(error)}`] };
 	}

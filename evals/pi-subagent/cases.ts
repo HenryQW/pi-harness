@@ -1,8 +1,9 @@
-// Delegation-shape and no-wait judgment for the pi-subagent skill. Stub parameters are the real
-// extension schemas, so argument validation matches the live tools.
+// Delegation-shape and no-wait judgment for the pi-subagent skill. Stub parameters are the real extension
+// schemas, but stubs apply only that schema. Graders run the real parseDelegateTask on delegate_task arguments,
+// so a request that the live tool rejects fails the case.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { DelegateTaskParameters } from "../../extensions/pi-subagent/extensions/workflow.ts";
+import { DelegateTaskParameters, parseDelegateTask } from "../../extensions/pi-subagent/extensions/workflow.ts";
 import { IdOnlySchema, IntegrationActionParameters, ResumeRequestParameters, StageRequestSchema } from "../../extensions/pi-subagent/src/schema.ts";
 import { calledTimes, check, git, noBash } from "../graders.ts";
 import type { EvalCase, StubResponse, StubTool, ToolCall, Trace } from "../types.ts";
@@ -11,9 +12,9 @@ const skill = "extensions/pi-subagent/skills/pi-subagent";
 
 const DIRECT_ACK =
 	"Direct delegation started · D1 · direct-1-eval\nHerdr tab: w1:t2 · pane: w1:p3 · agent: D1.1\nExact session: /tmp/pi-eval/sessions/d1-1.jsonl\nAll launched tabs: /subagent (on this session branch).\n1 task(s); result will arrive in one follow-up message. Direct work shares this checkout; completion is an exact answer, not checked integration.";
-const ISOLATED_ACK =
-	"Pi Subagent request: durable request accepted; productive work continues. Use subagent_status to inspect progress.";
-const STATUS = "Pi Subagent request: running. Wave 1 dispatching; no candidate is ready yet. Checked candidates arrive as follow-ups.";
+// `{{id}}` echoes the request id, as in isolated.ts.
+const ISOLATED_ACK = "Pi Subagent {{id}}: durable request accepted; productive work continues. Use subagent_status to inspect progress.";
+const STATUS = "Pi Subagent {{id}}: running. Wave 1 dispatching; no candidate is ready yet. Checked candidates arrive as follow-ups.";
 const NOT_READY: StubResponse = { text: "No ready candidate or continuation exists for this request.", isError: true };
 
 function stubs(ack: string): StubTool[] {
@@ -72,6 +73,11 @@ function delegated(trace: Trace): string | undefined {
 	const call = firstDelegation(trace);
 	if (!call) return "delegate_task was not called";
 	if (call.isError) return `first delegate_task call failed: ${call.result.slice(0, 300)}`;
+	try {
+		parseDelegateTask(call.args);
+	} catch (error) {
+		return `the live delegate_task would reject the first call: ${error instanceof Error ? error.message : String(error)}`;
+	}
 	return undefined;
 }
 
@@ -130,6 +136,7 @@ export default [
 				call && (typeof args.goal !== "string" || !args.goal.trim()) ? "expected a request goal" : undefined,
 				call && changesets.length < 2 ? `expected at least 2 changeset tasks, got ${changesets.length}` : undefined,
 				call && changesets.some((task) => !Array.isArray(task.checks) || !task.checks.length) ? "expected checks on every changeset task" : undefined,
+				call && changesets.length && (!Array.isArray(args.finalChecks) || !args.finalChecks.length) ? "expected finalChecks for a changeset graph" : undefined,
 				call && new Set(tasks.map((task) => task.id)).size !== tasks.length ? "expected unique task ids" : undefined,
 				...noWaiting(trace),
 			);

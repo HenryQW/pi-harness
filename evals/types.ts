@@ -46,5 +46,7 @@ export interface EvalCase {
 	builtinTools?: boolean;
 	/** Real extension entry points to load with `-e`, relative to the repository root. */
 	extensions?: string[];
+	/** Pi process time limit. Default: 300_000. */
+	timeoutMs?: number;
 	grade: (trace: Trace, cwd: string) => Grade | Promise<Grade>;
 }

@@ -180,7 +180,7 @@ function repairCommit(cwd: string): string[] {
 	const status = gitStatus(cwd);
 	if (status.length) reasons.push(`worktree is dirty: ${status.join(", ")}`);
 	try {
-		execFileSync(process.execPath, ["--test"], { cwd, stdio: "pipe" });
+		execFileSync(process.execPath, ["--test"], { cwd, stdio: "pipe", timeout: 60_000 });
 	} catch {
 		reasons.push("node --test still fails after the repair");
 	}
@@ -243,6 +243,8 @@ export default [
 		kind: "quality",
 		skill,
 		prompt,
+		// Diagnosis, repair, tests, commit, and publication can exceed the default 300 s.
+		timeoutMs: 600_000,
 		builtinTools: true,
 		extensions,
 		setup: fixture("buggy", evidence("buggy", at(tapFailure()))),
