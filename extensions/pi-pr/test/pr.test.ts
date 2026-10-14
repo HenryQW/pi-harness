@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ConfigIssue } from "@henryqw/pi-config-store";
 import { spawnBounded, type Exec as BoundedExec } from "@henryqw/pi-process";
 import { PullRequestCommentSweep, StaleSweepStart } from "../extensions/pr-comment-sweep.ts";
 import { PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
@@ -198,6 +199,7 @@ function harness(options: {
 	createWorkPublisher?: ExtensionDependencies["createWorkPublisher"];
 	syncLocalHead?: ExtensionDependencies["syncLocalHead"];
 	policy?: Partial<PrPolicy>;
+	policyIssues?: ConfigIssue[];
 	isIdle?: () => boolean;
 	skillPath?: string;
 }) {
@@ -241,7 +243,7 @@ function harness(options: {
 		createCiFixer: options.createCiFixer,
 		createWorkPublisher: options.createWorkPublisher,
 		syncLocalHead: options.syncLocalHead,
-		loadPrPolicy: () => ({ ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ...options.policy }),
+		loadPrPolicy: () => ({ status: "ok", source: "missing", value: { ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ...options.policy }, issues: options.policyIssues ?? [] }),
 		needsFeedbackAttention: async () => false,
 	};
 	if (!options.useDefaultCommandHandler) {
@@ -873,6 +875,27 @@ test("the codexReview policy reaches PR discovery after /pr loads it", async () 
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		assert.deepEqual(gates.slice(0, 2), [undefined, true]);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("an invalid policy key warns once per session and /pr continues with its default", async () => {
+	const gates: Array<boolean | undefined> = [];
+	const app = harness({
+		async load(_pi, context) { gates.push(context.codexReview); return currentPullRequest({ conditions: { draft: true } }); },
+		useDefaultCommandHandler: true, policyIssues: [{ kind: "invalid-value", key: "codexReview", message: "must be true or false" }],
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		for (let run = 0; run < 2; run++) {
+			const discoveries = gates.length;
+			await app.command().handler("", ctx as ExtensionCommandContext);
+			assert.ok(gates.length > discoveries, "/pr still discovers the PR");
+		}
+		assert.ok(gates.every((gate) => gate === undefined), "codexReview uses its default, false");
+		const warnings = app.notifications.filter(({ message }) => message.includes("codexReview: must be true or false"));
+		assert.deepEqual(warnings.map(({ type }) => type), ["warning"]);
+		assert.match(warnings[0]!.message, /^pi-pr config issues .*defaults replace invalid settings\.$/);
 	} finally { await app.shutdown(ctx); }
 });
 

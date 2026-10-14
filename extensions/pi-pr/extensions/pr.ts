@@ -9,6 +9,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { type ConfigLoad, registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrClient } from "@henryqw/pi-herdr";
 import { Type, type Static, type TObject, type TSchema, type TUnion } from "typebox";
 import { Check, Errors } from "typebox/value";
@@ -25,7 +26,7 @@ import {
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
 import { PullRequestWorkPublisher } from "./pr-publish-work.ts";
-import { loadPrPolicy, PrRun } from "./pr-run.ts";
+import { createPrPolicyStore, DEFAULT_PR_POLICY, PrRun, type PrPolicy } from "./pr-run.ts";
 import {
 	GitHubRateLimitError,
 	loadCurrentPullRequest,
@@ -206,7 +207,7 @@ type PullRequestExtensionDependencies = {
 	createCiFixer?: (options: PullRequestCiFixOptions) => FixCiWorkflow;
 	createWorkPublisher?: (options: ConstructorParameters<typeof PullRequestWorkPublisher>[0]) => PullRequestWorkPublisher;
 	syncLocalHead?: PrCommandDependencies["syncLocalHead"];
-	loadPrPolicy?: typeof loadPrPolicy;
+	loadPrPolicy?: () => ConfigLoad<PrPolicy>;
 	canonicalWorktree?: (cwd: string, signal?: AbortSignal) => Promise<string>;
 	newRunId?: () => string;
 	now?: () => number;
@@ -244,6 +245,8 @@ export default function pullRequestExtension(
 	pi: ExtensionAPI,
 	dependencies: PullRequestExtensionDependencies = {},
 ): void {
+	const policyStore = createPrPolicyStore();
+	const policyReporter = registerConfigReporting(pi, [policyStore]);
 	const herdr = createHerdrClient(pi.exec.bind(pi));
 	const renameHerdrWorkspace = async (
 		cwd: string,
@@ -1048,7 +1051,9 @@ export default function pullRequestExtension(
 			ctx.signal?.throwIfAborted();
 			if (publication && (workflowContext || activeInvocations.size)) throw new Error("A PR invocation is still active");
 			cancelRefresh();
-			prRun = new PrRun((dependencies.loadPrPolicy ?? loadPrPolicy)());
+			const policy = (dependencies.loadPrPolicy ?? (() => policyStore.loadSync()))();
+			policyReporter.report(ctx, policyStore, policy);
+			prRun = new PrRun(policy.status === "ok" ? policy.value : DEFAULT_PR_POLICY);
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");

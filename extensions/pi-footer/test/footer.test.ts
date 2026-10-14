@@ -162,9 +162,9 @@ test("renders family status on the first line and external statuses beside runti
 	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
 	await writeFile(openInConfig, '{"command":"code -n"}');
 	assert.match(footer.render(100)[0]!, /vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\?windowId=_blank/);
+	// Malformed open-in config falls back to `code`; launch reporting, not render, shows the issue.
 	await writeFile(openInConfig, "{not json");
-	assert.doesNotThrow(() => footer.render(100));
-	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
+	assert.match(footer.render(100)[0]!, /vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\x1b\\/);
 	await writeFile(openInConfig, '{"command":"code"}');
 	setCapabilities({ ...previousCapabilities, hyperlinks: false });
 	assert.doesNotMatch(footer.render(100)[0]!, /\x1b\]8;;/);
