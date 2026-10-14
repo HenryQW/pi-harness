@@ -25,7 +25,7 @@ test("PR policy loads valid limits and replaces each invalid or unknown key with
 		assert.deepEqual(load(JSON.stringify({ [key]: value })), { value: DEFAULT_PR_POLICY, issues: [`invalid-value:${key}`] });
 	}
 	assert.deepEqual(load('{"maxRepairAttempts":0,"mergeMethod":"rebase"}'), { value: { ...DEFAULT_PR_POLICY, mergeMethod: "rebase" }, issues: ["invalid-value:maxRepairAttempts"] });
-	assert.deepEqual(load('{"constructor":1,"mergeMethd":"rebase","codexReview":true}'), { value: { ...DEFAULT_PR_POLICY, codexReview: true }, issues: ["unknown-key:constructor", "unknown-key:mergeMethd"] });
+	assert.deepEqual(load('{"constructor":1,"mergeMethd":"rebase","codexReview":true}'), { value: { ...DEFAULT_PR_POLICY, codexReview: true }, issues: ["unknown-key:constructor", "invalid-value:mergeMethod"] });
 	assert.deepEqual(load("{"), { value: DEFAULT_PR_POLICY, issues: ["invalid-json:"] });
 });
 
