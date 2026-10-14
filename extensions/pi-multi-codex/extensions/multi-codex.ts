@@ -940,9 +940,11 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		triedSlots.clear();
 		providerRequest = undefined;
 		preserveModelChoice = false;
-		// Fields without a disable rule always load; registerConfigReporting shows any issues.
+		// registerConfigReporting shows any issues. A file-level problem or an invalid or misspelled
+		// `autoSwitchOn429` keeps switching off; a missing file uses the default.
 		const config = configStore.loadSync();
-		autoSwitchOn429 = config.status === "ok" && config.value.autoSwitchOn429;
+		autoSwitchOn429 = config.status === "ok" && config.value.autoSwitchOn429
+			&& !config.issues.some(({ key }) => key === "" || key === "autoSwitchOn429");
 		automaticOpen = isManagedModel(ctx.model) && !sessionHasAgentWork(ctx);
 		automaticCandidate = ctx.model;
 		// Cache-only ranking happens before background refresh starts.

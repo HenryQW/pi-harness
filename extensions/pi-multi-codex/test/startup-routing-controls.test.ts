@@ -518,7 +518,7 @@ test("autoSwitchOn429 false leaves normal 429 handling unchanged", async () => {
 	});
 });
 
-test("invalid config is preserved, reported at launch, and falls back to 429 switching", async () => {
+test("invalid config is preserved, reported at launch, and disables 429 switching", async () => {
 	await withApp({ 1: 80, 2: 60 }, [], async ({ agentDir, handlers, ctx, setModels, notices }) => {
 		const path = extensionConfigPath("pi-multi-codex", agentDir);
 		const invalid = '{"autoSwitchOn429":"yes","autoSwitchOn249":false}\n';
@@ -531,10 +531,24 @@ test("invalid config is preserved, reported at launch, and falls back to 429 swi
 
 		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
 		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
-		await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
-		assert.equal(setModels.length, 1);
+		const result = await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+		assert.equal(result, undefined);
+		assert.equal(setModels.length, 0);
 	});
 });
+
+for (const contents of ['{"autoSwitchOn429":', '{"autoswitchOn429":true}']) {
+	test(`a malformed file or a misspelled autoSwitchOn429 disables 429 switching: ${contents}`, async () => {
+		await withApp({ 1: 80, 2: 60 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+			await writeFile(extensionConfigPath("pi-multi-codex", agentDir), contents);
+			handlers.get("session_start")?.({ type: "session_start" }, ctx);
+			handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+			handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+			await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+			assert.equal(setModels.length, 0);
+		});
+	});
+}
 
 test("shows the five-hour reset below Pro Lite and the seven-day reset at Pro Lite", async () => {
 	for (const [tier, footerWindow, status] of [
