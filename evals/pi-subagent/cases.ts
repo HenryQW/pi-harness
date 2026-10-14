@@ -5,7 +5,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { DelegateTaskParameters, parseDelegateTask } from "../../extensions/pi-subagent/extensions/workflow.ts";
 import { IdOnlySchema, IntegrationActionParameters, ResumeRequestParameters, StageRequestSchema } from "../../extensions/pi-subagent/src/schema.ts";
-import { calledTimes, check, git, noBash } from "../graders.ts";
+import { check, git, noBash, notCalled } from "../graders.ts";
 import type { EvalCase, StubResponse, StubTool, ToolCall, Trace } from "../types.ts";
 
 const skill = "extensions/pi-subagent/skills/pi-subagent";
@@ -81,12 +81,12 @@ function delegated(trace: Trace): string | undefined {
 	return undefined;
 }
 
-/** After an acknowledgement: no sleep, no Herdr wait, and at most one status read (no follow-up ever arrives). */
+/** After an acknowledgement: no sleep, no Herdr wait, and no status read. No follow-up can arrive in a trial. */
 function noWaiting(trace: Trace): string[] {
 	return [
 		noBash(trace, /\bsleep\b/),
 		noBash(trace, /\bherdr\b[^\n]*\bwait\b/),
-		calledTimes(trace, "subagent_status", { max: 1 }),
+		notCalled(trace, "subagent_status"),
 	].filter((reason): reason is string => reason !== undefined);
 }
 

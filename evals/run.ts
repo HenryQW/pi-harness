@@ -60,11 +60,13 @@ if (!selected.length) {
 const model = values.model ?? configuredModel();
 const root = prepareRunRoot();
 applyHermeticEnv(root);
-process.once("SIGINT", () => {
-	killActiveRuns();
-	rmSync(root, { recursive: true, force: true });
-	process.exit(130);
-});
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+	process.once(signal, () => {
+		killActiveRuns();
+		rmSync(root, { recursive: true, force: true });
+		process.exit(code);
+	});
+}
 const resultsDir = join(evalsDir, ".results", new Date().toISOString().replaceAll(":", "-"));
 console.log(`Running ${selected.length} case(s) x ${trials} trial(s), model ${model ?? "Pi default"}, concurrency ${concurrency}`);
 

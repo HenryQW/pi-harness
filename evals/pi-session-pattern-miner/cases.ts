@@ -1,8 +1,8 @@
 // session-search.ts serves the synthetic sessions with the real session_search result shapes.
 // All session content is synthetic. Paths under /home/eval do not exist.
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { calledTimes, callsTo, check, finalTextMatches, git, notCalled } from "../graders.ts";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { calledTimes, calledWith, callsTo, check, finalTextMatches, git, gitStatus, notCalled } from "../graders.ts";
 import type { EvalCase, Trace } from "../types.ts";
 import { type Message, type Session, sessionsPath } from "./session-search.ts";
 
@@ -65,6 +65,9 @@ const noise = [
 	]),
 ];
 
+/** The setup commit lives in the trial directory, the parent of the fixture cwd. */
+const setupHeadPath = (cwd: string) => join(dirname(cwd), "pi-eval-setup-head");
+
 /** A small Git repository whose current files let the model verify ownership, plus the session-search fixture. */
 const setup = (prepared: Session[], hits: Session[]) => (cwd: string) => {
 	writeFileSync(
@@ -83,18 +86,25 @@ const setup = (prepared: Session[], hits: Session[]) => (cwd: string) => {
 	git(cwd, "init", "-q");
 	git(cwd, "add", ".");
 	git(cwd, "commit", "-qm", "init");
+	writeFileSync(setupHeadPath(cwd), git(cwd, "rev-parse", "HEAD"));
 	writeFileSync(sessionsPath(cwd), JSON.stringify({ prepared, hits }));
 };
 
-/** Checks every case shares: one preparation call first, no file changes, no direct session file access. */
-function protocol(trace: Trace) {
+/**
+ * Checks every case shares: one repository preparation call with limit 10 first, an unchanged fixture worktree,
+ * no write or edit, and no direct session file access.
+ */
+function protocol(trace: Trace, cwd: string) {
 	const first = callsTo(trace, "session_search").at(0);
 	const direct = trace.calls.find((call) => call.name !== "session_search" && /\.pi\/agent\/sessions|\.jsonl\b/.test(JSON.stringify(call.args)));
 	return [
 		calledTimes(trace, "session_search", 1, { operation: "prepare-pattern-miner" }),
+		calledTimes(trace, "session_search", 1, { operation: "prepare-pattern-miner", scope: "repository", limit: 10 }),
 		first?.args.operation === "prepare-pattern-miner" ? undefined : "first session_search call is not prepare-pattern-miner",
 		notCalled(trace, "write"),
 		notCalled(trace, "edit"),
+		gitStatus(cwd).length ? `fixture worktree changed: ${gitStatus(cwd).join(", ")}` : undefined,
+		git(cwd, "rev-parse", "HEAD") === readFileSync(setupHeadPath(cwd), "utf8") ? undefined : "fixture HEAD moved",
 		direct && `direct session file access via ${direct.name}: ${JSON.stringify(direct.args).slice(0, 200)}`,
 	];
 }
@@ -138,7 +148,7 @@ export default [
 		setup: setup([refreshA, ...noise], [refreshA]),
 		builtinTools: true,
 		extensions,
-		grade: (trace) => check(...protocol(trace), ...abstains(trace)),
+		grade: (trace, cwd) => check(...protocol(trace, cwd), ...abstains(trace)),
 	},
 	{
 		id: "single-session-gate-phrase",
@@ -148,7 +158,7 @@ export default [
 		setup: setup([refreshA, ...noise], [refreshA]),
 		builtinTools: true,
 		extensions,
-		grade: (trace) => check(...protocol(trace), finalTextMatches(trace, /not enough repeated evidence/i)),
+		grade: (trace, cwd) => check(...protocol(trace, cwd), finalTextMatches(trace, /not enough repeated evidence/i)),
 	},
 	{
 		id: "continuation-counts-once",
@@ -158,7 +168,7 @@ export default [
 		setup: setup([refreshA, refreshContinued, ...noise], [refreshA, refreshContinued]),
 		builtinTools: true,
 		extensions,
-		grade: (trace) => check(...protocol(trace), ...abstains(trace)),
+		grade: (trace, cwd) => check(...protocol(trace, cwd), ...abstains(trace)),
 	},
 	{
 		id: "three-sessions-recommend-with-contract",
@@ -168,12 +178,14 @@ export default [
 		setup: setup([refreshA, refreshB, refreshC, ...noise], [refreshA, refreshB, refreshC]),
 		builtinTools: true,
 		extensions,
-		grade: (trace) => {
+		grade: (trace, cwd) => {
 			const text = trace.finalText;
 			const evidence = [refreshA, refreshB, refreshC];
 			const inspected = trace.calls.some((call) => call.name !== "session_search" && /package\.json/.test(JSON.stringify(call.args)));
 			return check(
-				...protocol(trace),
+				...protocol(trace, cwd),
+				// protocol makes preparation the first session_search call, so every query call follows it.
+				calledWith(trace, "session_search", { query: /\S/ }),
 				...evidence.map((s) => (cites(text, s) ? undefined : `final text does not identify session ${s.path}`)),
 				...evidence.map((s) => (s.messages.some(([entryId]) => text.includes(entryId)) ? undefined : `final text cites no entry ID from ${s.name}`)),
 				contractLabelCount(text) === contractLabels.length ? undefined : `implementation contract has ${contractLabelCount(text)}/${contractLabels.length} required labels`,

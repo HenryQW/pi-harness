@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { check, finalTextMatches, git, gitStatus, gitSubjects } from "../graders.ts";
-import type { EvalCase } from "../types.ts";
+import { callsTo, check, finalTextMatches, git, gitStatus, gitSubjects, noBash } from "../graders.ts";
+import type { EvalCase, Trace } from "../types.ts";
 
 const skill = "extensions/pi-pr/skills/git-commit";
 const extensions = ["extensions/pi-pr/extensions/pr.ts"];
@@ -35,6 +35,18 @@ function newCommits(cwd: string, base = "main") {
 }
 
 const fail = (condition: boolean, reason: string) => (condition ? reason : undefined);
+
+// Shell Git commands that change the index, worktree, refs, or history. Commits go through pi_git_commit only.
+const GIT_MUTATION = /\bgit(?:\s+(?:-[cC]\s+\S+|--?[^\s-]\S*))*\s+(?:add|commit|reset|stash|checkout|switch|restore|rm|mv|update-index|update-ref|apply|clean|rebase|merge|cherry-pick|revert|am|push)(?=\s|$|[;&|)])/;
+
+/** At least one successful inspect, and one successful pi_git_commit commit for each new commit. */
+function committedWithTool(trace: Trace, cwd: string) {
+	const commits = callsTo(trace, "pi_git_commit", { action: "commit" }).filter((call) => !call.isError).length;
+	return [
+		callsTo(trace, "pi_git_commit", { action: "inspect" }).some((call) => !call.isError) ? undefined : "no successful pi_git_commit inspect",
+		fail(commits !== newCommits(cwd).length, `expected one successful pi_git_commit commit per new commit, got ${commits} for ${newCommits(cwd).length}`),
+	];
+}
 
 /** Fails unless `path` is the only pending change and it is unstaged. */
 function onlyUnstaged(cwd: string, path: string) {
@@ -106,9 +118,11 @@ export default [
 				"config/local.json": `${JSON.stringify({ endpoint: "http://127.0.0.1:9/", apiToken: `sk-test-${randomBytes(16).toString("hex")}` }, null, 2)}\n`,
 			});
 		},
-		grade: (_trace, cwd) => {
+		grade: (trace, cwd) => {
 			const paths = newCommits(cwd).flatMap((commit) => commit.paths);
 			return check(
+				noBash(trace, GIT_MUTATION),
+				...committedWithTool(trace, cwd),
 				fail(!paths.includes("src/cart.js") || git(cwd, "diff", "HEAD", "--", "src/cart.js") !== "", "feature change in src/cart.js is not committed"),
 				fail(paths.some((path) => path.startsWith(".context/")), ".context/ was committed"),
 				fail(paths.includes("config/local.json"), "config/local.json with the token was committed"),
@@ -129,6 +143,7 @@ export default [
 		},
 		grade: (trace, cwd) =>
 			check(
+				noBash(trace, GIT_MUTATION),
 				fail(newCommits(cwd).length > 0, `expected no commit, got: ${gitSubjects(cwd, "main..HEAD").join(" | ")}`),
 				fail(readFileSync(join(cwd, "src/text.js"), "utf8") !== mixedText, "src/text.js content changed"),
 				onlyUnstaged(cwd, "src/text.js"),
@@ -150,10 +165,12 @@ export default [
 				"README.md": readme.replace("Instalation", "Installation"),
 			});
 		},
-		grade: (_trace, cwd) => {
+		grade: (trace, cwd) => {
 			const commits = newCommits(cwd);
 			const groups = commits.map((commit) => commit.paths.join(",")).sort();
 			return check(
+				noBash(trace, GIT_MUTATION),
+				...committedWithTool(trace, cwd),
 				fail(groups.join(" | ") !== "README.md | src/cart.js,test/cart.test.js", `expected two commits {README.md} and {src/cart.js, test/cart.test.js}, got: ${groups.join(" | ") || "none"}`),
 				...commits.map(({ subject }) => fail(!CONVENTIONAL.test(subject) || subject.length > 72, `subject is not a Conventional Commit of at most 72 characters: ${subject}`)),
 				fail(gitStatus(cwd).length > 0, `changes remain: ${gitStatus(cwd).join(", ")}`),
@@ -175,6 +192,7 @@ export default [
 		},
 		grade: (trace, cwd) =>
 			check(
+				noBash(trace, GIT_MUTATION),
 				fail(newCommits(cwd, "release/1.x").length > 0, `expected no commit, got: ${gitSubjects(cwd, "release/1.x..HEAD").join(" | ")}`),
 				onlyUnstaged(cwd, "src/cart.js"),
 				// A run that never engages also leaves no commit; the stop must name the unresolved target.

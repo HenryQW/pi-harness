@@ -2,6 +2,8 @@
 // Replies come from the case's scripted spec, which setup writes outside the fixture repository (see specPath),
 // keyed like stub queues (`<action>:<id>` before `<action>`; the last reply repeats). Where later judgment depends
 // on earlier calls, the tool follows pr-comment-sweep.ts instead of the script:
+// - A `runId` other than ROUTE_RUN_ID fails, and every action except `start` and `resume` needs the guard of the
+//   last status reply, with the real messages of pr.ts and requireGuard.
 // - The last status reply is the route state. Out-of-order `record`, `commit`, `validate`, and `publish`
 //   calls fail with the real messages.
 // - After `record`, each status carries the recorded plan, with `ledgerComplete` and `approved` true.
@@ -12,10 +14,13 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /** The spec lives in the trial directory, the parent of the fixture cwd, so tools in cwd cannot find it. */
 export const specPath = (cwd: string) => join(dirname(cwd), "pi-eval-sweep.json");
+/** The route run ID that /pr reserves for every case. */
+export const ROUTE_RUN_ID = "3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c";
 export const ACTIONS = ["start", "resume", "show", "record", "adopt", "commit", "validate", "publish", "refresh", "resolve", "finalize"];
 
 /** Scripted replies by queue key. A string is returned as is, `{ error }` is a tool error, and other values are JSON. */
@@ -105,10 +110,17 @@ export default function (pi: ExtensionAPI) {
 		parameters: PARAMETERS as never,
 		executionMode: "sequential",
 		async execute(_id, raw, _signal, _onUpdate, ctx) {
-			const params = raw as { action: string; id?: string; ledger?: unknown[]; ownedPaths?: string[]; message?: string; checks?: unknown[] };
+			const params = raw as { runId: string; action: string; guard?: unknown; id?: string; ledger?: unknown[]; ownedPaths?: string[]; message?: string; checks?: unknown[] };
 			const git = (...args: string[]) => execFileSync("git", args, { cwd: ctx.cwd, encoding: "utf8" }).trim();
 			const text = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
 			const dirty = () => git("status", "--porcelain", "--untracked-files=all") !== "";
+			const guarded = !["start", "resume"].includes(params.action);
+			// The real union schema rejects a guarded action without a guard before the run ID check.
+			if (guarded && params.guard === undefined) throw new Error("Tool arguments do not match one action: must not have additional properties");
+			if (params.runId !== ROUTE_RUN_ID) throw new Error("PR workflow runId is wrong or stale");
+			if (guarded && !isDeepStrictEqual(params.guard, current?.guard)) {
+				throw new Error("stale comment sweep run, generation, or feedback fingerprint");
+			}
 			const unpublished = current?.phase === "recorded" && !!current.plan && current.attempts.push === "none";
 			if (params.action === "record" && !(current && ["triage", "refresh-pending"].includes(current.phase) && !current.plan)) {
 				throw new Error("Comment sweep ledger was already recorded or is not ready");

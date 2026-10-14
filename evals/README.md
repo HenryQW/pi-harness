@@ -24,6 +24,8 @@ node evals/run.ts --model anthropic/claude-sonnet-5-5 --trials 5
 | `--concurrency <n>` | `2` | Run at most `n` Pi processes at the same time. |
 | `--list` | off | Load and validate all case definitions, then stop. Exit code 1 means a definition is not valid. |
 
+The runner starts the `pi` command from your `PATH`. To test a different Pi, set `PI_BIN` to the path of its executable, for example `PI_BIN=extensions/pi-pr/node_modules/.bin/pi`. The runner resolves a relative path against the current directory.
+
 The runner reads `defaultProvider`, `defaultModel`, and `defaultThinkingLevel` from your Pi `settings.json`. The runner sends these values to Pi as one `--model` value. If an extension supplies your default provider, Pi cannot find that model, because evals do not load your extensions. Each trial then fails with `Model "..." not found`. In this case, use `--model`.
 
 The runner prints one line for each trial and then a summary table. It writes the full trace and the raw Pi event stream for each trial to `evals/.results/<timestamp>/`. Git ignores this directory. The exit code is 1 when a case fails.

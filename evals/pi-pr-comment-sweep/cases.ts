@@ -8,11 +8,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { callsTo, calledWith, check, git, gitStatus, noBash, notCalled, finalTextMatches } from "../graders.ts";
 import type { EvalCase, ToolCall, Trace } from "../types.ts";
-import { ACTIONS, specPath, type SweepSpec } from "./sweep-tool.ts";
+import { ACTIONS, ROUTE_RUN_ID, specPath, type SweepSpec } from "./sweep-tool.ts";
 
 const SKILL = "extensions/pi-pr/skills/pi-pr-comment-sweep";
 // /pr sends `/${skill} runId=${runId} action=${action}` (extensions/pi-pr/extensions/pr-command.ts).
-const ROUTE_RUN_ID = "3f2b8c1e-9a4d-4e7b-8c2a-1d5e6f7a8b9c";
 const routePrompt = (action: "start" | "resume") => `/skill:pi-pr-comment-sweep runId=${ROUTE_RUN_ID} action=${action}`;
 const extensions = ["evals/pi-pr-comment-sweep/sweep-tool.ts"];
 const PR_URL = "https://github.com/acme/stats-kit/pull/42";

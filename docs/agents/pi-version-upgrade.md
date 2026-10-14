@@ -47,10 +47,11 @@ Before you release, test the final commit at the target. Each workspace resolves
     printf "  '@earendil-works/%s': %s\n" "$package" "$TARGET" >> pnpm-workspace.yaml
   done
   pnpm install && pnpm test && pnpm run typecheck
+  PI_BIN="$PWD/extensions/pi-pr/node_modules/.bin/pi" node evals/run.ts --model <provider/id>
 )
 ```
 
-If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimumReleaseAgeExclude` in the same temporary edit. Fix failures in a new commit and repeat the target test. Run live or interactive TUI tests only when the changed behavior needs them. Run the skill evals at the target with `node evals/run.ts` (see [evals/README.md](../../evals/README.md)) and report failing cases. Then release with [docs/releasing.md](../releasing.md).
+If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimumReleaseAgeExclude` in the same temporary edit. Fix failures in a new commit and repeat the target test. Run live or interactive TUI tests only when the changed behavior needs them. The last command runs the skill evals with the target Pi before the trap restores the original install (see [evals/README.md](../../evals/README.md)). Report failing cases. Then release with [docs/releasing.md](../releasing.md).
 
 Add an audit log entry, even when every decision is `none`. Report decisions, the target-run result, untested live or interactive behavior, and npm deprecations pending maintainer action.
 

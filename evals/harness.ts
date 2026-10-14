@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { devNull, homedir, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { EvalCase, Grade, ToolCall, Trace } from "./types.ts";
 
@@ -9,6 +9,8 @@ export const evalsDir = fileURLToPath(new URL(".", import.meta.url));
 export const repoRoot = join(evalsDir, "..");
 const stubExtension = join(evalsDir, "stub-extension.ts");
 const TIMEOUT_MS = 300_000;
+// Resolved at import, before applyHermeticEnv changes HOME and PATH and trials change the cwd.
+const piBin = process.env.PI_BIN ? resolve(process.env.PI_BIN) : "pi";
 
 export interface Suite {
 	name: string;
@@ -194,7 +196,7 @@ function killGroup(pid: number): void {
 
 function runPi(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) {
 	return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolve, reject) => {
-		const child = spawn("pi", args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(piBin, args, { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
 		let timedOut = false;
