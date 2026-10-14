@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type ConfigLoad } from "@henryqw/pi-config-store";
-import { createOpenInConfigStore, registerOpenInConfigReporting } from "./open-in-config.ts";
+import { type ConfigLoad, registerConfigReporting } from "@henryqw/pi-config-store";
+import { createOpenInConfigStore } from "./open-in-config.ts";
 
 export type OpenInConfig = { command: string };
 
@@ -28,14 +28,14 @@ export function configuredOpenUri(path: string): string | undefined {
 
 export default function openInExtension(pi: ExtensionAPI): void {
 	const configStore = createOpenInConfigStore();
-	const report = registerOpenInConfigReporting(pi, configStore);
+	const reporter = registerConfigReporting(pi, [configStore]);
 
 	// Reload config on each call; split the command on whitespace (no quoted tokens).
 	pi.registerCommand("open", {
 		description: "Open the current path with the configured command",
 		handler: async (_args, ctx) => {
 			const loaded = configStore.loadSync();
-			report(ctx, loaded);
+			reporter.report(ctx, configStore, loaded);
 			if (loaded.status === "disabled") return;
 			const [executable, ...args] = loaded.value.command.split(/\s+/);
 			const result = await pi.exec(executable, [...args, ctx.cwd]);

@@ -33,7 +33,7 @@ The `/open` Pi command that launches configured command for current working dire
 _Avoid_: editor command, project opener
 
 **Open command configuration**:
-User config at `getAgentDir()/config/pi-open-in/config.json` selecting executable launched by `/open`; `/set-open-in <command>` updates it. A missing file silently defaults to `code` without being created. An unknown key, an invalid `command`, or a malformed file warns once per session, at session start or the next `/open`, and `command` falls back to `code` without touching the file. The footer and `/open` share one session report, so issues show once also with footer-only activation; footer renders read it but never notify. Command string is split on whitespace; tokens with spaces unsupported.
+User config at `getAgentDir()/config/pi-open-in/config.json` selecting executable launched by `/open`; `/set-open-in <command>` updates it. A missing file silently defaults to `code` without being created. An unknown key, an invalid `command`, or a malformed file warns once per session, at session start or the next `/open`, and `command` falls back to `code` without touching the file. The footer and `/open` both report it at session start, and pi-config-store's shared record shows each issue once, also with footer-only activation; footer renders read it but never notify. Command string is split on whitespace; tokens with spaces unsupported.
 _Avoid_: project config, editor preference
 
 **Current working directory**:
