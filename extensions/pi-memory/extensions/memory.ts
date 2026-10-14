@@ -5,7 +5,9 @@ import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionCo
 import { askQuestion } from "@henryqw/pi-ask-question";
 import {
 	extensionConfigDir,
+	formatConfigIssues,
 	readTextFileBounded,
+	registerConfigReporting,
 	writePrivateTextFileAtomically,
 } from "@henryqw/pi-config-store";
 import {
@@ -20,7 +22,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
-import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
+import { memoryConfigStore, type MemoryConfig } from "../src/config.ts";
 import {
 	ENTRY_DELIMITER,
 	isEnoent,
@@ -639,6 +641,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	registerModelTask(pi, MEMORY_REVIEW_TASK);
 	registerModelTask(pi, MEMORY_PREPARE_TASK);
 	registerModelTask(pi, DREAM_TASK);
+	const configStore = memoryConfigStore();
+	const configReporter = registerConfigReporting(pi, [configStore]);
 	const state: {
 		config?: MemoryConfig;
 		stores?: Record<Target, MemoryStore>;
@@ -864,7 +868,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.initError = undefined;
 		state.observedReviewSystem = false;
 		try {
-			const config = loadMemoryConfig().value;
+			const loaded = configStore.loadSync();
+			configReporter.report(ctx, configStore, loaded);
+			if (loaded.status === "disabled") throw new Error(`invalid config: ${formatConfigIssues(loaded.issues)}`);
+			const config = loaded.value;
 			try {
 				if (loadTaskModelsConfig().source === "missing") {
 					ctx.ui.notify("Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");
@@ -954,7 +961,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				}
 			}
 		} catch (error) {
-			// Surface once, disable quietly: no throw-loop every turn.
+			// Disable without a throw-loop every turn; launch reporting already showed config issues.
 			state.initError = error instanceof Error ? error.message : String(error);
 		}
 	});
@@ -1134,7 +1141,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		// Failed init stays visible every turn (correctness-critical config must
 		// not vanish silently) but as a warning line, not a per-turn throw-loop.
 		if (state.initError) {
-			event.systemPromptOptions.sections[PROMPT_SECTION] = `WARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configPath()} and restart.`;
+			event.systemPromptOptions.sections[PROMPT_SECTION] = `WARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configStore.path} and restart.`;
 			return;
 		}
 		if (!state.snapshotBlocks) return;
