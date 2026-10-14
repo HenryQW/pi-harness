@@ -694,6 +694,28 @@ test("review eligibility resets on tree, session, and shutdown lifecycle changes
 	});
 });
 
+test("a malformed file or an invalid or misspelled automatic key keeps automatic analysis off", async () => {
+	for (const contents of ['{"automatic":', '{"automatic":"yes"}', '{"Automatic":true}']) {
+		await withAgentDir(async (agentDir) => {
+			const configPath = extensionConfigPath("pi-prompt-creator", agentDir);
+			await mkdir(join(configPath, ".."), { recursive: true });
+			await writeFile(configPath, contents);
+			const child = controlledExecutor();
+			const app = harness({
+				agentDir,
+				executor: child.executor,
+				branch: [{ type: "message", message: { role: "user", content: "Make this workflow reusable." } }],
+			});
+			await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+			assert.equal(app.notifications.length, 1);
+			for (const text of ["one", "two", "three"]) app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
+			await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(child.runs.length, 0, contents);
+		});
+	}
+});
+
 test("invalid config keys warn once, fall back per key, and an explicit toggle replaces the file", async () => {
 	await withAgentDir(async (agentDir) => {
 		const configPath = extensionConfigPath("pi-prompt-creator", agentDir);

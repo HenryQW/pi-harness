@@ -385,7 +385,8 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		resetBranch(ctx);
 		const loaded = configStore.loadSync();
 		configReporter.report(ctx, configStore, loaded);
-		automatic = loaded.status === "ok" && loaded.value.automatic;
+		// A file-level problem or an invalid or misspelled `automatic` keeps automatic analysis off; a missing file uses the default.
+		automatic = loaded.status === "ok" && loaded.value.automatic && !loaded.issues.some(({ key }) => key === "" || key === "automatic");
 		inputThreshold = loaded.status === "ok" ? loaded.value.inputThreshold : DEFAULT_INPUT_THRESHOLD;
 	});
 

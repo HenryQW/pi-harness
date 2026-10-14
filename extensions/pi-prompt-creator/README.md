@@ -104,7 +104,9 @@ Edit either field. Then run `/reload` to apply the change. Omitted fields use th
 
 A missing file quietly uses both defaults. Startup never creates or rewrites the file.
 
-At session start, Pi shows a warning with the file path and each problem for an unknown key, including a misspelled key, or an invalid value. Pi ignores the unknown key and uses the default for each invalid field. Malformed JSON, invalid UTF-8, a file over 64 KiB, an unreadable file, or a non-object root uses both defaults. Startup leaves the file unchanged.
+At session start, Pi shows a warning with the file path and each problem for an unknown key or an invalid value. Pi ignores the unknown key. A misspelled key near a missing field, such as `automatc`, counts as an invalid value of that field. An invalid `inputThreshold` uses the default `3`.
+
+Automatic analysis stays off for the session when `automatic` is invalid or misspelled, or when the file has malformed JSON, invalid UTF-8, more than 64 KiB, a read error, or a non-object root. Startup leaves the file unchanged.
 
 Only `/promptor automatic on` or `/promptor automatic off` writes the config. A toggle replaces the whole file, also a file with problems. It keeps the threshold in use and removes unknown keys.
 
