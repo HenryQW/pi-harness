@@ -18,7 +18,8 @@ All-or-nothing parsers made one typo or bad value fail the whole config. Each ow
   - an unknown key and an invalid optional value produce a visible launch warning; each invalid key falls back to its safe default;
   - a near-miss key (an unknown key that misspells a declared key that is not in the file) is an invalid value of that declared key, so it follows the rule of that key;
   - a missing or invalid required key, or an invalid value whose default would be unsafe (for example, a storage directory or an unlimited token limit), fails at launch with a visible error and disables the extension's features; its config repair commands still work.
-- A repair write reports the issues of the file before it replaces the file. It never drops a setting whose default would be unsafe unless the command sets that setting.
+- A repair write reports the issues of the file before it replaces the file. It never drops a setting whose default would be unsafe unless the command sets that setting. A repair built from an earlier read replaces the file only if the file is unchanged under the write lock.
+- Each issue shows one time in each session, also when several extensions read the same file. An owner API that a consumer loads exposes its issues, so the consumer can report them when the owner extension is not active.
 - Generated state and recovery files stay strict; this rule covers user-edited config only.
 - `@henryqw/pi-config-store` owns these load mechanics ([ADR 018](018-extension-config-homes.md)). Owners declare the fields, defaults, and required or unsafe keys.
 - Path layout now follows [ADR 018](018-extension-config-homes.md).
