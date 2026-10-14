@@ -193,8 +193,8 @@ test("consumers report task-model config issues at launch and after a lazy read,
 		for (const handler of handlers) handler(event, ctx);
 		assert.deepEqual(notices, [[`pi-task-models config issues (${file}): extra: unknown key; defaults replace invalid settings.`, "warning"]]);
 		writeFileSync(file, JSON.stringify({ extra: 1, tasks: { "pi-example/review": "slow" } }));
-		first(ctx);
-		second(ctx);
+		first(ctx as never);
+		second(ctx as never);
 		assert.deepEqual(notices.slice(1), [[`pi-task-models config issues (${file}): tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"]]);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

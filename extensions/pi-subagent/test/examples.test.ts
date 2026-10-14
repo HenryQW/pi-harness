@@ -254,7 +254,7 @@ test("roleDefaults merge into every Role first and deduplicate", async (t) => {
 	let sessionStart: ((event: unknown, ctx: unknown) => void) | undefined;
 	const report = registerRoleDefaultsReporting({ on: (_event: string, handler: typeof sessionStart) => { sessionStart = handler; } } as never, agentDir);
 	const notices: Array<[string, string]> = [];
-	const ctx = { hasUI: true, ui: { notify: (message: string, level: string) => notices.push([message, level]) } };
+	const ctx = { hasUI: true, ui: { notify: (message: string, level: string) => notices.push([message, level]) } } as never;
 	await writeFile(path, JSON.stringify({ maxTokens: "many", roleDefaults: { mcps: [] } }));
 	sessionStart!({}, ctx);
 	report(ctx);
