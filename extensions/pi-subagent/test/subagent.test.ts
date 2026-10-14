@@ -1660,6 +1660,12 @@ test("bad config never stops the extension: launch warns on a typo, and invalid 
 			/maxTokens: must be an integer >= 1/);
 		assert.deepEqual(app.notifications.at(-1), { message: `pi-subagent disabled (${path}): maxTokens: must be an integer >= 1`, type: "error" });
 
+		// Lazy command reads report issues added after session start.
+		await writeFile(path, JSON.stringify({ maxTurns: 0 }));
+		await app.commands.get("subagent")!.handler("roles", app.ctx);
+		assert.ok(app.notifications.some(({ message, type }) => type === "warning"
+			&& message === `pi-subagent config issues (${path}): maxTurns: must be an integer >= 1; defaults replace invalid settings.`), JSON.stringify(app.notifications));
+
 		// A session that started disabled built its executor without the file's token limit, so a repair needs a reload.
 		await writeFile(path, JSON.stringify({ maxToken: 1_000 }));
 		const launchedDisabled = harness({ ui: true });
