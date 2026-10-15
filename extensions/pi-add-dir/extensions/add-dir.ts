@@ -228,7 +228,9 @@ export function createExternalAutocompleteProvider(
 
 export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOptions = {}): void {
 	const globalStore = createAddDirConfigStore(options.agentDir);
-	registerConfigReporting(pi, [globalStore]);
+	const configReporter = registerConfigReporting(pi, [globalStore]);
+	// Report the latest file before a global write, so issues found after launch use the same deduplicated report.
+	const reportGlobalConfig = (ctx: ExtensionContext) => configReporter.report(ctx, globalStore, globalStore.loadSync());
 	let sessionDirs: SessionDir[] = [];
 	let projectPaths: string[] = [];
 	let globalPaths: string[] = [];
@@ -386,6 +388,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 	async function writePersistentPath(source: "project" | "global", absolutePath: string, ctx: ExtensionContext): Promise<void> {
 		if (source === "global") {
+			reportGlobalConfig(ctx);
 			const config = await globalStore.update((current) => ({
 				directories: current.directories.includes(absolutePath)
 					? current.directories
@@ -489,6 +492,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 				);
 				persistState();
 			} else if (dir.source === "global") {
+				reportGlobalConfig(ctx);
 				const config = await globalStore.update((current) => ({
 					directories: current.directories.filter((path) => path !== dir.storedPath),
 				}));

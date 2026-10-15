@@ -706,6 +706,30 @@ test("promotes a session directory to global scope", async () => {
 	}
 });
 
+test("reports global config issues found after launch before a global write", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-add-dir-agent-"));
+	const cwd = await mkdtemp(join(tmpdir(), "pi-add-dir-project-"));
+	const external = await mkdtemp(join(tmpdir(), "pi-add-dir-external-"));
+	const configPath = join(agentDir, "config", "pi-add-dir", "config.json");
+	try {
+		const notifications: Array<{ message: string; level: string }> = [];
+		const { commands, handlers } = loadExtension({ agentDir });
+		const ctx = interactiveContext(cwd, () => [], { notifications });
+		await handlers.get("session_start")!({}, ctx);
+		await mkdir(join(configPath, ".."), { recursive: true });
+		const contents = `${JSON.stringify({ directories: [], extra: true })}\n`;
+		await writeFile(configPath, contents);
+		await commands.get("dir-add")!.handler(`--global ${external}`, ctx as ExtensionCommandContext);
+
+		assert.ok(notifications.some(({ level, message }) => level === "warning" && /extra: unknown key/.test(message)));
+		assert.equal(await readFile(configPath, "utf8"), contents);
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+		await rm(cwd, { recursive: true, force: true });
+		await rm(external, { recursive: true, force: true });
+	}
+});
+
 test("uses session then project then global precedence for duplicate configured paths", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-precedence-"));
 	const repo = join(root, "repo");
