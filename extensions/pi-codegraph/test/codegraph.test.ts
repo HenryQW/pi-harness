@@ -186,8 +186,10 @@ test("seeds from the closest usable index, then syncs", async (t) => {
 		{ built: "1.6.0", busy: true, calls: ["status", "sync"], seed: "older" },
 		// CodeGraph reports that its current extraction engine would rebuild the copied index.
 		{ built: "1.6.0", reindexRecommended: true, calls: ["status", "status", "init"] },
+		// Different extension mappings change how unchanged files parse, which sync does not redo.
+		{ built: "1.6.0", config: true, calls: ["init"] },
 	];
-	for (const { built, busy, reindexRecommended, calls, seed } of scenarios) {
+	for (const { built, busy, reindexRecommended, config, calls, seed } of scenarios) {
 		const { base, primary, worktree } = await fixture(t);
 		const old = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).stdout.trim();
 		await writeFile(join(worktree, "a.ts"), "export const a = 1;\n");
@@ -205,6 +207,7 @@ test("seeds from the closest usable index, then syncs", async (t) => {
 		}
 		const writerLock = join(other, ".codegraph", "codegraph.lock");
 		if (busy) await writeFile(writerLock, "1");
+		if (config) await writeFile(join(worktree, "codegraph.json"), '{"extensions":{".tpl":"html"}}');
 		const run = harness(worktree, { reindexRecommended });
 		await run.start();
 		assert.deepEqual(run.calls.filter(({ args }) => args.includes(worktree)).map(({ args }) => args[0]), calls);

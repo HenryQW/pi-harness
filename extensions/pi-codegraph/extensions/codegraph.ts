@@ -1,4 +1,4 @@
-import { mkdir, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
@@ -63,13 +63,23 @@ function indexedCommit(worktree: string, version: string): string | undefined {
 	}
 }
 
+// Extension mappings in codegraph.json change how unchanged files parse, which sync does not redo.
+async function projectConfig(dir: string): Promise<string | undefined> {
+	try {
+		return await readFile(join(dir, "codegraph.json"), "utf8");
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "" : undefined;
+	}
+}
+
 // Copies the usable worktree index closest to this HEAD. `codegraph sync` then re-extracts
 // only the files that differ, which matches a fresh `codegraph init`.
 async function seedIndex(pi: ExtensionAPI, root: string, worktrees: string[], version: string, signal: AbortSignal): Promise<boolean> {
+	const config = await projectConfig(root);
 	// Probe one worktree at a time: repositories can keep many worker worktrees.
 	const candidates: { worktree: string; changes: number }[] = [];
 	for (const worktree of worktrees) {
-		if (worktree === root) continue;
+		if (worktree === root || config === undefined || await projectConfig(worktree) !== config) continue;
 		const commit = indexedCommit(worktree, version);
 		if (!commit) continue;
 		const diff = await pi.exec("git", ["diff", "--name-only", "-z", commit, "HEAD"], { cwd: root, timeout: 10_000, signal });
@@ -98,13 +108,14 @@ async function copyIndex(pi: ExtensionAPI, source: string, root: string, signal:
 		const db = new DatabaseSync(join(source, ".codegraph", "codegraph.db"), { readOnly: true });
 		try {
 			await mkdir(join(root, ".codegraph"), { recursive: true });
-			await backup(db, target);
+			// Throwing from the progress callback stops the copy when Pi quits or reloads.
+			await backup(db, target, { progress: () => signal.throwIfAborted() });
 			copied = true;
 		} finally {
 			db.close();
 		}
 	} catch {
-		// The source can vanish after selection.
+		// The source can vanish after selection, or Pi can quit during the copy.
 	} finally {
 		await rm(lock, { force: true });
 	}
@@ -121,6 +132,7 @@ async function copyIndex(pi: ExtensionAPI, source: string, root: string, signal:
 	}
 	// codegraph init does not rebuild over an existing database.
 	await Promise.all(["", "-wal", "-shm"].map((suffix) => rm(`${target}${suffix}`, { force: true })));
+	signal.throwIfAborted();
 	return false;
 }
 
