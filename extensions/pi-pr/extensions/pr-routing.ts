@@ -65,7 +65,8 @@ export type PullRequestDiscovery<T extends PullRequest = PullRequest> =
 	| { kind: "current"; pullRequest: T }
 	| { kind: "none"; creationTarget: PullRequestTarget; branch: BranchCreationState }
 	| { kind: "blocked"; issue: DiscoveryIssue }
-	| { kind: "inactive" };
+	// nonGitHubHosts is set when the remotes point only to hosts that gh has no credentials for.
+	| { kind: "inactive"; nonGitHubHosts?: string[] };
 
 export type NextStep =
 	| "create" | "link-branch" | "blocked" | "none"

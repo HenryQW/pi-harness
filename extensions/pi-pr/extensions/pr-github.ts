@@ -184,7 +184,7 @@ type TargetReadResult =
 	| { kind: "target"; target: PushTarget }
 	| { kind: "missing"; branch: string; remoteNames: string[] }
 	| { kind: "blocked"; issue: "detached" | "target" }
-	| { kind: "inactive" };
+	| { kind: "inactive"; nonGitHubHosts?: string[] };
 
 type LinkConfiguration = {
 	upstreamRemote: string[];
@@ -1394,6 +1394,8 @@ async function readPushTarget(
 	if (worktree.code === 0 && worktreeOutput === "false\n") return { kind: "inactive" };
 	if (worktree.code !== 0) commandFailure("Check Git worktree", worktree);
 	if (worktreeOutput !== "true\n") fail("Check Git worktree", "invalid response");
+	const nonGitHubHosts = await readNonGitHubRemoteHosts(pi, context);
+	if (nonGitHubHosts) return { kind: "inactive", nonGitHubHosts };
 
 	const branchResult = context.rebaseBranch === undefined
 		? await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])
@@ -1776,6 +1778,44 @@ export async function loadCurrentPullRequest(
 	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed);
 }
 
+// Returns the remote hosts when no remote points to github.com or to a host that gh has credentials for.
+async function readNonGitHubRemoteHosts(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+): Promise<string[] | null> {
+	// Unlike git config, git remote -v applies url.<base>.insteadOf and pushInsteadOf.
+	const result = await invoke(pi, context, "Read remote URLs", "git", ["remote", "-v"]);
+	if (result.code !== 0) return null;
+	const hosts = new Set<string>();
+	for (const line of result.stdout.replace(/\r\n/g, "\n").split("\n")) {
+		const url = /^[^\t]+\t(.*) \((?:fetch|push)\)$/.exec(line)?.[1];
+		if (url === undefined) continue;
+		const host = remoteHost(url);
+		// Keep the normal discovery path for remote forms without a host, such as local paths.
+		if (!host) return null;
+		hosts.add(host);
+	}
+	if (hosts.size === 0 || hosts.has("github.com")) return null;
+	for (const host of hosts) {
+		// gh auth token reads local credentials, including GH_ENTERPRISE_TOKEN, without a network request.
+		const token = await invoke(pi, context, "Read GitHub host credentials", "gh", ["auth", "token", "--hostname", host]);
+		if (token.code === 0) return null;
+	}
+	return [...hosts].sort();
+}
+
+function remoteHost(url: string): string | undefined {
+	if (url.includes("://")) {
+		try {
+			return new URL(url).hostname.toLowerCase() || undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	// scp-like syntax (git@host:owner/repo.git) needs a colon before the first slash.
+	return /^(?:[^@/]+@)?([^:/]+):/.exec(url)?.[1]?.toLowerCase();
+}
+
 async function loadCurrentPullRequestInternal(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1784,7 +1824,7 @@ async function loadCurrentPullRequestInternal(
 	creationIdentity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
-	if (read.kind === "inactive") return { kind: "inactive" };
+	if (read.kind === "inactive") return read;
 	if (read.kind === "blocked") {
 		return { kind: "blocked", issue: { kind: read.issue === "detached" ? "detached-head" : "target-invalid" } };
 	}

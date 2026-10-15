@@ -194,6 +194,8 @@ function harness(options: HarnessOptions) {
 				return result(`${options.pushReference ?? "fork/feature/pr"}\n`);
 			}
 			if (command === "git" && args.join(" ") === "remote") return result(`${(options.remoteNames ?? ["fork", "origin"]).join("\n")}\n`);
+			if (command === "git" && args.join(" ") === "remote -v") return result(`fork\tgit@${nextHost()}:acme/project.git (push)\n`);
+			if (command === "gh" && args.slice(0, 2).join(" ") === "auth token") return result("token\n");
 			if (command === "git" && args[0] === "check-ref-format") {
 				if (args[1] === "--branch") return result(`${args[2]}\n`);
 				if (args[1]?.startsWith("refs/heads/")) return result();
@@ -502,6 +504,19 @@ test("returns silently outside a Git worktree", async () => {
 	assert.equal(await handler("", app.context), "none");
 	assert.deepEqual(app.notifications, []);
 	assert.deepEqual(app.messages, []);
+});
+
+test("explains an inactive repository whose remotes are not on GitHub", async () => {
+	const app = harness({ states: [] });
+	const handler = createPrCommandHandler(app.pi, {
+		loadCurrentPullRequest: async () => ({ kind: "inactive", nonGitHubHosts: ["gitea.example"] }),
+	});
+
+	assert.equal(await handler("", app.context), "none");
+	assert.deepEqual(app.notifications, [{
+		message: "/pr needs a GitHub remote: gh has no credentials for gitea.example; for GitHub Enterprise, run gh auth login --hostname <host>",
+		type: "warning",
+	}]);
 });
 
 test("does not route an observed GitHub lookup failure to PR creation", async () => {

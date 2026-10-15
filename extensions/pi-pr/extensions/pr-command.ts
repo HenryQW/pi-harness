@@ -294,7 +294,13 @@ export function createPrCommandHandler(
 			}
 		}
 		onRouteResolved?.(nextStep);
-		if (discovery.kind === "inactive") return nextStep;
+		if (discovery.kind === "inactive") {
+			if (discovery.nonGitHubHosts) {
+				const hosts = discovery.nonGitHubHosts.join(", ");
+				ctx.ui.notify(`/pr needs a GitHub remote: gh has no credentials for ${hosts}; for GitHub Enterprise, run gh auth login --hostname <host>`, "warning");
+			}
+			return nextStep;
+		}
 		if (discovery.kind === "blocked") {
 			return nextStep;
 		}
