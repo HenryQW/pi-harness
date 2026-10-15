@@ -482,8 +482,8 @@ export interface RegisterIsolatedOptions {
 	executor: EphemeralSubagentExecutor;
 	policy: EffectiveExecutionPolicy;
 	currentPolicy(): EffectiveExecutionPolicy;
-	/** Report new config issues before each deferred Role launch reads the Role catalog and routes. */
-	reportConfig?(ctx: ExtensionContext): void;
+	/** Report new config issues, and throw when the config now blocks delegation, before each deferred Role launch. */
+	beforeRoleLaunch?(ctx: ExtensionContext): void;
 	componentsFactory?: CreateIsolatedComponents;
 }
 
@@ -509,7 +509,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		// The launch runtime reads this context only to resolve a Role launch.
 		context: () => {
 			const ctx = latestContext();
-			options.reportConfig?.(ctx);
+			options.beforeRoleLaunch?.(ctx);
 			return ctx;
 		},
 		executor: options.executor,

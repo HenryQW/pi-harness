@@ -211,6 +211,15 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		}
 		return policy;
 	};
+	/**
+	 * Before a deferred Role launch: report new issues, then revalidate so a now-disabled config blocks the child.
+	 * The workflow keeps the limits that it admitted at entry (direct idle timeout and concurrency, or the durable
+	 * isolated request's recorded policy); a limit change applies to the next workflow.
+	 */
+	const beforeRoleLaunch = (ctx: ExtensionContext): void => {
+		reportConfig(ctx);
+		currentPolicy();
+	};
 	const canWrite = (input: unknown): boolean => {
 		try {
 			const parsed = parseDelegateTask(input);
@@ -239,7 +248,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		executor,
 		policy: initialPolicy,
 		currentPolicy,
-		reportConfig,
+		beforeRoleLaunch,
 	});
 	let directSequence = 0;
 	const directTasks = new Map<string, {
@@ -739,8 +748,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			directTasks.set(taskId, local);
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
-				// A later chain worker launches after earlier ones finish; report config edits made meanwhile.
-				reportConfig(latestCtx ?? ctx);
+				// A later worker launches after earlier ones finish; report and revalidate config edits made meanwhile.
+				beforeRoleLaunch(latestCtx ?? ctx);
 				const role = findRole(loadRoleCatalog(), entry.delegation.role);
 				const { modelClass, model } = entry.delegation;
 				const prepared = await prepareDirectLaunch(role, latestCtx ?? ctx, {

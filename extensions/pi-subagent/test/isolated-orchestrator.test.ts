@@ -193,7 +193,7 @@ function createHarness(options: {
 	responseState?: RunState;
 	inventoryStates?: RunState[];
 	onCreate?: (options: Parameters<CreateIsolatedComponents>[0]) => void;
-	reportConfig?: (ctx: ExtensionContext) => void;
+	beforeRoleLaunch?: (ctx: ExtensionContext) => void;
 } = {}): Harness {
 	const tools: RegisteredTool[] = [];
 	const commands = new Map<string, RegisteredCommand>();
@@ -286,7 +286,7 @@ function createHarness(options: {
 		executor: {} as never,
 		policy: POLICY,
 		currentPolicy: () => POLICY,
-		...(options.reportConfig ? { reportConfig: options.reportConfig } : {}),
+		...(options.beforeRoleLaunch ? { beforeRoleLaunch: options.beforeRoleLaunch } : {}),
 		componentsFactory: createComponents,
 	});
 	tools.unshift({
@@ -829,9 +829,9 @@ test("inspection exposes late retained resources without dumping irrelevant stat
 	assert.deepEqual(harness.runnerCalls.map(({ method }) => method), ["status"]);
 });
 
-test("each deferred Role launch reports config with the session context first", async () => {
+test("each deferred Role launch reports and revalidates config with the session context first", async () => {
 	const reported: ExtensionContext[] = [];
-	const harness = createHarness({ reportConfig: (ctx) => reported.push(ctx) });
+	const harness = createHarness({ beforeRoleLaunch: (ctx) => reported.push(ctx) });
 	const initial = context("/nested/initial", { id: "initial-model" });
 	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, new AbortController().signal, initial);
 	reported.length = 0;
@@ -840,6 +840,13 @@ test("each deferred Role launch reports config with the session context first", 
 	harness.handlers.get("agent_settled")!({ type: "agent_settled" }, settled);
 	assert.equal(harness.getRoleContext(), settled);
 	assert.deepEqual(reported, [initial, settled]);
+
+	// A hook that blocks delegation fails the Role launch before its context reaches route resolution.
+	let blocked = false;
+	const guarded = createHarness({ beforeRoleLaunch: () => { if (blocked) throw new Error("delegation is blocked"); } });
+	await executeTool(namedTool(guarded, "delegate_task"), EXECUTE_REQUEST, new AbortController().signal, initial);
+	blocked = true;
+	assert.throws(() => guarded.getRoleContext(), /delegation is blocked/);
 });
 
 test("lazily creates one component graph and supplies fresh session context", async () => {

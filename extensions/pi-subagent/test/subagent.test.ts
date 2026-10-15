@@ -1116,6 +1116,29 @@ test("a later direct chain worker reports config edited while earlier workers ra
 	});
 });
 
+test("a later direct chain worker fails before launch when the config became disabled", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const path = join(agentDir, "config", "pi-subagent", "config.json");
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				if (prompt.includes("first")) await writeFile(path, JSON.stringify({ maxTokens: 0 }));
+				return "exact answer";
+			});
+			const app = harness({ ui: true, cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("chain", { chain: [
+				{ role: "worker", name: "First", task: "first", access: "read" },
+				{ role: "worker", name: "Second", task: "next: {previous}", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "start").length, 1, "the second worker never starts");
+			assert.match(app.sentMessages[0]!.message.content, /maxTokens: must be an integer >= 1; delegation is blocked until this file is corrected/);
+			assert.deepEqual(app.notifications.at(-1), { message: `pi-subagent disabled (${path}): maxTokens: must be an integer >= 1`, type: "error" });
+		});
+	});
+});
+
 test("parallel direct delegation returns after first verified tab and delivers one ordered partial failure", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
