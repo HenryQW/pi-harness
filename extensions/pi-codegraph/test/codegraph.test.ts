@@ -219,6 +219,34 @@ test("seeds from the closest usable index, then syncs", async (t) => {
 	}
 });
 
+test("never passes indexed metadata to Git as an option", async (t) => {
+	const { base, primary, worktree } = await fixture(t);
+	const output = join(base, "overwritten");
+	await mkdir(join(primary, ".codegraph"));
+	const db = new DatabaseSync(join(primary, ".codegraph", "codegraph.db"));
+	db.exec(`CREATE TABLE project_metadata (key TEXT PRIMARY KEY, value TEXT);
+		INSERT INTO project_metadata VALUES ('index_state', 'complete'), ('indexed_with_version', '1.6.0'), ('indexed_at_commit', '--output=${output}');`);
+	db.close();
+	const run = harness(worktree);
+	await run.start();
+	assert.equal(run.calls.some(({ command, args }) => command === "git" && args[0] === "diff"), false);
+	await assert.rejects(stat(output), { code: "ENOENT" });
+	assert.equal(run.statuses.at(-1), "<success>✓</success> CG");
+});
+
+test("a failed setup stops watching the checkout of an earlier session", async (t) => {
+	const { worktree } = await fixture(t);
+	await index(worktree);
+	let fail = false;
+	const run = harness(worktree, { gitProbe: async (args) => fail && args.includes("--absolute-git-dir") ? { code: 1, stdout: "", stderr: "boom", killed: false } : undefined });
+	await run.start();
+	assert.equal(run.servers.size, 1);
+	fail = true;
+	await run.start();
+	assert.match(run.notices[0]!.message, /boom/);
+	assert.equal(run.servers.size, 0);
+});
+
 test("TUI indexing survives session replacement and replaces its dim animation with an indexed badge", async (t) => {
 	const { primary, worktree, lock } = await fixture(t);
 	await index(primary);

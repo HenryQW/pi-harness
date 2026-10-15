@@ -52,7 +52,9 @@ function indexedCommit(worktree: string, version: string): string | undefined {
 		const rows = db.prepare("SELECT key, value FROM project_metadata WHERE key IN ('index_state', 'indexed_with_version', 'indexed_at_commit')").all();
 		const metadata = Object.fromEntries(rows.map(({ key, value }) => [key, value]));
 		const commit = metadata.indexed_at_commit;
-		return metadata.index_state === "complete" && metadata.indexed_with_version === version && typeof commit === "string" ? commit : undefined;
+		// The value goes to Git; only a full object ID cannot be read as an option.
+		const valid = typeof commit === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit);
+		return metadata.index_state === "complete" && metadata.indexed_with_version === version && valid ? commit : undefined;
 	} catch {
 		// A missing, unreadable, or foreign index cannot seed.
 		return undefined;
@@ -64,14 +66,17 @@ function indexedCommit(worktree: string, version: string): string | undefined {
 // Copies the usable worktree index closest to this HEAD. `codegraph sync` then re-extracts
 // only the files that differ, which matches a fresh `codegraph init`.
 async function seedIndex(pi: ExtensionAPI, root: string, worktrees: string[], version: string, signal: AbortSignal): Promise<boolean> {
-	const candidates = await Promise.all(worktrees.filter((worktree) => worktree !== root).map(async (worktree) => {
+	// Probe one worktree at a time: repositories can keep many worker worktrees.
+	const candidates: { worktree: string; changes: number }[] = [];
+	for (const worktree of worktrees) {
+		if (worktree === root) continue;
 		const commit = indexedCommit(worktree, version);
-		if (!commit) return undefined;
+		if (!commit) continue;
 		const diff = await pi.exec("git", ["diff", "--name-only", "-z", commit, "HEAD"], { cwd: root, timeout: 10_000, signal });
-		return diff.code === 0 && !diff.killed ? { worktree, changes: diff.stdout.split("\0").length } : undefined;
-	}));
-	signal.throwIfAborted();
-	for (const { worktree } of candidates.filter((candidate) => candidate !== undefined).sort((a, b) => a.changes - b.changes)) {
+		signal.throwIfAborted();
+		if (diff.code === 0 && !diff.killed) candidates.push({ worktree, changes: diff.stdout.split("\0").length });
+	}
+	for (const { worktree } of candidates.sort((a, b) => a.changes - b.changes)) {
 		if (await copyIndex(pi, worktree, root, signal)) return true;
 	}
 	return false;
@@ -307,6 +312,8 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 		const controller = initializer = new AbortController();
 		setup = initialize(pi, ctx, controller.signal).then(watch).catch((error) => {
 			if (controller.signal.aborted) return;
+			// Do not keep watching the checkout of an earlier session.
+			watch(undefined);
 			const message = `pi-codegraph: ${error instanceof Error ? error.message : String(error)}`;
 			ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("error", "!")} CG: setup failed`);
 			if (ctx.hasUI) ctx.ui.notify(message, "error");
