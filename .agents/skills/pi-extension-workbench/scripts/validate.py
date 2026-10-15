@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exercise authority resolution through direct and shimmed Node launchers."""
 
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
