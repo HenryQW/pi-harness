@@ -68,3 +68,4 @@ Add an audit log entry, even when every decision is `none`. Report the consumer 
 Add one entry per audit: the version range, the date, the consumers, and each `remove` or `change` decision with its changelog item. `none` items need no entry. The last entry's upper version is `BASE`.
 
 - Baseline `0.9.3` (2026-10-10): every package that calls the Herdr CLI (`@henryqw/pi-herdr`, `pi-herdr-tools`, `pi-subagent`, and `pi-pr`) raised its minimum to the latest stable Herdr, without an audit of earlier releases.
+- `0.9.3` to `0.9.5` (2026-10-15): consumers `@henryqw/pi-herdr`, `pi-herdr-tools`, `pi-subagent`, `pi-pr`, and the optional `pi-ask-question`. All `none`; schema `protocol` stays 22. Deferred: the 0.9.4 macOS refusal of too-long commands for a starting shell (#4950) could replace the `pi-herdr` `awaitShellPrompt` probe, but its error code is undocumented and the check is macOS-only. Adopt it only after a live test records a stable error code.
