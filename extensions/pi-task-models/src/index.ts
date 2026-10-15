@@ -461,8 +461,14 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-async function saveTaskModelPreset(ctx: ExtensionContext, store: TaskModelPresetsStore, profiles: TaskModelsConfig["profiles"]): Promise<void> {
-	if (!Object.keys(profiles).length) {
+/** `currentProfiles` reads the active profiles; the save uses its latest value, not the menu snapshot. */
+async function saveTaskModelPreset(
+	ctx: ExtensionContext,
+	store: TaskModelPresetsStore,
+	currentProfiles: () => TaskModelsConfig["profiles"],
+	report: (loaded: ReturnType<TaskModelPresetsStore["loadSync"]>) => void,
+): Promise<void> {
+	if (!Object.keys(currentProfiles()).length) {
 		ctx.ui.notify("Configure a task model profile before saving a preset.", "warning");
 		return;
 	}
@@ -475,9 +481,12 @@ async function saveTaskModelPreset(ctx: ExtensionContext, store: TaskModelPreset
 	try {
 		// Confirm before locking so an open dialog never blocks other sessions' saves.
 		const loaded = store.loadSync();
+		report(loaded);
 		const replace = loaded.status === "ok" && Object.hasOwn(loaded.value, name);
 		if (replace && !await ctx.ui.confirm("Replace task model preset?", `Replace "${name}" with the current profiles?`)) return;
 		// update refuses a file with issues, so a malformed preset file is never overwritten.
+		const profiles = currentProfiles();
+		if (!Object.keys(profiles).length) throw new Error("the active config has no task model profiles now");
 		await store.update((presets) => {
 			if (Object.hasOwn(presets, name) && !replace) throw new Error(`Another session saved preset "${name}"; try again.`);
 			return { ...presets, [name]: profiles };
@@ -574,7 +583,11 @@ export function createTaskModelsExtension(
 			]);
 			if (!selected) return;
 			if (selected === "save-preset") {
-				await saveTaskModelPreset(ctx, presetsStore, config.profiles);
+				await saveTaskModelPreset(ctx, presetsStore, () => {
+					const latest = repairStore.loadSync();
+					reporter.report(ctx, configStore, configStore.loadSync());
+					return latest.status === "ok" ? latest.value.profiles : {};
+				}, (loaded) => reporter.report(ctx, presetsStore, loaded));
 				return;
 			}
 

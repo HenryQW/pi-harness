@@ -495,6 +495,13 @@ test("Option+S saves all current profiles, merges names, confirms replacement, a
 		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "my-setup": updated, ["__proto__"]: profiles });
 		await handler("preset", { ui: { select: async () => "__proto__", notify() {} } });
 		assert.deepEqual(loadTaskModelsConfig(dir).value.profiles, profiles);
+
+		// Another session changes the active profiles while the name prompt is open; the preset saves the latest ones.
+		name = "latest";
+		const edited = { balanced: { primary: { model: "provider/edited", thinkingLevel: "low" } } };
+		ctx.ui.input = async () => { writeFileSync(configFile(dir), JSON.stringify({ profiles: edited })); return name; };
+		await handler("", ctx);
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).latest, edited);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
