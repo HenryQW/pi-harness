@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { setImmediate } from "node:timers/promises";
@@ -37,13 +38,18 @@ function harness(cwd: string, options: {
 	gitProbe?: (args: string[], signal?: AbortSignal) => Promise<Awaited<ReturnType<ExtensionAPI["exec"]>> | undefined>;
 	explore?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
 	onStatus?: (text: string | undefined) => void;
+	confirm?: boolean | ((signal?: AbortSignal) => Promise<boolean>);
 } = {}) {
 	let start!: (event: unknown, ctx: ExtensionContext) => Promise<void> | void;
 	let shutdown!: typeof start;
 	const notices: { message: string; level: string }[] = [];
 	const calls: { command: string; args: string[]; cwd: string; timeout?: number }[] = [];
+	const servers = new Map<string, unknown>();
+	const prompts: string[] = [];
 	let tool!: ToolDefinition;
 	const pi = {
+		registerMcpServer: (name: string, config: unknown) => servers.set(name, config),
+		unregisterMcpServer: (name: string) => servers.delete(name),
 		on: (name: string, handler: typeof start) => {
 			if (name === "session_start") start = handler;
 			else if (name === "session_shutdown") shutdown = handler;
@@ -55,7 +61,7 @@ function harness(cwd: string, options: {
 				if (args[0] === "--version") return options.version ?? { code: 0, stdout: "1.6.0", stderr: "", killed: false };
 				if (args[0] === "explore") return options.explore ?? { code: 0, stdout: "explored", stderr: "", killed: false };
 				if (options.init) return options.init(opts.signal);
-				await index(opts.cwd);
+				if (args[0] === "init") await index(opts.cwd);
 				return { code: 0, stdout: "", stderr: "", killed: false };
 			}
 			if (command === "git" && options.gitProbe) {
@@ -78,12 +84,16 @@ function harness(cwd: string, options: {
 		ui: {
 			theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
 			notify: (message: string, level: string) => notices.push({ message, level }),
+			confirm: async (title: string, _message: string, opts?: { signal?: AbortSignal }) => {
+				prompts.push(title);
+				return typeof options.confirm === "function" ? options.confirm(opts?.signal) : options.confirm ?? false;
+			},
 			setStatus: (_key: string, text: string | undefined) => { statuses.push(text); options.onStatus?.(text); },
 		},
 	} as unknown as ExtensionContext;
 	codegraphExtension(pi);
 	const explore = (params: Record<string, unknown>) => tool.execute("call", params, undefined, undefined, ctx as never);
-	return { start: () => start({}, ctx), shutdown: (reason = "quit") => shutdown({ reason }, ctx), explore, tool, notices, calls, statuses };
+	return { start: () => start({}, ctx), shutdown: (reason = "quit") => shutdown({ reason }, ctx), explore, tool, notices, calls, statuses, servers, prompts };
 }
 
 test("initializes an opted-in linked worktree at its root once, including nested launches", async (t) => {
@@ -99,7 +109,86 @@ test("initializes an opted-in linked worktree at its root once, including nested
 	]);
 	assert.ok(run.statuses.some((text) => text?.includes("CG · indexing")));
 	assert.equal(run.statuses.at(-1), "<success>✓</success> CG");
+	assert.deepEqual(run.servers.get("pi-codegraph"), { command: "codegraph", args: ["serve", "--mcp", "--path", worktree], cwd: worktree, exposure: "hidden" });
 	await assert.rejects(rmdir(lock), { code: "ENOENT" });
+});
+
+test("offers one time to index the primary checkout, then seeds the worktree from it", async (t) => {
+	const declined = await fixture(t);
+	const no = harness(declined.worktree);
+	await no.start();
+	await no.start();
+	assert.equal(no.prompts.length, 1);
+	assert.equal(no.calls.some(({ args }) => args[0] === "init"), false);
+	assert.equal(no.statuses.at(-1), "<dim>○</dim> CG");
+	assert.equal(no.servers.size, 0);
+	const { primary, worktree } = await fixture(t);
+	const yes = harness(worktree, { confirm: true });
+	await yes.start();
+	assert.deepEqual(yes.calls.filter(({ command }) => command === "codegraph").map(({ args }) => args.join(" ")), ["--version", `init --yes ${primary}`, `init --yes ${worktree}`]);
+	assert.equal(yes.statuses.at(-1), "<success>✓</success> CG");
+});
+
+test("a dismissed prompt is not a decline, and a failed primary init keeps the primary lock", async (t) => {
+	const { primary, worktree } = await fixture(t);
+	const asked = Promise.withResolvers<void>();
+	const dismissed = harness(worktree, { confirm: (signal) => {
+		asked.resolve();
+		return new Promise((resolve) => signal?.addEventListener("abort", () => resolve(false), { once: true }));
+	} });
+	dismissed.start();
+	await asked.promise;
+	await dismissed.shutdown();
+	await assert.rejects(stat(join(primary, ".git", "pi-codegraph-declined")), { code: "ENOENT" });
+	const failed = harness(worktree, { confirm: true, init: async () => {
+		await index(primary);
+		return { code: 1, stdout: "", stderr: "primary init failed", killed: false };
+	} });
+	await failed.start();
+	const lock = join(primary, ".git", "pi-codegraph-init.lock");
+	assert.ok(failed.notices[0]!.message.includes(lock));
+	await rmdir(lock);
+});
+
+test("does not offer to index a bare repository", async (t) => {
+	const { base, primary } = await fixture(t);
+	const bare = join(base, "bare.git");
+	const worktree = join(base, "bare-worktree");
+	await exec("git", ["clone", "-q", "--bare", primary, bare]);
+	await exec("git", ["-C", bare, "worktree", "add", "-q", "--detach", worktree]);
+	const run = harness(worktree, { confirm: true });
+	await run.start();
+	assert.deepEqual(run.prompts, []);
+	assert.equal(run.calls.some(({ args }) => args[0] === "init"), false);
+});
+
+test("seeds from the closest complete index of the same CodeGraph version, then syncs", async (t) => {
+	for (const [built, command] of [["1.6.0", "sync"], ["1.5.0", "init"]]) {
+		const { base, primary, worktree } = await fixture(t);
+		const old = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).stdout.trim();
+		await writeFile(join(worktree, "a.ts"), "export const a = 1;\n");
+		await exec("git", ["-C", worktree, "add", "a.ts"]);
+		await exec("git", ["-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "a"]);
+		const other = join(base, "other");
+		await exec("git", ["-C", primary, "worktree", "add", "-q", "--detach", other, "worker"]);
+		for (const [root, commit] of [[primary, old], [other, "worker"]]) {
+			await mkdir(join(root, ".codegraph"));
+			const db = new DatabaseSync(join(root, ".codegraph", "codegraph.db"));
+			const sha = (await exec("git", ["-C", root, "rev-parse", commit])).stdout.trim();
+			db.exec(`CREATE TABLE project_metadata (key TEXT PRIMARY KEY, value TEXT);
+				INSERT INTO project_metadata VALUES ('index_state', 'complete'), ('indexed_with_version', '${built}'), ('indexed_at_commit', '${sha}');`);
+			db.close();
+		}
+		const run = harness(worktree);
+		await run.start();
+		assert.deepEqual(run.calls.filter(({ args }) => args.includes(worktree)).map(({ args }) => args[0]), [command]);
+		assert.equal(run.statuses.at(-1), "<success>✓</success> CG");
+		if (command !== "sync") continue;
+		const seeded = new DatabaseSync(join(worktree, ".codegraph", "codegraph.db"), { readOnly: true });
+		const head = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).stdout.trim();
+		assert.equal(seeded.prepare("SELECT value FROM project_metadata WHERE key = 'indexed_at_commit'").get()?.value, head);
+		seeded.close();
+	}
 });
 
 test("TUI indexing survives session replacement and replaces its dim animation with an indexed badge", async (t) => {
