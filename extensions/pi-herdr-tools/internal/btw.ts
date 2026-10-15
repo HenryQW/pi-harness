@@ -496,6 +496,8 @@ export async function registerBtwExtension(
 			if (route.kind === "config") {
 				try {
 					if (route.args === "reset") {
+						// Reset does not depend on the file, but first show the problems that it removes.
+						loadConfig(ctx);
 						const config = { ...DEFAULT_CONFIG };
 						await configStore.save(config);
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");

@@ -462,10 +462,13 @@ test("config subcommand updates and resets launch defaults, including malformed-
 		assert.equal(harness.configStore.config.tools, "read-only");
 		assert.equal(harness.configStore.updateRuns, 2);
 
-		harness.configStore.issues = [{ kind: "invalid-json", key: "", message: "invalid JSON" }];
+		harness.configStore.issues = [{ kind: "invalid-json", key: "", message: "invalid JSON before reset" }];
 		await command?.handler("config reset", ctx);
 		assert.deepEqual(harness.configStore.config, DEFAULT_CONFIG);
 		assert.equal(harness.configStore.saveRuns, 1);
+		assert.deepEqual(ctx.notifications.at(-2), {
+			message: `pi-herdr-btw config issues (${harness.configStore.path}): invalid JSON before reset; defaults replace invalid settings.`, type: "warning",
+		});
 	});
 });
 
