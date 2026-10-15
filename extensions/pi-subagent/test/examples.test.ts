@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { findRole, loadRoleCatalog, parseRoleName, type RoleName } from "../src/index.ts";
+import { findRole, loadRoleCatalog, parseRoleName, registerRoleDefaultsReporting, type RoleName } from "../src/index.ts";
 import { parseExecuteRequest } from "../src/schema.ts";
 
 test("README isolated request passes production graph admission", async () => {
@@ -241,8 +241,25 @@ test("roleDefaults merge into every Role first and deduplicate", async (t) => {
 		{ name: "reviewer", tools: ["read", "codegraph_explore", "grep", "find", "ls", "git_read"], extensions: ["/provider.ts"], skills: ["house-style"] },
 		{ name: "scout", tools: ["read", "codegraph_explore", "grep"], extensions: ["/provider.ts", "/other.ts"], skills: ["house-style"] },
 	]);
-	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { extensions: ["relative.ts"] } }));
-	assert.throws(() => loadRoleCatalog(agentDir), /config\.json: roleDefaults: extensions entries must be absolute paths/);
-	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { mcps: [] } }));
-	assert.throws(() => loadRoleCatalog(agentDir), /roleDefaults: unknown key "mcps"; expected extensions, tools, skills/);
+	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ roleDefaults: { extensions: ["relative.ts"], skills: ["house-style"], mcps: [] } }));
+	assert.deepEqual(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "implementer")!.skills, ["house-style"], "invalid roleDefaults keys are dropped");
+	// The extension blocks delegation for a bad limit; the Role catalog of other consumers stays available.
+	await writeFile(join(rolesDir, "config.json"), JSON.stringify({ maxTokens: "many", roleDefaults: { skills: ["house-style"] } }));
+	assert.deepEqual(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "implementer")!.skills, ["house-style"]);
+	await writeFile(join(rolesDir, "config.json"), "{ not json");
+	assert.throws(() => loadRoleCatalog(agentDir), /config\.json: invalid JSON/);
+
+	// Catalog consumers report roleDefaults issues, but not the execution-limit issues that the extension owns.
+	const path = join(rolesDir, "config.json");
+	let sessionStart: ((event: unknown, ctx: unknown) => void) | undefined;
+	const report = registerRoleDefaultsReporting({ on: (_event: string, handler: typeof sessionStart) => { sessionStart = handler; } } as never, agentDir);
+	const notices: Array<[string, string]> = [];
+	const ctx = { hasUI: true, ui: { notify: (message: string, level: string) => notices.push([message, level]) } } as never;
+	await writeFile(path, JSON.stringify({ maxTokens: "many", roleDefaults: { mcps: [] } }));
+	sessionStart!({}, ctx);
+	report(ctx);
+	assert.deepEqual(notices, [[`pi-subagent config issues (${path}): roleDefaults.mcps: unknown key; defaults replace invalid settings.`, "warning"]]);
+	await writeFile(path, JSON.stringify({ roleDefaults: { mcps: [], tools: "read" } }));
+	report(ctx);
+	assert.deepEqual(notices.at(-1), [`pi-subagent config issues (${path}): roleDefaults.tools: roleDefaults: tools must be an array of strings.; defaults replace invalid settings.`, "warning"]);
 });

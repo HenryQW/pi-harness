@@ -175,6 +175,7 @@ async function withApp(
 		const notices: string[] = [];
 		const sessionEntries: any[] = [];
 		const ctx = {
+			hasUI: true,
 			get model() { return activeModel; },
 			modelRegistry: { getProviderAuth: async (provider: string) => ({ auth: { apiKey: `token-${provider}` } }) },
 			scopedModels,
@@ -187,7 +188,10 @@ async function withApp(
 			},
 		};
 		multiCodex({
-			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			on(event: string, handler: Handler) {
+				const previous = handlers.get(event);
+				handlers.set(event, previous ? (event, ctx) => { previous(event, ctx); return handler(event, ctx); } : handler);
+			},
 			registerCommand(name: string, command: { handler: Command }) { commands.set(name, command.handler); },
 			registerProvider() {},
 			appendEntry(customType: string) { sessionEntries.push({ type: "custom", customType }); },
@@ -514,15 +518,16 @@ test("autoSwitchOn429 false leaves normal 429 handling unchanged", async () => {
 	});
 });
 
-test("malformed config is preserved, warns once, and disables 429 switching", async () => {
+test("invalid config is preserved, reported at launch, and disables 429 switching", async () => {
 	await withApp({ 1: 80, 2: 60 }, [], async ({ agentDir, handlers, ctx, setModels, notices }) => {
 		const path = extensionConfigPath("pi-multi-codex", agentDir);
-		const malformed = '{"autoSwitchOn429":"yes"}\n';
-		await writeFile(path, malformed);
+		const invalid = '{"autoSwitchOn429":"yes","autoSwitchOn249":false}\n';
+		await writeFile(path, invalid);
 		handlers.get("session_start")?.({ type: "session_start" }, ctx);
-		handlers.get("session_start")?.({ type: "session_start" }, ctx);
-		assert.equal(notices.filter((notice) => notice.includes("config is invalid")).length, 1);
-		assert.equal(await readFile(path, "utf8"), malformed);
+		assert.deepEqual(notices.filter((notice) => notice.includes(path)), [
+			`pi-multi-codex config issues (${path}): autoSwitchOn249: unknown key; autoSwitchOn429: must be true or false; defaults replace invalid settings.`,
+		]);
+		assert.equal(await readFile(path, "utf8"), invalid);
 
 		handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
 		handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
@@ -531,6 +536,19 @@ test("malformed config is preserved, warns once, and disables 429 switching", as
 		assert.equal(setModels.length, 0);
 	});
 });
+
+for (const contents of ['{"autoSwitchOn429":', '{"autoswitchOn429":true}']) {
+	test(`a malformed file or a misspelled autoSwitchOn429 disables 429 switching: ${contents}`, async () => {
+		await withApp({ 1: 80, 2: 60 }, [], async ({ agentDir, handlers, ctx, setModels }) => {
+			await writeFile(extensionConfigPath("pi-multi-codex", agentDir), contents);
+			handlers.get("session_start")?.({ type: "session_start" }, ctx);
+			handlers.get("before_provider_request")?.({ type: "before_provider_request", payload: {} }, ctx);
+			handlers.get("after_provider_response")?.({ type: "after_provider_response", status: 429, headers: {} }, ctx);
+			await handlers.get("message_end")?.({ type: "message_end", message: assistantError("openai-codex") }, ctx);
+			assert.equal(setModels.length, 0);
+		});
+	});
+}
 
 test("shows the five-hour reset below Pro Lite and the seven-day reset at Pro Lite", async () => {
 	for (const [tier, footerWindow, status] of [

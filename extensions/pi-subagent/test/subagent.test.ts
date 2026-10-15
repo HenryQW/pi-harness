@@ -1094,6 +1094,51 @@ test("direct chain waits for exact prior result and admits declared writer Roles
 	});
 });
 
+test("a later direct chain worker reports config edited while earlier workers ran", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const path = join(agentDir, "config", "pi-subagent", "config.json");
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				if (prompt.includes("first")) await writeFile(path, JSON.stringify({ roleDefaults: { mcps: [] } }));
+				return "exact answer";
+			});
+			const app = harness({ ui: true, cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("chain", { chain: [
+				{ role: "worker", name: "First", task: "first", access: "read" },
+				{ role: "worker", name: "Second", task: "next: {previous}", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.ok(app.notifications.some(({ message }) =>
+				message === `pi-subagent config issues (${path}): roleDefaults.mcps: unknown key; defaults replace invalid settings.`), JSON.stringify(app.notifications));
+		});
+	});
+});
+
+test("a later direct chain worker fails before launch when the config became disabled", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const path = join(agentDir, "config", "pi-subagent", "config.json");
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				if (prompt.includes("first")) await writeFile(path, JSON.stringify({ maxTokens: 0 }));
+				return "exact answer";
+			});
+			const app = harness({ ui: true, cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("chain", { chain: [
+				{ role: "worker", name: "First", task: "first", access: "read" },
+				{ role: "worker", name: "Second", task: "next: {previous}", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "start").length, 1, "the second worker never starts");
+			assert.match(app.sentMessages[0]!.message.content, /maxTokens: must be an integer >= 1; delegation is blocked until this file is corrected/);
+			assert.deepEqual(app.notifications.at(-1), { message: `pi-subagent disabled (${path}): maxTokens: must be an integer >= 1`, type: "error" });
+		});
+	});
+});
+
 test("parallel direct delegation returns after first verified tab and delivers one ordered partial failure", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -1642,5 +1687,36 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 			await app.commands.get("subagent")!.handler("", app.ctx);
 			assert.ok(actions.some((choice) => choice.startsWith("Close/cancel-and-release ALL owned workers")), "the workflow stays locally owned");
 		});
+	});
+});
+
+test("bad config never stops the extension: launch warns on a typo, and invalid maxTokens blocks delegation with an error", async () => {
+	await environment(async (agentDir) => {
+		const path = join(agentDir, "config", "pi-subagent", "config.json");
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await writeFile(path, JSON.stringify({ maxSubagent: 2 }));
+		const app = harness({ ui: true });
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		assert.deepEqual(app.notifications.filter(({ message }) => message.startsWith("pi-subagent")), [{
+			message: `pi-subagent config issues (${path}): maxSubagents: unknown key "maxSubagent"; did you mean "maxSubagents"?; defaults replace invalid settings.`, type: "warning",
+		}]);
+		await writeFile(path, JSON.stringify({ maxTokens: 0 }));
+		await assert.rejects(() => app.tool.execute("blocked", { role: "scout", name: "Blocked", task: "inspect", access: "read" }, undefined, undefined, app.ctx),
+			/maxTokens: must be an integer >= 1/);
+		assert.deepEqual(app.notifications.at(-1), { message: `pi-subagent disabled (${path}): maxTokens: must be an integer >= 1`, type: "error" });
+
+		// Lazy command reads report issues added after session start.
+		await writeFile(path, JSON.stringify({ maxTurns: 0 }));
+		await app.commands.get("subagent")!.handler("roles", app.ctx);
+		assert.ok(app.notifications.some(({ message, type }) => type === "warning"
+			&& message === `pi-subagent config issues (${path}): maxTurns: must be an integer >= 1; defaults replace invalid settings.`), JSON.stringify(app.notifications));
+
+		// A session that started disabled built its executor without the file's token limit, so a repair needs a reload.
+		await writeFile(path, JSON.stringify({ maxToken: 1_000 }));
+		const launchedDisabled = harness({ ui: true });
+		await launchedDisabled.handlers.get("session_start")?.({}, launchedDisabled.ctx);
+		await writeFile(path, JSON.stringify({ maxTokens: 1_000 }));
+		await assert.rejects(() => launchedDisabled.tool.execute("repaired", { role: "scout", name: "Repaired", task: "inspect", access: "read" }, undefined, undefined, launchedDisabled.ctx),
+			/was disabled when the session started; run \/reload/);
 	});
 });

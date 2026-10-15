@@ -24,13 +24,16 @@ test("uses the config home without legacy fallback and preserves malformed JSON"
 		await writeFile(legacyPath, legacyContents);
 
 		assert.equal(store.path, join(agentDir, "config", "pi-herdr-btw", "config.json"));
-		assert.deepEqual(store.loadSync(), { source: "missing", value: { ...DEFAULT_CONFIG } });
+		assert.deepEqual(store.loadSync(), { status: "ok", source: "missing", value: { ...DEFAULT_CONFIG }, issues: [] });
 		await assert.rejects(readFile(store.path, "utf8"), { code: "ENOENT" });
 		assert.equal(await readFile(legacyPath, "utf8"), legacyContents);
 
 		await mkdir(dirname(store.path), { recursive: true });
 		await writeFile(store.path, "{ broken");
-		assert.throws(() => store.loadSync());
+		const broken = store.loadSync();
+		assert.equal(broken.status, "ok");
+		assert.deepEqual(broken.status === "ok" && broken.value, { ...DEFAULT_CONFIG });
+		assert.equal(broken.issues[0]?.kind, "invalid-json");
 		await assert.rejects(store.update((config) => ({ ...config, split: "down" })));
 		assert.equal(await readFile(store.path, "utf8"), "{ broken");
 	});
@@ -46,8 +49,10 @@ test("concurrent shared updates do not lose config changes", async () => {
 			other.update((config) => ({ ...config, autoSubmit: true })),
 		]);
 		assert.deepEqual(store.loadSync(), {
+			status: "ok",
 			source: "file",
 			value: { autoSubmit: true, tools: "read-only", split: "down" },
+			issues: [],
 		});
 	});
 });
@@ -57,7 +62,7 @@ test("save persists validated defaults after reset", async () => {
 		await mkdir(dirname(store.path), { recursive: true });
 		await writeFile(store.path, "{ broken");
 		await store.save({ ...DEFAULT_CONFIG });
-		assert.deepEqual(store.loadSync(), { source: "file", value: { ...DEFAULT_CONFIG } });
+		assert.deepEqual(store.loadSync(), { status: "ok", source: "file", value: { ...DEFAULT_CONFIG }, issues: [] });
 	});
 });
 
@@ -68,8 +73,25 @@ test("update rejects invalid config without writing", async () => {
 		await assert.rejects(
 			// @ts-expect-error invalid value on purpose
 			store.update(() => ({ autoSubmit: "yes", tools: "all", split: "down" })),
-			/autoSubmit must be/,
+			/autoSubmit: must be true or false/,
 		);
 		assert.equal(await readFile(store.path, "utf8"), before);
+	});
+});
+
+test("an invalid or unknown key falls back per key and is reported", async () => {
+	await withStore(async (_agentDir, store) => {
+		await mkdir(dirname(store.path), { recursive: true });
+		await writeFile(store.path, JSON.stringify({ autoSubmit: true, split: "left", tool: "none", volume: 3 }));
+		assert.deepEqual(store.loadSync(), {
+			status: "ok",
+			source: "file",
+			value: { ...DEFAULT_CONFIG, autoSubmit: true },
+			issues: [
+				{ kind: "unknown-key", key: "volume", message: "unknown key" },
+				{ kind: "invalid-value", key: "tools", message: 'unknown key "tool"; did you mean "tools"?' },
+				{ kind: "invalid-value", key: "split", message: "must be one of right, down" },
+			],
+		});
 	});
 });

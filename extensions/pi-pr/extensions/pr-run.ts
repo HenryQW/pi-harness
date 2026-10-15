@@ -1,48 +1,32 @@
 import { isDeepStrictEqual } from "node:util";
-import { createConfigStore } from "@henryqw/pi-config-store";
-import { isRecord } from "./pr-execution.ts";
+import { createConfigStore, field, parsers } from "@henryqw/pi-config-store";
 
 export type PrCheck = { command: string; args: string[] };
 export type MergeMethod = "squash" | "merge" | "rebase";
 export const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
 export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; checkTimeoutMinutes: number; mergeMethod: MergeMethod; codexReview: boolean };
 export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, checkTimeoutMinutes: 10, mergeMethod: "squash", codexReview: false };
-type NumericPolicyKey = Exclude<keyof PrPolicy, "mergeMethod" | "codexReview">;
-const NUMERIC_KEYS: readonly NumericPolicyKey[] = ["maxPublicationCycles", "maxRepairAttempts", "ciPollSeconds", "ciWaitMinutes", "checkTimeoutMinutes"];
-/** `ciWaitMinutes: 0` disables waiting for running CI; every other limit must be positive. */
-const ZERO_ALLOWED: ReadonlySet<NumericPolicyKey> = new Set(["ciWaitMinutes"]);
 /** Node replaces a timer delay above 2^31-1 ms with 1 ms, which would turn a long poll into a tight loop. */
 const MAX_CI_POLL_SECONDS = 2_147_483;
 const MAX_CHECK_TIMEOUT_MINUTES = 35_791;
 
-export function loadPrPolicy(agentDir?: string): PrPolicy {
-	const config = createConfigStore({
-		extensionId: "pi-pr", agentDir, defaults: () => ({ ...DEFAULT_PR_POLICY }),
-		parse(value: unknown): PrPolicy {
-			if (!isRecord(value) || Object.keys(value).some((key) => !Object.hasOwn(DEFAULT_PR_POLICY, key))) throw new Error(`Expected only ${Object.keys(DEFAULT_PR_POLICY).join(", ")}`);
-			const policy = { ...DEFAULT_PR_POLICY };
-			if (value.mergeMethod !== undefined) {
-				if (!MERGE_METHODS.includes(value.mergeMethod as MergeMethod)) throw new Error(`mergeMethod must be one of ${MERGE_METHODS.join(", ")}`);
-				policy.mergeMethod = value.mergeMethod as MergeMethod;
-			}
-			if (value.codexReview !== undefined) {
-				if (typeof value.codexReview !== "boolean") throw new Error("codexReview must be true or false");
-				policy.codexReview = value.codexReview;
-			}
-			for (const key of NUMERIC_KEYS) {
-				if (value[key] !== undefined) {
-					const minimum = ZERO_ALLOWED.has(key) ? 0 : 1;
-					if (!Number.isSafeInteger(value[key]) || (value[key] as number) < minimum) throw new Error(`${key} must be an integer of at least ${minimum}`);
-					if (key === "ciPollSeconds" && (value[key] as number) > MAX_CI_POLL_SECONDS) throw new Error(`ciPollSeconds must be at most ${MAX_CI_POLL_SECONDS}`);
-					if (key === "checkTimeoutMinutes" && (value[key] as number) > MAX_CHECK_TIMEOUT_MINUTES) throw new Error(`checkTimeoutMinutes must be at most ${MAX_CHECK_TIMEOUT_MINUTES}`);
-					policy[key] = value[key] as number;
-				}
-			}
-			return policy;
+/** An unknown key or invalid value is an issue, and that key uses its default; no key disables `/pr`. */
+export function createPrPolicyStore(agentDir?: string) {
+	const defaults = DEFAULT_PR_POLICY;
+	return createConfigStore({
+		extensionId: "pi-pr",
+		agentDir,
+		fields: {
+			maxPublicationCycles: field(parsers.integer({ min: 1 }), defaults.maxPublicationCycles),
+			maxRepairAttempts: field(parsers.integer({ min: 1 }), defaults.maxRepairAttempts),
+			ciPollSeconds: field(parsers.integer({ min: 1, max: MAX_CI_POLL_SECONDS }), defaults.ciPollSeconds),
+			// `0` disables waiting for running CI.
+			ciWaitMinutes: field(parsers.integer({ min: 0 }), defaults.ciWaitMinutes),
+			checkTimeoutMinutes: field(parsers.integer({ min: 1, max: MAX_CHECK_TIMEOUT_MINUTES }), defaults.checkTimeoutMinutes),
+			mergeMethod: field(parsers.oneOf(MERGE_METHODS), defaults.mergeMethod),
+			codexReview: field(parsers.boolean(), defaults.codexReview),
 		},
 	});
-	try { return config.loadSync().value; }
-	catch (error) { throw new Error(`PR configuration is preserved at ${config.path}: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
 /** Time limit for each caller-supplied validation check; Git and gh helpers keep their shorter limits. */

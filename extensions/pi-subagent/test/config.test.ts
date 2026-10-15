@@ -3,207 +3,106 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { readSubagentConfig, configPath } from "../extensions/config.ts";
-import { DEFAULT_MAX_TURNS } from "../src/index.ts";
+import { resolveExecutionPolicy } from "../extensions/config.ts";
+import { createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG } from "../src/index.ts";
 
-async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
+async function withStore(run: (store: ReturnType<typeof createSubagentConfigStore>) => Promise<void>): Promise<void> {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-config-"));
 	try {
-		await run(agentDir);
+		await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
+		await run(createSubagentConfigStore(agentDir));
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}
 }
 
-async function configDir(agentDir: string): Promise<void> {
-	await mkdir(join(agentDir, "config", "pi-subagent"), { recursive: true });
-}
-
-test("missing config yields defaults without a legacy fallback", async () => {
-	await withAgentDir(async (agentDir) => {
-		const legacyPath = join(agentDir, "config", "pi-subagent", "pi-subagent.json");
-		const legacy = JSON.stringify({ maxTurns: 1 });
-		await configDir(agentDir);
-		await writeFile(legacyPath, legacy);
-
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded, { source: "missing", config: {} });
-		assert.equal(loaded.config.maxTurns ?? DEFAULT_MAX_TURNS, 50);
-		assert.equal(await readFile(legacyPath, "utf8"), legacy);
-		await assert.rejects(() => readFile(configPath(agentDir), "utf8"), { code: "ENOENT" });
+test("missing config yields default limits without a legacy fallback", async () => {
+	await withStore(async (store) => {
+		const legacyPath = join(store.path, "..", "pi-subagent.json");
+		await writeFile(legacyPath, JSON.stringify({ maxTurns: 1 }));
+		const loaded = store.loadSync();
+		assert.deepEqual(loaded, { status: "ok", source: "missing", value: DEFAULT_SUBAGENT_CONFIG, issues: [] });
+		assert.deepEqual(resolveExecutionPolicy(store.path, loaded), {
+			maxSubagents: 5, maxTurns: 50, childIdleMs: 600_000, childMaxMs: 1_800_000, maxCorrections: 1,
+		});
+		await assert.rejects(() => readFile(store.path, "utf8"), { code: "ENOENT" });
 	});
 });
 
-test("valid execution limits and timeout are accepted", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({
-			maxSubagents: 3,
-			maxTurns: 1,
-			maxTokens: 2_000,
-			maxCorrections: 0,
-			timeout: { idleMinutes: 15, maxMinutes: 60 },
+test("valid execution limits, timeout, and roleDefaults are accepted", async () => {
+	await withStore(async (store) => {
+		const roleDefaults = { extensions: ["/provider.ts"], tools: ["read"], skills: [] };
+		await writeFile(store.path, JSON.stringify({
+			maxSubagents: 3, maxTurns: 1, maxTokens: 2_000, maxCorrections: 0, timeout: { idleMinutes: 15, maxMinutes: 60 }, roleDefaults,
 		}));
-		assert.deepEqual(readSubagentConfig(agentDir), {
-			source: "file",
-			config: {
-				maxSubagents: 3,
-				maxTurns: 1,
-				maxTokens: 2_000,
-				maxCorrections: 0,
-				timeout: { idleMinutes: 15, maxMinutes: 60 },
-			},
+		const loaded = store.loadSync();
+		assert.deepEqual(loaded, { status: "ok", source: "file", value: {
+			maxSubagents: 3, maxTurns: 1, maxTokens: 2_000, maxCorrections: 0, timeout: { idleMinutes: 15, maxMinutes: 60 }, roleDefaults,
+		}, issues: [] });
+		assert.deepEqual(resolveExecutionPolicy(store.path, loaded), {
+			maxSubagents: 3, maxTurns: 1, maxTokens: 2_000, childIdleMs: 900_000, childMaxMs: 3_600_000, maxCorrections: 0,
 		});
 	});
 });
 
-test("malformed JSON reports an error and preserves defaults", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		const path = configPath(agentDir);
-		const broken = "{ maxSubagents: ";
-		await writeFile(path, broken);
-		const loaded = readSubagentConfig(agentDir);
-		assert.equal(loaded.source, "file");
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /not valid JSON/);
-		assert.match(loaded.error!, /delegation is blocked until this file is corrected\.$/);
-		assert.equal(await readFile(path, "utf8"), broken);
-		assert.match(readSubagentConfig(agentDir).error!, /not valid JSON/);
-	});
-});
-
-test("invalid UTF-8 reports an error and preserves the file", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		const path = configPath(agentDir);
-		const bytes = Buffer.concat([Buffer.from('{"maxTurns": 1}'), Buffer.from([0xff])]);
-		await writeFile(path, bytes);
-		const loaded = readSubagentConfig(agentDir);
-		assert.equal(loaded.source, "file");
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /couldn't be read/);
-		assert.deepEqual(await readFile(path), bytes);
-	});
-});
-
-test("invalid concurrency, turn, and token limits report errors and preserve defaults", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagents: 0, maxTurns: 0, maxTokens: 0 }));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /maxSubagents must be a safe integer >= 1, got 0/);
-		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1, got 0/);
-		assert.match(loaded.error!, /maxTokens must be a safe integer >= 1, got 0/);
-	});
-});
-
-test("malformed explicit safety settings block delegation without discarding valid parsed values", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagents: 3, maxTurns: 1.5, maxTokens: 2_000 }));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, { maxSubagents: 3, maxTokens: 2_000 });
-		assert.match(loaded.error!, /delegation is blocked until this file is corrected\.$/);
-		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1, got 1.5/);
-	});
-});
-
-test("invalid timeout values report an error and preserve defaults", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({
-			timeout: { idleMinutes: -1, maxMinutes: Infinity, unknownKey: 1 },
+test("unknown keys and invalid bounded limits warn and fall back per key to safe defaults", async () => {
+	await withStore(async (store) => {
+		await writeFile(store.path, JSON.stringify({
+			maxSubagent: 2,
+			maxSubagents: 0,
+			maxTurns: 1.5,
+			maxCorrections: 1,
+			timeout: { idleMinutes: 50_000_000, maxMinutes: 45, sandbox: true },
+			roleDefaults: { extensions: ["relative.ts"], tools: ["read"], mcps: [] },
 		}));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /timeout\.idleMinutes must be a positive number of minutes, got -1/);
-		assert.match(loaded.error!, /timeout\.maxMinutes must be a positive number of minutes/);
-		assert.match(loaded.error!, /unknown timeout\.unknownKey/);
+		const loaded = store.loadSync();
+		assert.equal(loaded.status, "ok");
+		assert.deepEqual(loaded.issues.map(({ kind, key }) => [kind, key]), [
+			["unknown-key", "maxSubagent"],
+			["invalid-value", "maxSubagents"],
+			["invalid-value", "maxTurns"],
+			["unknown-key", "timeout.sandbox"],
+			["invalid-value", "timeout.idleMinutes"],
+			["invalid-value", "roleDefaults.extensions"],
+			["unknown-key", "roleDefaults.mcps"],
+		]);
+		assert.deepEqual(loaded.status === "ok" && loaded.value, {
+			...DEFAULT_SUBAGENT_CONFIG, timeout: { idleMinutes: 10, maxMinutes: 45 }, roleDefaults: { tools: ["read"] },
+		});
 	});
 });
 
-test("timeout values that overflow Node timers report an error", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({
-			timeout: { idleMinutes: 50_000_000 },
-		}));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /exceeds 2147483647 ms/);
+test("timeout that breaks the idle/max rule falls back to the default timeout", async () => {
+	await withStore(async (store) => {
+		await writeFile(store.path, JSON.stringify({ timeout: { idleMinutes: 30 } }));
+		const loaded = store.loadSync();
+		assert.equal(loaded.status, "ok");
+		assert.match(loaded.issues[0]!.message, /maxMinutes \(30\) must be greater than idleMinutes \(30\)/);
+		assert.deepEqual(loaded.status === "ok" && loaded.value.timeout, DEFAULT_SUBAGENT_CONFIG.timeout);
 	});
 });
 
-test("non-object timeout reports an error", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({ timeout: 5 }));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /timeout must be a JSON object, got 5/);
+test("invalid or misspelled maxTokens or malformed JSON disables delegation instead of removing the token limit", async () => {
+	await withStore(async (store) => {
+		for (const contents of [JSON.stringify({ maxTokens: 0, maxTurns: 3 }), JSON.stringify({ maxToken: 1_000 }), JSON.stringify({ MaxTokens: 1_000 }), "{ maxSubagents: "]) {
+			await writeFile(store.path, contents);
+			const loaded = store.loadSync();
+			assert.equal(loaded.status, "disabled");
+			assert.throws(() => resolveExecutionPolicy(store.path, loaded), /delegation is blocked until this file is corrected\.$/);
+			assert.equal(await readFile(store.path, "utf8"), contents);
+		}
 	});
 });
 
-test("non-object config root reports an error", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), "[1, 2]");
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /must contain a JSON object/);
-	});
-});
-
-test("non-safe maxSubagents, maxTurns, and maxTokens values report errors", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({
-			maxSubagents: Number.MAX_SAFE_INTEGER + 1,
-			maxTurns: Number.MAX_SAFE_INTEGER + 1,
-			maxTokens: Number.MAX_SAFE_INTEGER + 1,
-		}));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /maxSubagents must be a safe integer >= 1/);
-		assert.match(loaded.error!, /maxTurns must be a safe integer >= 1/);
-		assert.match(loaded.error!, /maxTokens must be a safe integer >= 1/);
-	});
-});
-
-test("config path uses the extension config home", () => {
-	assert.equal(configPath("/agents"), join("/agents", "config", "pi-subagent", "config.json"));
-});
-
-test("unknown top-level keys report an error", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({ maxSubagent: 2 }));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /unknown config key "maxSubagent"/);
-	});
-});
-
-test("effective maxMinutes must exceed idleMinutes when one field is omitted", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({
-			timeout: { idleMinutes: 30 },
-		}));
-		const loaded = readSubagentConfig(agentDir);
-		assert.deepEqual(loaded.config, {});
-		assert.match(loaded.error!, /timeout\.maxMinutes \(30\) must be greater than timeout\.idleMinutes \(30\)/);
-	});
-});
-
-test("roleDefaults are validated like Role fields and reject unknown keys", async () => {
-	await withAgentDir(async (agentDir) => {
-		await configDir(agentDir);
-		await writeFile(configPath(agentDir), JSON.stringify({ roleDefaults: { extensions: ["/provider.ts"], tools: ["read"], skills: [] } }));
-		assert.deepEqual(readSubagentConfig(agentDir), { source: "file", config: { roleDefaults: { extensions: ["/provider.ts"], tools: ["read"], skills: [] } } });
-		await writeFile(configPath(agentDir), JSON.stringify({ roleDefaults: { tools: "read", sandbox: true } }));
-		assert.match(readSubagentConfig(agentDir).error!, /roleDefaults: unknown key "sandbox"; expected extensions, tools, skills/);
+test("a misspelled bounded limit warns and keeps its finite default", async () => {
+	await withStore(async (store) => {
+		await writeFile(store.path, JSON.stringify({ maxTurn: 500, timeout: { maxMinute: 600 } }));
+		const loaded = store.loadSync();
+		assert.equal(loaded.status, "ok");
+		assert.deepEqual(loaded.issues.map(({ key, message }) => [key, message]), [
+			["maxTurns", 'unknown key "maxTurn"; did you mean "maxTurns"?'],
+			["timeout.maxMinutes", 'unknown key "maxMinute"; did you mean "maxMinutes"?'],
+		]);
+		assert.deepEqual(loaded.status === "ok" && loaded.value, DEFAULT_SUBAGENT_CONFIG);
 	});
 });

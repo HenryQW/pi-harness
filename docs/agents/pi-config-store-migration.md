@@ -1,253 +1,86 @@
 # Pi Config Store Migration
 
-Agent runbook for introducing `@henryqw/pi-config-store` and moving every current extension to the Extension Config Home layout from [ADR 018](../adr/018-extension-config-homes.md).
-
-**Status: complete.** The config-store package, all runtime owner and consumer migrations, the one-time local-file moves, and the repository policy update are complete. Keep the Delivery DAG and old-to-new data table below as reusable guidance for future migrations.
+Agent record and runbook for the move of every user-edited extension config to the `@henryqw/pi-config-store` 4.x field contract. It applies the warn and disable rule in [ADR 004](../adr/004-extension-config-safety.md) and the ownership rules in [ADR 018](../adr/018-extension-config-homes.md).
 
 This is the single migration source of truth. Do not add a second `MIGRATION.md` inside the package.
 
+**Status:** complete. The store contract and every consumer below use the 4.x field contract. Every consumer depends on `@henryqw/pi-config-store` `^4.0.0`, and every `@henryqw/pi-task-models` consumer depends on `^9.0.0`. Use this page as the reference for a new config or a change to an existing one.
+
+The earlier one-time move to Extension Config Homes is complete. Runtime code reads only `config/<extension-id>/`.
+
 ## Invariants
 
-- Use `getAgentDir()/config`, never a hardcoded home path.
-- Every extension owns `config/<extension-id>/`.
-- Default user JSON is `config/<extension-id>/config.json`.
-- Only the owner writes its home.
-- Consumers use an owner API or namespaced Pi events.
-- Preserve malformed files and write only after explicit user action.
-- Warn only when user action is required. Missing optional config with usable defaults does not warn.
-- Missing generated state is normal and does not warn.
-- Move existing files once outside runtime code. Add no legacy readers, aliases, adapters, dual schemas, or fallback paths.
+- Every user-edited config loads through `createConfigStore` with `fields` or `entries`. No direct `JSON.parse` of a config file, and no raw `readFileSync` of `config.json`.
+- Generated state and recovery files stay strict and owner-local. Do not move them to fields.
+- Do not change any file format. Existing valid files must load with the same effective values.
+- `loadSync()` never throws for file content or I/O. Do not wrap it in `try`/`catch` for those cases.
+- Register `registerConfigReporting(pi, [stores...])` once in the extension factory. Pass each lazy read result of a command or event to `reporter.report(ctx, store, result)`. Never report from a render; launch reporting covers a store that a render reads. All reporters in the process share one record per `session_start` event, so several extensions can report the same file and each issue still shows once.
+- A consumer of another owner's config registers the owner's reporting hook and calls it before each lazy read: `registerTaskModelsConfigReporting` (`@henryqw/pi-task-models`) before route resolution, and `registerRoleDefaultsReporting` (`@henryqw/pi-subagent`) before `loadRoleCatalog`. The owner API must never drop a nonblocking issue silently.
+- When `status` is `disabled`, disable features that need the config. Keep config repair commands working; they write with `store.save`.
+- `store.update` refuses a file with any issue. A repair flow that builds its value from an earlier `loadSync()` snapshot replaces a broken file with `store.replaceIfUnchanged(snapshot, value)`, which compares the file bytes under the lock and refuses a changed file. `store.save` is only for a full replacement that does not depend on the current file. Before any replacement, including `save`, load and report the current file, and never drop a setting whose default is unsafe unless the command sets it.
+- A write command never writes back a cached or session-start value. It loads and reports the file, then merges its change into the latest value with `update` when that load is clean, or uses `replaceIfUnchanged` with that load when it has issues, so a change made during a dialog is never overwritten.
+- Parsers of a store that writes must accept their own output.
+- Only the owner reads its files. Consumers use the owner API.
 
-## Delivery DAG
-
-```text
-Freeze public contract
-        │
-        ├──────────────┬──────────────────┐
-        ▼              ▼                  ▼
-Config-store core   Human README   This agent runbook
-        └──────────────┴──────────────────┘
-                       │
-                       ▼
-          Combined package validation
-                       │
-                       ▼
-             Release config-store
-                       │
-          ┌────────────┴────────────┐
-          ▼                         ▼
-  Migrate task-models         Migrate open-in
-  owner API and config        owner API and config
-          │                         │
-          ├──────────────┬──────────┼──────────────┐
-          ▼              ▼          ▼              ▼
-  auto-compact      herdr-btw    memory         subagent
-          │              │          │              │
-          └──────────┐   │          │              │
-                     ▼   ▼          ▼              ▼
-                herdr-rename     footer      remaining consumers
-
-Independent custom-state helper migrations:
-  multi-codex | notes | session-recall
-
-All repository code integrated
-        │
-        ▼
-Main moves local user files once; stop on conflicts
-        │
-        ▼
-Update AGENTS.md, README template, stale paths, versions, lockfile
-```
-
-Owner packages must land before their consumers. Package runtime units may run in parallel only when they own disjoint files. Keep manifests, workspace versions, and `pnpm-lock.yaml` in one central unit.
-
-## Stage 1: Build `pi-config-store` (complete)
-
-Freeze this public contract before parallel work:
+## Contract
 
 ```ts
-extensionConfigDir(extensionId, agentDir?)
-extensionConfigPath(extensionId, agentDir?)
-
-createConfigStore({
-  extensionId,
-  agentDir?,
-  defaults: () => T,
-  parse: (value: unknown) => T,
-})
+createConfigStore({ extensionId, agentDir?, fileName?, fields, check? })
+createConfigStore({ extensionId, agentDir?, fileName?, entries, check? })
+field(parse, fallback, { onInvalid?: "default" | "disable" })
+required(parse)
+parsers.boolean() | number(range) | integer(range) | string({ trim? }) | absolutePath()
+       | oneOf(values) | nullable(p) | object(fields) | record(value, { key? }) | array(item, { unique? })
+store.loadSync(): ConfigLoad<T>  // { status: "ok", source, value, issues } | { status: "disabled", source, issues }
+registerConfigReporting(pi, stores): { report(ctx, store, result) }
 ```
 
-The store exposes `path`, synchronous load with `{ source: "file" | "missing", value }`, and asynchronous `save`, locked `update`, and `remove`.
+Rules for choosing a field:
 
-Run three disjoint units in parallel:
+| Setting | Declaration |
+| --- | --- |
+| Optional with a safe default | `field(parser, default)` |
+| Default would read or write the wrong place, or weaken a safety limit | `field(parser, default, { onInvalid: "disable" })` |
+| No usable default | `required(parser)` |
+| Map of user names | `parsers.record(value, { key })`; a bad entry is dropped |
+| List | `parsers.array(item, { unique })`; a bad item is dropped |
+| Rule across fields | `check`, or a custom parser for a nested object |
 
-1. **Core package:** manifest, lockfile, source, tests, build config, and license.
-2. **Human README:** package behavior and examples only.
-3. **Agent runbook:** this file only.
+A custom `FieldParser` throws to reject the whole value. Use `report(path, message)` only for an entry that it drops.
 
-Core requirements:
+**Near-miss keys.** An unknown key that misspells a declared key that is not in the file counts as an invalid value of that declared key. The match ignores letter case and allows at most one edit (insert, delete, replace, or swap of two adjacent characters) for each three characters of the declared key, and at most two edits. The issue is `<key>: unknown key "<typo>"; did you mean "<key>"?`, and the field rule applies: the default, or a disabled config for `required` and `onInvalid: "disable"`. Thus, a misspelled unsafe key, such as `maxToken` for `maxTokens`, never fails open. Other unknown keys only warn. The rule applies to each field table, also in `parsers.object`, but not to `parsers.record` keys or `entries`. When a consumer must treat an invalid value differently from a missing one (for example, an opt-out switch that must stay off), check `issues` for the field key or for `""` (a file-level issue).
 
-- validate extension IDs as one lowercase path component;
-- keep path helpers free of filesystem side effects;
-- bound JSON reads to 64 KiB and decode UTF-8 strictly;
-- validate parsed `unknown` through the owner parser;
-- preserve malformed and schema-invalid files;
-- return missing defaults without creating a file;
-- lock every mutation;
-- write with a same-directory temporary file and atomic rename;
-- use directory mode `0700` and file mode `0600`;
-- remove only `config.json`.
+## Consumer units
 
-Do not add UI, schemas, migration helpers, custom-format storage, or compatibility APIs.
+Each package owns its source, tests, and README.
 
-Validate the integrated package:
+| Package | Store | Root shape | Field notes |
+| --- | --- | --- | --- |
+| `pi-bark` | `pi-bark` | fixed fields | `serverUrl` `required` custom (`parseServerUrl`): the default server would receive the Device Key; `deviceKey` `required(string({ trim: true }))`; `encryption` `required(nullable(...))` custom strict parser: a `null` default would send plaintext; `statusNotifications` `object` with `cwdOverrides` `record(boolean, { key: absolutePath() })`. Repair commands read a draft store over the same file (no disabling field, absent safety keys stay unset), report its issues, refuse a missing or invalid `serverUrl`, `deviceKey`, or `encryption` that the command does not set (`/bark` also refuses while the main store is disabled), then `update` a clean file or `replaceIfUnchanged` a file with issues. |
+| `pi-footer` | `pi-footer` | fixed fields | `colors` `record(colorValue, { key: oneOf(FOOTER_COLOR_ROLES) })`. Read and report at session start. |
+| `pi-footer` (open-in) | `pi-open-in` | fixed fields | `command` `field(string({ trim: true }), "code")`. `createOpenInConfigStore` (`extensions/open-in-config.ts`) builds the store. `footer.ts` and `open.ts` both pass it to `registerConfigReporting`, which reports at session start; the shared report record shows each issue one time, also with footer-only activation. `/open` reports its read. Renders call `configuredOpenUri`, which never throws or notifies. `loadOpenInConfig` returns `ConfigLoad` (pi-footer 5.0.0). |
+| `pi-task-models` | `pi-task-models` `config.json` | fixed fields | `profiles` `record(profile, { key: oneOf(PROFILE_NAMES) })` with `onInvalid: "disable"`, because no default route is safe; `tasks` `record(oneOf(PROFILE_NAMES), { key: taskId })`. Profile parser keeps route normalization and the `fav` no-fallback rule. `/task-models` reads a repair store without the disable rule, so a confirmed save keeps the `tasks` that loaded; it saves with `replaceIfUnchanged`, which refuses a file changed after the snapshot. Consumers register `registerTaskModelsConfigReporting`. The owner API throws `config-disabled` with the path and the issues; consumers pass that message through. |
+| `pi-task-models` | `pi-task-models` `presets.json` | `entries` | `fileName: "presets.json"`, `entries: record(record(profile, { key: oneOf(PROFILE_NAMES) }), { key: presetName })`. Replace the custom lock and write with `store.update`. |
+| `pi-memory` | `pi-memory` | fixed fields | `directory` `absolutePath()` with `onInvalid: "disable"`, so an invalid or misspelled `directory` disables memory; char limits `integer({ min: 1, max: 100_000 })`. |
+| `pi-prompt-creator` | `pi-prompt-creator` | fixed fields | `automatic` `boolean()`, `inputThreshold` `integer({ min: 1 })`. An `automatic` issue or a file-level issue keeps automatic analysis off; a missing file uses `true`. |
+| `pi-auto-compact` | `pi-auto-compact` | fixed fields | `autoCompactThreshold` `number({ min: 25, lessThan: 100 })`. |
+| `pi-multi-codex` | `pi-multi-codex` | fixed fields | `autoSwitchOn429` `field(boolean(), true)`. An `autoSwitchOn429` issue or a file-level issue keeps 429 switching off; a missing file uses `true`. Keep `usage.json` strict. |
+| `pi-cron` | `pi-cron` | fixed fields | `jobs` `array(job, { unique: (job) => job.id })` with the custom job parser; `limits` custom object parser with the `maxMinutes > idleMinutes` rule. Keep run state strict. |
+| `pi-herdr-tools` | `pi-herdr-btw` | fixed fields | `autoSubmit` `boolean()`, `tools` `oneOf(TOOL_MODES)`, `split` `oneOf(["right", "down"])`. `/btw config` keeps `update`; reset uses `save`. |
+| `pi-add-dir` | `pi-add-dir` | fixed fields | `directories` `array(absolutePath(), { unique: (dir) => dir })`. |
+| `pi-subagent` | `pi-subagent` | fixed fields | Bounded execution limits use `integer`/`number` and fall back to their finite defaults; `maxTokens` uses `onInvalid: "disable"` because its default is unlimited, so an invalid or misspelled `maxTokens` blocks delegation, and a session that started disabled needs `/reload`; `timeout` `object` plus the idle/max rule; `roleDefaults` custom parser from `parseRoleDefaults` that drops bad keys. `readRoleDefaults` (`src/index.ts`) reads only `roleDefaults` and throws only for a file-level issue, so a bad limit does not break `loadRoleCatalog` for other consumers; catalog consumers such as pi-cron report its issues with `registerRoleDefaultsReporting`. Every lazy policy, Role catalog, or route read in the extension reports first, and each deferred direct or isolated Role launch also revalidates with `currentPolicy()` so a now-disabled config blocks it (running workflows keep their admitted limits); the isolated runner's `currentPolicy` reports through the latest session context. |
+| `pi-pr` | `pi-pr` | fixed fields | `mergeMethod` `oneOf(MERGE_METHODS)`, `codexReview` `boolean()`, numeric limits `integer` with the current bounds. `createPrPolicyStore()` (`extensions/pr-run.ts`) builds the store; `/pr` loads it with `loadSync()`, reports its issues, and no longer throws for bad optional values. |
+
+`pi-notes` and `pi-session-recall` own only generated state; they need no runtime change.
+
+## Validate a change
+
+Run the package's own checks and update its README when user-visible behavior changes:
 
 ```bash
-pnpm --filter @henryqw/pi-config-store run test
-pnpm --filter @henryqw/pi-config-store run typecheck
-pnpm --filter @henryqw/pi-config-store run pack:check
+pnpm --filter <package> run test
+pnpm --filter <package> run --if-present typecheck
 git diff --check
 ```
 
-Only new `@henryqw/pi-config-store@0.1.0` releases in this stage.
-
-## Stage 2: Prepare extension migrations (complete)
-
-After the config-store package is available, use one central metadata unit to:
-
-1. add `@henryqw/pi-config-store` to every owner using its store or path helper;
-2. remove direct `proper-lockfile` dependencies only where no other feature needs them;
-3. bump every affected public package once with `pnpm version`;
-4. regenerate `pnpm-lock.yaml` once.
-
-Runtime units must not edit package manifests, versions, or `pnpm-lock.yaml`.
-
-## Stage 3: Migrate owners and consumers (complete)
-
-Every package section below is one bounded runtime unit unless an owner API and its direct consumer must change together. Each unit owns only its package source, tests, and README.
-
-### `pi-task-models`
-
-- Move `config/pi-task-models.json` to `config/pi-task-models/config.json` during the one-time filesystem step.
-- Replace local path and JSON I/O with the shared store.
-- Keep task-model parsing, normalization, defaults, and route errors package-owned.
-- Expose an owner API that returns validated effective config and whether the file was missing.
-- Remove the old public path shape rather than aliasing it.
-- Warn once when its own extension loads without config.
-- Update direct consumers: `pi-auto-compact`, `pi-herdr-btw`, `pi-herdr-rename`, `pi-memory`, and `pi-subagent`.
-
-### `pi-open-in`
-
-- Move `config/pi-open-in.json` to `config/pi-open-in/config.json`.
-- Keep command validation and the `code` default package-owned.
-- Expose validated effective config plus missing source to consumers.
-- Keep missing config silent because `code` is a usable default.
-- Update `pi-footer` to consume the owner API; it must not know the path.
-
-### `pi-auto-compact`
-
-- Move `config/pi-auto-compact.json` to `config/pi-auto-compact/config.json`.
-- Replace `readConfig` and `writeConfig` filesystem mechanics with the store.
-- Keep threshold parsing and defaults local.
-- Keep missing local and shared config silent because threshold and current-model fallbacks are usable.
-- Consume task-model data through the owner API.
-- Update local and shared-config fixtures.
-
-### `pi-herdr-btw`
-
-- Move `config/pi-herdr-btw.json` to `config/pi-herdr-btw/config.json`.
-- Delete the package-local generic `ConfigStore` mechanics after adopting the shared store.
-- Retain `parseConfig`, command application, formatting, and defaults.
-- Preserve concurrent no-lost-update behavior through the shared locked update.
-- Keep missing optional local config silent. Warn once for missing required shared task-model config.
-
-### `pi-herdr-rename`
-
-- It owns no local config.
-- Replace shared task-model access with the owner API.
-- Warn once when the shared config is missing.
-- Update task-model path fixtures and README references.
-
-### `pi-memory`
-
-- `config/pi-memory/config.json` already has the target path; do not move it.
-- Use the shared store while retaining strict memory-specific validation.
-- Use the directory helper for `memory/`, `backups/`, and `dream.json`.
-- Do not move those files.
-- Keep missing optional local config silent. Warn once for missing required shared task-model config.
-- Keep memory mutation locking; remove no dependency still used by memory storage.
-
-### `pi-subagent`
-
-- Move `config/pi-subagent/pi-subagent.json` to `config/pi-subagent/config.json`.
-- Keep role Markdown files in `config/pi-subagent/` unchanged.
-- Use the shared store for JSON and the directory helper for role files.
-- Preserve invalid-config diagnostics and defaults without rewriting malformed files.
-- Keep missing optional local config silent. Warn once for missing required shared task-model config.
-
-### `pi-footer`
-
-- It owns no local config.
-- Consume validated open-in values through the owner API.
-- Keep missing optional open-in config silent because `code` is a usable default.
-- Update footer fixtures from the flat path to the owner home.
-
-### `pi-multi-codex`
-
-- Keep `config/pi-multi-codex/usage.json` in place.
-- Replace repeated directory joins with the shared directory helper.
-- Keep cache parsing, abort handling, locking, and atomic writes package-owned.
-- Do not warn when the generated cache is absent.
-
-### `pi-notes`
-
-- Keep `config/pi-notes/<worktree-hash>.json` in place.
-- Replace the local directory helper with the shared helper.
-- Keep note identity, validation, pruning, and persistence package-owned.
-- Do not warn when generated note state is absent.
-
-### `pi-session-recall`
-
-- Keep `config/pi-session-recall/index.db` in place.
-- Replace the local directory join with the shared helper.
-- Keep SQLite lifecycle and rebuild behavior package-owned.
-- Do not warn when the disposable index is absent.
-
-## Stage 4: Move local files once (complete)
-
-Main completed this step outside delegated worktrees after all code was integrated and before restarting Pi. The procedure used was:
-
-For each changed path:
-
-1. stop active Pi processes;
-2. resolve the effective agent directory;
-3. if only the old path exists, create the target home and move the file without parsing or rewriting it;
-4. if only the new path exists, do nothing;
-5. if neither exists, do nothing; optional config defaults stay silent;
-6. if both exist, overwrite neither and ask the user which file is authoritative;
-7. verify bytes and permissions after each move.
-
-Move these files:
-
-| Old | New |
-| --- | --- |
-| `config/pi-auto-compact.json` | `config/pi-auto-compact/config.json` |
-| `config/pi-herdr-btw.json` | `config/pi-herdr-btw/config.json` |
-| `config/pi-open-in.json` | `config/pi-open-in/config.json` |
-| `config/pi-subagent/pi-subagent.json` | `config/pi-subagent/config.json` |
-| `config/pi-task-models.json` | `config/pi-task-models/config.json` |
-
-Do not move `pi-memory`, `pi-multi-codex`, `pi-notes`, or `pi-session-recall` state already inside its owner home.
-
-## Stage 5: Finish repository policy (complete)
-
-The repository policy is complete:
-
-1. `AGENTS.md` now requires ADR 018's Extension Config Home rule;
-2. `extensions/README-template.md` now uses `~/.pi/agent/config/<package>/config.json`;
-3. current source, tests, READMEs, context files, root docs, and deprecated docs were searched for old paths;
-4. obsolete local JSON I/O and lock helpers were removed;
-5. affected packages were validated once;
-6. repository tests, typechecks, pack checks, version checks, and `git diff --check` were run.
-
-Do not publish, push, or move user files from an isolated subagent worktree.
+Add the smallest regression tests for: an unknown key warns, an invalid optional value uses its default, a near-miss key of each `required` or `disable` field disables the features, and repair commands still work. Before a push, run `pnpm install --frozen-lockfile`, all package tests and typechecks, `pnpm run check:package-versions`, and `pnpm run docs:validate`.

@@ -17,7 +17,7 @@ Run user-authored job prompts on a schedule in fresh Pi sessions while any Pi se
 
 - Scheduling lives in the Pi process: the tick starts on `session_start` and stops on `session_shutdown`. No daemon.
 - Config is read every tick and never rewritten except an explicit Enable or Disable choice in `/cron`, which changes only that job's `enabled` flag.
-- Invalid config pauses all jobs with one visible error and preserves the file.
+- A bad job is dropped with a warning while valid jobs still run; unknown keys warn and are ignored; a bad limit uses its default. `pi-config-store` launch reporting shows each config issue once per session, and the file is preserved.
 - The Role bounds capability. Direct read-only admission is not applied because job entries are user-authored.
 - Route precedence: job `model` and `thinking`, then job `modelClass`, then the Role default, then the `pi-cron/job` Model Task assignment (default `fast`).
 - Local admission precedes shared claiming: busy manual requests do not queue; scheduled jobs are reconsidered later. Each run captures its original session's abort signal before asynchronous preparation.

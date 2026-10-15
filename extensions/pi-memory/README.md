@@ -53,7 +53,7 @@ A SYSTEM file proven present during review cannot disappear later in that sessio
 
 It resolves the configured Pi registry primary route, then fallback, through `/task-models`. It never substitutes the current session model. It accepts only verified bounded JSON evidence.
 
-If the shared task-model config is missing, pi-memory shows a warning one time at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before you add memory.
+If the shared task-model config is missing, pi-memory shows a warning one time at session start. Configure `pi-memory/reviewCandidate` with `/task-models` before you add memory. pi-memory also shows each problem in the shared task-model config one time in each session, at session start or before a review.
 
 An overlap or contradiction found during an active response queues the question instead of blocking the agent. The tool reports `queued: true` and `saved: false`. Nothing is written yet. The agent must finish its reply. It must not retry or ask you itself. After the response fully settles (`agent_settled`), pi-memory drains conflicts in FIFO order. It reviews live sources again. If a conflict remains, it uses the shared `ask_question` UI. An idle `/remember` request can ask immediately. Choose **Merge with existing entries**, **Discard the new entry, keep current**, or **Replace current entry**. The UI also offers **Something else.** for a custom answer. The recommended choice comes first: merge for overlap, replace for contradiction, and discard for SYSTEM conflicts. pi-memory never edits SYSTEM.md.
 
@@ -95,7 +95,9 @@ Package-owned: `~/.pi/agent/config/pi-memory/config.json`. You write this option
 | `memoryCharLimit` | Caps `MEMORY.md` by character count. | Safe integer from 1 to 100000. | `8800` |
 | `userCharLimit` | Caps `USER.md` by character count. | Safe integer from 1 to 100000. | `5500` |
 
-Malformed JSON, invalid UTF-8, files over 64 KiB, non-object roots, unknown keys, or out-of-range values cause initialization to fail with an error that names the problem. Persistent memory is disabled for that session. Fix the file and start a new session. The file is never rewritten.
+At session start, Pi shows a warning with the file path and each problem for an unknown key or an invalid `memoryCharLimit` or `userCharLimit`. pi-memory ignores the unknown key and uses the default for the invalid limit. A misspelled key near a missing key counts as an invalid value of that key. Thus, `memoryCharLimt` gives the default `memoryCharLimit`.
+
+An invalid or misspelled `directory` (for example, `directroy` when `directory` is not in the file), malformed JSON, invalid UTF-8, a file over 64 KiB, an unreadable file, or a non-object root disables persistent memory for that session. pi-memory never uses the default directory in place of an invalid `directory`. Pi shows an error with the file path and each problem. Fix the file and start a new session. pi-memory never rewrites the file.
 
 ## State and storage
 

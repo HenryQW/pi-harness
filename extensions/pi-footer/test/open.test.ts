@@ -6,7 +6,7 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import openInExtension, { configuredOpenUri, loadOpenInConfig } from "@henryqw/pi-footer/open-uri";
 
-type Context = { cwd: string; ui: { notify(message: string, type: string): void } };
+type Context = { cwd: string; hasUI: boolean; ui: { notify(message: string, type: string): void } };
 type Command = (args: string, ctx: Context) => Promise<void>;
 test("missing owner config uses code silently without read-time writes", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-open-in-test-"));
@@ -24,13 +24,17 @@ test("missing owner config uses code silently without read-time writes", async (
 	mkdirSync(join(agentDir, "config"), { recursive: true });
 	writeFileSync(legacyConfigFile, '{"command":"cursor"}');
 
-	assert.deepEqual(loadOpenInConfig(agentDir), { source: "missing", value: { command: "code" } });
+	assert.deepEqual(loadOpenInConfig(agentDir), { status: "ok", source: "missing", value: { command: "code" }, issues: [] });
 	assert.equal(configuredOpenUri("/some/path"), "vscode://file/some/path");
 	assert.equal(existsSync(configDir), false);
 
 	const commands = new Map<string, Command>();
+	let sessionStart: ((event: unknown, ctx: Context) => void) | undefined;
 	const execCalls: string[][] = [];
 	const api = {
+		on(event: string, handler: typeof sessionStart) {
+			if (event === "session_start") sessionStart = handler;
+		},
 		registerCommand(name: string, command: { handler: Command }) {
 			commands.set(name, command.handler);
 		},
@@ -41,10 +45,14 @@ test("missing owner config uses code silently without read-time writes", async (
 	} as unknown as ExtensionAPI;
 	openInExtension(api);
 
+	const notices: [string, string][] = [];
 	const ctx: Context = {
 		cwd: "/some/cwd",
-		ui: { notify: () => {} },
+		hasUI: true,
+		ui: { notify: (message, type) => notices.push([message, type]) },
 	};
+	sessionStart!({}, ctx);
+	assert.deepEqual(notices, []);
 	assert.equal(existsSync(configDir), false);
 
 	const open = commands.get("open")!;
@@ -55,7 +63,7 @@ test("missing owner config uses code silently without read-time writes", async (
 	await setOpenIn("cursor --reuse-window", ctx);
 	assert.equal(readFileSync(configFile, "utf8"), '{\n  "command": "cursor --reuse-window"\n}\n');
 	assert.equal(readFileSync(legacyConfigFile, "utf8"), '{"command":"cursor"}');
-	assert.deepEqual(loadOpenInConfig(agentDir), { source: "file", value: { command: "cursor --reuse-window" } });
+	assert.deepEqual(loadOpenInConfig(agentDir), { status: "ok", source: "file", value: { command: "cursor --reuse-window" }, issues: [] });
 	assert.equal(configuredOpenUri(ctx.cwd), undefined);
 	await open("", ctx);
 	assert.deepEqual(execCalls.at(-1), ["cursor", "--reuse-window", ctx.cwd]);
@@ -69,11 +77,37 @@ test("missing owner config uses code silently without read-time writes", async (
 		assert.equal(configuredOpenUri("/some/path"), uri);
 	}
 
-	for (const invalid of ["{not json", '{"command":"code","extra":1}', '{"command":""}']) {
+	// A bad key warns once per session and falls back to `code`; renders never notify.
+	for (const [invalid, issue] of [
+		["{not json", /invalid JSON/],
+		['{"command":"cursor","extra":1}', /extra: unknown key/],
+		['{"command":""}', /command: must be non-empty text/],
+	] as const) {
 		writeFileSync(configFile, invalid);
-		assert.throws(() => loadOpenInConfig(agentDir));
-		await assert.rejects(() => open("", ctx));
+		notices.length = 0;
+		const expected = invalid.includes("cursor") ? "cursor" : "code";
+		assert.equal(loadOpenInConfig(agentDir).status, "ok");
+		assert.equal(configuredOpenUri(ctx.cwd), expected === "code" ? "vscode://file/some/cwd" : undefined);
+		assert.deepEqual(notices, []);
+		await open("", ctx);
+		await open("", ctx);
+		assert.deepEqual(execCalls.at(-1), [expected, ctx.cwd]);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0]![0], issue);
+		assert.equal(notices[0]![1], "warning");
 		assert.equal(readFileSync(configFile, "utf8"), invalid);
-		assert.equal(configuredOpenUri(ctx.cwd), undefined);
 	}
+
+	sessionStart!({}, ctx);
+	assert.match(notices.at(-1)![0], /^pi-open-in config issues .*command: must be non-empty text/);
+
+	// /set-open-in reports a problem in the file that it replaces.
+	writeFileSync(configFile, '{"command":"code","typo":1}');
+	notices.length = 0;
+	await setOpenIn("zed", ctx);
+	assert.deepEqual(notices, [
+		[`pi-open-in config issues (${configFile}): typo: unknown key; defaults replace invalid settings.`, "warning"],
+		["Saved open-in command: zed", "info"],
+	]);
+	assert.equal(readFileSync(configFile, "utf8"), '{\n  "command": "zed"\n}\n');
 });

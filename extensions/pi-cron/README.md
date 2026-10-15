@@ -66,7 +66,7 @@ Package-owned: `~/.pi/agent/config/pi-cron/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `jobs` | Scheduled jobs. | Array of job objects with unique `id`. | — |
+| `jobs` | Scheduled jobs. | Array of job objects with unique `id`. | No jobs. |
 | `jobs[].id` | Job name used in `/cron` and state. | Lowercase letters, digits, and hyphens, up to 64 characters. | — |
 | `jobs[].every` | Interval schedule. Exactly one of `every` or `at` is required. | `<n>m`, `<n>h`, or `<n>d` between `1m` and `7d`. | — |
 | `jobs[].at` | Daily wall-clock schedule. | `HH:MM` in 24-hour time. | — |
@@ -85,7 +85,11 @@ Package-owned: `~/.pi/agent/config/pi-cron/config.json`
 | `limits.idleMinutes` | Minutes without child activity before the run is stopped. | Positive number; converted milliseconds must be ≤ 2,147,483,647. | `10` |
 | `limits.maxMinutes` | Hard runtime cap per run. | Greater than `idleMinutes`; converted milliseconds must be ≤ 2,147,483,647. | `30` |
 
-Only you edit this file. The exception: after you choose Enable or Disable, `/cron` toggles the `enabled` flag of that job. Changes apply before the next scheduled admission, and you do not restart Pi. Newly added jobs wait until the next check. A job that already runs keeps its admitted definition and limits. These errors block all jobs until you fix the file: unknown keys, a job with both or neither schedule, an unknown time zone, a relative path, or an invalid route. Background checks show each different config error one time. `/cron` shows the error each time you run it. The extension never rewrites the file to recover.
+Only you edit this file. The exception: after you choose Enable or Disable, `/cron` toggles the `enabled` flag of that job. Changes apply before the next scheduled admission, and you do not restart Pi. Newly added jobs wait until the next check. A job that already runs keeps its admitted definition and limits.
+
+A bad job does not stop the other jobs. The extension ignores a job that has a problem and shows a warning. Job problems include an unknown key, both or neither schedule, an unknown time zone, a relative path, an invalid route, and a repeated `id`. The other jobs continue to run. The extension also ignores an unknown top-level key or `limits` key, and shows a warning. An invalid limit uses its default. If `limits.maxMinutes` is not greater than the effective `limits.idleMinutes`, all limits use their defaults. If the file is malformed JSON, no jobs run until you fix the file.
+
+Each warning gives the file path and the reasons. It shows one time in each session; later checks and `/cron` do not show it again. Without a UI, the warning goes to stderr. The extension never rewrites the file to recover. While the file has a problem, the Enable and Disable choices of `/cron` do not change the file.
 
 Do not put secrets in this file. The run inherits the environment of the current session. Thus, point `env` at a private file, or export the variable in the shell that starts Pi.
 
@@ -97,7 +101,9 @@ Do not put secrets in this file. The run inherits the environment of the current
 
 ## Limits and recovery
 
-Jobs run only while a Pi session with this extension is open. There is no background daemon. A slot missed while Pi was closed runs one time at the next check.
+Jobs run only while a Pi session with this extension is open. There is no background daemon.
+
+At session start and when a job starts, pi-cron also shows problems in the pi-subagent `roleDefaults` and in the shared task-model config. Each problem shows one time in each session, also when pi-subagent or Task Models shows it. A slot missed while Pi was closed runs one time at the next check.
 
 A run cannot answer approval prompts or questions. Thus, a Role that needs interactive confirmation stays blocked until the idle timeout. A failed or timed-out run records `failure` with the error text. If the run created a run session file, open it. Pre-launch failures have no run session, and `/cron` says `Session: none created`. Use `/cron run <job-id>` to retry.
 

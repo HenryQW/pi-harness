@@ -3,172 +3,77 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import {
-	configPath,
-	DEFAULT_MEMORY_CHAR_LIMIT,
-	DEFAULT_USER_CHAR_LIMIT,
-	loadMemoryConfig,
-} from "../src/config.ts";
+import { DEFAULT_MEMORY_CHAR_LIMIT, DEFAULT_USER_CHAR_LIMIT, memoryConfigStore } from "../src/config.ts";
 
-async function makeDir() {
-	return mkdtemp(join(tmpdir(), "pi-memory-config-"));
+async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-memory-config-"));
+	try {
+		await run(agentDir);
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+	}
 }
 
-async function writeConfig(agentDir: string, contents: string | Uint8Array): Promise<string> {
-	const path = configPath(agentDir);
+async function writeConfig(agentDir: string, contents: string): Promise<string> {
+	const path = memoryConfigStore(agentDir).path;
 	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, contents);
 	return path;
 }
 
 test("absent config returns defaults without creating its home", async () => {
-	const agentDir = await makeDir();
-	try {
-		const loaded = loadMemoryConfig(agentDir);
-		assert.deepEqual(loaded, {
+	await withAgentDir(async (agentDir) => {
+		const store = memoryConfigStore(agentDir);
+		assert.deepEqual(store.loadSync(), {
+			status: "ok",
 			source: "missing",
 			value: {
 				directory: join(agentDir, "config", "pi-memory", "memory"),
 				memoryCharLimit: DEFAULT_MEMORY_CHAR_LIMIT,
 				userCharLimit: DEFAULT_USER_CHAR_LIMIT,
 			},
+			issues: [],
 		});
-		await assert.rejects(readFile(configPath(agentDir), "utf8"), { code: "ENOENT" });
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("partial config merges with defaults", async () => {
-	const agentDir = await makeDir();
-	try {
-		await writeConfig(agentDir, JSON.stringify({ memoryCharLimit: 100 }));
-		const { value } = loadMemoryConfig(agentDir);
-		assert.equal(value.memoryCharLimit, 100);
-		assert.equal(value.userCharLimit, DEFAULT_USER_CHAR_LIMIT);
-		assert.equal(value.directory, join(agentDir, "config", "pi-memory", "memory"));
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
+		await assert.rejects(readFile(store.path, "utf8"), { code: "ENOENT" });
+	});
 });
 
 test("valid full config is accepted", async () => {
-	const agentDir = await makeDir();
-	const directory = await makeDir();
-	try {
-		await writeConfig(agentDir, JSON.stringify({ directory, memoryCharLimit: 42, userCharLimit: 7 }));
-		assert.deepEqual(loadMemoryConfig(agentDir), {
+	await withAgentDir(async (agentDir) => {
+		await writeConfig(agentDir, JSON.stringify({ directory: "/tmp/memory", memoryCharLimit: 42, userCharLimit: 7 }));
+		assert.deepEqual(memoryConfigStore(agentDir).loadSync(), {
+			status: "ok",
 			source: "file",
-			value: { directory, memoryCharLimit: 42, userCharLimit: 7 },
+			value: { directory: "/tmp/memory", memoryCharLimit: 42, userCharLimit: 7 },
+			issues: [],
 		});
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-		await rm(directory, { recursive: true, force: true });
-	}
+	});
 });
 
-test("malformed JSON throws and leaves bytes unchanged", async () => {
-	const agentDir = await makeDir();
-	const bytes = "{ not json !!";
-	try {
-		const path = await writeConfig(agentDir, bytes);
-		assert.throws(() => loadMemoryConfig(agentDir), new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-		assert.equal(await readFile(path, "utf8"), bytes);
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("non-object top level throws with file path", async () => {
-	const agentDir = await makeDir();
-	try {
-		const path = await writeConfig(agentDir, "[1,2]");
-		assert.throws(() => loadMemoryConfig(agentDir), new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("wrong types throw naming the field", async () => {
-	const agentDir = await makeDir();
-	try {
-		for (const [field, value] of [
-			["directory", 123],
-			["memoryCharLimit", "big"],
-			["userCharLimit", null],
-		] as const) {
-			await writeConfig(agentDir, JSON.stringify({ [field]: value }));
-			assert.throws(() => loadMemoryConfig(agentDir), new RegExp(field));
-		}
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("invalid limits throw", async () => {
-	const agentDir = await makeDir();
-	try {
-		for (const value of [-1, 0, 1.5, 100_001]) {
-			await writeConfig(agentDir, JSON.stringify({ memoryCharLimit: value }));
-			assert.throws(() => loadMemoryConfig(agentDir), /memoryCharLimit/);
-			await writeConfig(agentDir, JSON.stringify({ userCharLimit: value }));
-			assert.throws(() => loadMemoryConfig(agentDir), /userCharLimit/);
-		}
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("relative directory throws, absolute directory is accepted", async () => {
-	const agentDir = await makeDir();
-	const directory = await makeDir();
-	try {
-		await writeConfig(agentDir, JSON.stringify({ directory: "relative/dir" }));
-		assert.throws(() => loadMemoryConfig(agentDir), /directory/);
-
-		await writeConfig(agentDir, JSON.stringify({ directory }));
-		assert.equal(loadMemoryConfig(agentDir).value.directory, directory);
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-		await rm(directory, { recursive: true, force: true });
-	}
-});
-
-test("unknown keys fail fast and preserve the file", async () => {
-	const agentDir = await makeDir();
-	const contents = JSON.stringify({ memoryCharLimits: 100 });
-	try {
+test("unknown keys and invalid limits warn and fall back per key", async () => {
+	await withAgentDir(async (agentDir) => {
+		const contents = JSON.stringify({ memoryCharLimits: 100, memoryCharLimit: 0, userCharLimit: 7 });
 		const path = await writeConfig(agentDir, contents);
-		assert.throws(() => loadMemoryConfig(agentDir), /Unknown key 'memoryCharLimits'/);
+		const loaded = memoryConfigStore(agentDir).loadSync();
+		assert.ok(loaded.status === "ok");
+		assert.equal(loaded.value.memoryCharLimit, DEFAULT_MEMORY_CHAR_LIMIT);
+		assert.equal(loaded.value.userCharLimit, 7);
+		assert.deepEqual(loaded.issues.map(({ kind, key }) => [kind, key]), [
+			["unknown-key", "memoryCharLimits"],
+			["invalid-value", "memoryCharLimit"],
+		]);
 		assert.equal(await readFile(path, "utf8"), contents);
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
+	});
 });
 
-test("invalid UTF-8 fails as malformed and preserves the file", async () => {
-	const agentDir = await makeDir();
-	try {
-		const bytes = Buffer.concat([Buffer.from(JSON.stringify({ directory: "/tmp/" }), "utf8"), Buffer.from([0xff])]);
-		const path = await writeConfig(agentDir, bytes);
-		assert.throws(() => loadMemoryConfig(agentDir), /invalid UTF-8/);
-		assert.deepEqual(await readFile(path), bytes);
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("control characters and oversized configs are rejected", async () => {
-	const agentDir = await makeDir();
-	try {
-		await writeConfig(agentDir, JSON.stringify({ directory: "/tmp/\nx" }));
-		assert.throws(() => loadMemoryConfig(agentDir), /must not contain control characters/);
-
-		const oversized = "x".repeat(65 * 1024);
-		const path = await writeConfig(agentDir, oversized);
-		assert.throws(() => loadMemoryConfig(agentDir), /too large/);
-		assert.equal(await readFile(path, "utf8"), oversized);
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-	}
+test("invalid directory or unreadable file disables memory instead of using the default directory", async () => {
+	await withAgentDir(async (agentDir) => {
+		for (const contents of [JSON.stringify({ directory: "relative/dir" }), JSON.stringify({ directory: "/tmp/\nx" }), JSON.stringify({ directroy: "/tmp/memory" }), "{ not json"]) {
+			const path = await writeConfig(agentDir, contents);
+			const loaded = memoryConfigStore(agentDir).loadSync();
+			assert.equal(loaded.status, "disabled", contents);
+			assert.equal(loaded.issues.length, 1);
+			assert.equal(await readFile(path, "utf8"), contents);
+		}
+	});
 });

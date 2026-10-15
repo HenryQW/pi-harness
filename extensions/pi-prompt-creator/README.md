@@ -89,7 +89,7 @@ A successful save reloads Pi resources. If reload fails, the prompt remains save
 
 The extension registers `pi-prompt-creator/draft`. Its default task profile is `fast`.
 
-Use `/task-models` to select the model and thinking level. The extension owns no model configuration.
+Use `/task-models` to select the model and thinking level. The extension owns no model configuration. At session start and before each analysis, it shows each problem in the shared task-model config one time in each session.
 
 ## Config
 
@@ -104,9 +104,11 @@ Edit either field. Then run `/reload` to apply the change. Omitted fields use th
 
 A missing file quietly uses both defaults. Startup never creates or rewrites the file.
 
-Malformed config or unknown keys disable automatic analysis. Pi warns once and leaves the file unchanged.
+At session start, Pi shows a warning with the file path and each problem for an unknown key or an invalid value. Pi ignores the unknown key. A misspelled key near a missing field, such as `automatc`, counts as an invalid value of that field. An invalid `inputThreshold` uses the default `3`.
 
-Only `/promptor automatic on` or `/promptor automatic off` writes the config. A toggle keeps the configured threshold.
+Automatic analysis stays off for the session when `automatic` is invalid or misspelled, or when the file has malformed JSON, invalid UTF-8, more than 64 KiB, a read error, or a non-object root. Startup leaves the file unchanged.
+
+Only `/promptor automatic on` or `/promptor automatic off` writes the config. A toggle reads the file again and keeps its current `inputThreshold`, also when another session changed it. A toggle also replaces a file with problems: it first shows the problems, then keeps the usable values and removes unknown keys. If another session changes that file before the write, the toggle stops and writes nothing.
 
 ## State and storage
 

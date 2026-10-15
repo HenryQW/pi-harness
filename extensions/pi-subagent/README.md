@@ -220,11 +220,19 @@ pi-subagent owns `~/.pi/agent/config/pi-subagent/config.json`. If the file is mi
 | `maxCorrections` | Same-worker automatic corrections per isolated request | Safe integer ≥ 0 | `1` |
 | `timeout.idleMinutes` | Direct worker and ephemeral child idle timeout | Positive and within Node's timer range | `10` |
 | `timeout.maxMinutes` | Ephemeral child hard runtime | Greater than idle and within Node's timer range | `30` |
-| `roleDefaults` | Optional `extensions`, `tools`, and `skills` arrays merged into every built-in and user Role, with the same validation as Role fields | Object; unknown keys rejected | None |
+| `roleDefaults` | Optional `extensions`, `tools`, and `skills` arrays merged into every built-in and user Role, with the same validation as Role fields | Object with `extensions`, `tools`, or `skills` | None |
 
 In each merged list, `roleDefaults` entries come first, and the entries of the Role follow. The merge removes duplicates and occurs before resource resolution. Use `roleDefaults` for the provider extension that every child needs. Limits come only from this global file. Request fields cannot override or replenish them. Existing durable requests keep their recorded policy, but a lower current correction limit can tighten recovery. Intentionally, there is no whole-run timeout setting.
 
-Malformed or unreadable JSON, unknown keys, and invalid values block delegation with one actionable warning. The extension preserves the file and never rewrites it automatically.
+A bad config never stops the extension. At launch, and again each time it reads the file (a `delegate_task` call, each later worker of a direct chain, each isolated Role launch, `/subagent roles`, or a status inspection), the extension shows each new problem one time:
+
+- An unknown key shows a warning. The extension ignores the key.
+- A misspelled key that is near a missing key, such as `maxToken` for `maxTokens`, counts as an invalid value of that key. The warning gives the likely key.
+- An invalid value in `maxSubagents`, `maxTurns`, `maxCorrections`, or `timeout` shows a warning. The extension uses the finite default for that key. If `timeout.maxMinutes` is not greater than `timeout.idleMinutes`, the extension uses the default `timeout`.
+- An unknown or invalid key in `roleDefaults` shows a warning. The extension ignores only that key, so Roles get fewer default resources.
+- An invalid or misspelled `maxTokens`, malformed JSON, invalid UTF-8, a file larger than 64 KiB, or an unreadable file shows an error and blocks delegation. The default token limit is unlimited, so the extension does not use a default in these cases. `/subagent` stays available. Correct the file to enable delegation again. The block also applies to work that already runs: the next worker of a direct workflow, or the next Role launch of an isolated request, fails before it starts. A workflow that runs keeps the limits that it started with. If the file had the problem when the session started, also run `/reload`, because the session took its execution limits from the defaults.
+
+No key is required. The extension preserves the file and never rewrites it automatically.
 
 ### Roles
 
@@ -274,6 +282,7 @@ The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. In
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `loadRoleCatalog`, `findRole`, `parseRoleName`, `parseRoleDefaults` | functions | Load built-in and user Roles with `roleDefaults` and per-file errors, then select one by name. |
+| `registerRoleDefaultsReporting(pi, agentDir?)` | function | Reports `roleDefaults` problems at each session start. Returns `report(ctx)`; call it before a lazy `loadRoleCatalog`. Each problem shows one time in each session. |
 | `resolveRoleSkills`, `resolveRoleLaunch`, `resolveConfiguredRoleLaunch` | functions | Resolve effective Pi resources and model routes. |
 | `prepareRoleLaunch`, `finalizeRoleLaunch` | functions | Prepare Role prompts, arguments, and tool policy. |
 | `createEphemeralSubagentExecutor` | function | Run bounded no-session Pi children through a FIFO pool. |

@@ -57,6 +57,8 @@ type HarnessOptions = {
 	fetchUrlResult?: ReturnType<typeof result>;
 	pushRepositoryResult?: ReturnType<typeof result>;
 	remoteHead?: string | null;
+	remoteListResult?: ReturnType<typeof result>;
+	githubHosts?: string[];
 	remoteHeads?: Record<string, string | null>;
 	configValues?: Record<string, string[]>;
 	remoteHeadResult?: ReturnType<typeof result>;
@@ -297,6 +299,18 @@ function harness(options: HarnessOptions = {}) {
 					? defaultUrl
 					: options.fetchUrls?.[requestedRemote] ?? (requestedRemote === remote ? options.fetchUrl : undefined) ?? defaultUrl;
 				return result(`${requestedUrl}\n`);
+			}
+			if (command === "git" && args.join(" ") === "remote -v") {
+				if (options.remoteListResult) return options.remoteListResult;
+				return result((options.remoteNames ?? [remote, "origin"]).map((name) => {
+					const url = options.pushUrls?.[name] ?? (name === remote ? pushUrl : `git@github.com:acme/${name}.git`);
+					return `${name}\t${url} (fetch)\n${name}\t${url} (push)\n`;
+				}).join(""));
+			}
+			if (command === "gh" && args.slice(0, 3).join(" ") === "auth token --hostname") {
+				return (options.githubHosts ?? ["github.com"]).includes(args[3] ?? "")
+					? result("token\n")
+					: result("", 1, `no oauth token found for ${args[3]}\n`);
 			}
 			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
 				const [host, owner, name, ...rest] = (args[2] ?? "").split("/");
@@ -816,6 +830,33 @@ test("stays inactive only after a C-locale safe-directory probe confirms no repo
 
 	assert.deepEqual(await discoverCurrentPullRequest(pi, context), { kind: "inactive" });
 	assert.equal(calls.some(({ args }) => args[0] === "branch"), false);
+});
+
+test("treats a repository with no GitHub-hosted remote as inactive", async () => {
+	for (const url of [
+		"ssh://git@192.168.192.3:9005/team/project.git",
+		"git@gitlab.internal.example:team/project.git",
+	]) {
+		const { pi, context, calls } = harness({ remoteListResult: result(`origin\t${url} (fetch)\norigin\t${url} (push)\n`) });
+		const host = url.startsWith("ssh:") ? "192.168.192.3" : "gitlab.internal.example";
+		assert.deepEqual(await discoverCurrentPullRequest(pi, context), { kind: "inactive", nonGitHubHosts: [host] }, url);
+		assert.equal(calls.some(({ command, args }) => command === "gh" && args[0] !== "auth"), false, url);
+		assert.equal(calls.some(({ command, args }) => command === "git" && args[0] === "branch"), false, url);
+	}
+});
+
+test("keeps GitHub and GitHub Enterprise remotes on the normal discovery path", async () => {
+	for (const { url, githubHosts } of [
+		{ url: "git@github.com:acme/fork.git", githubHosts: [] },
+		{ url: "ssh://git@ghe.example.com/acme/fork.git", githubHosts: ["ghe.example.com"] },
+		{ url: "/srv/git/fork.git", githubHosts: [] },
+	]) {
+		const app = harness({
+			githubHosts,
+			remoteListResult: result(`fork\t${url} (fetch)\norigin\tgit@gitea.example:acme/fork.git (push)\n`),
+		});
+		assert.equal((await discoverCurrentPullRequest(app.pi, app.context)).kind, "current", url);
+	}
 });
 
 test("surfaces repository errors and a later read recovers after the error is fixed", async () => {

@@ -10,7 +10,7 @@ The service that accepts push requests and forwards them to Apple Push Notificat
 
 ## Device Key
 
-The secret value that identifies the Bark App installation that should receive a push notification.
+The secret value that identifies the Bark App installation that should receive a push notification. pi-bark cannot send without it, so a missing or invalid Device Key disables pi-bark.
 
 ## Push request
 

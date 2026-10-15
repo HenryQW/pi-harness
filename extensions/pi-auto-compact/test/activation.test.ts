@@ -33,7 +33,8 @@ function loadExtension(
 	autoCompact({
 		events: { on: () => () => {}, emit() {} },
 		on(event: string, handler: Handler) {
-			handlers.set(event, handler);
+			const previous = handlers.get(event);
+			handlers.set(event, previous ? (event, ctx) => { previous(event, ctx); return handler(event, ctx); } : handler);
 		},
 		registerCommand(name: string, options: { handler: Command }) {
 			commands.set(name, options.handler);
@@ -104,7 +105,7 @@ test("suppresses only empty abort caused by pending extension compaction", async
 	}
 });
 
-test("configures threshold and ignores obsolete model fields", async () => {
+test("configures threshold and warns about obsolete model fields", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-"));
 	const configFile = autoCompactConfigFile(tempRoot);
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -127,6 +128,7 @@ test("configures threshold and ignores obsolete model fields", async () => {
 		const notices: string[] = [];
 		const ctx = {
 			cwd: tempRoot,
+			hasUI: true,
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
 			compact: () => { compactions++; },
@@ -140,6 +142,9 @@ test("configures threshold and ignores obsolete model fields", async () => {
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
+		assert.deepEqual(notices, [
+			`pi-auto-compact config issues (${configFile}): compactionModel: unknown key; compactionThinkingLevel: unknown key; defaults replace invalid settings.`,
+		]);
 		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), legacyConfig);
 		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
 		assert.equal(compactions, 0);
@@ -155,6 +160,22 @@ test("configures threshold and ignores obsolete model fields", async () => {
 
 		await commands.get("auto-compact")?.("model", ctx);
 		assert.equal(notices.at(-1), "Usage: /auto-compact");
+
+		// A file that another session breaks while the input dialog is open is not replaced.
+		input = "50";
+		const broken = '{"autoCompactThreshold":45,"extra":1}';
+		ctx.ui.input = async () => { await writeFile(configFile, broken); return input; };
+		await commands.get("auto-compact")?.("", ctx);
+		assert.match(notices.at(-1)!, /^Couldn't save pi-auto-compact config: Config at .* has issues; fix or replace it before updating: extra: unknown key$/);
+		assert.equal(await readFile(configFile, "utf8"), broken);
+		// The command reports that file, and replaces it only while it stays unchanged.
+		ctx.ui.input = async () => { await writeFile(configFile, `${broken} `); return input; };
+		await commands.get("auto-compact")?.("", ctx);
+		assert.ok(notices.some((notice) => notice.startsWith(`pi-auto-compact config issues (${configFile}): extra: unknown key`)), notices.join("\n"));
+		assert.match(notices.at(-1)!, /changed since it was read; nothing was written/);
+		ctx.ui.input = async () => input;
+		await commands.get("auto-compact")?.("", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 50 });
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -182,6 +203,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 		let prompt = "";
 		const ctx = {
 			cwd: tempRoot,
+			hasUI: true,
 			isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
 			compact() {},
@@ -198,7 +220,7 @@ test("uses only config homes and preserves invalid local config", async () => {
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
-		assert.deepEqual(notices, []);
+		assert.equal(notices.length, 0);
 		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
 		await assert.rejects(() => readFile(sharedConfigFile, "utf8"), { code: "ENOENT" });
 		assert.equal(await readFile(legacyConfigFile, "utf8"), legacy);
@@ -209,15 +231,25 @@ test("uses only config homes and preserves invalid local config", async () => {
 		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
 
 		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		for (const invalid of ["{ not json\n", '{"autoCompactThreshold":20}']) {
-			await writeFile(configFile, invalid);
+		for (const [invalid, reason] of [
+			["{ not json\n", "invalid JSON: "],
+			['{"autoCompactThreshold":20}', "autoCompactThreshold: must be a number >= 25 and < 100"],
+		]) {
+			await writeFile(configFile, invalid!);
 			notices.length = 0;
-			const invalidHandlers = loadExtension();
+			const invalidCommands = new Map<string, Command>();
+			const invalidHandlers = loadExtension(invalidCommands);
 			invalidHandlers.get("session_start")?.(
 				{ type: "session_start", reason: "startup" } as never,
 				ctx,
 			);
-			assert.deepEqual(notices, [["Couldn't read pi-auto-compact config; using 70%.", "error"]]);
+			assert.equal(notices.length, 1);
+			const [message, level] = notices[0]!;
+			assert.equal(level, "warning");
+			assert.ok(message.startsWith(`pi-auto-compact config issues (${configFile}): ${reason}`), message);
+			await invalidCommands.get("auto-compact")?.("", ctx);
+			assert.equal(prompt, "Auto-compact threshold (%) · current: 70");
+			assert.equal(notices.length, 1, "the command does not repeat a shown issue");
 			assert.equal(await readFile(configFile, "utf8"), invalid);
 		}
 	} finally {
@@ -273,13 +305,15 @@ test("silences missing shared task-model config but reports present config error
 		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
 		await writeFile(taskModelsFile, malformed);
 		await beforeCompact();
-		assert.deepEqual(notices, [["Couldn't read task model config; using current session model.", "error"]]);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0]![0], /^Task model config at .*config\.json is disabled: invalid JSON: .*Fix the file or run \/task-models\. Using current session model\.$/);
+		assert.equal(notices[0]![1], "error");
 		assert.equal(await readFile(taskModelsFile, "utf8"), malformed);
 
 		await writeFile(taskModelsFile, "{}\n");
 		notices.length = 0;
 		await beforeCompact();
-		assert.deepEqual(notices, [["Task model profile fast is not configured; using current session model.", "error"]]);
+		assert.deepEqual(notices, [["Task pi-auto-compact/autoCompact profile fast is not configured. Run /task-models. Using current session model.", "error"]]);
 
 		await writeFile(taskModelsFile, JSON.stringify({
 			profiles: { fast: { primary: { model: "unavailable/model", thinkingLevel: "off" } } },

@@ -1,48 +1,20 @@
 import { pathToFileURL } from "node:url";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createConfigStore } from "@henryqw/pi-config-store";
-
-const DEFAULT_COMMAND = "code";
+import { type ConfigLoad, registerConfigReporting } from "@henryqw/pi-config-store";
+import { createOpenInConfigStore } from "./open-in-config.ts";
 
 export type OpenInConfig = { command: string };
 
-function parseOpenInConfig(value: unknown): OpenInConfig {
-	const config = value as Record<string, unknown>;
-	if (
-		!config ||
-		typeof config !== "object" ||
-		Array.isArray(config) ||
-		Object.keys(config).length !== 1 ||
-		typeof config.command !== "string" ||
-		!config.command.trim()
-	) {
-		throw new Error('Invalid open-in config: expected exactly one non-empty string "command" property');
-	}
-	return { command: config.command.trim() };
-}
-
-function createOpenInConfigStore(agentDir?: string) {
-	return createConfigStore<OpenInConfig>({
-		extensionId: "pi-open-in",
-		agentDir,
-		defaults: () => ({ command: DEFAULT_COMMAND }),
-		parse: parseOpenInConfig,
-	});
-}
-
-export function loadOpenInConfig(agentDir?: string): { source: "file" | "missing"; value: OpenInConfig } {
+/** An invalid or unknown key is an issue; an invalid `command` falls back to `code`. */
+export function loadOpenInConfig(agentDir?: string): ConfigLoad<OpenInConfig> {
 	return createOpenInConfigStore(agentDir).loadSync();
 }
 
+/** Runs on every footer render, so it never notifies; the footer and open extensions report issues at session start. */
 export function configuredOpenUri(path: string): string | undefined {
-	let command: string;
-	try {
-		command = loadOpenInConfig().value.command;
-	} catch {
-		// Invalid config must not break footer render; just omit the URI.
-		return undefined;
-	}
-	const [executable, ...args] = command.split(/\s+/);
+	const loaded = loadOpenInConfig();
+	if (loaded.status === "disabled") return undefined;
+	const [executable, ...args] = loaded.value.command.split(/\s+/);
 	if (executable !== "code") return undefined;
 	const query = args.includes("-n") || args.includes("--new-window") ? "?windowId=_blank" : "";
 	if (path.startsWith("\\\\")) {
@@ -56,12 +28,16 @@ export function configuredOpenUri(path: string): string | undefined {
 
 export default function openInExtension(pi: ExtensionAPI): void {
 	const configStore = createOpenInConfigStore();
+	const reporter = registerConfigReporting(pi, [configStore]);
 
 	// Reload config on each call; split the command on whitespace (no quoted tokens).
 	pi.registerCommand("open", {
 		description: "Open the current path with the configured command",
 		handler: async (_args, ctx) => {
-			const [executable, ...args] = configStore.loadSync().value.command.split(/\s+/);
+			const loaded = configStore.loadSync();
+			reporter.report(ctx, configStore, loaded);
+			if (loaded.status === "disabled") return;
+			const [executable, ...args] = loaded.value.command.split(/\s+/);
 			const result = await pi.exec(executable, [...args, ctx.cwd]);
 			if (result.code !== 0) {
 				throw new Error(`Open command failed: ${result.stderr.trim() || `exit code ${result.code}`}`);
@@ -74,6 +50,8 @@ export default function openInExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const command = args.trim();
 			if (!command) throw new Error("Usage: /set-open-in <command>");
+			// The new command replaces the whole file, so first show any problem in the file that it removes.
+			reporter.report(ctx, configStore, configStore.loadSync());
 			await configStore.save({ command });
 			ctx.ui.notify(`Saved open-in command: ${command}`, "info");
 		},

@@ -1,5 +1,5 @@
-import { isAbsolute, resolve } from "node:path";
-import { createConfigStore } from "@henryqw/pi-config-store";
+import { resolve } from "node:path";
+import { type ConfigLoad, createConfigStore, field, type FieldParser, formatConfigIssues, parsers, required } from "@henryqw/pi-config-store";
 
 export const DEFAULT_SERVER_URL = "https://api.day.app";
 export const ENCRYPTION_ALGORITHM = "AES256";
@@ -16,12 +16,19 @@ export type BarkEncryption = {
 
 export type BarkConfig = {
 	serverUrl: string;
-	deviceKey: string | null;
+	deviceKey: string;
 	encryption: BarkEncryption | null;
 	statusNotifications: {
 		defaultEnabled: boolean;
 		cwdOverrides: Record<string, boolean>;
 	};
+};
+
+/** Config that repair commands write. The Device Key can be `null` (unset); an absent required key stays undefined. */
+export type BarkConfigDraft = Omit<BarkConfig, "serverUrl" | "deviceKey" | "encryption"> & {
+	serverUrl: string | undefined;
+	deviceKey: string | null | undefined;
+	encryption: BarkEncryption | null | undefined;
 };
 
 export function parseServerUrl(value: string): string {
@@ -41,92 +48,103 @@ export function parseServerUrl(value: string): string {
 	return url.href.replace(/\/$/, "");
 }
 
-function parseDeviceKey(value: unknown): string | null {
-	if (value === null) return null;
-	if (typeof value !== "string" || !value.trim()) {
-		throw new Error('Invalid Bark config: "deviceKey" must be a non-empty string.');
-	}
-	return value.trim();
-}
+const serverUrl: FieldParser<string> = (raw) => {
+	if (typeof raw !== "string") throw new Error("must be an HTTP or HTTPS URL");
+	return parseServerUrl(raw);
+};
 
-function parseEncryption(value: unknown): BarkEncryption | null {
-	if (value === null) return null;
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error('Invalid Bark config: "encryption" must be an object or null.');
-	}
-	const encryption = value as Record<string, unknown>;
+const encryption: FieldParser<BarkEncryption> = (raw) => {
+	const value = raw as Record<string, unknown>;
 	if (
-		Object.keys(encryption).length !== 4 ||
-		encryption.algorithm !== ENCRYPTION_ALGORITHM ||
-		encryption.mode !== ENCRYPTION_MODE ||
-		encryption.padding !== ENCRYPTION_PADDING ||
-		typeof encryption.key !== "string" ||
-		Buffer.byteLength(encryption.key, "utf8") !== ENCRYPTION_KEY_BYTES
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).length !== 4 ||
+		value.algorithm !== ENCRYPTION_ALGORITHM ||
+		value.mode !== ENCRYPTION_MODE ||
+		value.padding !== ENCRYPTION_PADDING ||
+		typeof value.key !== "string" ||
+		Buffer.byteLength(value.key, "utf8") !== ENCRYPTION_KEY_BYTES
 	) {
 		throw new Error(
-			`Invalid Bark encryption config: expected ${ENCRYPTION_ALGORITHM}, ${ENCRYPTION_MODE}, ${ENCRYPTION_PADDING}, and a ${ENCRYPTION_KEY_BYTES}-byte UTF-8 key.`,
+			`expected ${ENCRYPTION_ALGORITHM}, ${ENCRYPTION_MODE}, ${ENCRYPTION_PADDING}, and a ${ENCRYPTION_KEY_BYTES}-byte UTF-8 key`,
 		);
 	}
 	return value as BarkEncryption;
-}
+};
 
-function parseStatusNotifications(value: unknown): BarkConfig["statusNotifications"] {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error('Invalid Bark config: "statusNotifications" must be an object.');
-	}
-	const notifications = value as Record<string, unknown>;
-	const overrides = notifications.cwdOverrides;
-	if (
-		Object.keys(notifications).length !== 2 ||
-		typeof notifications.defaultEnabled !== "boolean" ||
-		!overrides ||
-		typeof overrides !== "object" ||
-		Array.isArray(overrides)
-	) {
-		throw new Error('Invalid Bark config: expected "defaultEnabled" and "cwdOverrides" notification settings.');
-	}
-	if (Object.entries(overrides).some(([cwd, enabled]) => !isAbsolute(cwd) || typeof enabled !== "boolean")) {
-		throw new Error("Invalid Bark config: CWD notification overrides must map absolute paths to booleans.");
-	}
-	return value as BarkConfig["statusNotifications"];
-}
-
-function parseBarkConfig(value: unknown): BarkConfig {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error("Invalid Bark config: expected Bark settings object.");
-	}
-	const config = value as Record<string, unknown>;
-	if (
-		Object.keys(config).length !== 4 ||
-		typeof config.serverUrl !== "string" ||
-		!("deviceKey" in config) ||
-		!("encryption" in config) ||
-		!("statusNotifications" in config)
-	) {
-		throw new Error("Invalid Bark config: expected server, device, encryption, and notification settings.");
-	}
-	return {
-		serverUrl: parseServerUrl(config.serverUrl),
-		deviceKey: parseDeviceKey(config.deviceKey),
-		encryption: parseEncryption(config.encryption),
-		statusNotifications: parseStatusNotifications(config.statusNotifications),
-	};
-}
+const statusNotifications = field(
+	parsers.object({
+		defaultEnabled: field(parsers.boolean(), true),
+		cwdOverrides: field(parsers.record(parsers.boolean(), { key: parsers.absolutePath() }), {}),
+	}),
+	{ defaultEnabled: true, cwdOverrides: {} },
+);
 
 export function statusNotificationsEnabled(config: BarkConfig, cwd: string): boolean {
 	return config.statusNotifications.cwdOverrides[resolve(cwd)] ?? config.statusNotifications.defaultEnabled;
 }
 
+/**
+ * Bark cannot send without a Device Key. A default server would receive the Device Key, and a default `null`
+ * encryption would send plaintext, so each of these keys is required and a missing or invalid one disables pi-bark.
+ */
 export function createBarkConfigStore(agentDir?: string) {
-	return createConfigStore<BarkConfig>({
+	return createConfigStore({
 		extensionId: "pi-bark",
 		agentDir,
-		defaults: () => ({
-			serverUrl: DEFAULT_SERVER_URL,
-			deviceKey: null,
-			encryption: null,
-			statusNotifications: { defaultEnabled: true, cwdOverrides: {} },
-		}),
-		parse: parseBarkConfig,
+		fields: {
+			serverUrl: required(serverUrl),
+			deviceKey: required(parsers.string({ trim: true })),
+			encryption: required(parsers.nullable(encryption)),
+			statusNotifications,
+		},
 	});
+}
+
+const REQUIRED_KEYS = ["serverUrl", "deviceKey", "encryption"] as const;
+
+/** Same file; every field has a default, so repair commands can read a disabled config. An absent or invalid required key stays undefined. */
+function createBarkDraftStore(agentDir?: string) {
+	return createConfigStore({
+		extensionId: "pi-bark",
+		agentDir,
+		fields: {
+			serverUrl: field<string | undefined>(serverUrl, undefined),
+			deviceKey: field<string | null | undefined>(parsers.nullable(parsers.string({ trim: true })), undefined),
+			encryption: field<BarkEncryption | null | undefined>(parsers.nullable(encryption), undefined),
+			statusNotifications,
+		},
+	});
+}
+
+/**
+ * Write config for a repair command. `report` receives the issues of the current file before any write.
+ * A clean file uses a locked update. A file with issues is replaced if it is unchanged under the lock. A missing or invalid
+ * server URL, Device Key, or encryption setting blocks the write unless the command sets it (`replaces`), so no required
+ * setting is lost or silently unset.
+ */
+export async function writeBarkConfig(
+	agentDir: string | undefined,
+	replaces: readonly (keyof BarkConfig)[],
+	change: (config: BarkConfigDraft) => BarkConfigDraft,
+	report: (store: { extensionId: string; path: string }, result: ConfigLoad<unknown>) => void,
+): Promise<void> {
+	const store = createBarkDraftStore(agentDir);
+	const current = store.loadSync();
+	report(store, current);
+	// The draft store has no disabling field, so it always loads a value.
+	if (current.status !== "ok") throw new Error(formatConfigIssues(current.issues));
+	const fileIssues = current.issues.filter(({ key }) => !key);
+	const blocking = current.source === "missing" ? [] : fileIssues.length ? fileIssues : REQUIRED_KEYS
+		.filter((key) => current.value[key] === undefined && !replaces.includes(key))
+		.map((key) => current.issues.find((issue) => issue.key === key) ?? { kind: "missing-required" as const, key, message: "required" });
+	if (blocking.length) throw new Error(`Fix the Bark config at ${store.path} first: ${formatConfigIssues(blocking)}`);
+	// A missing file has no settings to keep, so it starts from the defaults with an unset Device Key.
+	const draft = (config: BarkConfigDraft): BarkConfigDraft => current.source === "missing"
+		? { ...config, serverUrl: config.serverUrl ?? DEFAULT_SERVER_URL, deviceKey: config.deviceKey ?? null, encryption: config.encryption ?? null }
+		: config;
+	if (!current.issues.length) await store.update((config) => change(draft(config)));
+	// The change uses the snapshot, so the replacement refuses a file that another session changed meanwhile.
+	else await store.replaceIfUnchanged(current, change(draft(current.value)));
 }

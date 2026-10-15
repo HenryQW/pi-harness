@@ -1,6 +1,6 @@
 # 018. Extension Config Homes
 
-- **Status:** accepted
+- **Status:** accepted; shared mechanics amended 2026-10-14
 - **Date:** 2026-08-30
 
 ## Context
@@ -17,7 +17,7 @@ The repository needs one ownership boundary that works for user-edited JSON, gen
 
 **Shared mechanics.** `@henryqw/pi-config-store` owns the canonical path helpers, bounded strict UTF-8 reads, and private atomic text writes. These text helpers do not choose a format, parse data, interpret missing files, or expose locks. Each extension owns its formats, schemas, recovery rules, and lock policy.
 
-The package also keeps the default JSON store. It provides safe load, save, locked update, and removal for `config.json`. Extensions still supply validation and defaults. Custom files may use the shared text mechanics, but their format and locking stay owner-local.
+The package also keeps the JSON store for user-edited config. It provides safe load, save, locked update, locked replacement of an unchanged file, and removal for `config.json` and other hand-edited JSON files in the home. The store owns load-time validation mechanics: per-key fields, unknown-key reports, near-miss key detection, per-key defaults, dropped nested entries, disabled results, and launch reporting deduplicated across extensions under [ADR 004](004-extension-config-safety.md). Owners own the schemas: fields, defaults, required or unsafe keys, and cross-field rules. Every user-edited extension config loads through store fields; no extension reads a config file with direct JSON parsing. Generated state and custom files may use the shared text mechanics, but their format, strict validation, and locking stay owner-local.
 
 **Ownership.** Only an extension writes its home. Consumers obtain validated effective values through an owner package API or a namespaced Pi event protocol. They do not read or write the owner's files directly.
 
@@ -29,6 +29,7 @@ The package also keeps the default JSON store. It provides safe load, save, lock
 - Single-file extensions move from `config/<extension>.json` to `config/<extension>/config.json`.
 - Existing extension-named homes retain custom state in place; some nonstandard config filenames move to `config.json`.
 - Missing required config becomes visible without destructive startup writes; optional defaults stay quiet.
+- Invalid or unknown keys warn at launch with the same text in every extension.
 - Shared file safety can improve once without centralizing formats, schemas, or locking policy.
 - The one-time migration must coordinate owners, consumers, tests, documentation, versions, and local user files.
 

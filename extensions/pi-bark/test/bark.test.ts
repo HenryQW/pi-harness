@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createDecipheriv } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import { parseServerUrl } from "../src/config.ts";
 type Context = {
 	cwd: string;
 	sessionManager: { buildContextEntries(): SessionEntry[] };
+	hasUI: boolean;
 	ui: { notify(message: string, type: string): void };
 };
 type Command = (args: string, ctx: Context) => Promise<void>;
@@ -42,7 +43,8 @@ function harness(
 			commands.set(name, command.handler);
 		},
 		on(name: string, handler: (event: unknown, ctx: unknown) => unknown) {
-			lifecycleHandlers.set(name, handler);
+			const previous = lifecycleHandlers.get(name);
+			lifecycleHandlers.set(name, previous ? (event, ctx) => (previous(event, ctx), handler(event, ctx)) : handler);
 		},
 		getSessionName: () => (typeof sessionName === "function" ? sessionName() : sessionName),
 	} as unknown as ExtensionAPI;
@@ -109,6 +111,34 @@ test("built key generator stores, protects, replaces, and disables Bark push enc
 	const disabled = runKeyGenerator(agentDir, "--disable");
 	assert.equal(disabled.status, 0, disabled.stderr);
 	assert.equal(JSON.parse(readFileSync(configPath, "utf8")).encryption, null);
+
+	const invalid = `${JSON.stringify({ serverUrl: "https://api.day.app", deviceKey: "device-key", encryption: { key: "short" } })}\n`;
+	writeFileSync(configPath, invalid);
+	const blocked = runKeyGenerator(agentDir);
+	assert.equal(blocked.status, 1);
+	assert.match(blocked.stderr, /^pi-bark config issues \(.*\): encryption: expected AES256/);
+	assert.match(blocked.stderr, /Fix the Bark config at .* first: encryption: expected AES256/);
+	assert.equal(readFileSync(configPath, "utf8"), invalid);
+	// A missing Device Key is reported and never silently written as null.
+	const noDeviceKey = `${JSON.stringify({ serverUrl: "https://api.day.app", encryption: null })}\n`;
+	writeFileSync(configPath, noDeviceKey);
+	const keptDeviceKey = runKeyGenerator(agentDir, "--force");
+	assert.equal(keptDeviceKey.status, 1);
+	assert.match(keptDeviceKey.stderr, /Fix the Bark config at .* first: deviceKey: required/);
+	assert.equal(readFileSync(configPath, "utf8"), noDeviceKey);
+	// A write never drops a missing safety setting that the command does not set.
+	const noServer = `${JSON.stringify({ deviceKey: "device-key", encryption: null })}\n`;
+	writeFileSync(configPath, noServer);
+	const keptServer = runKeyGenerator(agentDir, "--disable");
+	assert.equal(keptServer.status, 1);
+	assert.match(keptServer.stderr, /Fix the Bark config at .* first: serverUrl: required/);
+	assert.equal(readFileSync(configPath, "utf8"), noServer);
+	writeFileSync(configPath, invalid);
+	const repaired = runKeyGenerator(agentDir, "--force");
+	assert.equal(repaired.status, 0, repaired.stderr);
+	const repairedConfig = JSON.parse(readFileSync(configPath, "utf8"));
+	assert.equal(repairedConfig.deviceKey, "device-key");
+	assert.equal(repairedConfig.encryption.key, repaired.stdout.match(/^Key: (.+)$/m)?.[1]);
 });
 
 test("/set-bark saves config and /copyb copies then posts the exact text", async (t) => {
@@ -138,6 +168,7 @@ test("/set-bark saves config and /copyb copies then posts the exact text", async
 	const ctx: Context = {
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => entries },
+		hasUI: true,
 		ui: { notify: (message) => notices.push(message) },
 	};
 
@@ -197,6 +228,7 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => [] },
 		isIdle: () => idle,
+		hasUI: true,
 		ui: { notify: () => {} },
 	};
 	await commands.get("set-bark")!("device-key", ctx);
@@ -269,6 +301,7 @@ test("a continuation cancels a finished push after its deferred idle check", asy
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => [] },
 		isIdle: () => true,
+		hasUI: true,
 		ui: { notify: (message: string) => notices.push(message) },
 	};
 	await commands.get("set-bark")!("device-key", ctx);
@@ -304,6 +337,7 @@ test("settled notifications report the run outcome without error details", async
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => [assistantEntry([{ type: "text", text: "older branch" }], "error")] },
 		isIdle: () => true,
+		hasUI: true,
 		ui: { notify: (message: string) => notices.push(message) },
 	};
 	await commands.get("set-bark")!("device-key", ctx);
@@ -385,6 +419,7 @@ test("automatic status pushes preserve event order and event-time state", async 
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => [] },
 		isIdle: () => true,
+		hasUI: true,
 		ui: { notify: () => {} },
 	};
 	await commands.get("set-bark")!("device-key", ctx);
@@ -432,6 +467,7 @@ test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is
 	const ctx: Context = {
 		cwd: join(agentDir, "project"),
 		sessionManager: { buildContextEntries: () => [assistantEntry([{ type: "text", text }])] },
+		hasUI: true,
 		ui: { notify: () => {} },
 	};
 	await commands.get("set-bark")!("device-key", ctx);
@@ -461,6 +497,7 @@ test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is
 	lifecycleHandlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, {
 		cwd: join(agentDir, "project"),
 		isIdle: () => true,
+		hasUI: true,
 		ui: { notify: () => {} },
 	});
 	await waitForImmediate();
@@ -476,47 +513,100 @@ test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is
 	assert.equal(statusPlaintext, JSON.stringify({ title: "Pi finished", body: "Pi session: Test session" }));
 });
 
-test("/copyb requires valid config and preserves malformed files", async (t) => {
+test("bad config disables or warns once, and /set-bark repairs a disabled config", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	let copied = false;
-	let pushed = false;
+	let pushes = 0;
 	const notices: Array<{ message: string; type: string }> = [];
 	const { commands, lifecycleHandlers } = harness(
 		agentDir,
 		(async () => {
-			pushed = true;
+			pushes++;
 			return new Response(null, { status: 200 });
 		}) as typeof fetch,
 		async () => { copied = true; },
 	);
 	const ctx: Context = {
 		cwd: join(agentDir, "project"),
+		hasUI: true,
 		sessionManager: { buildContextEntries: () => [assistantEntry([{ type: "text", text: "done" }])] },
 		ui: { notify: (message, type) => notices.push({ message, type }) },
 	};
 	const configPath = join(agentDir, "config", "pi-bark", "config.json");
 
-	await lifecycleHandlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, {
-		cwd: join(agentDir, "project"),
-		isIdle: () => true,
-		ui: { notify: () => {} },
-	});
-	assert.equal(pushed, false);
+	lifecycleHandlers.get("session_start")!({}, ctx);
+	const missing = "serverUrl: required; deviceKey: required; encryption: required";
+	assert.deepEqual(notices, [{ message: `pi-bark disabled (${configPath}): ${missing}`, type: "error" }]);
+	await lifecycleHandlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, { ...ctx, isIdle: () => true });
+	assert.equal(pushes, 0);
+	assert.equal(notices.length, 1);
 	assert.equal(existsSync(join(agentDir, "config", "pi-bark")), false);
-	await assert.rejects(() => commands.get("copyb")!("", ctx), /Bark is not configured/);
+	await assert.rejects(() => commands.get("copyb")!("", ctx), new RegExp(`Bark is not configured \\(${missing}\\)`));
 	assert.equal(existsSync(join(agentDir, "config", "pi-bark")), false);
 	await assert.rejects(() => commands.get("set-bark")!("device-key file:///tmp/bark", ctx), /HTTP or HTTPS/);
 	assert.equal(existsSync(configPath), false);
 
-	await commands.get("set-bark")!("device-key https://push.example.com/bark", ctx);
 	const malformed = '{"serverUrl":"https://api.day.app","deviceKey":42,"encryption":null,"statusNotifications":{"defaultEnabled":true,"cwdOverrides":{}}}\n';
+	mkdirSync(join(configPath, ".."), { recursive: true });
 	writeFileSync(configPath, malformed);
-	assert.equal(lifecycleHandlers.get("ui_prompt_start")!({}, ctx), undefined);
+	for (let index = 0; index < 2; index++) lifecycleHandlers.get("ui_prompt_start")!({}, ctx);
 	await Promise.resolve();
-	assert.equal(notices.at(-1)?.type, "warning");
-	assert.match(notices.at(-1)?.message ?? "", /deviceKey/);
-	await assert.rejects(() => commands.get("copyb")!("", ctx), /deviceKey/);
+	assert.deepEqual(notices.slice(1), [{ message: `pi-bark disabled (${configPath}): deviceKey: must be non-empty text`, type: "error" }]);
+	await assert.rejects(() => commands.get("copyb")!("", ctx), /deviceKey: must be non-empty text/);
 	assert.equal(readFileSync(configPath, "utf8"), malformed);
 	assert.equal(copied, false);
+
+	await commands.get("set-bark")!("device-key", ctx);
+	await commands.get("copyb")!("", ctx);
+	assert.equal(pushes, 1);
+
+	const noEncryption = `${JSON.stringify({ serverUrl: "https://api.day.app", deviceKey: "device-key" })}\n`;
+	writeFileSync(configPath, noEncryption);
+	lifecycleHandlers.get("ui_prompt_start")!({}, ctx);
+	await waitForImmediate();
+	// The launch error already showed "encryption: required" for the missing file, so it does not repeat.
+	assert.equal(pushes, 1);
+	await assert.rejects(() => commands.get("set-bark")!("device-key", ctx), /first: encryption: required/);
+	assert.equal(readFileSync(configPath, "utf8"), noEncryption);
+
+	writeFileSync(configPath, `${JSON.stringify({
+		serverUrl: "https://api.day.app",
+		deviceKey: "device-key",
+		encryption: null,
+		sound: "bell",
+		statusNotifications: { defaultEnabled: "no", cwdOverrides: { relative: false } },
+	})}\n`);
+	lifecycleHandlers.get("ui_prompt_start")!({}, ctx);
+	await waitForImmediate();
+	assert.equal(pushes, 2);
+	assert.deepEqual(notices.at(-1), {
+		message: `pi-bark config issues (${configPath}): sound: unknown key; statusNotifications.defaultEnabled: must be true or false; statusNotifications.cwdOverrides.relative: must be an absolute path without control characters; defaults replace invalid settings.`,
+		type: "warning",
+	});
+
+	// A status setting is refused while pi-bark stays disabled, so it never reports a change that sends nothing.
+	const removedKey = `${JSON.stringify({ serverUrl: "https://api.day.app", encryption: null })}\n`;
+	writeFileSync(configPath, removedKey);
+	await assert.rejects(() => commands.get("bark")!("on", ctx), /Bark is not configured \(deviceKey: required\)/);
+	assert.equal(readFileSync(configPath, "utf8"), removedKey);
+	assert.ok(!notices.some(({ message }) => message.startsWith("Enabled Bark status notifications")));
+	const unsetKey = `${JSON.stringify({ serverUrl: "https://api.day.app", deviceKey: null, encryption: null })}\n`;
+	writeFileSync(configPath, unsetKey);
+	await assert.rejects(() => commands.get("bark")!("default on", ctx), /Bark is not configured \(deviceKey: must be non-empty text\)/);
+	assert.equal(readFileSync(configPath, "utf8"), unsetKey);
+
+	// A repair write reports new issues before it replaces the file.
+	writeFileSync(configPath, `${JSON.stringify({ serverUrl: "https://api.day.app", deviceKey: "device-key", encryption: null, volume: 3 })}\n`);
+	await commands.get("bark")!("default off", ctx);
+	assert.deepEqual(notices.slice(-2), [
+		{ message: `pi-bark config issues (${configPath}): volume: unknown key; defaults replace invalid settings.`, type: "warning" },
+		{ message: "Disabled Bark status notifications by default.", type: "info" },
+	]);
+	assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), {
+		serverUrl: "https://api.day.app",
+		deviceKey: "device-key",
+		encryption: null,
+		statusNotifications: { defaultEnabled: false, cwdOverrides: {} },
+	});
 });

@@ -2,8 +2,10 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { registerConfigReporting } from "@henryqw/pi-config-store";
+import { createOpenInConfigStore } from "./open-in-config.ts";
 import { configuredOpenUri } from "./open.ts";
-import { type FooterColorConfig, footerConfigPath, loadFooterConfig, paintFooter } from "./footer-config.ts";
+import { createFooterConfigStore, paintFooter } from "./footer-config.ts";
 
 const THINKING_COLORS = {
 	minimal: 46,
@@ -179,6 +181,10 @@ function latestResponse(ctx: ExtensionContext): { model: string; thinkingLevel?:
 }
 
 export default function footerExtension(pi: ExtensionAPI): void {
+	const colorStore = createFooterConfigStore();
+	// Launch reporting shows color config issues; the session-start read below sees the same file. Renders read
+	// the open-in config for the checkout link but never notify, so its issues show here too, shared with /open.
+	registerConfigReporting(pi, [colorStore, createOpenInConfigStore()]);
 	let activeMilliseconds = 0;
 	let activeStartedAt: number | undefined;
 	let promptPaused = false;
@@ -328,12 +334,8 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		};
 
 		// Colors are read once per session start; /reload applies edits
-		let footerColors: FooterColorConfig = {};
-		try {
-			footerColors = loadFooterConfig();
-		} catch (error) {
-			ctx.ui.notify(`Footer colors ignored (${footerConfigPath()}): ${(error as Error).message}`, "warning");
-		}
+		const loadedColors = colorStore.loadSync();
+		const footerColors = loadedColors.status === "ok" ? loadedColors.value.colors : {};
 
 		ctx.ui.setFooter((tui, theme, data) => {
 			requestRuntimeRender = () => tui.requestRender();

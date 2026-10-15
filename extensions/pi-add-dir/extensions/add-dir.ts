@@ -9,6 +9,7 @@ import {
 	type AutocompleteSuggestions,
 } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { Type } from "typebox";
 import {
 	buildContextInjection,
@@ -227,6 +228,9 @@ export function createExternalAutocompleteProvider(
 
 export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOptions = {}): void {
 	const globalStore = createAddDirConfigStore(options.agentDir);
+	const configReporter = registerConfigReporting(pi, [globalStore]);
+	// Report the latest file before a global write, so issues found after launch use the same deduplicated report.
+	const reportGlobalConfig = (ctx: ExtensionContext) => configReporter.report(ctx, globalStore, globalStore.loadSync());
 	let sessionDirs: SessionDir[] = [];
 	let projectPaths: string[] = [];
 	let globalPaths: string[] = [];
@@ -234,17 +238,10 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 	let addedDirs: ScopedDir[] = [];
 	let currentCwd = "";
 
-	function globalConfigError(error: unknown): Error {
-		const message = error instanceof Error ? error.message : String(error);
-		return new Error(`Cannot load pi-add-dir global config at ${globalStore.path}: ${message}`, { cause: error });
-	}
-
+	// No field disables this config, so a load always has a value; bad entries are dropped and reported at launch.
 	function loadGlobalPaths(): string[] {
-		try {
-			return globalStore.loadSync().value.directories;
-		} catch (error) {
-			throw globalConfigError(error);
-		}
+		const loaded = globalStore.loadSync();
+		return loaded.status === "ok" ? loaded.value.directories : [];
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
@@ -391,17 +388,14 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 	async function writePersistentPath(source: "project" | "global", absolutePath: string, ctx: ExtensionContext): Promise<void> {
 		if (source === "global") {
-			try {
-				const config = await globalStore.update((current) => ({
-					directories: current.directories.includes(absolutePath)
-						? current.directories
-						: [...current.directories, absolutePath],
-				}));
-				globalPaths = config.directories;
-				return;
-			} catch (error) {
-				throw globalConfigError(error);
-			}
+			reportGlobalConfig(ctx);
+			const config = await globalStore.update((current) => ({
+				directories: current.directories.includes(absolutePath)
+					? current.directories
+					: [...current.directories, absolutePath],
+			}));
+			globalPaths = config.directories;
+			return;
 		}
 		projectPaths = await readProjectPaths(ctx.cwd, true);
 		if (projectPaths.some((path) => resolveDir(path, ctx.cwd) === absolutePath)) return;
@@ -498,14 +492,11 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 				);
 				persistState();
 			} else if (dir.source === "global") {
-				try {
-					const config = await globalStore.update((current) => ({
-						directories: current.directories.filter((path) => path !== dir.storedPath),
-					}));
-					globalPaths = config.directories;
-				} catch (error) {
-					throw globalConfigError(error);
-				}
+				reportGlobalConfig(ctx);
+				const config = await globalStore.update((current) => ({
+					directories: current.directories.filter((path) => path !== dir.storedPath),
+				}));
+				globalPaths = config.directories;
 			} else {
 				await mutateProjectConfig(
 					["--unset-all", "--fixed-value", PROJECT_CONFIG_KEY, dir.storedPath],

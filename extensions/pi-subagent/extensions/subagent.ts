@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { availableTaskModels, loadTaskModelsConfig, modelReference, type ProfileName, registerModelTask, resolveAvailableModel, resolveConfiguredTaskRoute, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
-import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
-import { readSubagentConfig, resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
+import { availableTaskModels, loadTaskModelsConfig, modelReference, type ProfileName, registerModelTask, registerTaskModelsConfigReporting, resolveAvailableModel, resolveConfiguredTaskRoute, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
+import { registerConfigReporting } from "@henryqw/pi-config-store";
+import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
+import { resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
 import { registerCheckoutAdmission } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
@@ -180,20 +181,45 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const widgetItems = new Map<string, WidgetItem>();
 	const tokenHandles = new Map<string, DirectHandle>();
 	const samplingTokens = new Set<string>();
-	const loadedConfig = readSubagentConfig();
-	let initialPolicy: EffectiveExecutionPolicy;
-	try {
-		initialPolicy = resolveExecutionPolicy(loadedConfig);
-	} catch {
-		initialPolicy = resolveExecutionPolicy({ source: "missing", config: {} });
-	}
+	const configStore = createSubagentConfigStore();
+	const configReporter = registerConfigReporting(pi, [configStore]);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi);
+	/** Report new issues before a lazy Role catalog, route, or policy read. */
+	const reportConfig = (ctx: Pick<ExtensionContext, "hasUI" | "ui">): void => {
+		configReporter.report(ctx, configStore, configStore.loadSync());
+		reportTaskModels(ctx);
+	};
+	const loadedConfig = configStore.loadSync();
+	// A disabled config blocks each delegation; the executor still needs finite limits.
+	const initialPolicy = resolveExecutionPolicy(configStore.path, loadedConfig.status === "ok" ? loadedConfig
+		: { status: "ok", source: loadedConfig.source, value: DEFAULT_SUBAGENT_CONFIG, issues: [] });
 	const executor = createEphemeralSubagentExecutor({
 		maxConcurrency: initialPolicy.maxSubagents,
 		maxTurns: initialPolicy.maxTurns,
 		maxTokens: initialPolicy.maxTokens,
 		timeout: { idleMs: initialPolicy.childIdleMs, maxMs: initialPolicy.childMaxMs },
 	});
-	const currentPolicy = (): EffectiveExecutionPolicy => resolveExecutionPolicy(readSubagentConfig());
+	// The isolated runner reads the policy lazily without a context, so each read reports through the session's.
+	let latestCtx: ExtensionContext | undefined;
+	const currentPolicy = (): EffectiveExecutionPolicy => {
+		const loaded = configStore.loadSync();
+		if (latestCtx) configReporter.report(latestCtx, configStore, loaded);
+		const policy = resolveExecutionPolicy(configStore.path, loaded);
+		// The executor took its limits from the defaults, which can be unlimited, so a repaired file needs a reload.
+		if (loadedConfig.status === "disabled") {
+			throw new Error(`${configStore.path} was disabled when the session started; run /reload to apply its execution limits.`);
+		}
+		return policy;
+	};
+	/**
+	 * Before a deferred Role launch: report new issues, then revalidate so a now-disabled config blocks the child.
+	 * The workflow keeps the limits that it admitted at entry (direct idle timeout and concurrency, or the durable
+	 * isolated request's recorded policy); a limit change applies to the next workflow.
+	 */
+	const beforeRoleLaunch = (ctx: ExtensionContext): void => {
+		reportConfig(ctx);
+		currentPolicy();
+	};
 	const canWrite = (input: unknown): boolean => {
 		try {
 			const parsed = parseDelegateTask(input);
@@ -222,6 +248,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		executor,
 		policy: initialPolicy,
 		currentPolicy,
+		beforeRoleLaunch,
 	});
 	let directSequence = 0;
 	const directTasks = new Map<string, {
@@ -237,7 +264,6 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		return tab.entryId === saved.entryId && tab.name === saved.name && tab.tabId === saved.tabId
 			&& tab.paneId === saved.paneId && tab.sessionFile === saved.sessionFile;
 	});
-	let latestCtx: ExtensionContext | undefined;
 	let sessionEpoch = 0;
 	// Shutdown still saves outgoing identities; only a session start defers records to its carry loop.
 	let directRecordEpoch = 0;
@@ -311,6 +337,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (!current()) throw new Error("Session or branch changed before status inspection.");
 			const snapshot = notices.join("\n");
 			if (Buffer.byteLength(snapshot, "utf8") > 32_000) throw new Error("Status exceeds the 32 KiB inspection limit; use subagent_status for exact evidence.");
+			reportConfig(ctx);
 			const role = findRole(loadRoleCatalog(), "scout");
 			const prepared = await prepareDirectLaunch(role, ctx, { modelClass: "fast" });
 			const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
@@ -354,6 +381,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		roles(ctx) {
 			const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 			let catalog: ReturnType<typeof loadRoleCatalog>;
+			reportConfig(ctx);
 			try { catalog = loadRoleCatalog(); } catch (error) { return `Role catalog unavailable: ${message(error)}`; }
 			const list = (values: readonly string[] | undefined) => values?.length ? values.join(", ") : "none";
 			const lines = catalog.roles.flatMap((role) => {
@@ -507,13 +535,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		}
 		latestCtx = ctx;
 		ensureWidget(ctx);
-		if (loadedConfig.error !== undefined) ctx.ui.notify(loadedConfig.error, "warning");
 		try {
 			if (loadTaskModelsConfig().source === "missing") {
 				ctx.ui.notify("Task model config is missing; run /task-models to configure it.", "warning");
 			}
 		} catch {
-			// Route resolution retains the existing malformed shared-config error.
+			// A disabled shared config throws; the task-models config reporter already shows the path and the problems.
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -620,6 +647,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			signal?.throwIfAborted();
+			// Isolated requests read the policy in the runner; report it here with the tool's context.
+			reportConfig(ctx);
 			const parsed = parseDelegateTask(params);
 			if (parsed.mode === "isolated") return await isolatedSurface.execute(parsed.request, signal, ctx);
 			const workflow = parsed.workflow;
@@ -719,6 +748,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			directTasks.set(taskId, local);
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
+				// A later worker launches after earlier ones finish; report and revalidate config edits made meanwhile.
+				beforeRoleLaunch(latestCtx ?? ctx);
 				const role = findRole(loadRoleCatalog(), entry.delegation.role);
 				const { modelClass, model } = entry.delegation;
 				const prepared = await prepareDirectLaunch(role, latestCtx ?? ctx, {

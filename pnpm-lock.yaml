@@ -18,7 +18,7 @@ importers:
   extensions/pi-add-dir:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       typebox:
         specifier: ^1.3.15
@@ -44,10 +44,10 @@ importers:
   extensions/pi-auto-compact:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-task-models':
-        specifier: ^8.0.0
+        specifier: ^9.0.0
         version: link:../pi-task-models
     devDependencies:
       '@earendil-works/pi-coding-agent':
@@ -57,7 +57,7 @@ importers:
   extensions/pi-bark:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
     devDependencies:
       '@earendil-works/pi-coding-agent':
@@ -77,13 +77,13 @@ importers:
   extensions/pi-cron:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
-        specifier: ^27.0.0
+        specifier: ^27.2.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
-        specifier: ^8.0.0
+        specifier: ^9.0.0
         version: link:../pi-task-models
       proper-lockfile:
         specifier: ^4.1.2
@@ -105,7 +105,7 @@ importers:
   extensions/pi-footer:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
     devDependencies:
       '@earendil-works/pi-coding-agent':
@@ -118,13 +118,13 @@ importers:
   extensions/pi-herdr-tools:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
         specifier: ^0.5.0
         version: link:../../packages/pi-herdr
       '@henryqw/pi-task-models':
-        specifier: ^8.0.0
+        specifier: ^9.0.0
         version: link:../pi-task-models
       typebox:
         specifier: ^1.3.15
@@ -143,10 +143,10 @@ importers:
         specifier: ^3.0.0
         version: link:../pi-ask-question
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-task-models':
-        specifier: ^8.0.0
+        specifier: ^9.0.0
         version: link:../pi-task-models
       proper-lockfile:
         specifier: ^4.1.2
@@ -171,7 +171,7 @@ importers:
   extensions/pi-multi-codex:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       proper-lockfile:
         specifier: ^4.1.2
@@ -190,7 +190,7 @@ importers:
   extensions/pi-notes:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
     devDependencies:
       '@earendil-works/pi-coding-agent':
@@ -203,7 +203,7 @@ importers:
   extensions/pi-pr:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
         specifier: ^0.5.0
@@ -231,13 +231,13 @@ importers:
   extensions/pi-prompt-creator:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-subagent':
         specifier: ^22.0.0 || ^23.0.0 || ^24.0.0 || ^25.0.0 || ^26.0.0 || ^27.0.0
         version: link:../pi-subagent
       '@henryqw/pi-task-models':
-        specifier: ^8.0.0
+        specifier: ^9.0.0
         version: link:../pi-task-models
     devDependencies:
       '@earendil-works/pi-coding-agent':
@@ -253,7 +253,7 @@ importers:
   extensions/pi-session-recall:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       typebox:
         specifier: ^1.3.15
@@ -272,7 +272,7 @@ importers:
   extensions/pi-subagent:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
         specifier: ^0.5.0
@@ -284,7 +284,7 @@ importers:
         specifier: ^0.2.0
         version: link:../../packages/pi-process
       '@henryqw/pi-task-models':
-        specifier: ^8.0.0
+        specifier: ^9.0.0
         version: link:../pi-task-models
       proper-lockfile:
         specifier: ^4.1.2
@@ -309,7 +309,7 @@ importers:
   extensions/pi-task-models:
     dependencies:
       '@henryqw/pi-config-store':
-        specifier: ^3.0.0
+        specifier: ^4.0.0
         version: link:../../packages/pi-config-store
       proper-lockfile:
         specifier: ^4.1.2

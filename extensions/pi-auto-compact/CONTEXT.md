@@ -21,7 +21,7 @@ The user-directed work in progress when auto-compaction begins and which continu
 _Avoid_: Prompt, new task
 
 **Auto-compaction configuration**:
-User config at `getAgentDir()/config/pi-auto-compact/config.json` sets the optional threshold. Missing config uses 70% silently. Invalid config stays unchanged and falls back visibly. Only `/auto-compact` writes it.
+User config at `getAgentDir()/config/pi-auto-compact/config.json` sets the optional threshold. Missing config uses 70% silently. Unknown keys and an invalid threshold show a launch warning with the path and reasons; the threshold falls back to 70% and the file stays unchanged. Only `/auto-compact` writes it.
 _Avoid_: legacy config path, model-selection config
 
 **Compaction task profile**:

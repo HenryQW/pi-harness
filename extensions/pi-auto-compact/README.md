@@ -31,7 +31,7 @@ Restart Pi after you install the package or change settings. Trusted `.pi/settin
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared compaction routes. |
 
-Task Models owns the shared `~/.pi/agent/config/pi-task-models/config.json` file. By default, the `pi-auto-compact/autoCompact` task of this extension uses the `fast` profile. A task entry is an explicit user override.
+Task Models owns the shared `~/.pi/agent/config/pi-task-models/config.json` file. At session start and before each compaction, this extension shows each problem in that file one time in each session. By default, the `pi-auto-compact/autoCompact` task of this extension uses the `fast` profile. A task entry is an explicit user override.
 
 ## Use
 
@@ -59,11 +59,11 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact/config.json`
 | --- | --- | --- | --- |
 | `autoCompactThreshold` | Sets the context-use percentage that triggers compaction. | Number from 25 inclusive to below 100. | `70` |
 
-The extension ignores unknown fields. Legacy model fields are obsolete. `/auto-compact` writes this file.
+If the file is missing, the extension uses 70%. A read does not create the file.
 
-If the file is missing, the extension uses 70%. A read does not create the file. If the file is malformed or invalid, the extension shows a failure at session start and uses 70%. The file stays unchanged.
+At session start, the extension shows one warning for the problems in the file. The warning gives the file path and the reasons. Problems include malformed JSON, an invalid `autoCompactThreshold`, and an unknown key, such as a misspelled key or an obsolete model key. The extension ignores unknown keys. If the threshold is invalid, the extension uses 70%. The file stays unchanged. Without a UI, the warning goes to stderr.
 
-Only `/auto-compact` writes this file. Its write is atomic.
+Only `/auto-compact` writes this file. It reads the file when it opens and shows its problems. A valid file is then updated under a lock. A file with problems is replaced, thus the command also removes unknown keys and invalid values, but only if no other session changed the file while the input dialog was open. Otherwise the command writes nothing and shows the error. Its write is atomic.
 
 ## State and storage
 

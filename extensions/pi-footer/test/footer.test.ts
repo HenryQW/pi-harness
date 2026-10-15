@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, setCapabilities, stripTerminalSequences } from "@earendil-works/pi-tui";
 import footerExtension from "../extensions/footer.ts";
+import openInExtension from "../extensions/open.ts";
 
 
 // Isolate footer color config so a developer's real agent directory cannot change render output.
@@ -162,9 +163,9 @@ test("renders family status on the first line and external statuses beside runti
 	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
 	await writeFile(openInConfig, '{"command":"code -n"}');
 	assert.match(footer.render(100)[0]!, /vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\?windowId=_blank/);
+	// Malformed open-in config falls back to `code`; launch reporting, not render, shows the issue.
 	await writeFile(openInConfig, "{not json");
-	assert.doesNotThrow(() => footer.render(100));
-	assert.doesNotMatch(footer.render(100)[0]!, /vscode:\/\//);
+	assert.match(footer.render(100)[0]!, /vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\x1b\\/);
 	await writeFile(openInConfig, '{"command":"code"}');
 	setCapabilities({ ...previousCapabilities, hyperlinks: false });
 	assert.doesNotMatch(footer.render(100)[0]!, /\x1b\]8;;/);
@@ -291,6 +292,51 @@ test("preserves CodeGraph badges and muted preparation statuses, and marks direc
 	assert.match(third(), /^✓ CG · ↩ rewind +◷ 0s$/);
 	await handlers.get("session_shutdown")!(undefined);
 	footer.dispose();
+});
+
+test("footer-only activation reports open-in issues at session start, never per render, and shares the report with /open", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-open-in-"));
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(async () => {
+		process.env.PI_CODING_AGENT_DIR = isolatedAgentDir;
+		await rm(agentDir, { recursive: true, force: true });
+	});
+	const configPath = join(agentDir, "config", "pi-open-in", "config.json");
+	await mkdir(join(configPath, ".."), { recursive: true });
+	await writeFile(configPath, JSON.stringify({ command: "code", extra: 1 }));
+	const start = async (extensions: Array<(pi: ExtensionAPI) => void>) => {
+		const sessionStart: Handler[] = [];
+		const notices: string[] = [];
+		const pi = {
+			on(event: string, handler: Handler) { if (event === "session_start") sessionStart.push(handler); },
+			registerCommand() {},
+			appendEntry() {},
+			exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+		} as unknown as ExtensionAPI;
+		for (const extension of extensions) extension(pi);
+		let factory: FooterFactory | undefined;
+		const ctx = {
+			mode: "tui", cwd: "/repo", hasUI: true, getContextUsage: () => undefined,
+			sessionManager: { getEntries: () => [], getLeafId: () => null, getBranch: () => [] },
+			ui: { notify: (message: string) => notices.push(message), setFooter: (next: FooterFactory) => { factory = next; } },
+		} as unknown as ExtensionContext;
+		// Pi passes one event object to every session_start handler.
+		const event = { type: "session_start" };
+		for (const handler of sessionStart) await handler(event, ctx);
+		return { notices, footer: () => factory!({ requestRender() {} }, { fg: (_color, text) => text }, {
+			getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {},
+		}) };
+	};
+	const issue = `pi-open-in config issues (${configPath}): extra: unknown key; defaults replace invalid settings.`;
+
+	const footerOnly = await start([footerExtension]);
+	assert.deepEqual(footerOnly.notices, [issue]);
+	const footer = footerOnly.footer();
+	for (let index = 0; index < 3; index++) footer.render(100);
+	assert.deepEqual(footerOnly.notices, [issue]);
+	footer.dispose();
+
+	assert.deepEqual((await start([footerExtension, openInExtension])).notices, [issue]);
 });
 
 test("shows deterministic Git status and refreshes after an agent run", async (t) => {

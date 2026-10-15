@@ -101,9 +101,9 @@ Package-owned: `~/.pi/agent/config/pi-footer/config.json` for footer colors and 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
 | `colors` | Colors for footer-owned text by role. | Object that maps color roles to theme tokens, `#RGB`, `#RRGGBB`, `oklch(...)`, `okhsl(...)`, or an ANSI index from `0` to `255`. | Built-in colors. |
-| `command` | Command that `/open` runs. Required when the file exists. | Non-empty string. | `"code"` |
+| `command` | Command that `/open` runs. | Non-empty string. | `"code"` |
 
-The footer reads `colors` once per session start; run `/reload` after editing it. The file is never rewritten. A missing file or a missing role keeps the built-in color. At each session start, an invalid file shows a warning with the path and the reason, and the whole color config falls back to the built-in colors.
+The footer reads `colors` once per session start; run `/reload` after editing it. The file is never rewritten. A missing file or a missing role keeps the built-in color. At each session start, an unknown key, an unknown role, or an invalid color shows a warning with the path and the reason. Only the invalid role uses its built-in color. The other roles keep their configured colors. A malformed file uses the built-in colors for all roles.
 
 ### Footer color roles
 
@@ -144,7 +144,7 @@ Theme tokens are `accent`, `dim`, `muted`, `text`, `success`, `warning`, `error`
 
 ### Open command
 
-A missing file silently uses the default command, `code`. An invalid existing file makes `/open` fail visibly and stays unchanged. See Limits and recovery. `/open` reads the config on every run. Only `/set-open-in` writes the file, atomically. Reads do not create or write the config home.
+A missing file silently uses the default command, `code`. An invalid existing file shows a warning and uses `code`. The file stays unchanged. See Limits and recovery. `/open` reads the config on every run. Only `/set-open-in` writes the file, atomically. Reads do not create or write the config home.
 
 ## API
 
@@ -153,7 +153,8 @@ Consumers: use the owner API. Do not read the config file directly. Replace impo
 ```ts
 import { loadOpenInConfig } from "@henryqw/pi-footer/open-uri";
 
-const { source, value } = loadOpenInConfig();
+const loaded = loadOpenInConfig();
+if (loaded.status === "ok") console.log(loaded.value.command, loaded.issues);
 ```
 
 These exports are for package consumers. The commands in Use are the Pi interfaces.
@@ -165,15 +166,15 @@ These exports are for package consumers. The commands in Use are the Pi interfac
 | `loadOpenInConfig(agentDir?)` | function | Reads and validates the owner config. |
 | `configuredOpenUri(path)` | function | Returns a safe VS Code URI for a supported command. |
 
-`loadOpenInConfig` returns `source` as `"missing"` or `"file"`. `value.command` is validated. Pass an agent directory when needed.
+`loadOpenInConfig` returns a `@henryqw/pi-config-store` `ConfigLoad` result: `status`, `source` (`"missing"` or `"file"`), `issues`, and, when `status` is `"ok"`, `value`. `value.command` is validated. An invalid `command` gives `"code"` and an issue. The function does not show issues. Pass an agent directory when needed.
 
-`configuredOpenUri(path)` works when the executable is `code`. With `code -n` or `code --new-window`, it adds `windowId=_blank` so the link opens in a new window. It returns `undefined` for other commands or invalid config. `@henryqw/pi-config-store` owns the config home and storage.
+`configuredOpenUri(path)` works when the executable is `code`. With `code -n` or `code --new-window`, it adds `windowId=_blank` so the link opens in a new window. It returns `undefined` for other commands. An invalid config uses `code`. The function never shows a notification, because the footer calls it on each render. `@henryqw/pi-config-store` owns the config home and storage.
 
 ## Limits and recovery
 
 The open command splits on whitespace into an executable and arguments. Tokens cannot contain spaces, and quoting is unsupported. Use a wrapper script for executables in paths that contain spaces.
 
-An existing config file must be a JSON object with exactly one non-empty string `command` property. Otherwise `/open` fails with a visible error, offers no open URI, and leaves the malformed file unchanged. If the configured command exits with an error, Pi reports its error output or exit code. Fix the command and run `/open` again.
+An existing config file must be a JSON object with one non-empty string `command` property. An unknown key, an invalid `command`, or a malformed file shows a warning at session start, or at the next `/open`. The warning also shows when only the footer is active, because the footer link uses this config. Each issue shows one time in each session, also when the footer and `/open` are both active. The footer render never shows a warning. Then `/open` and the footer link use `code`, and the file stays unchanged. Fix the file or run `/set-open-in <command>` to replace it. `/set-open-in` first shows each new problem in the file that it replaces. If the configured command exits with an error, Pi reports its error output or exit code. Fix the command and run `/open` again.
 
 When the configured executable is `code` and Pi reports hyperlink support, the accent-colored checkout name links to the current path. The link opens a new window for `code -n` or `code --new-window`. A missing config silently uses `code`. Other executables and terminals with hyperlinks disabled render plain text.
 

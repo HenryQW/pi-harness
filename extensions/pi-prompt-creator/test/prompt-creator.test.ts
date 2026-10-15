@@ -694,25 +694,68 @@ test("review eligibility resets on tree, session, and shutdown lifecycle changes
 	});
 });
 
-test("malformed config is preserved and warns once until an explicit toggle replaces it", async () => {
+test("a malformed file or an invalid or misspelled automatic key keeps automatic analysis off", async () => {
+	for (const contents of ['{"automatic":', '{"automatic":"yes"}', '{"Automatic":true}']) {
+		await withAgentDir(async (agentDir) => {
+			const configPath = extensionConfigPath("pi-prompt-creator", agentDir);
+			await mkdir(join(configPath, ".."), { recursive: true });
+			await writeFile(configPath, contents);
+			const child = controlledExecutor();
+			const app = harness({
+				agentDir,
+				executor: child.executor,
+				branch: [{ type: "message", message: { role: "user", content: "Make this workflow reusable." } }],
+			});
+			await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
+			assert.equal(app.notifications.length, 1);
+			for (const text of ["one", "two", "three"]) app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
+			await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(child.runs.length, 0, contents);
+		});
+	}
+});
+
+test("invalid config keys warn once, fall back per key, and an explicit toggle replaces the file", async () => {
 	await withAgentDir(async (agentDir) => {
 		const configPath = extensionConfigPath("pi-prompt-creator", agentDir);
 		await mkdir(join(configPath, ".."), { recursive: true });
-		const malformed = '{"automatic":true,"inputThreshold":0}\n';
-		await writeFile(configPath, malformed);
+		const invalid = '{"automatic":true,"inputThreshold":0,"automatc":false}\n';
+		await writeFile(configPath, invalid);
 		const child = controlledExecutor();
-		const app = harness({ agentDir, executor: child.executor });
+		const app = harness({
+			agentDir,
+			executor: child.executor,
+			branch: [{ type: "message", message: { role: "user", content: "Make this workflow reusable." } }],
+		});
 
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
 		await app.handlers.get("session_start")!({ type: "session_start" }, app.ctx);
-		assert.equal(app.notifications.filter(({ message }) => message.includes("config is invalid")).length, 1);
-		assert.equal(await readFile(configPath, "utf8"), malformed);
+		assert.deepEqual(app.notifications, [{
+			message: `pi-prompt-creator config issues (${configPath}): automatc: unknown key; inputThreshold: must be an integer >= 1; defaults replace invalid settings.`,
+			level: "warning",
+		}]);
+		assert.equal(await readFile(configPath, "utf8"), invalid);
 		for (const text of ["one", "two", "three"]) app.handlers.get("input")!({ source: "interactive", text }, app.ctx);
 		await app.handlers.get("agent_settled")!({ type: "agent_settled", aborted: false }, app.ctx);
-		assert.equal(child.runs.length, 0, "invalid config disables automatic analysis");
+		await eventually(() => child.runs.length === 1);
 
+		await app.registeredCommands.get("promptor")!("automatic off", app.ctx);
+		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: false, inputThreshold: 3 });
+		assert.equal(app.notifications.at(-1)?.message, "Automatic analysis disabled.");
+
+		// Another session changes the threshold; the toggle keeps it instead of the cached value.
+		await writeFile(configPath, '{"automatic":false,"inputThreshold":7}');
 		await app.registeredCommands.get("promptor")!("automatic on", app.ctx);
-		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: true, inputThreshold: 3 });
-		assert.equal(app.notifications.at(-1)?.message, "Automatic analysis enabled.");
+		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: true, inputThreshold: 7 });
+
+		// A file that became invalid is reported before the toggle replaces it.
+		await writeFile(configPath, '{"automatic":true,"inputThreshold":7,"extra":1}');
+		await app.registeredCommands.get("promptor")!("automatic off", app.ctx);
+		assert.deepEqual(app.notifications.slice(-2), [
+			{ message: `pi-prompt-creator config issues (${configPath}): extra: unknown key; defaults replace invalid settings.`, level: "warning" },
+			{ message: "Automatic analysis disabled.", level: "info" },
+		]);
+		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: false, inputThreshold: 7 });
 	});
 });

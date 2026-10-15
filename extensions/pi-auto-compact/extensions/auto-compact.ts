@@ -7,7 +7,7 @@ import {
 	getAgentDir,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { createConfigStore } from "@henryqw/pi-config-store";
+import { createConfigStore, field, parsers, registerConfigReporting } from "@henryqw/pi-config-store";
 import type {
 	AgentBeforeSettleEvent,
 	CompactionEntry,
@@ -21,6 +21,7 @@ import type {
 import {
 	executeTaskRoutes,
 	registerModelTask,
+	registerTaskModelsConfigReporting,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
 	type ResolvedTaskRoute,
@@ -44,35 +45,23 @@ export const AUTO_COMPACT_TASK = {
 	purpose: "Compact session context before it is exhausted.",
 	defaultProfile: "fast",
 } as const satisfies ModelTask;
-type AutoCompactConfig = { autoCompactThreshold: number };
 
 function isValidThreshold(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= MIN_COMPACT_THRESHOLD_PERCENT && value < 100;
 }
 
-function parseAutoCompactConfig(value: unknown): AutoCompactConfig {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		throw new Error("Config must be an object.");
-	}
-	const threshold = (value as Record<string, unknown>).autoCompactThreshold ?? DEFAULT_COMPACT_THRESHOLD_PERCENT;
-	if (!isValidThreshold(threshold)) {
-		throw new Error(`autoCompactThreshold must be at least ${MIN_COMPACT_THRESHOLD_PERCENT} and below 100.`);
-	}
-	return { autoCompactThreshold: threshold };
-}
-
-function configuredTaskRoutes(ctx: ExtensionContext): ResolvedTaskRoute[] {
+/** `report` shows new task-model config issues before the routes resolve. */
+function configuredTaskRoutes(ctx: ExtensionContext, report: (ctx: ExtensionContext) => void): ResolvedTaskRoute[] {
+	report(ctx);
 	try {
 		return resolveConfiguredTaskRoutes(ctx, AUTO_COMPACT_TASK);
 	} catch (error) {
 		const { taskRouteCode, profileName } = error as TaskRouteError;
 		if (taskRouteCode === "config-missing") return [];
-		const cause = taskRouteCode === "profile-missing"
-			? `Task model profile ${profileName} is not configured`
-			: taskRouteCode === "no-route"
-				? `No usable ${profileName} task model route`
-				: "Couldn't read task model config";
-		ctx.ui.notify(`${cause}; using current session model.`, "error");
+		// pi-task-models messages give the path and the problems; only `no-route` gets compaction wording.
+		ctx.ui.notify(taskRouteCode === "no-route"
+			? `No usable ${profileName} task model route; using current session model.`
+			: `${error instanceof Error ? error.message : String(error)} Using current session model.`, "error");
 		return [];
 	}
 }
@@ -244,11 +233,23 @@ function readResult(entry: ProjectedSessionEntry, projected: ProjectedSessionEnt
 
 export default function (pi: ExtensionAPI) {
 	registerModelTask(pi, AUTO_COMPACT_TASK);
-	const configStore = createConfigStore<AutoCompactConfig>({
+	const configStore = createConfigStore({
 		extensionId: "pi-auto-compact",
-		defaults: () => ({ autoCompactThreshold: DEFAULT_COMPACT_THRESHOLD_PERCENT }),
-		parse: parseAutoCompactConfig,
+		fields: {
+			autoCompactThreshold: field(
+				parsers.number({ min: MIN_COMPACT_THRESHOLD_PERCENT, lessThan: 100 }),
+				DEFAULT_COMPACT_THRESHOLD_PERCENT,
+			),
+		},
 	});
+	// Registered before this extension's session_start handler so launch issues show first.
+	const reporter = registerConfigReporting(pi, [configStore]);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi);
+	/** The config has no required or unsafe field, so a load is never disabled. */
+	const loadThreshold = () => {
+		const loaded = configStore.loadSync();
+		return { loaded, threshold: loaded.status === "ok" ? loaded.value.autoCompactThreshold : DEFAULT_COMPACT_THRESHOLD_PERCENT };
+	};
 	let active = false;
 	let autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
 	// Emergency compaction interrupts a run; boundary maintenance never does.
@@ -336,7 +337,7 @@ export default function (pi: ExtensionAPI) {
 		};
 		const signal = ctx.signal;
 		try {
-			const routes = configuredTaskRoutes(ctx);
+			const routes = configuredTaskRoutes(ctx, reportTaskModels);
 			let result: Awaited<ReturnType<typeof compact>> | undefined;
 			if (routes.length) {
 				try {
@@ -455,13 +456,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			let currentThreshold: number;
-			try {
-				currentThreshold = configStore.loadSync().value.autoCompactThreshold;
-			} catch {
-				ctx.ui.notify("Couldn't read pi-auto-compact config.", "error");
-				return;
-			}
+			const { loaded, threshold: currentThreshold } = loadThreshold();
+			reporter.report(ctx, configStore, loaded);
 
 			const input = await ctx.ui.input(
 				`Auto-compact threshold (%) · current: ${currentThreshold}`,
@@ -476,9 +472,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				await configStore.save({ autoCompactThreshold: threshold });
-			} catch {
-				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
+				// The dialog can stay open while another session edits the file: merge into a clean file under the
+				// lock, and replace a file with problems (already reported above) only if it did not change meanwhile.
+				if (!loaded.issues.length) await configStore.update((latest) => ({ ...latest, autoCompactThreshold: threshold }));
+				else await configStore.replaceIfUnchanged(loaded, { autoCompactThreshold: threshold });
+			} catch (error) {
+				ctx.ui.notify(`Couldn't save pi-auto-compact config: ${error instanceof Error ? error.message : String(error)}`, "error");
 				return;
 			}
 			autoCompactThreshold = threshold;
@@ -489,13 +488,8 @@ export default function (pi: ExtensionAPI) {
 	// Pi's built-in automatic compaction competes with this extension. Refuse
 	// activation unless effective global/project settings disable it.
 	pi.on("session_start", (event, ctx) => {
-		try {
-			const config = configStore.loadSync();
-			autoCompactThreshold = config.value.autoCompactThreshold;
-		} catch {
-			autoCompactThreshold = DEFAULT_COMPACT_THRESHOLD_PERCENT;
-			ctx.ui.notify(`Couldn't read pi-auto-compact config; using ${DEFAULT_COMPACT_THRESHOLD_PERCENT}%.`, "error");
-		}
+		// Launch reporting shows config issues; invalid values use the default.
+		autoCompactThreshold = loadThreshold().threshold;
 
 		active = !SettingsManager.create(ctx.cwd, getAgentDir(), {
 			projectTrusted: ctx.isProjectTrusted(),
@@ -519,7 +513,7 @@ export default function (pi: ExtensionAPI) {
 		for (const path of prior.read) event.preparation.fileOps.read.add(path);
 		for (const path of prior.edited) event.preparation.fileOps.edited.add(path);
 
-		const routes = configuredTaskRoutes(ctx);
+		const routes = configuredTaskRoutes(ctx, reportTaskModels);
 		if (!routes.length) return;
 
 		try {

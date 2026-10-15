@@ -54,9 +54,9 @@ Package-owned: `~/.pi/agent/config/pi-multi-codex/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `autoSwitchOn429` | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` when the config file is missing |
+| `autoSwitchOn429` | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` |
 
-Edit this file yourself. The extension does not create or write it. A missing file uses the default `true`, and config changes take effect at the next session start. Set `autoSwitchOn429` to `false` to disable automatic switching. A present config must contain only this field as a boolean. If the config is invalid, the extension keeps the file, shows a warning, and disables automatic switching for the session. Fix the file and start a new session to recover.
+Edit this file yourself. The extension does not create or write it. A missing file uses the default `true`, and config changes take effect at the next session start. Set `autoSwitchOn429` to `false` to disable automatic switching. At session start, the extension shows a warning with the file path for an unknown key, malformed JSON, or a value that is not a boolean. It ignores an unknown key. When `autoSwitchOn429` is not a boolean or is misspelled (for example, `autoswitchOn429`), or when the file has malformed JSON, invalid UTF-8, more than 64 KiB, a read error, or a non-object root, automatic switching stays off for that session. The extension keeps the file unchanged. Fix the file and start a new session to recover.
 
 ## State and storage
 

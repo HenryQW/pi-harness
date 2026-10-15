@@ -106,9 +106,9 @@ Package-owned: `~/.pi/agent/config/pi-bark/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `serverUrl` | Base URL of the Bark server that accepts push requests. | HTTP or HTTPS URL with an optional path and no query or fragment. | `"https://api.day.app"` |
-| `deviceKey` | Identifies the Bark App installation that receives the push notification. | Non-empty string or `null`. | `null` |
-| `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | `null` |
+| `serverUrl` | Base URL of the Bark server that accepts push requests. | HTTP or HTTPS URL with an optional path and no query or fragment. | Required. `/set-bark` writes `"https://api.day.app"` when you do not give a server URL. |
+| `deviceKey` | Identifies the Bark App installation that receives the push notification. | Non-empty string. | Required |
+| `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | Required. `null` disables Push Encryption. The commands write `null` to a new file. |
 | `statusNotifications` | Controls automatic status notifications by CWD. | Global boolean default and absolute-CWD boolean overrides. | Enabled with no overrides. |
 
 Config changes take effect on the next command or status event. You do not need to restart Pi. A status notification that is already in the queue uses the settings that pi-bark read when its event occurred.
@@ -193,6 +193,7 @@ Set `encryption` to `null` when Push Encryption is disabled.
 
 - A missing config file stays missing until a command or the key script writes it.
 - `/set-bark` preserves Push Encryption and status notification settings.
+- `pi-bark-key` can run before `/set-bark`. It then writes `"deviceKey": null`, and pi-bark stays disabled until you run `/set-bark`.
 - The Server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter. Use HTTPS when possible. HTTP sends the Device Key over the network without encryption. Without Push Encryption, HTTP also sends the push content without encryption. Push Encryption does not protect the Device Key.
 - Config writes are private and atomic.
 - Pi commands never print the Device Key, Server URL, or Custom Encryption Key.
@@ -203,6 +204,19 @@ Bark and Apple Push Notification service limit the payload size of a push notifi
 
 `/copyb` waits for a maximum of 15 seconds for the Bark server. If the push request fails after the clipboard copy, your clipboard still contains the message.
 
-An invalid config file causes a visible error, and pi-bark does not change the file. Fix or move the malformed file. Then run the command again.
+pi-bark checks its config when Pi starts and each time it reads the config. It does not change the file. Each problem shows one time in each session:
+
+| Problem | Result |
+| --- | --- |
+| Unknown key, or invalid `statusNotifications` value | A warning shows. pi-bark ignores the key or uses the default for that value, and continues to send. |
+| Missing config file | An error shows, and pi-bark is disabled. It sends no push notifications. Run `/set-bark` to create the file. |
+| Missing or invalid `deviceKey` | An error shows, and pi-bark is disabled. Run `/set-bark` to repair it. |
+| Missing or invalid `serverUrl`, including a misspelled key such as `serverURL` | An error shows, and pi-bark is disabled. pi-bark does not use the public server, because that server would receive your Device Key. Run `/set-bark` with the correct server URL. |
+| Missing or invalid `encryption`, including a misspelled key such as `encyption` | An error shows, and pi-bark is disabled. pi-bark does not send without encryption. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
+| Malformed JSON or a non-object file | An error shows, and pi-bark is disabled. Fix or move the file. |
+
+`/set-bark` and `pi-bark-key` work while pi-bark is disabled. `/bark` does not: while pi-bark is disabled, it shows the problem and does not change the file, because a notification setting cannot make pi-bark send. Before a write, the commands they show each new problem in the file: the Pi commands show a notification, and `pi-bark-key` writes to stderr. If the file has a problem, they replace the whole file. They remove unknown keys and invalid `statusNotifications` entries. They hold the file lock while they compare the file with the version that they read. If another session changed the file in the meantime, they stop, show the error, and do not change the file. Run the command again.
+
+They do not change a malformed file, or a file with a missing or invalid `serverUrl`, `deviceKey`, or `encryption` that the command does not set. `/set-bark` sets `serverUrl` and `deviceKey`. `pi-bark-key --force` and `pi-bark-key --disable` set `encryption`. In that case, they show the problem and stop. Fix the file, or run the command that sets the key.
 
 See Bark's [Push Encryption documentation](https://github.com/Finb/Bark/blob/master/docs/en-us/encryption.md) for the encryption model.

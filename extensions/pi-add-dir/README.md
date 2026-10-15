@@ -50,7 +50,7 @@ Package-owned: `~/.pi/agent/config/pi-add-dir/config.json`
 | --- | --- | --- | --- |
 | `directories` | Directories loaded for every workspace. `/dir-add --global` updates this list. | Array of unique absolute paths without control characters. | `[]` |
 
-If the file is missing, the extension uses the default. Invalid config stops the load, and the extension does not overwrite the file. Reload Pi after you edit the file manually.
+If the file is missing, the extension uses the default. At launch, the extension shows a warning for each unknown key and each invalid or duplicate directory entry. It ignores that key or entry and loads the other directories. If the file is malformed or `directories` is not an array, it shows a warning and uses the default. It does not change the file. `/dir-add --global` and global removal with `/dir-ls` fail until you fix the reported issues. Reload Pi after you edit the file manually.
 
 ## State and storage
 

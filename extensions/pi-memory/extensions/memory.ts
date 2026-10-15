@@ -5,13 +5,16 @@ import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionCo
 import { askQuestion } from "@henryqw/pi-ask-question";
 import {
 	extensionConfigDir,
+	formatConfigIssues,
 	readTextFileBounded,
+	registerConfigReporting,
 	writePrivateTextFileAtomically,
 } from "@henryqw/pi-config-store";
 import {
 	executeTaskRoutes,
 	loadTaskModelsConfig,
 	registerModelTask,
+	registerTaskModelsConfigReporting,
 	resolveConfiguredTaskRoutes,
 	type ModelTask,
 	type ResolvedTaskRoute,
@@ -20,7 +23,7 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
-import { configPath, loadMemoryConfig, type MemoryConfig } from "../src/config.ts";
+import { memoryConfigStore, type MemoryConfig } from "../src/config.ts";
 import {
 	ENTRY_DELIMITER,
 	isEnoent,
@@ -187,17 +190,20 @@ function sameReviewSnapshot(left: ReviewSnapshot, right: ReviewSnapshot): boolea
 		);
 }
 
+// Set by the extension factory; Pi loads each extension instance with its own module copy.
+let reportTaskModels: (ctx: ExtensionContext) => void = () => {};
+
 function configuredReviewRoutes(ctx: ExtensionContext, task: ModelTask = MEMORY_REVIEW_TASK): ResolvedTaskRoute[] {
+	reportTaskModels(ctx);
 	try {
 		return resolveConfiguredTaskRoutes(ctx, task);
 	} catch (error) {
 		const { taskRouteCode, profileName } = error as TaskRouteError;
+		// pi-task-models messages give the path and the problems; only `no-route` gets memory-specific wording.
 		throw new MemoryReviewError(
-			taskRouteCode === "profile-missing"
-				? `${task.id} profile ${profileName} is not configured. Run /task-models.`
-				: taskRouteCode === "no-route"
-					? `${task.id} profile ${profileName} has no available route. Run /task-models.`
-					: "Couldn't read task model config. Run /task-models.",
+			taskRouteCode === "no-route"
+				? `${task.id} profile ${profileName} has no available route. Run /task-models.`
+				: error instanceof Error ? error.message : String(error),
 		);
 	}
 }
@@ -639,6 +645,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	registerModelTask(pi, MEMORY_REVIEW_TASK);
 	registerModelTask(pi, MEMORY_PREPARE_TASK);
 	registerModelTask(pi, DREAM_TASK);
+	const configStore = memoryConfigStore();
+	const configReporter = registerConfigReporting(pi, [configStore]);
+	reportTaskModels = registerTaskModelsConfigReporting(pi);
 	const state: {
 		config?: MemoryConfig;
 		stores?: Record<Target, MemoryStore>;
@@ -864,14 +873,17 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.initError = undefined;
 		state.observedReviewSystem = false;
 		try {
-			const config = loadMemoryConfig().value;
+			const loaded = configStore.loadSync();
+			configReporter.report(ctx, configStore, loaded);
+			if (loaded.status === "disabled") throw new Error(`invalid config: ${formatConfigIssues(loaded.issues)}`);
+			const config = loaded.value;
 			try {
 				if (loadTaskModelsConfig().source === "missing") {
 					ctx.ui.notify("Shared task model config is missing; configure pi-memory/reviewCandidate with /task-models before adding memory.", "warning");
 				}
 			} catch {
-				// A broken review route must not disable otherwise usable memory snapshots.
-				ctx.ui.notify("Couldn't read task model config. Run /task-models.", "warning");
+				// A broken review route must not disable otherwise usable memory snapshots;
+				// the task-models config reporter already shows the path and the problems.
 			}
 			await mkdir(BACKUP_DIR(), { recursive: true });
 			await mkdir(config.directory, { recursive: true });
@@ -954,7 +966,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				}
 			}
 		} catch (error) {
-			// Surface once, disable quietly: no throw-loop every turn.
+			// Disable without a throw-loop every turn; launch reporting already showed config issues.
 			state.initError = error instanceof Error ? error.message : String(error);
 		}
 	});
@@ -1134,7 +1146,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		// Failed init stays visible every turn (correctness-critical config must
 		// not vanish silently) but as a warning line, not a per-turn throw-loop.
 		if (state.initError) {
-			event.systemPromptOptions.sections[PROMPT_SECTION] = `WARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configPath()} and restart.`;
+			event.systemPromptOptions.sections[PROMPT_SECTION] = `WARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configStore.path} and restart.`;
 			return;
 		}
 		if (!state.snapshotBlocks) return;

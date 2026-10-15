@@ -836,6 +836,14 @@ test("declares a balanced review task and invokes the configured primary route",
 			/Run \/task-models/,
 		);
 		assert.equal(calls.length, 0);
+
+		// A disabled shared config keeps the pi-task-models message with the path and the problem.
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), "{");
+		await assert.rejects(
+			() => tool.execute("disabled", { action: "add", content: "candidate" }, undefined, undefined, ctx),
+			/Task model config at .*config\.json is disabled: invalid JSON/,
+		);
+		assert.equal(calls.length, 0);
 	});
 });
 
@@ -1610,14 +1618,14 @@ test("errors carry match previews/usage, snapshots filter frame tokens, backups 
 	}
 });
 
-test("init failure disables extension silently; oversized and capped snapshots warn instead of injecting", async () => {
+test("invalid config disables memory with a launch error; oversized and capped snapshots warn instead of injecting", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-init-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	try {
-		// Case 1: config invalid at session_start -> before_agent_start silent, tool errors once.
+		// Case 1: invalid directory at session_start -> launch error, never the default directory.
 		await mkdir(join(agentDir, "config", "pi-memory"), { recursive: true });
 		await writeFile(join(agentDir, "config", "pi-memory", "config.json"), JSON.stringify({ directory: "relative/path" }));
 		const handlers = new Map<string, Handler>();
@@ -1630,7 +1638,12 @@ test("init failure disables extension silently; oversized and capped snapshots w
 		} as unknown as ExtensionAPI);
 		const before = handlers.get("before_agent_start")!;
 		const memoryTool = tool!;
-		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
+		const launch: Array<[string, string]> = [];
+		await handlers.get("session_start")!({ type: "session_start" }, { hasUI: true, ui: { notify: (message: string, level: string) => launch.push([message, level]) } });
+		assert.equal(launch.length, 1);
+		assert.match(launch[0]![0], /^pi-memory disabled \(.*config\.json\): directory: must be an absolute path/);
+		assert.equal(launch[0]![1], "error");
+		await assert.rejects(lstat(join(agentDir, "config", "pi-memory", "memory")), { code: "ENOENT" });
 		// Failed init stays visible: warning injected every turn, never thrown.
 		const failed = promptEvent();
 		assert.equal(await before(failed), undefined);

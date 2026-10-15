@@ -80,7 +80,8 @@ function loadExtension(options: {
 	const tools = new Map<string, RegisteredTool>();
 	addDirExtension({
 		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
-			handlers.set(event, handler);
+			const previous = handlers.get(event);
+			handlers.set(event, previous ? async (event, ctx) => { await previous(event, ctx); return handler(event, ctx); } : handler);
 		},
 		registerCommand(name: string, command: RegisteredCommand) {
 			commands.set(name, command);
@@ -97,6 +98,12 @@ function loadExtension(options: {
 		},
 	} as unknown as ExtensionAPI, { agentDir: options.agentDir ?? join(tmpdir(), `pi-add-dir-test-${process.pid}`) });
 	return { appendedEntries, commands, handlers, sentMessages, tools };
+}
+
+function savedGlobalDirectories(agentDir: string): string[] {
+	const loaded = createAddDirConfigStore(agentDir).loadSync();
+	assert.ok(loaded.status === "ok");
+	return loaded.value.directories;
 }
 
 function extensionContext(cwd: string, getBranch: () => unknown[], reload = async () => {}): ExtensionContext {
@@ -607,7 +614,7 @@ test("keeps concurrent global additions idempotent", async () => {
 			first.commands.get("dir-add")!.handler(`--global ${external}`, firstCtx as ExtensionCommandContext),
 			second.commands.get("dir-add")!.handler(`--global ${external}`, secondCtx as ExtensionCommandContext),
 		]);
-		assert.deepEqual(createAddDirConfigStore(agentDir).loadSync().value.directories, [resolveDir(external, cwd)]);
+		assert.deepEqual(savedGlobalDirectories(agentDir), [resolveDir(external, cwd)]);
 		assert.deepEqual(firstNotifications.map(({ level }) => level), ["info"]);
 		assert.deepEqual(secondNotifications.map(({ level }) => level), ["info"]);
 	} finally {
@@ -689,9 +696,33 @@ test("promotes a session directory to global scope", async () => {
 		await handlers.get("session_start")!({}, ctx);
 		await commands.get("dir-add")!.handler(`--global ${external}`, ctx as ExtensionCommandContext);
 
-		assert.deepEqual(createAddDirConfigStore(agentDir).loadSync().value.directories, [resolveDir(external, cwd)]);
+		assert.deepEqual(savedGlobalDirectories(agentDir), [resolveDir(external, cwd)]);
 		assert.deepEqual(appendedEntries.at(-1), { customType: "add-dir:state", data: { dirs: [] } });
 		assert.match(notifications.at(-1)!.message, /global scope/);
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+		await rm(cwd, { recursive: true, force: true });
+		await rm(external, { recursive: true, force: true });
+	}
+});
+
+test("reports global config issues found after launch before a global write", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-add-dir-agent-"));
+	const cwd = await mkdtemp(join(tmpdir(), "pi-add-dir-project-"));
+	const external = await mkdtemp(join(tmpdir(), "pi-add-dir-external-"));
+	const configPath = join(agentDir, "config", "pi-add-dir", "config.json");
+	try {
+		const notifications: Array<{ message: string; level: string }> = [];
+		const { commands, handlers } = loadExtension({ agentDir });
+		const ctx = interactiveContext(cwd, () => [], { notifications });
+		await handlers.get("session_start")!({}, ctx);
+		await mkdir(join(configPath, ".."), { recursive: true });
+		const contents = `${JSON.stringify({ directories: [], extra: true })}\n`;
+		await writeFile(configPath, contents);
+		await commands.get("dir-add")!.handler(`--global ${external}`, ctx as ExtensionCommandContext);
+
+		assert.ok(notifications.some(({ level, message }) => level === "warning" && /extra: unknown key/.test(message)));
+		assert.equal(await readFile(configPath, "utf8"), contents);
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 		await rm(cwd, { recursive: true, force: true });
@@ -802,7 +833,7 @@ test("warns and preserves missing or overlapping global directories", async () =
 		const { handlers } = loadExtension({ agentDir });
 		await handlers.get("session_start")!({}, interactiveContext(cwd, () => [], { notifications }));
 		assert.equal(notifications.filter(({ level }) => level === "warning").length, 2);
-		assert.deepEqual(createAddDirConfigStore(agentDir).loadSync().value.directories, [missing, cwd]);
+		assert.deepEqual(savedGlobalDirectories(agentDir), [missing, cwd]);
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 		await rm(cwd, { recursive: true, force: true });
@@ -828,22 +859,29 @@ test("writes skipped-directory warnings to stderr without UI", async () => {
 	}
 });
 
-test("does not overwrite malformed global configuration", async () => {
+test("drops and reports bad global directory entries without changing the file", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-add-dir-agent-"));
 	const cwd = await mkdtemp(join(tmpdir(), "pi-add-dir-project-"));
+	const external = await mkdtemp(join(tmpdir(), "pi-add-dir-external-"));
 	const configPath = join(agentDir, "config", "pi-add-dir", "config.json");
 	try {
+		await writeFile(join(external, "AGENTS.md"), "Global external instructions.\n");
 		await mkdir(join(configPath, ".."), { recursive: true });
-		await writeFile(configPath, "{broken\n");
+		const contents = `${JSON.stringify({ directories: ["relative", external, external], dirs: [] })}\n`;
+		await writeFile(configPath, contents);
+		const notifications: Array<{ message: string; level: string }> = [];
 		const { handlers } = loadExtension({ agentDir });
-		await assert.rejects(
-			handlers.get("session_start")!({}, extensionContext(cwd, () => [])),
-			/Cannot load pi-add-dir global config/,
-		);
-		assert.equal(await readFile(configPath, "utf8"), "{broken\n");
+		await handlers.get("session_start")!({}, interactiveContext(cwd, () => [], { notifications }));
+		const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
+		await handlers.get("before_agent_start")!(event, {} as ExtensionContext);
+		assert.match(event.systemPromptOptions.sections.pi_add_dir!, /Global external instructions/);
+		assert.deepEqual(notifications.map(({ level }) => level), ["warning"]);
+		assert.match(notifications[0]!.message, /dirs: unknown key; directories\[0\]: must be an absolute path.*directories\[2\]: duplicates/);
+		assert.equal(await readFile(configPath, "utf8"), contents);
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 		await rm(cwd, { recursive: true, force: true });
+		await rm(external, { recursive: true, force: true });
 	}
 });
 

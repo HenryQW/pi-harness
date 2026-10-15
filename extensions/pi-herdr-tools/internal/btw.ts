@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrClient, hasHerdrErrorCode, startPiAgent } from "@henryqw/pi-herdr";
-import { registerModelTask, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
+import { registerModelTask, registerTaskModelsConfigReporting, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
 import {
 	buildSessionContext,
 	convertToLlm,
@@ -78,7 +79,7 @@ export type ContextStorePort = Pick<
 >;
 export type ConfigStorePort = Pick<
 	ReturnType<typeof createBtwConfigStore>,
-	"loadSync" | "save" | "update"
+	"extensionId" | "path" | "loadSync" | "save" | "update"
 >;
 
 const SIDE_PANE_INSTRUCTIONS = `You are running in a focused /btw side pane spawned from another Pi session.
@@ -373,6 +374,14 @@ export async function registerBtwExtension(
 	}
 
 	const configStore = options.configStore ?? createBtwConfigStore();
+	const configReporter = registerConfigReporting(pi, [configStore]);
+	const reportTaskModels = registerTaskModelsConfigReporting(pi);
+	const loadConfig = (ctx: ExtensionContext): BtwConfig => {
+		const loaded = configStore.loadSync();
+		configReporter.report(ctx, configStore, loaded);
+		// No field disables this config: invalid keys fall back to their defaults.
+		return loaded.status === "ok" ? loaded.value : { ...DEFAULT_CONFIG };
+	};
 	const herdr = createHerdrClient<HerdrOptions>(pi.exec.bind(pi));
 
 	// --- Parent-side merge coordination ---------------------------------
@@ -487,13 +496,15 @@ export async function registerBtwExtension(
 			if (route.kind === "config") {
 				try {
 					if (route.args === "reset") {
+						// Reset does not depend on the file, but first show the problems that it removes.
+						loadConfig(ctx);
 						const config = { ...DEFAULT_CONFIG };
 						await configStore.save(config);
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");
 						return;
 					}
 					if (!route.args || route.args === "show") {
-						const config = configStore.loadSync().value;
+						const config = loadConfig(ctx);
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}\n${CONFIG_COMMAND_USAGE}`, "info");
 						return;
 					}
@@ -559,14 +570,14 @@ export async function registerBtwExtension(
 
 			let payloadPath: string | undefined;
 			try {
-				const config: BtwConfig = configStore.loadSync().value;
+				const config = loadConfig(ctx);
 				await store.removeStale();
 				const createdAt = new Date().toISOString();
 				const sessionId = ctx.sessionManager.getSessionId();
 				const currentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
 				const thinkingLevel = pi.getThinkingLevel();
 				let launchRoute: ResolvedTaskRoute | undefined;
-				for (const route of configuredTaskRoutes(ctx, BTW_TASK, "BTW")) {
+				for (const route of configuredTaskRoutes(ctx, BTW_TASK, "BTW", reportTaskModels)) {
 					try {
 						const authenticated = (await ctx.modelRegistry.getApiKeyAndHeaders(route.model)).ok;
 						if (launchGeneration !== sessionGeneration) return;

@@ -9,8 +9,9 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { extensionConfigDir, extensionConfigPath } from "@henryqw/pi-config-store";
+import { createConfigStore, extensionConfigDir, field, formatConfigIssues, parsers, registerConfigReporting, type FieldParser } from "@henryqw/pi-config-store";
 import { hasDisplayControlCharacters } from "./display-text.ts";
+import { DEFAULT_MAX_TURNS } from "./ephemeral.ts";
 import { loadRoleMcpConfig, parseRoleMcpAllowlist } from "./mcp-role.ts";
 import {
 	loadTaskModelsConfig,
@@ -316,24 +317,109 @@ export function parseRoleDefaults(value: unknown, label = "roleDefaults"): RoleD
 	};
 }
 
+/** Per-key `roleDefaults`: an unknown key or invalid list is reported and dropped, so fewer resources load. */
+const roleDefaultsField: FieldParser<RoleDefaults> = (raw, report) => {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("must be a JSON object");
+	const defaults: RoleDefaults = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (!(ROLE_DEFAULT_KEYS as readonly string[]).includes(key)) {
+			report([key], "unknown key", "unknown-key");
+			continue;
+		}
+		try { Object.assign(defaults, parseRoleDefaults({ [key]: value })); }
+		catch (error) { report([key], error instanceof Error ? error.message : String(error)); }
+	}
+	return defaults;
+};
+
+export interface SubagentConfig {
+	maxSubagents: number;
+	maxTurns: number;
+	maxTokens: number | undefined;
+	maxCorrections: number;
+	timeout: { idleMinutes: number; maxMinutes: number };
+	roleDefaults: RoleDefaults;
+}
+
+export const DEFAULT_SUBAGENT_CONFIG: Readonly<SubagentConfig> = Object.freeze({
+	maxSubagents: 5,
+	maxTurns: DEFAULT_MAX_TURNS,
+	maxTokens: undefined,
+	maxCorrections: 1,
+	timeout: Object.freeze({ idleMinutes: 10, maxMinutes: 30 }),
+	roleDefaults: Object.freeze({}),
+});
+
+const timeoutMinutes = parsers.number({ greaterThan: 0, max: 2_147_483_647 / 60_000 });
+const timeoutField: FieldParser<SubagentConfig["timeout"]> = (raw, report) => {
+	const timeout = parsers.object({
+		idleMinutes: field(timeoutMinutes, DEFAULT_SUBAGENT_CONFIG.timeout.idleMinutes),
+		maxMinutes: field(timeoutMinutes, DEFAULT_SUBAGENT_CONFIG.timeout.maxMinutes),
+	})(raw, report);
+	if (timeout.maxMinutes <= timeout.idleMinutes) {
+		throw new Error(`maxMinutes (${timeout.maxMinutes}) must be greater than idleMinutes (${timeout.idleMinutes})`);
+	}
+	return timeout;
+};
+
+/**
+ * The user `config.json` store shared by the extension and `loadRoleCatalog`.
+ * Invalid bounded limits and `roleDefaults` keys fall back to defaults; an
+ * invalid `maxTokens` disables the config because its default is unlimited.
+ */
+export function createSubagentConfigStore(agentDir = getAgentDir()) {
+	return createConfigStore({
+		extensionId: "pi-subagent",
+		agentDir,
+		fields: {
+			maxSubagents: field(parsers.integer({ min: 1 }), DEFAULT_SUBAGENT_CONFIG.maxSubagents),
+			maxTurns: field(parsers.integer({ min: 1 }), DEFAULT_SUBAGENT_CONFIG.maxTurns),
+			maxTokens: field<number | undefined>(parsers.integer({ min: 1 }), undefined, { onInvalid: "disable" }),
+			maxCorrections: field(parsers.integer({ min: 0 }), DEFAULT_SUBAGENT_CONFIG.maxCorrections),
+			timeout: field(timeoutField, DEFAULT_SUBAGENT_CONFIG.timeout),
+			roleDefaults: field(roleDefaultsField, DEFAULT_SUBAGENT_CONFIG.roleDefaults),
+		},
+	});
+}
+
+/**
+ * Read only `roleDefaults`. The extension reports and enforces the execution limits, so a bad limit does not
+ * break the Role catalog of other consumers; other keys are not this reader's issues.
+ */
+function loadRoleDefaults(agentDir: string) {
+	const store = createConfigStore({
+		extensionId: "pi-subagent",
+		agentDir,
+		fields: { roleDefaults: field(roleDefaultsField, DEFAULT_SUBAGENT_CONFIG.roleDefaults) },
+	});
+	const loaded = store.loadSync();
+	const issues = loaded.issues.filter(({ key }) => !key || /^roleDefaults(?![\w$])/.test(key));
+	// A file that cannot load has no trusted `roleDefaults`.
+	return issues.some(({ key }) => !key)
+		? { store, loaded: { status: "disabled" as const, source: loaded.source, issues } }
+		: { store, loaded: { ...loaded, issues } };
+}
+
 function readRoleDefaults(agentDir: string): RoleDefaults {
-	const path = extensionConfigPath("pi-subagent", agentDir);
-	let raw: string;
-	try {
-		raw = readFileSync(path, "utf8");
-	} catch (error: unknown) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return {};
-		throw error;
-	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch (error) {
-		throw new Error(`${path} is not valid JSON (${error instanceof Error ? error.message : String(error)}).`);
-	}
-	// Whole-file validation belongs to the execution policy reader, which blocks delegation.
-	const value = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).roleDefaults : undefined;
-	return value === undefined ? {} : parseRoleDefaults(value, `${path}: roleDefaults`);
+	const { store, loaded } = loadRoleDefaults(agentDir);
+	if (loaded.status !== "ok") throw new Error(`${store.path}: ${formatConfigIssues(loaded.issues)}`);
+	return loaded.value.roleDefaults;
+}
+
+/**
+ * Report `roleDefaults` issues at each session start, and return a function that reports them after a lazy
+ * Role catalog load, such as `loadRoleCatalog` or `resolveRoleLaunch`. Every pi-config-store reporter shares
+ * one record, so each issue shows one time in each session, also with the pi-subagent extension active.
+ */
+export function registerRoleDefaultsReporting(
+	pi: Pick<ExtensionAPI, "on">,
+	agentDir = getAgentDir(),
+): (ctx: Pick<ExtensionContext, "hasUI" | "ui">) => void {
+	const target = loadRoleDefaults(agentDir).store;
+	const reporter = registerConfigReporting(pi, []);
+	const report = (ctx: Pick<ExtensionContext, "hasUI" | "ui">) => reporter.report(ctx, target, loadRoleDefaults(agentDir).loaded);
+	pi.on("session_start", (_event, ctx) => report(ctx));
+	return report;
 }
 
 const withDefaults = (defaults: readonly string[] | undefined, values: readonly string[]): string[] => [...new Set([...(defaults ?? []), ...values])];
@@ -408,7 +494,8 @@ function claimedRoleName(file: string): RoleName {
  * Package-shipped Roles plus user Roles from `config/pi-subagent`, with
  * `roleDefaults` merged in. A user Role overrides a same-named built-in. Each
  * invalid or duplicate user file is reported and makes its claimed name
- * unavailable without hiding valid Roles. Malformed `roleDefaults` throws.
+ * unavailable without hiding valid Roles. Invalid `roleDefaults` keys are
+ * dropped; a `config.json` that cannot load (for example, malformed JSON) throws.
  */
 export function loadRoleCatalog(agentDir = getAgentDir()): RoleCatalog {
 	const defaults = readRoleDefaults(agentDir);
@@ -470,12 +557,8 @@ export function resolveTaskRoute(
 	profileName: ProfileName,
 	agentDir = getAgentDir(),
 ): ResolvedTaskRoute {
-	let config;
-	try {
-		config = loadTaskModelsConfig(agentDir).value;
-	} catch {
-		throw new Error("Couldn't read task model config. Run /task-models.");
-	}
+	// A disabled config throws with the path and the problems.
+	const config = loadTaskModelsConfig(agentDir).value;
 	return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName]);
 }
 

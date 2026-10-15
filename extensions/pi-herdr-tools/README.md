@@ -152,7 +152,7 @@ Normal cleanup does these steps. It checks whether a tab in another Herdr worksp
 - The consumer-owned `pi-herdr-btw/btw` task defaults to `fast`.
 - Before the pane starts, `/btw` selects the first authenticated viable effective profile route.
 
-`~/.pi/agent/config/pi-task-models/config.json` is shared, and `@henryqw/pi-task-models` owns it. A task entry is an explicit user override. Routes resolve before the pane starts. If this file is missing or unreadable, or a task profile is not configured, the package shows one warning one time per session.
+`~/.pi/agent/config/pi-task-models/config.json` is shared, and `@henryqw/pi-task-models` owns it. A task entry is an explicit user override. Routes resolve before the pane starts. If this file is missing, or a task profile is not configured, the package shows one warning one time per session. At session start and before each route resolution, the package also shows each problem in this file, such as an unknown key or malformed JSON, one time in each session.
 
 #### Merge delivery
 
@@ -196,11 +196,11 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 | `split` | Sets the side-pane placement. | `right` or `down`. | `right` |
 
 - All fields are optional.
-- The extension rejects unknown keys and non-object files.
-- `/btw config show` prints effective values.
-- `/btw config reset` saves the defaults.
 - The config file is optional. If it is missing, the extension uses the defaults.
-- A malformed config file causes a visible failure, and the file does not change.
+- At launch, the extension shows a warning for each unknown key and each invalid value. An invalid value uses its default. A malformed file uses all defaults. `/btw` continues to work, and the file does not change.
+- `/btw config show` prints effective values.
+- `/btw config <option> <value>` fails while the file has an issue. Fix the file, or run `/btw config reset`.
+- `/btw config reset` first shows any problem in the file, then replaces the whole file with the defaults.
 
 ## State and storage
 

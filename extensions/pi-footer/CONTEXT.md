@@ -25,7 +25,7 @@ Left side of the third footer line for every non-empty status from extensions ou
 _Avoid_: Family extension status, rewritten status
 
 **Footer color configuration**:
-User config at `getAgentDir()/config/pi-footer/config.json` that maps footer-owned color roles to theme tokens, concrete colors, or ANSI indices. The footer reads it once per session start and never rewrites it. A missing file or missing role keeps the built-in color; an invalid file notifies at each session start with its path and reason and the whole color config falls back to built-in colors. It does not control the thinking-level gradient or external extension status colors.
+User config at `getAgentDir()/config/pi-footer/config.json` that maps footer-owned color roles to theme tokens, concrete colors, or ANSI indices. The footer reads it once per session start and never rewrites it. A missing file or missing role keeps the built-in color. At each session start, an unknown key, an unknown role, or an invalid color warns with its path and reason; only that role falls back to its built-in color. A malformed file falls back to built-in colors for every role. It does not control the thinking-level gradient or external extension status colors.
 _Avoid_: style config, theme override, per-metric styling
 
 **Open command**:
@@ -33,7 +33,7 @@ The `/open` Pi command that launches configured command for current working dire
 _Avoid_: editor command, project opener
 
 **Open command configuration**:
-User config at `getAgentDir()/config/pi-open-in/config.json` selecting executable launched by `/open`; `/set-open-in <command>` updates it. A missing file silently defaults to `code` without being created. An existing file must be an object with exactly one non-empty string `command`; anything else makes `/open` fail visibly without touching the file. Command string is split on whitespace; tokens with spaces unsupported.
+User config at `getAgentDir()/config/pi-open-in/config.json` selecting executable launched by `/open`; `/set-open-in <command>` updates it. A missing file silently defaults to `code` without being created. An unknown key, an invalid `command`, or a malformed file warns once per session, at session start or the next `/open`, and `command` falls back to `code` without touching the file. The footer and `/open` both report it at session start, and pi-config-store's shared record shows each issue once, also with footer-only activation; footer renders read it but never notify. Command string is split on whitespace; tokens with spaces unsupported.
 _Avoid_: project config, editor preference
 
 **Current working directory**:

@@ -1,10 +1,12 @@
 import { resolve } from "node:path";
-import { copyToClipboard, type ExtensionAPI, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { formatConfigIssues, registerConfigReporting } from "@henryqw/pi-config-store";
 import {
 	createBarkConfigStore,
 	DEFAULT_SERVER_URL,
 	parseServerUrl,
 	statusNotificationsEnabled,
+	writeBarkConfig,
 	type BarkConfig,
 } from "../src/config.ts";
 import { encryptPushContent } from "../src/encryption.ts";
@@ -39,7 +41,6 @@ async function sendPush(
 	fetchImpl: typeof globalThis.fetch,
 	cancelSignal?: AbortSignal,
 ): Promise<void> {
-	if (!config.deviceKey) throw new Error("Bark Device Key is required.");
 	const payload = config.encryption ? encryptPushContent(content, config.encryption) : content;
 	let response: Response;
 	try {
@@ -60,6 +61,7 @@ async function sendPush(
 
 export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOptions = {}): void {
 	const configStore = createBarkConfigStore(options.agentDir);
+	const configReporter = registerConfigReporting(pi, [configStore]);
 	const copy = options.copy ?? copyToClipboard;
 	const fetchImpl = options.fetch ?? globalThis.fetch;
 
@@ -70,12 +72,14 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	let runOutcome: "finished" | "failed" | "aborted" = "finished";
 	const queueStatus = async (
 		title: string,
-		cwd: string,
+		ctx: ExtensionContext,
 		shouldSend?: Promise<boolean>,
 		cancelSignal?: AbortSignal,
 	): Promise<void> => {
-		const configSnapshot = configStore.loadSync().value;
-		if (!configSnapshot.deviceKey || !statusNotificationsEnabled(configSnapshot, cwd)) return;
+		const loaded = configStore.loadSync();
+		configReporter.report(ctx, configStore, loaded);
+		if (loaded.status === "disabled" || !statusNotificationsEnabled(loaded.value, ctx.cwd)) return;
+		const configSnapshot = loaded.value;
 		const sessionName = pi.getSessionName()?.trim() || "Unnamed";
 		const contentSnapshot = { title, body: `Pi session: ${sessionName}` };
 		const send = async () => {
@@ -87,7 +91,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	};
 
 	pi.on("ui_prompt_start", (_event, ctx) => {
-		void queueStatus("Pi needs input", ctx.cwd).catch((error) => {
+		void queueStatus("Pi needs input", ctx).catch((error) => {
 			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 		});
 	});
@@ -119,7 +123,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		const shouldSend = new Promise<boolean>((resolve) => {
 			setImmediate(() => resolve(ctx.isIdle()));
 		});
-		void queueStatus(title, ctx.cwd, shouldSend, controller.signal).catch((error) => {
+		void queueStatus(title, ctx, shouldSend, controller.signal).catch((error) => {
 			ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
 		});
 	});
@@ -133,17 +137,24 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 					? ["on", "off"].includes(second) && !extra
 					: ["on", "off", "inherit"].includes(first) && !second;
 			if (!valid) throw new Error("Usage: /bark <on|off|inherit> | default <on|off>");
+			// A status setting fixes nothing that disables pi-bark, so do not report a change that sends nothing.
+			const loaded = configStore.loadSync();
+			configReporter.report(ctx, configStore, loaded);
+			if (loaded.status === "disabled") {
+				throw new Error(`Bark is not configured (${formatConfigIssues(loaded.issues)}). Run /set-bark <device-key> [server-url] or fix ${configStore.path} first.`);
+			}
+			const report: Parameters<typeof writeBarkConfig>[3] = (store, result) => configReporter.report(ctx, store, result);
 			if (first === "default") {
 				const enabled = second === "on";
-				await configStore.update((config) => ({
+				await writeBarkConfig(options.agentDir, [], (config) => ({
 					...config,
 					statusNotifications: { ...config.statusNotifications, defaultEnabled: enabled },
-				}));
+				}), report);
 				ctx.ui.notify(`${enabled ? "Enabled" : "Disabled"} Bark status notifications by default.`, "info");
 				return;
 			}
 			const cwd = resolve(ctx.cwd);
-			await configStore.update((config) => {
+			await writeBarkConfig(options.agentDir, [], (config) => {
 				const cwdOverrides = { ...config.statusNotifications.cwdOverrides };
 				if (first === "inherit") delete cwdOverrides[cwd];
 				else cwdOverrides[cwd] = first === "on";
@@ -151,7 +162,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 					...config,
 					statusNotifications: { ...config.statusNotifications, cwdOverrides },
 				};
-			});
+			}, report);
 			ctx.ui.notify(
 				first === "inherit"
 					? "This CWD now inherits the default Bark notification setting."
@@ -165,8 +176,12 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		description: "Copy the last agent message and send a Bark push notification",
 		handler: async (args, ctx) => {
 			if (args.trim()) throw new Error("Usage: /copyb");
-			const config = configStore.loadSync().value;
-			if (!config.deviceKey) throw new Error("Bark is not configured. Run /set-bark <device-key> [server-url] first.");
+			const loaded = configStore.loadSync();
+			configReporter.report(ctx, configStore, loaded);
+			if (loaded.status === "disabled") {
+				throw new Error(`Bark is not configured (${formatConfigIssues(loaded.issues)}). Run /set-bark <device-key> [server-url] or fix ${configStore.path}.`);
+			}
+			const config = loaded.value;
 
 			const text = lastAssistantText(ctx.sessionManager.buildContextEntries());
 			if (!text) throw new Error("No agent messages to copy yet.");
@@ -182,11 +197,9 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		handler: async (args, ctx) => {
 			const [deviceKey, serverUrl = DEFAULT_SERVER_URL, extra] = args.trim().split(/\s+/);
 			if (!deviceKey || extra) throw new Error("Usage: /set-bark <device-key> [server-url]");
-			await configStore.update((config) => ({
-				...config,
-				serverUrl: parseServerUrl(serverUrl),
-				deviceKey,
-			}));
+			const url = parseServerUrl(serverUrl);
+			await writeBarkConfig(options.agentDir, ["serverUrl", "deviceKey"], (config) => ({ ...config, serverUrl: url, deviceKey }), (store, result) =>
+				configReporter.report(ctx, store, result));
 			ctx.ui.notify("Saved the Bark Device Key and server URL.", "info");
 		},
 	});

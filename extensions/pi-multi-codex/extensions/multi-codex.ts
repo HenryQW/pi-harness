@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createConfigStore, extensionConfigDir, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
+import { createConfigStore, extensionConfigDir, field, parsers, registerConfigReporting, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { lock } from "proper-lockfile";
 import {
 	createAssistantMessageEventStream,
@@ -76,7 +76,6 @@ type UsageState = {
 };
 
 type ParsedUsage = { remaining: number; reset: number; fiveHourReset?: number; limitedUntil?: number; tier?: string };
-type Config = { autoSwitchOn429: boolean };
 
 const NATIVE_PROVIDER_ID = "openai-codex";
 const CODEX_ALIAS_PATTERN = /^openai-codex-([2-9]|[1-9]\d+)$/;
@@ -91,13 +90,6 @@ const CACHE_MUTEX_RETRY_MS = 20;
 const CLEANUP_TIMEOUT_MS = 250;
 const cachePath = () => join(extensionConfigDir("pi-multi-codex"), "usage.json");
 const cacheMutexPath = () => `${cachePath()}.mutex`;
-
-function parseConfig(value: unknown): Config {
-	if (!isRecord(value) || Object.keys(value).length !== 1 || typeof value.autoSwitchOn429 !== "boolean") {
-		throw new Error("Config must contain only autoSwitchOn429:boolean.");
-	}
-	return { autoSwitchOn429: value.autoSwitchOn429 };
-}
 
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -820,11 +812,11 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	const native = builtinProviders().find((provider) => provider.id === NATIVE_PROVIDER_ID) as CodexProvider | undefined;
 	if (!native) return;
 	const quota = new CodexQuotaStatus();
-	const configStore = createConfigStore<Config>({
+	const configStore = createConfigStore({
 		extensionId: "pi-multi-codex",
-		defaults: () => ({ autoSwitchOn429: true }),
-		parse: parseConfig,
+		fields: { autoSwitchOn429: field(parsers.boolean(), true) },
 	});
+	registerConfigReporting(pi, [configStore]);
 	const registered = new Map<number, CodexProvider>();
 	const triedSlots = new Set<number>();
 	let sessionContext: ExtensionContext | undefined;
@@ -833,7 +825,6 @@ export default function multiCodex(pi: ExtensionAPI): void {
 	let preserveModelChoice = false;
 	let selectingAutomatically = false;
 	let autoSwitchOn429 = true;
-	let configWarned = false;
 	let providerRequest: { provider?: string; status?: number } | undefined;
 
 	const registerSlot = (slot: number): void => {
@@ -949,15 +940,11 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		triedSlots.clear();
 		providerRequest = undefined;
 		preserveModelChoice = false;
-		try {
-			autoSwitchOn429 = configStore.loadSync().value.autoSwitchOn429;
-		} catch {
-			autoSwitchOn429 = false;
-			if (!configWarned) {
-				configWarned = true;
-				ctx.ui.notify("Pi Multi Codex config is invalid. Automatic 429 switching is disabled; the file was left unchanged.", "warning");
-			}
-		}
+		// registerConfigReporting shows any issues. A file-level problem or an invalid or misspelled
+		// `autoSwitchOn429` keeps switching off; a missing file uses the default.
+		const config = configStore.loadSync();
+		autoSwitchOn429 = config.status === "ok" && config.value.autoSwitchOn429
+			&& !config.issues.some(({ key }) => key === "" || key === "autoSwitchOn429");
 		automaticOpen = isManagedModel(ctx.model) && !sessionHasAgentWork(ctx);
 		automaticCandidate = ctx.model;
 		// Cache-only ranking happens before background refresh starts.

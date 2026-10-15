@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ConfigIssue, ConfigLoad } from "@henryqw/pi-config-store";
 import { DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
 import { isBtwPayload, type BtwPayload } from "../internal/core.ts";
 import {
@@ -123,21 +124,22 @@ class FakeStore implements ContextStorePort {
 }
 
 class FakeConfigStore implements ConfigStorePort {
+	readonly extensionId = "pi-herdr-btw";
+	readonly path = "/agent/config/pi-herdr-btw/config.json";
 	config: BtwConfig = { ...DEFAULT_CONFIG };
 	readonly saved: BtwConfig[] = [];
 	saveRuns = 0;
 	updateRuns = 0;
 	source: "file" | "missing" = "file";
-	loadError: Error | undefined;
+	issues: ConfigIssue[] = [];
 
-	loadSync(): { source: "file" | "missing"; value: BtwConfig } {
-		if (this.loadError) throw this.loadError;
-		return { source: this.source, value: { ...this.config } };
+	loadSync(): ConfigLoad<BtwConfig> {
+		return { status: "ok", source: this.source, value: { ...this.config }, issues: [...this.issues] };
 	}
 
 	async save(config: BtwConfig): Promise<void> {
 		this.config = { ...config };
-		this.loadError = undefined;
+		this.issues = [];
 		this.source = "file";
 		this.saved.push({ ...this.config });
 		this.saveRuns += 1;
@@ -460,10 +462,13 @@ test("config subcommand updates and resets launch defaults, including malformed-
 		assert.equal(harness.configStore.config.tools, "read-only");
 		assert.equal(harness.configStore.updateRuns, 2);
 
-		harness.configStore.loadError = new Error("malformed config");
+		harness.configStore.issues = [{ kind: "invalid-json", key: "", message: "invalid JSON before reset" }];
 		await command?.handler("config reset", ctx);
 		assert.deepEqual(harness.configStore.config, DEFAULT_CONFIG);
 		assert.equal(harness.configStore.saveRuns, 1);
+		assert.deepEqual(ctx.notifications.at(-2), {
+			message: `pi-herdr-btw config issues (${harness.configStore.path}): invalid JSON before reset; defaults replace invalid settings.`, type: "warning",
+		});
 	});
 });
 
@@ -1023,6 +1028,25 @@ test("parent uses task profile without a current model", async () => {
 			"--thinking",
 			"high",
 		]);
+	});
+});
+
+test("parent launches with defaults and warns once when config has issues", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const configStore = new FakeConfigStore();
+		configStore.issues = [{ kind: "invalid-value", key: "split", message: "must be one of right, down" }];
+		const harness = await createHarness(store, herdrExec(), configStore);
+		const ctx = createCommandContext();
+		await harness.commands.get("btw")?.handler("question", ctx);
+		await harness.commands.get("btw")?.handler("config show", ctx);
+		harness.cleanup();
+
+		assert.equal(store.created.length, 1);
+		assert.deepEqual(ctx.notifications.filter(({ type }: { type: string }) => type === "warning"), [{
+			message: "pi-herdr-btw config issues (/agent/config/pi-herdr-btw/config.json): split: must be one of right, down; defaults replace invalid settings.",
+			type: "warning",
+		}]);
 	});
 });
 

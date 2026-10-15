@@ -9,6 +9,7 @@ import {
 	availableTaskModels,
 	executeTaskRoutes,
 	loadTaskModelsConfig,
+	registerTaskModelsConfigReporting,
 	registerModelTask,
 	resolveConfiguredTaskRoute,
 	resolveConfiguredTaskRoutes,
@@ -59,12 +60,13 @@ function eventBus() {
 
 function controlPlane(events: ReturnType<typeof eventBus>, agentDir: string) {
 	let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
-	let sessionStart: ((event: unknown, ctx: any) => void) | undefined;
+	const listeners: Array<(event: unknown, ctx: any) => void> = [];
+	const sessionStart = (event: unknown, ctx: any) => { for (const listener of listeners) listener(event, ctx); };
 	const pi = {
 		events,
 		on(name: string, listener: (event: unknown, ctx: any) => void) {
 			assert.equal(name, "session_start");
-			sessionStart = listener;
+			listeners.push(listener);
 		},
 		registerCommand(_name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
 			handler = command.handler;
@@ -88,21 +90,30 @@ test("loads defaults without writing or legacy fallback and preserves invalid fi
 		assert.throws(() => readFileSync(file, "utf8"), { code: "ENOENT" });
 
 		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
-		writeFileSync(file, "{ not json\n", { encoding: "utf8" });
-		assert.throws(() => loadTaskModelsConfig(dir), /Unexpected token|JSON/);
-		assert.equal(readFileSync(file, "utf8"), "{ not json\n");
-
-		for (const invalid of [
-			{ extra: true },
-			{ profiles: { fast: { primary: { model: " provider/model", thinkingLevel: "low" } } } },
-			{ profiles: { fast: { primary: { model: "provider/model", thinkingLevel: "low", extra: true } } } },
-			{ tasks: { "bad task": "fast" } },
-		]) {
-			const text = `${JSON.stringify(invalid)}\n`;
-			writeFileSync(file, text);
-			assert.throws(() => loadTaskModelsConfig(dir));
-			assert.equal(readFileSync(file, "utf8"), text);
+		for (const disabled of ["{ not json\n", '{"profiles":[]}']) {
+			writeFileSync(file, disabled, { encoding: "utf8" });
+			assert.throws(() => loadTaskModelsConfig(dir), /Task model config at .*config\.json is disabled: (invalid JSON|profiles: must be a JSON object)/);
+			assert.equal(readFileSync(file, "utf8"), disabled);
 		}
+
+		const route = { model: "provider/model", thinkingLevel: "low" };
+		const text = `${JSON.stringify({
+			extra: true,
+			profiles: {
+				fast: { primary: { model: " provider/model", thinkingLevel: "low" } },
+				balanced: { primary: { ...route, extra: true } },
+				frontier: { primary: route },
+				fav: { primary: route, fallback: route },
+				unknown: { primary: route },
+			},
+			tasks: { "bad task": "fast", "pi-new/task": "slow", "pi-new/kept": "fav" },
+		})}\n`;
+		writeFileSync(file, text);
+		assert.deepEqual(loadTaskModelsConfig(dir), {
+			source: "file",
+			value: { profiles: { frontier: { primary: route } }, tasks: { "pi-new/kept": "fav" } },
+		});
+		assert.equal(readFileSync(file, "utf8"), text);
 
 		writeFileSync(file, `${JSON.stringify({ tasks: { "pi-new/customTask": "frontier" } })}\n`);
 		assert.deepEqual(loadTaskModelsConfig(dir), {
@@ -128,6 +139,140 @@ test("warns once at session start when config is missing", () => {
 			"warning",
 		]]);
 		assert.throws(() => readFileSync(configFile(dir), "utf8"), { code: "ENOENT" });
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("reports config issues at launch: warnings fall back, a broken profile table disables", () => {
+	const dir = tempDir();
+	try {
+		const { sessionStart } = controlPlane(eventBus(), dir);
+		const file = configFile(dir);
+		const presets = join(dir, "config", "pi-task-models", "presets.json");
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(file, JSON.stringify({ extra: {}, tasks: { "pi-example/review": "slow" } }));
+		writeFileSync(presets, JSON.stringify({ " bad": {} }));
+		const notices: Array<[string, string]> = [];
+		const ctx = { hasUI: true, ui: { notify(message: string, level: string) { notices.push([message, level]); } } };
+		sessionStart({}, ctx);
+		assert.deepEqual(notices, [
+			[`pi-task-models config issues (${file}): extra: unknown key; tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"],
+			[`pi-task-models config issues (${presets}): [" bad"]: preset names must be non-empty text without surrounding whitespace or control characters; defaults replace invalid settings.`, "warning"],
+		]);
+
+		notices.length = 0;
+		writeFileSync(file, "{ not json");
+		sessionStart({}, ctx);
+		assert.equal(notices[0]![1], "error");
+		assert.match(notices[0]![0], /^pi-task-models disabled \(.*config\.json\): invalid JSON/);
+
+		// A misspelled `profiles` key is an invalid profile table, so routing is disabled.
+		notices.length = 0;
+		writeFileSync(file, JSON.stringify({ profile: {} }));
+		sessionStart({}, ctx);
+		assert.deepEqual(notices[0], [`pi-task-models disabled (${file}): profiles: unknown key "profile"; did you mean "profiles"?`, "error"]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("consumers report task-model config issues at launch and after a lazy read, once per session", () => {
+	const dir = tempDir();
+	try {
+		const file = configFile(dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(file, JSON.stringify({ extra: 1 }));
+		const handlers: Array<(event: unknown, ctx: unknown) => void> = [];
+		const pi = { on: (_event: string, handler: (event: unknown, ctx: unknown) => void) => { handlers.push(handler); } };
+		const first = registerTaskModelsConfigReporting(pi as never, dir);
+		const second = registerTaskModelsConfigReporting(pi as never, dir);
+		const notices: Array<[string, string]> = [];
+		const ctx = { hasUI: true, ui: { notify(message: string, level: string) { notices.push([message, level]); } } };
+		const event = {};
+		for (const handler of handlers) handler(event, ctx);
+		assert.deepEqual(notices, [[`pi-task-models config issues (${file}): extra: unknown key; defaults replace invalid settings.`, "warning"]]);
+		writeFileSync(file, JSON.stringify({ extra: 1, tasks: { "pi-example/review": "slow" } }));
+		first(ctx as never);
+		second(ctx as never);
+		assert.deepEqual(notices.slice(1), [[`pi-task-models config issues (${file}): tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"]]);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("/task-models repairs a disabled config only after confirmation", async () => {
+	const dir = tempDir();
+	try {
+		const { handler } = controlPlane(eventBus(), dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(configFile(dir), "{ not json");
+		let confirmed = false;
+		const notices: string[] = [];
+		const run = () => {
+			const selections = ["fast · not configured", "test/model", "off", "None"];
+			return handler("", {
+				hasUI: true,
+				ui: {
+					select: async () => selections.shift(),
+					confirm: async (_title: string, message: string) => {
+						assert.match(message, /config\.json has issues: invalid JSON/);
+						return confirmed;
+					},
+					notify(message: string) { notices.push(message); },
+				},
+				scopedModels: [],
+				modelRegistry: { getAvailable: () => [{ provider: "test", id: "model", input: ["text"], reasoning: false }] },
+			});
+		};
+		await run();
+		assert.equal(readFileSync(configFile(dir), "utf8"), "{ not json");
+		assert.match(notices[0]!, /^pi-task-models disabled/);
+		confirmed = true;
+		await run();
+		assert.deepEqual(loadTaskModelsConfig(dir).value, {
+			profiles: { fast: { primary: { model: "test/model", thinkingLevel: "off" } } }, tasks: {},
+		});
+		assert.equal(notices.at(-1), "fast profile saved.");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("/task-models repair keeps the tasks that loaded and refuses a file changed after the snapshot", async () => {
+	const dir = tempDir();
+	try {
+		const { handler } = controlPlane(eventBus(), dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(configFile(dir), JSON.stringify({ profiles: [], tasks: { "pi-example/review": "frontier" } }));
+		let onConfirm = () => {};
+		const notices: string[] = [];
+		const run = () => {
+			const selections = ["fast · not configured", "test/model", "off", "None"];
+			return handler("", {
+				hasUI: true,
+				ui: {
+					select: async () => selections.shift(),
+					confirm: async () => { onConfirm(); return true; },
+					notify(message: string) { notices.push(message); },
+				},
+				scopedModels: [],
+				modelRegistry: { getAvailable: () => [{ provider: "test", id: "model", input: ["text"], reasoning: false }] },
+			});
+		};
+		const repaired = JSON.stringify({ profiles: {}, tasks: {} });
+		onConfirm = () => writeFileSync(configFile(dir), repaired);
+		await run();
+		assert.equal(readFileSync(configFile(dir), "utf8"), repaired);
+		assert.match(notices.at(-1)!, /config\.json changed since it was read; nothing was written/);
+
+		writeFileSync(configFile(dir), JSON.stringify({ profiles: [], tasks: { "pi-example/review": "frontier" } }));
+		onConfirm = () => {};
+		await run();
+		assert.deepEqual(loadTaskModelsConfig(dir).value, {
+			profiles: { fast: { primary: { model: "test/model", thinkingLevel: "off" } } },
+			tasks: { "pi-example/review": "frontier" },
+		});
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -227,26 +372,38 @@ test("missing, empty, or invalid presets leave active config and preset files un
 		const path = join(dir, "config", "pi-task-models", "presets.json");
 		const profile = { primary: { model: "provider/model", thinkingLevel: "off" } };
 		for (const [contents, expected] of [
-			[undefined, /Couldn't read task model presets.*presets\.json/],
-			["{}", /No presets found/],
-			["{ not json", /Invalid JSON\./],
-			[JSON.stringify({ invalid: null }), /profiles must be an object/],
-			[JSON.stringify({ invalid: { fast: profile, balanced: profile, frontier: {
-				primary: { model: "provider/model", thinkingLevel: "wrong" },
-			} } }), /frontier profile is invalid/],
-			[JSON.stringify({ invalid: { unknown: profile } }), /Unknown profile: unknown/],
-			[JSON.stringify({ invalid: { fav: { ...profile, fallback: profile.primary } } }), /fav profile has no fallback/],
+			[undefined, []],
+			["{}", []],
+			["{ not json", [/presets\.json\): invalid JSON/]],
+			[JSON.stringify({ invalid: null }), [/presets\.json\): invalid: must be a JSON object/]],
 		] as const) {
 			if (contents !== undefined) writeFileSync(path, contents);
 			const notices: string[] = [];
-			await handler("preset", { ui: {
-				select: async () => assert.fail("invalid or empty presets must not open a picker"),
+			await handler("preset", { hasUI: true, ui: {
+				select: async () => assert.fail("empty presets must not open a picker"),
 				notify(message: string) { notices.push(message); },
 			} });
-			assert.match(notices[0], expected);
+			assert.equal(notices.length, expected.length + 1);
+			expected.forEach((pattern, index) => assert.match(notices[index]!, pattern));
+			assert.match(notices.at(-1)!, /No presets found/);
 			assert.equal(readFileSync(configFile(dir), "utf8"), active);
 			if (contents !== undefined) assert.equal(readFileSync(path, "utf8"), contents);
 		}
+
+		// A bad preset or profile is dropped and reported; the rest still loads.
+		writeFileSync(path, JSON.stringify({
+			broken: null,
+			partial: { fast: profile, frontier: { primary: { model: "provider/model", thinkingLevel: "wrong" } } },
+		}));
+		const notices: string[] = [];
+		await handler("preset", { hasUI: true, ui: {
+			select: async (_title: string, options: string[]) => {
+				assert.deepEqual(options, ["partial"]);
+				return undefined;
+			},
+			notify(message: string) { notices.push(message); },
+		} });
+		assert.match(notices[0]!, /broken: must be a JSON object; partial\.frontier: primary must contain/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -270,7 +427,9 @@ test("preset application preserves config corrupted while the picker is open", a
 			notify(message: string, level: string) { notices.push([message, level]); },
 		} });
 		assert.equal(readFileSync(configFile(dir), "utf8"), "{ not json");
-		assert.deepEqual(notices, [["Couldn't save task model config.", "error"]]);
+		assert.equal(notices.length, 1);
+		assert.match(notices[0]![0], /^Couldn't save task model config: Config at .* has issues; .*invalid JSON/);
+		assert.equal(notices[0]![1], "error");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -336,6 +495,13 @@ test("Option+S saves all current profiles, merges names, confirms replacement, a
 		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "my-setup": updated, ["__proto__"]: profiles });
 		await handler("preset", { ui: { select: async () => "__proto__", notify() {} } });
 		assert.deepEqual(loadTaskModelsConfig(dir).value.profiles, profiles);
+
+		// Another session changes the active profiles while the name prompt is open; the preset saves the latest ones.
+		name = "latest";
+		const edited = { balanced: { primary: { model: "provider/edited", thinkingLevel: "low" } } };
+		ctx.ui.input = async () => { writeFileSync(configFile(dir), JSON.stringify({ profiles: edited })); return name; };
+		await handler("", ctx);
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).latest, edited);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -418,7 +584,7 @@ test("preset saving rejects invalid names, malformed existing files, and oversiz
 		} } } });
 		writeFileSync(path, contents);
 		await handler("", ctx);
-		assert.match(notices.pop()!, /Presets exceed 65536 bytes/);
+		assert.match(notices.pop()!, /Config exceeds 65536 bytes/);
 		assert.equal(readFileSync(path, "utf8"), contents);
 		writeFileSync(configFile(dir), "{}");
 		await handler("", ctx);
@@ -525,12 +691,24 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 			thinkingLevel: "off",
 		});
 
+		writeFileSync(file, JSON.stringify({
+			profiles: { frontier: { primary: { model: "provider/primary", thinkingLevel: "wrong" } } },
+			tasks: { [EXAMPLE_TASK.id]: "frontier" },
+		}));
+		assert.throws(
+			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
+			{
+				taskRouteCode: "profile-missing",
+				message: /profile frontier is invalid in .*config\.json: profiles\.frontier: primary must contain/,
+			},
+		);
+
 		writeFileSync(file, "{ not json\n");
 		assert.throws(
 			() => resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir),
 			{
-				taskRouteCode: "config-read",
-				message: /Couldn't read task model config\. Run \/task-models\./,
+				taskRouteCode: "config-disabled",
+				message: /Task model config at .*config\.json is disabled: invalid JSON/,
 			},
 		);
 		assert.throws(
@@ -780,23 +958,7 @@ test("task assignment merges into the latest config and preserves config corrupt
 
 		await run(() => writeFileSync(configFile(dir), "{ not json"));
 		assert.equal(readFileSync(configFile(dir), "utf8"), "{ not json");
-		assert.equal(notices.pop(), "Couldn't save task model config.");
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("loadTaskModelsConfig rejects fallback on fav profile", () => {
-	const dir = tempDir();
-	try {
-		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
-		const file = configFile(dir);
-		writeFileSync(file, JSON.stringify({
-			profiles: { fav: { primary: { model: "p/m", thinkingLevel: "off" }, fallback: { model: "p/f", thinkingLevel: "off" } } },
-		}));
-		const invalid = readFileSync(file, "utf8");
-		assert.throws(() => loadTaskModelsConfig(dir), /fav profile has no fallback/);
-		assert.equal(readFileSync(file, "utf8"), invalid);
+		assert.match(notices.pop()!, /^Couldn't save task model config: Config at .* has issues/);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -850,7 +1012,7 @@ test("task-models configures primary and fallback atomically in one profile flow
 		const notifications: string[] = [];
 		ctx.ui.notify = (message: string) => { notifications.push(message); };
 		await handler("", ctx);
-		assert.ok(notifications.includes("Couldn't save task model config."));
+		assert.ok(notifications.some((message) => message.startsWith("Couldn't save task model config: ")));
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

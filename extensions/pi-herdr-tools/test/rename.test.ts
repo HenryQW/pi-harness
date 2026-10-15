@@ -761,7 +761,7 @@ test("rename reports malformed shared config without rewriting it", async () => 
 		await app.commands.get("rename")?.("", app.ctx);
 		assert.equal(app.completionCalls.length, 0);
 		assert.deepEqual(app.names, []);
-		assert.match(app.notifications.at(-1) ?? "", /Couldn't read task model config/);
+		assert.match(app.notifications.at(-1) ?? "", /pi-task-models\/config.json is disabled: invalid JSON/);
 		assert.equal(await readFile(taskModelsFile, "utf8"), malformed);
 	});
 });
