@@ -59,7 +59,7 @@ type PullRequestSpec = {
 	reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
 	statusCheckRollup?: unknown[];
 	codexReactions?: string[];
-	codexSummary?: boolean;
+	codexSummary?: true | "older";
 	codexP1Threads?: number;
 };
 
@@ -252,7 +252,8 @@ function harness(options: HarnessOptions) {
 				return result(JSON.stringify([(active?.codexReactions ?? []).map((content) => ({ content, user: { login: "chatgpt-codex-connector[bot]" } }))]));
 			}
 			if (command === "gh" && args.join(" ") === "api --hostname github.com --paginate --slurp repos/acme/project/issues/42/comments?per_page=100") {
-				const summary = "<!-- codex-pull-request-review-summary -->\n| 📝 **Code Review** | ✅ **Completed** | `36e8693` | PR opened |";
+				const sha = active?.codexSummary === "older" ? "36e8693" : (active?.headRefOid ?? localHead).slice(0, 7);
+				const summary = `<!-- codex-pull-request-review-summary -->\n| 📝 **Code Review** | ✅ **Completed** | \`${sha}\` | PR opened |`;
 				return result(JSON.stringify([active?.codexSummary ? [{ user: { login: "chatgpt-codex-connector[bot]" }, body: summary }] : []]));
 			}
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") {
@@ -596,19 +597,19 @@ test("the opt-in Codex review gate waits within the CI budget and keeps P0/P1 fi
 	assert.deepEqual(reviewed.events, ["load", "notify", "load", "confirm", "load", "merge"]);
 	assert.match(reviewed.notifications[0]?.message ?? "", /waiting for the Codex review; checking every 30 s for up to 10 min/);
 
-	const approved = harness({ codexReview: true, states: [{ codexReactions: ["+1"] }, { codexReactions: ["+1"] }] });
-	assert.equal(await approved.handler("", approved.context, invocation(new PrRun())), "merge");
-	assert.deepEqual(approved.events, ["load", "confirm", "load", "merge"]);
+	const stale = harness({ codexReview: true, states: [{ codexReactions: ["+1"], codexSummary: "older" }, { codexReactions: ["+1"], codexSummary: "older" }, { codexReactions: ["+1"], codexSummary: "older" }] });
+	assert.equal(await stale.handler("", stale.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 1 }))), "none");
+	assert.equal(stale.confirmations.length + mutationCalls(stale.calls).length, 0);
 
 	const silent = harness({ codexReview: true, states: [{}, {}, {}] });
 	assert.equal(await silent.handler("", silent.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 1 }))), "none");
 	assert.deepEqual(silent.events, ["load", "notify", "load", "load", "notify"]);
-	assert.equal(silent.notifications.at(-1)?.message, 'PR #42 is still waiting for the Codex review; comment "@codex review" if it did not start, then run /pr again');
+	assert.equal(silent.notifications.at(-1)?.message, 'PR #42 is still waiting for the Codex review of the current head; run /pr again later');
 	assert.equal(silent.confirmations.length + mutationCalls(silent.calls).length, 0);
 
 	const run = new PrRun();
 	run.complete("sweep", localHead);
-	const findings = harness({ codexReview: true, states: [{ codexReactions: ["+1"], codexP1Threads: 1 }] });
+	const findings = harness({ codexReview: true, states: [{ codexSummary: true, codexP1Threads: 1 }] });
 	assert.equal(await findings.handler("", findings.context, invocation(run)), "none");
 	assert.deepEqual(findings.notifications, [{ message: "PR sweep already ran; 1 unresolved Codex P0/P1 findings block the merge prompt", type: "warning" }]);
 	assert.equal(findings.confirmations.length, 0);

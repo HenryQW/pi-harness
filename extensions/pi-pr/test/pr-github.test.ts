@@ -2219,16 +2219,24 @@ test("classifies behind, ahead, and diverged only after fetching the exact PR he
 	}
 });
 
-test("derives the opt-in Codex review gate from reactions, the summary comment, and P0/P1 threads", async () => {
+test("derives the opt-in Codex review gate from reactions, the current-head summary row, and P0/P1 threads", async () => {
 	const codex = { login: "chatgpt-codex-connector[bot]" };
-	const summary = "<!-- codex-pull-request-review-summary -->\n| Task | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n" +
-		"| 📝 **Code Review** | ✅ **Completed** <relative-time datetime=\"2026-10-01T00:00:00Z\"></relative-time> | `36e8693` | PR opened |";
+	const row = (status: string, sha: string) => `| 📝 **Code Review** | ${status} <relative-time datetime="2026-10-01T00:00:00Z"></relative-time> | \`${sha}\` | Manual request |`;
+	const summary = (...rows: string[]) => ({
+		user: codex,
+		body: `<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n${rows.join("\n")}\n`,
+	});
+	const current = summary(row("✅ **Completed**", REMOTE_HEAD.slice(0, 7)));
+	const older = summary(row("✅ **Completed**", "36e8693"));
 	const cases: Array<{ name: string; reactions: unknown[]; comments?: unknown[]; status: "running" | "complete" }> = [
 		{ name: "EYES means running", reactions: [{ content: "+1", user: codex }, { content: "eyes", user: codex }], status: "running" },
 		{ name: "no Codex activity means running", reactions: [{ content: "+1", user: { login: "octocat" } }], comments: [], status: "running" },
-		{ name: "THUMBS_UP completes", reactions: [{ content: "+1", user: codex }], status: "complete" },
-		{ name: "a Completed summary completes", reactions: [], comments: [{ user: null, body: "note" }, { user: codex, body: summary }], status: "complete" },
-		{ name: "another author's summary does not complete", reactions: [], comments: [{ user: { login: "octocat" }, body: summary }], status: "running" },
+		{ name: "THUMBS_UP alone does not complete", reactions: [{ content: "+1", user: codex }], comments: [], status: "running" },
+		{ name: "THUMBS_UP with an older Completed row waits", reactions: [{ content: "+1", user: codex }], comments: [older], status: "running" },
+		{ name: "a Completed row for the current head completes", reactions: [], comments: [{ user: null, body: "note" }, current], status: "complete" },
+		{ name: "the latest row decides", reactions: [], comments: [summary(row("✅ **Completed**", REMOTE_HEAD.slice(0, 7)), row("⏳ **In progress**", REMOTE_HEAD.slice(0, 7)))], status: "running" },
+		{ name: "an unparseable summary means running", reactions: [], comments: [{ user: codex, body: "<!-- codex-pull-request-review-summary -->\nCode Review: Completed" }], status: "running" },
+		{ name: "another author's summary does not complete", reactions: [], comments: [{ user: { login: "octocat" }, body: current.body }], status: "running" },
 	];
 	for (const { name, reactions, comments, status } of cases) {
 		const app = harness({ codexReactions: reactions, codexComments: comments });
@@ -2245,6 +2253,7 @@ test("derives the opt-in Codex review gate from reactions, the summary comment, 
 	});
 	const findings = harness({
 		codexReactions: [{ content: "+1", user: codex }],
+		codexComments: [current],
 		threads: reviewThreadOutput(reviewThreadPage([
 			thread("chatgpt-codex-connector", "P1"),
 			thread("chatgpt-codex-connector", "P0", true),

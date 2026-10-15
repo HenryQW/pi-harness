@@ -37,7 +37,8 @@ const CODEX_LOGIN = "chatgpt-codex-connector";
 const CODEX_REST_LOGIN = `${CODEX_LOGIN}[bot]`;
 const CODEX_BLOCKING_BADGE = /!\[P[01] Badge\]\(/;
 const CODEX_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->";
-const CODEX_SUMMARY_COMPLETED = /\*\*Code Review\*\*\s*\|[^|\n]*\*\*Completed\*\*/;
+/** A Code Review row of the summary table: its Status cell, then the short SHA of the reviewed head in the Commit cell. */
+const CODEX_SUMMARY_ROW = /^\|[^|\n]*\*\*Code Review\*\*[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,64})`\s*\|/gim;
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const FAILED_CHECK_STATES = new Set([
@@ -1525,8 +1526,9 @@ async function readUnresolvedReviewThreads(
 }
 
 /**
- * Codex adds EYES while it reviews, then THUMBS_UP for a clean review or a Completed summary row.
- * Without either signal it has not started yet, which also counts as running.
+ * Codex reviews every push. It adds EYES while it reviews and edits one summary comment whose latest
+ * Code Review row names the reviewed head. THUMBS_UP is PR-level and can be stale, so only a Completed
+ * row for the current head completes; a missing or unparseable summary counts as running.
  */
 async function readCodexReviewStatus(
 	pi: Pick<ExtensionAPI, "exec">,
@@ -1539,10 +1541,10 @@ async function readCodexReviewStatus(
 	])).stdout, action);
 	const reactions = (await read("Read Codex review reactions", "reactions")).filter(isCodexAuthor);
 	if (reactions.some((reaction) => reaction.content === "eyes")) return "running";
-	if (reactions.some((reaction) => reaction.content === "+1")) return "complete";
-	const comments = await read("Read Codex review summary", "comments");
-	return comments.some((comment) => isCodexAuthor(comment) && typeof comment.body === "string" &&
-		comment.body.startsWith(CODEX_SUMMARY_MARKER) && CODEX_SUMMARY_COMPLETED.test(comment.body))
+	const summary = (await read("Read Codex review summary", "comments")).filter((comment) => isCodexAuthor(comment) &&
+		typeof comment.body === "string" && comment.body.startsWith(CODEX_SUMMARY_MARKER)).at(-1);
+	const row = summary ? [...(summary.body as string).matchAll(CODEX_SUMMARY_ROW)].at(-1) : undefined;
+	return row?.[1].includes("**Completed**") && candidate.head.oid.toLowerCase().startsWith(row[2].toLowerCase())
 		? "complete"
 		: "running";
 }

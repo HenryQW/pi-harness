@@ -344,7 +344,7 @@ export function createPrCommandHandler(
 			if (interval === null) {
 				const budget = run?.policy.ciWaitMinutes ?? 0;
 				ctx.ui.notify(nextStep === "wait-review"
-					? `PR #${current.number} is still waiting for the Codex review; comment "@codex review" if it did not start, then run /pr again`
+					? `PR #${current.number} is still waiting for the Codex review of the current head; run /pr again later`
 					: budget > 0
 					? `PR #${current.number} is still waiting for CI after ${budget} min; run /pr again later`
 					: `PR #${current.number} is waiting for CI`, "warning");
