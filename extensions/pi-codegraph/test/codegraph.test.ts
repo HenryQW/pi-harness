@@ -115,36 +115,46 @@ test("initializes an opted-in linked worktree at its root once, including nested
 
 test("offers one time to index the primary checkout, then seeds the worktree from it", async (t) => {
 	const declined = await fixture(t);
-	const no = harness(declined.worktree);
-	await no.start();
-	await no.start();
+	// Non-TUI modes await setup during session_start, so a dialog there could never be answered.
+	const headless = harness(declined.worktree, { confirm: true });
+	await headless.start();
+	assert.deepEqual(headless.prompts, []);
+	const no = harness(declined.worktree, { mode: "tui" });
+	no.start();
+	await no.shutdown("new");
+	no.start();
+	await no.shutdown("new");
 	assert.equal(no.prompts.length, 1);
 	assert.equal(no.calls.some(({ args }) => args[0] === "init"), false);
 	assert.equal(no.statuses.at(-1), "<dim>○</dim> CG");
 	assert.equal(no.servers.size, 0);
 	const { primary, worktree } = await fixture(t);
-	const yes = harness(worktree, { confirm: true });
-	await yes.start();
+	const yes = harness(worktree, { mode: "tui", confirm: true });
+	yes.start();
+	await yes.shutdown("new");
 	assert.deepEqual(yes.calls.filter(({ command }) => command === "codegraph").map(({ args }) => args.join(" ")), ["--version", `init --yes ${primary}`, `init --yes ${worktree}`]);
 	assert.equal(yes.statuses.at(-1), "<success>✓</success> CG");
 });
 
 test("a dismissed prompt is not a decline, and a failed primary init keeps the primary lock", async (t) => {
-	const { primary, worktree } = await fixture(t);
+	const { primary, worktree, lock: worktreeLock } = await fixture(t);
 	const asked = Promise.withResolvers<void>();
-	const dismissed = harness(worktree, { confirm: (signal) => {
+	const dismissed = harness(worktree, { mode: "tui", confirm: (signal) => {
 		asked.resolve();
 		return new Promise((resolve) => signal?.addEventListener("abort", () => resolve(false), { once: true }));
 	} });
 	dismissed.start();
 	await asked.promise;
+	// An open dialog holds no lock: other sessions proceed, and a killed Pi leaves nothing stale.
+	await assert.rejects(stat(worktreeLock), { code: "ENOENT" });
 	await dismissed.shutdown();
 	await assert.rejects(stat(join(primary, ".git", "pi-codegraph-declined")), { code: "ENOENT" });
-	const failed = harness(worktree, { confirm: true, init: async () => {
+	const failed = harness(worktree, { mode: "tui", confirm: true, init: async () => {
 		await index(primary);
 		return { code: 1, stdout: "", stderr: "primary init failed", killed: false };
 	} });
-	await failed.start();
+	failed.start();
+	await failed.shutdown("new");
 	const lock = join(primary, ".git", "pi-codegraph-init.lock");
 	assert.ok(failed.notices[0]!.message.includes(lock));
 	await rmdir(lock);
@@ -156,8 +166,9 @@ test("does not offer to index a bare repository", async (t) => {
 	const worktree = join(base, "bare-worktree");
 	await exec("git", ["clone", "-q", "--bare", primary, bare]);
 	await exec("git", ["-C", bare, "worktree", "add", "-q", "--detach", worktree]);
-	const run = harness(worktree, { confirm: true });
-	await run.start();
+	const run = harness(worktree, { mode: "tui", confirm: true });
+	run.start();
+	await run.shutdown("new");
 	assert.deepEqual(run.prompts, []);
 	assert.equal(run.calls.some(({ args }) => args[0] === "init"), false);
 });

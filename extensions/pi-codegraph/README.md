@@ -20,7 +20,7 @@ Requires Pi 1.1.0 or later in the 1.x series and the `codegraph` executable on P
 
 ## Use
 
-Start `pi` in a linked worktree. If the primary checkout has no index, Pi asks one time if it can index the repository. If you accept, pi-codegraph runs `codegraph init --yes` in the primary checkout, then creates the worktree index. You can also initialize the primary checkout yourself:
+Start `pi` in a linked worktree. If the primary checkout has no index, the Pi TUI asks one time if it can index the repository. If you accept, pi-codegraph runs `codegraph init --yes` in the primary checkout, then creates the worktree index. You can also initialize the primary checkout yourself:
 
 ```bash
 codegraph init --yes
@@ -38,7 +38,7 @@ The tool works the same with Pi's `codemode`, including `codemode.mode` set to `
 
 ## Flow
 
-- The extension builds a missing worktree index only when the primary checkout has `.codegraph/codegraph.db`. If the primary checkout has no index, the TUI or RPC client asks one time for each repository. If you decline, the extension writes `pi-codegraph-declined` in the Git common directory and does not ask again. Remove that file to be asked again. Without a UI, the extension does not ask.
+- The extension builds a missing worktree index only when the primary checkout has `.codegraph/codegraph.db`. If the primary checkout has no index, the TUI asks one time for each repository. The extension does not hold a lock while the dialog is open. If you decline or press Escape, the extension writes `pi-codegraph-declined` in the Git common directory and does not ask again. Remove that file to be asked again. RPC, print, and JSON modes do not ask, because Pi waits for setup to finish before an RPC client can send an answer.
 - Initialization occurs when Pi starts, not when Git creates the worktree. In TUI mode, it runs in the background. Thus, the footer and later startup handlers can load.
 - Each linked worktree keeps its own `.codegraph`. The extension never shares a database between worktrees.
 - To make setup fast, the extension copies one existing index of the same repository, then runs `codegraph sync`. Sync parses again only the files that are different. The result is the same as a full `codegraph init`. The extension selects the index whose indexed commit has the fewest changed files compared to the worktree `HEAD`. It uses only a complete index that the installed CodeGraph version built. If no index is usable, it runs `codegraph init --yes`.

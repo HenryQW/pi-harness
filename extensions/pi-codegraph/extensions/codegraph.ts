@@ -117,7 +117,8 @@ async function codegraph(pi: ExtensionAPI, root: string, args: string[], signal:
 
 // Asks one time per repository; a primary index lets every later worktree copy an index.
 async function acceptPrimaryIndex(ctx: ExtensionContext, commonDir: string, primary: string, signal: AbortSignal): Promise<boolean> {
-	if (!ctx.hasUI) return false;
+	// Other modes await setup during session_start, before an RPC client's answer can be read.
+	if (ctx.mode !== "tui") return false;
 	const declined = join(commonDir, "pi-codegraph-declined");
 	try {
 		await stat(declined);
@@ -176,6 +177,16 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 	let stopProgress = () => {};
 	let indexed = false;
 	try {
+		const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"], signal);
+		const first = worktrees.split("\0\0", 1)[0].split("\0");
+		if (!first[0].startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
+		const primary = first[0].slice("worktree ".length);
+		const paths = worktrees.split("\0").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
+		const commonDir = await git(pi, root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal);
+		// Ask before taking the lock, so an open dialog neither blocks other sessions nor leaves a stale lock.
+		// A bare repository has no primary checkout to index.
+		const accepted = primary !== root && !first.includes("bare") && !(await hasIndex(root)) && !(await hasIndex(primary))
+			&& await acceptPrimaryIndex(ctx, commonDir, primary, signal);
 		await acquireLock(lock, recovery, signal, () => { stopProgress = showProgress(ctx, "waiting for index", signal); });
 		let attempted = false;
 		try {
@@ -183,20 +194,9 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 				indexed = true;
 				return root;
 			}
-			const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"], signal);
-			const first = worktrees.split("\0\0", 1)[0].split("\0");
-			if (!first[0].startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
-			// A bare repository has no primary checkout to index.
-			if (first.includes("bare")) return;
-			const primary = first[0].slice("worktree ".length);
-			const paths = worktrees.split("\0").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
-			if (primary === root) return;
+			if (primary === root || first.includes("bare")) return;
 			const primaryIndexed = await hasIndex(primary);
-			const commonDir = await git(pi, root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal);
-			if (!primaryIndexed) {
-				stopProgress();
-				if (!(await acceptPrimaryIndex(ctx, commonDir, primary, signal))) return;
-			}
+			if (!primaryIndexed && !accepted) return;
 			stopProgress();
 			stopProgress = showProgress(ctx, "indexing", signal);
 			if (!primaryIndexed) {
