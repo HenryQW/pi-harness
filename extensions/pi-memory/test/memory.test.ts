@@ -3,7 +3,8 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import memoryExtensionImpl, { MEMORY_PREPARE_TASK, MEMORY_REVIEW_TASK } from "../extensions/memory.ts";
 import { ENTRY_DELIMITER, MAX_BATCH_OPERATIONS, MAX_FILE_BYTES, MemoryStore } from "../src/store.ts";
 
@@ -18,6 +19,13 @@ function memoryExtension(api: object): void {
 const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 const SESSION_CONTEXT = { ui: { notify() {} } };
 const MEMORY_PROMPT_SECTION = "pi_memory";
+
+initTheme();
+const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+type CustomFactory = (tui: { requestRender(): void }, theme: typeof plainTheme, keybindings: undefined, done: (value: unknown) => void) => {
+	render(width: number): string[];
+	handleInput(data: string): void;
+};
 
 type PromptEvent = {
 	systemPrompt: string;
@@ -199,6 +207,16 @@ async function withReviewFixture(
 					return options.select?.(choices);
 				},
 				input: async () => options.input,
+				custom: (factory: CustomFactory) => new Promise((resolve) => {
+					const component = factory({ requestRender() {} }, plainTheme, undefined, resolve);
+					const lines = () => component.render(160).map((line) => stripVTControlCharacters(line).trimEnd());
+					questions.push(lines().join("\n"));
+					void (async () => {
+						const choice = (await options.select?.(lines()))?.replace(/^\s*→?\s*/, "");
+						for (let step = 0; choice && step < 2 && !lines().find((line) => line.includes("→"))?.includes(choice); step++) component.handleInput("\x1b[B");
+						component.handleInput(choice ? "\r" : "\x1b");
+					})();
+				}),
 			},
 		} as unknown as ExtensionContext;
 		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, handlers, questions, selections });
@@ -506,19 +524,21 @@ test("/dream stops when the agent becomes busy after reading SYSTEM.md", async (
 
 test("/dream applies an approved exact SYSTEM edit before removing represented whole entries", async () => {
 	await withReviewFixture({
-		system: "Existing global rules.", memory: "promote this rule\n§\nkeep this fact", user: "keep this preference",
+		system: "# Rules\nExisting global rules.", memory: "promote this rule\n§\nkeep this fact", user: "keep this preference",
 		responses: [JSON.stringify({
 			reason: "Global behavior applies to all sessions.",
 			system: { find: "", replace: "\nAlways verify the boundary." },
 			remove: { memory: ["promote this rule"], user: [] },
 		})],
-		select: (choices) => choices.find((choice) => choice.includes("Apply promotion")),
+		select: () => "Approve",
 	}, async ({ agentDir, memoryDir, commands, ctx, calls, notifications, questions }) => {
 		await commands.get("dream")!.handler("", ctx);
 		assert.equal(calls.length, 1);
 		assert.deepEqual(JSON.parse(calls[0]!.context.messages[0]!.content).entries.memory, ["promote this rule", "keep this fact"]);
-		assert.match(questions[0]!, /Always verify the boundary/);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "Existing global rules.\nAlways verify the boundary.");
+		assert.match(questions[0]!, /Promote memory to SYSTEM\.md .*SYSTEM\.md\n\s*\n\s*Why: Global behavior applies to all sessions\./);
+		assert.match(questions[0]!, /\+\s*3 Always verify the boundary\.\n\s*\n\s*Remove from MEMORY\.md \(now covered by SYSTEM\.md\):\n\s*- promote this rule\n/);
+		assert.match(questions[0]!, /→ Reject\s+Change no files\n\s*Approve\s+Update SYSTEM\.md, delete 1 entry from MEMORY\.md\n/);
+		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "# Rules\nExisting global rules.\nAlways verify the boundary.");
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "keep this fact");
 		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "keep this preference");
 		assert.ok(Number.isFinite(Date.parse(JSON.parse(await readFile(join(agentDir, "config", "pi-memory", "dream.json"), "utf8")).lastDreamAt)));
@@ -528,7 +548,7 @@ test("/dream applies an approved exact SYSTEM edit before removing represented w
 
 test("/dream cancellation and source drift preserve SYSTEM, entries, and timestamp", async () => {
 	const promotion = JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } });
-	await withReviewFixture({ system: "original", memory: "entry", responses: [promotion], select: (choices) => choices[0] }, async ({ agentDir, memoryDir, commands, ctx }) => {
+	await withReviewFixture({ system: "original", memory: "entry", responses: [promotion], select: () => "Reject" }, async ({ agentDir, memoryDir, commands, ctx }) => {
 		await commands.get("dream")!.handler("", ctx);
 		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "original");
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
@@ -542,7 +562,7 @@ test("/dream cancellation and source drift preserve SYSTEM, entries, and timesta
 	let memoryPath = "";
 	await withReviewFixture({
 		system: "original", memory: "entry", responses: [promotion],
-		select: async (choices) => { await writeFile(memoryPath, "changed entry"); return choices.find((choice) => choice.includes("Apply promotion")); },
+		select: async () => { await writeFile(memoryPath, "changed entry"); return "Approve"; },
 	}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
 		memoryPath = join(memoryDir, "MEMORY.md");
 		await commands.get("dream")!.handler("", ctx);
@@ -574,9 +594,9 @@ test("/dream cancellation during approval prevents SYSTEM and memory writes", as
 	await withReviewFixture({
 		system: "original", memory: "entry",
 		responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } })],
-		select: (choices) => {
+		select: () => {
 			controller.abort(new Error("dream cancelled"));
-			return choices.find((choice) => choice.includes("Apply promotion"));
+			return "Approve";
 		},
 	}, async ({ agentDir, memoryDir, commands, ctx, calls, notifications }) => {
 		await commands.get("dream")!.handler("", { ...ctx, signal: controller.signal });
@@ -594,7 +614,7 @@ test("/dream reports a timestamp failure without claiming the approved promotion
 		responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } })],
 		select: async (choices) => {
 			await mkdir(statePath);
-			return choices.find((choice) => choice.includes("Apply promotion"));
+			return "Approve";
 		},
 	}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
 		statePath = join(agentDir, "config", "pi-memory", "dream.json");
@@ -624,9 +644,9 @@ test("/dream keeps entries and leaves its timestamp unset if removal fails after
 		await withReviewFixture({
 			system: "original", memory: "entry",
 			responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } })],
-			select: (choices) => {
+			select: () => {
 				MemoryStore.prototype.applyBatch = async () => ({ success: false, error: "simulated removal failure" });
-				return choices.find((choice) => choice.includes("Apply promotion"));
+				return "Approve";
 			},
 		}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
 			await commands.get("dream")!.handler("", ctx);

@@ -1,7 +1,7 @@
 import { lstat, mkdir, opendir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, generateDiffString, getAgentDir, getSelectListTheme, renderDiff, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { askQuestion } from "@henryqw/pi-ask-question";
 import {
 	extensionConfigDir,
@@ -20,7 +20,7 @@ import {
 	type ResolvedTaskRoute,
 	type TaskRouteError,
 } from "@henryqw/pi-task-models";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
 import { memoryConfigStore, type MemoryConfig } from "../src/config.ts";
@@ -430,6 +430,43 @@ function dreamSystemText(snapshot: ReviewSnapshot, proposal: DreamProposal): str
 	return updated;
 }
 
+async function confirmDream(ctx: ExtensionContext, systemPath: string, old: string, updated: string, proposal: DreamProposal, signal?: AbortSignal): Promise<boolean> {
+	return ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {
+		signal?.addEventListener("abort", () => done(false), { once: true });
+		const container = new Container();
+		const border = () => new DynamicBorder((text: string) => theme.fg("accent", text));
+		container.addChild(border());
+		container.addChild(new Text(`${theme.fg("accent", theme.bold("Promote memory to SYSTEM.md"))} ${theme.fg("dim", escapeDisplayControls(systemPath))}`, 1, 0));
+		container.addChild(new Text(theme.fg("muted", `Why: ${escapeDisplayControls(proposal.reason)}`), 1, 1));
+		if (updated !== old) container.addChild(new Text(renderDiff(generateDiffString(escapeDisplayControls(old), escapeDisplayControls(updated)).diff), 1, 0));
+		for (const [target, file] of [["memory", "MEMORY.md"], ["user", "USER.md"]] as const) {
+			if (!proposal.remove[target].length) continue;
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.bold(`Remove from ${file} (now covered by SYSTEM.md):`), 1, 0));
+			for (const entry of proposal.remove[target]) container.addChild(new Text(theme.fg("toolDiffRemoved", `- ${escapeDisplayControls(entry)}`), 1, 0));
+		}
+		const changes = [updated !== old && "update SYSTEM.md", ...(["memory", "user"] as const).map((target) => {
+			const count = proposal.remove[target].length;
+			return count && `delete ${count} ${count === 1 ? "entry" : "entries"} from ${target === "memory" ? "MEMORY.md" : "USER.md"}`;
+		})].filter(Boolean).join(", ");
+		const list = new SelectList([
+			{ value: "reject", label: "Reject", description: "Change no files" },
+			{ value: "approve", label: "Approve", description: changes.charAt(0).toUpperCase() + changes.slice(1) },
+		], 2, getSelectListTheme());
+		list.onSelect = (item) => done(item.value === "approve");
+		list.onCancel = () => done(false);
+		container.addChild(new Spacer(1));
+		container.addChild(list);
+		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc reject"), 1, 0));
+		container.addChild(border());
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => { list.handleInput(data); tui.requestRender(); },
+		};
+	});
+}
+
 function validateEntryContent(content: string): string | undefined {
 	const normalized = normalizeEntry(content);
 	if (!normalized) return "Content cannot be empty.";
@@ -778,13 +815,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 					return;
 				}
 				const updated = dreamSystemText(snapshot, proposal);
-				const answer = await askQuestion({
-					question: `Promote this change to agent-global SYSTEM.md and remove the listed whole entries?\n\n${escapeDisplayControls(JSON.stringify(proposal))}`,
-					options: [{ label: "Keep current files" }, { label: "Apply promotion" }],
-				}, ctx, signal);
+				const approved = await confirmDream(ctx, systemPath, snapshot.system.raw, updated, proposal, signal);
 				signal?.throwIfAborted();
-				if (answer.error) throw new MemoryReviewError(answer.error);
-				if (answer.answer !== "Apply promotion" || answer.wasCustom) {
+				if (!approved) {
 					ctx.ui.notify("Dream cancelled; nothing was written.", "info");
 					return;
 				}
