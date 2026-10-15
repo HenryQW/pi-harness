@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -419,34 +420,56 @@ test("replaceIfUnchanged refuses a snapshot or reread that could not read the fi
 		await chmod(store.path, 0o000);
 		const snapshot = store.loadSync();
 		assert.deepEqual(snapshot.issues.map(({ kind }) => kind), ["unreadable"]);
-		// Another unreadable file with other bytes gives the same error text, so the error must not compare equal.
+		// Another unreadable file with other bytes gives the same error text, so the snapshot proves nothing.
 		await rm(store.path);
 		await writeFile(store.path, '{"count":5}', { mode: 0o000 });
-		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), /changed since it was read/);
+		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), /was not read completely \(cannot read file: .*\), so it cannot be replaced safely; nothing was written/);
+		await chmod(store.path, 0o600);
+		assert.equal(await readFile(store.path, "utf8"), '{"count":5}');
+
+		// A readable snapshot refuses a locked reread that cannot read the file.
+		const readable = store.loadSync();
+		await chmod(store.path, 0o000);
+		await assert.rejects(store.replaceIfUnchanged(readable, { count: 1 }), /changed since it was read/);
 		await chmod(store.path, 0o600);
 		assert.equal(await readFile(store.path, "utf8"), '{"count":5}');
 	});
 });
 
-test("replaceIfUnchanged compares every byte of a file too large to parse", async () => {
+test("replaceIfUnchanged refuses a file too large to read completely", async () => {
 	await withAgentDir(async (agentDir) => {
 		const store = createStore(agentDir);
 		const large = Buffer.alloc(200 * 1024, " ");
 		await writeConfig(store.path, large);
 		const snapshot = store.loadSync();
 		assert.deepEqual(snapshot.issues.map(({ kind }) => kind), ["too-large"]);
-		// Same size, one byte changed far past the parse limit.
-		const edited = Buffer.from(large);
-		edited[150 * 1024] = 0x0a;
-		await writeFile(store.path, edited);
-		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), /changed since it was read/);
-		await writeFile(store.path, Buffer.concat([large, Buffer.from(" ")]));
-		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), /changed since it was read/);
-		assert.equal((await readFile(store.path)).length, large.length + 1);
-		// An unchanged oversized file can be repaired.
+		await assert.rejects(store.replaceIfUnchanged(snapshot, { count: 1 }), (error: Error) => error.message
+			=== `Config at ${store.path} was not read completely (file exceeds 65536 bytes), so it cannot be replaced safely; nothing was written. Fix, shrink, or remove the file, then retry.`);
+		assert.deepEqual(await readFile(store.path), large);
+
+		// A file within the limit that grows past it under the lock is a change.
+		await writeFile(store.path, '{"count":2}');
+		const small = store.loadSync();
 		await writeFile(store.path, large);
-		await store.replaceIfUnchanged(snapshot, { count: 1 });
-		assert.deepEqual(store.loadSync(), { status: "ok", source: "file", value: { count: 1 }, issues: [] });
+		await assert.rejects(store.replaceIfUnchanged(small, { count: 1 }), /changed since it was read/);
+		assert.deepEqual(await readFile(store.path), large);
+	});
+});
+
+test("non-regular config paths are unreadable issues and never block", { skip: process.platform === "win32" }, async () => {
+	await withAgentDir(async (agentDir) => {
+		const store = createStore(agentDir);
+		await mkdir(store.path, { recursive: true });
+		assert.deepEqual(store.loadSync().issues, [{ kind: "unreadable", key: "", message: "cannot read file: not a regular file" }]);
+		await rm(store.path, { recursive: true });
+		// A FIFO without a writer would block a plain open; a device such as /dev/zero would never end.
+		execFileSync("mkfifo", [store.path]);
+		const fifo = store.loadSync();
+		assert.deepEqual(fifo.issues, [{ kind: "unreadable", key: "", message: "cannot read file: not a regular file" }]);
+		await assert.rejects(store.replaceIfUnchanged(fifo, { count: 1 }), /was not read completely \(cannot read file: not a regular file\)/);
+		await rm(store.path);
+		await symlink("/dev/zero", store.path);
+		assert.deepEqual(store.loadSync().issues, [{ kind: "unreadable", key: "", message: "cannot read file: not a regular file" }]);
 	});
 });
 

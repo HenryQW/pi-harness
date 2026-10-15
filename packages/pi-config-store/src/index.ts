@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { closeSync, openSync, readSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -35,30 +35,29 @@ function decodeBounded(chunks: Buffer[], bytesRead: number, path: string, maxByt
 	return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, bytesRead));
 }
 
+/** Read at most maxBytes + 1 bytes from an open file. */
+function readOpenFileBoundedSync(file: number, maxBytes: number): Buffer {
+	const chunks: Buffer[] = [];
+	let bytesRead = 0;
+	while (bytesRead <= maxBytes) {
+		const chunk = Buffer.allocUnsafe(readBufferSize(maxBytes, bytesRead));
+		const count = readSync(file, chunk, 0, chunk.length, null);
+		if (count === 0) break;
+		chunks.push(chunk.subarray(0, count));
+		bytesRead += count;
+	}
+	return Buffer.concat(chunks, bytesRead);
+}
+
 /**
- * Read the whole file in one pass: keep at most maxBytes + 1 bytes to parse, and hash every byte, so the
- * revision identifies the exact file even when it is too large to parse.
+ * Read a config file's revision: at most maxBytes + 1 bytes of a regular file. A FIFO opens without blocking
+ * (O_NONBLOCK, where supported), and fstat rejects it and any other non-regular file before a read.
  */
-function readRevisionSync(path: string, maxBytes: number): { bytes: Buffer; size: number; digest: string } {
-	const file = openSync(path, "r");
+function readRevisionSync(path: string, maxBytes: number): Buffer {
+	const file = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
 	try {
-		const hash = createHash("sha256");
-		const chunks: Buffer[] = [];
-		let kept = 0;
-		let size = 0;
-		for (;;) {
-			const chunk = Buffer.allocUnsafe(64 * 1024);
-			const count = readSync(file, chunk, 0, chunk.length, null);
-			if (count === 0) break;
-			hash.update(chunk.subarray(0, count));
-			size += count;
-			if (kept <= maxBytes) {
-				const keep = chunk.subarray(0, Math.min(count, maxBytes + 1 - kept));
-				chunks.push(keep);
-				kept += keep.length;
-			}
-		}
-		return { bytes: Buffer.concat(chunks, kept), size, digest: hash.digest("hex") };
+		if (!fstatSync(file).isFile()) throw new Error("not a regular file");
+		return readOpenFileBoundedSync(file, maxBytes);
 	} finally {
 		closeSync(file);
 	}
@@ -67,21 +66,12 @@ function readRevisionSync(path: string, maxBytes: number): { bytes: Buffer; size
 /** Read strict UTF-8 text, consuming no more than maxBytes + 1 bytes synchronously. */
 export function readTextFileBoundedSync(path: string, maxBytes: number): string {
 	assertMaxBytes(maxBytes);
-	let file: number | undefined;
-	const chunks: Buffer[] = [];
-	let bytesRead = 0;
+	const file = openSync(path, "r");
 	try {
-		file = openSync(path, "r");
-		while (bytesRead <= maxBytes) {
-			const chunk = Buffer.allocUnsafe(readBufferSize(maxBytes, bytesRead));
-			const count = readSync(file, chunk, 0, chunk.length, null);
-			if (count === 0) break;
-			chunks.push(chunk.subarray(0, count));
-			bytesRead += count;
-		}
-		return decodeBounded(chunks, bytesRead, path, maxBytes);
+		const bytes = readOpenFileBoundedSync(file, maxBytes);
+		return decodeBounded([bytes], bytes.length, path, maxBytes);
 	} finally {
-		if (file !== undefined) closeSync(file);
+		closeSync(file);
 	}
 }
 
@@ -480,16 +470,23 @@ function readIssue(error: unknown): ConfigIssue {
 	return { kind: "unreadable", key: "", message: `cannot read file: ${errorMessage(error)}` };
 }
 
-/** A read file's parse prefix and exact identity (size and SHA-256 of all bytes), `null` for a missing file, or a read error message. */
-type Revision = { bytes: Buffer; size: number; digest: string } | string | null;
+/** The bytes a load read (at most the limit + 1), `null` for a missing file, or a read error message. */
+type Revision = Buffer | string | null;
 
 /** What each `loadSync()` result read, so `replaceIfUnchanged` can detect a later change. */
 const revisions = new WeakMap<object, { path: string; revision: Revision }>();
 
-/** A read error proves nothing about the bytes, so an error revision never equals another revision. */
+/** Why a revision cannot prove the file's exact contents: a read error, or a file larger than the limit. */
+function incompleteRevision(revision: Revision): string | undefined {
+	if (typeof revision === "string") return revision;
+	if (revision && revision.length > MAX_CONFIG_BYTES) return `file exceeds ${MAX_CONFIG_BYTES} bytes`;
+	return undefined;
+}
+
+/** Equal only when both files are missing, or both were read completely with the same bytes. */
 function sameRevision(left: Revision, right: Revision): boolean {
-	if (left && right && typeof left === "object" && typeof right === "object") return left.size === right.size && left.digest === right.digest;
-	return left === null && right === null;
+	if (incompleteRevision(left) !== undefined || incompleteRevision(right) !== undefined) return false;
+	return Buffer.isBuffer(left) && Buffer.isBuffer(right) ? left.equals(right) : left === null && right === null;
 }
 
 class ConfigStore<T> {
@@ -525,7 +522,7 @@ class ConfigStore<T> {
 		if (typeof revision === "string") return this.fallback("file", [{ kind: "unreadable", key: "", message: revision }]);
 		let contents: string;
 		try {
-			contents = decodeBounded([revision.bytes], revision.bytes.length, this.path, MAX_CONFIG_BYTES);
+			contents = decodeBounded([revision], revision.length, this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
 			return this.fallback("file", [readIssue(error)]);
 		}
@@ -549,10 +546,15 @@ class ConfigStore<T> {
 	/**
 	 * Validate `value` strictly and replace the whole file under a lock, but only when the file is unchanged
 	 * since `snapshot`, a `loadSync()` result of a store for the same file. A changed file throws and stays unchanged.
+	 * A snapshot that could not read the whole file cannot prove that, so it throws too.
 	 */
 	async replaceIfUnchanged(snapshot: ConfigLoad<unknown>, value: T): Promise<void> {
 		const expected = revisions.get(snapshot);
 		if (expected?.path !== this.path) throw new TypeError(`snapshot must be a loadSync() result for ${this.path}`);
+		const incomplete = incompleteRevision(expected.revision);
+		if (incomplete !== undefined) {
+			throw new Error(`Config at ${this.path} was not read completely (${incomplete}), so it cannot be replaced safely; nothing was written. Fix, shrink, or remove the file, then retry.`);
+		}
 		const { contents } = this.strict(value);
 		await withLock(this.path, async () => {
 			if (!sameRevision(this.readRevision(), expected.revision)) {
