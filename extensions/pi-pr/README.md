@@ -95,7 +95,7 @@ Existing pi-pr code uses MIT. The imported `git-commit`, `git-pr`, and `update-f
 | Failed GitHub Actions job | Inspect failure evidence, make a scoped fix, validate, and publish. Other failed checks block. |
 | Changes requested, unresolved threads, or new feedback | Triage actionable feedback and make the necessary changes. Leave blocked threads open. |
 | CI running and nothing else blocks | Wait in the same `/pr`. Re-read GitHub every `ciPollSeconds` for a maximum of `ciWaitMinutes`. Then route the fresh state. |
-| `codexReview` is `true`, the Codex review is not complete, and nothing else blocks | Wait in the same `/pr` with the CI wait interval and budget. Then route the fresh state. Refer to [Codex review gate](#codex-review-gate). |
+| `codexReview` is `true`, the Codex review of the current head is not complete, and nothing else blocks | Wait in the same `/pr` with the CI wait interval and budget. Then route the fresh state. Refer to [Codex review gate](#codex-review-gate). |
 | Draft, closed, merged, or review still required | Report the PR lifecycle or condition, and make no changes. |
 | Merge-ready | Ask you to confirm the merge. The dialog shows the PR number, URL, short head OID, base ref, and `mergeMethod`. If you accept, check fresh state again and merge with the configured `mergeMethod`. If you decline, or the session has no UI, report the PR as merge-ready and make no changes. |
 
@@ -113,9 +113,13 @@ For each fixed review thread, the sweep replies with only the full hash of the f
 
 ### Codex review gate
 
-Set `codexReview` to `true` to make `/pr` wait for the ChatGPT Codex GitHub review before it shows the merge dialog. `/pr` then reads the PR reactions and conversation comments of the `chatgpt-codex-connector` bot. The Codex review is complete when the bot has no EYES (👀) reaction on the PR, and the bot has a THUMBS_UP (👍) reaction or a summary comment that shows `Completed`. In all other conditions, `/pr` waits. The wait uses `ciPollSeconds` and the same `ciWaitMinutes` budget as CI waits. When the budget is spent, `/pr` stops with `still waiting for the Codex review` and does not show the merge dialog.
+Set `codexReview` to `true` to make `/pr` wait for the ChatGPT Codex GitHub review of the current PR head before it shows the merge dialog. Codex reviews each push to the PR. `/pr` reads the PR reactions and conversation comments of the `chatgpt-codex-connector` bot. Codex keeps one summary comment, and the latest `Code Review` row of that comment shows the status and the short SHA of the reviewed commit. The Codex review is complete only when these conditions are true:
 
-Codex reviews one time when a PR opens or becomes ready for review, and when a person comments `@codex review`. It does not review again after later pushes, and it does not review some PRs. Thus, a complete review can apply to an older head. If the review did not start, comment `@codex review` on the PR, then run `/pr` again. `/pr` never posts this comment.
+- The bot has no EYES (👀) reaction on the PR.
+- The latest `Code Review` row shows `Completed`.
+- The SHA in that row is the start of the current PR head OID.
+
+In all other conditions, `/pr` waits. A THUMBS_UP (👍) reaction alone does not complete the review, because it applies to the PR and can be from an older head. A `Completed` row for a different commit does not complete the review. If `/pr` cannot parse the summary comment, it waits. The wait uses `ciPollSeconds` and the same `ciWaitMinutes` budget as CI waits. When the budget is spent, `/pr` stops with `still waiting for the Codex review of the current head` and does not show the merge dialog. Run `/pr` again later. `/pr` never posts comments.
 
 An unresolved Codex review thread with a P0 or P1 badge starts a sweep, as all unresolved threads do. If the sweep already ran in this `/pr` and such a thread stays unresolved, `/pr` stops with `unresolved Codex P0/P1 findings block the merge prompt`.
 
@@ -147,7 +151,7 @@ Package-owned: `<agent-dir>/config/pi-pr/config.json`
 | `ciWaitMinutes` | Total CI and Codex review wait per `/pr` invocation, including waits after a later fix or sweep pushes. | Integer ≥ 0; `0` disables waiting | `10` |
 | `checkTimeoutMinutes` | Time limit for each selected validation check. Git and GitHub CLI helper commands keep shorter limits. | Integer `1`–`35791` | `10` |
 | `mergeMethod` | Method for the direct merge. GitHub may still reject a method the repository disallows. | `squash`, `merge`, or `rebase` | `squash` |
-| `codexReview` | Wait for a complete ChatGPT Codex GitHub review before the merge dialog. When `true`, each discovery of an open PR reads a maximum of two more GitHub endpoints. | `true` or `false` | `false` |
+| `codexReview` | Wait for a complete ChatGPT Codex GitHub review of the current PR head before the merge dialog. When `true`, each discovery of an open PR reads a maximum of two more GitHub endpoints. | `true` or `false` | `false` |
 
 If the file is missing, `/pr` uses the defaults. An unknown key, including a misspelled key, or an invalid value shows a warning with the path and the reason. That key then uses its default, and the other keys keep their values. A malformed file uses all defaults. `/pr` continues, and the file does not change. Each issue shows one time in each session, at session start or at the next `/pr`. Fix the file, then run `/pr` again. `/pr` reads the configuration one time per explicit `/pr`. A later `/pr` or reload resets the limits.
 
