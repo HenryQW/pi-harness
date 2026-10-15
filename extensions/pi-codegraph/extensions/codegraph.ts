@@ -1,5 +1,6 @@
-import { mkdir, rmdir, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -8,6 +9,7 @@ const LOCK_WAIT_MS = 5 * 60_000;
 const INIT_TIMEOUT_MS = 10 * 60_000;
 const EXPLORE_TIMEOUT_MS = 120_000;
 const STATUS_KEY = "pi-codegraph";
+const MCP_SERVER = "pi-codegraph";
 const SPINNER_INTERVAL_MS = 100;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -42,6 +44,146 @@ async function hasIndex(root: string): Promise<boolean> {
 	}
 }
 
+// Returns the commit of a complete index built by the running CodeGraph version.
+function indexedCommit(worktree: string, version: string): string | undefined {
+	let db: DatabaseSync | undefined;
+	try {
+		db = new DatabaseSync(join(worktree, ".codegraph", "codegraph.db"), { readOnly: true });
+		const rows = db.prepare("SELECT key, value FROM project_metadata WHERE key IN ('index_state', 'indexed_with_version', 'indexed_at_commit')").all();
+		const metadata = Object.fromEntries(rows.map(({ key, value }) => [key, value]));
+		const commit = metadata.indexed_at_commit;
+		// The value goes to Git; only a full object ID cannot be read as an option.
+		const valid = typeof commit === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit);
+		return metadata.index_state === "complete" && metadata.indexed_with_version === version && valid ? commit : undefined;
+	} catch {
+		// A missing, unreadable, or foreign index cannot seed.
+		return undefined;
+	} finally {
+		db?.close();
+	}
+}
+
+// Extension mappings in codegraph.json change how unchanged files parse, which sync does not redo.
+async function projectConfig(dir: string): Promise<string | undefined> {
+	try {
+		return await readFile(join(dir, "codegraph.json"), "utf8");
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "" : undefined;
+	}
+}
+
+// Copies the usable worktree index closest to this HEAD. `codegraph sync` then re-extracts
+// only the files that differ, which matches a fresh `codegraph init`.
+async function seedIndex(pi: ExtensionAPI, root: string, worktrees: string[], version: string, signal: AbortSignal): Promise<boolean> {
+	const config = await projectConfig(root);
+	// Probe one worktree at a time: repositories can keep many worker worktrees.
+	const candidates: { worktree: string; changes: number }[] = [];
+	for (const worktree of worktrees) {
+		if (worktree === root || config === undefined || await projectConfig(worktree) !== config) continue;
+		const commit = indexedCommit(worktree, version);
+		if (!commit) continue;
+		const diff = await pi.exec("git", ["diff", "--name-only", "-z", commit, "HEAD"], { cwd: root, timeout: 10_000, signal });
+		signal.throwIfAborted();
+		if (diff.code === 0 && !diff.killed) candidates.push({ worktree, changes: diff.stdout.split("\0").length });
+	}
+	for (const { worktree } of candidates.sort((a, b) => a.changes - b.changes)) {
+		if (await copyIndex(pi, worktree, root, signal)) return true;
+	}
+	return false;
+}
+
+async function copyIndex(pi: ExtensionAPI, source: string, root: string, signal: AbortSignal): Promise<boolean> {
+	const target = join(root, ".codegraph", "codegraph.db");
+	const lock = join(source, ".codegraph", "codegraph.lock");
+	try {
+		// CodeGraph's writer lock keeps the snapshot out of a sync's separately committed phases.
+		// Its watcher retries a busy lock; a stale lock with this PID is removed once Pi exits.
+		await writeFile(lock, String(process.pid), { flag: "wx" });
+	} catch {
+		// A writer holds the source, or the source vanished.
+		return false;
+	}
+	let copied = false;
+	try {
+		const db = new DatabaseSync(join(source, ".codegraph", "codegraph.db"), { readOnly: true });
+		try {
+			await mkdir(join(root, ".codegraph"), { recursive: true });
+			// Throwing from the progress callback stops the copy when Pi quits or reloads.
+			await backup(db, target, { progress: () => signal.throwIfAborted() });
+			copied = true;
+		} finally {
+			db.close();
+		}
+	} catch {
+		// The source can vanish after selection, or Pi can quit during the copy.
+	} finally {
+		await rm(lock, { force: true });
+	}
+	if (copied) {
+		// CodeGraph decides whether the copy is complete and built by its current extraction engine.
+		const status = await pi.exec("codegraph", ["status", "--json", root], { cwd: root, timeout: 30_000, signal });
+		signal.throwIfAborted();
+		try {
+			const { index } = JSON.parse(status.stdout) as { index?: { state?: string; reindexRecommended?: boolean } };
+			if (status.code === 0 && index?.state === "complete" && index.reindexRecommended === false) return true;
+		} catch {
+			// No usable status: treat the copy as unusable.
+		}
+	}
+	// codegraph init does not rebuild over an existing database.
+	await Promise.all(["", "-wal", "-shm"].map((suffix) => rm(`${target}${suffix}`, { force: true })));
+	signal.throwIfAborted();
+	return false;
+}
+
+// Waits for an exclusive initialization lock; `onWait` runs once when another session holds it.
+async function acquireLock(lock: string, recovery: string, signal: AbortSignal, onWait: () => void): Promise<void> {
+	const deadline = Date.now() + LOCK_WAIT_MS;
+	let waiting = false;
+	while (true) {
+		signal.throwIfAborted();
+		try {
+			await mkdir(lock);
+			return;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			if (Date.now() >= deadline) throw new Error(`Timed out waiting for CodeGraph initialization. ${recovery}`);
+			if (!waiting) onWait();
+			waiting = true;
+			await delay(250, undefined, { signal });
+		}
+	}
+}
+
+async function codegraph(pi: ExtensionAPI, root: string, args: string[], signal: AbortSignal): Promise<void> {
+	const result = await pi.exec("codegraph", [...args, root], { cwd: root, timeout: INIT_TIMEOUT_MS, signal });
+	signal.throwIfAborted();
+	if (result.code !== 0 || result.killed || !(await hasIndex(root))) {
+		throw new Error(`CodeGraph ${args[0]} failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${(result.stderr || result.stdout).trim().slice(-2000)}`);
+	}
+}
+
+// Asks one time per repository; a primary index lets every later worktree copy an index.
+async function acceptPrimaryIndex(ctx: ExtensionContext, commonDir: string, primary: string, signal: AbortSignal): Promise<boolean> {
+	// Other modes await setup during session_start, before an RPC client's answer can be read.
+	if (ctx.mode !== "tui") return false;
+	const declined = join(commonDir, "pi-codegraph-declined");
+	try {
+		await stat(declined);
+		return false;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	const accepted = await ctx.ui.confirm(
+		"Index this repository with CodeGraph?",
+		`pi-codegraph builds one CodeGraph index in ${primary} (CodeGraph creates .codegraph/ there). Each new worktree then copies an index and starts in seconds. If you decline, pi-codegraph does not ask again; remove ${declined} to be asked again.`,
+		{ signal },
+	);
+	signal.throwIfAborted();
+	if (!accepted) await writeFile(declined, "");
+	return accepted;
+}
+
 async function git(pi: ExtensionAPI, cwd: string, args: string[], signal: AbortSignal): Promise<string> {
 	const result = await pi.exec("git", args, { cwd, timeout: 10_000, signal });
 	signal.throwIfAborted();
@@ -51,7 +193,8 @@ async function git(pi: ExtensionAPI, cwd: string, args: string[], signal: AbortS
 	return result.stdout.replace(/\r?\n$/, "");
 }
 
-async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: AbortSignal): Promise<void> {
+// Resolves to the worktree root when it has an index.
+async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: AbortSignal): Promise<string | undefined> {
 	ctx.ui.setStatus(STATUS_KEY, undefined);
 	const version = await pi.exec("codegraph", ["--version"], { cwd: ctx.cwd, timeout: 10_000, signal });
 	signal.throwIfAborted();
@@ -79,46 +222,52 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 	const lock = join(gitDir, "pi-codegraph-init.lock");
 	// Check the lock before the database: an in-progress/failed init can leave a partial DB.
 	const recovery = `Inspect CodeGraph in ${root}. If no initializer is running, run codegraph index in that directory, then remove ${lock} with rmdir and /reload.`;
-	const deadline = Date.now() + LOCK_WAIT_MS;
 	let stopProgress = () => {};
-	let waiting = false;
 	let indexed = false;
 	try {
-		while (true) {
-			signal.throwIfAborted();
-			try {
-				await mkdir(lock);
-				break;
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-				if (Date.now() >= deadline) throw new Error(`Timed out waiting for CodeGraph initialization. ${recovery}`);
-				if (!waiting) {
-					stopProgress = showProgress(ctx, "waiting for index", signal);
-					waiting = true;
-				}
-				await delay(250, undefined, { signal });
-			}
-		}
+		const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"], signal);
+		const first = worktrees.split("\0\0", 1)[0].split("\0");
+		if (!first[0].startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
+		const primary = first[0].slice("worktree ".length);
+		const paths = worktrees.split("\0").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
+		const commonDir = await git(pi, root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal);
+		// Ask before taking the lock, so an open dialog neither blocks other sessions nor leaves a stale lock.
+		// A bare repository has no primary checkout to index.
+		const accepted = primary !== root && !first.includes("bare") && !(await hasIndex(root)) && !(await hasIndex(primary))
+			&& await acceptPrimaryIndex(ctx, commonDir, primary, signal);
+		await acquireLock(lock, recovery, signal, () => { stopProgress = showProgress(ctx, "waiting for index", signal); });
 		let attempted = false;
 		try {
 			if (await hasIndex(root)) {
 				indexed = true;
-				return;
+				return root;
 			}
-			const worktrees = await git(pi, root, ["worktree", "list", "--porcelain", "-z"], signal);
-			const first = worktrees.split("\0", 1)[0];
-			if (!first.startsWith("worktree ")) throw new Error("Git returned an invalid primary worktree.");
-			const primary = first.slice("worktree ".length);
-			if (primary === root || !(await hasIndex(primary))) return;
+			if (primary === root || first.includes("bare")) return;
+			const primaryIndexed = await hasIndex(primary);
+			if (!primaryIndexed && !accepted) return;
 			stopProgress();
 			stopProgress = showProgress(ctx, "indexing", signal);
-			attempted = true;
-			const result = await pi.exec("codegraph", ["init", "--yes", root], { cwd: root, timeout: INIT_TIMEOUT_MS, signal });
-			signal.throwIfAborted();
-			if (result.code !== 0 || result.killed || !(await hasIndex(root))) {
-				throw new Error(`CodeGraph init failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${(result.stderr || result.stdout).trim().slice(-2000)}`);
+			if (!primaryIndexed) {
+				// The primary checkout's own lock: its sessions must not accept a partial DB either.
+				const primaryLock = join(commonDir, "pi-codegraph-init.lock");
+				const primaryRecovery = `Inspect CodeGraph in ${primary}. If no initializer is running, run codegraph index in that directory, then remove ${primaryLock} with rmdir and /reload.`;
+				await acquireLock(primaryLock, primaryRecovery, signal, () => {});
+				// Another session can index the primary checkout while this one waits.
+				if (!(await hasIndex(primary))) {
+					try {
+						await codegraph(pi, primary, ["init", "--yes"], signal);
+					} catch (error) {
+						throw new Error(`${error instanceof Error ? error.message : String(error)}\n${primaryRecovery}`, { cause: error });
+					}
+				}
+				await rmdir(primaryLock);
 			}
+			attempted = true;
+			const seeded = await seedIndex(pi, root, paths, version.stdout.trim(), signal);
+			signal.throwIfAborted();
+			await codegraph(pi, root, seeded ? ["sync"] : ["init", "--yes"], signal);
 			indexed = true;
+			return root;
 		} catch (error) {
 			if (attempted) throw new Error(`${error instanceof Error ? error.message : String(error)}\n${recovery}`, { cause: error });
 			throw error;
@@ -161,11 +310,22 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 			return { content: [{ type: "text", text: result.stdout }], details: undefined };
 		},
 	});
+	// CodeGraph's MCP server runs the file watcher that keeps the index current; its tools stay
+	// hidden because codegraph_explore covers them. Pi starts and stops the server.
+	let watched: string | undefined;
+	const watch = (root: string | undefined) => {
+		if (root === watched) return;
+		if (watched) pi.unregisterMcpServer(MCP_SERVER);
+		watched = root;
+		if (root) pi.registerMcpServer(MCP_SERVER, { command: "codegraph", args: ["serve", "--mcp", "--path", root], cwd: root, exposure: "hidden" });
+	};
 	pi.on("session_start", (_event, ctx) => {
 		if (setup) return ctx.mode === "tui" ? undefined : setup;
 		const controller = initializer = new AbortController();
-		setup = initialize(pi, ctx, controller.signal).catch((error) => {
+		setup = initialize(pi, ctx, controller.signal).then(watch).catch((error) => {
 			if (controller.signal.aborted) return;
+			// Do not keep watching the checkout of an earlier session.
+			watch(undefined);
 			const message = `pi-codegraph: ${error instanceof Error ? error.message : String(error)}`;
 			ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("error", "!")} CG: setup failed`);
 			if (ctx.hasUI) ctx.ui.notify(message, "error");

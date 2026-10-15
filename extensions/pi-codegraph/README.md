@@ -1,6 +1,6 @@
 # `@henryqw/pi-codegraph`
 
-When you start Pi in a new Git worktree, you get a separate [CodeGraph](https://github.com/colbymchenry/codegraph) index. Agents can then explore the indexed code with the `codegraph_explore` tool.
+When you start Pi in a new Git worktree, you get a separate [CodeGraph](https://github.com/colbymchenry/codegraph) index in seconds. CodeGraph keeps the index current while Pi runs. Agents can then explore the indexed code with the `codegraph_explore` tool.
 
 ## Install
 
@@ -9,7 +9,7 @@ npm install -g @colbymchenry/codegraph
 pi install npm:@henryqw/pi-codegraph
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series and the `codegraph` executable on Pi's `PATH`. You do not need an MCP server or MCP configuration.
+Requires Pi 1.1.0 or later in the 1.x series and the `codegraph` executable on Pi's `PATH`. You do not need MCP configuration. The extension registers the CodeGraph MCP server itself. Pi's built-in MCP support must stay enabled, because the server keeps the index current.
 
 ## Works with
 
@@ -20,17 +20,16 @@ Requires Pi 1.1.0 or later in the 1.x series and the `codegraph` executable on P
 
 ## Use
 
-In the primary checkout, initialize CodeGraph one time:
+Start `pi` in a linked worktree. If the primary checkout has no index, the Pi TUI asks one time if it can index the repository. If you accept, pi-codegraph runs `codegraph init --yes` in the primary checkout, then creates the worktree index. You can also initialize the primary checkout yourself:
 
 ```bash
 codegraph init --yes
 ```
 
-Then start `pi` in a linked worktree. When the primary checkout has an index, pi-codegraph initializes a separate worktree index.
-
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `codegraph_explore` | tool | Lets agents explore the indexed code. It returns the source of the relevant symbols grouped by file, plus the call path between them. |
+| `pi-codegraph` | MCP server | Runs `codegraph serve --mcp --path <worktree-root>`. Its file watcher updates the index when files change. Its tools are hidden. |
 | CodeGraph setup status | ui | Shows an icon and `CG`: `✓ CG` when indexed, `○ CG` when missing, or a dim spinner and elapsed time during setup. Setup errors remain visible with recovery instructions. |
 
 `codegraph_explore` takes a `query`, an optional `maxFiles` (default 12), and an optional `projectPath` (defaults to Pi's working directory). It runs `codegraph explore --path <projectPath> --max-files <maxFiles> <query>` and returns the output as-is. If the command exits with an error or runs for more than 120 seconds, the tool call fails. The tool call then shows the end of the CodeGraph error output.
@@ -39,9 +38,11 @@ The tool works the same with Pi's `codemode`, including `codemode.mode` set to `
 
 ## Flow
 
-- The extension builds a missing worktree index only when the primary checkout already has `.codegraph/codegraph.db`.
+- The extension builds a missing worktree index only when the primary checkout has `.codegraph/codegraph.db`. If the primary checkout has no index, the TUI asks one time for each repository. The extension does not hold a lock while the dialog is open. If you decline or press Escape, the extension writes `pi-codegraph-declined` in the Git common directory and does not ask again. Remove that file to be asked again. RPC, print, and JSON modes do not ask, because Pi waits for setup to finish before an RPC client can send an answer.
 - Initialization occurs when Pi starts, not when Git creates the worktree. In TUI mode, it runs in the background. Thus, the footer and later startup handlers can load.
-- Each linked worktree keeps its own `.codegraph`. The extension never copies or shares databases between branches.
+- Each linked worktree keeps its own `.codegraph`. The extension never shares a database between worktrees.
+- To make setup fast, the extension copies one existing index of the same repository, then runs `codegraph sync`. Sync parses again only the files that are different. The result is the same as a full `codegraph init`. The extension selects the index whose indexed commit has the fewest changed files compared to the worktree `HEAD`. It uses only a complete index that the installed CodeGraph version built. During the copy, it holds the CodeGraph writer lock (`.codegraph/codegraph.lock`) of the source, so that the copy cannot include a partial sync. It skips a source whose lock another writer holds. After the copy, `codegraph status --json` must report a complete index that does not need a new build. Otherwise, the extension deletes the copy and tries the next index. If no index is usable, it runs `codegraph init --yes`.
+- When the index of the current checkout is ready, the extension registers the hidden `pi-codegraph` MCP server. Pi starts it. The CodeGraph file watcher then syncs each file change, including uncommitted edits. This applies to the primary checkout too. CodeGraph shares one daemon for each checkout between sessions. The daemon stops 5 minutes after the last session closes.
 - The extension does not initialize non-Git directories or repositories without a primary index.
 - Setup shows a dim footer status such as `⠋ CG · indexing 8s`. When another session holds the initialization lock, it shows `waiting for index`. Only TUI mode animates the spinner. When setup finishes, the spinner changes to `✓ CG` for an existing or new index. For a Git repository without an index, it changes to `○ CG`. Non-Git directories show no index badge. There is no success notification.
 - Missing prerequisites and setup failures stay visible as `! CG: prerequisites missing` or `! CG: setup failed`. Each has a theme-colored `!` icon and an actionable notification.
@@ -50,7 +51,7 @@ The tool works the same with Pi's `codemode`, including `codemode.mode` set to `
 
 ## State and storage
 
-The extension uses the CodeGraph state. Each worktree keeps its own `.codegraph/codegraph.db`. The extension never copies or shares the database, and it does not write the database directly. It gives creation to `codegraph init --yes <worktree-root>`. The extension does not change existing indexes.
+The extension uses the CodeGraph state. Each worktree keeps its own `.codegraph/codegraph.db`. To create a new index, the extension makes a SQLite online backup of an existing index into the new worktree, then runs `codegraph sync <worktree-root>`. Without a usable index, it runs `codegraph init --yes <worktree-root>`. The extension reads other indexes but does not change them. It holds their CodeGraph writer lock only during the copy, which usually takes less than one second. The CodeGraph MCP server updates the index of the current checkout. The extension writes only its lock and the `pi-codegraph-declined` file in the Git metadata.
 
 ## Limits and recovery
 
@@ -62,7 +63,11 @@ Initialization uses an exclusive `pi-codegraph-init.lock` in the Git metadata of
 cd /path/to/affected-worktree-root && codegraph index && rmdir /path/to/pi-codegraph-init.lock
 ```
 
+The initialization of the primary checkout uses the same procedure with the `pi-codegraph-init.lock` of the primary checkout. If it fails, run `codegraph index` in the primary checkout, remove that lock, then run `/reload`. The error message shows both paths. The extension does not offer to index a bare repository.
+
 The package never installs prerequisites automatically. The package supports only Git worktree-root indexes that use the default `.codegraph` directory. It does not automatically initialize nested monorepo indexes. For automatic opt-in detection, the primary checkout must stay indexed.
+
+Each CodeGraph daemon uses approximately 230 MB of memory. If Pi's MCP support is disabled (for example with `--no-mcp`), the server does not start and indexes become stale. Run `codegraph sync` in the checkout to update its index. If your `mcp.json` has a server named `pi-codegraph`, that server replaces the server of the extension.
 
 Do not remove an active lock. The extension does not do a health check of existing indexes without an extension-owned lock. The lock controls the sessions of this extension, not manual `codegraph init` commands. Do not run those commands during initialization.
 
