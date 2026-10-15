@@ -35,6 +35,9 @@ Example paths below are relative to `examples/extensions/`.
   change cache behavior. `context` excludes system/tool messages;
   `context_with_system` owns the full request transcript and must preserve a
   leading system message. Do not accidentally mutate stored history.
+- `before_agent_start` also fires for `sendMessage(..., { triggerTurn: true })`
+  runs. Check `event.messageType === "user"` before reading `prompt` or
+  `images`; `"custom"` runs carry `message` instead.
 - `agent_end` is not necessarily final. Actionable boundary continuations need
   a terminating condition; `agent_settled` is final and notification-only.
   In Pi 1.1.0, use `event.aborted` to identify cancelled runs at settlement;

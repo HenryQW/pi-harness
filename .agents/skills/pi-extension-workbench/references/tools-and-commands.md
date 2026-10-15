@@ -11,7 +11,7 @@ Example paths below are relative to `examples/extensions/`.
 |---|---|---|
 | Small model-callable operation | `registerTool`, narrow TypeBox schema | `hello.ts` |
 | Data consumed by scripts | `outputSchema` + `structuredContent` | Installed `Tools` section |
-| Orchestrate existing tools | `ctx.executeTool()`; list with `ctx.tools` | Installed `Tools` section |
+| Orchestrate existing tools | `ctx.executeTool()`; list with `ctx.tools`; declare `reachesTools` | Installed `Tools` and `Tool exposure` sections |
 | Reduce declarations or discover tools | `exposure`, `namespace` | Installed `Tool exposure` section |
 | Deliberate active-set changes | `getActiveTools` / `setActiveTools` | `dynamic-tools.ts`, `tools.ts` |
 | Bound large results | Pi truncation helpers | `truncated-tool.ts` |
@@ -63,6 +63,8 @@ annotations are unverified hints, not authorization.
 | In-process signal, without persistence/replay | Namespaced `pi.events` | `event-bus.ts` |
 
 Validate command arguments; choose message delivery and `triggerTurn`
-deliberately. Session-changing operations are command-context-only: lifecycle
-handlers can deadlock. After replacement, use the fresh `withSession` context;
+deliberately. A starting run counts as busy, also during
+`before_agent_start`: `ctx.isIdle()` is false, `sendMessage` queues into that
+run, and `sendUserMessage` needs `deliverAs`. Session-changing operations are
+command-context-only: lifecycle handlers can deadlock. After replacement, use the fresh `withSession` context;
 after `await ctx.reload()`, do not reuse the old extension runtime.

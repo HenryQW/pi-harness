@@ -34,6 +34,23 @@ Do not add runtime version checks. Choose peer ranges with [Pi peer ranges](../r
 
 Implement `remove` items first, then `change` items; record before and after measurements for performance changes in the PR.
 
+### Audit the workbench skill
+
+Also compare each item with [pi-extension-workbench](../../.agents/skills/pi-extension-workbench/SKILL.md) and its `references/`. Record a `change` decision when an item adds, renames, removes, or changes the contract of an event, API, doc, or example that the skill names, or adds a native API that the skill should prefer to custom code. Then check that each doc and example that the skill cites exists in the target artifact:
+
+```bash
+(
+  cd .agents/skills/pi-extension-workbench
+  rg -oN --no-filename '`[A-Za-z0-9_./-]+\.(ts|md)`' SKILL.md references | tr -d '`' | sort -u |
+    while read -r path; do
+      case "$path" in docs/* | examples/* | dist/*) ;; *) path="examples/extensions/$path" ;; esac
+      test -e "$tmp/pi-coding-agent/package/$path" || echo "missing: $path"
+    done
+)
+```
+
+Replace or remove each missing citation. Set the `Last reviewed against Pi` comment in `SKILL.md` to `TARGET`, also when all skill decisions are `none`. Run `python3 .agents/skills/pi-extension-workbench/scripts/validate.py`.
+
 ## 3. Test the target
 
 Before you release, test the final commit at the target. Each workspace resolves its own pinned Pi packages, so use a temporary workspace override. The trap restores the files also when a check fails:
@@ -53,7 +70,7 @@ Before you release, test the final commit at the target. Each workspace resolves
 
 If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimumReleaseAgeExclude` in the same temporary edit. Fix failures in a new commit and repeat the target test. Run live or interactive TUI tests only when the changed behavior needs them. The last command runs the skill evals with the target Pi before the trap restores the original install (see [evals/README.md](../../evals/README.md)). Report failing cases. Then release with [docs/releasing.md](../releasing.md).
 
-Add an audit log entry, even when every decision is `none`. Report decisions, the target-run result, untested live or interactive behavior, and npm deprecations pending maintainer action.
+Add an audit log entry, even when every decision is `none`. Report decisions, workbench skill changes, the target-run result, untested live or interactive behavior, and npm deprecations pending maintainer action.
 
 ## Audit log
 
@@ -61,4 +78,4 @@ Add one entry per audit: the version range, the date, and each `remove` or `chan
 
 - `1.0.1` to `1.0.4` (2026-10-07): all `none`.
 - `1.0.4` to `1.1.0` (2026-10-09): `change` for "Added `aborted` to `agent_settled`": `@henryqw/pi-memory` drops deferred work from cancelled runs, `@henryqw/pi-bark` sends no **Pi finished** notification for cancelled runs, and `@henryqw/pi-prompt-creator` skips automatic analysis after cancellation. All other items `none`. Every Pi-dependent workspace now uses one Pi `1.1.0` package graph, which removes mixed `pi-ai` and `pi-tui` type identities. With the raised floor, `@henryqw/pi-subagent` also removed its obsolete Pi `1.0.0` rejection of `oauth.clientRegistration` `cimd`.
-- `1.1.0` to `1.2.0` (2026-10-13): `change` for "`before_agent_start` also fires for `pi.sendMessage(..., { triggerTurn: true })` runs; `BeforeAgentStartEvent` is a union on `messageType`": `@henryqw/pi-herdr-tools` automatic rename ignores custom-message runs, which have no `prompt`. All other items `none`; the peer floor stays `^1.1.0`.
+- `1.1.0` to `1.2.0` (2026-10-13): `change` for "`before_agent_start` also fires for `pi.sendMessage(..., { triggerTurn: true })` runs; `BeforeAgentStartEvent` is a union on `messageType`": `@henryqw/pi-herdr-tools` automatic rename ignores custom-message runs, which have no `prompt`. All other items `none`; the peer floor stays `^1.1.0`. Reviewed later (2026-10-15): the workbench skill gets `change` for the `before_agent_start` union, the busy starting run, and `reachesTools`.
