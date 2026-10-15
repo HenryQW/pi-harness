@@ -108,7 +108,7 @@ At session start, Pi shows a warning with the file path and each problem for an 
 
 Automatic analysis stays off for the session when `automatic` is invalid or misspelled, or when the file has malformed JSON, invalid UTF-8, more than 64 KiB, a read error, or a non-object root. Startup leaves the file unchanged.
 
-Only `/promptor automatic on` or `/promptor automatic off` writes the config. A toggle replaces the whole file, also a file with problems. It keeps the threshold in use and removes unknown keys.
+Only `/promptor automatic on` or `/promptor automatic off` writes the config. A toggle reads the file again and keeps its current `inputThreshold`, also when another session changed it. A toggle also replaces a file with problems: it first shows the problems, then keeps the usable values and removes unknown keys. If another session changes that file before the write, the toggle stops and writes nothing.
 
 ## State and storage
 

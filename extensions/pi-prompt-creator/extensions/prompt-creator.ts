@@ -473,11 +473,20 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			if (action === "automatic" && values.length === 1 && (values[0] === "on" || values[0] === "off")) {
 				const next = values[0] === "on";
 				try {
-					await configStore.save({ automatic: next, inputThreshold });
+					// Write the latest file, not the session's cached threshold, and report its problems first.
+					const loaded = configStore.loadSync();
+					configReporter.report(ctx, configStore, loaded);
+					// No field disables this config, so a load always has a value.
+					if (loaded.status !== "ok") return;
+					let written = { ...loaded.value, automatic: next };
+					if (!loaded.issues.length) written = await configStore.update((latest) => ({ ...latest, automatic: next }));
+					// A file with problems is replaced with its usable values, and only if no other session changed it meanwhile.
+					else await configStore.replaceIfUnchanged(loaded, written);
 					automatic = next;
+					inputThreshold = written.inputThreshold;
 					ctx.ui.notify(`Automatic analysis ${next ? "enabled" : "disabled"}.`, "info");
-				} catch {
-					ctx.ui.notify("Could not save Prompt Creator config.", "error");
+				} catch (error) {
+					ctx.ui.notify(`Could not save Prompt Creator config: ${error instanceof Error ? error.message : String(error)}`, "error");
 				}
 				return;
 			}

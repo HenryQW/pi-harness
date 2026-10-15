@@ -743,5 +743,19 @@ test("invalid config keys warn once, fall back per key, and an explicit toggle r
 		await app.registeredCommands.get("promptor")!("automatic off", app.ctx);
 		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: false, inputThreshold: 3 });
 		assert.equal(app.notifications.at(-1)?.message, "Automatic analysis disabled.");
+
+		// Another session changes the threshold; the toggle keeps it instead of the cached value.
+		await writeFile(configPath, '{"automatic":false,"inputThreshold":7}');
+		await app.registeredCommands.get("promptor")!("automatic on", app.ctx);
+		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: true, inputThreshold: 7 });
+
+		// A file that became invalid is reported before the toggle replaces it.
+		await writeFile(configPath, '{"automatic":true,"inputThreshold":7,"extra":1}');
+		await app.registeredCommands.get("promptor")!("automatic off", app.ctx);
+		assert.deepEqual(app.notifications.slice(-2), [
+			{ message: `pi-prompt-creator config issues (${configPath}): extra: unknown key; defaults replace invalid settings.`, level: "warning" },
+			{ message: "Automatic analysis disabled.", level: "info" },
+		]);
+		assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { automatic: false, inputThreshold: 7 });
 	});
 });
