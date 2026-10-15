@@ -160,6 +160,22 @@ test("configures threshold and warns about obsolete model fields", async () => {
 
 		await commands.get("auto-compact")?.("model", ctx);
 		assert.equal(notices.at(-1), "Usage: /auto-compact");
+
+		// A file that another session breaks while the input dialog is open is not replaced.
+		input = "50";
+		const broken = '{"autoCompactThreshold":45,"extra":1}';
+		ctx.ui.input = async () => { await writeFile(configFile, broken); return input; };
+		await commands.get("auto-compact")?.("", ctx);
+		assert.match(notices.at(-1)!, /^Couldn't save pi-auto-compact config: Config at .* has issues; fix or replace it before updating: extra: unknown key$/);
+		assert.equal(await readFile(configFile, "utf8"), broken);
+		// The command reports that file, and replaces it only while it stays unchanged.
+		ctx.ui.input = async () => { await writeFile(configFile, `${broken} `); return input; };
+		await commands.get("auto-compact")?.("", ctx);
+		assert.ok(notices.some((notice) => notice.startsWith(`pi-auto-compact config issues (${configFile}): extra: unknown key`)), notices.join("\n"));
+		assert.match(notices.at(-1)!, /changed since it was read; nothing was written/);
+		ctx.ui.input = async () => input;
+		await commands.get("auto-compact")?.("", ctx);
+		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 50 });
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;

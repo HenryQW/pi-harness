@@ -472,9 +472,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				await configStore.save({ autoCompactThreshold: threshold });
-			} catch {
-				ctx.ui.notify("Couldn't save pi-auto-compact config.", "error");
+				// The dialog can stay open while another session edits the file: merge into a clean file under the
+				// lock, and replace a file with problems (already reported above) only if it did not change meanwhile.
+				if (!loaded.issues.length) await configStore.update((latest) => ({ ...latest, autoCompactThreshold: threshold }));
+				else await configStore.replaceIfUnchanged(loaded, { autoCompactThreshold: threshold });
+			} catch (error) {
+				ctx.ui.notify(`Couldn't save pi-auto-compact config: ${error instanceof Error ? error.message : String(error)}`, "error");
 				return;
 			}
 			autoCompactThreshold = threshold;
