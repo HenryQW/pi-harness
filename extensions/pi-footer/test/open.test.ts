@@ -100,4 +100,14 @@ test("missing owner config uses code silently without read-time writes", async (
 
 	sessionStart!({}, ctx);
 	assert.match(notices.at(-1)![0], /^pi-open-in config issues .*command: must be non-empty text/);
+
+	// /set-open-in reports a problem in the file that it replaces.
+	writeFileSync(configFile, '{"command":"code","typo":1}');
+	notices.length = 0;
+	await setOpenIn("zed", ctx);
+	assert.deepEqual(notices, [
+		[`pi-open-in config issues (${configFile}): typo: unknown key; defaults replace invalid settings.`, "warning"],
+		["Saved open-in command: zed", "info"],
+	]);
+	assert.equal(readFileSync(configFile, "utf8"), '{\n  "command": "zed"\n}\n');
 });

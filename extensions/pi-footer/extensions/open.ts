@@ -50,6 +50,8 @@ export default function openInExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const command = args.trim();
 			if (!command) throw new Error("Usage: /set-open-in <command>");
+			// The new command replaces the whole file, so first show any problem in the file that it removes.
+			reporter.report(ctx, configStore, configStore.loadSync());
 			await configStore.save({ command });
 			ctx.ui.notify(`Saved open-in command: ${command}`, "info");
 		},
