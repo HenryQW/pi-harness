@@ -39,6 +39,7 @@ function harness(cwd: string, options: {
 	explore?: Awaited<ReturnType<ExtensionAPI["exec"]>>;
 	onStatus?: (text: string | undefined) => void;
 	confirm?: boolean | ((signal?: AbortSignal) => Promise<boolean>);
+	reindexRecommended?: boolean;
 } = {}) {
 	let start!: (event: unknown, ctx: ExtensionContext) => Promise<void> | void;
 	let shutdown!: typeof start;
@@ -60,6 +61,10 @@ function harness(cwd: string, options: {
 			if (command === "codegraph") {
 				if (args[0] === "--version") return options.version ?? { code: 0, stdout: "1.6.0", stderr: "", killed: false };
 				if (args[0] === "explore") return options.explore ?? { code: 0, stdout: "explored", stderr: "", killed: false };
+				if (args[0] === "status") {
+					const index = { state: "complete", reindexRecommended: options.reindexRecommended ?? false };
+					return { code: 0, stdout: JSON.stringify({ index }), stderr: "", killed: false };
+				}
 				if (options.init) return options.init(opts.signal);
 				if (args[0] === "init") await index(opts.cwd);
 				return { code: 0, stdout: "", stderr: "", killed: false };
@@ -173,31 +178,43 @@ test("does not offer to index a bare repository", async (t) => {
 	assert.equal(run.calls.some(({ args }) => args[0] === "init"), false);
 });
 
-test("seeds from the closest complete index of the same CodeGraph version, then syncs", async (t) => {
-	for (const [built, command] of [["1.6.0", "sync"], ["1.5.0", "init"]]) {
+test("seeds from the closest usable index, then syncs", async (t) => {
+	const scenarios = [
+		{ built: "1.6.0", calls: ["status", "sync"], seed: "closest" },
+		{ built: "1.5.0", calls: ["init"] },
+		// A CodeGraph writer holds the closest index, so its snapshot could fall inside a sync.
+		{ built: "1.6.0", busy: true, calls: ["status", "sync"], seed: "older" },
+		// CodeGraph reports that its current extraction engine would rebuild the copied index.
+		{ built: "1.6.0", reindexRecommended: true, calls: ["status", "status", "init"] },
+	];
+	for (const { built, busy, reindexRecommended, calls, seed } of scenarios) {
 		const { base, primary, worktree } = await fixture(t);
 		const old = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).stdout.trim();
 		await writeFile(join(worktree, "a.ts"), "export const a = 1;\n");
 		await exec("git", ["-C", worktree, "add", "a.ts"]);
 		await exec("git", ["-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "a"]);
+		const head = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).stdout.trim();
 		const other = join(base, "other");
 		await exec("git", ["-C", primary, "worktree", "add", "-q", "--detach", other, "worker"]);
-		for (const [root, commit] of [[primary, old], [other, "worker"]]) {
+		for (const [root, sha] of [[primary, old], [other, head]]) {
 			await mkdir(join(root, ".codegraph"));
 			const db = new DatabaseSync(join(root, ".codegraph", "codegraph.db"));
-			const sha = (await exec("git", ["-C", root, "rev-parse", commit])).stdout.trim();
 			db.exec(`CREATE TABLE project_metadata (key TEXT PRIMARY KEY, value TEXT);
 				INSERT INTO project_metadata VALUES ('index_state', 'complete'), ('indexed_with_version', '${built}'), ('indexed_at_commit', '${sha}');`);
 			db.close();
 		}
-		const run = harness(worktree);
+		const writerLock = join(other, ".codegraph", "codegraph.lock");
+		if (busy) await writeFile(writerLock, "1");
+		const run = harness(worktree, { reindexRecommended });
 		await run.start();
-		assert.deepEqual(run.calls.filter(({ args }) => args.includes(worktree)).map(({ args }) => args[0]), [command]);
+		assert.deepEqual(run.calls.filter(({ args }) => args.includes(worktree)).map(({ args }) => args[0]), calls);
 		assert.equal(run.statuses.at(-1), "<success>✓</success> CG");
-		if (command !== "sync") continue;
+		// Only the writer that took a lock releases it.
+		if (busy) await stat(writerLock);
+		else await assert.rejects(stat(writerLock), { code: "ENOENT" });
+		if (!seed) continue;
 		const seeded = new DatabaseSync(join(worktree, ".codegraph", "codegraph.db"), { readOnly: true });
-		const head = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).stdout.trim();
-		assert.equal(seeded.prepare("SELECT value FROM project_metadata WHERE key = 'indexed_at_commit'").get()?.value, head);
+		assert.equal(seeded.prepare("SELECT value FROM project_metadata WHERE key = 'indexed_at_commit'").get()?.value, seed === "closest" ? head : old);
 		seeded.close();
 	}
 });

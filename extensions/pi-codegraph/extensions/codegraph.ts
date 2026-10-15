@@ -71,19 +71,50 @@ async function seedIndex(pi: ExtensionAPI, root: string, worktrees: string[], ve
 		return diff.code === 0 && !diff.killed ? { worktree, changes: diff.stdout.split("\0").length } : undefined;
 	}));
 	signal.throwIfAborted();
-	const seed = candidates.filter((candidate) => candidate !== undefined).sort((a, b) => a.changes - b.changes)[0];
-	if (!seed) return false;
-	const target = join(root, ".codegraph", "codegraph.db");
-	const source = new DatabaseSync(join(seed.worktree, ".codegraph", "codegraph.db"), { readOnly: true });
-	try {
-		await mkdir(join(root, ".codegraph"), { recursive: true });
-		// The online backup takes a consistent snapshot even while CodeGraph writes the source index.
-		await backup(source, target);
-	} finally {
-		source.close();
+	for (const { worktree } of candidates.filter((candidate) => candidate !== undefined).sort((a, b) => a.changes - b.changes)) {
+		if (await copyIndex(pi, worktree, root, signal)) return true;
 	}
-	// A source rebuilt during the copy (codegraph index) gives an incomplete snapshot; init cannot rebuild over it.
-	if (indexedCommit(root, version)) return true;
+	return false;
+}
+
+async function copyIndex(pi: ExtensionAPI, source: string, root: string, signal: AbortSignal): Promise<boolean> {
+	const target = join(root, ".codegraph", "codegraph.db");
+	const lock = join(source, ".codegraph", "codegraph.lock");
+	try {
+		// CodeGraph's writer lock keeps the snapshot out of a sync's separately committed phases.
+		// Its watcher retries a busy lock; a stale lock with this PID is removed once Pi exits.
+		await writeFile(lock, String(process.pid), { flag: "wx" });
+	} catch {
+		// A writer holds the source, or the source vanished.
+		return false;
+	}
+	let copied = false;
+	try {
+		const db = new DatabaseSync(join(source, ".codegraph", "codegraph.db"), { readOnly: true });
+		try {
+			await mkdir(join(root, ".codegraph"), { recursive: true });
+			await backup(db, target);
+			copied = true;
+		} finally {
+			db.close();
+		}
+	} catch {
+		// The source can vanish after selection.
+	} finally {
+		await rm(lock, { force: true });
+	}
+	if (copied) {
+		// CodeGraph decides whether the copy is complete and built by its current extraction engine.
+		const status = await pi.exec("codegraph", ["status", "--json", root], { cwd: root, timeout: 30_000, signal });
+		signal.throwIfAborted();
+		try {
+			const { index } = JSON.parse(status.stdout) as { index?: { state?: string; reindexRecommended?: boolean } };
+			if (status.code === 0 && index?.state === "complete" && index.reindexRecommended === false) return true;
+		} catch {
+			// No usable status: treat the copy as unusable.
+		}
+	}
+	// codegraph init does not rebuild over an existing database.
 	await Promise.all(["", "-wal", "-shm"].map((suffix) => rm(`${target}${suffix}`, { force: true })));
 	return false;
 }
