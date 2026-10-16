@@ -1,15 +1,16 @@
 # Pi Ask Question
 
+Pi Ask Question collects one explicit user answer while agent work waits.
+
 ## Language
 
-**Ask Question tool**:
-`ask_question` agent tool that pauses execution for one interactive user answer. Its named `askQuestion` helper is the reusable validated interaction for extensions that must wait for that answer.
-_Avoid_: questionnaire, prompt tool
+**Interactive question**:
+A question that pauses agent work until the user selects a predefined answer, enters a custom answer, or cancels.
 
 **Question option**:
-One of up to three labeled predefined answers, optionally carrying description shown below label. First is recommended.
+One of up to three labeled predefined answers, with an optional description. The first option is the recommended answer.
 _Avoid_: choice value, enum member
 
 **Custom answer**:
-Free-text answer entered through final `Something else.` option.
+Free-text input supplied through the final `Something else.` option. Cancellation or empty input is not an answer.
 _Avoid_: other option, fallback answer

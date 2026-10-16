@@ -1,35 +1,43 @@
 # Pi Multi Codex
 
+Pi Multi Codex selects among ChatGPT Codex account slots while preserving the selected physical model.
+
 ## Language
 
 **Codex account**:
-ChatGPT identity authenticated through Codex OAuth and returning seven-day usage data. Free accounts qualify; API-key identities do not.
-_Avoid_: API account; provider as a name for the account
+A ChatGPT identity authenticated through Codex OAuth, including Free accounts. An API-key identity is not a Codex account.
+_Avoid_: API account, provider as a name for the account
 
 **Account slot**:
-Position through which Pi authenticates one Codex account. Base slot is native Codex position; additional slots are numbered. Each additional slot appears in Pi as its own `OpenAI Codex #<n>` provider.
+A position through which Pi authenticates one Codex account. Slot 1 is native; each additional numbered slot appears as a separate provider.
 _Avoid_: Account, pool member
 
 **Remaining quota**:
-Unused percentage of seven-day Codex allowance and account-selection score among eligible slots.
+The unused percentage of the seven-day Codex allowance, used to rank eligible slots with fresh usage data.
 _Avoid_: Balance, normalized capacity
 
 **Quota window**:
-Codex usage period ending at reset time. The seven-day window supplies remaining quota; the five-hour window can temporarily block a slot.
+A Codex usage period ending at its reset time. The seven-day window supplies remaining quota; the five-hour window can temporarily block a slot.
 _Avoid_: Balance period
 
 **Five-hour quota block**:
-Period after a slot reaches 100% usage in its five-hour window, during which automatic routing excludes it until reset.
+The period after a slot reaches its five-hour usage limit and before that window resets, during which automatic routing excludes it.
 _Avoid_: Exhausted account, disabled slot
 
 **Usage snapshot**:
-Remaining quota, subscription tier, quota blocks, and reset times observed for account slot at specific time.
+The last observed usage information for a slot, including any available quota, tier, and reset times. A failed observation does not prove remaining quota.
 _Avoid_: Account state, credential state
 
 **Fresh usage snapshot**:
-Usage snapshot fetched successfully less than five minutes ago. Sessions share fresh snapshots instead of repeating network requests.
+A successful usage snapshot for the current account, less than five minutes old and before its quota reset.
 _Avoid_: Live quota, session cache
 
 **Subscription tier**:
-Optional Codex plan class reported by usage service for display only. Tier does not affect account eligibility or selection.
+The optional plan class used for status display and the displayed reset window. It does not determine account eligibility or ranking.
 _Avoid_: Sub type, capacity multiplier
+
+**Startup ranking**:
+Selection of the eligible slot with the most fresh remaining quota before initial agent work, unless an explicit model selection takes priority.
+
+**Quota failover**:
+Selection of another eligible, untried slot after HTTP 429. Unlike startup ranking, it can use stale or missing quota data.

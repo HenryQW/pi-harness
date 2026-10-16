@@ -1,9 +1,9 @@
-# Pi Herdr Done
+# Pi Herdr Done (retired)
 
-Pi Herdr Done ends completed worktree work through Herdr, closing its workspace tabs while reserving explicit force for unsafe worktree removal.
+This archive records the original worktree-completion context, first absorbed into [Pi Herdr Clone](../pi-herdr-clone/CONTEXT.md). The active replacement is [Pi Herdr Tools](../../extensions/pi-herdr-tools/CONTEXT.md).
 
 ## Language
 
 **Worktree completion**:
-Explicit end of a Pi task that removes its linked Git worktree checkout and closes every tab in its Herdr workspace. Dirty checkout removal or removal while another workspace uses the checkout requires explicit force.
+The explicit end of a Pi task that removed its linked checkout and closed its Herdr workspace tabs. Removal of a dirty checkout or one used by another workspace required explicit force.
 _Avoid_: workspace removal, Pi exit, implicit forced cleanup

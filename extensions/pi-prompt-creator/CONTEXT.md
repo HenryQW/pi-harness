@@ -1,25 +1,23 @@
-# pi-prompt-creator — Context
+# Pi Prompt Creator
 
-## Domain
+Pi Prompt Creator finds reusable prompt ideas in the current conversation. Main and the user review each idea before the user approves a new global prompt.
 
-Turn repetition and correction in the current Pi conversation into one editable prompt template candidate. The user decides whether the candidate becomes a global Pi prompt.
+## Language
 
-## Glossary
+**Current Conversation**:
+The model-visible conversation on the active branch, including its retained summary and effective user and completed assistant text. Inactive branches, removed context, tool traffic, and thinking are not prompt-analysis evidence.
 
-- **Current Conversation**: The active conversation branch, including summaries that replace compacted history. Inactive branches are outside the scope.
-- **Signal**: Evidence in the Current Conversation that a reusable prompt may help. Signals are explicit recurrence language, repetition of the same underlying request, or repeated correction of the agent's behavior.
-- **Prompt Candidate**: One unsaved, editable prompt template proposed from the strongest Signal. A session has at most one pending Prompt Candidate; the user may explicitly request another after the pending candidate is shown or dismissed.
-- **Prompt Review**: Conversational refinement of a Prompt Candidate by the user and Main.
-- **Final Prompt Draft**: Complete prompt-template Markdown authored by Main after Prompt Review. A Prompt Candidate is not a Final Prompt Draft.
-- **Approved Prompt**: A Final Prompt Draft the user explicitly accepts for creation as a global Pi prompt. Approval never authorizes replacing an existing prompt.
+**Signal**:
+Evidence that a reusable prompt could help: explicit recurrence language, requests with the same intent, or repeated corrections of Main's behavior.
 
-## Boundary
+**Prompt Candidate**:
+One unsaved prompt template proposed from a Signal. A pending candidate is untrusted review material, not an approved prompt.
 
-| Concern | Home |
-| --- | --- |
-| Cross-session evidence and historical search | `@henryqw/pi-session-recall` |
-| Scripts, Skills, and other automation | Their owning package or repository |
-| User config load rules and launch reporting | `@henryqw/pi-config-store` ([ADR 004](../../docs/adr/004-extension-config-safety.md)) |
-| This extension | Current-conversation Signal detection, Prompt Candidate generation, and Prompt Review |
+**Prompt Review**:
+Conversational refinement of a displayed Prompt Candidate by the user and Main.
 
-The extension stays silent when it finds no Prompt Candidate. Background analysis remains visible while it is running. Manually requested candidates display when ready; automatic candidates wait for explicit user display, so background work never steals editor focus.
+**Final Prompt Draft**:
+The complete prompt-template Markdown in Main's latest valid retained review reply after the candidate was displayed. A Prompt Candidate is not a Final Prompt Draft.
+
+**Approved Prompt**:
+A Final Prompt Draft that the user explicitly accepts for creation as a new global Pi prompt. Approval does not permit replacement of an existing prompt.
