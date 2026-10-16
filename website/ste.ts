@@ -114,7 +114,7 @@ export function checkSte(markdown: string, options: { avoidTerms: AvoidTerm[] })
         }
       }
       if (node.type === "paragraph") {
-        const sentences = text.split(/(?<=[.!?]["'”’)]*)(?=\s|$)/);
+        const sentences = text.split(/(?<=[.!?]["'”’)\]]*)(?=\s|$)/);
         let offset = 0;
         let count = 0;
         for (const sentence of sentences) {

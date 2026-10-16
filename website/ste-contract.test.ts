@@ -41,6 +41,7 @@ test("ste checker: sentence and paragraph limits include only prose words", () =
   assert.deepEqual(check(`${words(24)} \\! \\? — \\.`), []);
   assert.deepEqual(check(`${words(25)}! ${words(25)}? ${words(25)}.`), []);
   assert.deepEqual(check('"Read." '.repeat(7)).map(({ rule }) => rule), ["paragraph-length"]);
+  assert.deepEqual(check("[Read.] ".repeat(7)).map(({ rule }) => rule), ["paragraph-length"]);
 });
 
 test("ste checker: ordered procedures use 20 words and reject passive forms", () => {
