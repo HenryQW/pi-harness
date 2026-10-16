@@ -57,6 +57,6 @@
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-ask-question/example.png"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.1.0"
+    "@earendil-works/pi-coding-agent": "1.2.0"
   }
 }
