@@ -1,97 +1,103 @@
 # Pi PR
 
-Pi PR observes the current-branch pull request and routes the user to its single highest-priority next step. The footer and PR next-step widget use the same route; `/pr` reads fresh state before acting. It supports authenticated GitHub.com and GitHub Enterprise repositories. Each PR hostname selects its GitHub API host.
+Pi PR identifies the current-branch pull request and selects its highest-priority next step. Local commit and PR publication tools provide narrower authority than the user-run PR command.
 
 ## Language
 
+### Identity and state
+
 **Current-branch pull request**:
-The one GitHub pull request proven to match the Pi session's current branch. A configured target proves it directly. A unique inferred target proves it from a validated remote ref, repository, and exact OID.
+The one GitHub pull request proven to match the current branch through a validated configured or uniquely inferred target.
 _Avoid_: Repository PR list, PR dashboard
 
 **Configured PR target**:
-The current branch's explicit Git push destination. It names one validated remote, repository, host, ref, and remote OID.
+The current branch's Git push destination, with a validated remote, repository, host, ref, and remote commit identity.
 _Avoid_: Upstream guess, default remote
 
-**PR identity observation**:
-A session entry that remembers only a configured pull request's stable identity. It stores the PR URL, number, host, head identity, and configured target identity. Normal discovery may reload that URL after the configured remote ref is deleted. The current target and local HEAD must still match. GitHub remains authoritative for mutable state. Invalid identity or a failed GitHub load never enables PR creation.
-_Avoid_: Pull request cache, worktree cache, mutable PR snapshot
-
 **Inferred PR target**:
-One exact PR target discovered when the branch has no configured push destination. It must be the only validated remote publishing the same branch ref, and its PR head must match the remote OID. It has presentation authority but no mutation authority until the user confirms linking.
+The unique validated remote target publishing the same branch ref and exact PR head. It permits display, not changes, until the user permits upstream linking.
 _Avoid_: Guessed upstream, automatic link
 
-**PR discovery blocker**:
-A deterministic reason that PR discovery cannot safely select creation, linking, or another workflow. Examples include ambiguous remotes or PRs, an OID mismatch, a published branch without a PR, and unsafe Git configuration.
-_Avoid_: No PR, transient lookup failure
+**PR identity observation**:
+A remembered configured PR identity that can locate the same PR after its remote ref is deleted. It does not replace GitHub as authority for current state.
+_Avoid_: Pull request cache, mutable PR snapshot
 
-**PR footer status**:
-One linked pull request number and one plain-language lifecycle or condition shown through Pi's extension status line. It uses the same priority as PR workflow routing.
-_Avoid_: PR summary, review dashboard, glyph stack
+**PR discovery blocker**:
+A known ambiguity or unsafe condition that prevents safe PR selection or creation, distinct from a failed lookup.
+_Avoid_: No PR, transient lookup failure
 
 **PR lifecycle**:
 Whether a pull request is `open`, `merged`, or `closed`.
 _Avoid_: PR state, PR condition
 
 **PR condition**:
-An independently observable fact about an open pull request, such as draft status, required base update, merge conflict, review feedback, CI outcome, policy readiness, or, when the `codexReview` policy is enabled, the Codex review status and its unresolved P0/P1 findings. Several conditions may coexist.
+An independently observed fact about an open PR, such as draft status, base update need, conflict, feedback, CI outcome, or review and merge policy. Several conditions can exist together.
 _Avoid_: PR state, lifecycle
 
 **PR feedback item**:
-A conversation comment, review body, inline review comment, or reply that may require attention. Feedback includes human and review-bot authors but excludes mechanical CI status output. Changes requested and unresolved review threads can trigger routing and block merging. Ordinary conversation comments neither trigger routing nor block merging.
+A conversation comment, review body, inline review comment, or reply that may need attention, excluding mechanical CI status output. New standalone feedback can require triage without itself being a merge blocker.
 _Avoid_: Comment or unresolved thread as a name for all feedback
 
 **Merge-ready pull request**:
-An open, non-draft pull request with a clean worktree and no unpublished or divergent local commits. No required base update, merge conflict, changes-requested review, unresolved review thread, failed or running CI, pending review, blocked merge policy, or, when the `codexReview` policy is enabled, incomplete Codex review remains.
+An open, non-draft PR with safe clean local state and no remaining publication, conflict, base-update, feedback, CI, review, or merge-policy blocker. Readiness does not authorize a merge.
 _Avoid_: No failures, no comments, approved PR
 
+### Authority and presentation
+
 **PR next step**:
-The single highest-priority user-authorized workflow derived from the current lifecycle and conditions. One `/pr` invocation authorizes guarded steps through fresh rediscovery, stopping for external input, ambiguity, failed checks, an uncertain mutation, a repeated route, or merge. Direct merge needs explicit user confirmation each time, then fresh readiness.
-_Avoid_: Automatic remediation, PR action, workflow chain
+The highest-priority permitted workflow derived from fresh PR and local state, subject to the authority of the entry point.
+_Avoid_: Automatic remediation, PR action
 
 **PR helper run**:
-One random in-memory run ID bound to the current session generation, canonical worktree, selected route, and fresh route authority. Only one run may exist. Busy-session launches use hidden native settlement-boundary messages, never user input queues. Boundary handoff consumes the exact pending skill/run/action without `before_agent_start`; unused or cancelled runs end at settlement. Pi 1.1.0 or newer in the 1.x series is required. Most runs end at agent settlement. An exact branch-update conflict may survive for one user-guided continuation. Session replacement and shutdown forget the run without changing a pending rebase.
+One temporary workflow authority bound to a session, worktree, selected route, and verified PR state. It is not permission to reuse a helper after that authority ends.
 _Avoid_: Reusable token, serialized authority, global workflow context
 
+**PR workflow routing**:
+Selection of the next permitted workflow from fresh evidence after each completed step, stopping for blockers, uncertain outcomes, external input, or a merge decision.
+_Avoid_: User-facing `/pr` flags, stale mergeability
+
+**PR footer status**:
+The linked PR number and its highest-priority lifecycle or condition.
+_Avoid_: PR summary, review dashboard, glyph stack
+
 **PR next-step widget**:
-A compact one-line action hint tells the user which highest-priority workflow `/pr` will run. It omits identity and status already shown in the footer. It prefixes the plain `Run /pr to …` text with `✗` for errors, `!` for warnings, `✓` for success, or `●` for accent and neutral routes. In TUI, only the icon uses a theme color; RPC and non-TUI receive the same plain line without ANSI. The creation widget stays absent on a clean new local branch. It appears after a commit or for ordinary pending work, including untracked files. It stays absent during a Git operation and when head and base are the same ref. Other widgets are absent when no workflow is available.
+A single action hint for the workflow that the PR command would select, separate from PR identity and status.
 _Avoid_: Workflow menu, multiple actions
 
 **PR routing widget**:
-A transient one-line `Checking pull request…` status replaces the next-step widget while `/pr` performs fresh discovery. TUI uses an animated, width-bounded braille spinner. RPC receives the plain first frame without ANSI. The footer remains visible. The widget clears as soon as route derivation finishes and before any route interaction or action. Concurrent commands show it while any invocation is still routing. Session replacement and shutdown stop its timer.
+A temporary status shown while the PR command obtains fresh discovery, not the result of that discovery.
 _Avoid_: Model working indicator, modal, routing result
 
-**PR workflow routing**:
-`/pr` is flagless. A fresh discovery chooses creation on a validated unpublished branch with committed or ordinary pending work, links one exact inferred target and rediscovers the same configured PR before continuing, or routes a configured open PR. Local state is normalized first: a behind or clean diverged local HEAD selects local sync, then a dirty tree or ahead local HEAD selects scoped local publication. Mergeability that GitHub has not finished computing selects a bounded re-read. A confirmed conflict or a base GitHub reports behind selects the pinned-base branch update. Failed GitHub Actions CI, review changes, and unresolved threads select their guarded workflows. Running CI with no other blocker selects a bounded wait that re-reads GitHub every `ciPollSeconds` for at most `ciWaitMinutes` per invocation; running CI with review still required waits for a person instead. With the `codexReview` policy enabled, an incomplete Codex review with no other blocker selects the same bounded wait and shares its budget; `/pr` never requests the review. Before waiting or merge, `/pr` compares a complete fresh feedback snapshot against the last finalized sweep marker so new standalone comments and review bodies select triage automatically. Merged, closed, and draft PRs are no-action. The helper run is bound to the session and canonical worktree; one `/pr` continues after a completed helper action. After each published mutation the invocation reads fresh GitHub mergeability, feedback, and CI. Direct merge requires explicit user confirmation, fresh readiness after it, and an exact expected head, and happens only inside an explicit `/pr` with UI; GitHub auto-merge is never enabled.
-_Avoid_: User-facing `/pr` flags, stale mergeability, unsolicited conflict resolution
-
 **PR presentation refresh**:
-The footer and widget load once at session start and refresh after local commits, PR creation, pushes, dispatched workflow settlement, and successful delegated-task settlement. When an agent run settles while Pi is idle, an open pull request also refreshes if the last discovery finished at least two minutes earlier and no refresh is active or queued. No timer runs, so external changes stay hidden until a later refresh. A session outside a Git worktree stays silent. The routing widget replaces any action hint when `/pr` starts and clears when route derivation finishes. A creation workflow defers intermediate refreshes until agent settlement, so its push-before-PR transition stays hidden. Other dispatched workflows keep the widget hidden until settlement; direct and no-action routes refresh it after the handler finishes. Command errors restore the prior hint and schedule a refresh, except a fresh GitHub API quota failure, which shows the sanitized `GitHub API rate limit exhausted; retry after GitHub resets it` message and does not immediately retry. After a successful merge, a missing current-branch pull request does not show the create widget until a new local commit. Presentation and `/pr` share fresh discovery plus session identity rehydration. `/pr` reads fresh state and is authoritative for actions.
-_Avoid_: Periodic presentation polling, polling outside an authorized `/pr` invocation, cached command state
+An update to footer and widget evidence after session or work events. Displayed evidence is not authority for a later change.
+_Avoid_: Periodic presentation polling, cached command state
+
+### Workflows
 
 **PR creation workflow**:
-Preparation chooses one `branch.<branch>.gh-merge-base` or the validated `origin` default branch and pins its OID. The package helper inspects pending work and commits only explicitly selected paths; ambiguous or unrelated work stops the route for an ownership decision. Clean verification pins local HEAD without merging or rebasing merely because base advanced. Relevant validation precedes the exact-OID, exact-lease push. Creation/publishing preserves existing post-push retry and upstream recovery boundaries.
-_Avoid_: Creation-time merge, user-facing base flags, shell-driven Git mutation
+Creation of a PR from scoped local work against a selected, pinned base. It includes validation and exact-head publication, not a base merge or rebase.
+_Avoid_: Creation-time merge, user-facing base flags
 
 **PR local sync workflow**:
-For a configured open PR whose clean or dirty local HEAD is behind the PR head, or whose clean local commits diverged from it, the package helper fetches the exact PR head OID and fast-forwards, or rebases the local commits onto it. It never pushes, stashes, or resets. Uncommitted changes that overlap a fast-forward, a rebase conflict (aborted back to the original HEAD), and local merge commits stop for the user. A dirty diverged branch first goes through local publication, which commits owned paths and hands the committed branch back to sync before validation and push. The invocation then rediscovers.
+A local fast-forward or rebase onto the exact PR head to reconcile behind or diverged local commits. It does not push, stash, or reset.
 _Avoid_: Automatic stashing, reset to remote, publishing from sync
 
-**PR branch update workflow**:
-A confirmed conflict, or a base that GitHub reports behind (reported only when repository policy requires an up-to-date branch), routes to the package branch helper with clean equal local and PR heads. It pins and fetches the exact base OID, rebases, returns bounded conflict paths and retains one guided continuation. Semantic conflict decisions require a user. The verified head is published once with an exact remote lease; uncertain outcomes cannot be replayed. The active invocation reads fresh mergeability and feedback.
-_Avoid_: Rebase on a merely stale base GitHub still calls clean, automatic stashing, unleased force push
-
-**PR feedback sweep workflow**:
-Fresh routing finds new/edited standalone feedback, except `Bot` conversation comments (status output), as well as changes-requested reviews and unresolved threads. A marker written only after successful finalization records the last complete assessed generation; malformed markers are preserved and block attention lookup. Existing canonical-worktree sweep recovery retains version-one semantics and post-publication base OID drift recovery: refresh alone rebinds the base after confirming repository, ref, and exact published head. A clean original HEAD and an exact owned-path ledger precede edits for new sweeps. After publication, refresh retains unchanged decisions, blocks new or edited actionable feedback for a later fix cycle, and binds a saved projection to the latest complete generation. The helper selects eligible threads, verifies replies by returned ID, and never replays uncertain mutations without proof.
-_Avoid_: Silent loss of standalone comments, unscoped comment edits, recovery deletion on malformed data
-
 **PR local publication workflow**:
-For a configured open PR with dirty or ahead local work, the package-owned helper freezes identity, lease, HEAD, and exact status. The model selects intended paths and a commit message; the helper rejects unrelated staged paths, commits only reviewed paths, validates clean work and descendant HEAD, and pushes an exact captured OID with a frozen lease once. A commit on a diverged HEAD ends the run as a replan: fresh routing syncs the committed branch onto the PR head and publishes it in a second pass. Unrelated or ambiguous work stops the route for a user decision.
+Scoped commits, validation, and publication of owned local work to an existing PR with verified identity and remote lease. Unrelated work and uncertain publication outcomes stop the workflow.
 _Avoid_: Stash, reset, mutable symbolic push, replaying an uncertain push
 
+**PR branch update workflow**:
+A rebase onto the pinned PR base for a confirmed conflict or required base update, followed by checked publication. It is distinct from local sync onto the PR head.
+_Avoid_: Rebase on a merely stale base GitHub still calls clean, unleased force push
+
+**PR feedback sweep workflow**:
+Assessment of a complete feedback snapshot, scoped fixes where needed, and verified replies and thread resolution. Saved progress separates completed decisions from new or changed feedback.
+_Avoid_: Silent loss of standalone comments, unscoped comment edits
+
 **PR CI-fix workflow**:
-When a diagnosable GitHub Actions job has failed, `/pr` dispatches the package-owned `pi-pr-fix-ci` only when local HEAD equals the PR head and the worktree is clean. Other failed checks and commit statuses remain visible no-action blockers. The helper resolves check-suite, workflow-run, attempt, and job IDs through GitHub API fields; HTML details links never establish identity. It streams bounded log tails and revalidates its saved destination, open PR, failure evidence, and repair HEAD directly before one exact-OID push.
+Evidence-based repair of a failed GitHub Actions job on the exact PR head, with validation before publication. Other failed checks can block without qualifying for this workflow.
 _Avoid_: Unbounded CI watcher, automatic retry, rerun loop
 
 **PR merge workflow**:
-When the current pull request is merge-ready, `/pr` shows a native confirmation with the PR number, URL, short head OID, base ref, and configured `mergeMethod` (squash by default). Only an explicit yes merges; a decline or a session without UI reports merge-ready and stops. After a yes, `/pr` revalidates readiness and merges with the exact confirmed head; a changed head cancels. Routing has already synced a behind local HEAD, so merge sees a clean local HEAD equal to the PR head; the merge helper itself still tolerates a behind head. An in-progress merge, rebase, cherry-pick, revert, or sequencer operation is not clean, even when status is empty. The readiness check fetches the exact PR head OID from the validated push URL without shared fetch state. GitHub remains responsible for rejecting a merge method that repository policy does not allow. The workflow does not enable auto-merge or a merge queue, rebase the local branch, force-push, delete branches, or clean up worktrees.
-_Avoid_: Merge skill, unchecked merge, auto-merge, repository-detected merge method, branch cleanup, worktree completion
+A merge of the exact confirmed PR head after explicit user confirmation and a fresh readiness check. It does not enable auto-merge or include branch or worktree cleanup.
+_Avoid_: Unchecked merge, auto-merge, branch cleanup, worktree completion

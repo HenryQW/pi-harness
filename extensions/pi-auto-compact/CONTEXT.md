@@ -1,29 +1,31 @@
 # Pi Auto Compact
 
-Pi Auto Compact protects ongoing Pi work from context-window pressure. It compacts session context early, then continues the same task without user intervention.
+Pi Auto Compact reduces context pressure while preserving the current task. Normal context maintenance occurs between completed turns; emergency compaction can interrupt and resume work.
 
 ## Language
 
 **Auto-compaction**:
-Proactive compaction of a Pi session before context pressure interrupts active work.
+Extension-owned reduction of Pi session context when context use exceeds the selected threshold. It preserves raw session history.
 _Avoid_: Automatic summarization, context reset
 
 **Read trim**:
-Context edit before summary compaction that replaces an older `read` result when an identical later full read remains in recent context. When it frees enough context, no summary runs.
-_Avoid_: Pruning, summarization, trim step
+Replacement of an older successful text-only read result when an identical later full read remains in protected recent context. A sufficient read trim avoids summary compaction.
+_Avoid_: Pruning, summarization
 
-**Task resumption**:
-Continuation of the current task after auto-compaction, without asking the user to repeat the request.
-_Avoid_: Retry, restart, new task
+**Summary compaction**:
+A summary of older effective conversation context that replaces that context in future model requests when read trim is insufficient.
 
 **Current task**:
-The user-directed work in progress when auto-compaction begins and which continues after it completes.
+The user-directed work in progress when context maintenance begins.
 _Avoid_: Prompt, new task
 
-**Auto-compaction configuration**:
-User config at `getAgentDir()/config/pi-auto-compact/config.json` sets the optional threshold. Missing config uses 70% silently. Unknown keys and an invalid threshold show a launch warning with the path and reasons; the threshold falls back to 70% and the file stays unchanged. Only `/auto-compact` writes it.
-_Avoid_: legacy config path, model-selection config
+**Task resumption**:
+Continuation of the current task after emergency compaction interrupts it. Normal boundary compaction does not restart a completed answer.
+_Avoid_: Retry, restart, new task
+
+**Auto-compaction threshold**:
+The selected percentage of the context window above which automatic context reduction is needed.
 
 **Compaction task profile**:
-Consumer-owned Model Task `pi-auto-compact/autoCompact` defaults to `fast`; shared task-model config can explicitly override it and supplies primary and optional fallback Pi registry routes. If neither route works, native compaction uses the current session model.
+The shared Task Profile assigned to the independent compaction Model Task. Its default is `fast`; the current session model is the final fallback when shared routes cannot complete compaction.
 _Avoid_: dedicated compaction model, package-owned model picker

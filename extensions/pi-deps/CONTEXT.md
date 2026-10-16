@@ -1,17 +1,20 @@
 # Pi Deps
 
-Pi Deps makes dependency preparation an explicit repository capability for future Git worktrees.
+Pi Deps prepares dependencies when Git creates a worktree in a repository that opted in.
 
 ## Language
 
 **Prepared worktree**:
-New Git worktree whose supported root dependency environments start installing at creation and finish in the background; completion is signaled to consumers instead of blocking the creator.
+A new Git worktree admitted to dependency preparation. Its installs can still be running; the term does not prove that dependencies are ready.
 _Avoid_: ready repo, initialized checkout
 
 **Dependency environment**:
-Installable package set governed by one supported root lockfile. One repository may contain both Node and uv dependency environments.
+An installable package set governed by a supported root lockfile. A repository can have both Node and uv dependency environments.
 _Avoid_: dependency folder, package-manager cache
 
 **Repository opt-in**:
-Explicit repository state requesting dependency preparation for future worktrees, independent of which tool creates them.
+An explicit local choice to prepare dependencies for future worktrees through the repository's shared Git checkout hook.
 _Avoid_: global enablement, Pi startup install
+
+**Preparation outcome**:
+The running, successful, or failed state of background dependency installation for one worktree, separate from completion of worktree creation.

@@ -1,95 +1,63 @@
-# Pi Subagent Context
+# Pi Subagent
 
-## Purpose
+Pi Subagent delegates bounded work to Role-configured Pi workers. Direct tasks share Main's checkout; isolated requests produce checked candidates for explicit integration.
 
-Own Role-configured Pi delegation through one `delegate_task` surface:
+## Language
 
-- **direct mode** runs authorized compact shared-checkout work in Herdr tabs in Main's workspace and returns a handle before completion;
-- **isolated mode** runs durable checked graphs with Herdr worktrees, exact Git identities, guarded integration, and recovery; and
-- the package root exposes the Role, executor, worktree, evidence, schema, state, and runtime mechanisms used by the extension.
+### Delegation
 
-## Domain glossary
+**Main**:
+The Pi session and checkout that coordinate delegated work.
 
-- **Main**: the Pi session and checkout coordinating delegated work.
-- **Role**: package or user Markdown defining responsibility, tools, trusted extension sources, Skills, optional MCP names, instructions, and an optional model-class default. Roles do not select isolation.
-- **Model Class**: `fast`, `balanced`, `frontier`, or `fav`, resolved through `pi-task-models`.
-- **Direct task**: one bounded task using its Role's declared resources in Main's shared checkout, with a declared `access` of `read` or `write`; authorized writes take effect immediately without checked integration.
-- **Direct reference**: `D<workflow>.<worker>` display reference for one recorded direct worker on the session branch, such as `D7.1`. It identifies a worker for display and `continueFrom`; it never grants ownership.
-- **Continued worker**: a new direct worker, with a new reference and tab, that resumes a finished worker's saved Pi session and private lease through `continueFrom`.
-- **Isolated request**: one durable ID, goal, and checked task graph.
-- **Candidate**: exact clean committed task-worktree identity produced by an isolated changeset worker.
-- **Readiness**: durable proof that one exact live-worker candidate passed its preliminary checks and is sealed for Main's explicit selection; it is not a separate user approval.
-- **Integration generation**: Main's owned, ordered assembly of selected candidates in a separate checkout; each replaced assembly remains an inspectable superseded generation.
-- **Release**: Main's explicit, exact-identity cleanup of a rejected worker or superseded generation after proving it is no longer selected; it never discards dirty or conflicted work.
-- **Productive lease**: repository-scoped process lease that excludes concurrent execute/resume while permitting status and abort.
-- **Safety budget**: finite timeout for child work, process I/O, status, termination, or cleanup. It is not a whole-run deadline.
+**Role**:
+A named capability definition with instructions, tools, trusted extension sources, Skills, optional MCP servers, and an optional Model Class default. A Role does not select isolation.
 
-## Invariants
+**Model Class**:
+A `fast`, `balanced`, `frontier`, or `fav` choice resolved through Pi Task Models.
 
-### Unified surface and modes
+**Direct task**:
+A bounded task in Main's shared checkout with declared `read` or `write` access. Authorized writes take effect immediately, without rollback or checked integration.
 
-- Every `delegate_task` request declares `mode: "direct"` or `mode: "isolated"`. No path silently falls back between modes.
-- Direct mode selects exactly one single, parallel, or chain shape. Unknown properties and mixed shapes fail before launch.
-- Isolated mode accepts 1–8 typed tasks. `dependsOn` controls waves. `contextFrom` may name completed text tasks only and preserves declared order.
-- Roles describe capability, not checkout placement. Role-level worktree isolation is rejected.
+**Direct reference**:
+A display and continuation reference for one recorded direct worker, such as `D7.1`. It does not grant ownership of that worker.
 
-### Global limits
+**Continued worker**:
+A new direct worker that resumes a finished worker's saved Pi conversation in a new tab with a new Direct reference.
 
-- `config/pi-subagent/config.json` is the only user execution-policy source. It owns `maxSubagents`, `maxTurns`, optional `maxTokens`, `maxCorrections`, and child idle/hard timeout.
-- The config loads through `@henryqw/pi-config-store` fields. An unknown key or an invalid bounded limit, timeout, or `roleDefaults` key warns at launch and uses its finite default. An invalid `maxTokens`, or a file that cannot be read or parsed, disables delegation with an error, because the token default is unlimited. Role Markdown files keep per-file exclusion; durable state stays strict.
-- Request fields cannot override or replenish policy. Durable requests store the policy snapshot and cumulative correction count; current config may tighten the correction allowance.
-- Productive execution has no whole-run wall-clock deadline. Long productive work and later resume remain valid. Direct Herdr observation also has no whole-task elapsed deadline; worker idleness is bounded.
-- Child idle/hard runtime, turn/token handling, outer abort, process I/O, status inspection, termination, and cleanup remain independently bounded. Direct Herdr workers use idle limits, not ephemeral child hard runtime.
-- Ephemeral children share one FIFO executor pool. Queued time consumes no child timeout. Isolated Herdr Role launches receive the same non-refilling turn/token/runtime budget metadata.
+**Checkout admission**:
+The exclusive permission held by a direct write request that prevents Main and other direct writers from writing to the shared checkout. It remains held until worker termination is proven; read classification is not a sandbox.
 
-### Direct evidence
+**Isolated request**:
+A durable goal and dependency graph of text and changeset tasks, with checked results and recovery state.
 
-- Direct mode uses each Role's declared resources for explicitly authorized scope. Each task declares `access`; a request with any `write` task is a write request. `read` is Main's unenforced classification: read requests skip admission and return plain text; their parallel tasks run concurrently, chains stay ordered. Write requests serialize tasks and retain Pi checkout admission until exact owned worker termination is proved by pane absence and two empty private process-lease scans; uncertain termination retains admission and live recovery ownership. Write-request answers require an explicit structured `succeeded` outcome; failed, blocked, or malformed completion stops dispatch but does not prevent release after proved termination. `/subagent` Close/cancel-and-release retries termination under session, branch, epoch and exact ownership guards without replaying work or removing checkout/session evidence. This is a worker report, not proof of validation, cleanliness, rollback, or checked integration. Direct changesets require isolated mode.
-- Only direct write requests reserve checkout admission. They cannot start while another direct writer holds it or a Main potentially-writing call is in flight. Main calls, including Bash and nested `codemode` writes, do not block each other. A direct writer blocks Main's writes until verified worker termination; use isolated mode when Main must continue writing. Reads never wait.
-- Each direct worker has a recorded Herdr tab and Pi session identity. The first handle returns before completion; subsequent tab identities remain recoverable on the session branch.
-- `continueFrom` resolves to exactly one recorded tab with the same Role and a saved turn identity. It refuses before launch while a local task owns the session, when the session is missing, above 16 MiB, or its exact recorded turn is not terminal, or when a still-listed old agent is not the exact idle or done agent. Old-pane closure needs pane absence and two empty lease scans. The relaunch reuses the session file and private lease in a new tab and record.
-- `/subagent` **Stop this worker** exists only for running workers of locally owned all-read workflows. It aborts one entry, proves its termination, and records `Stopped by user from /subagent`; siblings continue and Main receives one result.
-- An exact settled worker with a bounded final Pi answer produces a follow-up to Main. Worker text reaching Main carries a no-authority header with imitated harness framing escaped; a failed task keeps a bounded partial excerpt, never shown as success. Blocked, unknown, idle-stalled, truncated, or ambiguous outcomes retain actionable recovery identity. Session replacement never delivers to the wrong Main session.
+**Text task**:
+An isolated-graph task whose result is bounded text rather than a changeset. Completed text can supply context to later tasks.
 
-### Isolated lifecycle
+**Changeset task**:
+An isolated-graph task that produces a committed change in its own worker worktree.
 
-- Changeset tasks durably record allocation intent before each external side effect. Unknown outcomes are retained and never guessed.
-- One worker remains live across prompts, preliminary checks, follow-up/correction, readiness, Main's staging decisions, combined validation, and guarded promotion. Selected workers terminate after promotion; rejected workers terminate on explicit rejection.
-- Optional same-worker follow-ups are admitted only while a changeset is actively working. After the final checked-evidence save, one synchronous queue-or-seal transition prevents admitted revisions from being lost; the runner never waits for routine input.
-- Worker waves pin Main's committed branch/HEAD/tree, excluding staged, unstaged, and untracked changes; dirty Main permits checked candidate readiness, but branch/HEAD drift blocks dispatch and clean Main is required before staging, combined validation, or promotion.
-- Preliminary checks gate readiness. Any changed candidate invalidates previous readiness and validation.
-- Optional task judgment binds to the exact preliminary candidate. Main selects and orders candidates in a separate owned integration checkout, where final full-suite checks and optional final judgment bind to the clean combined tip before promotion.
-- Promotion requires exact unchanged clean Main and a passing combined generation. Durable promotion evidence precedes selected-worker termination and cleanup; recovery never rolls back a proven promotion.
-- Rejected workers and superseded generations stay retained until Main explicitly releases their exact clean, proved-owned resources. At most two unreleased integration checkouts coexist.
-- Failures, ambiguity, interruption, review findings, conflicts, drift, unproved termination, or cleanup failure enter `needs_attention` and preserve evidence.
-- `subagent_status` is read-only, callable from `codemode` scripts, and returns the bounded public projection as structured content, never raw run state. `delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. `subagent_resume` accepts only strict `retry`, `verify`, or `finalize` continuations; only a correcting `retry` takes Main's optional instruction. `subagent_abort` terminates only exact owned workers.
-- The extension never pushes, opens a pull request, publishes, deploys, stashes, resets, force-cleans, or deletes unproved recoverable work.
+### Checked integration
 
-### Resource and launch policy
+**Candidate**:
+The exact clean committed identity of a changeset worker's proposed change.
 
-- Ambient child extensions and Skills stay disabled. Only Role/caller resources plus required internal adapters load.
-- Every Role requires `tools`, `extensions`, and `skills` arrays; unknown frontmatter keys are rejected per file, and an invalid file blocks only the name it claims. `roleDefaults` in config merge into every Role first, deduplicated. `extensions` may name Pi built-in extensions as `builtin:<name>`. A Role activates `codemode` only by naming it in `tools` with `builtin:codemode` loaded; MCP configuration never activates it, and Pi's codemode settings apply unchanged. `mcps` names servers from the global `~/.pi/agent/mcp.json`; their tools keep their configured exposure in a codemode Role and are forced to direct exposure otherwise. Omitted or empty `mcps` denies MCP access. Direct `pi-mcp-adapter` loading is rejected because it bypasses the allowlist.
-- The Role tool policy declares the Role's `tools` and the extension tools Pi would declare on registration; extension tools with `codemode` or `deferred` exposure stay callable from scripts without being declared.
-- Selected extensions are trusted executable bundles, not a sandbox. All tools and lifecycle behavior they register load together.
-- Role Skill names resolve through Main's effective Pi registry. Missing Roles, Skills, tools, MCP servers, routes, models, or thinking levels fail before the first productive turn.
-- Route precedence is call model class, then Role default, then registered Model Task assignment/default. A direct model replaces only the route model and must support its thinking level.
-- Main-only delegation/recovery tools and `ask_question` are excluded from children. Recursive delegation is unavailable.
-- Package built-ins are `implementer`, `reviewer`, and `scout`; a same-named user Role overrides a built-in.
-- `git_read` is an internal read-only child tool loaded only for Roles declaring it; the built-in reviewer opts in. Fixed structured Git operations provide bounded local evidence without Bash, network, external filters, or mutations. Named-ref context supplements but never replaces the authoritative exact isolated review patch.
+**Readiness**:
+Saved proof that an exact candidate passed preliminary checks and is sealed for Main's explicit selection. It is not a separate user approval.
 
-### Executor boundaries
+**Integration generation**:
+Main's ordered assembly of selected candidates in a separate checkout. A replaced assembly remains available as a superseded generation.
 
-- A terminal response at the turn boundary succeeds; attempted continuation fails with typed `turn_limit` and bounded retained output.
-- Token accounting sums completed assistant responses once. A terminal crossing succeeds. A continuing crossing completes tools and receives one response-only handoff; further continuation fails.
-- Recognized Pi JSON events renew idle timeout; raw bytes do not. Child maximum runtime always terminates ephemeral children.
-- Output, stderr, protocol events, callback draining, and inherited descendant streams are bounded.
-- Low-level worktree finalization returns explicit `pruned`, `retained`, or `recovery` evidence and never force-deletes uncertain work.
-- Exact review helpers produce bounded private evidence; callers must preserve identity guards and verdict validation.
+**Judgment**:
+A review decision bound to an exact candidate or combined integration generation, separate from automated validation.
 
-## Owned storage
+**Promotion**:
+The guarded transfer of a validated integration generation into unchanged, clean Main. Readiness alone does not permit promotion.
 
-- User config and Role Markdown: `<agent-dir>/config/pi-subagent/`
-- Durable state: `<agent-dir>/config/pi-subagent/state/<repository-hash>/`
-- Shared model routes: `<agent-dir>/config/pi-task-models/config.json`
+**Release**:
+Main's explicit cleanup of an exact rejected worker or superseded generation after proving that it is no longer selected. Release does not discard dirty, conflicted, or uncertain work.
 
-State version 5 is strict. Older or malformed files are rejected rather than rewritten or migrated silently.
+**Productive lease**:
+Repository-scoped ownership that excludes concurrent execution or resumption while permitting status inspection and abort.
+
+**Safety budget**:
+A finite limit for child execution or a safety operation, not a deadline for the whole isolated request.
