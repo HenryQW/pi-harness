@@ -2002,9 +2002,15 @@ class StagingGit extends IntegrationGit {
 		return this.cleanupBlocked ? { outcome: "blocked", failure: "Exact checkout is dirty; inspect the retained worktree." }
 			: { outcome: "ready", value: "removed" };
 	}
-	override async release(_root: string, info: WorktreeInfo, _tip: WorkspaceIdentity,
-		kind: "worktree" | "branch"): Promise<GitOutcome<"removed">> {
-		this.releases.push(`${info.branch}:${kind}`);
+	/** Branches whose checkout and ref were removed outside Pi Subagent. */
+	readonly removed = new Set<string>();
+	override async absent(_root: string, info: WorktreeInfo): Promise<boolean> {
+		return this.removed.has(info.branch);
+	}
+	override async release(_root: string, info: WorktreeInfo, tip: WorkspaceIdentity,
+		kind: "worktree" | "branch"): Promise<GitOutcome<"removed" | "absent">> {
+		this.releases.push(`${info.branch}:${kind}@${tip.head}`);
+		if (this.removed.has(info.branch)) return { outcome: "ready", value: "absent" };
 		return this.releaseBlocked ? { outcome: "blocked", failure: "Owned checkout is dirty." }
 			: { outcome: "ready", value: "removed" };
 	}
@@ -2860,6 +2866,102 @@ test("Main refresh invalidates candidates launched from an old staged snapshot a
 	await assert.rejects(runner.stage({ id, action: "stage", generation: 2, taskId: dependent.taskId,
 		attempt: dependent.attempt, candidate: dependent.tip,
 		expectedTip: refreshed.state.integration.generations[1]!.integrationBase }, root), /stale or unowned candidate/);
+});
+
+test("after a corrected generation is refreshed, release and abort reach a terminal state without manual cleanup", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "refresh-release-abort";
+	const ready = await runner.execute(request(id, [changesetTask("first"),
+		{ ...changesetTask("dependent"), dependsOn: ["first"] }]), root);
+	const first = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "first",
+		attempt: first.attempt, candidate: first.tip, expectedTip: ready.state.main }, root);
+	const snapshot = staged.state.integration.generations[0]!.combinedTip!;
+	const advanced = await runner.integrate({ id, action: "advance", generation: 1, expectedTip: snapshot }, root);
+	const dependent = advanced.state.integration.candidates[1]!;
+	await runner.stage({ id, action: "stage", generation: 1, taskId: "dependent", attempt: dependent.attempt,
+		candidate: dependent.tip, expectedTip: snapshot }, root);
+	git.resolved = true;
+	const combined = (await runner.stage({ id, action: "resolve", generation: 1, taskId: "dependent", attempt: dependent.attempt,
+		candidate: dependent.tip, expectedTip: snapshot }, root)).state.integration.generations[0]!.combinedTip!;
+	runtime.failCombinedExit = true;
+	await runner.integrate({ id, generation: 1, action: "validate", expectedTip: combined }, root);
+	runtime.integrationIdentity = identity("f", combined.branch);
+	const correctedTip = (await runner.integrate({ id, generation: 1, action: "correct", expectedTip: combined }, root))
+		.state.integration.generations[0]!.combinedTip!;
+	await runner.integrate({ id, generation: 1, action: "validate", expectedTip: correctedTip }, root);
+	runtime.main = identity("b");
+	const refreshed = await runner.integrate({ id, generation: 2, action: "refresh", expectedTip: correctedTip,
+		expectedMain: ready.state.main, newMain: runtime.main }, root);
+	assert.deepEqual(refreshed.state.integration.generations[0]?.correction?.to, correctedTip);
+	assertParsed(refreshed.state);
+
+	// The superseded checkout holds the corrected tip, not the last staged tip.
+	await assert.rejects(runner.integrate({ id, generation: 1, action: "release", expectedTip: combined }, root), /exact superseded/);
+	const oldReleased = await runner.integrate({ id, generation: 1, action: "release", expectedTip: correctedTip }, root);
+	assert.deepEqual(oldReleased.state.integration.generations[0]?.cleanup?.map((step) => step.status), ["completed", "completed"]);
+	assert.ok(git.releases.includes(`pi-subagent/subagent-integration:worktree@${correctedTip.head}`));
+	// Refresh invalidated the dependent but left its idle worker running; release stops that exact worker first.
+	const releasedDependent = await runner.integrate({ id, generation: 2, action: "release", taskId: "dependent",
+		attempt: dependent.attempt, expectedTip: dependent.tip }, root);
+	assert.equal(releasedDependent.state.integration.candidates[1]?.worker, "released");
+	assert.equal(changesetState(releasedDependent.state, "dependent").attempts[0]?.termination?.status, "terminated");
+	assert.deepEqual(runtime.terminationCalls.map((call) => call.workerId), ["dependent-agent"]);
+	// The root candidate can still be rejected after its invalidated dependent stopped.
+	const rejected = await runner.stage({ id, action: "reject", generation: 2, taskId: "first", attempt: first.attempt,
+		candidate: first.tip, expectedTip: refreshed.state.integration.generations[1]!.integrationBase }, root);
+	assert.equal(changesetState(rejected.state, "first").status, "rejected");
+	await runner.integrate({ id, generation: 2, action: "release", taskId: "first", attempt: first.attempt, expectedTip: first.tip }, root);
+	// The empty refreshed generation holds no candidate work, so abort releases it.
+	const aborted = await runner.abort(id, root);
+	assert.equal(aborted.state.status, "aborted");
+	assert.deepEqual(aborted.state.integration.generations[1]?.cleanup?.map((step) => step.status), ["completed", "completed"]);
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "aborted");
+	assertParsed(aborted.state);
+});
+
+test("abort closes a request whose retained checkouts, branches, and workers were removed outside Pi Subagent", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "removed-outside";
+	const ready = await runner.execute(request(id, [changesetTask("first"),
+		{ ...changesetTask("dependent"), dependsOn: ["first"] }]), root);
+	const first = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "first",
+		attempt: first.attempt, candidate: first.tip, expectedTip: ready.state.main }, root);
+	const snapshot = staged.state.integration.generations[0]!.combinedTip!;
+	await runner.integrate({ id, action: "advance", generation: 1, expectedTip: snapshot }, root);
+	runtime.main = identity("b");
+	await runner.integrate({ id, generation: 2, action: "refresh", expectedTip: snapshot,
+		expectedMain: ready.state.main, newMain: runtime.main }, root);
+	// Main then moved to another branch, so no Main-dependent action can reject the root candidate.
+	runtime.main = identity("c", "refs/heads/other");
+	await assert.rejects(runner.abort(id, root), /explicitly rejected and released/);
+	for (const branch of ["first", "dependent", "pi-subagent/subagent-integration"]) git.removed.add(branch);
+	runtime.terminationReconciliations.push({ outcome: "terminated" }, { outcome: "terminated" });
+	const aborted = await runner.abort(id, root);
+	assert.equal(aborted.state.status, "aborted");
+	assert.deepEqual(runtime.terminationCalls, [], "absent workers are reconciled, never closed");
+	assert.deepEqual(aborted.state.integration.candidates.map((item) => [item.decision, item.worker]),
+		[["rejected", "released"], ["rejected", "released"]]);
+	assert.equal(changesetState(aborted.state, "first").status, "rejected");
+	assert.deepEqual(aborted.state.integration.generations.map((generation) => generation.cleanup?.map((step) => step.status)),
+		[["completed", "completed"], ["completed", "completed"]]);
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "aborted");
+	assertParsed(aborted.state);
+});
+
+test("abort keeps a removed generation whose promotion failed without proved drift", async (t) => {
+	const { runner, root, git, action } = await stagedForPromotion(t, "blocked-promotion-removed");
+	await runner.integrate({ ...action, action: "validate" }, root);
+	git.promoteResult = { outcome: "blocked", failure: "Main is not a fast-forward base." };
+	const failed = await runner.integrate({ ...action, action: "promote" }, root);
+	assert.equal(failed.state.integration.generations[0]?.status, "promotion_failed");
+	for (const branch of ["change", "pi-subagent/subagent-integration"]) git.removed.add(branch);
+	await assert.rejects(runner.abort(action.id, root), /explicitly rejected and released/);
+	const after = await runner.status(action.id, root);
+	assert.deepEqual(after.state, failed.state);
 });
 
 test("two bounded clean Main advances before staging retain both allocations and the original candidate", async (t) => {

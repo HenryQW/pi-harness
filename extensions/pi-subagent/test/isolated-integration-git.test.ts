@@ -148,10 +148,14 @@ test("explicit unselected release preserves dirty work and removes only the exac
 	await rm(join(worker.path, "ignored.log"));
 	assert.deepEqual(await runtime.release(root, worker, candidate, "worktree", signal), { outcome: "ready", value: "removed" });
 	assert.deepEqual(await runtime.release(root, worker, candidate, "worktree", signal), { outcome: "ready", value: "absent" });
+	assert.equal(await runtime.absent(root, worker, signal), false, "the retained branch is not absent");
 	assert.equal((await runtime.release(root, worker, { ...candidate, head: base.head }, "branch", signal)).outcome, "blocked");
 	assert.equal(git(root, "rev-parse", `refs/heads/${worker.branch}`), candidate.head);
 	assert.deepEqual(await runtime.release(root, worker, candidate, "branch", signal), { outcome: "ready", value: "removed" });
 	assert.deepEqual(await runtime.release(root, worker, candidate, "branch", signal), { outcome: "ready", value: "absent" });
+	assert.equal(await runtime.absent(root, worker, signal), true);
+	assert.deepEqual(await runtime.release(root, worker, { ...candidate, head: "f".repeat(40) }, "branch", signal),
+		{ outcome: "ready", value: "absent" }, "absence needs no surviving commit lineage");
 	const moved = await allocate(runtime, root, base, "moved");
 	const relocated = join(root, ".worktrees", "other-checkout");
 	git(root, "worktree", "move", moved.path, relocated);
