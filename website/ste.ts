@@ -51,9 +51,9 @@ const unapproved = [
   ["thus|hence", "so"],
   ["simply|please", "delete it"],
   ["attempt(?:s|ed|ing)?", "try"],
-  ["facilitate|assist", "help"],
-  ["obtain", "get"],
-  ["commence", "start"],
+  ["facilitat(?:e[sd]?|ing)|assist(?:s|ed|ing)?", "help"],
+  ["obtain(?:s|ed|ing)?", "get"],
+  ["commenc(?:e[sd]?|ing)", "start"],
   ["a\\s+number\\s+of", "some or several"],
   ["in\\s+the\\s+event\\s+that", "if"],
   ["due\\s+to\\s+the\\s+fact\\s+that", "because"],
@@ -108,7 +108,7 @@ export function checkSte(markdown: string, options: { avoidTerms: AvoidTerm[] })
         for (const match of text.matchAll(pattern)) report(match.index, rule, message(match[0]));
       }
       if (procedure) {
-        const passive = wholePhrase("(?:am|is|are|was|were|be|been|being)\\s+(?:[a-z]+ly\\s+)?(?:(?!(?:red|bed|shed|need|speed|feed|seed|hundred)\\b)[a-z]+ed|built|chosen|done|given|known|made|shown|sent|taken|written)");
+        const passive = wholePhrase("(?:am|is|are|was|were|be|been|being|isn't|aren't|wasn't|weren't)\\s+(?:not\\s+)?(?:[a-z]+ly\\s+)?(?:(?!(?:red|bed|shed|need|speed|feed|seed|hundred)\\b)[a-z]+ed|built|chosen|done|given|known|made|shown|sent|taken|written)");
         for (const match of text.matchAll(passive)) {
           report(match.index, "passive-procedure", `"${match[0]}" is passive in a procedure; use active voice`);
         }

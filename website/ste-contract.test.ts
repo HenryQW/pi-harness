@@ -48,6 +48,7 @@ test("ste checker: ordered procedures use 20 words and reject passive forms", ()
     `1. ${words(20)}.`,
     `2. ${words(21)}.`,
     "3. The file is quickly written. It was built. Be prepared.",
+    "4. The file is not deleted. It isn't saved.",
     "   - The file is saved.",
     "",
     "The file is saved.",
@@ -60,6 +61,8 @@ test("ste checker: ordered procedures use 20 words and reject passive forms", ()
     { line: 3, rule: "passive-procedure" },
     { line: 3, rule: "passive-procedure" },
     { line: 4, rule: "passive-procedure" },
+    { line: 4, rule: "passive-procedure" },
+    { line: 5, rule: "passive-procedure" },
   ]);
   assert.deepEqual(check("1. Save the file. The file is new.\n2. Use `is written` as text.\n3. Make sure that the indicator is red."), []);
 });
@@ -93,12 +96,12 @@ test("ste checker: headings and table cells use word rules, not length limits", 
 
 test("ste checker: word boundaries, inflections, and inline phrases retain source lines", () => {
   const markdown = [
-    "Utilizes, utilising, leveraged, leveraging, ensured, ensuring, attempted, attempting.",
+    "Utilizes, utilising, leveraged, leveraging, ensured, ensuring, attempted, attempting, assists, facilitates, commenced, obtaining.",
     "Use this in **order**", "to proceed via a link, e.g. this one.",
     "Deviation, attemptsLog, and elsewhere are valid.",
   ].join("\n\n");
   const issues = check(markdown).filter(({ rule }) => rule === "unapproved-word");
-  assert.equal(issues.length, 10); // The blank line prevents a cross-paragraph phrase match.
+  assert.equal(issues.length, 14); // The blank line prevents a cross-paragraph phrase match.
   assert.deepEqual(issues.slice(-2), [
     { line: 5, rule: "unapproved-word", message: '"via" is not approved STE; use through, with, or by' },
     { line: 5, rule: "unapproved-word", message: '"e.g." is not approved STE; use for example' },
