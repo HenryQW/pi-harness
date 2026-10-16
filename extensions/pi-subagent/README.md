@@ -1,6 +1,6 @@
 # `@henryqw/pi-subagent`
 
-Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Authorized direct tasks use Herdr tabs in your current workspace; checked implementation uses isolated Herdr worktrees. Both modes return a handle, so Main can continue while the work runs.
+Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Authorized direct tasks use Herdr tabs in your current workspace. Checked implementation uses isolated Herdr worktrees. Both modes return a handle, so Main can continue while the work runs.
 
 ![Pi showing six delegated tasks running in parallel](./example.png)
 

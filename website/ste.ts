@@ -108,13 +108,13 @@ export function checkSte(markdown: string, options: { avoidTerms: AvoidTerm[] })
         for (const match of text.matchAll(pattern)) report(match.index, rule, message(match[0]));
       }
       if (procedure) {
-        const passive = wholePhrase("(?:am|is|are|was|were|be|been|being)\\s+(?:[a-z]+ly\\s+)?(?:[a-z]+ed|built|chosen|done|given|known|made|shown|sent|taken|written)");
+        const passive = wholePhrase("(?:am|is|are|was|were|be|been|being)\\s+(?:[a-z]+ly\\s+)?(?:(?!(?:red|bed|shed|need|speed|feed|seed|hundred)\\b)[a-z]+ed|built|chosen|done|given|known|made|shown|sent|taken|written)");
         for (const match of text.matchAll(passive)) {
           report(match.index, "passive-procedure", `"${match[0]}" is passive in a procedure; use active voice`);
         }
       }
       if (node.type === "paragraph") {
-        const sentences = text.split(/(?<=[.!?])(?=\s|$)/);
+        const sentences = text.split(/(?<=[.!?]["'”’)]*)(?=\s|$)/);
         let offset = 0;
         let count = 0;
         for (const sentence of sentences) {

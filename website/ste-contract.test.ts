@@ -40,6 +40,7 @@ test("ste checker: sentence and paragraph limits include only prose words", () =
   ]);
   assert.deepEqual(check(`${words(24)} \\! \\? — \\.`), []);
   assert.deepEqual(check(`${words(25)}! ${words(25)}? ${words(25)}.`), []);
+  assert.deepEqual(check('"Read." '.repeat(7)).map(({ rule }) => rule), ["paragraph-length"]);
 });
 
 test("ste checker: ordered procedures use 20 words and reject passive forms", () => {
@@ -60,7 +61,7 @@ test("ste checker: ordered procedures use 20 words and reject passive forms", ()
     { line: 3, rule: "passive-procedure" },
     { line: 4, rule: "passive-procedure" },
   ]);
-  assert.deepEqual(check("1. Save the file. The file is new.\n2. Use `is written` as text."), []);
+  assert.deepEqual(check("1. Save the file. The file is new.\n2. Use `is written` as text.\n3. Make sure that the indicator is red."), []);
 });
 
 test("ste checker: code, HTML, images, and link targets do not supply prose", () => {
