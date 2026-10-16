@@ -1,6 +1,6 @@
 # `@henryqw/pi-ask-question`
 
-Pause Pi until the user selects one of up to three question options or enters a custom answer. The user selects with the keyboard, so agents and extensions get an explicit answer and do not parse free-form chat.
+Pause Pi until the user selects one of up to three question options or enters a custom answer. The user selects with the keyboard. Agents and extensions get an explicit answer without parsing free-form chat.
 
 ![Pi asking the user to choose a database](./example.png)
 
@@ -14,7 +14,7 @@ Requires Pi 1.1.0 or later in the 1.x series.
 
 ## Use
 
-In an interactive TUI session, call `ask_question` with a question and one to three question options. Pi pauses until the user answers. Then it returns the selected option or the custom answer.
+In an interactive TUI session, call `ask_question` with a question and one to three question options. Pi pauses until the user answers. Then it returns the selected question option or the custom answer.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ In an interactive TUI session, call `ask_question` with a question and one to th
 - The UI marks the first option `(Recommended)`.
 - The UI adds `Something else.`, which opens a text input for a custom answer.
 
-While an interactive TUI question is open, the tool publishes `herdr:blocked` with the `Input required` label. It clears the status after completion, cancellation, or failure.
+While an interactive TUI question is open, the Ask Question tool publishes `herdr:blocked` with the `Input required` label. It clears the status after completion, cancellation, or failure.
 
 ## API
 
@@ -48,10 +48,10 @@ Import these exports from the package root, `@henryqw/pi-ask-question`.
 | `AskQuestionRequest` | type | Describes a question request. |
 | `AskQuestionResult` | type | Describes the flow result. |
 
-The answer is `null` if the user cancels or submits an empty custom answer. It is also `null` if the request is invalid or the context is not in TUI mode. For invalid requests and non-TUI contexts, the result has an optional `error`.
+The answer is `null` if the user cancels or submits an empty custom answer. It is also `null` if the request is invalid or the context is not in TUI mode. For invalid requests and non-TUI contexts, the result can include an `error`.
 
 ## Limits and recovery
 
-Questions must not be blank. Supply one to three question options. Each label must not be blank and must be unique, without regard to case. `Something else.` is reserved for the custom answer option. Invalid questions return an error.
+Questions must not be blank. Supply one to three question options. Each label must not be blank. Labels must be unique, without regard to case. Use `Something else.` only for the custom answer option. Invalid questions return an error.
 
-The tool requires an interactive TUI. In non-interactive sessions, the tool returns `UI not available (running in non-interactive mode)`. In these sessions, ask in plain assistant text. If the tool is aborted, it closes the pending question. If the user cancels the prompt or submits an empty custom answer, the result has no answer.
+The Ask Question tool requires an interactive TUI. In non-interactive sessions, the tool returns `UI not available (running in non-interactive mode)`. In these sessions, ask in plain assistant text. If you abort the tool, it closes the pending question. If the user cancels the prompt or submits an empty custom answer, the result has no answer.

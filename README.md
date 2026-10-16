@@ -3,9 +3,9 @@
 [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/HenryQW/pi-harness/blob/main/LICENSE)
 [![npm profile](https://img.shields.io/badge/npm-%40henryqw-CB3837.svg?logo=npm)](https://www.npmjs.com/~henryqw)
 
-Highly opinionated Pi harness.
+This Pi harness uses strong workflow preferences.
 
-See [the doc](https://pi.henry.wang).
+Read [the doc](https://pi.henry.wang).
 
 ## Install
 
@@ -13,7 +13,7 @@ See [the doc](https://pi.henry.wang).
 curl -fsSL https://pi.henry.wang/install.sh | sh
 ```
 
-The installer shows installed Pi and Herdr versions. It asks before updating either tool. After selected replacement packages install successfully, it removes their retired npm sources: `pi-herdr-tools` replaces `pi-herdr-btw`, `pi-herdr-clone`, `pi-herdr-rename`, and `pi-herdr-done`, and `pi-footer` replaces `pi-open-in`. The existing Open In config stays in place.
+The installer shows installed Pi and Herdr versions. It asks before updating either tool. After selected replacement packages install successfully, it removes their retired npm sources. The package `pi-herdr-tools` replaces `pi-herdr-btw`, `pi-herdr-clone`, `pi-herdr-rename`, and `pi-herdr-done`. The package `pi-footer` replaces `pi-open-in`. The existing Open In config stays in place.
 
 Use `--update` to approve available updates without a prompt:
 
@@ -23,8 +23,8 @@ curl -fsSL https://pi.henry.wang/install.sh | sh -s -- --update
 
 ## Extension dependencies
 
-Each row is an active extension; a filled square marks a **direct** runtime or peer dependency on the package named above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.
+Each row shows an active extension. A filled square marks a **direct** runtime or peer dependency on the package above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.
 
 ![Matrix showing 29 direct internal dependency edges across all 19 active Pi extensions and seven dependency packages](./docs/extension-dependencies.svg)
 
-Development and transitive dependencies, deprecated extensions, and `@deprecated/` are excluded.
+The matrix excludes development and transitive dependencies, deprecated extensions, and `@deprecated/`.
