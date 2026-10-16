@@ -156,7 +156,7 @@ export function directSessionUsage(jsonl: string, prompt: string): { tokens?: nu
 		} else if (active && message.role === "assistant") {
 			if (message.usage && typeof message.usage === "object") {
 				const usage = message.usage as Json;
-				const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
+				const values = [usage.input, usage.output];
 				if (values.every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
 					total += (values as number[]).reduce((sum, value) => sum + value, 0);
 					observed = true;
