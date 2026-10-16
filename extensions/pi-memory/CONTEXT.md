@@ -1,19 +1,38 @@
-# pi-memory — Context
+# Pi Memory
 
-## Domain
+Pi Memory keeps bounded cross-session user facts and agent notes. Repository knowledge and current task progress belong outside these stores.
 
-Session-scale, cross-session scratch memory for the Pi agent: two auto-managed markdown stores (`MEMORY.md` = agent notes, `USER.md` = user profile), each a list of entries delimited by `\n§\n`, size-capped in characters (model-independent). Adds are independently reviewed through the local `pi-memory/reviewCandidate` Model Task (default `balanced`) against live SYSTEM and both stores; `/dream` and final memory qualification remain current-session-agent workflows.
+## Language
 
-## Boundary
+**Memory entry**:
+One durable cross-project fact or instruction in a memory store, not a transcript or task log.
 
-| Concern | Home |
-| --- | --- |
-| Task progress (this session/worktree) | `.context/progress.md` |
-| Session-scale facts, user preferences | this extension's `MEMORY.md` / `USER.md` |
-| Durable repo/project knowledge | `docs/adr/`, root `AGENTS.md`, package `CONTEXT.md` files |
-| User config load rules and launch reporting | `@henryqw/pi-config-store` ([ADR 004](../../docs/adr/004-extension-config-safety.md)); an invalid `directory` disables memory and never falls back to the default directory |
-| Memory stores, backups, and `dream.json` | this extension; generated state stays strict |
+**Agent notes**:
+The memory store for stable cross-project environment and workflow facts.
 
-Knowledge-tier model and vault-as-sync-pipe decision: [ADR 005](../../docs/adr/005-knowledge-tier-model.md). Global-store threat model: [ADR 006](../../docs/adr/006-pi-memory-global-store-threat-model.md).
+**User profile**:
+The memory store for durable user identity, preferences, and corrections.
 
-Promotion flow: recurring memory entries are promoted into `AGENTS.md`/`CONTEXT.md` via PR, then removed from the memory store. The memory store is an inbox with exits, not an archive.
+**Session snapshot**:
+The fixed view of both stores captured when a session starts. Later writes change live memory, not the injected snapshot.
+
+**Memory candidate**:
+A proposed entry and target store that have not yet been accepted for saving.
+
+**Candidate review**:
+An independent model assessment of a proposed addition against live agent-global instructions and both memory stores.
+
+**Memory conflict**:
+An overlap or contradiction between a candidate and existing memory or agent-global instructions that needs user resolution.
+
+**Queued conflict**:
+An unsaved candidate awaiting review and possible user resolution after the current response settles. A queued conflict is not a successful write.
+
+**Remember request**:
+A user instruction for an independent model to turn into one suitable memory candidate, or decline.
+
+**Dream promotion**:
+A user-approved transfer of a general invariant rule from memory into agent-global instructions. Only whole entries represented by the resulting instructions qualify for removal.
+
+**Memory qualification**:
+The current session agent's decision that a newly learned fact belongs in cross-session memory rather than repository docs or task progress.

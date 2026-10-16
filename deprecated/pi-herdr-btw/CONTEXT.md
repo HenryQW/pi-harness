@@ -1,25 +1,25 @@
-# Pi Herdr BTW
+# Pi Herdr BTW (retired)
 
-Pi Herdr BTW opens an isolated side thread in a Herdr pane and can merge its text transcript plus a follow-up prompt back into Main.
+This archive records the former side-question context, now part of [Pi Herdr Tools](../../extensions/pi-herdr-tools/CONTEXT.md). These terms describe the archived package, not a second active implementation.
 
 ## Language
 
 **Main**:
-Parent Pi session that owns side-thread launch and merge delivery.
+The parent Pi session that owned side-thread launch and merge delivery.
 _Avoid_: Parent agent
 
 **Side Thread**:
-Separate Pi process and Herdr pane opened for a bounded question.
+A separate Pi conversation and Herdr pane for a bounded question, with a snapshot of Main's context. It shared the working directory; it did not isolate file changes.
 _Avoid_: Child agent
 
 **Side-Thread Transcript**:
-User/assistant text turns returned to Main; tool payloads are excluded.
+The user and assistant text returned to Main, excluding tool payloads.
 _Avoid_: Full child context
 
 **Merge Request**:
-One-way handoff of Side-Thread Transcript plus follow-up prompt to Main. Main owns consumption; Side Thread does not wait for confirmation.
+A one-way handoff of a Side-Thread Transcript and follow-up prompt to Main, without waiting for acknowledgement.
 _Avoid_: Merge acknowledgement
 
 **BTW Task Profile**:
-Consumer-owned Model Task `pi-herdr-btw/btw` defaults to `fast`; shared `pi-task-models` config can explicitly override its route profile. Launch may use configured fallback before Side Thread starts.
+The shared Task Profile for the archived side-question Model Task `pi-herdr-btw/btw`, with `fast` as its default.
 _Avoid_: Package-owned model picker

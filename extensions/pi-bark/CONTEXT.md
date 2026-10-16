@@ -1,77 +1,63 @@
-# pi-bark glossary
+# Pi Bark
 
-## Bark App
+Pi Bark sends Pi responses and status notifications to a Bark App installation.
 
+## Language
+
+**Bark App**:
 The iOS app that receives and displays push notifications.
 
-## Bark server
+**Bark server**:
+The service that accepts push requests and forwards notifications through Apple Push Notification service.
 
-The service that accepts push requests and forwards them to Apple Push Notification service.
+**Device Key**:
+The secret that identifies the Bark App installation that receives a push notification. It permits sending, not decryption.
 
-## Device Key
+**Push request**:
+A request to a Bark server that contains a Device Key and push content.
 
-The secret value that identifies the Bark App installation that should receive a push notification. pi-bark cannot send without it, so a missing or invalid Device Key disables pi-bark.
-
-## Push request
-
-A request sent to a Bark server. It names a Device Key and carries push content.
-
-## Push notification
-
+**Push notification**:
 The message delivered through Apple Push Notification service and displayed by the Bark App.
 
-## Body
+**Body**:
+The main push content displayed in a push notification.
 
-The main push content shown in a push notification.
+**Status notification**:
+A push that reports that Pi needs input, finished, or failed. It includes the session name, but no prompt, agent output, or error text.
 
-## Status notification
+**Session name**:
+The current Pi conversation display name used in status notifications, independent of Herdr state.
 
-A status-only push sent when Pi is waiting for user input or has fully settled. It contains the Pi session name but no prompt or agent output.
+**Notification default**:
+The automatic-notification setting inherited by working directories without a CWD override.
 
-## Session name
+**CWD override**:
+An automatic-notification setting for one absolute working directory. It does not affect an explicit response push.
 
-Pi's current session display name. Other integrations may show the same name without pi-bark reading their state.
+**Server URL**:
+The base address of the Bark server selected to receive push requests.
 
-## Notification default
+**Push Encryption**:
+Optional protection of push content from the Bark server and Apple Push Notification service. It does not protect the Device Key.
 
-The global switch inherited by any CWD without an explicit override.
+**Custom Encryption Key**:
+The secret shared with the Bark App to encrypt and decrypt push content, separate from the Device Key.
 
-## CWD override
-
-An optional automatic-notification switch keyed by the current absolute working directory. It lives in pi-bark config, not the project.
-
-## Server URL
-
-The base URL of the Bark server that accepts push requests.
-
-## Push Encryption
-
-Optional protection that encrypts push content before it reaches the Bark server or Apple Push Notification service.
-
-## Custom Encryption Key
-
-The secret shared with the Bark App to encrypt and decrypt push content. It is separate from the Device Key.
-
-## Algorithm
-
+**Algorithm**:
 The encryption algorithm and key size selected in the Bark App.
 
-## Mode
-
+**Mode**:
 The block cipher mode selected in the Bark App.
 
-## Padding
-
+**Padding**:
 The padding rule selected in the Bark App.
 
-## IV
+**Ciphertext**:
+The encrypted push content sent to the Bark server.
 
-A per-push initialization vector sent with Ciphertext. It must not be called a nonce in this context.
-
-## Ciphertext
-
-Encrypted push content carried by a push request.
-
-## GCM authentication tag
-
+**GCM authentication tag**:
 The integrity value appended to GCM-encrypted content before Base64 encoding.
+
+**IV**:
+The per-push initialization vector sent with Ciphertext for Bark decryption.
+_Avoid_: nonce

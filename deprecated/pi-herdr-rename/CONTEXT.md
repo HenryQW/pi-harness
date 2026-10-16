@@ -1,25 +1,25 @@
-# Pi Herdr Rename
+# Pi Herdr Rename (retired)
 
-Pi extension that gives each conversation one short task label across Pi and its Herdr terminal location.
+This archive records the former conversation-title context, now part of [Pi Herdr Tools](../../extensions/pi-herdr-tools/CONTEXT.md). These definitions describe its archived title and branch policy.
 
 ## Language
 
 **Display title**:
-Model-generated natural task phrase, sentence-cased and limited to four words and 20 characters. One display title labels Pi conversation and current Herdr pane and workspace. It also labels enclosing tab when current pane has no siblings.
+A model-generated task phrase in sentence case, limited to four words and 20 characters. It labeled the Pi conversation and its Herdr pane and workspace, and the tab when the pane had no siblings.
 _Avoid_: semantic title, session rename, terminal name
 
 **Semantic branch**:
-Git-safe branch combining task kind with display-title words: the reply `{"kind":"refactor","subject":"update task logic"}` becomes `refactor/update-task-logic`. It replaces a detached checkout or Herdr-generated `worktree/...` branch; an existing non-generated branch wins.
+A Git-safe branch combining a task kind with display-title words. It replaced a detached or Herdr-generated branch, not an existing user-named branch.
 _Avoid_: display title, raw generated branch, arbitrary Git mutation
 
 **Generated worktree label**:
-Herdr linked-worktree label matching its `worktree-<adjective>-<noun>-<hex>` default. It is replaced automatically with current display title; an explicit rename may also replace a custom workspace label.
+Herdr's default linked-worktree label, eligible for automatic replacement by the Display title. Replacement of a custom workspace label required an explicit rename.
 _Avoid_: semantic branch, custom workspace name
 
 **Sole-pane tab**:
-Herdr tab containing current pane and no sibling panes. Only this tab receives display title because title cannot misrepresent another pane.
+A Herdr tab containing the current pane and no sibling panes, so its title could represent that conversation alone.
 _Avoid_: single-pane session, empty tab
 
 **Rename task profile**:
-Consumer-owned Model Task `pi-herdr-rename/rename` defaults to `fast`; shared task-model config can explicitly override it and supplies primary and optional fallback Pi registry routes. Rename never substitutes the current session model; no viable route leaves titles unchanged.
+The shared Task Profile for the archived title Model Task `pi-herdr-rename/rename`, with `fast` as its default. No viable route left titles unchanged rather than substituting the current session model.
 _Avoid_: package-owned rename model, active model
