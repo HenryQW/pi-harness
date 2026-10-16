@@ -1,6 +1,6 @@
 # `@henryqw/pi-config-store`
 
-Give extension authors one safe home for Pi extension files. A bad user config never stops an extension and is never silent: the store reports each problem and uses safe defaults, or it disables the extension when a default is not safe. End users do not install this package directly in Pi.
+Give extension authors one safe home for Pi extension files. A bad user config never crashes an extension. The store reports each problem. It uses safe defaults, or it disables the extension when a default is not safe. End users do not install this package directly in Pi.
 
 ## Install
 
@@ -8,7 +8,7 @@ Give extension authors one safe home for Pi extension files. A bad user config n
 npm install @henryqw/pi-config-store
 ```
 
-Use your extension package's package manager. Do not run `pi install` for this library. Requires `@earendil-works/pi-coding-agent` 1.1.0 or later in the 1.x series.
+Use your extension package's package manager. Do not run `pi install` for this library. The library requires `@earendil-works/pi-coding-agent` 1.1.0 or later in the 1.x series.
 
 ## Use
 
@@ -41,37 +41,41 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-`registerConfigReporting` shows launch problems. Call `reporter.report` after each lazy read, so that new problems also show once.
+`registerConfigReporting` shows launch problems. Call `reporter.report` after each lazy read. New problems then also show once.
 
 ### Load rules
 
 | Problem | Result |
 | --- | --- |
 | Unknown key | The store ignores the key and reports an `unknown-key` issue. |
-| Near-miss key: an unknown key that misspells a declared key that is not in the file | The store reports an `invalid-value` issue on the declared key, such as `maxTokens: unknown key "maxToken"; did you mean "maxTokens"?`. It then applies the rule of that field: the default, or a disabled config for a `required` field or a field with `onInvalid: "disable"`. |
+| Near-miss key: an unknown key with incorrect spelling of a declared key that is not in the file | The store reports an `invalid-value` issue on the declared key, such as `maxTokens: unknown key "maxToken"; did you mean "maxTokens"?`. It then applies the field rule. It uses the default, or disables the config for a `required` field or a field with `onInvalid: "disable"`. |
 | Invalid optional value | The store uses the field default and reports an `invalid-value` issue. |
 | Invalid nested entry in `parsers.record`, `parsers.array`, or `parsers.object` | The store drops only that entry and reports it. |
-| Invalid value in a field with `onInvalid: "disable"` | The config is disabled. |
-| Missing or invalid `required` field | The config is disabled. This includes a missing file. |
-| `check` failure | The store reports an `invalid-config` issue and uses all defaults. The config is disabled when a field is required or has `onInvalid: "disable"`. |
-| Malformed JSON, invalid UTF-8, file larger than 64 KiB, unreadable path, path that is not a regular file (such as a directory, FIFO, or device), or non-object root | The store reports one issue for the file and uses all defaults. The config is disabled when a field is required or has `onInvalid: "disable"`. |
+| Invalid value in a field with `onInvalid: "disable"` | The store disables the config. |
+| Missing or invalid `required` field | The store disables the config. This includes a missing file. |
+| `check` failure | The store reports an `invalid-config` issue and uses all defaults. It disables the config when a field is required or has `onInvalid: "disable"`. |
+| Malformed JSON, invalid UTF-8, file larger than 64 KiB, unreadable path, path that is not a regular file (such as a directory, FIFO, or device), or non-object root | The store reports one issue for the file and uses all defaults. It disables the config when a field is required or has `onInvalid: "disable"`. |
 
-A near-miss key is equal to the declared key except for letter case, or it has a small edit distance from the declared key. The limit is one edit (insert, delete, replace, or swap of two adjacent characters) for each three characters of the declared key, and a maximum of two edits. Thus, a declared key of one or two characters matches only a different letter case. The rule applies to each field table, also in `parsers.object`, but not to the keys of `parsers.record` or `entries`.
+A near-miss key differs from the declared key only in letter case, or it has a small edit distance from the declared key. One edit can insert, delete, or replace a character, or swap two adjacent characters. The limit is one edit for each three characters of the declared key, with a maximum of two edits. A declared key of one or two characters matches only a different letter case.
 
-`loadSync()` does not throw for file content or I/O problems, and it never writes.
+The rule applies to each field table, including those in `parsers.object`. It does not apply to keys of `parsers.record` or `entries`.
 
-When the config is disabled, disable the extension's features. Keep config repair commands available, so that the user can fix the file.
+`loadSync()` does not throw for file content or I/O problems. It never writes.
+
+If the store disables the config, disable the extension's features. Keep config repair commands available. The user must be able to fix the file.
 
 ### Launch reporting
 
-On each `session_start`, `registerConfigReporting(pi, stores)` loads each store. It shows one notification for each file that has issues:
+On each `session_start`, `registerConfigReporting(pi, stores)` loads each store. It shows one notification for each file with issues:
 
 | Status | Severity | Text |
 | --- | --- | --- |
 | `disabled` | `error` | `<extension-id> disabled (<path>): <issues>` |
 | `ok` with issues | `warning` | `<extension-id> config issues (<path>): <issues>; defaults replace invalid settings.` |
 
-When `ctx.hasUI` is false, the reporter writes the same text to stderr. Each issue shows one time in each session. The reporter identifies an issue by its file path, kind, key, and message. All reporters in the Pi process share this record, also the reporters of other extensions. Thus, when two extensions report the same file, each issue shows one time. A new `session_start` event starts a new record.
+When `ctx.hasUI` is false, the reporter writes the same text to stderr. Each issue shows one time in each session. The reporter identifies an issue by its file path, kind, key, and message.
+
+All reporters in the Pi process share this record, including reporters of other extensions. When two extensions report the same file, each issue shows only one time. A new `session_start` event starts a new record.
 
 ## API
 
@@ -92,15 +96,15 @@ When `ctx.hasUI` is false, the reporter writes the same text to stderr. Each iss
 | `store.extensionId` | `string` | Gives the owner extension ID. |
 | `store.path` | `string` | Gives the store's file path. |
 | `store.loadSync()` | `ConfigLoad<T>` | Loads and validates the current file. |
-| `store.save(value: T)` | `Promise<void>` | Validates `value` strictly and replaces the whole file under a lock. |
-| `store.update(mutator: (current: T) => T)` | `Promise<T>` | Locks a read-modify-write operation and returns the written value. |
-| `store.replaceIfUnchanged(snapshot, value: T)` | `Promise<void>` | Validates `value` strictly and replaces the whole file under a lock, but only when the file has not changed since `snapshot`. |
+| `store.save(value: T)` | `Promise<void>` | Validates `value` strictly. Replaces the whole file under a lock. |
+| `store.update(mutator: (current: T) => T)` | `Promise<T>` | Locks a read-modify-write operation. Returns the value it wrote. |
+| `store.replaceIfUnchanged(snapshot, value: T)` | `Promise<void>` | Validates `value` strictly. Replaces the whole file under a lock only when the file has not changed since `snapshot`. |
 | `store.remove()` | `Promise<void>` | Removes only the store's file. |
 | `extensionConfigDir(extensionId, agentDir?)` | function | Returns an extension's config home. |
 | `extensionConfigPath(extensionId, agentDir?)` | function | Returns the home's `config.json` path. |
 | `readTextFileBoundedSync(path, maxBytes)` | function | Reads bounded strict UTF-8 text synchronously. |
 | `readTextFileBounded(path, maxBytes, options?)` | async function | Reads bounded strict UTF-8 text. `options.signal` can cancel it. |
-| `writePrivateTextFileAtomically(path, contents, options?)` | async function | Flushes and atomically replaces UTF-8 text. `options.signal` can cancel it. |
+| `writePrivateTextFileAtomically(path, contents, options?)` | async function | Flushes UTF-8 text. Replaces the file atomically. `options.signal` can cancel it. |
 
 ### Field parsers
 
@@ -121,7 +125,7 @@ Write other rules as a `FieldParser`. Write cross-field rules in `check`.
 
 By default, helpers use Pi's `getAgentDir()`. Pass `agentDir` to use another agent directory. Path helpers return paths without filesystem side effects.
 
-For custom files that are not hand-edited JSON, such as generated state, use `extensionConfigDir` and the bounded text helpers. The text helpers do not parse data, handle missing files, or lock access. The owning extension controls their format, schema, recovery, and lock policy.
+For custom files other than hand-edited JSON, use `extensionConfigDir` and the bounded text helpers. Such files include generated state. The text helpers do not parse data, handle missing files, or lock access. The owning extension controls the file format, schema, recovery, and lock policy.
 
 Only the owning extension writes its config home. Consumers use the owner's API or namespaced Pi events. They do not read or write another extension's files directly.
 
@@ -131,7 +135,7 @@ Only the owning extension writes its config home. Consumers use the owner's API 
 - The default JSON file is `getAgentDir()/config/<extension-id>/config.json`. Use `fileName` for another hand-edited JSON file in the same home, such as `presets.json`.
 - A missing file without required fields gives `{ status: "ok", source: "missing", value, issues: [] }` with the defaults. The store does not create a file.
 
-`save`, `update`, and `remove` are asynchronous. Every mutation uses a lock. Writes use a same-directory temporary file and atomic rename.
+`save`, `update`, and `remove` are asynchronous. Every change uses a lock. Writes use a temporary file in the same directory and an atomic rename.
 
 ## Limits and recovery
 
@@ -141,16 +145,22 @@ JSON reads and writes have a 64 KiB limit. UTF-8 decoding is strict.
 
 Reads never change a file. A malformed or invalid file stays unchanged until the user edits it or an explicit write replaces it.
 
-`store.update(mutator)` refuses a file that has any issue or a disabled config. It throws an error that gives the path and the issues, and it does not change the file. `store.save(value)` is an explicit full replacement. It validates `value` with the load rules and throws on any issue. It replaces a malformed file. Parsers of a store that writes must accept their own output.
+`store.update(mutator)` refuses a file with any issue or a disabled config. It throws an error with the path and issues. It does not change the file.
 
-A direct text read requires `maxBytes` to be a positive safe integer. It consumes at most `maxBytes + 1` bytes and rejects a larger file. Invalid UTF-8 throws, and missing-file errors pass through unchanged.
+`store.save(value)` is an explicit full replacement. It validates `value` with the load rules. It throws on any issue. It replaces a malformed file. Parsers of a store that writes must accept their own output.
 
-A direct text write creates or restricts its parent directory to mode `0700` where supported. It writes a same-directory temporary file at mode `0600`, flushes it, then renames it. Failures before rename clean the temporary file. A successful rename is committed, so later cancellation does not turn success into an error.
+A direct text read requires `maxBytes` to be a positive safe integer. It consumes at most `maxBytes + 1` bytes. It rejects a larger file. Invalid UTF-8 throws. Missing-file errors pass through unchanged.
 
-Repository default: most extension owners can assume one active config writer. Under that assumption, reload the extension after a manual or external edit before its next write. A stale in-memory full replacement is outside the supported workflow.
+A direct text write creates or restricts its parent directory to mode `0700` where supported. It writes a temporary file in the same directory at mode `0600`. It flushes the file. Then it renames the file. Failures before rename remove the temporary file. After a successful rename, later cancellation does not turn success into an error.
 
-`store.save(value)` locks and replaces the whole config. The lock serializes writes, but does not merge fields from stale values. Use `store.update(mutator)` when an extension supports multiple processes, sessions, or writers, or to keep concurrent field changes. It reads the latest config under the store lock.
+Repository default: most extension owners can assume one active config writer. With this assumption, reload the extension after a manual or external edit, before its next write. The supported workflow does not include a full replacement from stale in-memory data.
 
-To repair a file that has issues from a value that the user confirmed earlier, use `store.replaceIfUnchanged(snapshot, value)`. `snapshot` must be a `loadSync()` result of a store for the same file; another object throws a `TypeError`. Under the lock, the store reads the file again and compares all its bytes with the bytes that `snapshot` read. A missing file matches only a missing file. If the file changed, the method throws `Config at <path> changed since it was read; nothing was written. Read it again and retry.` and does not change the file.
+`store.save(value)` locks the whole config. It then replaces the config. The lock serializes writes, but does not merge fields from stale values. Use `store.update(mutator)` when an extension supports multiple processes, sessions, or writers. Also use it to keep concurrent field changes. It reads the latest config under the store lock.
 
-A load reads at most 64 KiB + 1 byte, and it does not open a FIFO in a way that blocks. Thus, a snapshot of a file that is larger than 64 KiB, unreadable, or not a regular file cannot prove the file contents. For such a snapshot, the method throws `Config at <path> was not read completely (<reason>), so it cannot be replaced safely; nothing was written. Fix, shrink, or remove the file, then retry.` and does not change the file.
+To repair a file with issues, use `store.replaceIfUnchanged(snapshot, value)` with a value that the user confirmed earlier. The `snapshot` must be a `loadSync()` result of a store for the same file. Another object throws a `TypeError`.
+
+Under the lock, the store reads the file again. It compares all bytes with the bytes that `snapshot` read. A missing file matches only a missing file. If the file changed, the method throws `Config at <path> changed since it was read; nothing was written. Read it again and retry.`. It does not change the file.
+
+A load reads at most 64 KiB + 1 byte. It does not open a FIFO in a way that blocks. A snapshot cannot prove the contents of a file larger than 64 KiB, an unreadable file, or a file that is not regular.
+
+For such a snapshot, the method throws `Config at <path> was not read completely (<reason>), so it cannot be replaced safely; nothing was written. Fix, shrink, or remove the file, then retry.`. It does not change the file.
