@@ -4,7 +4,7 @@ Get [Bark](https://bark.day.app) push notifications when Pi finishes, fails, or 
 
 ## Install
 
-Requires Pi 1.1.0 or later in the 1.x series.
+This package requires Pi 1.1.0 or later in the 1.x series.
 
 ```bash
 pi install npm:@henryqw/pi-bark
@@ -12,9 +12,10 @@ pi install npm:@henryqw/pi-bark
 
 ### Setup
 
-1. Open the Bark App and copy its test URL.
-2. Get the Device Key from the URL.
-3. Run `/set-bark` in Pi.
+1. Open the Bark App.
+2. Copy its test URL.
+3. Get the Device Key from the URL.
+4. Run `/set-bark` in Pi.
 
 For Bark's public server:
 
@@ -72,7 +73,9 @@ After setup, pi-bark sends these status notifications:
 - **Pi failed** when the agent has fully settled, will not continue automatically, and the run ended in an unrecovered failure.
 - **Pi finished** when the agent has fully settled, will not continue automatically, and the run completed normally.
 
-The outcome follows the Pi run status. The last agent response of the run decides it. A provider error means failure, and a later successful retry clears that failure. A failed context compaction during the run, including overflow recovery, also means failure. Each new run starts with a clean outcome. Earlier runs and other branches do not affect it. A failed `/compact` while Pi is idle sends no push notification.
+The outcome follows the Pi run status. The last agent response of the run decides it. A provider error means failure, and a later successful retry clears that failure. A failed context compaction during the run, including overflow recovery, also means failure.
+
+Each new run starts with a clean outcome. Earlier runs and other branches do not affect it. A failed `/compact` while Pi is idle sends no push notification.
 
 A cancelled run (for example, with Escape) or a cancelled compaction sends no settled notification. Input notifications and explicit `/copyb` stay available. If a new run starts before pi-bark sends a settled notification, pi-bark cancels that notification.
 
@@ -80,7 +83,7 @@ Each status notification includes the current Pi session name. Herdr shows the s
 
 An unset session name shows as `Unnamed`. Status notifications do not include prompts, agent output, or error messages. pi-bark sends no push notification when a prompt closes.
 
-Automatic notifications are enabled by default. Disable them only in the current CWD:
+Automatic notifications start enabled by default. To disable them only in the current CWD, run:
 
 ```text
 /bark off
@@ -111,7 +114,7 @@ Package-owned: `~/.pi/agent/config/pi-bark/config.json`
 | `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | Required. `null` disables Push Encryption. The commands write `null` to a new file. |
 | `statusNotifications` | Controls automatic status notifications by CWD. | Global boolean default and absolute-CWD boolean overrides. | Enabled with no overrides. |
 
-Config changes take effect on the next command or status event. You do not need to restart Pi. A status notification that is already in the queue uses the settings that pi-bark read when its event occurred.
+Config changes take effect on the next command or status event. You do not need to restart Pi. A queued status notification uses the settings that pi-bark read when its event occurred.
 
 ### Push encryption
 
@@ -122,7 +125,7 @@ After you configure it, pi-bark encrypts every push that it sends. This includes
 #### Set up encryption
 
 1. Configure your Bark Device Key with `/set-bark`.
-2. Generate and save a Custom Encryption Key:
+2. Run this command to generate and save a Custom Encryption Key:
 
    ```bash
    npx --yes --package=@henryqw/pi-bark -- pi-bark-key
@@ -144,7 +147,7 @@ After you configure it, pi-bark encrypts every push that it sends. This includes
 
 5. If Bark requires an IV, enter any 12 ASCII characters, such as `000000000000`.
 6. Save the Bark settings.
-7. Run `/copyb` in Pi. Bark should show the exact last agent message instead of `Decryption Failed`.
+7. Run `/copyb` in Pi. Check that Bark shows the exact last agent message instead of `Decryption Failed`.
 
 The saved IV is only a placeholder for older Bark versions. pi-bark creates a new 12-byte IV for each push and sends it with the Ciphertext. Bark uses that per-push IV, not the saved value.
 
@@ -194,7 +197,8 @@ Set `encryption` to `null` when Push Encryption is disabled.
 - A missing config file stays missing until a command or the key script writes it.
 - `/set-bark` preserves Push Encryption and status notification settings.
 - `pi-bark-key` can run before `/set-bark`. It then writes `"deviceKey": null`, and pi-bark stays disabled until you run `/set-bark`.
-- The Server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter. Use HTTPS when possible. HTTP sends the Device Key over the network without encryption. Without Push Encryption, HTTP also sends the push content without encryption. Push Encryption does not protect the Device Key.
+- The Server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter. Use HTTPS when possible.
+- HTTP sends the Device Key over the network without encryption. Without Push Encryption, HTTP also sends the push content without encryption. Push Encryption does not protect the Device Key.
 - Config writes are private and atomic.
 - Pi commands never print the Device Key, Server URL, or Custom Encryption Key.
 
@@ -215,8 +219,12 @@ pi-bark checks its config when Pi starts and each time it reads the config. It d
 | Missing or invalid `encryption`, including a misspelled key such as `encyption` | An error shows, and pi-bark is disabled. pi-bark does not send without encryption. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
 | Malformed JSON or a non-object file | An error shows, and pi-bark is disabled. Fix or move the file. |
 
-`/set-bark` and `pi-bark-key` work while pi-bark is disabled. `/bark` does not: while pi-bark is disabled, it shows the problem and does not change the file, because a notification setting cannot make pi-bark send. Before a write, the commands they show each new problem in the file: the Pi commands show a notification, and `pi-bark-key` writes to stderr. If the file has a problem, they replace the whole file. They remove unknown keys and invalid `statusNotifications` entries. They hold the file lock while they compare the file with the version that they read. If another session changed the file in the meantime, they stop, show the error, and do not change the file. Run the command again.
+`/set-bark` and `pi-bark-key` work while pi-bark is disabled. `/bark` does not work while pi-bark is disabled. It shows the problem and does not change the file. A notification setting cannot make pi-bark send.
 
-They do not change a malformed file, or a file with a missing or invalid `serverUrl`, `deviceKey`, or `encryption` that the command does not set. `/set-bark` sets `serverUrl` and `deviceKey`. `pi-bark-key --force` and `pi-bark-key --disable` set `encryption`. In that case, they show the problem and stop. Fix the file, or run the command that sets the key.
+Before a write, the commands show each new problem in the file. The Pi commands show a notification, and `pi-bark-key` writes to stderr. If the file has a problem that the command can repair, it replaces the whole file. The commands remove unknown keys and invalid `statusNotifications` entries.
+
+The commands hold the file lock while they compare the file with the version that they read. If another session changed the file in the meantime, they stop, show the error, and do not change the file. Run the command again.
+
+The commands do not change a malformed file. They also stop if `serverUrl`, `deviceKey`, or `encryption` is missing or invalid and the command does not set that key. `/set-bark` sets `serverUrl` and `deviceKey`. `pi-bark-key --force` and `pi-bark-key --disable` set `encryption`. If the command cannot repair the file, it shows the problem and stops. Fix the file, or run the command that sets the key.
 
 See Bark's [Push Encryption documentation](https://github.com/Finb/Bark/blob/master/docs/en-us/encryption.md) for the encryption model.

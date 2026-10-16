@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-footer",
-  "version": "5.0.0",
+  "version": "5.0.1",
   "description": "Show repository and usage details in the Pi footer and open the current working directory.",
   "keywords": [
     "pi-package",
