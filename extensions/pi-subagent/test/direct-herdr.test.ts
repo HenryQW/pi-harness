@@ -63,13 +63,13 @@ test("exact terminal turn evidence includes failed and aborted assistant turns b
 	assert.equal(exactDirectTerminalTurn(lines([{ type: "message", id: "tool", parentId: "user", message: { role: "assistant", stopReason: "toolUse", content: [] } }]), prompt), false);
 });
 
-test("direct usage counts only completed Pi usage records for the exact turn", () => {
-	const usage = (input: number) => ({ input, output: 2, cacheRead: 3, cacheWrite: 4 });
+test("direct usage sums input and output without cache for the exact turn", () => {
+	const usage = (input: number) => ({ input, output: 2, cacheRead: 300_000, cacheWrite: 40_000 });
 	const session = lines([
 		{ type: "message", id: "one", message: { role: "assistant", usage: usage(10) } },
 		{ type: "message", id: "two", message: { role: "assistant", usage: usage(20) } },
 	]) + '{"type":"message"';
-	assert.equal(directSessionUsage(session, prompt).tokens, 48);
+	assert.equal(directSessionUsage(session, prompt).tokens, 34);
 	assert.equal(directSessionUsage(session, "another prompt").tokens, undefined);
 	assert.equal(directSessionUsage(lines([]), prompt).tokens, undefined);
 });
