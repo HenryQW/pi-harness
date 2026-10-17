@@ -1,6 +1,6 @@
 # `@henryqw/pi-add-dir`
 
-Give the current Pi session external context, external skills, and searchable files from external directories. Pi uses these resources in place, so you do not copy or link the directories.
+Use external context, external skills, and searchable files in Pi without copying or linking external directories.
 
 ![Pi using added external directories by name](https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-add-dir/example.png)
 
@@ -10,39 +10,33 @@ Give the current Pi session external context, external skills, and searchable fi
 pi install npm:@henryqw/pi-add-dir
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
-
 ## Use
 
-Run `/dir-add`. Enter a directory. Then run `/dir-ls` to make sure that Pi added it. Pi lists the directory and makes its supported resources available.
-
-Humans use the slash commands from the Pi prompt. Pi agents use the tools.
+Run `/dir-add`, enter a directory, then run `/dir-ls` to verify it. Humans use commands; agents use tools.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/dir-add [path]` | command | Add to this session by default. To persist for the linked worktrees of this Git repository or for every workspace, pass `--project` or `--global` before the path. Omit the path to enter it at the prompt. Supports `~`. |
-| `/dir-ls` | command | List directories with their scope. Select one to remove it from that scope. |
+| `/dir-add [--project\|--global] [path]` | command | Add to this session by default. Use `--project` for this repository and linked worktrees, or `--global` for every workspace. Omit the path for interactive input. Supports `~`. |
+| `/dir-ls` | command | List directories and scopes; select one to remove it from that scope. |
 | `/dir-reload` | command | Reload external directory resources. |
-| `add_directory(path)` | tool | Add a directory to this session and return its context and instructions. Model-only: codemode scripts cannot call it. |
-| `search_external_files(pattern, maxResults?)` | tool | Search added directories with a glob. Returns up to 50 results by default; `maxResults` accepts up to 1,000. Returns a structured result to codemode scripts. |
-| `@` file autocomplete | ui | Find files in added directories and insert their absolute paths. |
-| External directory widget | ui | Show added directories and refer to `/dir-ls` for management. |
+| `add_directory(path)` | tool | Add session-only context and return instructions. Model-only: scripts and other tools cannot call it. |
+| `search_external_files(pattern, maxResults?)` | tool | Search added directories with a glob. Default: 50 results; maximum: 1,000. Codemode receives structured results. |
+| `@` file autocomplete | ui | For users: find external files and insert absolute paths. |
+| External directory widget | ui | For users: show directories; use `/dir-ls` to manage them. |
 
-External directories give Pi these resources:
+Pi adds root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md` to later prompts. External skills come from `.pi/skills`, `.agents/skills`, and `.claude/skills`.
 
-- External context from root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md` files. Pi injects them into later prompts.
-- External skills that Pi loads from `.pi/skills`, `.agents/skills`, and `.claude/skills`.
-- Files in the editor's `@` autocomplete, with absolute paths.
+`/dir-add` reloads only when discovered external skill paths change, not merely because skills exist. If `add_directory` asks for `/reload`, run it to update skills.
 
-`/dir-add` reloads only when the discovered external skill paths change. A directory that contains skills does not alone cause a reload. `add_directory` applies only to the session. When its result asks for `/reload`, run `/reload` to update external skills.
+External instructions and skills enter through a model-visible tool call or user command. This package does not enable codemode.
 
-### Programmatic use
+### Search results
 
-`search_external_files` declares an output schema. Programmatic callers, such as Pi `codemode` scripts, receive `{ pattern, maxResults, searchedDirectories, totalFound, truncated, directories }`. `directories` lists each directory that has at least one match, with its label and absolute file paths. `searchedDirectories` counts only the directories that the tool searched, including directories with no matches. It does not count directories that the tool skipped after it reached the limit.
+`search_external_files` declares an output schema. Scripts receive `{ pattern, maxResults, searchedDirectories, totalFound, truncated, directories }`.
 
-`truncated` is true when the result limit stopped the search. In that case, later directories or files can contain more matches. The model receives the same matches as text. If there are no external directories, a tool call returns a tool error. Scripts then reject with the error message.
+`directories` contains only matching directories, with labels and absolute file paths. `searchedDirectories` includes searched directories without matches, but excludes directories skipped after the limit.
 
-Pi declares `add_directory` to the model only (Pi `model-only` exposure). Codemode scripts and other tools cannot call it. Another directory's `AGENTS.md`, `CLAUDE.md`, and skills enter the session only through a model-visible tool call or a user command. This package does not enable codemode.
+`truncated: true` means the limit stopped the search; later files or directories can have more matches. Models receive the same matches as text. With no external directories, the tool returns an error; scripts reject with its message.
 
 ## Config
 
@@ -50,24 +44,24 @@ Package-owned: `~/.pi/agent/config/pi-add-dir/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `directories` | Directories loaded for every workspace. `/dir-add --global` updates this list. | Array of unique absolute paths without control characters. | `[]` |
+| `directories` | Directories for every workspace. `/dir-add --global` updates this list. | Array of unique absolute paths without control characters. | `[]` |
 
-If the file is missing, the extension uses the default. At launch, the extension shows a warning for each unknown key and each invalid or duplicate directory entry. It ignores that key or entry and loads the other directories. If the file is malformed or `directories` is not an array, it shows a warning and uses the default. It does not change the file.
+Missing files use the default. At launch, Pi warns about each unknown key and invalid or duplicate entry, skips them, and loads valid directories. Malformed files or non-array `directories` produce a warning and use the default. The file stays unchanged.
 
-`/dir-add --global` and global removal with `/dir-ls` fail until you fix the reported problems. Reload Pi after you edit the file manually.
+Global additions and removals fail until you fix reported config problems. Reload Pi after manual edits.
 
 ## State and storage
 
-The extension stores session directories in the current session branch. A new session addition rejects a directory that is inside Pi's working directory or that contains it. It also rejects a directory that overlaps another active external directory. When the working directory changes, the extension does not check restored session entries for overlap again.
+Session directories belong to the current session branch. New additions reject directories inside or containing Pi's working directory, or overlapping active external directories. Restored session entries do not repeat overlap checks when the working directory changes.
 
-Project directories use the repeatable local Git config key `pi-add-dir.directory` of the repository. Linked worktrees share local Git config. A cloned repository cannot inject this config. The config stays on the local machine. `/dir-add --project` therefore requires a Git repository.
+Project directories use repeatable local Git config key `pi-add-dir.directory`, shared by linked worktrees. This machine-local config cannot come from a clone. `/dir-add --project` requires a Git repository.
 
-You must explicitly select persistent scopes because external directories can inject `AGENTS.md`, `CLAUDE.md`, and skills.
+Select persistent scopes explicitly: external directories can inject `AGENTS.md`, `CLAUDE.md`, and skills.
 
 ## Limits and recovery
 
-Search supports basename and relative-path globs. It skips `.git` and `node_modules` and does not follow symbolic links. It uses Node to search the filesystem and returns at most 1,000 results for each call.
+Search uses Node and supports basename and relative-path globs. It skips `.git`, `node_modules`, and symbolic links.
 
-Missing or overlapping **project and global** directories stay in the config, but the extension skips them with a warning. Restore a missing directory at its original path, or correct the overlap. Then run `/dir-reload` to scan again.
+Missing or overlapping project and global directories stay configured but are skipped with warnings. Restore missing paths or correct overlaps, then run `/dir-reload`.
 
-To change or discard a configured path, use `/dir-ls` to **remove** it from its scope. If necessary, run `/dir-add` with the corrected path. `/dir-ls` cannot repair paths in place.
+To change or discard a path, remove it with `/dir-ls`. Add corrected paths with `/dir-add`; `/dir-ls` cannot repair paths in place.
