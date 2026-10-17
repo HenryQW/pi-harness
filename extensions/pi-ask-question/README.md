@@ -1,6 +1,6 @@
 # `@henryqw/pi-ask-question`
 
-Pause Pi until the user selects one of up to three question options or enters a custom answer. The user selects with the keyboard. Agents and extensions get an explicit answer without parsing free-form chat.
+Pause Pi until the user selects a question option with the keyboard or enters a custom answer. Agents and extensions get an explicit answer without parsing free-form chat.
 
 ![Pi asking the user to choose a database](./example.png)
 
@@ -10,15 +10,13 @@ Pause Pi until the user selects one of up to three question options or enters a 
 pi install npm:@henryqw/pi-ask-question
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
-
 ## Use
 
-In an interactive TUI session, call `ask_question` with a question and one to three question options. Pi pauses until the user answers. Then it returns the selected question option or the custom answer.
+Call `ask_question` in an interactive TUI with a question and one to three options in preference order. Pi waits for the selected option or custom answer.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `ask_question` | tool | For agents: pauses execution so the user can select an option or enter a custom answer. |
+| `ask_question` | tool | For agents: pause execution to get one user answer. |
 
 ```json
 {
@@ -31,15 +29,13 @@ In an interactive TUI session, call `ask_question` with a question and one to th
 }
 ```
 
-- Supply one to three options in preference order.
-- The UI marks the first option `(Recommended)`.
-- The UI adds `Something else.`, which opens a text input for a custom answer.
+The UI marks the first option `(Recommended)` and adds `Something else.` for custom text input. Descriptions are optional.
 
-While an interactive TUI question is open, the Ask Question tool publishes `herdr:blocked` with the `Input required` label. It clears the status after completion, cancellation, or failure.
+While a question is open, the tool publishes `herdr:blocked` with `Input required`. Completion, cancellation, or failure clears the status.
 
 ## API
 
-Import these exports from the package root, `@henryqw/pi-ask-question`.
+Import from the package root, `@henryqw/pi-ask-question`.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -48,10 +44,10 @@ Import these exports from the package root, `@henryqw/pi-ask-question`.
 | `AskQuestionRequest` | type | Describes a question request. |
 | `AskQuestionResult` | type | Describes the flow result. |
 
-The answer is `null` if the user cancels or submits an empty custom answer. It is also `null` if the request is invalid or the context is not in TUI mode. For invalid requests and non-TUI contexts, the result can include an `error`.
+The answer is `null` for cancellation, empty custom input, invalid requests, or non-TUI calls. Invalid requests and non-TUI calls also include `error`.
 
 ## Limits and recovery
 
-Questions must not be blank. Supply one to three question options. Each label must not be blank. Labels must be unique, without regard to case. Use `Something else.` only for the custom answer option. Invalid questions return an error.
+Questions and option labels must not be blank. Labels must be unique, without regard to case. `Something else.` is reserved for the custom answer option.
 
-The Ask Question tool requires an interactive TUI. In non-interactive sessions, the tool returns `UI not available (running in non-interactive mode)`. In these sessions, ask in plain assistant text. If you abort the tool, it closes the pending question. If the user cancels the prompt or submits an empty custom answer, the result has no answer.
+Non-interactive calls return `UI not available (running in non-interactive mode)`. Ask in plain assistant text instead. Aborting the tool closes the pending question.

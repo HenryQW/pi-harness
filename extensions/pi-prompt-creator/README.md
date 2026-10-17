@@ -1,19 +1,15 @@
 # `@henryqw/pi-prompt-creator`
 
-Turn repeated requests or corrections in the Current Conversation into a reviewed global Pi prompt. A child with no tools drafts one Prompt Candidate. Main and the user control Prompt Review and the save.
-
-Automatic analysis only prepares a Prompt Candidate. The extension never saves it without your approval.
+Turn repeated requests or corrections in the Current Conversation into a global Pi prompt. A child with no tools prepares one Prompt Candidate. Review it with Main and approve it before saving.
 
 ## Install
-
-This package requires Pi 1.1.0 or later in the 1.x series. It no longer supports older Pi releases.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-prompt-creator
 ```
 
-Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`. Open `/task-models` again. Verify the saved route or task assignment.
+Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`. Reopen `/task-models` to verify the saved route and thinking level.
 
 ## Works with
 
@@ -23,73 +19,43 @@ Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-pr
 
 ## Use
 
-Run `/promptor` in the interactive TUI after a repeated request or correction appears:
+After a repeated request or correction appears in the interactive TUI:
 
 1. Run `/promptor`. The completed Prompt Candidate appears automatically.
-2. Ask Main to refine it. Ask Main to return only the complete Final Prompt Draft.
-3. Run `/promptor save` to save under the suggested name. Alternatively, run `/promptor save <name>` to rename it.
+2. Review it with Main. After approval, ask Main to return only the complete Final Prompt Draft.
+3. Run `/promptor save` for the suggested name, or `/promptor save <name>` for another name.
 
-The extension creates the prompt at `~/.pi/agent/prompts/<name>.md`. Then Pi reloads its resources. You do not need a selection menu or name prompt.
+The extension creates `~/.pi/agent/prompts/<name>.md` and reloads Pi resources, without a selection menu or name prompt.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/promptor [analyze|dismiss|save [name]|automatic <on\|off>]` | command | For users in the interactive TUI: start or show analysis, dismiss a pending candidate, save a reviewed prompt, or control automatic analysis. |
-| `pi-prompt-creator/draft` | task | For users who configure `/task-models`: choose the child model and thinking level for the draft. |
-| Analysis status widget and candidate message | ui | Show analysis progress, readiness, or failure. A displayed candidate is marked as untrusted. |
+| `/promptor [analyze\|dismiss\|save [name]\|automatic <on\|off>]` | command | For TUI users: start or show analysis, dismiss a pending candidate, save a reviewed prompt, or control automatic analysis. |
+| `pi-prompt-creator/draft` | task | For `/task-models` users: select the draft model and thinking level. Default profile: `fast`. |
+| Analysis status widget and candidate message | ui | Show users progress, readiness, or failure. Displayed candidates are untrusted review material. |
 
 ## Flow
 
-![Automatic prompt analysis waits for user display before Main review and approved saving; manual candidates display immediately](./docs/prompt-lifecycle.svg)
+![Automatic analysis waits for candidate display, Main review, and approval; manual candidates appear immediately.](./docs/prompt-lifecycle.svg)
 
-The diagram shows the automatic path. Manual analysis displays its candidate immediately, without the WAIT stage. Both paths require Main review and your approval before the save.
+### Analysis
 
-### Automatic analysis
+Automatic analysis starts after `inputThreshold` non-empty user inputs, at the next idle completion that was not aborted. It runs at most once per extension runtime. An aborted run keeps the count and permits analysis after a later completion. A completion without cancellation does not guarantee provider success.
 
-Automatic mode waits for the configured number of non-empty user inputs. The default is three.
+Manual analysis prevents later automatic analysis in that runtime. `/promptor analyze` remains available after cancellation. Branch changes reset the count. Only one analysis can run; a pending candidate blocks another. Automatic analysis and candidate widgets require the interactive TUI.
 
-It starts at the next idle `agent_settled` event that is not aborted. It starts at most one time per extension runtime.
+Manual and automatic analysis send Pi's current model-visible session context to the child model configured through `/task-models`. Session context edits apply: removed or replaced original text does not reach the child. Request-local `context` and `context_with_system` transformations do not apply.
 
-An aborted run does not start automatic analysis. It keeps the input count and permits later automatic analysis. A later normal settlement can start analysis if it meets the conditions. `aborted: false` does not prove that the provider completed successfully.
+The payload includes the active compaction or branch summary, user text, completed assistant text, and effective prompt names and descriptions. It excludes tool traffic, thinking, images, custom messages, and inactive branches. The child has no tools, user extensions, Skills, saved session, project context files, or prompt templates. It returns one JSON response.
 
-Explicit `/promptor analyze` remains available after cancellation. A manual analysis prevents later automatic analysis in that extension runtime.
+New input does not stop analysis. Branch navigation discards the old result without stopping the child. Background work does not interrupt the conversation. Manual candidates appear immediately, without the diagram's WAIT stage. Automatic candidates stay behind `Prompt ready — /promptor` until you show them with `/promptor` or discard them with `/promptor dismiss`.
 
-Branch changes reset the input counter. Automatic analysis and Prompt Candidate widgets require the interactive TUI.
+### Review safeguards
 
-Only one analysis can run at a time. A pending Prompt Candidate blocks another analysis.
+Displayed Prompt Candidates are untrusted messages, not instructions to execute. Automatic analysis never saves a candidate without approval.
 
-Manual and automatic analysis send Pi's current model-visible session context to the child model that you configure through `/task-models`. Analysis applies session context edits that omit or replace messages. It does not send original text that these edits removed from model context to the child. It does not include request-local `context` and `context_with_system` transformations.
+Saving requires a displayed candidate followed by Main's valid Markdown review reply. The latest retained Main reply becomes the entire file. Replies before the active compaction or branch summary cannot qualify. Interrupted, failed, empty, or tool-use replies cannot qualify; the extension never substitutes an older reply.
 
-The payload includes the active compaction or branch summary, user text, successfully completed assistant text, and effective prompt names and descriptions.
-
-The extension disables project context files and prompt templates for the child. It excludes tool traffic, thinking, images, custom messages, and inactive branches.
-
-Analysis asks a child with no tools for one JSON response. The child has no user extensions, Skills, or saved session. The extension does not try failed analysis again.
-
-New user input does not stop a running child. Branch navigation discards its old result without stopping the child.
-
-### Review and save
-
-A manually requested analysis displays its completed Prompt Candidate immediately. Automatic analysis shows a running widget. It then keeps a completed Prompt Candidate behind the `Prompt ready — /promptor` widget until you run `/promptor` or `/promptor dismiss`. Background work never interrupts the conversation.
-
-The extension displays Prompt Candidates as visible messages that it marks as untrusted.
-
-Refine the Prompt Candidate with Main. Ask Main to return only the complete Final Prompt Draft. Then save it with `/promptor save [name]`.
-
-You can save only after you show a Prompt Candidate and Main then completes a valid Markdown review reply. The save uses that latest retained Main reply as the entire file. You cannot save replies before the active compaction or branch summary.
-
-You cannot save an interrupted, failed, empty, or tool-use reply. The extension never uses an older reply instead.
-
-A successful save ends that Prompt Review. Show another Prompt Candidate. Complete another Main review reply before you save again.
-
-`/promptor save` uses the suggested Prompt Candidate name. Pass `/promptor save <name>` to choose another. Names must be lowercase kebab-case, start with a letter, and contain at most 64 ASCII characters. The extension rejects existing command names and prompt files.
-
-A successful save reloads Pi resources. If reload fails, the prompt remains saved and `/reload` can load it.
-
-### Model routing
-
-The extension registers `pi-prompt-creator/draft`. Its default task profile is `fast`.
-
-Use `/task-models` to select the model and thinking level. The extension owns no model configuration. At session start and before each analysis, it shows each problem in the shared task-model config one time in each session.
+A successful save ends the Prompt Review. Another save requires another displayed candidate and completed Main review. Names must use lowercase kebab-case, start with a letter, and contain at most 64 ASCII characters. Existing command names and prompt files are rejected. If resource reload fails after saving, the file remains saved; run `/reload`.
 
 ## Config
 
@@ -97,41 +63,32 @@ Package-owned: `~/.pi/agent/config/pi-prompt-creator/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `automatic` | Runs automatic analysis after enough user inputs. | Boolean. | `true` |
-| `inputThreshold` | Sets the number of non-empty user inputs before automatic analysis. | Positive safe integer (`1`–`9007199254740991`). | `3` |
+| `automatic` | Starts automatic analysis after enough user inputs. | Boolean. | `true` |
+| `inputThreshold` | Required number of non-empty user inputs. | Safe integer from `1` to `9007199254740991`. | `3` |
 
-Edit either field. Then run `/reload` to apply the change. Omitted fields use their defaults.
+Edit the file, then run `/reload`. Missing files and omitted fields use defaults. Startup never creates or rewrites the file.
 
-A missing file quietly uses both defaults. Startup never creates or rewrites the file.
+Startup warnings give the file path and each unknown key or invalid value. Unknown keys are ignored. A misspelled key near a missing field, such as `automatc`, makes that field invalid. Invalid `inputThreshold` uses `3`.
 
-At session start, Pi shows a warning for an unknown key or an invalid value. The warning includes the file path and each problem. Pi ignores the unknown key. A misspelled key near a missing field, such as `automatc`, counts as an invalid value of that field. An invalid `inputThreshold` uses the default `3`.
+Invalid or misspelled `automatic` disables automatic analysis for the session. File-level problems also disable it: malformed JSON, invalid UTF-8, size above 64 KiB, read errors, or a non-object root. The file stays unchanged.
 
-Automatic analysis stays off for the session when `automatic` is invalid or misspelled. It also stays off when the file has malformed JSON, invalid UTF-8, more than 64 KiB, a read error, or a non-object root. Startup leaves the file unchanged.
+Only `/promptor automatic on` and `/promptor automatic off` write config. Each toggle rereads the file and preserves its current `inputThreshold`, including changes from another session. For a file with problems, it reports them, keeps usable values, and removes unknown keys. If another session changes that file before replacement, the toggle writes nothing.
 
-Only `/promptor automatic on` or `/promptor automatic off` writes the config. A toggle reads the file again and keeps its current `inputThreshold`, also when another session changed it. A toggle also replaces a file with problems. It first shows the problems, then keeps the usable values and removes unknown keys. If another session changes that file before the write, the toggle stops and writes nothing.
+The extension owns no model config. At session start and before analysis, it reports each shared task-model config problem once per session.
 
 ## State and storage
 
-A pending Prompt Candidate stays in memory only. The extension saves automatic mode, but not counters or Prompt Candidates.
-
-Saved prompts are at `~/.pi/agent/prompts/<name>.md`. A save never replaces an existing file.
+Pending candidates and input counters stay in memory only. Only automatic mode and approved prompt files persist. A save never replaces an existing file.
 
 ## Limits and recovery
 
-The child payload stays within 30,000 characters, including its JSON envelope and prompt metadata.
+| Limit | Behavior |
+| --- | --- |
+| Child payload | At most 30,000 characters, including JSON and prompt metadata. Active summary has priority, then newest complete messages. Excess prompt metadata goes first. |
+| Conversation | Older messages can be omitted. Individual messages are never cut. Past sessions are not searched. |
+| Markdown | Prompt Candidate and Final Prompt Draft must be non-empty and at most 16 KiB. NUL and other terminal controls are rejected, except tabs and line feeds. |
+| Child runtime | Two-minute idle timeout and five-minute hard timeout. |
 
-It gives priority to the active summary, then to the newest complete messages. It omits excess prompt metadata before conversation context.
+No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`. Analysis never retries automatically; run `/promptor` or `/promptor analyze` to try again. The next non-empty user input clears the failure widget.
 
-Analysis can omit old messages. It never cuts individual messages.
-
-Generated Prompt Candidate names use lowercase kebab-case and stay within 64 ASCII characters.
-
-Prompt Candidate and Final Prompt Draft Markdown must be non-empty and at most 16 KiB.
-
-The extension rejects NUL and other terminal controls in Prompt Candidate and saved Markdown. It permits ordinary tabs and line feeds.
-
-If analysis finds no Prompt Candidate, the running widget clears without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`. The extension does not automatically try failed analysis again. Run `/promptor` or `/promptor analyze` to start again.
-
-The failure widget clears after the next non-empty user input. Analysis has a two-minute idle timeout and five-minute hard timeout.
-
-This package does not search past sessions. It does not create Skills or project-local runtime state.
+This package does not create Skills or project-local runtime state.
