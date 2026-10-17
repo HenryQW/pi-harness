@@ -251,13 +251,16 @@ test("later scheduled admissions reload edited jobs and limits, skipping disable
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	const jobs = ["first", "edited", "disabled", "removed"].map((id) => ({ id, every: "1m", role: "scout", cwd: agentDir, prompt: id }));
 	await writeJobs(jobs);
-	await rm(join(agentDir, "config", "pi-cron", "state.json"), { force: true });
+	const home = join(agentDir, "config", "pi-cron");
+	// Set the baseline before admission; session_start does not await its tick.
+	await writeFile(join(home, "state.json"), JSON.stringify({
+		version: 1,
+		jobs: Object.fromEntries(jobs.map(({ id }) => [id, { firstSeenAt: SLOT - 3_600_000 }])),
+	}));
 	const h = harness(async (run) => {
 		if (run.task === "first") await gate;
 		return { outcome: "success", output: "done" };
 	});
-	await h.emit("session_start");
-	await h.settle();
 	h.setNow(SLOT);
 	await h.emit("session_start");
 	await h.settle(() => h.prepared.length === 1);
