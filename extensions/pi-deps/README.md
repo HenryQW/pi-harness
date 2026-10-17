@@ -8,8 +8,6 @@ Start locked Node and uv dependency installs when Git creates a worktree with re
 pi install npm:@henryqw/pi-deps
 ```
 
-Requires Pi 1.3.0 or later in the 1.x series.
-
 ## Use
 
 Run `/deps` in a trusted repository to enable dependency preparation. Create a worktree through Git to run its `post-checkout` hook. Then open Pi in TUI mode in that worktree. Pi shows install progress without command output. Run `/deps` again to disable future dependency preparation.

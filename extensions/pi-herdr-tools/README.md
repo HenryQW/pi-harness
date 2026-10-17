@@ -13,7 +13,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Use Pi 1.3.0 or later in the 1.x series and Herdr 0.9.3 or later. Herdr operations require a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
+Herdr operations require a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
 
 Before you use title generation or side threads, do these steps:
 
@@ -232,7 +232,7 @@ For a source session that Pi has saved, Pi names the clone file. If Pi has not w
 
 ### Conversation titles
 
-The Pi session stores each generated display title and semantic branch in a `pi-herdr-rename/title` session entry. When you resume a session that this version created, the extension applies the saved display title and semantic branch again. It does not send another model request.
+The Pi session stores each generated display title and semantic branch in a `pi-herdr-rename/title` session entry. When you resume a session that this extension created, the extension applies the saved display title and semantic branch again. It does not send another model request.
 
 ## Limits and recovery
 

@@ -7,8 +7,6 @@ Configure shared Task Routes for the Task Profiles `fast`, `balanced`, `frontier
 
 ## Install
 
-This package requires Pi 1.3.0 or later in the 1.x series. Upgrade Pi before you install version 9.1 or later of this package.
-
 ```bash
 pi install npm:@henryqw/pi-task-models
 ```
@@ -177,7 +175,7 @@ When you apply a preset, Task Models can create a missing active config. If the 
 | `orderedProfileRoutes(profile)` | function | Returns the primary route followed by the optional fallback. |
 | `createTaskModelsExtension(pi, options?)` (also the default export) | function | Registers the `/task-models` command, the missing-config warning, and config issue reports. |
 
-Model and route helpers use only `ctx.model`, `ctx.scopedModels`, and `ctx.modelRegistry.getAvailable()`. They do not require UI methods, so consumers can use different supported Pi 1.x versions.
+Model and route helpers use only `ctx.model`, `ctx.scopedModels`, and `ctx.modelRegistry.getAvailable()`. They do not require UI methods, so consumers can use supported Pi releases.
 
 Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use. When the config is disabled, it throws an error that gives the file path and the problems.
 

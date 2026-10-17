@@ -10,8 +10,6 @@ Its schema, descriptions, and guideline still add prompt cost while the tool is 
 pi install npm:@henryqw/pi-session-recall
 ```
 
-This package requires Pi 1.3.0 or later in the 1.x series and Node.js 22.19.0 or later.
-
 ## Use
 
 Ask the agent to search with distinctive keywords, for example:
@@ -171,7 +169,7 @@ Session and top-level `contentTruncated` report transcript budget trimming only.
 
 ### Rollback
 
-To return to the older 2.1.1 behavior, pin that release:
+To return to the older behavior, pin this release:
 
 ```bash
 pi install npm:@henryqw/pi-session-recall@2.1.1

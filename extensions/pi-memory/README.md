@@ -6,8 +6,6 @@ Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its
 
 ## Install
 
-This package requires Pi 1.3.0 or later in the 1.x series.
-
 ```bash
 pi install npm:@henryqw/pi-ask-question
 pi install npm:@henryqw/pi-task-models

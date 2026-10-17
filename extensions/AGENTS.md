@@ -19,3 +19,5 @@ Every registered tool's parameter schema must serialize as a plain object root w
 `pnpm run docs:validate` enforces the mechanical ASD-STE100 rules in `website/ste.ts`, but passing it does not prove full conformance.
 
 Use [README-template.md](README-template.md) for every package README: retain only applicable sections in its canonical order, with no placeholders or filler. Add an explanatory diagram for an extension with meaningful flows or relationships; do not add one merely to satisfy a rule. In extension READMEs, start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.
+
+Extension READMEs omit routine package and dependency versions; use manifests as the authority. Keep explicit versions only for essential compatibility or migration requirements.
