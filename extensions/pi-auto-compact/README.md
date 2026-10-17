@@ -1,6 +1,6 @@
 # `@henryqw/pi-auto-compact`
 
-Trim repeated reads before compaction of long Pi sessions. Completed tool turns continue normally, and compaction after a final answer does not start another turn. Your threshold keeps free context space.
+Use read trim before compaction of long Pi sessions to keep free context space at your threshold. Completed tool turns continue normally. Compaction after a final answer does not start another turn.
 
 ## Install
 
@@ -31,7 +31,7 @@ Restart Pi after you install the package or change settings. Trusted `.pi/settin
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared compaction routes. |
 
-Task Models owns the shared `~/.pi/agent/config/pi-task-models/config.json` file. At session start and before each compaction, this extension shows each problem in that file one time in each session. By default, the `pi-auto-compact/autoCompact` task of this extension uses the `fast` profile. A task entry is an explicit user override.
+Task Models owns the shared `~/.pi/agent/config/pi-task-models/config.json` file. At session start and before each compaction, this extension shows each problem in that file one time in each session. By default, the compaction task profile `pi-auto-compact/autoCompact` uses `fast`. A task entry is an explicit user override.
 
 ## Use
 
@@ -46,10 +46,10 @@ Run `/auto-compact` with no arguments. Enter a threshold from 25% to below 100%.
 
 ![Auto-compact flowchart: completed boundaries trim duplicate reads before summarizing; oversized requests use a separate emergency guard](./docs/auto-compact-flow.svg)
 
-- The extension measures context use the same way as Pi's status bar. It adds the provider-reported usage of the latest response to estimates for later messages. Before usage data exists, and after compaction, the extension estimates each message at about four characters per token. Estimates include replayed reasoning that some providers do not bill. Thus, estimates can be too high until the next response.
-- At completed `turn_end` and `agent_before_settle` boundaries, the extension replaces older successful, text-only `read` results. It does this only when an identical later full read is in the protected recent context. Tool name, arguments, and text must match. Failed, changed, image-bearing, or already edited results stay intact. If the read trim decreases context below the threshold, no summary request runs.
-- If the read trim is not sufficient, the extension summarizes older effective context. It tries the primary route of the `fast` profile, then the fallback route, then the current session model. Pi commits context-edit and compaction entries. This does not interrupt a normal tool turn or start a final answer again. A failed summary does not become a checkpoint.
-- Resumed or forked sessions and oversized fresh input can need an emergency `ctx.compact()` before a completed boundary exists. This exceptional path interrupts the current task and then resumes it.
+- The extension measures context use the same way as Pi's status bar. It adds the provider-reported usage of the latest response to estimates for later messages. Before usage data exists, and after compaction, the extension estimates each message at about four characters per token. Estimates include replayed reasoning that some providers do not bill. Estimates can therefore be too high until the next response.
+- At completed `turn_end` and `agent_before_settle` boundaries, the extension replaces older successful, text-only `read` results. It does this only when an identical later full read is in the protected recent context. Tool name, arguments, and text must match. Failed, changed, or already edited results stay intact. Results with images also stay intact. If read trim decreases context below the threshold, no summary request runs.
+- If read trim is not sufficient, the extension makes a summary of older effective context. It tries the primary route of the `fast` profile, then the fallback route, then the current session model. Pi commits context-edit and compaction entries. This does not interrupt a normal tool turn or start a final answer again. A failed summary does not become a checkpoint.
+- Resumed or forked sessions and oversized fresh input can need an emergency `ctx.compact()` before a completed boundary exists. This exceptional path interrupts the current task. Task resumption follows compaction.
 
 ## Config
 
@@ -61,16 +61,24 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact/config.json`
 
 If the file is missing, the extension uses 70%. A read does not create the file.
 
-At session start, the extension shows one warning for the problems in the file. The warning gives the file path and the reasons. Problems include malformed JSON, an invalid `autoCompactThreshold`, and an unknown key, such as a misspelled key or an obsolete model key. The extension ignores unknown keys. If the threshold is invalid, the extension uses 70%. The file stays unchanged. Without a UI, the warning goes to stderr.
+At session start, the extension shows one warning for the problems in the file. The warning gives the file path and the reasons. Problems include malformed JSON, an invalid `autoCompactThreshold`, and an unknown key. An unknown key can be a misspelled key or an obsolete model key.
 
-Only `/auto-compact` writes this file. It reads the file when it opens and shows its problems. A valid file is then updated under a lock. A file with problems is replaced, thus the command also removes unknown keys and invalid values, but only if no other session changed the file while the input dialog was open. Otherwise the command writes nothing and shows the error. Its write is atomic.
+The extension ignores unknown keys. If the threshold is invalid, the extension uses 70%. The file stays unchanged. Without a UI, the warning goes to stderr.
+
+Only `/auto-compact` writes this file. It reads the file when it opens and shows its problems. The command updates a valid file under a lock. It replaces a file with problems and removes unknown keys and invalid values.
+
+Replacement occurs only if no other session changed the file while the input dialog was open. Otherwise, the command writes nothing and shows the error. Its write is atomic.
 
 ## State and storage
 
-Context edits and compaction entries change only the projected context of the active session. They keep raw session history, export, UI display, and historical usage. They decrease only the estimated future context. Providers do not refund earlier tokens. An edit to an older prefix can also decrease provider cache reuse. This does not erase secrets.
+Context edits and compaction entries change only the projected context of the active session. They keep raw session history, export, UI display, and historical usage. They decrease only the estimated future context. Providers do not refund earlier tokens. An edit to an older prefix can also decrease provider cache reuse.
+
+This does not erase secrets.
 
 ## Limits and recovery
 
 - The extension does not activate unless effective `compaction.enabled` is `false`. If activation fails, disable built-in compaction in Pi settings. Then check trusted project settings.
 - If the extension cannot safely decrease a fresh request, it reports the limit and does not discard the request. Make the new input shorter, or run `/compact`.
-- If the shared Task Models config is malformed, the extension reports it and does not change it. Compaction then uses the current session model. If configured routes fail, compaction uses the current session model. If summary attempts fail, the extension saves no checkpoint. Check model routes and authentication. Then run `/compact` to try again manually.
+- If the shared Task Models config is malformed, the extension reports it and does not change it. Compaction then uses the current session model. If configured routes fail, compaction uses the current session model. If all summary requests fail, the extension saves no checkpoint.
+
+  Check model routes and authentication. Then run `/compact` to try again manually.

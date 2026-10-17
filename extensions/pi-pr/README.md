@@ -60,9 +60,9 @@ Only `/pr` and `pi_git_pr` give authority to the `pi_pr_*` helpers. A direct `pi
 
 While Pi is busy, workflow guidance continues through hidden session context at settlement, not through the editor queue. If you cancel, Pi does not put the guidance back in the editor.
 
-Only the model can call the `pi_git_*` and `pi_pr_*` tools. These tools run one action at a time. Codemode scripts and other tools cannot call them. Thus, a script cannot batch guarded actions or filter results that the model needs for its next safety decision.
+Only the model can call the `pi_git_*` and `pi_pr_*` tools. These tools run one action at a time. Codemode scripts and other tools cannot call them. As a result, a script cannot batch guarded actions or filter results that the model needs for its next safety decision.
 
-When `codemode.mode` is `only`, these tools stay declared, so `/pr` still works. Their parameter schemas are plain objects. Thus, providers that omit root-union tools can show them. The tools still check action arguments.
+When `codemode.mode` is `only`, these tools stay declared, so `/pr` still works. Their parameter schemas are plain objects. As a result, providers that omit root-union tools can show them. The tools still check action arguments.
 
 ### Local commits and PR publication
 
@@ -88,9 +88,13 @@ Unrelated staging, partial staging, `.context/`, and common secret filenames blo
 
 ### Standalone merge from main
 
-Ask the agent to update the current branch from main. `update-from-main` runs its packaged Python helper one time. It requires Python 3.9 or newer and Git with `fetch --porcelain`. This helper **merges**. It does not rebase like the `/pr` base-update route. It fetches before it makes a local change. It uses the exact OID from the fetch output and never pushes.
+Ask the agent to update the current branch from main. `update-from-main` runs its packaged Python helper one time. It requires Python 3.9 or newer and Git with `fetch --porcelain`.
 
-Before it merges, the helper backs up tracked and untracked changes in a stash with a unique reflog message. The backup also includes ignored files that collide with the source tree. The helper records ownership in the per-worktree ref `refs/worktree/update-from-main/pending/<token>`. Then it replaces that ref with `refs/worktree/update-from-main/backup` at the captured OID. To restore changes, the helper always applies the captured OID with `--index`. It never pops or drops a stash. It keeps the backup after success and after conflict, hook, or submodule failures.
+This helper **merges**. It does not rebase like the `/pr` base-update route. It fetches before it makes a local change. It uses the exact OID from the fetch output and never pushes.
+
+Before it merges, the helper backs up tracked and untracked changes in a stash with a unique reflog message. The backup also includes ignored files that collide with the source tree. The helper records ownership in the per-worktree ref `refs/worktree/update-from-main/pending/<token>`. Then it replaces that ref with `refs/worktree/update-from-main/backup` at the captured OID.
+
+To restore changes, the helper always applies the captured OID with `--index`. It never pops or drops a stash. It keeps the backup after success and after conflict, hook, or submodule failures.
 
 A retained backup blocks more runs only in the worktree that owns it, even after a branch switch. Report the backup OID and restore from it, not from a later `origin/main`. Before recovery can finish, the user must verify the restored bytes and staging and explicitly ask to complete recovery. Then complete recovery with `git update-ref -d refs/worktree/update-from-main/backup <oid>`. This keeps the stash entry.
 
@@ -134,7 +138,7 @@ These conditions block creation:
 
 `/pr` links an inferred open PR before the draft check. Before routing continues, fresh discovery must confirm the configured PR identity, destination, and head. For a configured draft, `/pr` only reports its PR condition. It does not sync, publish, rebase, fix CI, sweep, or merge.
 
-For a configured, open, non-draft PR, `/pr` first normalizes local state. If matching, verified recovery for a branch update or sweep exists, that recovery resumes first. Sync never pushes, stashes, or resets. GitHub reports a behind base only when policy requires an up-to-date branch. Thus, `/pr` processes it as a conflict.
+For a configured, open, non-draft PR, `/pr` first normalizes local state. If matching, verified recovery for a branch update or sweep exists, that recovery resumes first. Sync never pushes, stashes, or resets. GitHub reports a behind base only when policy requires an up-to-date branch. As a result, `/pr` processes it as a conflict.
 
 Running CI blocks only the merge. After the wait, `/pr` re-reads GitHub. PR feedback items or conflicts that arrived during the wait go to their workflows, not to a merge.
 
@@ -142,9 +146,11 @@ The merge occurs only in an explicit `/pr`, and only after you confirm it. This 
 
 ### Feedback sweeps
 
-`/pr` assesses standalone comments and review bodies before a merge or a wait. GitHub cannot resolve them. Thus, the sweep triages them and does not mark them resolved. A conversation comment from a GitHub `Bot` author does not start a sweep. Such comments include deploy or review-progress status. Bot reviews and review threads start a sweep.
+`/pr` assesses standalone comments and review bodies before a merge or a wait. GitHub cannot resolve them. As a result, the sweep triages them and does not mark them resolved. A conversation comment from a GitHub `Bot` author does not start a sweep. Such comments include deploy or review-progress status. Bot reviews and review threads start a sweep.
 
-A sweep makes scoped fixes without a second approval. Its `commit` action stages only changed owned paths. Checks run on the clean committed HEAD before publication. A sweep with no edits creates no commit. Unrelated changes block the commit. Before the sweep continues, use `resume` to reconcile an interrupted commit. Feedback that arrives after publication waits for the next `/pr` cycle.
+A sweep makes scoped fixes without a second approval. Its `commit` action stages only changed owned paths. Checks run on the clean committed HEAD before publication. A sweep with no edits creates no commit. Unrelated changes block the commit.
+
+Before the sweep continues, use `resume` to reconcile an interrupted commit. Feedback that arrives after publication waits for the next `/pr` cycle.
 
 For each fixed review thread, the sweep replies with only the full hash of the fixing commit. This is its published head, or an already-published PR commit that the ledger cites. For a non-actionable thread, it replies with a one-sentence rebuttal. It verifies the reply and then resolves the thread, even when the fix made the thread outdated.
 
@@ -153,7 +159,7 @@ After publication, a body-only edit to a standalone comment keeps its `non-actio
 - GitHub identifies the same `Bot` author in both snapshots.
 - Nothing else changed.
 
-The sweep uses the same rule for edits after `refresh` when it resolves threads, recovers thread resolution, or finalizes. Thus, a bot status update does not block these steps. Any other change requires another `refresh`.
+The sweep uses the same rule for edits after `refresh` when it resolves threads, recovers thread resolution, or finalizes. As a result, a bot status update does not block these steps. Any other change requires another `refresh`.
 
 ### Codex review gate
 
@@ -184,7 +190,7 @@ Discovery starts in the background when a session starts. It refreshes after loc
 - The last check finished at least two minutes before.
 - No refresh is active or in the queue.
 
-Failed checks reset this wait. There is no timer. Thus, external changes can stay hidden until a later idle settlement. `/pr` always reads fresh state before it acts. During automatic continuation, its route discovery updates the footer. Action hints stay hidden while a workflow is active.
+Failed checks reset this wait. There is no timer. As a result, external changes can stay hidden until a later idle settlement. `/pr` always reads fresh state before it acts. During automatic continuation, its route discovery updates the footer. Action hints stay hidden while a workflow is active.
 
 Outside a Git worktree, the UI stays silent. The UI also stays silent when no remote uses `github.com` or a host that `gh` has credentials for. Examples include a Gitea or GitLab server. Discovery failures show `PR · status unavailable`. A GitHub API quota error reports `GitHub API rate limit exhausted; retry after GitHub resets it` and does not try again.
 
@@ -220,7 +226,7 @@ Each issue shows one time in each session, at session start or at the next `/pr`
 
 The Pi session stores a PR identity observation: the configured PR URL, number, host, head identity, and target identity. It does not store mutable CI or review state. Discovery validates this identity against GitHub again. It creates no repository cache.
 
-Active feedback sweeps keep private recovery data in `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`. Branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect active decisions and remote mutation attempts. A fresh `/pr` resumes only matching, verified recovery.
+Active feedback sweeps keep private recovery data in `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json`. Branch updates use `<agent-dir>/config/pi-pr/update-branch/`. These files protect active decisions and remote mutations in progress. A fresh `/pr` resumes only matching, verified recovery.
 
 Base tip movement does not block plans, commits, publication, or recovery. But the PR identity, base repository and ref, head and lease, destination, and ownership must still match. The sweep keeps its frozen feedback and plan until the post-publish `refresh` binds the current base.
 
@@ -241,7 +247,7 @@ A path on the branch or in PR feedback is not proof of ownership. Unrelated or u
 
 Before the sweep publishes a changed sweep HEAD, `validate` runs `git diff --check` and selected non-destructive checks. Then it verifies that HEAD and the worktree did not change. Publication requires that saved validation. Version 3 sweeps run no checks after publication, and `finalize` takes `checks: []`.
 
-Unpublished v1/v2 recovery migrates to v3 without validation. Published legacy recovery keeps its saved checks and attempts. You cannot replace or drop failed legacy checks, and unknown results stay blocked.
+Unpublished v1/v2 recovery migrates to v3 without validation. Published legacy recovery keeps its saved checks and repair budget. You cannot replace or drop failed legacy checks, and unknown results stay blocked.
 
 A later `/pr` can run unknown local checks again. First, you must explicitly confirm that these checks are safe to repeat on the published HEAD. This never permits a replay of uncertain GitHub or push mutations.
 
@@ -252,7 +258,7 @@ A later `/pr` can run unknown local checks again. First, you must explicitly con
 
   Limits, frozen check sets, executed HEADs, and completed route and head keys stay after helper resumes and automatic continuations. If a completed route repeats on the same entry head, `/pr` stops.
 
-- Failed or unknown check sets use repair attempts. Each confirmed PR-head movement uses one publication cycle. Duplicate observations, no-ops, and failed pushes do not use publication cycles.
+- Failed or unknown check sets use the repair budget. Each confirmed PR-head movement uses one publication cycle. Duplicate observations, no-ops, and failed pushes do not use publication cycles.
 
   When the budget is spent, `/pr` cannot push again. But published-sweep cleanup, readiness checks, and merge stay possible. When the wait budget is spent, `/pr` stops with `still waiting for CI` or `still waiting for the Codex review`. A later explicit `/pr` waits again. A wait for human review never polls.
 
@@ -262,10 +268,10 @@ A later `/pr` can run unknown local checks again. First, you must explicitly con
 
   Initial CI preflight also cancels when only the base tip changed. Base movement during or after CI evidence collection blocks repair.
 - After a conflict rebase starts, a base tip that only advanced does not stop publication. `/pr` then rediscovers mergeability. If any other authority change occurs while a conflict waits, `/pr` aborts the unpublished rebase. It restores the original head, removes its pending recovery record, and rediscovers. An unpublished local merge goes through inspection and validation, not another rebase. `/pr` does not use stale CI evidence or a consumed collect action again.
-- Automatic handoff reserves a fresh run ID before settlement. Pi never uses expired IDs again. Rediscovery has a maximum of two attempts per invocation and does not reset budgets. It requires the same PR identity, destination, and validated remote head. Another head change during rediscovery stops the handoff.
+- Automatic handoff reserves a fresh run ID before settlement. Pi never uses expired IDs again. Rediscovery occurs a maximum of two times per invocation and does not reset budgets. It requires the same PR identity, destination, and validated remote head. Another head change during rediscovery stops the handoff.
 
   A new route never bypasses unreconciled rebase or sweep recovery. Dirty or divergent state, changed branches or destinations, aborts, and uncertain mutations stop the invocation. `/pr` never retries a mutation blindly.
-- Pushes use a saved exact remote OID lease and validate the destination again. Thus, concurrent updates block publication, and the push does not overwrite them. Creation does not change the base branch. A configured PR target does not change upstream settings.
+- Pushes use a saved exact remote OID lease and validate the destination again. As a result, concurrent updates block publication, and the push does not overwrite them. Creation does not change the base branch. A configured PR target does not change upstream settings.
 - Direct merge requires your confirmation, a clean, safe local Git state, and a fresh matching head. If the PR head changes while the dialog is open, `/pr` cancels the merge. `/pr` deletes no branch or worktree. An active Git operation blocks the merge.
 - While Git detaches HEAD, a paused conflict rebase continues to check the PR authority of the recorded branch. A verified rebase can resume through `/pr`. An unverified rebase that a restart interrupted needs manual recovery. The rebase does not change other local branch refs, even with `rebase.updateRefs=true`. Branches with merge commits after the fork point need manual rebase resolution.
 - `/pr` supports only authenticated GitHub.com and GitHub Enterprise repositories. If no remote uses `github.com` or a host that `gh auth token --hostname <host>` accepts, `/pr` shows a warning and does nothing. For GitHub Enterprise, run `gh auth login --hostname <host>`. Resolve ambiguous remotes, unrelated local changes, or GitHub blockers before you run `/pr` again.
