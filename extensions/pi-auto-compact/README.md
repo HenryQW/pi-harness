@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
+Requires Pi 1.3.0 or later in the 1.x series.
 
 Install `@henryqw/pi-task-models` first. Run `/task-models`. Configure the `fast` profile. Open `/task-models` again to verify that `fast` no longer says `not configured`.
 

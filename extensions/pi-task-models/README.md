@@ -7,7 +7,7 @@ Configure shared Task Routes for the Task Profiles `fast`, `balanced`, `frontier
 
 ## Install
 
-This package requires Pi 1.1.0 or later in the 1.x series. Upgrade Pi before you install version 8.1 or later of this package.
+This package requires Pi 1.3.0 or later in the 1.x series. Upgrade Pi before you install version 9.1 or later of this package.
 
 ```bash
 pi install npm:@henryqw/pi-task-models

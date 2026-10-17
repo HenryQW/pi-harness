@@ -4,6 +4,8 @@ See the current-branch pull request in the Pi footer. Run `/pr` for all PR workf
 
 ## Install
 
+Requires Pi 1.3.0 or later.
+
 ```bash
 pi install npm:@henryqw/pi-pr
 ```

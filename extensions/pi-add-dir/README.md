@@ -10,7 +10,7 @@ Give the current Pi session the context, skills, and searchable files of externa
 pi install npm:@henryqw/pi-add-dir
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
+Requires Pi 1.3.0 or later in the 1.x series.
 
 ## Use
 

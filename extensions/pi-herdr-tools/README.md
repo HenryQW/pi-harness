@@ -11,7 +11,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series and Herdr 0.9.3 or later. Herdr operations require a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title. Before you use title generation or side threads, do these steps. Run `/task-models`. Configure `fast`. Make sure that it does not show `not configured`. Dialog status also requires the Herdr Pi integration (`~/.pi/agent/extensions/herdr-agent-state.ts`). Herdr installs this integration. This package only publishes the status event.
+Requires Pi 1.3.0 or later in the 1.x series and Herdr 0.9.3 or later. Herdr operations require a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title. Before you use title generation or side threads, do these steps. Run `/task-models`. Configure `fast`. Make sure that it does not show `not configured`. Dialog status also requires the Herdr Pi integration (`~/.pi/agent/extensions/herdr-agent-state.ts`). Herdr installs this integration. This package only publishes the status event.
 
 ### Migrating from the merged packages
 

@@ -8,7 +8,7 @@ Start locked Node and uv dependency installs when Git creates a worktree for an 
 pi install npm:@henryqw/pi-deps
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
+Requires Pi 1.3.0 or later in the 1.x series.
 
 ## Use
 

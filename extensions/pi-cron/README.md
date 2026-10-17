@@ -4,7 +4,7 @@ Run a prompt on a schedule in a fresh Pi session. Each job selects its Role, mod
 
 ## Install
 
-Requires Pi 1.1.0 or later in the 1.x series. Older Pi releases are no longer supported.
+Requires Pi 1.3.0 or later in the 1.x series. Older Pi releases are no longer supported.
 
 ```bash
 pi install npm:@henryqw/pi-task-models

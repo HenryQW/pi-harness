@@ -10,7 +10,7 @@ Keep footer identity, model usage, agent-work time, and extension status visible
 pi install npm:@henryqw/pi-footer
 ```
 
-This package requires Pi 1.1.0 or later in the 1.x series.
+This package requires Pi 1.3.0 or later in the 1.x series.
 
 Version 3 replaces `@henryqw/pi-open-in`. If it is installed, remove it before you upgrade. This prevents duplicate `/open` and `/set-open-in` commands:
 

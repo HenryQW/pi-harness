@@ -10,7 +10,7 @@ Pause Pi until the user selects one of up to three question options or enters a 
 pi install npm:@henryqw/pi-ask-question
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
+Requires Pi 1.3.0 or later in the 1.x series.
 
 ## Use
 

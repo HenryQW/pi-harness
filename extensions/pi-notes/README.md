@@ -10,7 +10,7 @@ Show up to four persistent reminders for each worktree above the Pi editor. The 
 pi install npm:@henryqw/pi-notes
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series and Node.js 22.19.0 or newer.
+Requires Pi 1.3.0 or later in the 1.x series and Node.js 22.19.0 or newer.
 
 ## Use
 

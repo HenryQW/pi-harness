@@ -6,7 +6,7 @@ Automatic analysis only prepares a candidate. The extension never saves it witho
 
 ## Install
 
-This package requires Pi 1.1.0 or later in the 1.x series. Older Pi releases are no longer supported.
+This package requires Pi 1.3.0 or later in the 1.x series. Older Pi releases are no longer supported.
 
 ```bash
 pi install npm:@henryqw/pi-task-models

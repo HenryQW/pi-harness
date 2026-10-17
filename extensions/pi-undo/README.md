@@ -8,7 +8,7 @@ Return to your latest user prompt. Then edit it and send it again without the la
 pi install npm:@henryqw/pi-undo
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
+Requires Pi 1.3.0 or later in the 1.x series.
 
 ## Use
 
