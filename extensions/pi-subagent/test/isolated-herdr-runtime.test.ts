@@ -2253,6 +2253,24 @@ test("termination closes only the saved pane and rechecks every exact lease PID 
 	script.done();
 });
 
+test("termination of a live worker whose checkout was removed queries Herdr and lsof from the lease directory", async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const { attempt, leasePath } = await fullAttempt(fixture, runtime(fixture, script), script);
+	await privateLease(leasePath);
+	const host = new HerdrHostRuntime({
+		inspectInFlightTaskCandidate: async () => ({ candidate: changedIdentity(), clean: true, valid: true }),
+		runProcess: script.run, killProcess: () => {}, delay: async () => {}, now: () => 1_000,
+		env: {}, leaseDirectory: fixture.leases, lsofCommand: "lsof-test",
+	});
+	await rm(fixture.worktree, { recursive: true });
+	const before = script.calls.length;
+	script.push(...terminationPrefix(fixture), lsof(leasePath), lsof(leasePath));
+	assert.deepEqual(await host.terminateWorker({ task, attempt, workerId: AGENT_NAME, candidate: changedIdentity() }, context()), { outcome: "terminated" });
+	assert.ok(script.calls.slice(before).every(({ options }) => options.cwd === fixture.leases));
+	script.done();
+});
+
 test("termination refuses a stale pane that no longer belongs to the exact saved agent", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
@@ -2276,7 +2294,7 @@ test("termination refuses a stale pane that no longer belongs to the exact saved
 });
 
 test("termination reconciliation proves exact active or absent worker state", async (t) => {
-	for (const expected of ["active", "terminated"] as const) {
+	for (const expected of ["active", "terminated", "checkout removed"] as const) {
 		await t.test(expected, async (t) => {
 			const fixture = await paths(t);
 			const script = new ScriptedProcess();
@@ -2294,6 +2312,9 @@ test("termination reconciliation proves exact active or absent worker state", as
 				leaseDirectory: fixture.leases,
 				lsofCommand: "lsof-test",
 			});
+			// A worker checkout removed outside Pi Subagent cannot be the cwd of the global Herdr and lsof queries.
+			if (expected === "checkout removed") await rm(fixture.worktree, { recursive: true });
+			const before = script.calls.length;
 			script.push({ command: "herdr", args: ["agent", "list"], result: success({
 				type: "agent_list",
 				agents: expected === "active" ? [agentInfo("idle", true, { cwd: fixture.worktree })] : [],
@@ -2314,8 +2335,9 @@ test("termination reconciliation proves exact active or absent worker state", as
 			}
 			assert.deepEqual(await host.reconcileWorkerTermination({
 				task, attempt, workerId: AGENT_NAME, candidate: changedIdentity(),
-			}, context()), { outcome: expected });
-			assert.deepEqual(delays, expected === "terminated" ? [50] : []);
+			}, context()), { outcome: expected === "active" ? "active" : "terminated" });
+			assert.deepEqual(delays, expected === "active" ? [] : [50]);
+			if (expected === "checkout removed") assert.ok(script.calls.slice(before).every(({ options }) => options.cwd === fixture.leases));
 			script.done();
 		});
 	}

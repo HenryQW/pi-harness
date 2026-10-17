@@ -46,7 +46,7 @@ Delegation and continuation tools use plain-object parameter schemas. So provide
 | `subagent_resume` | tool | Perform the reported `retry`, `verify`, or `finalize` continuation. This does not replace staging or integration. A `retry` that sends a correction to the same worker accepts an optional `instruction` of at most 32000 characters. It adds this text to that prompt as Main's instruction after the saved failure. Other actions reject it. |
 | `subagent_stage` | tool | Stage, resolve, reject, or revise an exact candidate. Rejection of a staged candidate freezes that generation. |
 | `subagent_integrate` | tool | Advance staged dependents. Refresh after Main changes cleanly or validation fails without evidence. Validate in the background. Record one correction. Promote. Reconcile interrupted promotion. Clean up proven promotion. Explicitly release rejected or superseded resources. |
-| `subagent_abort` | tool | Abort an isolated request only when no retained candidates or integration worktrees remain. This tool cannot discard them. |
+| `subagent_abort` | tool | Abort an isolated request when no retained candidates or integration worktrees with work remain. Abort also works when their checkouts and branches are proved absent. This tool cannot discard them. |
 | `git_read` | tool | For Role-declared children (not Main): inspect bounded local Git evidence without Bash, tests, network access, or writes. |
 | `pi-subagent` | skill | Guide Main through delegation, authorization, checks, integration, and recovery. |
 | Direct status widget (`D`) | ui | For you in the TUI: show direct worker references (such as `D7.1`), status, Role badges, names, and route. Show task elapsed time, measured task tokens, pending tools, and the latest tool's recorded time. |
@@ -316,6 +316,10 @@ If an isolated worker produced no candidate, `subagent_abort` terminates it. It 
 
 Inspect `subagent_status`. Resolve the reported blocker. Then run `subagent_abort` again to reconcile cleanup. This does not replay worker prompts. Dirty work, unique commits, and uncertain allocations stay for deliberate manual recovery.
 
+If you removed the checkouts, branches, and Herdr workspaces of a request outside Pi Subagent, `subagent_abort` can close the request. Abort examines each retained candidate and each integration generation with stages. It proves that the checkout is not registered, its path does not exist, and its branch does not exist.
+
+Abort also proves worker absence with the same pane and lease checks. Then it records the candidates as rejected and released, and it completes the cleanup records. If one of these resources still exists, abort fails and does not change the request. In that case, release the resources first.
+
 The following details describe exact identity and retained-work requirements.
 
 A checked candidate stays retained if Main is dirty. Staging, combined validation, and promotion require Main to be clean at the pinned committed identity. Clean your local edits deliberately before you use those actions. The extension does not replay or merge dirty work automatically.
@@ -324,13 +328,19 @@ To stage, pass the exact `generation`, candidate (`taskId`, `attempt`, `candidat
 
 Stale identities fail. If integration allocation was uncertain, `subagent_stage resolve` first proves that the owned checkout is still at its base. Then it starts the selected merge. Otherwise, it retains the intent.
 
-Each request can keep at most two unreleased integration worktrees. A superseded generation is read-only. To release a superseded *clean* integration checkout, call `subagent_integrate` with `{ id, action: "release", generation, expectedTip }`. As `expectedTip`, use the last staged tip of that generation, or the integration base when no stage completed.
+Each request can keep at most two unreleased integration worktrees. A superseded generation is read-only.
 
-You can release a rejected candidate after its worker terminates and after release of all generations that use it. To release it, pass `{ id, action: "release", generation: <latest generation number, or 1>, taskId, attempt, expectedTip: <candidate tip> }`. Release saves each host, checkout, and branch step. It verifies ownership and cleanliness, including ignored files. It deletes the branch only if its ref still names the exact tip.
+To release a superseded *clean* integration checkout, call `subagent_integrate` with `{ id, action: "release", generation, expectedTip }`. As `expectedTip`, use the recorded tip of that generation. After `correct`, this is the correction tip. Otherwise, it is the last staged tip, or the integration base when no stage completed. A superseded generation keeps its correction record for this purpose.
 
-Dirty, conflicted, changed, or uncertain resources stay for manual inspection. After you resolve the obstacle, do the same release again. Each released checkout frees a retained slot. Abort is available after release of every retained resource.
+You can release a rejected candidate after release of all generations that use it. This includes a dependent candidate that a refresh or a rejection made invalid.
 
-Rejection can invalidate dependent work. If new dependent execution is not possible, start a new request. Do not force promotion.
+Release first proves that the exact worker stopped. If the worker is already gone, release records the proof of absence. If the idle worker still runs, release closes its exact pane. Then it proves pane absence and two empty lease scans. Release never tries again to close a worker after an uncertain termination.
+
+To release the candidate, pass `{ id, action: "release", generation: <latest generation number, or 1>, taskId, attempt, expectedTip: <candidate tip> }`. Release saves each host, checkout, and branch step. It verifies ownership and cleanliness, including ignored files. It deletes the branch only if its ref still names the exact tip.
+
+Dirty, conflicted, changed, or uncertain resources stay for manual inspection. After you resolve the obstacle, do the same release again. Each released checkout frees a retained slot. Abort is available after release of every retained resource. Abort also removes an empty integration generation that a refresh created, if its checkout is clean at its base.
+
+Rejection can invalidate dependent work. A rejection does not fail because of dependent work that a refresh or an earlier rejection already made invalid. If new dependent execution is not possible, start a new request. Do not force promotion.
 
 Productive requests have no whole-run wall-clock deadline. Resume does not reset the recorded policy or correction count. Text tasks have two dispatch tries. Inspection failures before dispatch do not use a try. Verification requires passing preliminary checks and any required judgment. It cannot override a failed review.
 

@@ -657,7 +657,8 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (input.workerId !== allocation.agentName) throw new Error("Worker termination identity does not match the exact saved agent.");
 			this.assertLeasePath(allocation.leasePath, allocation.token);
 			await assertPrivateLease(allocation.leasePath, false);
-			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
+			const cwd = await this.queryCwd(allocation.worktreeCwd);
+			const agents = (await this.listAgents(cwd, context)).map((agent) => ({
 				name: typeof agent.name === "string" ? agent.name : undefined,
 				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
 				tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
@@ -671,7 +672,7 @@ export class HerdrHostRuntime implements HostRuntime {
 
 			const processInfo = await this.herdr.json(
 				["pane", "process-info", "--pane", allocation.paneId],
-				this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+				this.processOptions(cwd, context, HERDR_OPERATION_CAP_MS),
 			);
 			const processResult = resultRecord(processInfo, "Herdr pane process-info response");
 			if (processResult.type !== "pane_process_info") throw new Error("Herdr pane process-info response has the wrong type.");
@@ -680,25 +681,25 @@ export class HerdrHostRuntime implements HostRuntime {
 				throw new Error("Herdr pane process-info did not match the exact saved pane.");
 			}
 
-			const closed = await this.herdr.exec(["pane", "close", allocation.paneId], this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
+			const closed = await this.herdr.exec(["pane", "close", allocation.paneId], this.processOptions(cwd, context, HERDR_OPERATION_CAP_MS));
 			if (closed.code !== 0 || closed.killed) throw new Error(herdrCommandFailure(["pane", "close"], closed));
 			requireOkResponse(closed.stdout, "Herdr pane close response");
-			if (!await this.paneAbsent(allocation.paneId, allocation.worktreeCwd, context)) throw new Error("The exact saved pane still exists after pane close.");
+			if (!await this.paneAbsent(allocation.paneId, cwd, context)) throw new Error("The exact saved pane still exists after pane close.");
 
-			let holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context);
+			let holders = await this.scanLease(allocation.leasePath, cwd, context);
 			if (holders.length) {
-				await this.signalExactHolders(holders, allocation, "SIGTERM", context);
+				await this.signalExactHolders(holders, { ...allocation, worktreeCwd: cwd }, "SIGTERM", context);
 				await this.delay(250, context.signal);
-				holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context);
+				holders = await this.scanLease(allocation.leasePath, cwd, context);
 			}
 			if (holders.length) {
-				await this.signalExactHolders(holders, allocation, "SIGKILL", context);
+				await this.signalExactHolders(holders, { ...allocation, worktreeCwd: cwd }, "SIGKILL", context);
 				await this.delay(100, context.signal);
-				holders = await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context);
+				holders = await this.scanLease(allocation.leasePath, cwd, context);
 			}
 			if (holders.length) throw new Error(`Exact process lease still has ${holders.length} surviving holder(s).`);
 			await this.delay(50, context.signal);
-			if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
+			if ((await this.scanLease(allocation.leasePath, cwd, context)).length) {
 				throw new Error("Exact process lease did not remain empty for two consecutive scans.");
 			}
 			return { outcome: "terminated" };
@@ -718,7 +719,8 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (input.workerId !== allocation.agentName) throw new Error("Saved termination worker does not match the exact owned agent.");
 			this.assertLeasePath(allocation.leasePath, allocation.token);
 			await assertPrivateLease(allocation.leasePath, false);
-			const agents = (await this.listAgents(allocation.worktreeCwd, context)).map((agent) => ({
+			const cwd = await this.queryCwd(allocation.worktreeCwd);
+			const agents = (await this.listAgents(cwd, context)).map((agent) => ({
 				name: typeof agent.name === "string" ? agent.name : undefined,
 				paneId: exactString(agent.pane_id, "Herdr listed agent pane ID"),
 				tabId: exactString(agent.tab_id, "Herdr listed agent tab ID"),
@@ -730,12 +732,12 @@ export class HerdrHostRuntime implements HostRuntime {
 					|| related[0]!.paneId !== allocation.paneId || related[0]!.tabId !== allocation.tabId) {
 					throw new Error("Observed worker identity does not exactly match the saved owned agent and pane.");
 				}
-				if (await this.paneAbsent(allocation.paneId, allocation.worktreeCwd, context)) {
+				if (await this.paneAbsent(allocation.paneId, cwd, context)) {
 					throw new Error("Exact saved agent exists but its saved pane is absent.");
 				}
 				const processInfo = await this.herdr.json(
 					["pane", "process-info", "--pane", allocation.paneId],
-					this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS),
+					this.processOptions(cwd, context, HERDR_OPERATION_CAP_MS),
 				);
 				const result = resultRecord(processInfo, "Herdr pane process-info response");
 				if (result.type !== "pane_process_info"
@@ -744,14 +746,14 @@ export class HerdrHostRuntime implements HostRuntime {
 				}
 				return { outcome: "active" };
 			}
-			if (!await this.paneAbsent(allocation.paneId, allocation.worktreeCwd, context)) {
+			if (!await this.paneAbsent(allocation.paneId, cwd, context)) {
 				throw new Error("Saved agent is absent but the exact saved pane still exists.");
 			}
-			if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
+			if ((await this.scanLease(allocation.leasePath, cwd, context)).length) {
 				throw new Error("Saved worker is absent but its private process lease still has holders.");
 			}
 			await this.delay(50, context.signal);
-			if ((await this.scanLease(allocation.leasePath, allocation.worktreeCwd, context)).length) {
+			if ((await this.scanLease(allocation.leasePath, cwd, context)).length) {
 				throw new Error("Private process lease did not remain empty for two consecutive scans.");
 			}
 			return { outcome: "terminated" };
@@ -805,11 +807,13 @@ export class HerdrHostRuntime implements HostRuntime {
 		}
 		try {
 			if (input.kind === "worker_tab") {
-				const allocation = ownedIntent(input.attempt, "worker_tab");
+				const owned = ownedIntent(input.attempt, "worker_tab");
 				const workspace = ownedIntent(input.attempt, "workspace");
-				requireIntentIdentity(allocation, input.attempt);
+				requireIntentIdentity(owned, input.attempt);
 				requireIntentIdentity(workspace, input.attempt);
-				assertWorkerTabIntent(allocation, input.task, input.attempt);
+				assertWorkerTabIntent(owned, input.task, input.attempt);
+				// Validation uses the saved identity; queries run from an existing directory.
+				const allocation = { ...owned, worktreeCwd: await this.queryCwd(owned.worktreeCwd) };
 				const leasePath = exactString(allocation.leasePath, "saved worker lease path");
 				this.assertLeasePath(leasePath, input.attempt.correlationToken);
 				assertWorkspaceIntent(workspace, input.attempt);
@@ -1488,6 +1492,17 @@ export class HerdrHostRuntime implements HostRuntime {
 		const identity = await this.repositoryIdentity(allocation.mainRoot, context);
 		if (identity.repoKey !== allocation.repoKey || identity.herdrRepoRoot !== allocation.herdrRepoRoot) {
 			throw new Error("Persisted workspace repository identity no longer matches Git.");
+		}
+	}
+
+	/** Herdr and lsof queries are global, so a checkout removed outside Pi Subagent must not be their process cwd. */
+	private async queryCwd(cwd: string): Promise<string> {
+		try {
+			await lstat(cwd);
+			return cwd;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return this.leaseDirectory;
+			throw error;
 		}
 	}
 
