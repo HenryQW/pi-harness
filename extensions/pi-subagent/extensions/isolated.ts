@@ -439,7 +439,7 @@ function inspectionNotices({ state, main, continuation }: RunResponse): string[]
 			&& !generation.promotion?.failure && !generation.supersededPromotion?.failure
 			&& generation !== state.integration.generations.at(-1)) continue;
 		const stagedTip = [...generation.stages].reverse().find((stage) => stage.tip)?.tip ?? generation.integrationBase;
-		lines.push(`Integration generation ${generation.number}: ${generation.status}; ${retainedPath ? `${checkoutCleaned ? "historical checkout; branch cleanup pending" : "worktree"}: ${JSON.stringify({ path: generation.worktree!.path, cwd: generation.worktree!.cwd, branch: generation.worktree!.branch, repoRoot: generation.worktree!.repoRoot })}; ` : ""}last staged tip: ${JSON.stringify(stagedTip)}${generation.combinedTip ? `; combined tip: ${JSON.stringify(generation.combinedTip)}` : ""}${generation.failure ? `; blockage: ${boundedPublicText(generation.failure)}` : ""}.`);
+		lines.push(`Integration generation ${generation.number}: ${generation.status}; ${retainedPath ? `${checkoutCleaned ? "historical checkout; branch cleanup pending" : "worktree"}: ${JSON.stringify({ path: generation.worktree!.path, cwd: generation.worktree!.cwd, branch: generation.worktree!.branch, repoRoot: generation.worktree!.repoRoot })}; ` : ""}last staged tip: ${JSON.stringify(stagedTip)}${generation.correction ? `; correction tip: ${JSON.stringify(generation.correction.to)}` : ""}${generation.combinedTip ? `; combined tip: ${JSON.stringify(generation.combinedTip)}` : ""}${generation.failure ? `; blockage: ${boundedPublicText(generation.failure)}` : ""}.`);
 		for (const stage of generation.stages.filter((item) => item.status === "conflict" || item.failure)) lines.push(`Integration generation ${generation.number} stage ${stage.taskId} attempt ${stage.attempt}: ${stage.status}${stage.failure ? `; blockage: ${boundedPublicText(stage.failure)}` : ""}.`);
 		for (const promotion of [generation.promotion, generation.supersededPromotion]) if (promotion?.failure) lines.push(`Integration generation ${generation.number} promotion ${promotion.status}: ${boundedPublicText(promotion.failure)}`);
 		if (generation.cleanup?.some((step) => step.status !== "completed")) lines.push(`Integration generation ${generation.number} cleanup pending: ${JSON.stringify(generation.cleanup.filter((step) => step.status !== "completed").map((step) => ({ kind: step.kind, status: step.status, failure: step.failure ? boundedPublicText(step.failure) : undefined })))}`);
@@ -766,7 +766,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	pi.registerTool({
 		name: "subagent_abort",
 		label: "Subagent abort",
-		description: "Abort an isolated request; reject and release retained candidates and integration checkouts first. Terminate only exact owned workers. Repeat abort to reconcile cleanup of unchanged no-candidate allocations; preserve dirty or committed work.",
+		description: "Abort an isolated request; reject and release retained candidates and integration checkouts first unless their checkouts and branches are proved absent. Terminate only exact owned workers. Repeat abort to reconcile cleanup of unchanged allocations; preserve dirty or committed work.",
 		parameters: IdOnlySchema,
 		prepareArguments: parseIdOnly,
 		exposure: "model-only",

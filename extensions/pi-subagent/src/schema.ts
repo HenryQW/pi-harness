@@ -1038,7 +1038,7 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 		if (generation.status === "superseded") {
 			if (!generation.supersededFrom || !generation.failure?.trim() || generation.promotion
 				|| generation.checks || generation.review || generation.combinedTip
-				|| (generation.supersededFrom === "promotion_failed" ? !generation.supersededPromotion : generation.correction || generation.supersededPromotion)) {
+				|| (generation.supersededFrom === "promotion_failed" ? !generation.supersededPromotion : generation.supersededPromotion)) {
 				throw new Error(`Superseded generation ${generation.number} retains usable evidence or lacks its reason.`);
 			}
 		} else if (generation.supersededFrom !== undefined || (promotion ? generation.status !== expectedStatus
@@ -1358,7 +1358,7 @@ export function parseRunState(value: unknown): RunState {
 			const releasedWithRevisedAttempt = selected?.status === "promoted" && selected.stages.some((stage) =>
 				stage.taskId === candidate.taskId && stage.attempt === candidate.attempt && !sameIdentity(stage.source, candidate.tip))
 				&& attempt?.cleanup.every((step) => step.status === "completed");
-			const releasedAfterRejection = task?.status === "rejected" && attempt?.termination?.status === "terminated"
+			const releasedAfterRejection = (task?.status === "rejected" || attempt?.superseded) && attempt?.termination?.status === "terminated"
 				&& (candidate.worker === "release_pending" || candidate.worker === "released"
 					&& attempt.cleanup.every((step) => step.status === "completed"));
 			if (!attempt || (candidate.worker !== "retained" && !releasedAfterRejection
