@@ -10,6 +10,17 @@ request + Role + route ──┤
 
 Both paths resolve Roles and model routes from Pi's effective registries. They share the package's global concurrency, turn/token, timeout, and correction policy. A request cannot supply or refill execution limits.
 
+## Choose a delegation mode
+
+Main chooses the mode from your request. You do not need to select one. Words such as “direct” and “isolated” can show your intent, but the work sets the route. Main declares the selected mode in each `delegate_task` call. The extension never falls back between modes.
+
+| Mode | Request that triggers it | Checkout behavior |
+| --- | --- | --- |
+| `direct` | Bounded research, review, or explicitly authorized writes and commits in the shared checkout | Opens Herdr tabs without focus in Main's current workspace. Creates no worktree. |
+| `isolated` | Implementation or a checked task graph | Runs changesets in owned Herdr worktrees. Main selects, validates, and promotes exact candidates. |
+
+Keep trivial mechanically verifiable work in Main. Keep tightly coupled changes under one owner. Do not split them by file count.
+
 ## Direct contract
 
 Direct mode selects one single, parallel, or chain workflow:
@@ -65,34 +76,148 @@ Each entry has:
 
 An explicit model must support the route's thinking level. A launched child is never retried automatically after provider or process failure.
 
-Direct tasks use their Role's declared resources, including write tools, within explicit task authorization. Resource/trust validation and recursive-delegation exclusions still apply. A direct `changeset` is rejected; use isolated mode for checked integration. Roles do not classify writes: a request is a write request when any task declares `access: "write"`. Write requests run serially and reserve checkout admission until owned workers are proved stopped. Read requests skip admission and return plain text; their parallel `tasks` run concurrently up to `maxSubagents`, while a chain stays ordered; `read` is not enforced. Results stay in request order. A chain substitutes only the preceding successful output and stops at its first failure.
+Direct `changeset` is rejected; use isolated mode for checked integration. Resource validation and recursive-delegation exclusions apply to every task. A request becomes a write request when any task declares `access: "write"`.
 
-The internal `git_read` tool is read-only and loads only when declared in the Role's `tools`; the built-in reviewer includes it. Supply named refs and paths for bounded local Git evidence without Bash. User reviewer overrides must opt in explicitly. Exact isolated review keeps the supplied patch authoritative; named-ref inspection may supply only referenced context, never another branch or worktree's candidate diff. Reviewers still run no tests or mutations and approve with exactly `PASS`.
+Read requests skip checkout admission and return plain text. Parallel `tasks` run concurrently up to `maxSubagents`; chains stay ordered. The extension does not enforce `read`. Results stay in request order.
 
-Writes and commits immediately change the shared checkout; there is no automatic validation, rollback, or isolated promotion. A final answer in a write request must be a JSON object with `outcome` (`succeeded`, `failed`, or `blocked`) and a non-empty `answer`; only explicit worker-reported success permits later dispatch or admission release, not merely a normally settled Pi turn. Preserve unrelated files and index entries, require explicit commit/external-action scope, and report checkout status. Uncertain launch after tab creation, failure, or cancellation retains admission and exact recovery identities. Inspect `/subagent`, stop remaining owned workers, inspect and preserve changes, then restart Pi before new writes. Admission covers this Main's Pi calls, not other sessions or external processes.
+Direct tasks use the declared tools, extensions, Skills, and MCP servers of the selected Role, including resources that can write. Authorization comes from your request and Main's bounded task packet, not from the capabilities of the Role. Name the permitted paths, actions, and exclusions. Preserve unrelated edits and staged changes. Authorize commits or external actions explicitly.
 
-The tool returns a handle after the first exact Herdr tab is launched. The remaining tabs are launched asynchronously; their identities are recorded on the session branch. A session-owned observer awaits each exact agent's lifecycle and retrieves its final answer from its Pi session file, not its possibly truncated screen. Idle, blocked, unknown, malformed, or oversized answers fail with recoverable tab/session identity; no whole-run deadline is imposed. `/subagent` shows exact recorded tabs on this session branch, distinguishing locally observed work from unobserved records. A session switch stops observation and carries tab identity into the new branch.
+For example, a configured Git operator with `bash` can stage named pending files and commit them on the `fast` route. Use isolated mode for a checked changeset.
 
-`continueFrom` resolves to exactly one recorded tab on the current session branch; an unknown or ambiguous reference, a different Role, or a second continuation of the same worker in one request fails before launch. The request also fails before launch while a locally active task owns the worker's session, when the session file is missing or above 16 MiB, or when its last exact turn for the recorded prompt is not terminal. Records without a saved turn identity (written before 27.0.0) are not continuable. Each record saves its Herdr workspace and checkout; a record from another workspace or checkout is refused. A session continued again has a later user turn, so only its newest reference is continuable. A still-listed old agent must match the exact recorded identity and be idle or done; it is closed with the same proof as termination (pane absence and two empty lease scans), and an absent agent still needs the two empty scans. The worker then starts in a new non-focused tab with Pi `--session` on the same file and the same private lease, a new agent name, and a new reference and record. Its answer is matched by the new prompt's turn identity. Access, admission, write rules, and route precedence are the same as for a new task; the handle and result name the source reference.
+Direct writes change Main's checkout immediately. They require no clean checkout. They give no automatic checks, rollback, or isolated integration guarantee. A write request cannot start while a direct writer owns the checkout. It also cannot start while a Main call that can write is in progress there.
 
-In `/subagent`, a locally owned active workflow whose tasks are all `read` offers **Stop this worker** for each running worker. Each entry has its own abort controller linked to the workflow controller. Stop aborts only that entry, sends Ctrl-C, and proves termination with the exact pane close, pane absence, and two empty lease scans. The entry fails with `Stopped by user from /subagent` and keeps partial output; siblings continue, a chain stops later steps, and Main still receives one result. Write workflows offer only all-or-nothing Close. Stop uses the same session, branch, epoch, and ownership guards as Close. If a stop proof fails, the workflow keeps local ownership after its siblings settle, so Close can retry termination.
+A write request runs its tasks in sequence. It holds checkout admission after the initial handle returns. Competing direct writers and Main writes fail until the extension proves that all owned workers stopped. To keep Main free to write, use `mode: isolated`. This mode gives worktree checks and explicit integration, not immediate changes to the shared checkout. Parallel read requests still run concurrently.
 
-The result is delivered to Main with `triggerTurn: true, deliverAs: "followUp"`. Busy Main finishes its current turn before consuming the result; idle Main starts a turn. Herdr reports worker lifecycle but never prompts Main directly. Read-access workers can observe a concurrently changing checkout; consumers must account for drift rather than treating a tab as file isolation.
+A failure in a write request stops further dispatch, but a worker with an uncertain state can still run. Chains replace each literal `{previous}` with the preceding successful answer and stop on failure. Task outcome and worker termination are separate.
+
+After settlement, the coordinator closes exact owned writer panes. It releases admission only after pane absence and two empty private process-lease scans. This proof requires native `lsof`. The coordinator removes no Git files, commits, or saved sessions. A failure stays a failure even when the coordinator releases admission.
+
+Admission stays held if the close fails, identity changes, a leased child survives, or inspection is uncertain. In that case, open `/subagent`. Select the exact direct workflow. Then choose **Close/cancel-and-release ALL owned workers in this workflow** to cancel dispatch and try termination again. This action stops every owned worker of that workflow, not one selected worker.
+
+The action checks session, branch, epoch, and live ownership. Recorded-only tasks cannot unlock anything. Resolve the reported blocker, including any surviving owned process. Then do the same action again. A restart of Pi is not termination proof.
+
+Inspect partial changes before new writes. To recover, never retry a commit or delete work without inspection.
+
+Tab creation can time out or return an incomplete or mismatched identity. In that case, `/subagent` retains the allocation intent. This includes the workspace, checkout, label, private lease and session paths, and any returned tab and pane IDs. No worker starts until the extension verifies the creation identity. These records are evidence, not ownership.
+
+Close is not available for an unverified allocation. Admission stays held until you reconcile it manually against Herdr. Do not create the tab again. Do not guess missing IDs or restart to bypass this blocker.
+
+A Close that starts while a worker is active keeps its branch, session, and epoch guards until the cancellation settles. Stale dialogs cannot close panes or release admission.
+
+Tasks in a write request must return one JSON completion object, such as `{"outcome":"succeeded","answer":"Scoped commit completed."}`. `outcome` must be `succeeded`, `failed`, or `blocked`, and `answer` must be non-empty. A normal final Pi turn is not sufficient. Failure, blocked work, plain text, or a malformed completion stops later dispatch.
+
+But admission depends on proved termination, not on the reported outcome. Success is the explicit report of the worker. It is not an independent validation of its changes.
+
+### Continue or stop one direct worker
+
+Main can continue a finished direct worker, so it does not have to start a new one. It adds `continueFrom` with the reference of the worker, such as `"continueFrom": "D7.1"`, to any single, parallel, or chain task. It uses the same `role` that the worker ran with. The worker resumes its saved Pi session in a new Herdr tab without focus, so it keeps its earlier context.
+
+The new tab gets a new agent name and reference. Its record points to the same session and private lease file. The launch handle and the result say `continued from D7.1`. Access, admission, write rules, and model routes are the same as for a new task.
+
+A request can continue each worker only one time, and only from the checkout and Herdr workspace where the worker ran. After a continuation, continue the newest reference. The extension refuses an older reference to the same session, because a later turn follows its own turn.
+
+Before launch, the request fails if the reference is unknown or matches more than one record on this session branch. It also fails if the Role is different or a locally active task still owns the session of the worker. A missing session file or a session file larger than 16 MiB also causes failure. The last session turn for the recorded prompt must be finished.
+
+If Herdr still lists the old agent, the agent must match the recorded name, pane, tab, workspace, and checkout. It must also be idle or done. The extension never closes a working or blocked agent. The extension closes the old pane, then proves pane absence and two empty lease scans.
+
+An absent old agent still requires two empty lease scans.
+
+Records saved before 27.0.0 have no turn identity. The extension cannot continue them. For these records, start a new task.
+
+In a running workflow that has only `read` tasks, `/subagent` shows **Stop this worker** for each running worker. It aborts only that worker, sends Ctrl-C, closes its exact pane, and proves pane absence and two empty lease scans. The result of the worker becomes a failure, `Stopped by user from /subagent`, and keeps any partial output. Other workers continue, but a chain stops its later steps.
+
+If the extension cannot prove termination of the stopped worker, the workflow keeps local ownership. So **Close/cancel-and-release** stays available. Main receives one result when the workflow finishes. A workflow with a `write` task offers only **Close/cancel-and-release ALL owned workers in this workflow**. Both actions check session, branch, and epoch, so a stale dialog cannot act.
+
+### Direct results and records
+
+The extension retrieves each final answer from its exact Pi session file, not its possibly truncated screen. Idle, blocked, unknown, malformed, or oversized answers fail with recoverable tab and session identities. No whole-run deadline applies.
+
+The tool returns a task ID and the first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues the result after the current turn. If Main is idle, the result starts a turn. The extension does not report a blocked, stalled, unknown, or truncated result as success.
+
+In the result, each launched worker has a line with its model, thinking level, measured task tokens, and elapsed time. For example: `✓ [1/2] Check · worker · provider/model · thinking high · 1.5k tok · 42s`. If Pi recorded no usage, the line shows `tokens unknown`. Failed and stopped workers show the usage that the extension measured until they ended. A worker that the extension skipped before launch shows no usage.
+
+The result details contain the same values in each entry as `model`, `thinkingLevel`, `tokens`, and `elapsedMs`. When the token count is unknown, `tokens` is absent. If a task fails after its worker produced text, the result keeps a bounded excerpt marked as partial output. This excerpt is never success.
+
+Every worker result delivered to Main starts with a header. The header states that the text is the output of the worker and carries no user authority. The extension inserts a backslash in text that imitates harness framing. Examples are `<system-reminder>`-style tags and lines that start with `Human:` or `Assistant:`. Nothing else changes. Isolated status and follow-up answer previews use the same header.
+
+A session switch or shutdown stops observation and preserves tab identities for recovery. To inspect exact tabs, agents, and Pi session files, open `/subagent` on the session branch. This includes tabs launched after the first. The menu has one row for each workflow.
+
+A single worker shows its reference, Role, and name (`D7.1 · worker · Search audit`). A multi-worker workflow shows its reference and worker count (`D8 · 3 workers`). When you select it, the menu lists each recorded worker by reference, Role, and name with its exact IDs. References and names help you match rows. The extension never uses them to decide ownership.
+
+Older records without saved references show their saved allocation label or exact task ID. A `recorded only` row does not prove that its workers run or finished. The menu labels locally observed work separately.
+
+### Status widgets
+
+The TUI has two separate compact status widgets. Each widget has one row for each visible worker or task. `D` marks direct work, and `I` marks isolated work. Badges such as `[S]` and `[I3]` identify the Role initial. Isolated badges also include the model class: `1` fast, `2` balanced, `3` frontier, `*` fav.
+
+Each direct row starts with a saved direct reference such as `D7.1`. `D7` is the workflow number in this Pi session, and `.1` is the position of the worker in the original request. `/subagent` uses the same reference and name. The Herdr tab label shows them at launch. Numbers continue after reload, and the session never uses a number again.
+
+A session switch can move a workflow into a session that already uses its number. In that case, the workflow gets a new number there. An existing Herdr tab keeps its original launch label.
+
+The direct widget shows the launched model, thinking level, elapsed time, and measured task tokens (`— tok` until usage is available). Failed rows show before working and completed rows. When rows overflow, `… N more` includes counts by status.
+
+The isolated widget shows the recorded task state and any retained workspace. It does not show reliable live model, thinking, or token readings from Herdr. Attention shows before ordinary work, and overflow uses `+N more · /subagent`. An aborted request with visible tasks has its own `request aborted` row. This row does not change the recorded statuses of the tasks.
+
+A committed worker without a checked candidate can show attention, not readiness. Status glyphs use the active TUI theme. The text also names the status without color.
+
+The direct widget and result summaries show measured tokens for the current task turn. This count adds input and output tokens from completed assistant usage records. It excludes cache-read and cache-write tokens. A continued worker counts only its new task turn. Missing usage stays unknown. This display count does not change token-limit accounting.
+
+A ready isolated candidate is **not promoted** to Main. To reload the menu and the isolated widget from saved state, choose **Refresh** in `/subagent`. Refresh does not recover or change a request. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
+
+### Direct tool activity
+
+Direct rows can show `pending read, bash` and `last read 125ms recorded`. Pending means that Pi saved the call, but the session of this task has no matching result. It does not prove that execution started. Parallel calls stay pending until their own results arrive.
+
+Recorded time comes only from the `durationMs` of the latest matched tool result. The extension does not calculate it from assistant timestamps. If the latest result has no timing, the row shows no tool time, even if an earlier result had timing. Older sessions, and calls rejected before execution, can have no recorded time. Task elapsed time is a separate metric.
+
+Activity uses the existing session sample and file-size cache. The extension ignores a partial trailing JSONL entry until it is complete. For display, the extension removes terminal control characters from tool names. Narrow rows remove activity before other metrics, so worker identity and failure state stay visible. Activity and time are display information, not proof of task completion, worker ownership, or a timeout.
 
 ## Isolated contract
 
-An isolated call is a checked directed graph:
+An isolated request has one durable ID, one goal, and 1 to 8 typed tasks:
 
-```text
+```json
 {
-  mode: "isolated",
-  id,
-  goal,
-  tasks: [1..8],
-  finalChecks?,
-  finalJudgment?
+  "mode": "isolated",
+  "id": "refresh-repair",
+  "goal": "Repair token refresh with exact checked evidence.",
+  "tasks": [
+    {
+      "id": "inspect",
+      "kind": "text",
+      "role": "scout",
+      "modelClass": "fast",
+      "requirements": "Identify the refresh failure and relevant tests.",
+      "deliverable": "A concise evidence report.",
+      "dependsOn": [],
+      "contextFrom": []
+    },
+    {
+      "id": "repair",
+      "kind": "changeset",
+      "role": "implementer",
+      "modelClass": "balanced",
+      "requirements": "Implement the smallest correct repair.",
+      "deliverable": "A committed candidate in the owned worktree.",
+      "dependsOn": [],
+      "contextFrom": ["inspect"],
+      "checks": [
+        { "command": "pnpm", "args": ["test", "--", "refresh"] }
+      ],
+      "judgment": {
+        "role": "reviewer",
+        "modelClass": "balanced",
+        "criterion": "The exact candidate fixes refresh and preserves unrelated behavior."
+      }
+    }
+  ],
+  "finalChecks": [
+    { "command": "pnpm", "args": ["test", "--", "refresh"] }
+  ]
 }
 ```
+
+The request also accepts optional `finalJudgment` with `role`, `modelClass`, and `criterion`, using the same shape as task `judgment`.
 
 Every task declares `id`, `kind`, `role`, `modelClass`, `requirements`, `deliverable`, `dependsOn`, and `contextFrom`.
 
@@ -102,38 +227,161 @@ Every task declares `id`, `kind`, `role`, `modelClass`, `requirements`, `deliver
 - `contextFrom` may reference completed text tasks only, implies scheduling dependencies, and preserves declaration order. It must not overlap `dependsOn`.
 - A graph containing changesets requires final checks. The repository root must have a `package.json` test script; admission prepends canonical `pnpm test` if absent from final checks. Combined validation rejects a changed root test script.
 
-Admission and worker-wave dispatch pin Main's exact committed branch, HEAD, and tree without inspecting or modifying its staged, unstaged, or untracked edits. Worker allocation verifies the same committed identity around worktree creation, including resumed waves; staged-dependent waves verify their clean integration snapshot. A dirty Main can therefore produce a checked retained candidate, but branch/HEAD drift stops new waves. The runner executes ready worker tasks concurrently, inspects clean committed candidates, runs preliminary task checks and optional preliminary judgment, then records ready candidates for Main. **It does not automatically integrate them.** Main selects exact candidates via `subagent_stage` into an owned integration checkout in explicit order. Each stage is a committed merge of the candidate, not a mutation of Main. Conflicts retain the checkout for Main to resolve; `resolve` verifies the exact two-parent merge instead of replaying an uncertain merge. Main can explicitly run dependent tasks from an exact staged tip with `subagent_integrate advance` and stage their results afterward. Independent candidates may be staged without re-running workers.
+Admission and worker-wave dispatch pin Main's exact committed branch, HEAD, and tree without inspecting or modifying its staged, unstaged, or untracked edits. Worker allocation verifies the same committed identity around worktree creation, including resumed waves; staged-dependent waves verify their clean integration snapshot. A dirty Main can therefore produce a checked retained candidate, but branch/HEAD drift stops new waves. The runner executes ready worker tasks concurrently, inspects clean committed candidates, runs preliminary task checks and optional preliminary judgment, then records ready candidates for Main. **It does not automatically integrate them.**
 
-Once all selected work is staged, Main calls `subagent_integrate validate` on the exact clean combined tip. It acknowledges the durably saved validation intent and continues in the session-owned background, independent of later turn cancellation; session replacement/shutdown still cancels it. A follow-up reports completion; status remains authoritative if delivery is missed. This runs every final check, including `pnpm test`, and optional final judgment in the integration checkout before any Main mutation. A failed check/review can be followed by one Main-authored committed correction in that checkout, recorded with `correct`, then another `validate`. Staging, combined validation, and `promote` require clean Main at the recorded committed identity; they stay blocked by dirty edits even when the checked candidate is retained, and no dirty work is replayed or merged automatically. `promote` requires exact passing combined evidence and unchanged Main and uses a guarded update to Main. Only proven promotion leads to selected-worker termination and verified cleanup. A changed candidate, integration tip, or Main identity invalidates prior evidence or blocks promotion; review accepts only exact `PASS`.
+Main selects exact candidates through `subagent_stage` into an owned integration checkout in explicit order. Each stage is a committed merge of the candidate, not a mutation of Main. Conflicts retain the checkout for Main to resolve; `resolve` verifies the exact two-parent merge instead of replaying an uncertain merge. Main can explicitly run dependent tasks from an exact staged tip with `subagent_integrate advance` and stage their results afterward. Independent candidates may be staged without re-running workers.
+
+Once all selected work is staged, Main calls `subagent_integrate validate` on the exact clean combined tip. It acknowledges the durably saved validation intent and continues in the session-owned background, independent of later turn cancellation; session replacement/shutdown still cancels it. A follow-up reports completion; status remains authoritative if delivery is missed. This runs every final check, including `pnpm test`, and optional final judgment in the integration checkout before any Main mutation. A failed check/review can be followed by one Main-authored committed correction in that checkout, recorded with `correct`, then another `validate`.
+
+Staging, combined validation, and `promote` require clean Main at the recorded committed identity. Dirty edits block these actions even when the checked candidate stays retained. The extension never replays or merges dirty work automatically. `promote` requires exact passing combined evidence and unchanged Main and uses a guarded update to Main. Only proven promotion leads to selected-worker termination and verified cleanup. A changed candidate, integration tip, or Main identity invalidates prior evidence or blocks promotion; review accepts only exact `PASS`.
+
+### Text results and cleanup
+
+The extension saves completed text answers independently of cleanup. Status and terminal follow-ups include a bounded preview of the accepted answer and cleanup evidence. Ignored automatic artifacts can retain a checkout, and this does not violate the read-only contract. The extension deletes no ignored files to make cleanup pass.
+
+Tracked or untracked changes, a changed checkout identity, or unproved inspection still require attention. The completed answer stays saved. But the extension does not accept it as dependency context or retry it automatically. Retained text checkouts require deliberate manual inspection and cleanup. A retained checkout alone is not evidence that the Role edited source.
 
 ### Readiness and Main actions
 
 The user's request can authorize the declared local graph, checks, review, and Main's later explicit integration actions. After each successful preliminary check batch, the runner drains any follow-up already queued for the same live worker. Each revision must produce a new clean commit and rerun preliminary checks. When the queue is empty, the runner atomically seals the candidate and persists exact readiness evidence without waiting for input.
 
-`/subagent` opens a native picker for direct recovery and isolated inspection; locally owned active changesets may queue an optional same-worker revision or drain all still-pending instructions into the native editor and submit one replacement. Cancel after draining leaves them withdrawn; claimed instructions are unaffected. Pi's global Option+Up is unchanged. There is no guaranteed post-completion editing window; late follow-ups fail visibly. After readiness, use `subagent_stage revise` with an exact candidate, generation, current `expectedTip`, and instruction when a same-worker correction remains allowed. Material scope growth, missing authorization, user-owned conflicts, or consequential external actions still require a new decision. pi-subagent never pushes, publishes, deploys, or opens a pull request.
+After readiness, use `subagent_stage revise` with the exact candidate, generation, current `expectedTip`, and instruction. A same-worker correction must remain available. Material scope growth, missing authorization, user-owned conflicts, and consequential external actions require a new decision. Pi Subagent never pushes, publishes, deploys, or opens a pull request.
 
-`subagent_status` puts failed review verdicts from every task's latest attempt (also while siblings run), the final gate, and each generation into its model-visible text within one shared 32 KiB budget and counts omitted verdicts; its structured projection carries each verdict up to 32 KiB and sets `verdictTruncated` when it is cut; asynchronous follow-ups keep a short preview and point Main to `subagent_status`. It reports ready candidates with `taskId`, `attempt`, and `tip`, plus each generation's number, stage lineage, combined tip, checks, promotion, and retained worktree. Use those exact identities (including branch, HEAD, index, and tree) rather than guessed commits:
+### Inspect and revise active work
 
-- `subagent_stage`: `{ id, action: "stage" | "resolve" | "reject" | "revise", generation, taskId, attempt, candidate, expectedTip, instruction? }`. `candidate` is the ready candidate's `tip`; `expectedTip` is Main's recorded identity for the first stage or the previous stage's exact tip. `resolve` reconciles a pending/conflicted merge; `reject` and `revise` arbitrate a candidate without changing Main.
-- `subagent_integrate`: `{ id, action: "advance" | "validate" | "correct" | "promote" | "reconcile" | "cleanup", generation, expectedTip }`. Use the generation's exact `combinedTip`. `advance` dispatches ready dependents on that snapshot, `correct` records the single clean committed correction after a definitive failed check/review, `reconcile` inspects an interrupted validation or promotion without replaying an uncertain promotion, and `cleanup` completes proved post-promotion cleanup.
-- `subagent_integrate refresh`: `{ id, action: "refresh", generation, expectedTip, expectedMain, newMain }`. If Main advanced to a clean same-branch descendant, this freezes the old generation and allocates a new integration checkout from `newMain`. Restage selected immutable candidates in explicit order, resolve fresh conflicts, then rerun combined validation. Dirty, divergent, or uncertain Main cannot refresh. For a reconciled `validation_failed` generation without checks, review, or a prior combined correction, identical `expectedMain` and `newMain` instead rebuild on the unchanged base. This requires the exact clean retained integration tip, leaves the old checkout retained, and never resumes its uncertain checks. Prove old coordinator/check processes stopped before recovery; a live productive lease blocks it. Restage explicitly and rerun all final gates; no correction allowance is replenished.
-- `subagent_integrate release`: `{ id, action: "release", generation, expectedTip, taskId?, attempt? }`. With no task, release an explicitly superseded checkout using that generation's recorded tip: its correction tip, else its last staged tip, else its integration base. Supersession keeps the correction record for this proof. With both `taskId` and `attempt`, release the rejected candidate of a rejected task or of a dependent attempt that refresh or rejection invalidated, using its exact candidate tip and the latest generation number (or 1 when none exists); release every generation that staged it first. Release proves exact worker termination before cleanup: reconciliation records an absent worker after pane absence and two empty lease scans, and only an observed live worker without saved termination intent is closed with the same proof. An uncertain termination is never replayed. Cleanup steps are persisted separately, and a retry reconciles already-removed resources by proving absence. Release refuses dirty/conflicted work, changed refs, unproved termination, and still-needed checkouts.
+To select work by label, open `/subagent` without arguments. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout. This includes requests launched in other sessions. Select an isolated request. Then select **Inspect status and recovery**.
 
-A rejection or revision of a staged candidate supersedes that generation, leaves its checkout read-only, and requires explicit restaging of chosen candidates into a new generation. At most two unreleased owned integration checkouts can coexist per request. Superseded integration checkouts and rejected candidate resources are **retained until Main explicitly releases them**. Inspect exact status first; dirty or unresolved conflicts require manual recovery without force deletion. Rejection invalidates dependent attempts; if the required fresh dependent work cannot run within the bounded attempt/lineage constraints, start a new request. `subagent_abort` cannot discard retained resources, but can finish after all candidates are rejected and all owned checkouts are released. It also releases an empty refreshed generation that is clean at its base. If retained candidate checkouts and staged integration checkouts are proved absent (unregistered, path missing, branch ref missing) and their workers are proved absent, abort records those candidates as rejected and released and completes their cleanup; any present resource fails abort without state changes. Rejection and revision ignore dependents that refresh or an earlier rejection already invalidated.
+This launches a Herdr tab without focus, with the configured `scout` Role on the configured `fast` route. The tab runs a read-access task with the resources of the Role. Its prompt contains bounded saved status, including retained paths, but not the raw launch environment or session transcripts. The analysis stays in that tab and does not queue a Main turn. The tab shows in the direct list with its own reference and name, such as `D9.1 · scout · Inspect <request ID>`. The extension records the tab and session file for recovery, even if the launch becomes uncertain.
+
+Before any stage or recovery action, the read-only `subagent_status` tool stays Main's authority for exact identities. If Herdr, the `scout` Role, or the fast route is not available, inspection fails and does not change the request. Main can then use `subagent_status`.
+
+For older work, choose Refresh or completed/history. The extension shows a warning for invalid state IDs and preserves them. Direct recovery still works outside Git or when isolated inventory is not available. The browse action does not resume work or change resources. Direct **Close/cancel-and-release** is an explicit termination action.
+
+For a locally active unsealed isolated changeset, choose **Send follow-up instructions** to open a native multiline editor. A submission queues the instruction, not a completed revision. Choose **Edit queued instructions** to withdraw *all still-pending* instructions for that selected task before the editor opens. Their full text shows in FIFO order, with blank lines between them. An explicit submission queues **one replacement** at the end. If you cancel, the withdrawn instructions stay removed.
+
+You cannot recall already-claimed instructions, initial prompts, or automatic corrections. A worker can seal while you edit. If the submission fails, the editor opens again with the full submitted text. You can then edit or copy it deliberately. The extension never queues it again automatically.
+
+The editor preserves combined text above the single-instruction limit, but rejects it until you make it shorter. A cancel before withdrawal makes no change. Neither action touches Main's editor or Pi's global Option+Up queue shortcut. Sessions without a UI can run `/subagent recover` or use agent tools for individual inspection and recovery.
+
+A queued follow-up runs after the current turn settles. It must produce a new clean commit that passes preliminary checks again. When no queued revision remains, the checked candidate seals immediately. There is no guaranteed time to edit after completion. Late follow-ups fail visibly.
+
+### Exact integration actions
+
+`subagent_status` shows failed review verdicts from each task's latest dispatch, the final gate, and each generation, including while siblings run. Its text uses one shared 32 KiB budget and counts omitted verdicts. Structured output carries each verdict up to 32 KiB and sets `verdictTruncated` when necessary. Follow-ups give short previews and direct Main to status for the full text.
+
+Status reports ready candidates with `taskId`, `attempt`, and `tip`. Each generation records its number, stage lineage, combined tip, checks, promotion, and retained worktree. Use these exact identities, including branch, HEAD, index, and tree. Do not guess commits.
+
+#### Stage and resolve
+
+```text
+{ id, action: "stage" | "resolve" | "reject" | "revise", generation, taskId, attempt, candidate, expectedTip, instruction? }
+```
+
+`candidate` is the ready candidate's `tip`. For the first stage, `expectedTip` is Main's recorded identity. Later stages use the previous stage's exact tip. `resolve` checks a pending or conflicted merge, including its exact two-parent identity. It never replays an uncertain merge.
+
+Stage and resolve remain available during an active wave; rejection and revision wait until the wave settles. If allocation was uncertain, resolve first proves that the owned checkout remains at its base before starting the selected merge. Otherwise, it retains the intent.
+
+Rejection or revision of a staged candidate supersedes that generation and leaves its checkout read-only. Main must explicitly restage selected candidates into a new generation. Each request permits at most two unreleased integration worktrees. Superseded generations and rejected candidates remain until explicit release.
+
+Rejection invalidates dependent work. Rejection and revision ignore dependent work that refresh or an earlier rejection already invalidated. If fresh dependent execution exceeds dispatch or lineage limits, start a new request. Do not force promotion.
+
+#### Validate and promote
+
+```text
+{ id, action: "advance" | "validate" | "correct" | "promote" | "reconcile" | "cleanup", generation, expectedTip }
+```
+
+Use the generation's exact `combinedTip` as `expectedTip`. `advance` dispatches ready dependents from that snapshot. `correct` records one clean committed correction after a definitive failed check or review. `reconcile` inspects interrupted validation or promotion without replaying uncertain promotion. `cleanup` finishes proved post-promotion cleanup.
+
+Validation acknowledges only after saving the exact generation's validation intent. Checks and final judgment then run in the background. Later turn cancellation does not cancel acknowledged validation; session replacement or shutdown does. Acknowledgement is not passing evidence. Inspect status if the completion follow-up fails.
+
+#### Refresh
+
+```text
+{ id, action: "refresh", generation, expectedTip, expectedMain, newMain }
+```
+
+If Main advances to a clean same-branch descendant, refresh freezes the old generation and allocates a new checkout from `newMain`. Restage selected immutable candidates in order, resolve fresh conflicts, and rerun combined validation. Dirty, divergent, or uncertain Main blocks refresh.
+
+After interrupted validation, prove that the old coordinator and check processes stopped. Never take over a live productive lease. Use guarded `reconcile` on the saved generation and `combinedTip`. Missing checks or review never authorize `correct` or `promote`.
+
+A reconciled `validation_failed` generation without recorded checks, review, or a prior combined correction permits refresh with identical `expectedMain` and `newMain`. Supply the exact old combined `expectedTip` and next generation number. Main and the retained integration tip must remain exact and clean. This allocates a new checkout; it never resumes uncertain checks.
+
+Restage selected candidates and run all final checks and required judgment before promotion. The old generation remains retained, the two-checkout limit still applies, and correction allowances do not reset.
+
+#### Release and abort
+
+```text
+{ id, action: "release", generation, expectedTip, taskId?, attempt? }
+```
+
+Without a task, release a superseded clean checkout using its recorded tip. Use its correction tip, otherwise its last staged tip, otherwise its integration base. Supersession preserves the correction record.
+
+With `taskId` and `attempt`, release a rejected candidate, including dependent work invalidated by refresh or rejection. First release every generation that staged it. Supply its candidate tip and the latest generation number, or `1` if none exists.
+
+Release proves exact worker termination before cleanup. An absent worker still requires pane absence and two empty lease scans. An observed live worker without saved termination intent can close with the same proof. Uncertain termination never replays automatically.
+
+Release saves each host, checkout, and branch step separately. It checks ownership and cleanliness, including ignored files. Branch deletion requires the exact recorded tip. A repeated release proves absence for already-removed resources. Dirty, conflicted, changed, uncertain, or still-needed resources remain for manual inspection. Resolve the blocker, then repeat release; each released checkout frees a slot.
+
+Abort cannot discard retained resources. It becomes available after rejection and release of all candidates and owned checkouts. It also removes an empty refreshed generation that remains clean at its base.
+
+If you removed resources outside Pi Subagent, abort can reconcile their absence. Each retained candidate or staged integration checkout must be unregistered, its path absent, and its branch absent. Workers must also be proved absent through pane and lease checks. Abort then records candidates as rejected and released and completes cleanup. Any present resource blocks abort without changing the request.
 
 ### Recovery and state
 
-State version 5 is stored privately under:
+State version 5 lives privately under:
 
 ```text
 <agent-dir>/config/pi-subagent/state/<repository-hash>/<request-id>.json
 ```
 
-Strict parsing rejects unknown properties, malformed evidence, invalid lineage, and old v4 state without migration; preserve old files and recover their work manually. Writes are atomic and repository productive work uses a durable process lease. `delegate_task` and `subagent_resume` acknowledge only after durable state is saved, then continue productive work asynchronously. A durably recorded worker attention state sends an immediate once-per-transition Pi follow-up to the launching session, even while siblings run; the wave also reports its final outcome. Isolated workers persist a private exact Pi session under the owned process lease so a proved final answer without a changed clean commit becomes attention rather than an indefinitely pending prompt. Missing or mismatched session proof cannot establish completion and never authorizes prompt replay. When a proved finished turn leaves tracked or untracked changes in a valid owned worktree, the runner sends the same worker one commit reminder per attempt, saved as a follow-up prompt record before delivery like any other prompt. It does not use a correction or a dispatch attempt. The runner never commits, stages, stashes, or discards; a commit from the reminder goes through the normal candidate path, and a worktree still dirty after it needs attention. `subagent_status` is read-only and remains the recovery authority if a follow-up is missed. `subagent_resume` accepts only the continuation reported by state. A `retry` that sends a same-worker correction may add an `instruction` (at most 32000 exact characters, no NUL), appended to the correction prompt as Main's instruction after the saved failure and saved in its prompt record before delivery; other actions reject it. `subagent_abort` performs exact worker termination and conservative teardown. Without a retained candidate, it removes only owned checkouts still clean and unchanged from their pinned base, including ignored-file checks. Active productive execution defers cleanup until it settles. Repeating abort on an aborted request reconciles pending cleanup without replaying uncertain termination. Dirty or committed work and uncertain allocations stay retained with visible blockers; `/subagent recover` includes aborted requests with retained resources.
+Parsing rejects unknown properties, malformed evidence, invalid lineage, and v4 or older state without migration. Preserve old files and recover work manually. Writes are atomic. A productive lease prevents concurrent execution or resumption but permits status inspection and abort.
 
-`/subagent prune` reviews every `pi-subagent/subagent-<24 hex>` branch in the repository and its `.worktrees/` checkout. An item is removable only when its tip is an ancestor of Main's HEAD or the local `origin` default-branch ref (no fetch), the checkout is still on its own branch (a detached or switched owned checkout is found by path and blocks), has no tracked or untracked changes, no initialized submodules, and no in-progress Git operation, no non-terminal or unreadable state in any of the repository's checkouts records its name (a non-regular state entry counts as unreadable and may own any name), no productive lease is live, and no Herdr pane works inside the checkout (unavailable Herdr refuses). Removal needs interactive confirmation; checkouts with ignored files need a second confirmation that names each ignored entry in full, and a checkout whose list does not fit is left out; that approval covers each entry with all its contents, and a new or changed top-level ignored entry skips the checkout. Prunable items are listed first, and only items shown in full in both dialogs can be removed; an over-long list ends with an explicit `+N more not shown` line instead of a silent cut. The confirming session's ownership is rechecked immediately before each `git worktree remove` and branch deletion. Each item is re-verified immediately before `git worktree remove`, and its branch is deleted with a compare-and-swap on the reviewed tip. Aborted requests that recorded a removed resource are then reconciled by the guarded abort path, which proves absence; requests it cannot reconcile are reported. State files are never edited directly.
+`delegate_task`, `subagent_resume`, and `subagent_integrate advance` return a durable request ID after saving the wave. Work continues asynchronously. A saved worker attention state sends a follow-up to the launching session, including while siblings run. The wave also reports its final result.
 
-Text attempt history records dispatches, not pre-dispatch inspection failures. Such failures retain task-level attention without adding an attempt or rewriting earlier execution diagnostics. A recorded interrupted dispatch still consumes an attempt. Verification requires the same passing preliminary checks, judgment, and ownership as candidate retention; readiness and the verified candidate are saved together.
+Isolated workers save private exact Pi sessions under their owned process leases. A proved final answer without a changed clean commit requires attention. Missing or mismatched session proof cannot establish completion and never permits prompt replay.
+
+When a finished turn leaves tracked or untracked changes in a valid owned worktree, the runner sends one commit reminder per dispatch try. It saves the reminder before delivery. This uses neither a correction nor a dispatch try. The runner never commits, stages, stashes, or discards. A resulting commit follows normal candidate checks; remaining dirty work requires attention.
+
+`subagent_status` stays read-only and authoritative if delivery fails. Session replacement or shutdown suppresses stale follow-ups and logs the request ID and reason, not prompts or credentials. Synchronous delivery failures report without automatic replay. Pi reports asynchronous `send_message` failures through its runtime.
+
+`subagent_resume` accepts only the reported `retry`, `verify`, or `finalize` continuation. A same-worker correction `retry` permits optional `instruction`: at most 32000 exact characters, with no NUL. The prompt includes this as Main's instruction after the saved failure and saves it before delivery. Other actions reject it.
+
+Without retained candidates, abort terminates exact owned workers and removes only owned checkouts that remain clean and unchanged from their pinned base. Cleanup includes ignored-file checks. Productive execution delays cleanup until it settles. Repeat abort to reconcile pending cleanup without replaying uncertain termination. Dirty or committed work and uncertain allocations remain with blockers. `/subagent recover` includes aborted requests with retained resources.
+
+### Recover after interruption
+
+After a coordinator interruption, run `/subagent recover` one time. It gets the repository productive lease before it changes any orphaned `pending` or `running` state. It preserves unreadable state files and retained candidates. It reports blockers and existing continuations to Main. It does not replay prompts, merges, promotion, or cleanup.
+
+If another productive run holds the lease, the command only reads status and reports the live owner. Wait. Do not take over. You can safely run the command again.
+
+Main uses `subagent_status` for exact identities. Main uses the recovery tools in the interface table above for deliberate decisions. The command never stages or promotes. Direct Herdr tab recovery stays in `/subagent`.
+
+### Prune leftover worktrees
+
+Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-` plus 24 hex characters. The command also cleans up such branches that have no checkout. The review lists each item with its path, branch, and tip. For each item, it also shows why the command can remove the item, or it shows every exact blocker. The command can remove an item only when all of these conditions are true:
+
+- Its branch tip is already in Main's HEAD or in the local `origin` default-branch ref. The command does not fetch.
+- Its checkout has no tracked or untracked changes. No merge, rebase, cherry-pick, revert, or bisect is in progress.
+- No unfinished isolated request, in any checkout of this repository, records it. An unreadable state file blocks every item that it mentions.
+- No productive run holds a repository lease.
+- No Herdr pane works inside the checkout. If the command cannot inspect Herdr, it refuses every checkout.
+
+One confirmation removes every listed removable item. When the command removes a checkout, it also deletes the ignored files of the checkout, such as `node_modules` or `dist`. So the command includes a checkout with ignored files only after a second confirmation. That confirmation names each ignored entry, and its approval covers all contents of each named entry.
+
+If a top-level ignored entry is new or changed, the command skips the checkout. If the full list of ignored entries of a checkout does not fit in that dialog, the command excludes the checkout. The command blocks checkouts with initialized submodules. It also blocks owned checkouts that are detached or on another branch. Remove them manually.
+
+The list shows removable items first. The command never cuts a long list silently. The list ends with `+N more not shown`, and the command does not remove the items that it did not show in that run. Run `/subagent prune` again to review them.
+
+The command checks each item again immediately before removal and skips an item that changed. If the session or branch changes during removal, the command skips the remaining steps. The command deletes a branch only if the branch still points at the reviewed tip. Then the command reconciles each aborted request that recorded a removed resource. It uses the same guarded path as a repeated `subagent_abort`, so the cleanup of that request no longer shows as pending.
+
+The report lists removed, skipped, and failed items, and each request that the command could not reconcile. Without interactive UI, the command only reports.
+
+A non-regular or unreadable state entry can block every item because its resource ownership is unknown. State files never change directly.
+
+### Execution limits
+
+Text tasks permit two dispatch tries. Inspection failures before dispatch require task-level attention without using a try or replacing earlier diagnostics. An interrupted dispatch still uses a try. Verification requires the same passing preliminary checks, judgment, and ownership as candidate retention; readiness and the verified candidate are saved together.
 
 Productive execution has no whole-run wall-clock deadline. Long productive work and later resumes remain valid. The request retains its original policy snapshot and correction count; a resume cannot refill them. Current configuration may tighten the correction allowance. Child idle/hard runtime, subprocess I/O, status inspection, termination, cleanup, and outer abort remain bounded independently.
 
@@ -152,9 +400,54 @@ Every child launch:
 5. excludes Main-only delegation/recovery tools and `ask_question`; and
 6. prepends the delegated-subagent identity contract.
 
-An empty `tools` list adds no base tools, though selected extension tools can still activate; extension tools with `codemode` or `deferred` exposure stay callable from scripts and are declared only when `tools` names them. Children run with `--no-extensions`, so a Role must list the extension that registers its route model's provider; `builtin:<name>` entries load Pi built-in extensions. A Role activates `codemode` by listing `builtin:codemode` in `extensions` and `codemode` in `tools`. `mcps` names servers from the global `~/.pi/agent/mcp.json` in Pi's native format; their tools keep their configured exposure in a codemode Role and load with direct exposure otherwise. Omitted or empty `mcps` denies MCP access. Loading `pi-mcp-adapter` directly is rejected because it bypasses the allowlist.
+An empty `tools` list adds no base tools. Selected extension tools can still activate.
+
+Children run with `--no-extensions`. So a Role must list the extension that registers the provider of its route model. Only declared resources and required internal policy adapters load. `builtin:<name>` entries explicitly load Pi built-in extensions (`builtin:codemode`, `builtin:tool-search`, `builtin:llama.cpp`).
+
+The extension rejects `builtin:mcp` and direct loading of `pi-mcp-adapter`, because they bypass the `mcps` allowlist. Scripts can still call extension tools registered with `codemode` or `deferred` exposure. But the model gets their declarations only when `tools` names them.
+
+To let a Role run `codemode` scripts, list `builtin:codemode` in `extensions`. Also list `codemode` in `tools`. Both are required, because the built-in registers the tool as inactive and the Role tool policy activates it. If `tools` has `codemode` alone, the launch fails with an unavailable tool.
+
+Pi's `codemode.mode` and `codemode.inlineBudget` settings apply in the child without change. So the Role never forces codemode-only operation. MCP configuration never activates `codemode` in a child. Scripts can call only the active tools of the Role, plus `codemode` and `deferred` extension and MCP tools. Inactive base tools such as `bash` stay unreachable.
+
+The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. In a Role that activates `codemode`, each selected server keeps its configured `exposure` and `toolExposure`. Pi's default `codemode` exposure makes tools callable from scripts without declarations. `direct` declares them. `deferred` tools stay reachable from scripts, and `hidden` tools stay unreachable. An invalid exposure value fails the launch.
+
+In every other Role, the extension forces selected servers to `direct` exposure. It ignores `toolExposure`, because that child cannot reach undeclared tools. Declared tools show to the model as `mcp__<server>__<tool>` after the server connects. Pi replaces `-` in server and tool names with `_`. Pi appends a hash suffix when two tool names collide or a name is longer than 64 characters.
+
+Before launch, the extension checks each selected entry against Pi's documented `mcpServers` rules, in Main and again in the child. The launch fails with the file path and field for each of these conditions:
+
+- An entry is disabled, malformed, or uses an unknown transport.
+- A server name is invalid.
+- Two selected names differ only in `-` and `_`.
+- `auth.provider` uses plain HTTP outside `localhost`, `127.0.0.1`, or `[::1]`.
+- `oauth.authServerMetadataUrl` does not use HTTPS outside those hosts.
+
+The extension never modifies the file. Fix the entry or choose another server. The extension passes valid `auth`, `oauth`, and `description` fields through, so Pi's native provider auth and OAuth apply. `oauth.clientRegistration` must be `dcr` or `cimd`. A `cimd` entry cannot use `clientId` or `clientName`. Any `callbackUrl` must use localhost or 127.0.0.1 with path `/callback`.
+
+The extension still ignores project MCP overrides. A project cannot change the global server allowlist or exposure of the Role. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. The extension excludes Main-only delegation and recovery tools and `ask_question` from children.
 
 Isolated Herdr Role launches receive the same turn, token, and child-runtime budget metadata as ephemeral launches. Retained workers therefore keep one non-refilling session budget across follow-ups rather than receiving a new request budget.
+
+### Reviewer Git inspection
+
+`git_read` is an internal child tool. The extension loads and registers it only for Roles that declare it. It accepts structured parameters, not shell commands or arbitrary Git options:
+
+| `operation` | Parameters and evidence |
+| --- | --- |
+| `status` | Optional `path`; staged, unstaged, and untracked status |
+| `diff` | `mode: "working"` (default, unstaged), `"staged"`, or `"committed"`; committed requires `base` and `tip`. Optional `path` |
+| `show` | Optional `revision` (default `HEAD`) and `path`; commit patch or file content at that commit |
+| `log` | Optional `revision`, `path`, and `maxCount` (default 20, maximum 100) |
+| `blame` | Required `path`, optional `revision` and paired `startLine`/`endLine` |
+| `rev-parse` | Optional `revision`; resolves one commit ID |
+
+Revisions accept commit IDs or named refs with optional `~N`/`^N` ancestry, not ranges or reflog expressions. Paths are literal and relative to the assigned cwd. The tool rejects absolute paths, traversal, `.git` components, and paths that look like options.
+
+Use named candidate refs. Do not assume that Main's checkout contains an isolated candidate. In isolated judgment, the supplied exact patch stays authoritative. Git inspection supplies only referenced context, not a replacement diff. Reviewers still cannot run tests, write, commit, or push. They approve only with exact `PASS`.
+
+You can cancel each call, and each call has a limit of 30 seconds. Results keep at most the last 32 KiB of UTF-8 output, with an explicit `truncated` flag and notice. If output is truncated, make the path, log count, or blame lines narrower. Do not treat truncated evidence as complete. Missing refs or files, non-repositories, invalid UTF-8, timeouts, and Git failures fail visibly. The tool writes no full-output artifact.
+
+Git must support `--no-lazy-fetch`. Older versions fail and do not permit network access. The tool disables lazy fetch, pager, optional locks, hooks, fsmonitor, external diffs, textconv, and clean and process filters. So working-tree comparisons use unfiltered bytes and can be different from filter-aware Git output (for example Git LFS). The tool does not inspect submodule contents. Concurrent edits can still make direct inspection stale.
 
 ## Ephemeral executor API
 
@@ -183,6 +476,8 @@ The FIFO permit is acquired before `prepare`, so queued work can resolve fresh R
 A result contains `outcome`, `exitCode`, bounded `output` and `stderr`, truncation state, optional stop reason/error, and aggregate usage. Abort, timeout, turn/token limit, spawn, protocol, preparation, and callback failures reject with typed `EphemeralSubagentError` codes.
 
 Token accounting adds each completed assistant response once. A terminal response that crosses the configured token value succeeds. A continuing crossing turn completes tools and receives one response-only handoff; further continuation fails. Role tools provide a convergence warning near configured turn/token/runtime limits.
+
+A child that reports `agent_settled.aborted: true` returns a failure result with `stopReason: "aborted"`, even if its process exits with code 0. The executor keeps collected output, usage, and child error text. `aborted: false` does not prove provider success. A parent abort or timeout still rejects with `EphemeralSubagentError`.
 
 ## Role launch API
 
