@@ -55,7 +55,13 @@ Only `/pr` and `pi_git_pr` authorize `pi_pr_*` helpers, for one invocation in th
 
 Ask the agent to commit scoped work or create/update a PR. See [git-commit arguments and checks](./skills/git-commit/SKILL.md) and [git-pr arguments and consent](./skills/git-pr/SKILL.md).
 
-Local commits require an existing commit and an attached branch. They never fetch, push, amend, bypass hooks, or change Git configuration. Unrelated staging, partial staging, `.context/`, and common secret filenames block commits. Filename checks cannot detect every secret: the agent must inspect content and ownership.
+Local commits require an existing commit and an attached branch. They never fetch, push, amend, bypass hooks, or change Git configuration. Unrelated staging, partial staging, `.context/`, and common secret filenames block commits. Filename checks cannot detect every secret: the agent must inspect content and ownership. Hooks run normally.
+
+| Tool call | Result |
+| --- | --- |
+| `pi_git_commit` `{ action: "inspect", target: "<local-ref-or-OID>" }` | Returns `inspectionId`, `head`, `targetOid`, `mergeBase`, and `paths`. |
+| `pi_git_commit` `{ action: "commit", inspectionId, ownedPaths, message }` | Returns `head` and consumes the inspection. Inspect again for another group. Subjects have at most 72 characters. |
+| `pi_git_pr` `{ base?: "<exact-base-ref>", allowUpstream?: true }` | Returns `nextStep` and can include a proven `url`, `blocker`, or `handoff`. With `handoff`, end the turn and do not guess run IDs. |
 
 `pi_git_pr` permits creation, local publication, and sync onto the PR head, not the base. It stops before feedback, CI repair, base rebase, waiting, or merging. Existing PR bases, titles, and bodies do not change.
 
