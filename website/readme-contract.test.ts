@@ -25,8 +25,9 @@ function introductionSentenceCount(markdown: string): number {
     if (inIntroduction && node.type === "heading" && node.depth === 2) break;
     if (!inIntroduction || node.type !== "paragraph") continue;
     const text = prose(node).text.trim();
-    if (text.startsWith("Inspired by")) continue;
-    count += splitSentences(text).filter((sentence) => /[\p{L}\p{N}\uFFFC]/u.test(sentence)).length;
+    const sentences = splitSentences(text).filter((sentence) => /[\p{L}\p{N}\uFFFC]/u.test(sentence));
+    // Attribution may follow the outcome; only its own sentence is exempt.
+    count += sentences.length - (text.startsWith("Inspired by") ? 1 : 0);
   }
   return count;
 }
@@ -36,7 +37,7 @@ test("README introduction counts prose sentences across paragraphs", () => {
     "Before the title.", "# Package", "First. Second!", "Third?", "Fourth.",
     "![Image.](./image.svg)", "Inspired by [another project](https://example.com). Read it.",
     "## Use", "Not part of the introduction.",
-  ].join("\n\n")), 4);
+  ].join("\n\n")), 5);
   assert.equal(introductionSentenceCount('# Package\n\n"Read." Use `a.b. c.`.\n\n![Image](./image.svg)'), 2);
 });
 

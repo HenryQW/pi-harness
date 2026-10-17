@@ -17,7 +17,7 @@ CI repair requires `gh api --help` to list `--allow-escape-sequences`. Upgrade `
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows the PR footer status in the shared footer. |
-| [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) | Required | Provides the Herdr CLI client for workspace renaming. |
+| [`@henryqw/pi-herdr`](https://pi.henry.wang/packages/pi-herdr) | Required | Provides the Herdr CLI client for workspace renaming. |
 | [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs child processes with limits. |
 
 Required dependencies install with `pi-pr`. Workspace renaming is optional and requires Herdr 0.9.3 or later. Other functions work outside Herdr.
@@ -66,6 +66,10 @@ An explicit `base` must match the existing PR base or configured/default creatio
 [update-from-main](./skills/update-from-main/SKILL.md) requires Python 3.9 or newer and Git with `fetch --porcelain`. It fetches, then **merges** the exact fetched `origin/main` OID without pushing. This differs from the `/pr` rebase route.
 
 The helper retains backups of tracked, untracked, and colliding ignored files. Retained backups block their owning worktree; unowned legacy backups block every worktree. Follow the linked skill for exact-OID restoration, interrupted runs, legacy backup adoption, and recovery completion. Verify restored bytes and staging before explicitly requesting completion. Never drop a backup or repeat an uncertain operation automatically. Removing a worktree removes ownership refs, not stash entries.
+
+### Workflow tests
+
+From this source checkout, run `pnpm --filter @henryqw/pi-pr test:git-workflows`. It uses temporary Git repositories and does not write to live GitHub. See [executed cases and acceptance instructions](./docs/git-workflows-tested.md).
 
 ### Licences
 
@@ -118,7 +122,11 @@ When Codex review is the only blocker, the footer shows `Codex review pending`. 
 
 The footer shows linked `PR #number` with statuses such as `N unresolved`, `CI failed`, `merge conflict`, `local behind`, or `merge-ready`. Blocked discovery or unavailable status shows unlinked `PR`. Status text works without color.
 
-The widget shows `⠋ Checking pull request…` during discovery, then a route hint. Errors use `✗`, warnings `!`, success `✓`, and neutral routes `●`. Hints stay hidden during workflows. Background status can lag; `/pr` always reads fresh evidence.
+The widget shows `⠋ Checking pull request…` during discovery, then a route hint. Errors use `✗`, warnings `!`, success `✓`, and neutral routes `●`. Hints stay hidden during workflows.
+
+Background discovery starts with the session. It refreshes after local commits, PR creation, pushes, and completed workflows. When Pi becomes idle, an open PR also refreshes. This requires no active or queued refresh and a last check at least two minutes old. Failed checks reset this wait. There is no timer, so external changes can stay hidden until a later idle settlement.
+
+`/pr` always reads fresh evidence.
 
 The UI stays silent outside Git or without a supported GitHub remote. Lookup failures show `PR · status unavailable`. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying.
 

@@ -147,7 +147,7 @@ Reads never change config. Problems appear at session start and when `/task-mode
 | Invalid profile or route; `fallback` in `fav` | Warn and ignore the profile. Tasks using it fail with `profile-missing`, including the problem. |
 | Malformed JSON, invalid UTF-8, over 64 KiB, unreadable file, non-object root or `profiles`, misspelled `profiles` such as `profile` | Disable routing. Every task fails with `config-disabled`. |
 
-Repair the file manually, or save a profile with `/task-models`. Problematic config requires confirmation. Saves retain only valid settings, including valid `tasks` when `profiles` is invalid. If problematic config changed since the menu opened, saving writes nothing; reopen `/task-models`.
+Repair the file manually, or save a profile with `/task-models`. Problematic config requires confirmation. Saves retain only valid settings, including valid `tasks` when `profiles` is invalid. If the file changed while `/task-models` was open, saving writes nothing; reopen `/task-models`.
 
 Saving refuses oversized, unreadable, or non-regular files. Fix, shrink, or remove the file first.
 

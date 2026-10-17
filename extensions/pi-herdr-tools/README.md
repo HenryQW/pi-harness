@@ -34,7 +34,7 @@ No migration: commands, safety behavior, task identifiers, `pi-herdr-rename/titl
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
-| [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) | Required | Herdr CLI access. |
+| [`@henryqw/pi-herdr`](https://pi.henry.wang/packages/pi-herdr) | Required | Herdr CLI access. |
 | [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves | Keeps Main-only memory and dream advice out of side threads. |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Model profiles for titles and side threads. |
 
