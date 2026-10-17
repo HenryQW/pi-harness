@@ -3,8 +3,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { catalog, repoRoot } from "./extension-catalog.ts";
 import { checkSte, parseAvoidTerms } from "./ste.ts";
+
+// The catalog resolves its paths from the website working directory.
+process.chdir(import.meta.dirname);
+const { catalog, repoRoot } = await import("./extension-catalog.ts");
 
 const readmes = [
   { directory: "root", path: "README.md" },
@@ -38,7 +41,7 @@ test("ste checker: sentence and paragraph limits include only prose words", () =
     { line: 1, rule: "sentence-length" },
     { line: 3, rule: "paragraph-length" },
   ]);
-  assert.deepEqual(check(`${words(24)} \\! \\? — \\.`), []);
+  assert.deepEqual(check(`${words(24)} \\! \\? : \\.`), []);
   assert.deepEqual(check(`${words(25)}! ${words(25)}? ${words(25)}.`), []);
   assert.deepEqual(check('"Read." '.repeat(7)).map(({ rule }) => rule), ["paragraph-length"]);
   assert.deepEqual(check("[Read.] ".repeat(7)).map(({ rule }) => rule), ["paragraph-length"]);
@@ -85,7 +88,7 @@ test("ste checker: code, HTML, images, and link targets do not supply prose", ()
   ]);
 });
 
-test("ste checker: headings and table cells use word rules, not length limits", () => {
+test("ste checker: table cells limit sentences but headings use only word rules", () => {
   const markdown = [
     `# ${words(26)} via`, "",
     "| Name | Text |", "| --- | --- |",
@@ -93,7 +96,25 @@ test("ste checker: headings and table cells use word rules, not length limits", 
   ].join("\n");
   assert.deepEqual(check(markdown).map(({ line, rule }) => ({ line, rule })), [
     { line: 1, rule: "unapproved-word" },
+    { line: 5, rule: "sentence-length" },
     { line: 5, rule: "unapproved-word" },
+  ]);
+  assert.deepEqual(check(`| Text |\n| --- |\n| ${words(25)}. ${"Short. ".repeat(7)} |`), []);
+});
+
+test("ste checker: prose rejects dashes except a whole em-dash table cell", () => {
+  const markdown = [
+    "# Name – purpose", "", "Read\nthis — first.", "",
+    "| Name | Text |", "| --- | --- |", "| — | Good |",
+    "| – | Text — more |", "| — `code` | `— –` |", "",
+    "Use `— –`.", "", "```text", "— –", "```",
+  ].join("\n");
+  assert.deepEqual(check(markdown).map(({ line, rule }) => ({ line, rule })), [
+    { line: 1, rule: "dash" },
+    { line: 4, rule: "dash" },
+    { line: 9, rule: "dash" },
+    { line: 9, rule: "dash" },
+    { line: 10, rule: "dash" },
   ]);
 });
 

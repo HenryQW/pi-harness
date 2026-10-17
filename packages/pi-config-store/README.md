@@ -54,7 +54,7 @@ export default function (pi: ExtensionAPI) {
 | Invalid value in a field with `onInvalid: "disable"` | The store disables the config. |
 | Missing or invalid `required` field | The store disables the config. This includes a missing file. |
 | `check` failure | The store reports an `invalid-config` issue and uses all defaults. It disables the config when a field is required or has `onInvalid: "disable"`. |
-| Malformed JSON, invalid UTF-8, file larger than 64 KiB, unreadable path, path that is not a regular file (such as a directory, FIFO, or device), or non-object root | The store reports one issue for the file and uses all defaults. It disables the config when a field is required or has `onInvalid: "disable"`. |
+| Malformed JSON, invalid UTF-8, file larger than 64 KiB, unreadable path, non-regular file (such as a directory, FIFO, or device), or non-object root | The store reports one issue for the file and uses all defaults. It disables the config when a field is required or has `onInvalid: "disable"`. |
 
 A near-miss key differs from the declared key only in letter case, or it has a small edit distance from the declared key. One edit can insert, delete, or replace a character, or swap two adjacent characters. The limit is one edit for each three characters of the declared key, with a maximum of two edits. A declared key of one or two characters matches only a different letter case.
 
