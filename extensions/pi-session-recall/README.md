@@ -1,6 +1,8 @@
 # `@henryqw/pi-session-recall`
 
-Search past Pi sessions locally to find prior decisions and context. The extension does not inject saved transcripts on every turn. The active tool registration still adds standing prompt cost through its schema, descriptions, and guideline. Returned content enters active model context.
+Search past Pi sessions locally to find earlier decisions and context. The extension does not inject saved transcripts on every turn.
+
+Its schema, descriptions, and guideline still add prompt cost while the tool is active. Returned content enters active model context.
 
 ## Install
 
@@ -65,9 +67,11 @@ In the interactive TUI, the collapsed tool block shows the last five visual line
 
 ### Programmatic output
 
-`session_search` declares an output schema, so programmatic callers such as Pi `codemode` scripts receive the result as a structured value instead of text. That value is the same JSON the model receives, including `mode`, `contentTruncated`, `syncWarning`, and the 50,000-character bound. Each mode is one schema variant selected by `mode`.
+`session_search` declares an output schema. Programmatic callers, such as Pi `codemode` scripts, receive the result as a structured value instead of text. The model receives the same JSON, including `mode`, `contentTruncated`, `syncWarning`, and the 50,000-character limit. The `mode` field selects one schema variant.
 
-Failures are tool errors, not success-shaped JSON. The model sees an error result, and codemode scripts reject with the error message. Rejected session paths and scroll identifiers cannot expand an error message beyond the same 50,000-character budget. This covers invalid or conflicting arguments, a `sessionId` that is missing or outside the Pi sessions directory, an unknown scroll anchor, session files over 32 MiB, failed required repository inventory, cancelled preparation, and results whose metadata alone exceeds the output budget.
+Failures produce tool errors, not JSON that indicates success. The model sees an error result. Codemode scripts reject with the error message. Rejected session paths and scroll identifiers cannot increase an error message beyond the same 50,000-character limit.
+
+These failures include invalid or conflicting arguments. A `sessionId` that names a missing file or a file outside the Pi sessions directory also causes failure. Other failures include an unknown scroll anchor, session files over 32 MiB, failed required repository inventory, and cancelled preparation. Results whose metadata alone exceeds the output limit also cause failure.
 
 The tool keeps Pi's default `direct` exposure. While the tool is active, Pi declares it to the model, and scripts can call it. The tool has a read-only annotation. It writes only its own derived index. This package does not enable codemode.
 
@@ -77,15 +81,15 @@ Invoke `/skill:pi-session-pattern-miner` to find repeated workflows in past sess
 
 It treats one lineage as one source and requires two independent examples before it recommends automation. A requested topic gets a focused confirmation search even when the prepared sample does not contain it.
 
-After the skill groups episodes into clusters, it always checks current candidate-relevant package manifests, scripts, skills, and instructions. It abstains if it cannot check them safely.
+The skill groups related examples. It then checks the current package manifests, scripts, skills, and instructions for each candidate. It makes no recommendation if it cannot check them safely.
 
 ### Repository inventory
 
 Repository inventory contains discovery hints. It never proves that a file owns a workflow. It does not verify the current worktree.
 
-Package scripts, executable paths, and instruction paths come from stage-0 entries in the Git index. Package content comes from indexed blobs. Git reads the objects locally in one check batch and one content batch. Lazy object fetching and replacement refs are disabled. Inventory never opens working-tree package paths.
+Package scripts, executable paths, and instruction paths come from stage-0 entries in the Git index. Package content comes from indexed blobs. Git reads the objects locally in one check batch and one content batch. Inventory disables lazy object fetching and replacement refs. Inventory never opens working-tree package paths.
 
-Executables need index mode `100755`. Instructions need a recognized name and a regular-file index mode. Skills come from Pi's effective command registry, and their canonical source paths must stay inside the repository.
+Executables need index mode `100755`. Instructions need a recognized name and a regular-file index mode. Skills come from Pi's effective command registry. Their canonical source paths must stay inside the repository.
 
 Available inventory includes this provenance:
 
@@ -98,7 +102,9 @@ Available inventory includes this provenance:
 }
 ```
 
-It also sets `worktreeVerified:false`. Staged adds, changes, and deletes affect the Git-index collections. Unstaged changes, deletions, mode changes, symlinks, and untracked files do not affect those collections. Skills come from Pi's effective registry and can include untracked files. Inspect current candidate files before you assign ownership. If you cannot do targeted current-file checks safely, abstain.
+It also sets `worktreeVerified:false`. Staged additions, changes, and deletions affect the Git-index collections. Unstaged changes, deletions, mode changes, symlinks, and untracked files do not affect those collections. Skills come from Pi's effective registry and can include untracked files.
+
+Inspect the current files for each candidate before you assign ownership. Make no recommendation if you cannot safely check those files.
 
 ## Flow
 
@@ -111,8 +117,8 @@ Search makes no model calls.
 - Discovery trims the query. Then it truncates the query to 512 characters before it finds matches. Discovery ignores text after that limit.
 - Prefer distinctive identifiers, package names, issue numbers, or uncommon terms. Use quoted phrases only when you know the exact wording.
 - The FTS5 trigram index uses AND for multiple words by default. Use `OR` for breadth, quoted phrases for exact matches, and `NOT` to exclude. Wildcards help only with stems of three or more characters.
-- Only user and assistant text is indexed. Thinking blocks and tool output are not searchable.
-- For message text over the 20,000-character indexing budget, only the first and last regions are indexed. The middle is omitted. Phrases and `NEAR` cannot cross those regions, but ordinary AND terms can.
+- The extension indexes only user and assistant text. You cannot search thinking blocks or tool output.
+- For message text over the 20,000-character indexing limit, the extension indexes only the first and last regions. It omits the middle. Phrases and `NEAR` cannot cross those regions, but ordinary AND terms can.
 - `sessionId` must be a `.jsonl` file under the Pi sessions directory.
 
 ### Context and sync
@@ -131,9 +137,9 @@ Historical tool output may contain secrets or other sensitive data. Raw retrieva
 
 ## State and storage
 
-The extension keeps its derived SQLite search index at `~/.pi/agent/config/pi-session-recall/index.db`. To rebuild the index from your session files, delete this derived state. You do not need migration or recovery machinery.
+The extension keeps its derived SQLite search index at `~/.pi/agent/config/pi-session-recall/index.db`. To build the index again from your session files, delete this derived state. You do not need migration or recovery tools.
 
-The index and transcript reads stay local. Transcripts are read in place. Returned content follows the data path of your configured model provider.
+The extension reads the index and transcripts locally. It reads transcripts in place. Returned content follows the data path of your configured model provider.
 
 ## Limits and recovery
 
@@ -141,23 +147,25 @@ Lazy index sync can fail during the walk of the session tree. Results still come
 
 - A partial walk returns top-level `syncWarning`: `{kind:"incomplete-walk"}`. In that case, the extension never purges indexed paths that the walk did not see.
 - A total sync failure returns top-level `syncWarning`: `{kind:"sync-failed", error}` with the capped failure message.
-- The warning is omitted after a completed sync.
+- The extension omits the warning after a completed sync.
 
-Session directories whose encoded path starts with `--tmp-` or `--private-tmp-` are never indexed. These sessions run from `/tmp` or `/private/tmp`.
+The extension never indexes session directories whose encoded path starts with `--tmp-` or `--private-tmp-`. These sessions run from `/tmp` or `/private/tmp`.
 
-Session files over 32 MiB are excluded from indexing and hydration, so discovery cannot newly find them. READ and SCROLL return an explicit size error. Discovery returns indexed metadata even when a source file changes afterward.
+The extension does not index or retrieve content from session files over 32 MiB. Discovery cannot find new files of this size. READ and SCROLL return an explicit size error. Discovery returns indexed metadata even when a source file changes afterward.
 
 Pattern preparation runs one sync pass. A positive backlog or incomplete walk limits the sample and sets `sync.complete:false`. A total sync or required repository-inventory failure returns an explicit tool error.
 
-Repository scope fails outside Git or when repository inventory fails. All scope still returns its corpus in two cases: Git-root lookup exits nonzero (`inventory.available:false`, `reason:"not-a-git-repository"`), or inventory fails after the root is resolved (`reason:"inventory-failed"`). Preparation fails, even with all scope, in these cases: the working directory cannot be resolved, Git cannot start, root lookup overflows or produces invalid output or unexpected stderr, or the call is cancelled. These failures do not return unavailable inventory.
+Repository scope fails outside Git or when repository inventory fails. All scope still returns its corpus when Git-root lookup exits nonzero (`inventory.available:false`, `reason:"not-a-git-repository"`). It also returns its corpus when inventory fails after root resolution (`reason:"inventory-failed"`).
+
+Preparation fails, even with all scope, if working directory resolution fails or Git cannot start. It also fails if root lookup overflows or produces invalid output or unexpected stderr. Cancellation also causes preparation to fail. These failures do not return unavailable inventory.
 
 Preparation rejects `query`, session cursors, or `window` in the same call. It also rejects `scope` without the operation.
 
 Preparation output stays within 50,000 serialized characters. Inventory uses at most 10,000 characters. Its `omittedCounts` report only omitted collection entries, and `inventory.truncated` reports those omissions.
 
-Inventory fails if the Git root output exceeds 4 KiB or the raw index listing exceeds 8 MiB. It also fails on malformed index data, invalid UTF-8, conflict entries, unsupported package modes, Git errors, unexpected Git stderr, or bounded stream overflow.
+Inventory fails if the Git root output exceeds 4 KiB or the raw index listing exceeds 8 MiB. It also fails on malformed index data, invalid UTF-8, conflict entries, or unsupported package modes. Git errors, unexpected Git stderr, or stream overflow beyond the limit also cause failure.
 
-Inventory accepts at most 512 package manifests. Each indexed manifest can be at most 1 MiB, and their declared sizes can total at most 16 MiB. One bounded batch checks all blob sizes before one bounded batch reads their content. Blob order, type, size, UTF-8, and exact output framing are checked before manifest data is parsed.
+Inventory accepts at most 512 package manifests. Each indexed manifest can be at most 1 MiB. Their declared sizes can total at most 16 MiB. One bounded batch checks all blob sizes before one bounded batch reads their content. Inventory checks blob order, type, size, UTF-8, and exact output framing before it parses manifest data.
 
 Session and top-level `contentTruncated` report transcript budget trimming only. Session `truncated` reports omitted middle messages.
 

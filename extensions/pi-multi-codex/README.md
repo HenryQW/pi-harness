@@ -1,6 +1,6 @@
 # `@henryqw/pi-multi-codex`
 
-Add multiple ChatGPT Codex OAuth accounts and start Pi work on the eligible slot with the most remaining quota. The extension switches away from active five-hour quota blocks and can retry an HTTP 429 on another eligible slot.
+Add multiple ChatGPT Codex OAuth accounts. Start Pi work on the eligible account slot with the most remaining quota. The extension switches away from active five-hour quota blocks and can retry an HTTP 429 on another eligible account slot.
 
 ![Pi showing Codex account quotas and the active footer slot](./example.png)
 ![Flowchart separating fresh-quota startup ranking from broader HTTP 429 failover](./docs/codex-routing-flow.svg)
@@ -23,7 +23,9 @@ This package requires Pi 1.3.0 or later in the 1.x series.
 
 ## Use
 
-First, run `/login` and authenticate `OpenAI Codex (legacy)` for slot 1. Run `/codex-add`. Then run `/login` and select the new `OpenAI Codex #<n>` provider. Restart Pi or update model scope. Then run `/codex-status`. The status lists the new slot with cached quota when available, or `unavailable` until the first successful usage snapshot.
+Run `/login`. Authenticate `OpenAI Codex (legacy)` for account slot 1. Run `/codex-add`.
+
+Run `/login` again. Select the new `OpenAI Codex #<n>` provider. Restart Pi or update model scope. Then run `/codex-status`. The status lists the new account slot with cached quota when available. It shows `unavailable` until the first successful usage snapshot.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -37,16 +39,16 @@ The footer and `/codex-status` show the five-hour reset countdown for Free, Go, 
 
 ## Flow
 
-- Before the first agent start, only fresh usage snapshots enter startup ranking. The slot with the most remaining quota wins.
+- Before the first agent start, ranking uses only fresh usage snapshots. The account slot with the most remaining quota wins.
 - An explicit model selection always wins for the next agent start.
-- Before later agent starts, a known active five-hour quota block switches to the eligible fresh slot with the most remaining quota.
-- After HTTP 429, failover can use authenticated, registered, scope-allowed, untried slots with stale or missing quota.
-- Failover skips known active five-hour quota blocks. It ranks fresh known quota first, then unranked slots by slot number.
+- Before later agent starts, the extension checks for a known active five-hour quota block. If it finds one, it switches to the eligible account slot with a fresh usage snapshot and the most remaining quota.
+- After HTTP 429, failover can use authenticated, registered, scope-allowed account slots that it has not tried. These slots can have stale or missing quota.
+- Failover skips known active five-hour quota blocks. It ranks fresh known quota first. Then it ranks the remaining slots by slot number.
 - Routing preserves the model ID.
-- Only physical Codex models are slots. A virtual model listed under `openai-codex`, such as `openai-codex/auto`, is never routed to a slot and shows no quota status.
-- During one agent run, each eligible slot is tried at most one time after HTTP 429 responses.
-- Automatic retry stops when no untried eligible slot remains.
-- The footer shows the fresh quota or five-hour quota block of the active slot.
+- Only physical Codex models are account slots. The extension never routes a virtual model under `openai-codex`, such as `openai-codex/auto`, to an account slot. It shows no quota status for a virtual model.
+- During one agent run, the extension tries each eligible account slot at most one time after HTTP 429 responses.
+- Automatic retry stops when the extension has tried all eligible account slots.
+- The footer shows the fresh quota or five-hour quota block of the active account slot.
 
 ## Config
 
@@ -56,7 +58,11 @@ Package-owned: `~/.pi/agent/config/pi-multi-codex/config.json`
 | --- | --- | --- | --- |
 | `autoSwitchOn429` | Switches to another eligible slot after an HTTP 429. | Boolean. | `true` |
 
-Edit this file yourself. The extension does not create or write it. A missing file uses the default `true`, and config changes take effect at the next session start. Set `autoSwitchOn429` to `false` to disable automatic switching. At session start, the extension shows a warning with the file path for an unknown key, malformed JSON, or a value that is not a boolean. It ignores an unknown key. When `autoSwitchOn429` is not a boolean or is misspelled (for example, `autoswitchOn429`), or when the file has malformed JSON, invalid UTF-8, more than 64 KiB, a read error, or a non-object root, automatic switching stays off for that session. The extension keeps the file unchanged. Fix the file and start a new session to recover.
+Edit this file yourself. The extension does not create or write it. If the file is missing, the extension uses the default `true`. Config changes take effect at the next session start. Set `autoSwitchOn429` to `false` to disable automatic switching.
+
+At session start, the extension warns about unknown keys, malformed JSON, or values that are not booleans. The warning includes the file path. The extension ignores unknown keys.
+
+Automatic switching stays off for the session if `autoSwitchOn429` is not a boolean or has incorrect spelling, such as `autoswitchOn429`. Switching also stays off for malformed JSON, invalid UTF-8, files larger than 64 KiB, read errors, or a non-object root. The extension keeps the file unchanged. Fix the file. Then start a new session to recover.
 
 ## State and storage
 
@@ -64,6 +70,6 @@ The extension keeps a generated, credential-free quota cache at `~/.pi/agent/con
 
 ## Limits and recovery
 
-The extension reads `auth.json` to identify account slots but does not directly edit credentials. When it asks Pi's auth resolver for a token to check quota, Pi can refresh expired OAuth credentials and update its auth store.
+The extension reads `auth.json` to identify account slots. It does not directly edit credentials. It asks Pi's auth resolver for a token to check quota. Pi can then refresh expired OAuth credentials and update its auth store.
 
 Scoped sessions can switch only to exact scoped aliases.

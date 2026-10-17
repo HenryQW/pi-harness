@@ -104,9 +104,13 @@ Model references use canonical `provider/model`. Pi's registry resolves numbered
 
 ### Presets
 
-To apply a saved setup, run `/task-models preset`. Then choose a name from the list. All four profiles (`fast`, `balanced`, `frontier`, and `fav`) are optional. An omitted profile keeps its current values. Each included profile replaces its complete routes, including thinking levels and optional fallbacks, in one atomic config update. Task assignments stay unchanged. If you cancel the picker, Task Models writes nothing.
+To apply a saved setup, run `/task-models preset`. Then choose a name from the list. All four profiles (`fast`, `balanced`, `frontier`, and `fav`) are optional. An omitted profile keeps its current values.
 
-To create a preset, open `/task-models`. In the main menu, press **Option+S** (macOS) or **Alt+S**. Then enter a name. The preset contains all configured profiles with their thinking levels and fallbacks. It does not contain task assignments. You must configure at least one profile. If you use an existing name, Task Models asks for confirmation before it replaces that preset. Other presets stay unchanged. If you cancel either prompt, Task Models writes nothing.
+Each included profile replaces its complete routes, including thinking levels and optional fallbacks, in one atomic config update. Task assignments stay unchanged. If you cancel the picker, Task Models writes nothing.
+
+To create a preset, open `/task-models`. In the main menu, press **Option+S** (macOS) or **Alt+S**. Then enter a name. You must configure at least one profile.
+
+The preset contains all configured profiles with their thinking levels and fallbacks. It does not contain task assignments. If you use an existing name, Task Models asks for confirmation before it replaces that preset. Other presets stay unchanged. If you cancel either prompt, Task Models writes nothing.
 
 The shortcut requires interactive terminal mode. The terminal must send Option/Alt as Meta (Escape). RPC does not support this shortcut. You can also edit `~/.pi/agent/config/pi-task-models/presets.json` manually. The file maps preset names to any subset of the four profiles. It uses the same route format as the active config:
 
@@ -129,9 +133,17 @@ The shortcut requires interactive terminal mode. The terminal must send Option/A
 }
 ```
 
-Replace every placeholder with an exact reference from `/task-models`. Add more named objects for more setups. For an included profile, omit `fallback` if you want no fallback. `fav` never accepts a fallback. To keep the existing routes of a profile, omit the full profile. Preset names must not be empty, must not start or end with whitespace, and must not contain control characters. The picker shows names in alphabetical order.
+Replace every placeholder with an exact reference from `/task-models`. Add more named objects for more setups. For an included profile, omit `fallback` if you want no fallback. `fav` never accepts a fallback. To keep the existing routes of a profile, omit the full profile.
 
-A missing, empty, or invalid preset file does not change the active config. The file must be valid UTF-8 JSON and 64 KiB or smaller. Task Models reports each preset problem as a warning. It ignores an invalid preset name, an invalid preset, or an invalid profile in a preset. The other presets and profiles stay available. Task Models does not save a preset while the preset file has a problem, so it does not overwrite your file. It shows the problem first. A save reads the active config again, so it stores the latest profiles, also when another session changed them while the name prompt was open. A save creates the preset file if it is missing. The save uses a private atomic write under a lock. Task Models asks for confirmation before it takes the lock, so an open prompt does not block other sessions. A save waits a short time for the lock of another session. If another session saves the same new name first, Task Models reports the conflict and writes nothing. Try again. When you apply a preset, Task Models can create a missing active config. If the active config has a problem, Task Models asks for confirmation before it replaces the config. A preset switch stores routes and does not check current authentication, model availability, or thinking support. When a task runs, the usual scope and route-resolution rules apply.
+Preset names must not be empty. Do not start or end a name with whitespace. Do not put control characters in a name. The picker shows names in alphabetical order.
+
+A missing, empty, or invalid preset file does not change the active config. The file must be valid UTF-8 JSON and 64 KiB or smaller. Task Models reports each preset problem as a warning. It ignores an invalid preset name, an invalid preset, or an invalid profile in a preset. The other presets and profiles stay available.
+
+Task Models does not save a preset while the preset file has a problem. This prevents it from overwriting your file. It shows the problem first. Before a save, Task Models reads the active config again to get the latest profiles. This includes changes from another session while the name prompt was open. A save creates the preset file if it is missing.
+
+The save uses a private atomic write under a lock. Task Models asks for confirmation before it takes the lock, so an open prompt does not block other sessions. A save waits a short time for the lock of another session. If another session saves the same new name first, Task Models reports the conflict and writes nothing. Try again.
+
+When you apply a preset, Task Models can create a missing active config. If the active config has a problem, Task Models asks for confirmation before it replaces the config. A preset switch stores routes and does not check current authentication, model availability, or thinking support. When a task runs, the usual scope and route-resolution rules apply.
 
 ## API
 
@@ -169,7 +181,7 @@ Model and route helpers use only `ctx.model`, `ctx.scopedModels`, and `ctx.model
 
 Consumers do not access the config file directly. `loadTaskModelsConfig()` returns `source` as `"file"` or `"missing"`, so consumers can warn when defaults are in use. When the config is disabled, it throws an error that gives the file path and the problems.
 
-A consumer must call `registerTaskModelsConfigReporting(pi)` in its extension factory, and call the returned `report(ctx)` before it resolves a route. Thus, config problems show also when the Task Models extension is not active. All reporters share one record, so each problem shows one time in each session, also when several consumers report it.
+A consumer must call `registerTaskModelsConfigReporting(pi)` in its extension factory. It must call the returned `report(ctx)` before it resolves a route. This shows config problems even when the Task Models extension is not active. All reporters share one record. Each problem shows one time in each session, even when several consumers report it.
 
 Profile thinking is authoritative. Resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
 
@@ -189,7 +201,11 @@ Task Models never changes the file when it reads it. It reports each problem at 
 | Invalid profile or route, or `fallback` in `fav` | Warning. Task Models ignores that profile. A task that uses the profile fails with `profile-missing`, and the error gives the problem. |
 | Malformed JSON, invalid UTF-8, a file larger than 64 KiB, an unreadable file, a root that is not an object, a `profiles` value that is not an object, or a misspelled `profiles` key such as `profile` | Error. Task routing is disabled, and every task fails with `config-disabled`. |
 
-No default route is safe, so Task Models does not replace a broken profile table with an empty one. To repair the config, edit the file, or open `/task-models` and save a profile. When the config has a problem, `/task-models` asks for confirmation before it saves. The save keeps only the settings that loaded without problems, also the `tasks` entries when only `profiles` has a problem. The save holds the file lock while it compares the file with the version that `/task-models` read. If the file changed while `/task-models` was open, the save stops and writes nothing. Open `/task-models` again. The save also stops when the file is larger than 64 KiB, cannot be read, or is not a regular file, because Task Models cannot prove that it is unchanged. Fix, shrink, or remove the file first.
+No default route is safe, so Task Models does not replace a broken profile table with an empty one. To repair the config, edit the file. Alternatively, open `/task-models`. Then save a profile. When the config has a problem, `/task-models` asks for confirmation before it saves.
+
+The save keeps only the settings that loaded without problems, including the `tasks` entries when only `profiles` has a problem. The save holds the file lock while it compares the file with the version that `/task-models` read. If the file changed while `/task-models` was open, the save stops and writes nothing. Open `/task-models` again.
+
+The save also stops if the file exceeds 64 KiB, is unreadable, or is not a regular file. Task Models cannot prove that such a file is unchanged. Fix, shrink, or remove the file first.
 
 Resolution errors are `TaskRouteError` values. Check `taskRouteCode`:
 
@@ -204,6 +220,6 @@ For `config-missing`, run `/task-models` to create the file. A consumer may sile
 
 `executeTaskRoutes()` uses only caller-supplied resolved routes. It does not resolve routes, authenticate, inspect providers, log, wait, or retry a route.
 
-It rejects empty route lists and checks its optional abort signal before every attempt. It stops on cancellation or when `shouldFallback(error)` returns false.
+It rejects empty route lists and checks its optional abort signal before it tries each route. It stops on cancellation or when `shouldFallback(error)` returns false.
 
-After allowed failures, it rethrows the final route error unchanged. Each attempt must be atomic and safe to repeat.
+After allowed failures, it rethrows the final route error unchanged. Each call to a route must be atomic and safe to repeat.
