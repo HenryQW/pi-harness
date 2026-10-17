@@ -8,8 +8,6 @@ Search past Pi sessions locally for decisions and context. Saved transcripts ent
 pi install npm:@henryqw/pi-session-recall
 ```
 
-Requires Node.js 22.19.0 or later.
-
 ## Use
 
 Ask the agent to search distinctive keywords:
@@ -157,7 +155,7 @@ Inventory rejects malformed index data, invalid UTF-8, conflict entries, unsuppo
 
 `omittedCounts` counts only omitted inventory entries; `inventory.truncated` reports those omissions. Session and top-level `contentTruncated` report transcript budget trimming only; session `truncated` reports omitted middle messages.
 
-To restore version 2.1.1 behavior, run:
+To return to the older behavior, pin this release:
 
 ```bash
 pi install npm:@henryqw/pi-session-recall@2.1.1

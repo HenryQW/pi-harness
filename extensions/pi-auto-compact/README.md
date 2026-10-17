@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-Install Task Models first. Run `/task-models` and configure `fast`. Open `/task-models` again; verify that `fast` no longer says `not configured`.
+Install `@henryqw/pi-task-models` first. Run `/task-models` and configure `fast`. Open `/task-models` again; verify that `fast` no longer says `not configured`.
 
 Disable Pi's built-in compaction in `~/.pi/agent/settings.json`:
 

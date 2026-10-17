@@ -8,7 +8,7 @@ See the current-branch pull request in the Pi footer. Run `/pr` to select its ne
 pi install npm:@henryqw/pi-pr
 ```
 
-Requires Node.js 22.19.0 or later and an authenticated GitHub.com or GitHub Enterprise checkout. Run `gh auth login`, then check with `gh auth status`. For Enterprise, use `gh auth login --hostname <host>`.
+Requires an authenticated GitHub.com or GitHub Enterprise checkout. Run `gh auth login`, then check with `gh auth status`. For Enterprise, use `gh auth login --hostname <host>`.
 
 CI repair requires `gh api --help` to list `--allow-escape-sequences`. Upgrade `gh` if that flag is missing.
 

@@ -10,8 +10,6 @@ Keep worktree reminders above the Pi editor across sessions.
 pi install npm:@henryqw/pi-notes
 ```
 
-Requires Node.js 22.19.0 or newer.
-
 ## Use
 
 Run `/note Verify the migration rollback.` in a Git worktree. The reminder appears immediately and in later sessions.

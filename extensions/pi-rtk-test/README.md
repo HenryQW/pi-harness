@@ -8,7 +8,7 @@ Keep long `pnpm test` output out of Pi's model context. Supported direct Bash ca
 pi install npm:@henryqw/pi-rtk-test
 ```
 
-Install Rust Token Killer (`rtk`) on Pi's `PATH`; this extension never installs or updates it.
+Install Rust Token Killer (`rtk`) on Pi's `PATH`. This extension does not install or update RTK.
 
 ```bash
 brew install rtk

@@ -8,7 +8,7 @@ Give extension authors one safe home for Pi extension files. A bad user config n
 npm install @henryqw/pi-config-store
 ```
 
-Use your extension package's package manager. Do not run `pi install` for this library. The library requires `@earendil-works/pi-coding-agent` 1.1.0 or later in the 1.x series.
+Use your extension package's package manager. Do not run `pi install` for this library. The library requires `@earendil-works/pi-coding-agent` 1.3.0 or later in the 1.x series.
 
 ## Use
 

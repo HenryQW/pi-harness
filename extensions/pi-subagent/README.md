@@ -6,7 +6,7 @@ Delegate bounded work to configured Pi Roles through [Herdr](https://herdr.dev/)
 
 ## Install
 
-Requires Node.js 22.19.0 or later. Isolated work requires Herdr 0.9.3 or later and a running server with API protocol 22 or later. The extension checks both Herdr requirements before launch.
+Isolated work requires Herdr 0.9.3 or later for both the client and server. The server must run on API protocol 22 or later. Pi Subagent checks Herdr and server support before it starts.
 
 ```bash
 pi install npm:@henryqw/pi-task-models

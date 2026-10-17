@@ -10,7 +10,7 @@ Keep footer identity, model usage, agent-work time, and extension status visible
 pi install npm:@henryqw/pi-footer
 ```
 
-This package replaces `@henryqw/pi-open-in`. Remove that package before upgrading to prevent duplicate commands:
+This package replaces `@henryqw/pi-open-in`. Remove that package before you upgrade to prevent duplicate `/open` and `/set-open-in` commands:
 
 ```bash
 pi remove npm:@henryqw/pi-open-in

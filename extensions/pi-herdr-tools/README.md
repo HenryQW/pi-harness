@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Use Herdr 0.9.3 or later in a Herdr-managed Pi pane. Outside Herdr, rename changes only the Pi session title.
+Use Herdr 0.9.3 or later in a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
 
 Before titles or side questions, configure `fast` in `/task-models`. It must not show `not configured`.
 
@@ -145,7 +145,7 @@ Side threads select the first authenticated viable route before launch. Titles u
 
 ## State and storage
 
-Clones are separate session files in the Pi-selected session directory. Saved `pi-herdr-rename/title` entries restore display titles and semantic branches without another model request. Older titles get no migration.
+Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved `pi-herdr-rename/title` entries restore display titles and semantic branches without another model request. Older titles get no migration.
 
 ## Limits and recovery
 

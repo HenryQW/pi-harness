@@ -129,7 +129,7 @@ Applying a preset can create missing active config. Config problems require conf
 | `orderedProfileRoutes(profile)` | function | Returns primary, then optional fallback. |
 | `createTaskModelsExtension(pi, options?)` (also default export) | function | Registers `/task-models`, missing-config warnings, and issue reporting. |
 
-Model and route helpers need only `ctx.model`, `ctx.scopedModels`, and `ctx.modelRegistry.getAvailable()`, not UI methods. Profile thinking is authoritative; resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+Model and route helpers use only `ctx.model`, `ctx.scopedModels`, and `ctx.modelRegistry.getAvailable()`. They do not require UI methods, so consumers can use supported Pi releases. Profile thinking is authoritative; resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
 
 Consumers must not read or write shared config directly. Register `registerTaskModelsConfigReporting(pi)` in the extension factory and call its `report(ctx)` before resolution, even without the Task Models extension. Each problem appears once per session across reporters.
 
