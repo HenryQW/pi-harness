@@ -6,7 +6,7 @@ Delegate work to configured Pi Roles with [Herdr](https://herdr.dev/). Authorize
 
 ## Install
 
-Isolated work requires Herdr and a running Herdr server on API protocol 22 or later. Pi Subagent checks Herdr and server support before it starts.
+Isolated work requires Herdr 0.9.3 or later for both the client and server. The server must run on API protocol 22 or later. Pi Subagent checks Herdr and server support before it starts.
 
 ```bash
 pi install npm:@henryqw/pi-task-models

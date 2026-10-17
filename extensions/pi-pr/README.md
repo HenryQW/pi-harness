@@ -20,7 +20,7 @@ CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequ
 | [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) | Required | Provides the Herdr CLI client when the workspace can be renamed. |
 | [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs child processes with limits. |
 
-The required packages install together with `pi-pr`. Herdr is optional, but workspace rename requires it.
+The required packages install together with `pi-pr`. Herdr is optional, but workspace rename requires Herdr 0.9.3 or later.
 
 ## Use
 
@@ -88,7 +88,7 @@ Unrelated staging, partial staging, `.context/`, and common secret filenames blo
 
 ### Standalone merge from main
 
-Ask the agent to update the current branch from main. `update-from-main` runs its packaged Python helper one time. It requires Python and Git with `fetch --porcelain`.
+Ask the agent to update the current branch from main. `update-from-main` runs its packaged Python helper one time. It requires Python 3.9 or newer and Git with `fetch --porcelain`.
 
 This helper **merges**. It does not rebase like the `/pr` base-update route. It fetches before it makes a local change. It uses the exact OID from the fetch output and never pushes.
 

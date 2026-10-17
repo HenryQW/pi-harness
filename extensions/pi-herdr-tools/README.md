@@ -13,7 +13,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Herdr operations require a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
+Herdr operations require Herdr 0.9.3 or later and a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
 
 Before you use title generation or side threads, do these steps:
 
