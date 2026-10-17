@@ -65,6 +65,7 @@ test("ste checker: ordered procedures use 20 words and reject passive forms", ()
     { line: 4, rule: "passive-procedure" },
     { line: 5, rule: "passive-procedure" },
   ]);
+  assert.deepEqual(check("1. The file is read.").map(({ rule }) => rule), ["passive-procedure"]);
   assert.deepEqual(check("1. Save the file. The file is new.\n2. Use `is written` as text.\n3. Make sure that the indicator is red."), []);
 });
 
@@ -76,10 +77,11 @@ test("ste checker: code, HTML, images, and link targets do not supply prose", ()
     `1. ${words(19)} \`Please ensure. It is saved.\`.`, "",
     "[Read this](https://example.com/please) and `ensure` it works.", "",
     "![please][image]", "", "[image]: https://example.com/ensure", "",
+    "<https://example.com/please>", "", "<please@example.com>", "",
     "[Please](https://example.com/ensure) read this.",
   ].join("\n");
   assert.deepEqual(check(markdown), [
-    { line: 17, rule: "unapproved-word", message: '"Please" is not approved STE; use delete it' },
+    { line: 21, rule: "unapproved-word", message: '"Please" is not approved STE; use delete it' },
   ]);
 });
 

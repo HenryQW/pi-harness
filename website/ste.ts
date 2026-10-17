@@ -9,6 +9,7 @@ type Node = {
   value?: string;
   ordered?: boolean | null;
   children?: Node[];
+  url?: string;
   position?: { start: { line: number } };
 };
 
@@ -66,6 +67,9 @@ function wholePhrase(pattern: string): RegExp {
 // Keep a source line for each character, including text across inline markup.
 function prose(node: Node): { text: string; lines: number[] } {
   if (["code", "html", "image", "imageReference"].includes(node.type)) return { text: "", lines: [] };
+  // An autolink such as <https://example.com> shows only its target.
+  const label = node.type === "link" && node.children?.length === 1 ? node.children[0].value : undefined;
+  if (label !== undefined && (node.url === label || node.url === `mailto:${label}`)) return { text: "", lines: [] };
   if (node.children) {
     const parts = node.children.map(prose);
     return { text: parts.map((part) => part.text).join(""), lines: parts.flatMap((part) => part.lines) };
@@ -108,7 +112,7 @@ export function checkSte(markdown: string, options: { avoidTerms: AvoidTerm[] })
         for (const match of text.matchAll(pattern)) report(match.index, rule, message(match[0]));
       }
       if (procedure) {
-        const passive = wholePhrase("(?:am|is|are|was|were|be|been|being|isn't|aren't|wasn't|weren't)\\s+(?:not\\s+)?(?:[a-z]+ly\\s+)?(?:(?!(?:red|bed|shed|need|speed|feed|seed|hundred)\\b)[a-z]+ed|built|chosen|done|given|known|made|shown|sent|taken|written)");
+        const passive = wholePhrase("(?:am|is|are|was|were|be|been|being|isn't|aren't|wasn't|weren't)\\s+(?:not\\s+)?(?:[a-z]+ly\\s+)?(?:(?!(?:red|bed|shed|need|speed|feed|seed|hundred)\\b)[a-z]+ed|built|chosen|done|given|known|made|shown|sent|taken|written|read|run|set|kept|found|held|put|seen|lost|paid|told|sold|begun|broken|hidden|forgotten|thrown|left|cut|shut|spent)");
         for (const match of text.matchAll(passive)) {
           report(match.index, "passive-procedure", `"${match[0]}" is passive in a procedure; use active voice`);
         }
