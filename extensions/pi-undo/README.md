@@ -8,8 +8,6 @@ Return to your latest user prompt without the later conversation context. You ca
 pi install npm:@henryqw/pi-undo
 ```
 
-Requires Pi 1.1.0 or later in the 1.x series.
-
 ## Use
 
 Run `/undo` with no arguments. It cancels active work. It waits until the work stops. Then it returns to the latest user prompt on the current branch. You can edit the prompt or submit it again.

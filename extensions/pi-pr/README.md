@@ -20,7 +20,7 @@ CI repair requires a GitHub CLI whose `gh api --help` lists `--allow-escape-sequ
 | [`@henryqw/pi-herdr`](https://pi.henry.wang/extensions/pi-herdr) | Required | Provides the Herdr CLI client when the workspace can be renamed. |
 | [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs child processes with limits. |
 
-The required packages install together with `pi-pr`. Herdr is optional. To rename a workspace, you need Herdr 0.9.3 or later.
+The required packages install together with `pi-pr`. Herdr is optional, but workspace rename requires Herdr 0.9.3 or later.
 
 ## Use
 

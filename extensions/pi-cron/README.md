@@ -4,8 +4,6 @@ Run scheduled prompts in fresh Pi sessions while any Pi session with this extens
 
 ## Install
 
-This package requires Pi 1.1.0 or later in the 1.x series. It no longer supports older Pi releases.
-
 ```bash
 pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
