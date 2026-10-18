@@ -175,7 +175,7 @@ test("successful no-target upstream setup revalidates a changed configured push 
 	discoveredTarget = { ...target(false), ref: "renamed", remoteOid: head };
 	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /Published target authority changed/);
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "push"), ["git", [
-		"push", "--porcelain", "--force-with-lease=refs/heads/feature:", "--recurse-submodules=no", "--",
+		"push", "--porcelain", "--no-follow-tags", "--force-with-lease=refs/heads/feature:", "--recurse-submodules=no", "--",
 		"git@github.com:acme/project.git", `${head}:refs/heads/feature`,
 	]]);
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "fetch"), ["git", [

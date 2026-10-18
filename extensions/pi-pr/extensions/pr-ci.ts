@@ -747,7 +747,7 @@ export class PullRequestCiFixer {
 				let pushError: unknown;
 				try {
 					await runChecked(this.exec, "git", [
-						"push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
+						"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
 						"--recurse-submodules=no", "--", this.authority.target.fetchSource,
 						`${repairHead}:refs/heads/${this.authority.target.ref}`,
 					], this.options());
