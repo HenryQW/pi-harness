@@ -102,6 +102,7 @@ export class PullRequestWorkPublisher {
 			await this.authorityCheck();
 			if (await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") throw new Error("Unrelated pending changes remain; ask about ownership before publishing");
 			const head = await readHead(this.exec, this.execOptions());
+			if (head !== this.initialHead) throw new Error("Local HEAD changed after inspection or commit; review it again in a fresh /pr");
 			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head))) {
 				throw new Error("Local HEAD is not a descendant of the published PR head");
 			}
