@@ -1,6 +1,6 @@
 # `@henryqw/pi-bark`
 
-Get [Bark](https://bark.day.app) push notifications when Pi finishes, fails, or needs your input. Use `/copyb` to send the latest Pi response to your device.
+Get [Bark](https://bark.day.app) push notifications when Pi finishes, fails, or needs input. Use `/copyb` to send the latest Pi response to your device.
 
 ## Install
 
@@ -8,26 +8,22 @@ Get [Bark](https://bark.day.app) push notifications when Pi finishes, fails, or 
 pi install npm:@henryqw/pi-bark
 ```
 
-### Setup
-
 1. Open the Bark App.
 2. Copy its test URL.
-3. Get the Device Key from the URL.
+3. Get the Device Key after the host, without sample content such as `/Test`.
 4. Run `/set-bark` in Pi.
 
-For Bark's public server:
+For `https://api.day.app/your-device-key/Test`, use:
 
 ```text
 /set-bark your-device-key
 ```
 
-For a self-hosted Bark server:
+For a self-hosted server, use:
 
 ```text
 /set-bark your-device-key https://bark.example.com
 ```
-
-A test URL such as `https://api.day.app/your-device-key/Test` contains the Device Key after the host. Do not include sample push content such as `/Test`.
 
 Treat the Device Key as a secret. Anyone with it can send push notifications to your device.
 
@@ -39,20 +35,18 @@ Treat the Device Key as a secret. Anyone with it can send push notifications to 
 
 ## Use
 
-Run `/copyb` with no arguments. It copies the latest Pi response to your clipboard and sends it to your Bark device.
+Run `/copyb` without arguments to copy the latest Pi response to your clipboard and send it to Bark.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/bark <on\|off\|inherit> \| default <on\|off>` | command | Set a notification override for the current CWD or change the default. |
-| `/copyb` | command | Copy the last agent message and send a Bark push notification. |
-| `/set-bark <device-key> [server-url]` | command | Save the Device Key and Bark server URL. |
-| `pi-bark-key [--force \| --disable]` | command | Terminal command to generate, replace, or disable the Custom Encryption Key. |
+| `/bark <on\|off\|inherit> \| default <on\|off>` | command | Sets the current CWD override or notification default. |
+| `/copyb` | command | Copies and sends the last agent message. |
+| `/set-bark <device-key> [server-url]` | command | Saves the Device Key and Server URL. |
+| `pi-bark-key [--force \| --disable]` | command | Generates, replaces, or disables the Custom Encryption Key. |
 
-The `/` commands are for people who use Pi. Run `pi-bark-key` in a terminal.
+All commands are for users. Run `/` commands in Pi and `pi-bark-key` in a terminal.
 
-`/copyb` copies the last agent message to your clipboard. It then sends a Bark V2 push request to `<serverUrl>/push`.
-
-Without Push Encryption, the JSON request uses the standard Bark parameter names:
+`/copyb` selects the same text as Pi's `/copy`, then trims outer whitespace. Markdown, code blocks, internal spacing, and line breaks stay unchanged. After copying, it sends a Bark V2 request to `<serverUrl>/push`. Without Push Encryption, the JSON uses standard Bark parameters:
 
 ```json
 {
@@ -61,45 +55,23 @@ Without Push Encryption, the JSON request uses the standard Bark parameter names
 }
 ```
 
-The `body` value is the same text that the Pi `/copy` command selects. `/copyb` removes leading and trailing whitespace from the combined response. Markdown, code blocks, internal spacing, and line breaks do not change.
+![Manual /copyb and automatic notifications share a sender. Push Encryption protects content; device_key stays plaintext. HTTPS protects transport.](./docs/push-encryption-flow.svg)
 
 ### Automatic status notifications
 
-After setup, pi-bark sends these status notifications:
+| Notification | When it sends |
+| --- | --- |
+| **Pi needs input** | Pi opens a blocking prompt, including `ask_question`. Closing a prompt sends nothing. |
+| **Pi failed** | The run ends with an unrecovered failure and will not continue automatically. |
+| **Pi finished** | The run ends normally and will not continue automatically. |
 
-- **Pi needs input** when Pi opens a blocking user prompt, including `ask_question`.
-- **Pi failed** when the agent has fully settled, will not continue automatically, and the run ended in an unrecovered failure.
-- **Pi finished** when the agent has fully settled, will not continue automatically, and the run completed normally.
+The last agent response decides the outcome: provider errors mean failure; successful retries clear them. Failed compaction during a run, including overflow recovery, also means failure. Each run starts clean; earlier runs and other branches do not affect it. Failed idle `/compact` sends nothing.
 
-The outcome follows the Pi run status. The last agent response of the run decides it. A provider error means failure, and a later successful retry clears that failure. A failed context compaction during the run, including overflow recovery, also means failure.
+Cancelled runs, including Escape, and cancelled compactions send no settled notification. Input notifications and `/copyb` remain available. A new run cancels a pending settled notification.
 
-Each new run starts with a clean outcome. Earlier runs and other branches do not affect it. A failed `/compact` while Pi is idle sends no push notification.
+Status notifications contain the Pi session name (`Unnamed` if unset), but no prompt, agent output, or error text. With `pi-herdr-tools`, Herdr shows the same name. pi-bark never calls Herdr or reads its state.
 
-A cancelled run (for example, with Escape) or a cancelled compaction sends no settled notification. Input notifications and explicit `/copyb` stay available. If a new run starts before pi-bark sends a settled notification, pi-bark cancels that notification.
-
-Each status notification includes the current Pi session name. Herdr shows the same name when `pi-herdr-tools` is active. pi-bark does not call Herdr or read Herdr state.
-
-An unset session name shows as `Unnamed`. Status notifications do not include prompts, agent output, or error messages. pi-bark sends no push notification when a prompt closes.
-
-Automatic notifications start enabled by default. To disable them only in the current CWD, run:
-
-```text
-/bark off
-```
-
-Use `on` to enable the current CWD explicitly. Use `inherit` to remove its CWD override. The CWD then follows the notification default.
-
-Change the notification default for all CWDs without a CWD override:
-
-```text
-/bark default off
-```
-
-These settings do not affect `/copyb`. CWD overrides are in the global pi-bark config, not in project files.
-
-## Flow
-
-![Architecture showing manual /copyb output and automatic Pi status notifications sharing one sender: a Custom Encryption Key encrypts only content, device_key stays plaintext in the same JSON request, and HTTPS adds TLS transport protection.](./docs/push-encryption-flow.svg)
+Automatic notifications default to enabled. Run `/bark off` or `/bark on` for a CWD override; `/bark inherit` removes it. `/bark default off` changes the default for CWDs without overrides. These global config settings do not affect `/copyb`; no project config is necessary.
 
 ## Config
 
@@ -107,29 +79,25 @@ Package-owned: `~/.pi/agent/config/pi-bark/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `serverUrl` | Base URL of the Bark server that accepts push requests. | HTTP or HTTPS URL with an optional path and no query or fragment. | Required. `/set-bark` writes `"https://api.day.app"` when you do not give a server URL. |
-| `deviceKey` | Identifies the Bark App installation that receives the push notification. | Non-empty string. | Required |
-| `encryption` | Custom Encryption Key and matching Bark encryption settings. | AES256-GCM settings object or `null`. | Required. `null` disables Push Encryption. The commands write `null` to a new file. |
-| `statusNotifications` | Controls automatic status notifications by CWD. | Global boolean default and absolute-CWD boolean overrides. | Enabled with no overrides. |
+| `serverUrl` | Bark server base URL. | HTTP or HTTPS URL; optional path, no query or fragment delimiter. | Required. `/set-bark` writes `"https://api.day.app"` if omitted. |
+| `deviceKey` | Receiving Bark App installation. | Non-empty string. | Required. |
+| `encryption` | Custom Encryption Key and Bark settings. | AES256-GCM object or `null`. | Required. Commands write `null` to new files to disable Push Encryption. |
+| `statusNotifications` | Notification default and CWD overrides. | Global boolean default; absolute-CWD boolean overrides. | Enabled; no overrides. |
 
-Config changes take effect on the next command or status event. You do not need to restart Pi. A queued status notification uses the settings that pi-bark read when its event occurred.
+Changes apply on the next command or status event without restart. Queued notifications retain event-time settings.
 
-### Push encryption
+### Push Encryption
 
-Push Encryption is optional. It prevents the Bark server and Apple Push Notification service from reading push content.
+Optional Push Encryption prevents the Bark server and Apple Push Notification service from reading content in all pushes, including `/copyb` and status notifications.
 
-After you configure it, pi-bark encrypts every push that it sends. This includes `/copyb` and all automatic status notifications.
-
-#### Set up encryption
-
-1. Configure your Bark Device Key with `/set-bark`.
-2. Run this command to generate and save a Custom Encryption Key:
+1. Configure the Device Key with `/set-bark`.
+2. Generate and save a Custom Encryption Key:
 
    ```bash
    npx --yes --package=@henryqw/pi-bark -- pi-bark-key
    ```
 
-   `npx` temporarily downloads the package and runs its `pi-bark-key` executable. The command saves the key to the pi-bark config and prints it one time.
+   `npx` temporarily downloads the package and runs `pi-bark-key`. It saves the key to config and prints it once.
 
 3. Open **Bark App → Push Encryption**.
 4. Enter these settings:
@@ -139,37 +107,29 @@ After you configure it, pi-bark encrypts every push that it sends. This includes
    | Algorithm | `AES256` |
    | Mode | `GCM` |
    | Padding | `noPadding` |
-   | Key | The generated 32-character key |
-
-   The generated ASCII key is 32 characters and 32 bytes.
+   | Key | Generated 32-character, 32-byte ASCII key. |
 
 5. If Bark requires an IV, enter any 12 ASCII characters, such as `000000000000`.
-6. Save the Bark settings.
-7. Run `/copyb` in Pi. Check that Bark shows the exact last agent message instead of `Decryption Failed`.
+6. Save the settings.
+7. Run `/copyb`; confirm Bark shows the exact last agent message, not `Decryption Failed`.
 
-The saved IV is only a placeholder for older Bark versions. pi-bark creates a new 12-byte IV for each push and sends it with the Ciphertext. Bark uses that per-push IV, not the saved value.
+The saved IV is an older-version placeholder. Each push uses a new 12-byte IV, sent with Ciphertext. Bark uses this per-push value. pi-bark appends the GCM authentication tag before Base64 encoding.
 
-Do not paste the command output into shared logs. The Custom Encryption Key can decrypt your push content.
+Never paste key command output into shared logs: the Custom Encryption Key can decrypt your push content.
 
-pi-bark appends the GCM authentication tag to the Ciphertext before Base64 encoding, as Bark requires.
-
-#### Replace or disable the key
-
-The command does not overwrite an existing key. Replace the key only when you also update the Bark App:
+The command preserves existing keys. To replace one, run this command and update the Bark App:
 
 ```bash
 npx --yes --package=@henryqw/pi-bark -- pi-bark-key --force
 ```
 
-To disable Push Encryption in pi-bark, run:
+To disable Push Encryption, run this command and disable it in the Bark App:
 
 ```bash
 npx --yes --package=@henryqw/pi-bark -- pi-bark-key --disable
 ```
 
-Also disable Push Encryption in the Bark App. If you do not, its settings do not match pi-bark.
-
-The config file has this shape:
+App and pi-bark settings must match. Config has this shape; use `"encryption": null` to disable encryption:
 
 ```json
 {
@@ -190,39 +150,28 @@ The config file has this shape:
 }
 ```
 
-Set `encryption` to `null` when Push Encryption is disabled.
+Use HTTPS. HTTP exposes the Device Key and, without Push Encryption, push content. Push Encryption never protects the Device Key.
 
-- A missing config file stays missing until a command or the key script writes it.
-- `/set-bark` preserves Push Encryption and status notification settings.
-- `pi-bark-key` can run before `/set-bark`. It then writes `"deviceKey": null`, and pi-bark stays disabled until you run `/set-bark`.
-- The Server URL must use HTTP or HTTPS. It cannot contain a query or fragment delimiter. Use HTTPS when possible.
-- HTTP sends the Device Key over the network without encryption. Without Push Encryption, HTTP also sends the push content without encryption. Push Encryption does not protect the Device Key.
-- Config writes are private and atomic.
-- Pi commands never print the Device Key, Server URL, or Custom Encryption Key.
+Missing config stays missing until a command writes it. `/set-bark` preserves encryption and notification settings. Running `pi-bark-key` first writes `"deviceKey": null`; pi-bark stays disabled until `/set-bark`. Writes are private and atomic. Pi commands never print the Device Key, Server URL, or Custom Encryption Key.
 
 ## Limits and recovery
 
-Bark and Apple Push Notification service limit the payload size of a push notification. This extension does not truncate push content. Bark returns an error when a message is too large.
+Bark and Apple Push Notification service limit payload size. pi-bark never truncates content; oversized messages return a Bark error. `/copyb` waits at most 15 seconds. Failed pushes do not undo the clipboard copy.
 
-`/copyb` waits for a maximum of 15 seconds for the Bark server. If the push request fails after the clipboard copy, your clipboard still contains the message.
+Config checks occur at startup and each read, without writing. Each problem shows once per session:
 
-pi-bark checks its config when Pi starts and each time it reads the config. It does not change the file. Each problem shows one time in each session:
-
-| Problem | Result |
+| Problem | Result and recovery |
 | --- | --- |
-| Unknown key, or invalid `statusNotifications` value | A warning shows. pi-bark ignores the key or uses the default for that value, and continues to send. |
-| Missing config file | An error shows, and pi-bark is disabled. It sends no push notifications. Run `/set-bark` to create the file. |
-| Missing or invalid `deviceKey` | An error shows, and pi-bark is disabled. Run `/set-bark` to repair it. |
-| Missing or invalid `serverUrl`, including a misspelled key such as `serverURL` | An error shows, and pi-bark is disabled. pi-bark does not use the public server, because that server would receive your Device Key. Run `/set-bark` with the correct server URL. |
-| Missing or invalid `encryption`, including a misspelled key such as `encyption` | An error shows, and pi-bark is disabled. pi-bark does not send without encryption. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
-| Malformed JSON or a non-object file | An error shows, and pi-bark is disabled. Fix or move the file. |
+| Unknown key or invalid `statusNotifications` | Warns, ignores unknown keys or uses the affected value's default, and continues sending. |
+| Missing file or invalid/missing `deviceKey` | Disables sending. Run `/set-bark`. |
+| Invalid/missing `serverUrl`, including `serverURL` | Disables sending, never substitutes the public server that would receive your Device Key. Run `/set-bark` with the correct URL. |
+| Invalid/missing `encryption`, including `encyption` | Disables sending, never substitutes unencrypted content. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
+| Malformed JSON or non-object file | Disables sending. Fix or move the file. |
 
-`/set-bark` and `pi-bark-key` work while pi-bark is disabled. `/bark` does not work while pi-bark is disabled. It shows the problem and does not change the file. A notification setting cannot make pi-bark send.
+Disabled pi-bark reports errors. `/set-bark` and `pi-bark-key` remain available; `/bark` reports the problem without writing. Notification settings cannot enable a disabled configuration.
 
-Before a write, the commands show each new problem in the file. The Pi commands show a notification, and `pi-bark-key` writes to stderr. If the file has a problem that the command can repair, it replaces the whole file. The commands remove unknown keys and invalid `statusNotifications` entries.
+Before writing, commands report new problems through Pi notifications or key-script stderr. Repairable files are replaced; unknown keys and invalid notification entries are removed. Concurrent file changes stop the write with an error; run the command again.
 
-The commands hold the file lock while they compare the file with the version that they read. If another session changed the file in the meantime, they stop, show the error, and do not change the file. Run the command again.
+Commands preserve malformed files. They stop if a required key is invalid or missing and the command cannot set it. `/set-bark` sets `serverUrl` and `deviceKey`; `pi-bark-key --force` and `pi-bark-key --disable` set `encryption`. Fix the file or use the matching repair command.
 
-The commands do not change a malformed file. They also stop if `serverUrl`, `deviceKey`, or `encryption` is missing or invalid and the command does not set that key. `/set-bark` sets `serverUrl` and `deviceKey`. `pi-bark-key --force` and `pi-bark-key --disable` set `encryption`. If the command cannot repair the file, it shows the problem and stops. Fix the file, or run the command that sets the key.
-
-See Bark's [Push Encryption documentation](https://github.com/Finb/Bark/blob/master/docs/en-us/encryption.md) for the encryption model.
+See Bark's [Push Encryption documentation](https://github.com/Finb/Bark/blob/master/docs/en-us/encryption.md).

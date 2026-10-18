@@ -1,6 +1,6 @@
 # `@henryqw/pi-rtk-test`
 
-Keep long `pnpm test` output out of Pi's model context. This extension sends supported direct Bash calls through RTK. RTK reports failures and a short result instead of the full test log.
+Keep long `pnpm test` output out of Pi's model context. Supported direct Bash calls use RTK, which reports failures and a short result instead of the full log.
 
 ## Install
 
@@ -19,32 +19,32 @@ rtk init -g --agent pi
 
 ## Use
 
-You do not need to change your commands. Pi changes these direct `pnpm test` Bash calls before Bash runs them:
+Keep your commands unchanged. Pi rewrites these direct Bash calls before execution:
 
 | Pi command | Bash command |
 | --- | --- |
 | `pnpm test` | `rtk test pnpm test` |
 | `pnpm test -- marker` | `rtk test pnpm test -- marker` |
 
-The extension removes leading and trailing whitespace. All other command text stays unchanged.
-
-## Flow
-
-When the extension loads, it runs `rtk test --help` one time with a two-second timeout. If RTK responds successfully, the extension rewrites supported Bash calls as the table above shows. RTK runs the tests and controls their output and exit status. This extension does not run tests, capture output, or examine test results.
+Only leading and trailing whitespace is removed. RTK runs tests and controls output and exit status; this extension never captures output or examines results.
 
 ## Limits and recovery
 
-The extension rewrites only direct bare `pnpm test` commands with optional test arguments. It does not change these forms:
+Only bare `pnpm test` with optional test arguments is supported. These forms stay unchanged:
 
 - `pnpm run test` and `pnpm run-script test`
 - Global or workspace options, such as `pnpm --filter pkg test`
-- Quoted or indirect programs, such as `"pnpm" test` or `env pnpm test`
+- Quoted or indirect programs: `"pnpm" test`, `env pnpm test`
 - `pnpm test:watch` and unrelated commands
 - Newlines, carriage returns, `;`, `|`, `&`, `<`, `>`, backticks, and `$(`
-- Every command that begins with `rtk`
+- Commands starting with `rtk`
 
-For an unsupported form, use `rtk test ...` explicitly. For example, run `rtk test pnpm run test`.
+Use `rtk test ...` explicitly for unsupported forms, for example `rtk test pnpm run test`.
 
-The startup probe can throw, exit with a nonzero status, stop from a kill signal, or time out. In these cases, the extension blocks supported `pnpm test` calls. The block message tells you to install RTK. It also tells you to verify `rtk test --help`. Other calls stay unchanged. The package does not warn at startup.
+At load, `rtk test --help` runs once with a two-second timeout. A thrown error, nonzero exit, kill signal, or timeout blocks supported calls without a startup warning. Other calls stay unchanged. The block message says:
 
-After you repair RTK, reload the extension or restart Pi. The probe then runs again.
+```text
+RTK is unavailable. Install RTK and verify `rtk test --help`.
+```
+
+Repair RTK, then reload the extension or restart Pi to repeat the probe.

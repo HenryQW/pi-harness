@@ -2,6 +2,9 @@
 README contract:
 - Copy this file to extensions/<package>/README.md. Replace placeholders.
 - Use the exact package H1 format shown below. Follow it with one to three short sentences about the user outcome.
+- Do not use em or en dashes in prose, except `—` alone in a table cell.
+- Limit each table-cell sentence to 25 words.
+- Do not repeat generic Pi version requirements enforced by peerDependencies.
 - Every H2 section is optional. Include a section only when it contains package-specific user information.
 - Delete an inapplicable or empty heading instead of writing `None`, `N/A`, `Not applicable`, placeholder filler, or generic information.
 - Keep retained H2 headings in this canonical order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.

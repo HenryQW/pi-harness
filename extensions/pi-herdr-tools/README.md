@@ -1,10 +1,6 @@
 # `@henryqw/pi-herdr-tools`
 
-Clone a conversation into a Herdr tab or worktree. Hand off a separate issue to a new agent in a new worktree. Ask a side question and merge its answer back into Main.
-
-Give the conversation a name. Finish the worktree safely. One package and one extension entry point supply `/clone-tab`, `/clone-worktree`, `/handoff-worktree`, `herdr_handoff`, `/btw`, `/rename`, and `/done`. Herdr also shows the pane as blocked while a Pi dialog waits for your answer.
-
-![Architecture overview showing one Pi extension entry point registering four internal handlers, with shared Herdr CLI and task-model routing dependencies.](./docs/workflow-overview.svg)
+Clone conversations, hand off tasks, and ask side questions in Herdr. Name conversations and finish worktrees with explicit safety checks.
 
 ## Install
 
@@ -13,19 +9,13 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Herdr operations require Herdr 0.9.3 or later and a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
+Use Herdr 0.9.3 or later in a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
 
-Before you use title generation or side threads, do these steps:
+Before titles or side questions, configure `fast` in `/task-models`. It must not show `not configured`.
 
-1. Run `/task-models`.
-2. Configure `fast`.
-3. Make sure that it does not show `not configured`.
+### Migration
 
-Dialog status also requires the Herdr Pi integration (`~/.pi/agent/extensions/herdr-agent-state.ts`). Herdr installs this integration. This package only publishes the status event.
-
-### Migrating from the merged packages
-
-`@henryqw/pi-herdr-btw`, `@henryqw/pi-herdr-clone`, and `@henryqw/pi-herdr-rename` are retired. Before, `pi-herdr-clone` included `pi-herdr-done`. That package is also retired. Install the replacement first. Then remove all old installs before you restart Pi:
+Replace the retired packages before restarting Pi:
 
 ```sh
 pi install npm:@henryqw/pi-herdr-tools
@@ -36,174 +26,104 @@ pi remove npm:@henryqw/pi-herdr-rename
 pi remove npm:@henryqw/pi-herdr-done
 ```
 
-Remove only the sources that you installed. For project-local installs, use `--local` on each command. Also remove old entry-point paths that you configured manually. If Pi loads an old package together with this package, Pi registers the commands two times. The harness installer removes retired personal npm sources only after the selected replacement installs successfully.
+Remove only installed sources and manually configured entry-point paths. Add `--local` for project-local installs. Old and new packages register duplicate commands. The harness installer removes retired personal npm sources only after successful replacement installation.
 
-You do not need a data migration. Commands and safety behavior did not change. Existing `pi-herdr-btw/btw` and `pi-herdr-rename/rename` task-model assignments keep their identifiers. The same applies to `pi-herdr-rename/title` session entries, BTW payload flags, and pending deliveries. BTW configuration stays at `~/.pi/agent/config/pi-herdr-btw/config.json`, although the package name is new. Each feature is an internal module, not a separately selectable extension resource.
+No migration: commands, safety behavior, task identifiers, `pi-herdr-rename/title` entries, BTW payload flags, pending deliveries, and config paths remain compatible. Features are not separately selectable.
 
 ## Works with
 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
-| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves | Recognizes side threads and does not inject Main-only memory or dream advice into them. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Shared profiles for title generation and side-thread routes. |
-
-The shared [`@henryqw/pi-herdr`](https://pi.henry.wang/packages/pi-herdr) CLI library stays separate. Side questions are inspired by [Claude Code](https://github.com/anthropics/claude-code). This package also merges their side-thread transcripts back into Main.
+| [`@henryqw/pi-herdr`](https://pi.henry.wang/packages/pi-herdr) | Required | Herdr CLI access. |
+| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves | Keeps Main-only memory and dream advice out of side threads. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Model profiles for titles and side threads. |
 
 ## Use
 
-Run `/clone-tab` to open a clone tab with an active-path clone. The original session stays open.
-
-Commands and prompts are for humans. Tools are for agents.
+Run `/clone-tab`; the original session stays active. Commands and prompts are for humans; tools are for agents.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/clone-tab` | command | Clone the current conversation into a new tab of the current Herdr workspace. |
-| `/clone-worktree` | command | Clone the current conversation into a new Herdr Git worktree workspace. |
-| `/handoff-worktree <issue>` | prompt | For humans: tell the agent to write a self-contained task prompt for the issue and send it with `herdr_handoff`. |
-| `herdr_handoff` | tool | For agents inside Herdr: create a worktree from local `main`. Start Pi in it. Submit a task prompt. Focus does not change. |
-| `/done [-f]` | command | Remove the current worktree and close its Herdr workspace tabs. `-f` (alias `--force`) skips confirmation. It permits forced removal and does not look for tabs in other workspaces. |
-| `/btw [<question...>]` | command | For humans in Main: open an empty side pane, or start with an editable question draft. |
-| `/btw ask <question...>` | command | For humans in Main: ask a question whose first word is `ask`, `config`, `merge`, or `help`. |
-| `/btw config [option value]` | command | For humans: show values or reset the defaults. Set `auto-submit` to `on` or `off`. Set `tools` to `inherit`, `all`, `read-only`, or `none`. Set `split` to `right` or `down`. |
-| `/btw merge [<prompt...>]` | command | For humans: in a side pane, put its side-thread transcript and next prompt in the queue for Main. `/btw merge` opens the prompt editor. In Main, look for pending side-thread deliveries. |
-| `/btw help` | command | For humans: show the command grammar. |
-| BTW capability widget | ui | For people in a side pane: shows `tool-free`, `read-only`, or `tool-enabled`. If the Main context cannot load, it shows the error and recovery steps. |
-| `/rename` | command | For people: generate a new title from up to five recent user messages. |
-| Rename progress and result widgets | ui | For people who run `/rename`: shows `renaming...`. On success, it then shows `renamed to <title>` for two seconds. |
-| First real user prompt | ui | For people in a new, untitled conversation: starts title generation when the expanded prompt is ready. |
-| `pi-herdr-rename/rename` | model task | Title-generation route. Users configure its profile with `/task-models`. |
-| Dialog blocked status | ui | For people watching Herdr: while a TUI dialog is open, the pane shows blocked with the label `Input required`. |
+| `/clone-tab` | command | Clone into a new tab in the current workspace. |
+| `/clone-worktree` | command | Clone into a new Git worktree workspace. |
+| `/handoff-worktree <issue>` | prompt | Prepare a task for `herdr_handoff`. |
+| `herdr_handoff` | tool | Start a separate task from local `main`, without changing focus. |
+| `/done [-f]` | command | Remove the worktree and close its workspace tabs. `--force` aliases `-f`. |
+| `/btw [<question...>]` | command | Open a side pane with an optional editable draft. |
+| `/btw ask <question...>` | command | Ask a question starting with a subcommand name. |
+| `/btw config [option value]` | command | Show values or `reset` defaults. Set `auto-submit` to `on`/`off`, `tools` to `inherit`/`all`/`read-only`/`none`, or `split` to `right`/`down`. |
+| `/btw merge [<prompt...>]` | command | Queue a merge request. Without a prompt, open the editor. In Main, check pending deliveries. |
+| `/btw help` | command | Show command grammar. |
+| BTW capability widget | ui | Show `tool-free`, `read-only`, `tool-enabled`, or context-load errors with recovery steps. |
+| `/rename` | command | Generate a title from up to five recent user messages. |
+| Rename progress and result widgets | ui | Show `renaming...`, then `renamed to <title>` for two seconds on success. |
+| First real user prompt | ui | Start titles in new, untitled conversations. |
+| `pi-herdr-rename/rename` | model task | Title model profile. |
+| `pi-herdr-btw/btw` | model task | Side-thread model profile. |
+| Dialog blocked status | ui | Show `Input required` in Herdr during interactive TUI dialogs. |
 
-### Clone conversations and finish worktrees
+### Clones
 
-The active path goes from the session root to its current leaf at the time that you start the command. It does not include sibling branches or assistant output that Pi still streams. Both clone commands require a Pi session in a Herdr pane (`HERDR_ENV=1` and `HERDR_PANE_ID`). Before they create a target, they validate the pane, session path, and current leaf. If Pi has not written the session file yet, the commands clone the live session state. The commands have no configuration, and Pi stays in the original session.
+Both commands require `HERDR_ENV=1` and `HERDR_PANE_ID`. Pane, session-path, and leaf validation precedes target creation. Clones contain the root-to-current-leaf path, excluding sibling branches and still-streaming assistant output. Unsaved sessions use live state. Clones need no configuration.
 
-Commit or discard changes in a Herdr-managed linked worktree. Then run `/done`. Confirm the removal. Normal removal does not remove dirty worktrees or worktrees that another Herdr workspace uses. **`/done -f` can permanently delete uncommitted work and leave other workspaces' tabs pointing at the removed checkout.**
+![Clone launch and recovery boundaries.](./docs/clone-flow.svg)
 
-### Hand off an issue
+Clone tabs keep the current working directory. Worktree clones use the new checkout. Pi starts with `--session <absolute-clone-file>`; only successful launches change focus.
 
-In a Herdr-managed Pi pane, run `/handoff-worktree Fix the flaky login test`. The agent collects the missing facts and writes one self-contained task prompt. It asks one question only when the repository, expected outcome, or a critical constraint is not clear. Then it calls `herdr_handoff` and reports the workspace, branch, checkout path, and agent name. It does not wait for the new agent to finish. A worktree handoff does not copy the current conversation.
+Worktree creation uses `herdr worktree create --workspace <current-workspace> --no-focus`, or the repository's parent workspace when already in a linked worktree. Herdr creates missing branches from `HEAD`, with checkouts under `worktrees.directory` in grouped workspaces. Clones and handoffs use an extra unfocused tab if a layout plugin such as `herdr-plus` occupies the root pane.
 
-`herdr_handoff` requires `HERDR_ENV=1`, `HERDR_PANE_ID`, and a local `main` branch. The current directory and the Herdr workspace of the pane must be in the same Git repository. Pi registers the tool only when `HERDR_ENV=1`. It takes these parameters, and each must be a non-empty string:
+### Worktree handoff
 
-| Parameter | Purpose |
+Run `/handoff-worktree Fix the flaky login test`. The agent collects missing facts, asking one question only for an unclear repository, outcome, or critical constraint. It sends a self-contained prompt, not the conversation, and reports without waiting for completion.
+
+The tool registers only with `HERDR_ENV=1`. It also requires `HERDR_PANE_ID`, local `main`, and matching Git repositories for the current directory and pane workspace.
+
+All parameters must be non-empty strings:
+
+| Parameter | Requirement |
 | --- | --- |
-| `branch` | New Git branch. Herdr creates it from local `main`. The branch must not exist. |
-| `label` | Herdr workspace label. |
-| `agentName` | Unique Herdr agent name for the new Pi agent. It must match `^[a-z][a-z0-9_-]{0,31}$`. |
+| `branch` | New branch; must not exist. |
+| `label` | Workspace label. |
+| `agentName` | Unique agent name matching `^[a-z][a-z0-9_-]{0,31}$`. |
 | `prompt` | Self-contained task prompt. |
 
-### Ask and merge side questions
-
-In a Herdr-managed Pi pane with a conversation, run `/btw Why is this test failing?`. A side pane opens with the question as an editable draft. Submit the question there. After the answer, run `/btw merge Apply the smallest safe fix`. Main receives the side-thread transcript, gets the focus again, and continues with the merge prompt.
-
-### Name conversations
-
-In a new, untitled conversation, send the first real prompt. Pi generates a display title in the background and does not delay the reply.
-
-### Show open dialogs in Herdr
-
-When an extension opens a select, confirm, input, editor, or custom dialog in the Pi interactive TUI, Herdr marks the pane as blocked. It uses the fixed label `Input required`. The status clears when you answer or cancel the dialog, or when the dialog fails. This also applies to dialogs from other packages, for example `pi-memory` review conflicts, `/task-models`, `/pr`, and `/cron`. This bridge never sends dialog titles or content to Herdr.
-
-| Mode | Dialog status |
-| --- | --- |
-| Interactive TUI | Reported. |
-| RPC, even when the client provides UI | Not reported. |
-| JSON and print | Not reported. |
-
-Nested dialogs count as one block. `ask_question` from `@henryqw/pi-ask-question` publishes its own status. The two statuses can overlap, and neither clears the other too early.
-
-## Flow
-
-### Clone conversations and finish worktrees
-
-![Swimlane showing active-path validation, tab and worktree clone routes, launch order, and recovery boundaries.](./docs/clone-flow.svg)
-
-#### Clone a tab
-
-1. Save the active path as a separate active-path clone with the current working directory.
-2. Create an unfocused Herdr tab in the current workspace with that working directory.
-3. Start Pi in the tab's root pane with `--session <absolute-clone-file>`.
-4. Focus the new tab after Pi starts successfully.
-
-#### Clone a worktree
-
-1. Create a Git worktree-backed workspace with `herdr worktree create --workspace <current-workspace> --no-focus`. Herdr creates the branch from `HEAD` if the name does not exist. Herdr checks out the worktree under its configured `worktrees.directory` and opens it as a grouped workspace. If the current workspace is already a linked worktree, the command targets the parent workspace of its repository. Herdr creates worktrees from the parent.
-2. Wait a short time for a worktree-layout plugin, such as `herdr-plus`, to start its agent. The plugin uses the root pane of the new workspace.
-3. If the root pane is in use, create an additional unfocused tab in the new workspace. Use the checkout as its working directory. The plugin agent and the worktree clone then coexist. Otherwise, use the root pane.
-4. Copy the active path into an active-path clone. Its working directory is the new checkout path.
-5. Start Pi in the chosen pane with `--session <absolute-clone-file>`.
-6. Focus the tab of the clone after Pi starts successfully.
-
-#### Hand off to a worktree
-
-1. Make sure that the current directory and the workspace of the pane are in the same Git repository. Make sure that the repository has a local `main` branch. Make sure that `branch` does not exist. If any check fails, stop before Herdr changes.
-2. Find the parent workspace of the repository, as `/clone-worktree` does.
-3. Run `herdr worktree create --workspace <parent> --branch <branch> --base main --label <label> --no-focus`.
-4. Select the root pane, or an additional tab if a worktree-layout plugin uses it, as `/clone-worktree` does. Start Pi with the agent name and no session arguments.
-5. Submit the prompt with `herdr agent prompt <agentName> <prompt> --wait --until working --timeout 30000`. The prompt goes to Herdr as one argument, not through a shell or a file.
-6. Return the workspace ID, tab, pane, branch, checkout path, and agent name. Focus does not change.
-
-#### Finish a worktree
-
-![Sequence of /done safety gates, cleanup order, and conditional parent update.](./docs/done-flow.svg)
-
-Normal `/done` asks for confirmation before it waits for Pi to become idle. If you decline, the checkout does not change. `/done -f` skips confirmation. Both wait for Pi to become idle before cleanup.
-
-Normal cleanup does these steps:
-
-1. Check whether a tab in another Herdr workspace uses the checkout.
-2. Remove the checkout with `git worktree remove <checkout>`.
-3. Close all other tabs in the current Herdr workspace.
-4. If this was a linked worktree and the primary checkout is non-bare, run `git pull --ff-only` from the primary checkout.
-5. Close the current tab last.
-
-Tabs that use the primary checkout do not block removal or the pull. Concurrent worktree completions run one at a time, with locks on the worktree and the primary checkout. Clone creation uses the same worktree lock.
+After validation, the tool runs `herdr worktree create --workspace <parent> --branch <branch> --base main --label <label> --no-focus`. It starts Pi without session arguments. It submits `herdr agent prompt <agentName> <prompt> --wait --until working --timeout 30000`, with the prompt as one argument, not a shell command or file. The result includes workspace ID, tab, pane, branch, checkout path, and agent name.
 
 ### Side questions
 
-#### Launch
+With a conversation open, run `/btw Why is this test failing?`, then submit the draft. Exact first words `ask`, `config`, `merge`, and `help` select subcommands; other input is a question.
 
-- `ask`, `config`, `merge`, and `help` route only when they are the exact first word. All other input is a question.
-- A question that you supply is an editable draft by default.
-- `/btw` gives the side pane a static snapshot of the compaction-aware context of Main. The side pane uses the working directory of Main.
-- The consumer-owned `pi-herdr-btw/btw` task defaults to `fast`.
-- Before the pane starts, `/btw` selects the first authenticated viable effective profile route.
+The side-thread model receives Main's fixed, compaction-aware context snapshot. Enabled tools can change shared files. Select `read-only` or `none` to prevent changes. Shorten Main's context if it exceeds the side-thread context limit.
 
-`~/.pi/agent/config/pi-task-models/config.json` is shared, and `@henryqw/pi-task-models` owns it. A task entry is an explicit user override. Routes resolve before the pane starts. If this file is missing, or a task profile is not configured, the package shows one warning one time per session.
+![Side-thread merge delivery.](./docs/btw-merge-sequence.svg)
 
-At session start and before each route resolution, the package also shows each problem in this file one time in each session. Problems include an unknown key or malformed JSON.
+Run `/btw merge Apply the smallest safe fix` after the answer. The merge request contains user and assistant text, without tool payloads. Herdr focuses Main and closes the side pane. Pending delivery survives shutdown until consumption or 24-hour stale cleanup. Once idle and authenticated, Main appends the transcript without starting a turn, then submits the prompt.
 
-#### Merge delivery
+### Titles
 
-![Sequence showing a fixed context snapshot with live shared files; the transcript and prompt queue until Main is idle and authenticated, then Main appends the transcript and submits the prompt.](./docs/btw-merge-sequence.svg)
+Automatic titles ignore extension-injected, empty, and image-only prompts. Expanded skill and prompt-template text starts background generation without delaying the reply. English, sentence-case display titles usually have two or three words; limits are four words and 20 characters.
 
-- In the side pane, a merge request stores the side-thread transcript and next prompt as a pending delivery.
-- Herdr then refocuses Main and closes the side pane.
-- A pending delivery stays after side-pane shutdown. It waits for Main to settle and for current model authentication.
-- Main appends the side-thread transcript and does not start a turn. Then Main submits the prompt.
-- A pending delivery stays available until Main consumes it or the 24-hour stale cleanup removes it.
+Herdr updates the pane and sole-pane tab. Linked worktrees get semantic branches only for detached checkouts or generated `worktree/...` branches; other branches remain unchanged. For example, `Update task logic` gives `refactor/update-task-logic`. Generated worktree labels change automatically; manual `/rename` can replace custom workspace names.
 
-### Conversation titles
+### Dialog status
 
-#### Trigger
+Status requires Herdr's installed Pi integration, `~/.pi/agent/extensions/herdr-agent-state.ts`. Select, confirm, input, editor, and custom dialogs from any package count; RPC, JSON, and print modes do not. No dialog title or content goes to Herdr.
 
-In a new, untitled session, the first real user prompt generates a display title in the background. This occurs after Pi expands skill and prompt-template shorthand. It does not delay the main reply. The extension ignores extension-injected prompts, empty prompts, and image-only input.
+Status clears on answer, cancellation, failure, `/reload`, session switch, or exit. Reload can hide dialogs; late events cannot restore status. Nested dialogs count as one block. Other status owners, including `@henryqw/pi-ask-question`, remain independent.
 
-#### Title and branch rules
+## Flow
 
-A semantic branch is a Git-safe branch name from a task kind and the display-title words. The model replies with one JSON object that has `kind` and `subject`. That classification stays internal. For example, `{"kind":"refactor","subject":"update task logic"}` shows as `Update task logic` and becomes `refactor/update-task-logic`. If a reply does not have the correct shape, the extension sends it back one time with the rejection before it stops the route. So, a valid display title can still come from the first route.
+### Worktree completion
 
-- In a linked worktree, the extension renames a detached checkout or a Herdr `worktree/...` branch. An existing non-generated branch does not change.
-- The generated worktree label of a linked worktree, such as `worktree-brave-meadow-4aa8`, changes to the display title automatically. A manual `/rename` can also replace a custom workspace name.
-- The extension renames the pane in Herdr. The tab label changes only when the tab is a sole-pane tab.
-- Outside Herdr, only the Pi session name changes. Herdr is required for pane, tab, workspace, and linked-worktree branch updates.
+![Worktree removal and primary-checkout update.](./docs/done-flow.svg)
 
-#### Model route
+`/done` requires `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_TAB_ID`. Commit or discard changes, then confirm removal; declining changes nothing. Normal and forced completion wait for idle Pi.
 
-The task `pi-herdr-rename/rename` uses `fast` only when it has no explicit assignment. To use another configured profile, assign the task to that profile in `/task-models`. The shared [`pi-task-models` config](https://pi.henry.wang/extensions/pi-task-models#config) stores the assignment under `tasks` at `~/.pi/agent/config/pi-task-models/config.json`.
+Normal removal rejects dirty worktrees and checkout use by other workspaces. Close listed tabs and retry; labels identify them, or IDs without labels. Primary-checkout tabs do not block removal or updates.
 
-The extension tries the primary route of the assigned profile, then its fallback. It uses the configured thinking level. In one route, if a reply does not have the title shape, the extension tries again one time with the rejected text. Only a second failure goes to the fallback. The extension never uses the current session model as a replacement.
+**`/done -f` skips confirmation and cross-workspace checks. It passes `--force` to Git, can permanently delete uncommitted work, and can leave other workspaces' tabs pointing at a removed checkout.**
+
+Cleanup runs `git worktree remove <checkout>`, closes other tabs in the current workspace, then updates a non-bare primary checkout with `git pull --ff-only`. The current tab closes last, even if the update fails. Tabs in other workspaces do not close.
 
 ## Config
 
@@ -211,76 +131,39 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `autoSubmit` | Submits the draft question. When `false`, the question stays editable in the side pane. | Boolean. | `false` |
-| `tools` | Selects the tools available in the side pane. | `inherit` (active tools of Main), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
-| `split` | Sets the side-pane placement. | `right` or `down`. | `right` |
+| `autoSubmit` | Submit the draft automatically; otherwise, keep it editable. | Boolean. | `false` |
+| `tools` | Tools available in the side pane. | `inherit` (Main's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
+| `split` | Side-pane placement. | `right` or `down`. | `right` |
 
-- All fields are optional.
-- The config file is optional. If it is missing, the extension uses the defaults.
-- At launch, the extension shows a warning for each unknown key and each invalid value. An invalid value uses its default. A malformed file uses all defaults. `/btw` continues to work, and the file does not change.
-- `/btw config show` prints effective values.
-- `/btw config <option> <value>` fails while the file has an issue. Fix the file, or run `/btw config reset`.
-- `/btw config reset` first shows any problem in the file, then replaces the whole file with the defaults.
+File and fields are optional. Launch reports unknown keys and invalid values, using field defaults; malformed files use all defaults. `/btw` continues without changing the file. `/btw config show` prints effective values. Updates fail until you correct issues or run `/btw config reset`. Reset reports issues, then replaces the file with defaults.
+
+### Model profiles
+
+`@henryqw/pi-task-models` owns `~/.pi/agent/config/pi-task-models/config.json`. Both tasks default to `fast`; `tasks` assignments override it. Missing config or profiles warn once per session. Issues, including unknown keys and malformed JSON, report once per session at startup or before route resolution. Correct them with `/task-models`.
+
+Side threads select the first authenticated viable route before launch. Titles use the primary route, then fallback, with configured thinking; they never substitute the current session model. An invalid title gets one repair request before fallback. Without a viable route, titles remain unchanged.
 
 ## State and storage
 
-### Clones
-
-Each active-path clone is a separate Pi session file in the Pi session directory. It contains only the active path. A clone tab uses the current working directory. A worktree clone uses the new checkout. The Pi session manager selects the session directory.
-
-For a source session that Pi has saved, Pi names the clone file. If Pi has not written the source session to disk, the extension creates and names the clone file in that directory.
-
-### Conversation titles
-
-The Pi session stores each generated display title and semantic branch in a `pi-herdr-rename/title` session entry. When you resume a session that this extension created, the extension applies the saved display title and semantic branch again. It does not send another model request.
+Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved `pi-herdr-rename/title` entries restore display titles and semantic branches without another model request. Older titles get no migration.
 
 ## Limits and recovery
 
-### Cloning
-
-| Outcome | What remains and how to recover |
+| Failure | Recovery |
 | --- | --- |
-| Definitive target creation failure | When `/clone-tab` tab creation fails, the extension removes its clone session if cleanup succeeds. If cleanup also fails, the error names the remaining file. A `/clone-worktree` failure in worktree creation or pre-launch extra-tab creation occurs before the extension creates a clone session. |
-| Killed or incomplete worktree creation | Herdr can keep partial workspace state. The error reports all returned IDs and tells you to examine `herdr workspace list`. The extension has not created a clone session yet. |
-| Incomplete tab-creation response | The error reports known IDs. For `/clone-tab`, the extension keeps the clone session and reports its path. For `/clone-worktree`, the extension keeps the worktree, and no clone session exists yet. Examine the target before manual cleanup. |
-| Agent start requested | The launch outcome can be unknown. Keep the target tab, panes, and session file. The error reports known IDs for recovery. |
-| Focus failed after Pi started | Show a warning, but do not report the clone that already started as failed. If necessary, focus the clone tab in Herdr. |
+| Definite clone-tab creation failure | The clone file is removed. Cleanup errors name any remaining file. |
+| Worktree creation or pre-launch extra-tab failure | No clone session exists yet. |
+| Killed or incomplete worktree creation | Partial workspace state can remain. Inspect returned IDs with `herdr workspace list`. |
+| Incomplete tab response | Inspect known IDs before cleanup. Clone tabs retain the session path; worktree clones retain the worktree without a clone session. |
+| Agent start requested | An ambiguous launch retains targets and session files. Inspect reported IDs. |
+| Clone focus failure | Pi already started. Focus its tab manually. |
+| Handoff validation failure | No worktree exists. Correct the reported requirement. |
+| Handoff cancellation | Before creation, nothing remains. After creation, reported resources remain; later launch or delivery steps stop. |
+| Handoff start or prompt failure | Resources remain. Errors identify worktree, branch, workspace, tab, pane, and agent. No automatic cleanup occurs. |
+| `agent_blocked` or `agent_prompt_stalled` | Prompt delivery failed. Inspect the agent before retrying. |
 
-### Worktree handoff
+Timed-out prompts can still arrive. Check `herdr agent get` and `herdr agent read`; resend with `herdr agent prompt` only if absent. Alternatively, run `/done` in the new worktree. Remove personal `handoff-worktree.md` copies to resolve package-prompt name collisions.
 
-| Outcome | What remains and how to recover |
-| --- | --- |
-| No local `main`, an existing branch, a different repository, missing Herdr environment, or failed worktree creation | Nothing. The tool stops before it creates a worktree. |
-| Tool call cancelled | Before worktree creation, nothing remains. After it, the tool does not start the agent or submit the prompt, and the error names the resources that remain. |
-| Killed or incomplete worktree creation | Herdr can keep partial workspace state. The error reports all returned IDs and tells you to examine `herdr workspace list`. |
-| Agent start or prompt delivery failed | The worktree, branch, workspace, tab, and pane remain. The error names each of them and the agent. The tool does no cleanup. A stalled or timed-out prompt can still reach the agent. Before you send it again, examine the agent with `herdr agent get` and `herdr agent read`. Send the prompt again with `herdr agent prompt` only when the agent did not get it. Or run `/done` in the new worktree. |
-| Agent was already blocked, or did not start to work | Herdr reports `agent_blocked` or `agent_prompt_stalled`. The tool reports this as a prompt delivery failure. |
+After a failed primary update, the removed worktree stays removed. Correct primary-checkout changes or divergence, then run `git -C <primary-checkout> pull --ff-only`.
 
-If you also keep a personal prompt template with the name `handoff-worktree.md`, Pi loads only one of the two and reports a name collision. Remove the personal copy to use the package prompt.
-
-### Worktree completion
-
-- `/done` does not remove a dirty worktree. Commit or discard changes first. `/done -f` passes `--force` to Git and can permanently delete uncommitted work.
-- A tab in another Herdr workspace that uses this checkout blocks normal removal. `/done` lists the tab label, or its ID when the tab has no label. Close the tab. Then try again. Use `/done -f` only if you accept removal of the checkout while that tab still refers to it. `/done` does not close tabs in other workspaces.
-- The command requires Pi inside Herdr with `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_TAB_ID` set.
-- The primary checkout update runs only after worktree removal. `git pull --ff-only` can fail, for example because the primary checkout has diverged or has local changes. In that case, the worktree no longer exists, and the current tab still closes. Correct the primary checkout problem. Then try again with `git -C <primary-checkout> pull --ff-only`.
-
-### Side questions
-
-The side pane uses the working directory of Main. So, enabled tools can change files that Main can see. Select `read-only` or `none` when the side question must not make changes.
-
-A large Main context can be more than the context limit of the side thread. Make the Main context shorter. Then try again.
-
-### Conversation titles
-
-Display titles are natural task phrases. They usually have two or three words, and they always have a maximum of four words and 20 characters. Models that answer in another language still make English display titles.
-
-If the shared task-model config is missing, the package shows one warning one time per session at session start. Run `/task-models` to configure rename routing. If no route is viable, display titles do not change. `/rename` shows a warning if the session has no user text to rename.
-
-Herdr and Git synchronization failures show as warnings. Correct the reported problem. Then run `/rename` to try again. When a newer rename cancels an older rename, the extension shows no message. Older titles get no migration.
-
-### Dialog status
-
-- Without Herdr's Pi integration, the status event has no listener and Herdr shows no blocked state.
-- On `/reload`, session switch, or exit, this package clears all blocks that it still holds, one time. Pi can hide a dialog that was open during reload. That old dialog does not affect Herdr status after that, and the package ignores late events from it.
-- Another listener of the same event can still show blocked status for its own reasons. This package clears only its own contribution.
+`/rename` warns without user text. For Herdr or Git synchronization warnings, correct the problem and retry `/rename`. Newer renames silently cancel older requests.

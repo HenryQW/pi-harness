@@ -65,7 +65,7 @@ function wholePhrase(pattern: string): RegExp {
 }
 
 // Keep a source line for each character, including text across inline markup.
-function prose(node: Node): { text: string; lines: number[] } {
+export function prose(node: Node): { text: string; lines: number[] } {
   if (["code", "html", "image", "imageReference"].includes(node.type)) return { text: "", lines: [] };
   // An autolink such as <https://example.com> shows only its target.
   const label = node.type === "link" && node.children?.length === 1 ? node.children[0].value : undefined;
@@ -82,6 +82,10 @@ function prose(node: Node): { text: string; lines: number[] } {
     return current;
   });
   return { text, lines };
+}
+
+export function splitSentences(text: string): string[] {
+  return text.split(/(?<=[.!?]["'”’)\]]*)(?=\s|$)/);
 }
 
 export function checkSte(markdown: string, options: { avoidTerms: AvoidTerm[] }): Issue[] {
@@ -111,27 +115,32 @@ export function checkSte(markdown: string, options: { avoidTerms: AvoidTerm[] })
       for (const { pattern, rule, message } of wordRules) {
         for (const match of text.matchAll(pattern)) report(match.index, rule, message(match[0]));
       }
+      if (node.type !== "tableCell" || text.trim() !== "—") {
+        for (const match of text.matchAll(/[—–]/g)) {
+          report(match.index, "dash", "Do not use em or en dashes in prose");
+        }
+      }
       if (procedure) {
         const passive = wholePhrase("(?:am|is|are|was|were|be|been|being|isn't|aren't|wasn't|weren't)\\s+(?:not\\s+)?(?:[a-z]+ly\\s+)?(?:(?!(?:red|bed|shed|need|speed|feed|seed|hundred)\\b)[a-z]+ed|built|chosen|done|given|known|made|shown|sent|taken|written|read|run|set|kept|found|held|put|seen|lost|paid|told|sold|begun|broken|hidden|forgotten|thrown|left|cut|shut|spent)");
         for (const match of text.matchAll(passive)) {
           report(match.index, "passive-procedure", `"${match[0]}" is passive in a procedure; use active voice`);
         }
       }
-      if (node.type === "paragraph") {
-        const sentences = text.split(/(?<=[.!?]["'”’)\]]*)(?=\s|$)/);
+      if (node.type === "paragraph" || node.type === "tableCell") {
+        const sentences = splitSentences(text);
         let offset = 0;
         let count = 0;
         for (const sentence of sentences) {
           const words = (sentence.match(/\S+/g) ?? []).filter((word) => /[\p{L}\p{N}\uFFFC]/u.test(word)).length;
           if (words) count++;
-          const max = procedure ? 20 : 25;
+          const max = procedure && node.type === "paragraph" ? 20 : 25;
           if (words > max) {
             report(offset + sentence.search(/\S/), "sentence-length",
               `Sentence has ${words} words; maximum ${max}: ${sentence.trim().replaceAll("\uFFFC", "[code]")}`);
           }
           offset += sentence.length;
         }
-        if (count > 6) report(0, "paragraph-length", `Paragraph has ${count} sentences; maximum 6`);
+        if (node.type === "paragraph" && count > 6) report(0, "paragraph-length", `Paragraph has ${count} sentences; maximum 6`);
       }
       return;
     }
