@@ -104,6 +104,20 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 
 	authority = { ...authority, head: { ...authority.head, oid: second.head },
 		target: { ...authority.target, remoteOid: second.head } };
+	await t.test("validation rejects a clean commit added after inspection", async () => {
+		const changed = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
+		await changed.inspect();
+		writeFileSync(join(root, "file.txt"), "unreviewed work\n");
+		git("add", "file.txt");
+		git("commit", "-m", "fix: unreviewed work");
+		assert.equal(git("status", "--porcelain=v1"), "");
+		await assert.rejects(changed.validate([]), /Local HEAD changed after inspection or commit/);
+		await assert.rejects(changed.publish(), /not validated/);
+		assert.equal(pushes, 2);
+		assert.equal(git("ls-remote", bare, "refs/heads/feature").split("\t")[0], second.head);
+	});
+	git("reset", "--hard", second.head);
 	git("mv", "--", "*.txt", "renamed.txt");
 	const renamed = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
