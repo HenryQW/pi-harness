@@ -546,6 +546,21 @@ test("/dream applies an approved exact SYSTEM edit before removing represented w
 	});
 });
 
+test("/dream keeps replacement text literal in SYSTEM.md", async () => {
+	await withReviewFixture({
+		system: "# Rules\nOld rule.\nKeep this rule.", memory: "promote this rule",
+		responses: [JSON.stringify({
+			reason: "Keep replacement tokens literal.",
+			system: { find: "Old rule.", replace: "Keep $& and $' literal." },
+			remove: { memory: ["promote this rule"], user: [] },
+		})],
+		select: () => "Approve",
+	}, async ({ agentDir, commands, ctx }) => {
+		await commands.get("dream")!.handler("", ctx);
+		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "# Rules\nKeep $& and $' literal.\nKeep this rule.");
+	});
+});
+
 test("/dream cancellation and source drift preserve SYSTEM, entries, and timestamp", async () => {
 	const promotion = JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } });
 	await withReviewFixture({ system: "original", memory: "entry", responses: [promotion], select: () => "Reject" }, async ({ agentDir, memoryDir, commands, ctx }) => {
