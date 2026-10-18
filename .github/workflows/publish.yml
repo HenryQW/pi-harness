@@ -47,8 +47,8 @@ jobs:
               continue
             fi
 
-            remote_version="$(npm view "$name" version 2>/dev/null || true)"
-            if [ "$local_version" = "$remote_version" ]; then
+            decision="$(node scripts/publish-decision.mjs "$name" "$local_version")"
+            if [ "$decision" = skip ]; then
               continue
             fi
 
