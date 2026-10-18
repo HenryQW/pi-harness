@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -163,6 +163,27 @@ test("explicit unselected release preserves dirty work and removes only the exac
 	assert.deepEqual(await inspected(root), base);
 });
 
+test("post-promotion cleanup preserves ignored files", async (t) => {
+	const root = await repo(t);
+	const runtime = new IntegrationGit();
+	const inspected = (path: string) => new CheckedGitRuntime().inspectMain({ root: path }, { signal });
+	const base = await inspected(root);
+	const integration = await allocate(runtime, root, base, "cleanup-integration");
+	const worker = await allocate(runtime, root, base, "cleanup-worker");
+	await commit(worker.path, "worker");
+	const staged = await runtime.stage(root, integration, base, [], worker, await inspected(worker.path), signal);
+	const stages = [staged.outcome === "ready" ? staged.value : assert.fail(JSON.stringify(staged))];
+	const promoted = await runtime.promote({ root, integration, base, stages, checks: checks(stages[0]!.tip), commands: [] }, signal);
+	const approved = promoted.outcome === "ready" ? promoted.value : assert.fail(JSON.stringify(promoted));
+	await appendFile(join(root, ".git", "info", "exclude"), "*.log\n");
+	const ignored = join(worker.path, "ignored.log");
+	await writeFile(ignored, "preserve ignored\n");
+	const result = await runtime.cleanup(root, integration, worker, base, stages, approved, "worktree", signal);
+	assert.equal(result.outcome, "blocked", JSON.stringify(result));
+	assert.match(result.failure, /ignored.*cleanup preserves them/);
+	assert.equal(await readFile(ignored, "utf8"), "preserve ignored\n");
+});
+
 test("text and changeset dependents read and edit an exact staged predecessor without moving Main", async (t) => {
 	const root = await repo(t);
 	const runtime = new IntegrationGit();
@@ -210,7 +231,7 @@ test("text and changeset dependents read and edit an exact staged predecessor wi
 	const unowned = { ...worker, branch: "pi-subagent/subagent-not-owned" };
 	assert.equal((await runtime.cleanup(root, integration, unowned, base, stages, approved, "worktree", signal, correction)).outcome, "unknown");
 	await writeFile(join(worker.path, "untracked.txt"), "retain\n");
-	assert.equal((await runtime.cleanup(root, integration, worker, base, stages, approved, "worktree", signal, correction)).outcome, "unknown");
+	assert.equal((await runtime.cleanup(root, integration, worker, base, stages, approved, "worktree", signal, correction)).outcome, "blocked");
 	assert.equal(git(worker.path, "rev-parse", "HEAD"), stages[1]!.worker.head);
 	await rm(join(worker.path, "untracked.txt"));
 	for (const checkout of [worker, predecessor, integration]) {
