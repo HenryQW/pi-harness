@@ -418,7 +418,7 @@ function dreamSystemText(snapshot: ReviewSnapshot, proposal: DreamProposal): str
 	if (find && old.split(find).length !== 2) throw new MemoryReviewError("Dream's SYSTEM excerpt must match exactly once.");
 	if (find === old) throw new MemoryReviewError("Dream cannot replace the entire SYSTEM.md; propose a smaller edit.");
 	if (!find && replace && !old.endsWith("\n") && !replace.startsWith("\n")) throw new MemoryReviewError("Dream's appended rule needs a line break.");
-	const updated = find ? old.replace(find, replace) : `${old}${replace}`;
+	const updated = find ? old.replace(find, () => replace) : `${old}${replace}`;
 	if (!updated.trim() || Buffer.byteLength(updated, "utf8") > MAX_FILE_BYTES) throw new MemoryReviewError("Dream would make SYSTEM.md empty or oversized.");
 	for (const target of ["memory", "user"] as const) {
 		const selected = proposal.remove[target];
