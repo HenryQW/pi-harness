@@ -122,6 +122,8 @@ function validateRoleMcpServer(path: string, name: string, value: unknown, codem
  * never activated by MCP configuration: the Role tool policy owns the active set.
  */
 export function loadRoleMcpConfig(agentDir: string, allowlist: readonly string[], options: { codemode: boolean } = { codemode: false }): LoadedMcpConfig {
+	// A Role without mcps must not depend on mcp.json being readable.
+	if (!allowlist.length) return { servers: [], autoEnableCodemode: false, errors: [] };
 	const path = join(agentDir, "mcp.json");
 	let parsed: unknown = {};
 	try {

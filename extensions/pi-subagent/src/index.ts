@@ -644,7 +644,8 @@ function prepareRoleLaunchFromSkills(
 	const extensions = [
 		...selectedExtensions,
 		...(CODEX_ALIAS.test(input.route.model.provider) ? [MULTI_CODEX_EXTENSION] : []),
-		...(mcps.length ? [ROLE_MCP_EXTENSION] : []),
+		// Always loaded: it connects the servers that Role extensions register; `mcps` gates only mcp.json.
+		ROLE_MCP_EXTENSION,
 		...(role.tools.includes("git_read") ? [GIT_READ_EXTENSION] : []),
 		ROLE_TOOLS_EXTENSION,
 	];
@@ -654,7 +655,7 @@ function prepareRoleLaunchFromSkills(
 		return [key, value];
 	}));
 	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOL_NAMES.join(",")];
-	if (mcps.length) args.push(`--${ROLE_MCP_POLICY_FLAG}`, JSON.stringify(mcps));
+	args.push(`--${ROLE_MCP_POLICY_FLAG}`, JSON.stringify(mcps));
 	for (const extension of new Set(extensions)) args.push("--extension", extension);
 	for (const skill of skills.paths) args.push("--skill", skill);
 	args.push(`--${ROLE_TOOL_POLICY_FLAG}`, JSON.stringify(tools));

@@ -410,6 +410,8 @@ To let a Role run `codemode` scripts, list `builtin:codemode` in `extensions`. A
 
 Pi's `codemode.mode` and `codemode.inlineBudget` settings apply in the child without change. So the Role never forces codemode-only operation. MCP configuration never activates `codemode` in a child. Scripts can call only the active tools of the Role, plus `codemode` and `deferred` extension and MCP tools. Inactive base tools such as `bash` stay unreachable.
 
+Every child loads the Role MCP adapter. It also connects the servers that Role extensions register with `pi.registerMcpServer()`, for example the CodeGraph watcher of `pi-codegraph`. These servers keep the exposure that the extension sets, and `mcps` does not gate them, because the Role already trusts the extension.
+
 The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. In a Role that activates `codemode`, each selected server keeps its configured `exposure` and `toolExposure`. Pi's default `codemode` exposure makes tools callable from scripts without declarations. `direct` declares them. `deferred` tools stay reachable from scripts, and `hidden` tools stay unreachable. An invalid exposure value fails the launch.
 
 In every other Role, the extension forces selected servers to `direct` exposure. It ignores `toolExposure`, because that child cannot reach undeclared tools. Declared tools show to the model as `mcp__<server>__<tool>` after the server connects. Pi replaces `-` in server and tool names with `_`. Pi appends a hash suffix when two tool names collide or a name is longer than 64 characters.

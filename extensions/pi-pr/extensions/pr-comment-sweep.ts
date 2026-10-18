@@ -1250,7 +1250,7 @@ export class PullRequestCommentSweep {
 			await this.save(location, state);
 			try {
 				await runChecked(this.exec, "git", [
-					"push", "--porcelain", `--force-with-lease=refs/heads/${state.authority.target.ref}:${state.original.lease}`,
+					"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${state.authority.target.ref}:${state.original.lease}`,
 					"--recurse-submodules=no", "--", state.authority.target.fetchSource,
 					`${head}:refs/heads/${state.authority.target.ref}`,
 				], this.options());

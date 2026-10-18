@@ -178,7 +178,7 @@ Role Markdown files in `~/.pi/agent/config/pi-subagent/` require frontmatter and
 | `tools` | Required base or internal tool-name array; `[]` selects none. Name `codemode` or `git_read` to activate it. |
 | `extensions` | Required array of trusted absolute paths, supported package sources, or Pi built-ins such as `builtin:codemode` |
 | `skills` | Required array of effective Pi Skill names |
-| `mcps` | Optional exact global server names from `~/.pi/agent/mcp.json`, using native `mcpServers` format. Omitted or `[]` denies MCP access. |
+| `mcps` | Optional exact global server names from `~/.pi/agent/mcp.json`, using native `mcpServers` format. Omitted or `[]` denies access to `mcp.json` servers. Servers that Role extensions register always connect. |
 | body | Required system instructions |
 
 The package ships `implementer`, `reviewer`, and `scout`; same-name user Roles override built-ins. Roles define capabilities, not access or isolation. Unknown frontmatter keys invalidate that file and report its path and key. Other valid Roles load; duplicate names become unavailable. Delegation to an invalid file's claimed Role fails with that file's error. Inspect `/subagent roles`.

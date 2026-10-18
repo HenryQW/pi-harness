@@ -102,6 +102,7 @@ export class PullRequestWorkPublisher {
 			await this.authorityCheck();
 			if (await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") throw new Error("Unrelated pending changes remain; ask about ownership before publishing");
 			const head = await readHead(this.exec, this.execOptions());
+			if (head !== this.initialHead) throw new Error("Local HEAD changed after inspection or commit; review it again in a fresh /pr");
 			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head))) {
 				throw new Error("Local HEAD is not a descendant of the published PR head");
 			}
@@ -136,7 +137,7 @@ export class PullRequestWorkPublisher {
 			this.consumed = true; // An uncertain push cannot reopen inspect, commit, or validation.
 			let error: unknown;
 			try {
-				await runChecked(this.exec, "git", ["push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
+				await runChecked(this.exec, "git", ["push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
 					"--recurse-submodules=no", "--", this.authority.target.fetchSource,
 					`${head}:refs/heads/${this.authority.target.ref}`], this.execOptions());
 			} catch (failure) { error = failure; }

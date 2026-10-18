@@ -725,6 +725,7 @@ test("captures repair HEAD internally and pushes one explicit OID refspec with a
 	assert.deepEqual(pushes.map(({ args }) => args), [[
 		"push",
 		"--porcelain",
+		"--no-follow-tags",
 		`--force-with-lease=refs/heads/feature:${original}`,
 		"--recurse-submodules=no",
 		"--",

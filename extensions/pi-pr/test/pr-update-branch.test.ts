@@ -225,7 +225,7 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 	await assert.rejects(app.workflow.publish(), /not ready to publish/);
 	assert.equal(pushes, 1);
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "push"), ["git", [
-		"push", "--porcelain", `--force-with-lease=refs/heads/feature:${oldHead}`,
+		"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/feature:${oldHead}`,
 		"--recurse-submodules=no", "--", "git@github.com:acme/fork.git", `${merged}:refs/heads/feature`,
 	]]);
 });

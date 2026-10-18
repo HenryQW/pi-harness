@@ -354,7 +354,7 @@ export class PullRequestCreator {
 			this.state.publicationHead = head;
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", [
-				"push", "--porcelain", `--force-with-lease=refs/heads/${this.target.ref}:${original ?? ""}`,
+				"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.target.ref}:${original ?? ""}`,
 				"--recurse-submodules=no", "--", this.target.fetchSource, `${head}:refs/heads/${this.target.ref}`,
 			], this.options());
 			if (await readRemoteOid(this.exec, this.options(), this.target.fetchSource, this.target.ref) !== head) {
