@@ -136,7 +136,7 @@ export class PullRequestWorkPublisher {
 			this.consumed = true; // An uncertain push cannot reopen inspect, commit, or validation.
 			let error: unknown;
 			try {
-				await runChecked(this.exec, "git", ["push", "--porcelain", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
+				await runChecked(this.exec, "git", ["push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
 					"--recurse-submodules=no", "--", this.authority.target.fetchSource,
 					`${head}:refs/heads/${this.authority.target.ref}`], this.execOptions());
 			} catch (failure) { error = failure; }

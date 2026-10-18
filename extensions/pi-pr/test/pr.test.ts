@@ -549,7 +549,7 @@ for (const [route, drift] of [
 		await assert.rejects(app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx), /not validated/);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "validate", checks: [] }, ctx);
 		await app.callTool("pi_pr_publish_work", { runId: ids[1], action: "publish" }, ctx);
-		assert.deepEqual(pushes, [["push", "--porcelain", `--force-with-lease=refs/heads/feature/pr:${original}`,
+		assert.deepEqual(pushes, [["push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/feature/pr:${original}`,
 			"--recurse-submodules=no", "--", destination, `${merged}:refs/heads/feature/pr`]]);
 		assert.equal(git("ls-remote", bare, "refs/heads/feature/pr").split("\t")[0], merged);
 		assert.equal(git("rev-parse", "HEAD"), merged);

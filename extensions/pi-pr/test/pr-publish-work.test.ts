@@ -81,9 +81,12 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	await assert.rejects(workflow.validate([]), /frozen/);
 	failCheck = false;
 	assert.deepEqual(await workflow.validate(checks), { head: committed.head, checks: 2 });
+	git("config", "push.followTags", "true");
+	git("tag", "-a", "unpublished-release", "-m", "Local release tag");
 	assert.deepEqual(await workflow.publish(), { kind: "published", head: committed.head });
 	assert.equal(pushes, 1);
 	assert.equal(git("ls-remote", bare, "refs/heads/feature").split("\t")[0], committed.head);
+	assert.equal(git("ls-remote", bare, "refs/tags/unpublished-release"), "");
 	await assert.rejects(workflow.publish(), /not validated/);
 
 	// The exact remote postcondition proves publication even when Git loses its response.
