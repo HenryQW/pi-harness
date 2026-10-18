@@ -529,8 +529,13 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		role: { ...role, mcps: [] },
 		route: { model, thinkingLevel: "high" },
 	});
-	assert.equal(noMcpLaunch.args.includes(policyFlag), false);
-	assert.ok(valuesAfter(noMcpLaunch.args, "--extension").every((extension) => !/[\\/]role-mcp\.ts$/.test(extension)));
+	// Without mcps the extension still loads, so servers that Role extensions register connect.
+	assert.deepEqual(roleMcpAllowlistFromArgv(noMcpLaunch.args), []);
+	assert.match(valuesAfter(noMcpLaunch.args, "--extension").at(-2)!, /pi-subagent\/extensions\/role-mcp\.ts$/);
+	const malformedDir = join(agentDir, "malformed");
+	await mkdir(malformedDir);
+	await writeFile(join(malformedDir, "mcp.json"), "{");
+	assert.deepEqual(loadRoleMcpConfig(malformedDir, []).servers, []);
 	const mcpPath = join(agentDir, "mcp.json");
 	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), /Role MCP servers are not configured: docs\./);
 	await writeFile(mcpPath, JSON.stringify({
