@@ -433,8 +433,6 @@ export class IntegrationGit {
 			if (kind === "worktree") {
 				if (!present && !pathPresent) return { outcome: "ready", value: "absent" };
 				if (!present || !pathPresent || branch.stdout.trim() !== expected.head) return { outcome: "blocked", failure: "Worktree registration/path/branch do not match approved tip." };
-				const dirty = await inspectWorktreeDirty(info.path, (args, cwd) => git(args, cwd, signal));
-				if (dirty.failure || dirty.dirty) return { outcome: "blocked", failure: "Owned checkout has ignored, untracked or tracked changes; cleanup preserves them." };
 				if (!sameIdentity(await current(root, info, signal), expected)) return { outcome: "blocked", failure: "Worktree differs from approved clean candidate." };
 				const dirty = await inspectWorktreeDirty(info.path, (args, cwd) => git(args, cwd, signal));
 				if (dirty.failure || dirty.dirty) return { outcome: "blocked", failure: "Owned checkout has ignored, untracked or tracked changes; cleanup preserves them." };

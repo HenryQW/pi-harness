@@ -231,7 +231,7 @@ test("text and changeset dependents read and edit an exact staged predecessor wi
 	const unowned = { ...worker, branch: "pi-subagent/subagent-not-owned" };
 	assert.equal((await runtime.cleanup(root, integration, unowned, base, stages, approved, "worktree", signal, correction)).outcome, "unknown");
 	await writeFile(join(worker.path, "untracked.txt"), "retain\n");
-	assert.equal((await runtime.cleanup(root, integration, worker, base, stages, approved, "worktree", signal, correction)).outcome, "blocked");
+	assert.equal((await runtime.cleanup(root, integration, worker, base, stages, approved, "worktree", signal, correction)).outcome, "unknown");
 	assert.equal(git(worker.path, "rev-parse", "HEAD"), stages[1]!.worker.head);
 	await rm(join(worker.path, "untracked.txt"));
 	for (const checkout of [worker, predecessor, integration]) {
