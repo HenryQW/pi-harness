@@ -23,7 +23,7 @@ After package updates, run `/deps` twice in each opted-in repository to replace 
 
 ## Flow
 
-![Dependency preparation with synchronous validation and detached installs](./docs/dependency-preparation-flow.svg)
+![Dependency preparation with validation, an install-needed decision, and selected detached installs](./docs/dependency-preparation-flow.svg)
 
 Synchronous lockfile validation immediately fails the worktree command for conflicting Node lockfiles, mismatched `packageManager`, and unsupported declarations.
 
