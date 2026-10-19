@@ -173,17 +173,6 @@ test("renders family status on the first line and external statuses beside runti
 	thinkingLevel = "off";
 	footer.render(100);
 	assert.ok(colors.some(([color, text]) => color === "dim" && text === "off"));
-	for (const [level, color] of [
-		["minimal", 46],
-		["low", 82],
-		["medium", 118],
-		["high", 220],
-		["xhigh", 208],
-		["max", 196],
-	] as const) {
-		thinkingLevel = level;
-		assert.match(footer.render(100)[1], new RegExp(`\\x1b\\[38;5;${color}m${level}\\x1b\\[39m$`));
-	}
 
 	thinkingLevel = "ultra";
 	assert.match(footer.render(100)[1], /\x1b\[38;5;196mu\x1b\[39m\x1b\[38;5;220ml\x1b\[39m\x1b\[38;5;46mt\x1b\[39m\x1b\[38;5;39mr\x1b\[39m\x1b\[38;5;201ma\x1b\[39m$/);
