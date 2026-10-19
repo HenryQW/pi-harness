@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-Install `@henryqw/pi-task-models` first. Run `/task-models` and configure `fast`. Open `/task-models` again; verify that `fast` no longer says `not configured`.
+Configure `fast` in `/task-models`. The compaction task uses `fast` unless a task entry overrides it.
 
 Disable Pi's built-in compaction in `~/.pi/agent/settings.json`:
 
@@ -28,8 +28,6 @@ Restart Pi after installation or settings changes. Activation requires effective
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared compaction routes. |
-
-Task Models owns `~/.pi/agent/config/pi-task-models/config.json`. The compaction task profile defaults to `fast`; a task entry overrides it. The extension reports each shared-config problem once per session, at startup or before compaction, without changing that file.
 
 ## Use
 

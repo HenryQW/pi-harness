@@ -1,6 +1,6 @@
 # Pi Subagent maintenance rules
 
-Follow [ADR 016](../../docs/adr/016-pi-subagent-architecture.md) and the [orchestration/API contract](docs/orchestration.md). These implementation boundaries supplement the repository rules.
+Follow [ADR 019](../../docs/adr/019-pi-subagent-orchestration.md) and the [orchestration/API contract](docs/orchestration.md). These implementation boundaries supplement the repository rules.
 
 ## Sources and boundaries
 

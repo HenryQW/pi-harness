@@ -12,7 +12,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-memory
 ```
 
-Run `/task-models` and configure `balanced` before adding memory. Reopen it to confirm that `balanced` no longer says `not configured`.
+Configure `balanced` in `/task-models`.
 
 ## Works with
 
@@ -44,8 +44,6 @@ Run `/remember I prefer concise release notes.` Pi proposes and reviews an entry
 ![pi-memory architecture showing reviewed writes and frozen session snapshots](./docs/memory-architecture.svg)
 
 Review sends live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md` snapshots to the configured model. Initially missing `SYSTEM.md` counts as empty. Unreadable, oversized, or over-cap sources block review. Restore a SYSTEM file that disappears after review proved it present.
-
-Missing task-model config produces a session-start warning. Configure `pi-memory/reviewCandidate` through `/task-models` before adding memory. Each shared-config problem appears once per session, at startup or before review.
 
 Conflict-free additions save immediately. Exact duplicate single adds and duplicate-only add batches are idempotent and skip review.
 
@@ -106,10 +104,10 @@ Fix invalid config, then start a new session.
 
 ## State and storage
 
-| Store | Scope | Default cap |
-| --- | --- | --- |
-| `MEMORY.md` | Cross-project agent notes. Put repository facts in repository docs. | 8800 characters |
-| `USER.md` | User profile. | 5500 characters |
+| Store | Scope |
+| --- | --- |
+| `MEMORY.md` | Cross-project agent notes. Put repository facts in repository docs. |
+| `USER.md` | User profile. |
 
 Files hold entries separated by `§`. Each session captures both stores once; later edits change live memory, not the injected session snapshot.
 

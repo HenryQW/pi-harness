@@ -71,9 +71,7 @@ The tool uses Pi's default `direct` exposure and a read-only annotation. It writ
 
 ### Pattern-miner skill
 
-The skill makes one preparation call before interpretation. One lineage counts as one source; recommendations need two independent examples. Requested topics receive a focused confirmation search even when absent from the sample.
-
-The skill groups examples, then checks current manifests, scripts, skills, and instructions. It makes no recommendation when it cannot safely check candidate files.
+Read the [pi-session-pattern-miner skill](./skills/pi-session-pattern-miner/SKILL.md) for its procedure and evidence rules.
 
 ### Repository inventory
 
@@ -139,26 +137,11 @@ Preparation runs one sync pass. Backlog or incomplete walks limit the sample and
 
 Repository scope fails outside Git or when inventory fails. All scope returns its corpus with `inventory.available:false` for nonzero Git-root lookup (`reason:"not-a-git-repository"`) or later inventory failure (`reason:"inventory-failed"`).
 
-Both scopes fail on working-directory resolution failure, failure to start Git, cancellation, root-output overflow, invalid root output, or unexpected root-lookup stderr.
-
 | Limit | Maximum |
 | --- | --- |
 | Serialized preparation output | 50,000 characters |
 | Inventory output | 10,000 characters |
-| Git root output | 4 KiB |
-| Raw Git index listing | 8 MiB |
-| Indexed package manifests | 512 |
-| One manifest | 1 MiB |
-| Combined declared manifest sizes | 16 MiB |
 
 Inventory rejects malformed index data, invalid UTF-8, conflict entries, unsupported package modes, Git errors, unexpected stderr, and stream overflow. It reads Git objects locally without lazy fetching or replacement refs.
 
 `omittedCounts` counts only omitted inventory entries; `inventory.truncated` reports those omissions. Session and top-level `contentTruncated` report transcript budget trimming only; session `truncated` reports omitted middle messages.
-
-To return to the older behavior, pin this release:
-
-```bash
-pi install npm:@henryqw/pi-session-recall@2.1.1
-```
-
-No index migration or cleanup is necessary.

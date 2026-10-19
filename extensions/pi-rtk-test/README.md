@@ -13,8 +13,6 @@ Install Rust Token Killer (`rtk`) on Pi's `PATH`. This extension does not instal
 ```bash
 brew install rtk
 rtk --version
-
-rtk init -g --agent pi
 ```
 
 ## Use

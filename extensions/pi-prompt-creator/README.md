@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-prompt-creator
 ```
 
-Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`. Reopen `/task-models` to verify the saved route and thinking level.
+Configure `fast` in `/task-models`, or override `pi-prompt-creator/draft`.
 
 ## Works with
 
@@ -74,7 +74,7 @@ Invalid or misspelled `automatic` disables automatic analysis for the session. F
 
 Only `/promptor automatic on` and `/promptor automatic off` write config. Each toggle rereads the file and preserves its current `inputThreshold`, including changes from another session. For a file with problems, it reports them, keeps usable values, and removes unknown keys. If another session changes that file before replacement, the toggle writes nothing.
 
-The extension owns no model config. At session start and before analysis, it reports each shared task-model config problem once per session.
+The extension owns no model config.
 
 ## State and storage
 
@@ -90,5 +90,3 @@ Pending candidates and input counters stay in memory only. Only automatic mode a
 | Child runtime | Two-minute idle timeout and five-minute hard timeout. |
 
 No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`. Analysis never retries automatically; run `/promptor` or `/promptor analyze` to try again. The next non-empty user input clears the failure widget.
-
-This package does not create Skills or project-local runtime state.

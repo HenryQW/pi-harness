@@ -28,7 +28,7 @@ Pi adds root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md` to l
 
 `/dir-add` reloads only when discovered external skill paths change, not merely because skills exist. If `add_directory` asks for `/reload`, run it to update skills.
 
-External instructions and skills enter through a model-visible tool call or user command. This package does not enable codemode.
+External instructions and skills enter through a model-visible tool call or user command.
 
 ### Search results
 
@@ -62,6 +62,4 @@ Select persistent scopes explicitly: external directories can inject `AGENTS.md`
 
 Search uses Node and supports basename and relative-path globs. It skips `.git`, `node_modules`, and symbolic links.
 
-Missing or overlapping project and global directories stay configured but are skipped with warnings. Restore missing paths or correct overlaps, then run `/dir-reload`.
-
-To change or discard a path, remove it with `/dir-ls`. Add corrected paths with `/dir-add`; `/dir-ls` cannot repair paths in place.
+Missing or overlapping project and global directories stay configured but are skipped with warnings. Restore missing paths, or remove an incorrect path with `/dir-ls` and add the corrected path with `/dir-add`; then run `/dir-reload`.

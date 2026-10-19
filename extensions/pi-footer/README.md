@@ -1,6 +1,6 @@
 # `@henryqw/pi-footer`
 
-Keep footer identity, model usage, agent-work time, and extension status visible in Pi. Use `/open` to open the current working directory. Enable the footer and open commands independently.
+Keep footer identity, model usage, agent-work time, and extension status visible in Pi. Enable the footer and open commands independently.
 
 ![Pi footer showing repository, pull request, quota, usage, model, and extension status](./example.png)
 
@@ -9,15 +9,6 @@ Keep footer identity, model usage, agent-work time, and extension status visible
 ```bash
 pi install npm:@henryqw/pi-footer
 ```
-
-This package replaces `@henryqw/pi-open-in`. Remove that package before you upgrade to prevent duplicate `/open` and `/set-open-in` commands:
-
-```bash
-pi remove npm:@henryqw/pi-open-in
-pi install npm:@henryqw/pi-footer
-```
-
-For project-local installations, add `--local` to both commands. Remove manually configured paths to the old package, then restart Pi. Keep the existing open command configuration at `config/pi-open-in/config.json`; do not move it.
 
 Both entry points load by default. To select only the open commands, use Pi's resource filter in `settings.json`:
 
@@ -32,7 +23,7 @@ Both entry points load by default. To select only the open commands, use Pi's re
 }
 ```
 
-Select `extensions/footer.ts` for only the footer, or use `pi config` to toggle either resource. No package activation config is necessary.
+Select `extensions/footer.ts` for only the footer, or use `pi config` to toggle either resource.
 
 ## Works with
 
@@ -69,7 +60,7 @@ Virtual models show the latest successful physical model and thinking level afte
 
 Thinking colors are dim grey for `off` and the model name, then green `minimal`, yellow-green `low`, lime `medium`, yellow `high`, orange `xhigh`, and red `max`. Active levels use ANSI-256 colors. `ultra` uses a rainbow only when the runtime supports it; unsupported levels do not appear.
 
-CodeGraph shows `✓ CG` with an index, `○ CG` in Git without an index, and no index badge outside Git. Setup shows a dim spinner and elapsed time, such as `⠋ CG · indexing 8s`. Persistent failures retain their theme-colored `!` and error text. Direct `codegraph_explore` calls temporarily show `● CG`; queries inside scripted tools do not.
+For CodeGraph badges, see [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph).
 
 Other dependency statuses, such as `⠋ deps · installing 12s`, disappear after completion. Middle dots separate statuses. The footer preserves colors, links, glyphs, and interior spacing, trims outer whitespace, replaces line breaks with spaces, and shortens long statuses.
 
@@ -95,7 +86,7 @@ Local Git data comes from `git status --porcelain=v2 --branch --untracked-files=
 Package-owned paths under `getAgentDir()` (normally `~/.pi/agent`):
 
 - `~/.pi/agent/config/pi-footer/config.json`: footer colors.
-- `~/.pi/agent/config/pi-open-in/config.json`: open command, retained from `pi-open-in`.
+- `~/.pi/agent/config/pi-open-in/config.json`: open command.
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
@@ -141,13 +132,9 @@ Theme tokens: `accent`, `dim`, `muted`, `text`, `success`, `warning`, `error`, a
 }
 ```
 
-### Open command
-
-`/open` reads config on each run. Missing config silently uses `code`. Reads never create or write the config home; only `/set-open-in` writes the file, atomically.
-
 ## API
 
-Consumers must use the owner API, not read config directly. Replace `@henryqw/pi-open-in/open-uri` imports with `@henryqw/pi-footer/open-uri`:
+Consumers must use the owner API, not read config directly:
 
 ```ts
 import { loadOpenInConfig } from "@henryqw/pi-footer/open-uri";
@@ -168,6 +155,8 @@ if (loaded.status === "ok") console.log(loaded.value.command, loaded.issues);
 ## Limits and recovery
 
 Open commands split on whitespace. Quoting and tokens with spaces are unsupported; use a wrapper script for executable paths with spaces.
+
+`/open` reads config on each run. Missing config silently uses `code`. Only `/set-open-in` writes the file, atomically.
 
 Open config must be a JSON object with one non-empty string `command`. Unknown keys, invalid commands, or malformed files produce warnings at session start or the next `/open`, including footer-only installations. Each issue shows once per session, never during rendering. Invalid commands and malformed files use `code` without changing the file.
 

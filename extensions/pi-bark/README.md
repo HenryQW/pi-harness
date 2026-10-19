@@ -1,6 +1,6 @@
 # `@henryqw/pi-bark`
 
-Get [Bark](https://bark.day.app) push notifications when Pi finishes, fails, or needs input. Use `/copyb` to send the latest Pi response to your device.
+Get [Bark](https://bark.day.app) push notifications when Pi finishes, fails, or needs input.
 
 ## Install
 
@@ -71,7 +71,7 @@ Cancelled runs, including Escape, and cancelled compactions send no settled noti
 
 Status notifications contain the Pi session name (`Unnamed` if unset), but no prompt, agent output, or error text. With `pi-herdr-tools`, Herdr shows the same name. pi-bark never calls Herdr or reads its state.
 
-Automatic notifications default to enabled. Run `/bark off` or `/bark on` for a CWD override; `/bark inherit` removes it. `/bark default off` changes the default for CWDs without overrides. These global config settings do not affect `/copyb`; no project config is necessary.
+Automatic notifications default to enabled. Run `/bark off` or `/bark on` for a CWD override; `/bark inherit` removes it. `/bark default off` changes the default for CWDs without overrides. These global config settings do not affect `/copyb`.
 
 ## Config
 

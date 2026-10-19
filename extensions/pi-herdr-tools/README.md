@@ -11,24 +11,7 @@ pi install npm:@henryqw/pi-herdr-tools
 
 Use Herdr 0.9.3 or later in a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
 
-Before titles or side questions, configure `fast` in `/task-models`. It must not show `not configured`.
-
-### Migration
-
-Replace the retired packages before restarting Pi:
-
-```sh
-pi install npm:@henryqw/pi-herdr-tools
-pi remove npm:@henryqw/pi-herdr-btw
-pi remove npm:@henryqw/pi-herdr-clone
-pi remove npm:@henryqw/pi-herdr-rename
-# Only if the older standalone completion package is still installed:
-pi remove npm:@henryqw/pi-herdr-done
-```
-
-Remove only installed sources and manually configured entry-point paths. Add `--local` for project-local installs. Old and new packages register duplicate commands. The harness installer removes retired personal npm sources only after successful replacement installation.
-
-No migration: commands, safety behavior, task identifiers, `pi-herdr-rename/title` entries, BTW payload flags, pending deliveries, and config paths remain compatible. Features are not separately selectable.
+Configure `fast` in `/task-models`.
 
 ## Works with
 
@@ -64,7 +47,7 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 
 ### Clones
 
-Both commands require `HERDR_ENV=1` and `HERDR_PANE_ID`. Pane, session-path, and leaf validation precedes target creation. Clones contain the root-to-current-leaf path, excluding sibling branches and still-streaming assistant output. Unsaved sessions use live state. Clones need no configuration.
+Both commands require `HERDR_ENV=1` and `HERDR_PANE_ID`. Pane, session-path, and leaf validation precedes target creation. Clones contain the root-to-current-leaf path, excluding sibling branches and still-streaming assistant output. Unsaved sessions use live state.
 
 ![Clone launch and recovery boundaries.](./docs/clone-flow.svg)
 
@@ -139,7 +122,7 @@ File and fields are optional. Launch reports unknown keys and invalid values, us
 
 ### Model profiles
 
-`@henryqw/pi-task-models` owns `~/.pi/agent/config/pi-task-models/config.json`. Both tasks default to `fast`; `tasks` assignments override it. Missing config or profiles warn once per session. Issues, including unknown keys and malformed JSON, report once per session at startup or before route resolution. Correct them with `/task-models`.
+See [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) for profile defaults, assignments, and config errors.
 
 Side threads select the first authenticated viable route before launch. Titles use the primary route, then fallback, with configured thinking; they never substitute the current session model. An invalid title gets one repair request before fallback. Without a viable route, titles remain unchanged.
 

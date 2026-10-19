@@ -1,6 +1,6 @@
 # `@henryqw/pi-config-store`
 
-Give extension authors one safe home for Pi extension files. A bad user config never crashes an extension. The store reports each problem. It uses safe defaults, or it disables the extension when a default is not safe. End users do not install this package directly in Pi.
+Give extension authors one safe home for Pi extension files. A bad user config never crashes an extension. The store reports each problem. It uses safe defaults, or it returns a disabled config when a default is not safe. End users do not install this package directly in Pi.
 
 ## Install
 
@@ -8,7 +8,7 @@ Give extension authors one safe home for Pi extension files. A bad user config n
 npm install @henryqw/pi-config-store
 ```
 
-Use your extension package's package manager. Do not run `pi install` for this library. The library requires `@earendil-works/pi-coding-agent` 1.3.0 or later in the 1.x series.
+Use your extension package's package manager. Do not run `pi install` for this library.
 
 ## Use
 
@@ -60,7 +60,7 @@ A near-miss key differs from the declared key only in letter case, or it has a s
 
 The rule applies to each field table, including those in `parsers.object`. It does not apply to keys of `parsers.record` or `entries`.
 
-`loadSync()` does not throw for file content or I/O problems. It never writes.
+`loadSync()` does not throw for file content or I/O problems.
 
 If the store disables the config, disable the extension's features. Keep config repair commands available. The user must be able to fix the file.
 
@@ -127,13 +127,11 @@ By default, helpers use Pi's `getAgentDir()`. Pass `agentDir` to use another age
 
 For custom files other than hand-edited JSON, use `extensionConfigDir` and the bounded text helpers. Such files include generated state. The text helpers do not parse data, handle missing files, or lock access. The owning extension controls the file format, schema, recovery, and lock policy.
 
-Only the owning extension writes its config home. Consumers use the owner's API or namespaced Pi events. They do not read or write another extension's files directly.
-
 ## State and storage
 
 - The config home is `getAgentDir()/config/<extension-id>/`.
 - The default JSON file is `getAgentDir()/config/<extension-id>/config.json`. Use `fileName` for another hand-edited JSON file in the same home, such as `presets.json`.
-- A missing file without required fields gives `{ status: "ok", source: "missing", value, issues: [] }` with the defaults. The store does not create a file.
+- A missing file without required fields gives `{ status: "ok", source: "missing", value, issues: [] }` with the defaults.
 
 `save`, `update`, and `remove` are asynchronous. Every change uses a lock. Writes use a temporary file in the same directory and an atomic rename.
 
@@ -153,14 +151,12 @@ A direct text read requires `maxBytes` to be a positive safe integer. It consume
 
 A direct text write creates or restricts its parent directory to mode `0700` where supported. It writes a temporary file in the same directory at mode `0600`. It flushes the file. Then it renames the file. Failures before rename remove the temporary file. After a successful rename, later cancellation does not turn success into an error.
 
-Repository default: most extension owners can assume one active config writer. With this assumption, reload the extension after a manual or external edit, before its next write. The supported workflow does not include a full replacement from stale in-memory data.
-
-`store.save(value)` locks the whole config. It then replaces the config. The lock serializes writes, but does not merge fields from stale values. Use `store.update(mutator)` when an extension supports multiple processes, sessions, or writers. Also use it to keep concurrent field changes. It reads the latest config under the store lock.
+`store.save(value)` does not merge fields from stale values. Use `store.update(mutator)` when an extension supports multiple writers or must keep concurrent field changes.
 
 To repair a file with issues, use `store.replaceIfUnchanged(snapshot, value)` with a value that the user confirmed earlier. The `snapshot` must be a `loadSync()` result of a store for the same file. Another object throws a `TypeError`.
 
 Under the lock, the store reads the file again. It compares all bytes with the bytes that `snapshot` read. A missing file matches only a missing file. If the file changed, the method throws `Config at <path> changed since it was read; nothing was written. Read it again and retry.`. It does not change the file.
 
-A load reads at most 64 KiB + 1 byte. It does not open a FIFO in a way that blocks. A snapshot cannot prove the contents of a file larger than 64 KiB, an unreadable file, or a file that is not regular.
+A snapshot cannot prove the contents of a file larger than 64 KiB, an unreadable file, or a file that is not regular.
 
 For such a snapshot, the method throws `Config at <path> was not read completely (<reason>), so it cannot be replaced safely; nothing was written. Fix, shrink, or remove the file, then retry.`. It does not change the file.

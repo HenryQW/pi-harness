@@ -20,7 +20,7 @@ CI repair requires `gh api --help` to list `--allow-escape-sequences`. Upgrade `
 | [`@henryqw/pi-herdr`](https://pi.henry.wang/packages/pi-herdr) | Required | Provides the Herdr CLI client for workspace renaming. |
 | [`@henryqw/pi-process`](https://pi.henry.wang/packages/pi-process) | Required | Runs child processes with limits. |
 
-Required dependencies install with `pi-pr`. Workspace renaming is optional and requires Herdr 0.9.3 or later. Other functions work outside Herdr.
+Workspace renaming is optional and requires Herdr 0.9.3 or later. Other functions work outside Herdr.
 
 ## Use
 
@@ -73,10 +73,6 @@ An explicit `base` must match the existing PR base or configured/default creatio
 
 The helper retains backups of tracked, untracked, and colliding ignored files. Retained backups block their owning worktree; unowned legacy backups block every worktree. Follow the linked skill for exact-OID restoration, interrupted runs, legacy backup adoption, and recovery completion. Verify restored bytes and staging before explicitly requesting completion. Never drop a backup or repeat an uncertain operation automatically. Removing a worktree removes ownership refs, not stash entries.
 
-### Workflow tests
-
-From this source checkout, run `pnpm --filter @henryqw/pi-pr test:git-workflows`. It uses temporary Git repositories and does not write to live GitHub. See [executed cases and acceptance instructions](./docs/git-workflows-tested.md).
-
 ## Flow
 
 ![Flowchart showing /pr linking an inferred open PR before draft handling, repeating discovery, and choosing the next safe route](./docs/pr-routing.svg)
@@ -127,8 +123,6 @@ The footer shows linked `PR #number` with statuses such as `N unresolved`, `CI f
 The widget shows `⠋ Checking pull request…` during discovery, then a route hint. Errors use `✗`, warnings `!`, success `✓`, and neutral routes `●`. Hints stay hidden during workflows.
 
 Background discovery starts with the session. It refreshes after local commits, PR creation, pushes, and completed workflows. When Pi becomes idle, an open PR also refreshes. This requires no active or queued refresh and a last check at least two minutes old. Failed checks reset this wait. There is no timer, so external changes can stay hidden until a later idle settlement.
-
-`/pr` always reads fresh evidence.
 
 The UI stays silent outside Git or without a supported GitHub remote. Lookup failures show `PR · status unavailable`. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying.
 

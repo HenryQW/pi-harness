@@ -1,6 +1,6 @@
 # `@henryqw/pi-deps`
 
-Start locked Node and uv dependency installs when Git creates a worktree in an opted-in repository. The shared hook works across worktree tools without installing dependencies at Pi startup.
+Start locked Node and uv dependency installs when Git creates a worktree in an opted-in repository. See [the hook design decision](./docs/adr/0001-prepare-dependencies-at-worktree-creation.md).
 
 ## Install
 

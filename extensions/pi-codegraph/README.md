@@ -34,7 +34,7 @@ codegraph init --yes
 
 `codegraph_explore` accepts `query`, optional `maxFiles` (default 12), and optional `projectPath` (default: Pi's working directory). It runs `codegraph explore --path <projectPath> --max-files <maxFiles> <query>` and returns unchanged output. A command error or runtime above 120 seconds fails the tool call and shows the end of the error output.
 
-Pi's `codemode` works, including `codemode.mode` set to `only`. Scripts call `tools.codegraph_explore({ query })` and receive a string. Only printed script output reaches the model. Print the full string when the model needs complete source; otherwise, search or shorten it first.
+Works with `codemode`, including `codemode.mode` set to `only`. Scripts call `tools.codegraph_explore({ query })` and receive a string.
 
 ## Flow
 
@@ -56,7 +56,9 @@ Creating, resuming, or forking a session waits for active initialization without
 
 Each checkout owns `.codegraph/codegraph.db`. The extension can read other indexes to prepare it, but does not change them. It writes `pi-codegraph-init.lock` in the worktree's Git metadata and `pi-codegraph-declined` in the Git common directory.
 
-To create a worktree index, the extension copies a complete index of the same repository that the installed CodeGraph version built. It picks the index with the fewest changed files compared to the worktree `HEAD`. During the copy, it holds the source writer lock `.codegraph/codegraph.lock` and skips a source that another writer locks. It then runs `codegraph sync <worktree-root>`. If `codegraph status --json` does not report a complete index, the extension deletes the copy and tries the next index. If no index is usable, it runs `codegraph init --yes <worktree-root>`.
+To create a worktree index, the extension copies a complete index of the same repository that the installed CodeGraph version built. It picks the index with the fewest changed files compared to the worktree `HEAD`. During the copy, it holds the source writer lock `.codegraph/codegraph.lock` and skips a source that another writer locks. It then runs `codegraph sync <worktree-root>`.
+
+The extension accepts a copied index only when `codegraph status --json` exits with code 0 and reports `index.state:"complete"` and `index.reindexRecommended:false`. Otherwise, it deletes the copy and tries the next index. If no index is usable, it runs `codegraph init --yes <worktree-root>`.
 
 The extension does not add ignore rules, delete indexes, or prune worktrees. Add `.codegraph/` to your ignore rules if necessary. Pi Subagent retains ignored files to prevent data loss, so indexed worker worktrees can require manual cleanup.
 
