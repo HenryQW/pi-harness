@@ -10,7 +10,7 @@ pi install npm:@henryqw/pi-subagent
 pi install npm:@henryqw/pi-cron
 ```
 
-Configure the job profiles with `/task-models`. Add a job to the config file below. Run `/cron` to check its next slot.
+Configure the job profiles in `/task-models`. Add a job to the config file below. Run `/cron` to check its next slot.
 
 ## Works with
 
@@ -38,7 +38,7 @@ The run inherits the current session environment plus `env`. Open its saved run 
 
 The extension checks jobs at session start and every minute. First sighting sets the anchor; a new job waits for its next slot. Missed slots produce one catch-up run, not a backlog. Open Pi sessions do not run the same job concurrently.
 
-`limits` bounds turns, idle time, and runtime. The extension saves the outcome, bounded output summary, and available session path before delivery.
+The extension saves the outcome, bounded output summary, and available session path before delivery.
 
 | `notify` value | Delivery |
 | --- | --- |
@@ -108,8 +108,6 @@ Invalid version 1 state, including malformed job records or run claims, stays un
 ## Limits and recovery
 
 There is no background daemon. Each Pi session runs one job at a time. If busy, `/cron run` does not queue; scheduled jobs wait for a later check.
-
-At session and job start, pi-cron reports pi-subagent `roleDefaults` and shared task-model config problems once per session. This also applies when those packages report the problem.
 
 Runs cannot answer questions or approval prompts. Interactive confirmation blocks a Role until idle timeout. Failed or timed-out runs record `failure` with error text. Open the run session if available; pre-launch failures show `Session: none created`. Retry with `/cron run <job-id>`.
 

@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="remember-queue-flow-title remember-queue-flow-desc" id="remember-queue-flow-root">
+        <title id="remember-queue-flow-title">The /remember request and conflict queues</title>
+        <desc id="remember-queue-flow-desc">Active responses defer conflicts and remember requests separately; after settlement, conflicts run first, then requests, with live-source checks before review, questions, or writes.</desc>
+        <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #remember-queue-flow-root { color: #101828; font-family: 'Geist', system-ui, sans-serif; }
+      #remember-queue-flow-root .diagram-scroll { overflow-x: auto; }
+      #remember-queue-flow-root .heading { fill: #101828; font: 600 20px 'Geist', sans-serif; }
+      #remember-queue-flow-root .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+      #remember-queue-flow-root .queue { fill: #e6e4de; stroke: #4c5665; stroke-width: 1; }
+      #remember-queue-flow-root .input { fill: #e6e4de; stroke: #6a7282; stroke-width: 1; }
+      #remember-queue-flow-root .focal { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+      #remember-queue-flow-root .name { fill: #101828; font: 600 14px 'Geist', sans-serif; text-anchor: middle; }
+      #remember-queue-flow-root .body { fill: #4c5665; font: 400 14px 'Geist', sans-serif; text-anchor: middle; }
+      #remember-queue-flow-root .code { fill: #4c5665; font: 400 10px 'Geist Mono', monospace; text-anchor: middle; }
+      #remember-queue-flow-root .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#remember-queue-flow-arrow); }
+      #remember-queue-flow-root .edge-primary { fill: none; stroke: #1d4ed8; stroke-width: 1.2; marker-end: url(#remember-queue-flow-arrow-primary); }
+      #remember-queue-flow-root .label-mask { fill: #f0eee9; }
+      #remember-queue-flow-root .label { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; text-anchor: middle; }
+      #remember-queue-flow-root .note { fill: #4c5665; font: 400 14px 'Geist', sans-serif; }</style>
+          <style>
+            .heading { fill: #101828; font: 600 20px 'Geist', sans-serif; }
+            .eyebrow { fill: #6a7282; font: 500 10px 'Geist Mono', monospace; letter-spacing: .08em; }
+            .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+            .queue { fill: #e6e4de; stroke: #4c5665; stroke-width: 1; }
+            .input { fill: #e6e4de; stroke: #6a7282; stroke-width: 1; }
+            .focal { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+            .name { fill: #101828; font: 600 14px 'Geist', sans-serif; text-anchor: middle; }
+            .body { fill: #4c5665; font: 400 14px 'Geist', sans-serif; text-anchor: middle; }
+            .code { fill: #4c5665; font: 400 10px 'Geist Mono', monospace; text-anchor: middle; }
+            .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#remember-queue-flow-arrow); }
+            .edge-primary { fill: none; stroke: #1d4ed8; stroke-width: 1.2; marker-end: url(#remember-queue-flow-arrow-primary); }
+            .label-mask { fill: #f0eee9; }
+            .label { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; text-anchor: middle; }
+            .note { fill: #4c5665; font: 400 14px 'Geist', sans-serif; }
+          </style>
+          <marker id="remember-queue-flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+          <marker id="remember-queue-flow-arrow-primary" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+        </defs>
+        <rect width="1280" height="720" fill="#f0eee9"/>
+        <text class="heading" x="40" y="64">Wait for the response, then process both queues</text>
+        <text class="eyebrow" x="40" y="104">DURING AN ACTIVE RESPONSE</text>
+        <text class="eyebrow" x="344" y="160">AFTER SETTLEMENT · ONLY WHILE IDLE</text>
+
+        <!-- Queue routes and processing routes precede nodes. -->
+        <path class="edge" d="M280 180 H304 Q312 180 312 188 V224 Q312 232 320 232 H344"/>
+        <path class="edge" d="M280 332 H304 Q312 332 312 324 V288 Q312 280 320 280 H344"/>
+        <line class="edge-primary" x1="584" y1="256" x2="656" y2="256"/>
+        <path class="edge" d="M464 320 V368 Q464 376 472 376 H708 Q716 376 716 384 V440"/>
+        <line class="edge" x1="584" y1="492" x2="656" y2="492"/>
+        <line class="edge" x1="800" y1="440" x2="800" y2="320"/>
+        <line class="edge" x1="888" y1="224" x2="1008" y2="224"/>
+        <path class="edge" d="M888 288 H952 Q960 288 960 296 V464 Q960 472 968 472 H1008"/>
+        <line class="edge" x1="1120" y1="400" x2="1120" y2="296"/>
+
+        <rect class="label-mask" x="588" y="232" width="64" height="14" rx="2"/>
+        <text class="label" x="620" y="242">1 FIRST</text>
+        <rect class="label-mask" x="532" y="352" width="88" height="14" rx="2"/>
+        <text class="label" x="576" y="362">2 THEN</text>
+        <rect class="label-mask" x="808" y="380" width="72" height="14" rx="2"/>
+        <text class="label" x="844" y="390">PROPOSAL</text>
+        <rect class="label-mask" x="912" y="200" width="72" height="14" rx="2"/>
+        <text class="label" x="948" y="210">DISTINCT</text>
+        <rect class="label-mask" x="912" y="264" width="72" height="14" rx="2"/>
+        <text class="label" x="948" y="274">CONFLICT</text>
+        <rect class="label-mask" x="1128" y="336" width="104" height="14" rx="2"/>
+        <text class="label" x="1180" y="346">CHECKS PASS</text>
+
+        <rect class="queue" x="40" y="128" width="240" height="104" rx="6"/>
+        <text class="name" x="160" y="160">Conflict queue</text>
+        <text class="body" x="160" y="184">Interactive questions wait</text>
+        <text class="code" x="160" y="208">queued: true · saved: false</text>
+
+        <rect class="queue" x="40" y="280" width="240" height="104" rx="6"/>
+        <text class="name" x="160" y="312">Remember queue</text>
+        <text class="body" x="160" y="336">Trimmed requests wait</text>
+        <text class="code" x="160" y="360">/remember &lt;instruction&gt;</text>
+
+        <rect class="focal" x="344" y="192" width="240" height="128" rx="6"/>
+        <text class="name" x="464" y="224">Response settles</text>
+        <text class="body" x="464" y="248">Conflicts first, then requests</text>
+        <text class="body" x="464" y="272">FIFO within each queue</text>
+        <text class="code" x="464" y="296">agent_settled · idle</text>
+
+        <rect class="input" x="344" y="440" width="240" height="104" rx="6"/>
+        <text class="name" x="464" y="472">Idle request</text>
+        <text class="body" x="464" y="496">Start immediately</text>
+        <text class="code" x="464" y="520">/remember &lt;instruction&gt;</text>
+
+        <rect class="node" x="656" y="440" width="232" height="104" rx="6"/>
+        <text class="name" x="772" y="464">Read live sources; prepare</text>
+        <text class="code" x="772" y="488">pi-memory/prepareCandidate</text>
+        <text class="body" x="772" y="512">One entry and target, or decline</text>
+        <text class="body" x="772" y="532">Decline → no write</text>
+
+        <rect class="node" x="656" y="192" width="232" height="128" rx="6"/>
+        <text class="name" x="772" y="220">Read live sources; review</text>
+        <text class="code" x="772" y="244">pi-memory/reviewCandidate</text>
+        <text class="body" x="772" y="272">Queued conflicts get a new review</text>
+        <text class="body" x="772" y="296">Exact duplicates skip review</text>
+
+        <rect class="node" x="1008" y="192" width="232" height="104" rx="6"/>
+        <text class="name" x="1124" y="224">Save</text>
+        <text class="body" x="1124" y="248">Sources must stay unchanged</text>
+        <text class="body" x="1124" y="272">Deferred result: UI notification</text>
+
+        <rect class="node" x="1008" y="400" width="232" height="144" rx="6"/>
+        <text class="name" x="1124" y="428">Ask about remaining conflicts</text>
+        <text class="code" x="1124" y="452">ask_question</text>
+        <text class="body" x="1124" y="476">Approved merge or replacement:</text>
+        <text class="body" x="1124" y="496">review again before saving</text>
+        <text class="body" x="1124" y="524">Discard or blocked → no write</text>
+
+        <!-- Two lifecycle guards apply to the entire flow. -->
+        <text class="note" x="40" y="584">Cancellation, shutdown, reload, or session replacement drops both queues. Completed writes remain saved.</text>
+        <text class="note" x="40" y="612">A new response or model change during review rejects the write. Retry in the current session.</text>
+        <line x1="40" y1="640" x2="1240" y2="640" stroke="#d5d8db" stroke-width="1"/>
+        <text class="note" x="40" y="672">Queued conflicts are not saved. The agent must finish replying without retrying or asking the user itself.</text>
+      </svg>

@@ -16,7 +16,7 @@
   <figure>
     <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="dependency-preparation-flow-title dependency-preparation-flow-desc">
       <title id="dependency-preparation-flow-title">Dependency preparation flow</title>
-      <desc id="dependency-preparation-flow-desc">Swimlane diagram showing that the shared hook synchronously validates root lockfiles plus packageManager declarations. Conflicting lockfiles, mismatches, and unsupported declarations fail the worktree command. Valid metadata starts detached installs and status reporting, but consumers may use the worktree before dependencies are ready.</desc>
+      <desc id="dependency-preparation-flow-desc">Swimlane diagram showing that the shared hook synchronously validates root lockfiles plus packageManager declarations. Conflicting lockfiles, mismatches, and unsupported declarations fail the worktree command. Valid metadata may start selected detached installs and status reporting; if no install is needed, the hook clears stale status and stops, but consumers may use the worktree before dependencies are ready.</desc>
       <defs>
         <style>
           .lane-label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
@@ -73,17 +73,26 @@
 
       <!-- Connectors -->
       <path class="edge" d="M368 76 H376 Q384 76 384 84 V156 Q384 164 392 164"/>
-      <path class="edge" d="M552 164 H556 Q560 164 560 168 V272 Q560 280 568 280"/>
-      <path class="edge" d="M720 344 V360"/>
-      <path class="edge-plain" d="M872 280 H884"/>
+      <path class="edge" d="M472 192 V200 Q472 208 464 208 H424 Q416 208 416 216"/>
+      <path class="edge" d="M416 344 V360"/>
+      <path class="edge" d="M568 280 H640"/>
+      <path class="edge" d="M752 320 V360"/>
+      <path class="edge-plain" d="M864 280 H884"/>
       <path class="edge-async" d="M892 272 H976 Q984 272 984 280 V420"/>
       <path class="edge-async" d="M892 288 Q900 288 900 296 V488 Q900 496 908 496 H972 Q980 496 980 504 V516"/>
       <path class="edge" d="M1056 452 H1080"/>
       <path class="edge" d="M1156 484 V500"/>
       <path class="edge" d="M1104 484 V488 Q1104 496 1096 496 H1088 Q1072 496 1072 512 V584 Q1072 592 1080 592"/>
 
-      <!-- Connector label -->
-      <text class="edge-label" x="752" y="352">INVALID</text>
+      <!-- Connector labels -->
+      <rect x="424" y="344" width="48" height="12" fill="#f0eee9"/>
+      <text class="edge-label" x="448" y="352">INVALID</text>
+      <rect x="580" y="260" width="48" height="12" fill="#f0eee9"/>
+      <text class="edge-label" x="604" y="268">VALID</text>
+      <rect x="760" y="332" width="24" height="12" fill="#f0eee9"/>
+      <text class="edge-label" x="772" y="340">NO</text>
+      <rect x="864" y="288" width="24" height="12" fill="#f0eee9"/>
+      <text class="edge-label" x="876" y="296">YES</text>
 
       <!-- Process nodes -->
       <rect class="node-input" x="224" y="52" width="144" height="48" rx="6"/>
@@ -94,21 +103,28 @@
       <text class="node-name" x="472" y="160">Create worktree</text>
       <text class="node-sub" x="472" y="180">CALL SHARED POST-CHECKOUT</text>
 
-      <polygon class="node" points="720,216 872,280 720,344 568,280"/>
-      <text class="node-name" x="720" y="264">Synchronous validation</text>
-      <text class="node-sub" x="720" y="280">ROOT LOCKFILES + packageManager DECLARATIONS</text>
-      <text class="node-sub" x="720" y="296">CONFLICTING LOCKFILES · MISMATCHES</text>
-      <text class="node-sub" x="720" y="308">UNSUPPORTED DECLARATIONS?</text>
+      <polygon class="node" points="416,216 568,280 416,344 264,280"/>
+      <text class="node-name" x="416" y="264">Synchronous validation</text>
+      <text class="node-sub" x="416" y="280">ROOT LOCKFILES + packageManager DECLARATIONS</text>
+      <text class="node-sub" x="416" y="296">CONFLICTING LOCKFILES · MISMATCHES</text>
+      <text class="node-sub" x="416" y="308">UNSUPPORTED DECLARATIONS?</text>
 
-      <rect class="node-failure" x="632" y="360" width="176" height="44" rx="6"/>
-      <text class="node-name" x="720" y="380">Fail fast</text>
-      <text class="node-sub" x="720" y="396">WORKTREE COMMAND</text>
+      <rect class="node-failure" x="328" y="360" width="176" height="44" rx="6"/>
+      <text class="node-name" x="416" y="380">Fail fast</text>
+      <text class="node-sub" x="416" y="396">WORKTREE COMMAND</text>
+
+      <polygon class="node" points="752,240 864,280 752,320 640,280"/>
+      <text class="node-name" x="752" y="284">Any install needed?</text>
+
+      <rect class="node" x="672" y="360" width="160" height="44" rx="6"/>
+      <text class="node-name" x="752" y="380">Stop</text>
+      <text class="node-sub" x="752" y="396">CLEAR STALE STATUS</text>
 
       <rect x="884" y="268" width="8" height="24" rx="4" fill="#4c5665"/>
 
       <rect class="node-async" x="912" y="420" width="144" height="64" rx="6"/>
-      <text class="node-name" x="984" y="444">Run frozen installs</text>
-      <text class="node-sub" x="984" y="464">NODE + UV · LOCKED</text>
+      <text class="node-name" x="984" y="444">Run selected installs</text>
+      <text class="node-sub" x="984" y="464">NODE AND/OR UV · LOCKED</text>
       <text class="node-sub" x="984" y="476">DETACHED</text>
 
       <rect class="node-state" x="1080" y="420" width="152" height="64" rx="6"/>

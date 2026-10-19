@@ -12,7 +12,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-memory
 ```
 
-Run `/task-models` and configure `balanced` before adding memory. Reopen it to confirm that `balanced` no longer says `not configured`.
+Configure `balanced` in `/task-models`.
 
 ## Works with
 
@@ -41,11 +41,9 @@ Run `/remember I prefer concise release notes.` Pi proposes and reviews an entry
 
 `pi-memory/reviewCandidate` independently reviews single adds and batches containing adds. It defaults to `balanced`, tries configured Pi registry primary then fallback routes, and never substitutes the session model. Only verified bounded JSON evidence is accepted.
 
-![pi-memory architecture showing reviewed writes and frozen session snapshots](./docs/memory-architecture.svg)
+![/remember prepares a candidate before preflight. The memory tool enters preflight directly. Adds need review; exact duplicates skip it. Replace/remove go directly to locked storage. Session snapshots stay fixed.](./docs/memory-architecture.svg)
 
 Review sends live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md` snapshots to the configured model. Initially missing `SYSTEM.md` counts as empty. Unreadable, oversized, or over-cap sources block review. Restore a SYSTEM file that disappears after review proved it present.
-
-Missing task-model config produces a session-start warning. Configure `pi-memory/reviewCandidate` through `/task-models` before adding memory. Each shared-config problem appears once per session, at startup or before review.
 
 Conflict-free additions save immediately. Exact duplicate single adds and duplicate-only add batches are idempotent and skip review.
 
@@ -55,11 +53,13 @@ An approved merge or replacement requires a single add conflicting with exactly 
 
 ### `/remember` and queued work
 
-`/remember` uses bounded `pi-memory/prepareCandidate` proposals for one exact entry and target, or declines unsuitable, project-specific, temporary, or trivial content. It requires the configured `balanced` route, checks source changes, and saves through reviewed memory. It does not send open-ended instructions to the session agent.
+![Remember requests and conflicts wait in separate queues; after settlement, conflicts run first, then requests, with live-source checks before review and writes](./docs/remember-queue-flow.svg)
 
-During an active response, trimmed `/remember` requests queue; interactive conflict questions queue separately. Conflicts return `queued: true`, `saved: false`: nothing is saved. The agent must finish replying without retrying or asking the user itself.
+`/remember` uses bounded `pi-memory/prepareCandidate` proposals: one exact entry and target, or a decline for unsuitable, project-specific, temporary, or trivial content. It requires the configured `balanced` route, unchanged sources, and candidate review. It never sends open-ended instructions to the session agent.
 
-After the response settles, conflicts run first, then remember requests, each in FIFO order while idle. Each reads live sources again; remaining conflicts use `ask_question`. Idle requests can ask immediately. Deferred results and failures appear as UI notifications, not new agent turns.
+Active responses queue trimmed `/remember` requests and interactive conflict questions separately. Queued conflicts return `queued: true`, `saved: false`; nothing is saved. The agent must finish replying without retrying or asking the user itself.
+
+After settlement, conflicts run first, then remember requests: FIFO within each queue, only while idle. Each item re-reads live sources; remaining conflicts use `ask_question`. Idle requests can ask immediately. Deferred results and failures use UI notifications, not new agent turns.
 
 Cancellation drops both queues before further preparation, dialogs, or writes, even without a context cancellation signal. Shutdown, reload, or session replacement also clears queues. Dropped requests never return; completed writes remain saved. Issue a new `/remember` if needed.
 
@@ -106,10 +106,10 @@ Fix invalid config, then start a new session.
 
 ## State and storage
 
-| Store | Scope | Default cap |
-| --- | --- | --- |
-| `MEMORY.md` | Cross-project agent notes. Put repository facts in repository docs. | 8800 characters |
-| `USER.md` | User profile. | 5500 characters |
+| Store | Scope |
+| --- | --- |
+| `MEMORY.md` | Cross-project agent notes. Put repository facts in repository docs. |
+| `USER.md` | User profile. |
 
 Files hold entries separated by `§`. Each session captures both stores once; later edits change live memory, not the injected session snapshot.
 

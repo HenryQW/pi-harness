@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="prompt-lifecycle-title prompt-lifecycle-desc" id="prompt-lifecycle-root">
       <title id="prompt-lifecycle-title">Automatic analysis path to a saved prompt</title>
-      <desc id="prompt-lifecycle-desc">Automatic candidates wait for /promptor, while manual candidates display immediately; both require a valid Main review and explicit user approval before saving a new prompt file.</desc>
+      <desc id="prompt-lifecycle-desc">The draft child uses up to three turns: a candidate proceeds to review, null clears the widget, and invalid output or child failure shows a failure status; automatic candidates wait for /promptor, manual candidates display immediately, and both require Main review and user approval before saving.</desc>
       <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
       #prompt-lifecycle-root { --paper: #f0eee9;
@@ -53,7 +53,7 @@
       <!-- Role lanes -->
       <rect x="40" y="140" width="1200" height="144" fill="#101828" fill-opacity="0.018"/>
       <rect x="40" y="428" width="1200" height="144" fill="#101828" fill-opacity="0.018"/>
-      <g fill="none" stroke="#101828" stroke-opacity="0.14" stroke-width="0.8">
+      <g fill="none" stroke="#101828" stroke-width="0.8" stroke-opacity="0.14">
         <line x1="40" y1="140" x2="1240" y2="140"/>
         <line x1="40" y1="284" x2="1240" y2="284"/>
         <line x1="40" y1="428" x2="1240" y2="428"/>
@@ -71,17 +71,27 @@
       <g fill="none" stroke="#4c5665" stroke-width="1" marker-end="url(#prompt-lifecycle-arrow)">
         <path d="M324 212 H412 Q420 212 420 220 V308"/>
         <path d="M676 500 H764 Q772 500 772 492 V404"/>
-        <path d="M852 356 H940 Q948 356 948 348 V260" stroke-dasharray="5,4"/>
+        <path d="M772 308 V220 Q772 212 780 212 H868" stroke-dasharray="5,4"/>
+        <path d="M556 452 V404"/>
+        <path d="M676 532 H940 Q948 532 948 524 V404"/>
         <path d="M1028 212 H1116 Q1124 212 1124 220 V308"/>
       </g>
-      <path d="M500 356 H588 Q596 356 596 364 V452" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#prompt-lifecycle-arrow-accent)"/>
-      <rect x="604" y="400" width="72" height="16" rx="2" fill="#f0eee9"/>
-      <text x="640" y="412" fill="#1d4ed8" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle" letter-spacing="0.8">CONTEXT</text>
+      <path d="M420 404 V476 Q420 484 428 484 H516" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#prompt-lifecycle-arrow-accent)"/>
+      <rect x="432" y="460" width="72" height="16" rx="2" fill="#f0eee9"/>
+      <text x="468" y="472" fill="#1d4ed8" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle" letter-spacing="0.8">CONTEXT</text>
+      <g fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">
+        <rect x="564" y="420" width="40" height="16" rx="2" fill="#f0eee9"/>
+        <text x="584" y="432">NULL</text>
+        <rect x="780" y="436" width="64" height="16" rx="2" fill="#f0eee9"/>
+        <text x="812" y="448">CANDIDATE</text>
+        <rect x="820" y="508" width="64" height="16" rx="2" fill="#f0eee9"/>
+        <text x="852" y="520">FAILURE</text>
+      </g>
 
       <!-- Nodes: name text remains 12px; technical text remains 8px. -->
       <g>
         <rect x="164" y="164" width="160" height="96" rx="8" fill="#f0eee9"/>
-        <rect x="164" y="164" width="160" height="96" rx="8" fill="#4c5665" fill-opacity="0.10" stroke="#6a7282"/>
+        <rect x="164" y="164" width="160" height="96" rx="8" fill="#4c5665" stroke="#6a7282" fill-opacity="0.10"/>
         <rect x="176" y="176" width="32" height="16" rx="2" fill="#4c5665" fill-opacity="0.14"/>
         <text x="192" y="188" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">YOU</text>
         <text x="244" y="212" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Conversation</text>
@@ -98,11 +108,11 @@
       </g>
       <g>
         <rect x="516" y="452" width="160" height="96" rx="8" fill="#f0eee9"/>
-        <rect x="516" y="452" width="160" height="96" rx="8" fill="#1d4ed8" fill-opacity="0.08" stroke="#1d4ed8" stroke-width="1.2"/>
+        <rect x="516" y="452" width="160" height="96" rx="8" fill="#1d4ed8" stroke="#1d4ed8" stroke-width="1.2" fill-opacity="0.08"/>
         <rect x="528" y="464" width="32" height="16" rx="2" fill="#1d4ed8" fill-opacity="0.14"/>
         <text x="544" y="476" fill="#1d4ed8" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">CHD</text>
-        <text x="596" y="500" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">One-turn draft</text>
-        <text x="596" y="520" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">tool-free · isolated</text>
+        <text x="596" y="500" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Draft child</text>
+        <text x="596" y="520" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">up to 3 turns · tool-free</text>
         <text x="596" y="536" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">candidate JSON | null</text>
       </g>
       <g>
@@ -115,7 +125,7 @@
       </g>
       <g>
         <rect x="868" y="164" width="160" height="96" rx="8" fill="#f0eee9"/>
-        <rect x="868" y="164" width="160" height="96" rx="8" fill="#4c5665" fill-opacity="0.10" stroke="#6a7282"/>
+        <rect x="868" y="164" width="160" height="96" rx="8" fill="#4c5665" stroke="#6a7282" fill-opacity="0.10"/>
         <rect x="880" y="176" width="32" height="16" rx="2" fill="#4c5665" fill-opacity="0.14"/>
         <text x="896" y="188" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">YOU</text>
         <text x="948" y="212" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Review with Main</text>
@@ -124,7 +134,7 @@
       </g>
       <g>
         <rect x="1044" y="308" width="160" height="96" rx="8" fill="#f0eee9"/>
-        <rect x="1044" y="308" width="160" height="96" rx="8" fill="#101828" fill-opacity="0.05" stroke="#4c5665"/>
+        <rect x="1044" y="308" width="160" height="96" rx="8" fill="#101828" stroke="#4c5665" fill-opacity="0.05"/>
         <rect x="1056" y="320" width="32" height="16" rx="2" fill="#101828" fill-opacity="0.10"/>
         <text x="1072" y="332" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">FILE</text>
         <text x="1124" y="356" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Saved prompt</text>
@@ -132,12 +142,29 @@
         <text x="1124" y="392" fill="#6a7282" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">prompts/&lt;name&gt;.md · new file</text>
       </g>
 
+      <!-- Null and failure stop analysis without a candidate. -->
+      <g>
+        <rect x="516" y="308" width="160" height="96" rx="8" fill="#ffffff" stroke="#101828"/>
+        <rect x="528" y="320" width="32" height="16" rx="2" fill="#101828" fill-opacity="0.08"/>
+        <text x="544" y="332" fill="#101828" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">EXT</text>
+        <text x="596" y="356" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Clear widget</text>
+        <text x="596" y="376" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">no candidate</text>
+      </g>
+      <g>
+        <rect x="868" y="308" width="160" height="96" rx="8" fill="#ffffff" stroke="#101828"/>
+        <rect x="880" y="320" width="32" height="16" rx="2" fill="#101828" fill-opacity="0.08"/>
+        <text x="896" y="332" fill="#101828" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" font-weight="600" text-anchor="middle">EXT</text>
+        <text x="948" y="356" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12" font-weight="600" text-anchor="middle">Failure status</text>
+        <text x="948" y="376" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">Prompt analysis failed</text>
+        <text x="948" y="392" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8" text-anchor="middle">— /promptor</text>
+      </g>
+
       <!-- Manual analysis skips WAIT, but does not skip review or approval. -->
       <text x="164" y="608" fill="#101828" font-family="'Geist', system-ui, sans-serif" font-size="12">Manual analysis displays its candidate immediately. Both paths require Main review and your approval before saving.</text>
       <text x="164" y="628" fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8">/promptor dismiss discards a pending automatic candidate. Saving never replaces an existing file.</text>
 
       <!-- Horizontal bottom legend; all content stays inside the 40px safe area. -->
-      <line x1="40" y1="644" x2="1240" y2="644" stroke="#101828" stroke-opacity="0.14" stroke-width="0.8"/>
+      <line x1="40" y1="644" x2="1240" y2="644" stroke="#101828" stroke-width="0.8" stroke-opacity="0.14"/>
       <g fill="#4c5665" font-family="'Geist Mono', ui-monospace, monospace" font-size="8">
         <text x="40" y="672" letter-spacing="1.2">LEGEND</text>
         <path d="M144 668 H176" fill="none" stroke="#4c5665" marker-end="url(#prompt-lifecycle-arrow)"/>
@@ -146,7 +173,7 @@
         <text x="416" y="672">ISOLATED ANALYSIS</text>
         <path d="M596 668 H628" fill="none" stroke="#4c5665" stroke-dasharray="5,4" marker-end="url(#prompt-lifecycle-arrow)"/>
         <text x="640" y="672">WAIT FOR USER DISPLAY</text>
-        <rect x="864" y="660" width="24" height="16" rx="2" fill="#101828" fill-opacity="0.05" stroke="#4c5665"/>
+        <rect x="864" y="660" width="24" height="16" rx="2" fill="#101828" stroke="#4c5665" fill-opacity="0.05"/>
         <text x="900" y="672">SAVED AFTER APPROVAL</text>
       </g>
     </svg>

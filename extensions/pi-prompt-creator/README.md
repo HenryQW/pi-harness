@@ -1,6 +1,6 @@
 # `@henryqw/pi-prompt-creator`
 
-Turn repeated requests or corrections in the Current Conversation into a global Pi prompt. A child with no tools prepares one Prompt Candidate. Review it with Main and approve it before saving.
+Turn repeated requests or corrections in the Current Conversation into a global Pi prompt. Review the Prompt Candidate with Main and approve it before saving.
 
 ## Install
 
@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-prompt-creator
 ```
 
-Run `/task-models` before analysis. Assign a model to `fast`, or override `pi-prompt-creator/draft`. Reopen `/task-models` to verify the saved route and thinking level.
+Configure `fast` in `/task-models`, or override `pi-prompt-creator/draft`.
 
 ## Works with
 
@@ -35,7 +35,7 @@ The extension creates `~/.pi/agent/prompts/<name>.md` and reloads Pi resources, 
 
 ## Flow
 
-![Automatic analysis waits for candidate display, Main review, and approval; manual candidates appear immediately.](./docs/prompt-lifecycle.svg)
+![Draft outcomes: a candidate proceeds to Main review and approval, null clears the widget, and failure shows a status; manual candidates appear immediately.](./docs/prompt-lifecycle.svg)
 
 ### Analysis
 
@@ -47,7 +47,7 @@ Manual and automatic analysis send Pi's current model-visible session context to
 
 The payload includes the active compaction or branch summary, user text, completed assistant text, and effective prompt names and descriptions. It excludes tool traffic, thinking, images, custom messages, and inactive branches. The child has no tools, user extensions, Skills, saved session, project context files, or prompt templates. It returns one JSON response.
 
-New input does not stop analysis. Branch navigation discards the old result without stopping the child. Background work does not interrupt the conversation. Manual candidates appear immediately, without the diagram's WAIT stage. Automatic candidates stay behind `Prompt ready — /promptor` until you show them with `/promptor` or discard them with `/promptor dismiss`.
+New input does not stop analysis. Branch navigation discards the old result without stopping the child. Background work does not interrupt the conversation. Manual candidates appear immediately. Automatic candidates stay behind `Prompt ready — /promptor` until you show them with `/promptor` or discard them with `/promptor dismiss`.
 
 ### Review safeguards
 
@@ -74,7 +74,7 @@ Invalid or misspelled `automatic` disables automatic analysis for the session. F
 
 Only `/promptor automatic on` and `/promptor automatic off` write config. Each toggle rereads the file and preserves its current `inputThreshold`, including changes from another session. For a file with problems, it reports them, keeps usable values, and removes unknown keys. If another session changes that file before replacement, the toggle writes nothing.
 
-The extension owns no model config. At session start and before analysis, it reports each shared task-model config problem once per session.
+The extension owns no model config.
 
 ## State and storage
 
@@ -90,5 +90,3 @@ Pending candidates and input counters stay in memory only. Only automatic mode a
 | Child runtime | Two-minute idle timeout and five-minute hard timeout. |
 
 No candidate clears the running widget without a notice. Invalid output or child failure shows `Prompt analysis failed — /promptor`. Analysis never retries automatically; run `/promptor` or `/promptor analyze` to try again. The next non-empty user input clears the failure widget.
-
-This package does not create Skills or project-local runtime state.

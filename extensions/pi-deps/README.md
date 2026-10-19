@@ -1,6 +1,6 @@
 # `@henryqw/pi-deps`
 
-Start locked Node and uv dependency installs when Git creates a worktree in an opted-in repository. The shared hook works across worktree tools without installing dependencies at Pi startup.
+Start locked Node and uv dependency installs when Git creates a worktree in an opted-in repository. See [the hook design decision](./docs/adr/0001-prepare-dependencies-at-worktree-creation.md).
 
 ## Install
 
@@ -23,11 +23,11 @@ After package updates, run `/deps` twice in each opted-in repository to replace 
 
 ## Flow
 
-![Dependency preparation with synchronous validation and detached installs](./docs/dependency-preparation-flow.svg)
+![Dependency preparation with validation, an install-needed decision, and selected detached installs](./docs/dependency-preparation-flow.svg)
 
-The hook validates lockfiles before worktree creation returns. Conflicting Node lockfiles, mismatched `packageManager`, and unsupported declarations fail the worktree command immediately.
+Synchronous lockfile validation immediately fails the worktree command for conflicting Node lockfiles, mismatched `packageManager`, and unsupported declarations.
 
-A detached installer runs frozen installs after validation. Node and uv both run when both lockfile types exist. Worktree creation and Pi startup do not wait: dependencies can still be unavailable when you use the worktree.
+After validation, detached frozen installs run. Node and uv both run when both lockfile types exist. Worktree creation and Pi startup do not wait: dependencies can still be unavailable when you use the worktree.
 
 Only tools that run `post-checkout` prepare dependencies. `git worktree add --no-checkout` does not; `git worktree add --detach` with checkout does.
 

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="done-flow-title done-flow-desc" id="done-flow-root">
       <title id="done-flow-title">Safe worktree completion</title>
-      <desc id="done-flow-desc">Normal /done asks for confirmation before waiting for Pi to become idle, then checks tab use and removes the worktree before tab cleanup and a conditional parent update; explicit force skips confirmation and the tab-use check.</desc>
+      <desc id="done-flow-desc">Normal /done asks for confirmation before waiting for Pi to become idle, then checks cross-workspace checkout use and removes the worktree before tab cleanup and a conditional parent update; explicit force skips confirmation and the cross-workspace checkout-use check, but still validates this tab's workspace and closes sibling tabs.</desc>
       <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
       #done-flow-root { --paper: #f0eee9;
@@ -113,8 +113,8 @@
       <text class="message-label" x="524" y="324">WAIT FOR IDLE</text>
 
       <line class="message" x1="408" y1="396" x2="648" y2="396"/>
-      <rect class="label-mask" x="480" y="376" width="96" height="12" rx="4"/>
-      <text class="message-label" x="528" y="384">CHECK TAB USE</text>
+      <rect class="label-mask" x="432" y="376" width="192" height="12" rx="4"/>
+      <text class="message-label" x="528" y="384">CHECK CROSS-WORKSPACE CHECKOUT USE</text>
       <line class="message-return" x1="648" y1="424" x2="408" y2="424"/>
       <rect class="label-mask" x="484" y="404" width="88" height="12" rx="4"/>
       <text class="message-label" x="528" y="412">CLEAR / REFUSE</text>
@@ -124,7 +124,7 @@
       <text class="guard" x="744" y="204">Both modes wait for Pi to become idle before cleanup.</text>
       <text class="guard" x="744" y="372">Normal: another workspace using this checkout blocks removal.</text>
       <text class="guard" x="744" y="396">Git refuses dirty worktrees unless --force is set.</text>
-      <text class="guard" x="744" y="420">--force skips the tab-use check; data loss is irreversible.</text>
+      <text class="guard" x="744" y="420">--force skips the cross-workspace checkout-use check; data loss is irreversible.</text>
       <text class="guard" x="744" y="444">Locks serialize worktree removal and primary-checkout updates.</text>
 
       <line class="message-accent" x1="408" y1="464" x2="648" y2="464"/>
@@ -178,7 +178,7 @@
       <text class="guard" x="744" y="604">Close this tab last, even if sibling cleanup or pull fails.</text>
 
       <!-- Legend strip -->
-      <line x1="40" y1="640" x2="1240" y2="640" stroke="#101828" stroke-opacity=".141" stroke-width=".8"/>
+      <line x1="40" y1="640" x2="1240" y2="640" stroke="#101828" stroke-width=".8" stroke-opacity=".141"/>
       <text class="legend-title" x="40" y="668">LEGEND</text>
 
       <line class="message" x1="128" y1="664" x2="164" y2="664"/>

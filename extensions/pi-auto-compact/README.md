@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact
 ```
 
-Install `@henryqw/pi-task-models` first. Run `/task-models` and configure `fast`. Open `/task-models` again; verify that `fast` no longer says `not configured`.
+Configure `fast` in `/task-models`. The compaction task uses `fast` unless a task entry overrides it.
 
 Disable Pi's built-in compaction in `~/.pi/agent/settings.json`:
 
@@ -29,8 +29,6 @@ Restart Pi after installation or settings changes. Activation requires effective
 | --- | --- | --- |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides shared compaction routes. |
 
-Task Models owns `~/.pi/agent/config/pi-task-models/config.json`. The compaction task profile defaults to `fast`; a task entry overrides it. The extension reports each shared-config problem once per session, at startup or before compaction, without changing that file.
-
 ## Use
 
 Run `/auto-compact` without arguments and enter a threshold. Pi confirms `Auto-compact threshold set to <value>%.`
@@ -48,7 +46,7 @@ Read trim has no separate switch. Disable or remove this extension to opt out.
 
 - Context measurement matches Pi's status bar: latest provider usage plus estimates for later messages. Without usage data, including after compaction, estimates use about four characters per token. Replayed reasoning can make estimates too high until the next response.
 - Between completed turns, read trim replaces older successful, text-only `read` results only if identical full reads remain in protected recent context. Tool names, arguments, and text must match. Failed, changed, already edited, and image results stay intact. Sufficient read trim avoids a summary request.
-- Otherwise, the extension sends older effective context for summary compaction. It tries the configured primary route, fallback route, then the current session model. Malformed shared config also selects the current session model.
+- Otherwise, summary compaction sends older effective context to the configured primary route, fallback route, then the current session model. Malformed shared config also selects the current session model.
 - Resumed or forked sessions and oversized fresh input can require emergency compaction. This interrupts the current task, then resumes it.
 
 ## Config

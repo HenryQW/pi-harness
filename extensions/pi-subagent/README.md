@@ -13,11 +13,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-subagent
 ```
 
-Run `/task-models` and configure the `fast`, `balanced`, `frontier`, and `fav` routes you use. Direct writer termination proof requires native `lsof`.
-
-### Upgrade from 26.x
-
-Version 27.0.0 requires direct tasks to declare `access` and rejects unknown Role frontmatter keys. The library replaces `loadRoles` with `loadRoleCatalog` and `findRole`. Read [Migrate from 26.x to 27.0.0](./docs/migration.md).
+Configure the profiles that your Roles use in `/task-models`. Direct writer termination proof requires native `lsof`.
 
 ## Works with
 
@@ -48,7 +44,7 @@ Commands and UI are for you. Tools and the packaged skill are for Main, except `
 | Direct status widget (`D`) | ui | Show direct references, names, Role badges, status, routes, elapsed time, measured task tokens, and tool activity in the TUI. |
 | Isolated status widget (`I`) | ui | Show recorded task state, Role/model-class badges, and retained workspaces in the TUI. Readiness does not mean promotion. |
 
-`delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. Main must make these decisions visibly; `codemode` scripts can call only `subagent_status`. Delegation and continuation tools use plain-object parameter schemas, including for providers that omit root-union tools. Each mode and action still requires its exact arguments.
+`delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. Main must make these decisions visibly; `codemode` scripts can call only `subagent_status`.
 
 ### Direct workflow
 
@@ -76,9 +72,7 @@ Every task requires `access: "read"` or `access: "write"`. Declare `write` for f
 
 Read requests run parallel tasks up to `maxSubagents`. Chains run in order, replace literal `{previous}` with the preceding successful answer, and stop on failure. Any `write` task makes the whole request serial and reserves checkout admission until all owned workers stop.
 
-Direct writes change Main's checkout immediately, including dirty checkouts. They have no automatic checks, rollback, or isolated integration guarantee. Specify permitted paths, actions, and exclusions. Preserve unrelated edits and staged changes; authorize commits and external actions explicitly.
-
-While admission is held, competing direct writers and Main writes fail. A direct writer also cannot start during a Main call that can write, including Bash or nested `codemode` writes. Main calls do not block each other; reads never wait. Use isolated mode to keep Main free to write.
+Direct writes change Main's checkout immediately, including dirty checkouts, and have no automatic checks or rollback. Preserve unrelated edits. See [Direct contract](./docs/orchestration.md#direct-contract) for write scope and checkout-admission rules.
 
 Tasks in write requests must return one JSON completion object:
 
@@ -93,6 +87,8 @@ The launch returns a task ID and first Herdr tab, not the answer. One follow-up 
 To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`. This opens a new tab with the saved conversation and a new reference. Continue the newest reference from the original checkout and workspace. For eligibility and stop behavior, see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).
 
 ### Isolated workflow
+
+![Isolated workers commit checked candidates; Main stages ready work while siblings run, advances dependents, validates the combined tip, and explicitly promotes](./docs/orchestration-architecture.svg)
 
 Use isolated mode for checked implementation. An isolated request has one durable ID, one goal, and 1 to 8 text or changeset tasks:
 
@@ -120,13 +116,14 @@ Use isolated mode for checked implementation. An isolated request has one durabl
 
 Workers use Main's pinned committed branch, HEAD, and tree, not staged, unstaged, or untracked edits. Branch or HEAD changes block new waves. Candidates must be committed with no tracked or untracked changes. Ignored generated files permit candidacy but prevent automatic cleanup.
 
-1. Start the request and keep its durable ID. Main can work or end its turn without polling.
-2. Inspect ready candidates with `subagent_status`. Main can stage exact candidates while siblings run and resolve conflicts there.
-3. Use `subagent_integrate advance` for dependents on a staged snapshot.
-4. After the wave settles, validate the combined integration tip with final checks and any final judgment.
-5. Explicitly promote passing work into unchanged, clean Main.
+Keep the durable ID; Main can work or end its turn without polling. Inspect ready candidates with `subagent_status`.
 
-Checks and judgments bind to exact Git identities. Staging, combined validation, and promotion require clean Main at the pinned identity. Changed identities, conflicts, or uncertain outcomes block promotion and preserve evidence. A definitive combined check or review failure permits one committed integration correction and another validation.
+- `subagent_stage` stages exact candidates while siblings run; resolve conflicts in the integration checkout.
+- `subagent_integrate advance` runs dependents on a staged snapshot.
+- `subagent_integrate validate` checks the combined integration tip after the wave settles, with final checks and any final judgment.
+- `subagent_integrate promote` explicitly promotes passing work.
+
+Readiness requires preliminary checks and any task `judgment`; it does not permit promotion. Checks and judgments bind to exact Git identities. Staging, combined validation, and promotion require unchanged, clean Main at the pinned identity. Changed identities, conflicts, or uncertain outcomes block promotion and preserve evidence. A definitive combined check or review failure permits one committed integration correction, recorded with `subagent_integrate correct`, and another validation.
 
 The extension sends follow-ups when a candidate becomes ready, a worker needs attention, and the wave finishes. A missed follow-up does not authorize replay. Read [Isolated contract](./docs/orchestration.md#isolated-contract) and [Exact integration actions](./docs/orchestration.md#exact-integration-actions) for graph, judgment, revision, refresh, and release details.
 
@@ -134,9 +131,7 @@ The extension sends follow-ups when a candidate becomes ready, a worker needs at
 
 Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. **Refresh** reloads saved status without recovery or mutation. Invalid state IDs stay preserved with a warning. Direct recovery remains available outside Git or without isolated inventory.
 
-**Inspect status and recovery** opens a separate unfocused Herdr tab using the configured `scout` Role and `fast` route. It requires a Herdr-managed pane. The model receives bounded saved status, including retained paths, but not raw launch environment or session transcripts. Its analysis stays in that tab and does not start a Main turn. Missing Herdr, Role, or route fails without changing the request; Main can use `subagent_status` instead.
-
-For locally active unsealed changesets, **Send follow-up instructions** queues a revision. **Edit queued instructions** withdraws all pending instructions before opening the editor; cancel leaves them removed. Already-claimed instructions cannot be recalled. Submission queues one replacement, and late submissions can fail after sealing. Read [Inspect and revise active work](./docs/orchestration.md#inspect-and-revise-active-work) before editing queued instructions.
+Inspection needs a Herdr pane, the configured `scout` Role, and the `fast` route. If it cannot start, the request stays unchanged; Main can use `subagent_status` to read state. See [Inspect and revise active work](./docs/orchestration.md#inspect-and-revise-active-work) for inspection and follow-up details.
 
 See [Status widgets](./docs/orchestration.md#status-widgets) for reference numbering, token counts, and activity metrics, and [Choose a delegation mode](./docs/orchestration.md#choose-a-delegation-mode) for routing guidance.
 

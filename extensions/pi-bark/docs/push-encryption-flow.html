@@ -17,7 +17,7 @@
   <figure class="frame" tabindex="0" role="region" aria-label="Push encryption diagram; scroll horizontally on narrow screens">
     <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="push-encryption-flow-title push-encryption-flow-desc">
       <title id="push-encryption-flow-title">How pi-bark protects push content</title>
-      <desc id="push-encryption-flow-desc">Manual /copyb output and automatic Pi status notifications share one sender that encrypts only content with AES256-GCM when a Custom Encryption Key is set, sends device_key as plaintext routing metadata in the same JSON request, and uses TLS only with HTTPS.</desc>
+      <desc id="push-encryption-flow-desc">Manual /copyb output and automatic Pi needs-input, failed, and finished notifications share one sender that encrypts only content with AES256-GCM when a Custom Encryption Key is set, sends device_key as plaintext routing metadata in the same JSON request, and uses TLS only with HTTPS.</desc>
       <defs>
         <style>
           .diagram-eyebrow { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .16em; }
@@ -117,7 +117,7 @@
       <rect class="tag" x="84" y="372" width="48" height="16" rx="2"/>
       <text class="tag-text" x="108" y="384">EVENT</text>
       <text class="name" x="162" y="408">Pi status</text>
-      <text class="sub" x="162" y="428">NEEDS INPUT · FINISHED</text>
+      <text class="sub" x="162" y="428">NEEDS INPUT · FAILED · FINISHED</text>
 
       <!-- Shared sender and config -->
       <rect class="node" x="352" y="284" width="200" height="112" rx="6"/>

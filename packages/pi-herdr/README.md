@@ -31,6 +31,12 @@ For a ready-to-use Pi workflow, see [`@henryqw/pi-herdr-tools`](https://pi.henry
 | `run` | function | Requires a successful exit and returns stdout. |
 | `json` | function | Requires a successful exit and parses a JSON object. |
 | `hasHerdrErrorCode` | function | Detects structured CLI errors in stdout or stderr. |
-| `startPiAgent` | function | Validates and builds the shared `agent start --kind pi --pane ... --` boundary. Before each start, it checks `pane process-info`. The pane shell must still own the foreground process group. It runs `pane run <pane> "echo <token>"`. It then polls `pane read` for up to 20 seconds. The token must appear as its own output line, with a prompt after it. This proves that the shell is reading input. Without this check, a shell on macOS can lose Enter for a launch command longer than 1024 bytes. This occurs while the shell starts or runs a prompt hook. The pane then waits forever. The helper does not probe an occupied pane, so `agent start` still reports `agent_pane_busy`. If the probe fails, the helper returns its result without starting the agent. It retries structured `agent_pane_busy` responses when the caller's result-aware policy permits it. The limit is five tries. It returns the raw final result. |
+| `startPiAgent` | function | Validates and runs the shared `agent start --kind pi --pane ... --` boundary after a shell-readiness probe. |
 
-Callers build Pi-specific arguments and validate responses. The Herdr Client does not copy the list of Herdr commands. Herdr defines the supported commands and response shapes.
+### `startPiAgent`
+
+On macOS, a shell that starts or runs a prompt hook can lose Enter for a launch command longer than 1024 bytes. The pane then waits forever. To prevent this, the helper first checks `pane process-info`. When the pane shell owns the foreground process group, it runs `pane run <pane> "echo <token>"` and polls `pane read` for up to 20 seconds. The probe passes when the token appears on its own line, with a prompt after it.
+
+The helper skips the probe when the shell does not own the group, so `agent start` reports `agent_pane_busy` for an occupied pane. If the probe fails, the helper returns its result without starting the agent. It retries `agent_pane_busy` up to five tries when the caller's policy permits it, then returns the raw final result.
+
+Callers build Pi-specific arguments and validate responses. Herdr defines the supported commands and response shapes.

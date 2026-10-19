@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-pr",
-  "version": "10.2.2",
+  "version": "10.2.3",
   "description": "Run /pr to safely discover or link the current pull request, then create, update, address feedback, fix CI, or merge when ready.",
   "keywords": [
     "pi-package",
@@ -13,13 +13,10 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "license": "(MIT AND Apache-2.0)",
+  "license": "MIT",
   "files": [
     "LICENSE",
-    "LICENSE-APACHE-2.0",
-    "NOTICE.md",
     "docs/pr-routing.svg",
-    "docs/git-workflows-tested.md",
     "extensions",
     "skills",
     "README.md"

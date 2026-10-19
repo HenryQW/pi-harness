@@ -5,8 +5,6 @@ description: Safely sync attached non-`main` worktree branch with fetched `origi
 
 # update-from-main
 
-<!-- SPDX-License-Identifier: Apache-2.0. Derived from HenryQW/skills; modified for pi-pr exact backup identity, worktree ownership, and retained recovery. See ../../NOTICE.md for source identity and changes. -->
-
 Run `python3 <skill>/scripts/update_from_main.py` once from the target worktree. Use this file's directory for `<skill>`. Requires Python 3.9 or newer and Git with `fetch --porcelain`. This is a standalone **merge**, not the `/pr` rebase route. The helper fetches before worktree mutation, backs up tracked/untracked state plus ignored paths when they collide, and merges the exact `main` OID captured from fetch output. It does not push or use GitHub. Before it stashes, the helper records ownership in this worktree's per-worktree ref. A retained backup blocks another run in its own worktree, also after a branch switch, but not in other worktrees. The instructions below are the single recovery guide.
 
 ## Fast path

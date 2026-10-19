@@ -121,7 +121,7 @@ A pattern is a partial argument object. A `RegExp` value tests a string argument
 
 Each trial runs in a new temporary directory with these settings:
 
-- Pi runs with `-p --mode json --no-session -ne -ns -nc --no-mcp --no-approve --offline`. Pi does not load your extensions, skills, context files, MCP servers, or project files.
+- Pi runs with `-p --mode json --no-session -ne -ns -nc --no-mcp --no-approve --offline`. The runner loads the case's skill, its declared extensions, and the stub extension when the case uses stubs. Pi does not load other extensions, skills, context files, or MCP servers.
 - `PI_CODING_AGENT_DIR` is a temporary agent directory. It contains only symbolic links to your `auth.json` and `models.json`. Your `SYSTEM.md`, `APPEND_SYSTEM.md`, and `settings.json` do not apply.
 - `HOME` and `XDG_CONFIG_HOME` are empty temporary directories. Tools that read configuration from your home directory do not find it.
 - The runner removes `GH_*`, `GITHUB_*`, `HERDR_*`, `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `SSH_AUTH_SOCK`, `SSH_ASKPASS`, and all inherited `GIT_*` variables. `GH_CONFIG_DIR` is an empty directory, so `gh` has no login.
