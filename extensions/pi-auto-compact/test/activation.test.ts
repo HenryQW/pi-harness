@@ -630,6 +630,56 @@ test("boundary trims an older exact read, commits branch-relative edit, and does
 	}
 });
 
+test("read trim uses the first earlier call and the first protected result", async () => {
+	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-read-order-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = tempRoot;
+	try {
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
+			compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 100 },
+		}));
+		const sm = SessionManager.inMemory(tempRoot);
+		const content = [{ type: "text" as const, text: "file output ".repeat(600) }];
+		const call = (id: string, path = "file") => ({ role: "assistant" as const,
+			content: [{ type: "toolCall" as const, id, name: "read", arguments: { path } }],
+			api: "openai-completions" as const, provider: "fake", model: "model", usage: {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			}, stopReason: "toolUse" as const, timestamp: 2 });
+		const result = (id: string) => sm.appendMessage({ role: "toolResult", toolCallId: id,
+			toolName: "read", content, isError: false, timestamp: 3 });
+		sm.appendMessage({ role: "user", content: "Read files", timestamp: 1 });
+		result("late");
+		sm.appendMessage(call("late"));
+		sm.appendMessage(call("old"));
+		sm.appendMessage(call("old", "other"));
+		const olderId = result("old");
+		const newest = call("new");
+		const callId = sm.appendMessage(newest);
+		const firstKeeperId = result("new");
+		const secondKeeperId = result("new");
+		const projection = sm.buildSessionProjection();
+		const tokens = projection.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		const handlers = loadExtension();
+		const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model: { contextWindow: tokens / 0.8 }, sessionManager: sm,
+			getContextUsage: () => ({ tokens: null, contextWindow: tokens / 0.8, percent: null }),
+			ui: { notify() {} }, signal: new AbortController().signal,
+		} as unknown as ExtensionContext;
+		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+		const proposed = await handlers.get("turn_end")?.({ type: "turn_end", outcome: "completed",
+			entries: [], message: newest, messageEntryId: callId, toolResultEntryIds: [firstKeeperId, secondKeeperId],
+			context: { contextEntries: projection.entries, contextMessages: projection.messages, pendingMessages: [] },
+		} as never, ctx);
+		assert.deepEqual(proposed, { entries: [{ type: "context_edit", targetId: olderId, replacement: {
+			content: [{ type: "text", text: `[Duplicate read; full result retained at entry ${firstKeeperId}.]` }],
+		} }] });
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await rm(tempRoot, { recursive: true, force: true });
+	}
+});
+
 test("ineligible reads stay intact and branch changes discard pending boundary drafts", async () => {
 	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-ineligible-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
