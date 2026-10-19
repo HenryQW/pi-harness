@@ -1967,6 +1967,11 @@ export class IsolatedRunner {
 				await verify();
 				state.status = "aborted";
 				state.accepted = false;
+				delete state.acceptedAt;
+				if (state.final.status === "passed") {
+					state.final.status = "superseded";
+					state.final.failure = "User confirmed discard from /subagent.";
+				}
 				delete state.recovery;
 				state.updatedAt = this.coordinatorRuntime.now();
 				// Invalidate readiness before termination or supersession; rejected candidates retain exact accounting.

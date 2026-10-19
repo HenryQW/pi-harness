@@ -3193,6 +3193,31 @@ test("discard includes a text attempt's retained checkout without inventing a re
 	assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted");
 });
 
+test("discard removes a completed request's retained resource and saves aborted state", async (t) => {
+	const { root, runtime, runner, store } = await harness(t, { executor: { run: async ({ prepare }) => {
+		const launch = await prepare();
+		await writeFile(join(launch.cwd, "retained.txt"), "retained output\n");
+		return { outcome: "success", exitCode: 0, output: "answer", outputTruncated: false, stderr: "" };
+	} } });
+	runtime.main = await new CheckedGitRuntime().inspectMain({ root }, { signal: new AbortController().signal });
+	await writeFile(join(root, ".git", "info", "exclude"), "/retained.txt\n");
+	const completed = await runner.execute(request("completed-discard", [textTask("research")]), root);
+	assert.equal(completed.state.status, "completed", completed.text);
+	assert.equal(completed.state.accepted, true);
+	assert.ok(completed.state.acceptedAt !== undefined);
+	assert.equal(completed.state.final.status, "passed");
+	const plan = await runner.discardPlan(root, "completed-discard", undefined, discardGuards);
+	const results = await runner.discard(root, plan, discardGuards);
+	assert.equal(results[0]!.outcome, "removed", JSON.stringify(results));
+	await assert.rejects(readFile(join(plan.items[0]!.path!, "retained.txt")), /ENOENT/);
+	const state = (await store.load(root, "completed-discard")).state;
+	assert.equal(state.status, "aborted");
+	assert.equal(state.accepted, false);
+	assert.equal(state.acceptedAt, undefined);
+	assert.equal(state.final.status, "superseded");
+	assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted");
+});
+
 test("discard keeps Main's checkout, moved checkouts, hidden changes, and initialized submodules", async (t) => {
 	const { root, worker, runner, directory } = await discardFixture(t);
 	const inspect = () => runner.discardPlan(root, "discard-request", directory, discardGuards);
