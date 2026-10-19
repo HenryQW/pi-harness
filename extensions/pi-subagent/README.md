@@ -88,6 +88,8 @@ To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`
 
 ### Isolated workflow
 
+![Isolated workers commit checked candidates; Main stages ready work while siblings run, advances dependents, validates the combined tip, and explicitly promotes](./docs/orchestration-architecture.svg)
+
 Use isolated mode for checked implementation. An isolated request has one durable ID, one goal, and 1 to 8 text or changeset tasks:
 
 ```json
@@ -114,13 +116,14 @@ Use isolated mode for checked implementation. An isolated request has one durabl
 
 Workers use Main's pinned committed branch, HEAD, and tree, not staged, unstaged, or untracked edits. Branch or HEAD changes block new waves. Candidates must be committed with no tracked or untracked changes. Ignored generated files permit candidacy but prevent automatic cleanup.
 
-1. Start the request and keep its durable ID. Main can work or end its turn without polling.
-2. Inspect ready candidates with `subagent_status`. Main can stage exact candidates while siblings run and resolve conflicts there.
-3. Use `subagent_integrate advance` for dependents on a staged snapshot.
-4. After the wave settles, validate the combined integration tip with final checks and any final judgment.
-5. Explicitly promote passing work into unchanged, clean Main.
+Keep the durable ID; Main can work or end its turn without polling. Inspect ready candidates with `subagent_status`.
 
-Checks and judgments bind to exact Git identities. Staging, combined validation, and promotion require clean Main at the pinned identity. Changed identities, conflicts, or uncertain outcomes block promotion and preserve evidence. A definitive combined check or review failure permits one committed integration correction and another validation.
+- `subagent_stage` stages exact candidates while siblings run; resolve conflicts in the integration checkout.
+- `subagent_integrate advance` runs dependents on a staged snapshot.
+- `subagent_integrate validate` checks the combined integration tip after the wave settles, with final checks and any final judgment.
+- `subagent_integrate promote` explicitly promotes passing work.
+
+Readiness requires preliminary checks and any task `judgment`; it does not permit promotion. Checks and judgments bind to exact Git identities. Staging, combined validation, and promotion require unchanged, clean Main at the pinned identity. Changed identities, conflicts, or uncertain outcomes block promotion and preserve evidence. A definitive combined check or review failure permits one committed integration correction, recorded with `subagent_integrate correct`, and another validation.
 
 The extension sends follow-ups when a candidate becomes ready, a worker needs attention, and the wave finishes. A missed follow-up does not authorize replay. Read [Isolated contract](./docs/orchestration.md#isolated-contract) and [Exact integration actions](./docs/orchestration.md#exact-integration-actions) for graph, judgment, revision, refresh, and release details.
 
