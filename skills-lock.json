@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "diagram-design": {
+      "source": "cathrynlavery/diagram-design",
+      "sourceType": "github",
+      "skillPath": "skills/diagram-design/SKILL.md",
+      "computedHash": "450a7879c9f5a45b56a40e3bdd46d548f5d4629223b2898c38420ccf0bfac907"
+    },
     "figma-build": {
       "source": "awdr74100/figwright",
       "sourceType": "github",
