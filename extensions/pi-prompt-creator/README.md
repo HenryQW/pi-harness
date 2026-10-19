@@ -35,7 +35,7 @@ The extension creates `~/.pi/agent/prompts/<name>.md` and reloads Pi resources, 
 
 ## Flow
 
-![Automatic analysis waits for candidate display, Main review, and approval; manual candidates appear immediately.](./docs/prompt-lifecycle.svg)
+![Draft outcomes: a candidate proceeds to Main review and approval, null clears the widget, and failure shows a status; manual candidates appear immediately.](./docs/prompt-lifecycle.svg)
 
 ### Analysis
 

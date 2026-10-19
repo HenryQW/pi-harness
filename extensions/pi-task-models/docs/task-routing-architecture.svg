@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="task-routing-architecture-title task-routing-architecture-desc">
       <title id="task-routing-architecture-title">Task model routing architecture</title>
-      <desc id="task-routing-architecture-desc">Architecture diagram showing an active consumer declaring a ModelTask to the shared task-models control plane, which selects an explicit override or declared default profile and resolves primary then fallback routes; Pi’s effective model registry determines availability and canonical IDs, scoped models make pinned thinking authoritative, and an empty scope falls back to Pi’s full model registry; viable routes return to the consumer and failures remain visible as TaskRouteError.</desc>
+      <desc id="task-routing-architecture-desc">A consumer declares a Model Task, task-models selects its Task Profile and resolves primary then optional fallback Task Routes (none for fav), and an empty scope uses available text models from Pi’s registry; config and profile errors occur before resolution, no-route follows resolution, and all remain visible as TaskRouteError.</desc>
       <defs>
         <style>
           @import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;display=swap");
@@ -54,6 +54,7 @@
       <line class="edge" x1="400" y1="400" x2="400" y2="288"/>
       <path class="edge" d="M152 536 V552 Q152 560 160 560 H808 Q816 560 816 552 V288"/>
       <path class="edge-error" d="M864 288 V336 Q864 344 872 344 H1096 Q1104 344 1104 352 V400"/>
+      <path class="edge-error" d="M480 288 V376 Q480 384 488 384 H808 a8 8 0 0 1 16 0 H1000 Q1008 384 1008 392 V400"/>
 
       <!-- Connector labels -->
       <rect class="label-mask" x="408" y="332" width="56" height="12" rx="2"/>
@@ -61,7 +62,9 @@
       <rect class="label-mask" x="568" y="540" width="128" height="12" rx="2"/>
       <text class="label" x="632" y="548">REGISTRY RULES</text>
       <rect class="label-mask" x="952" y="324" width="72" height="12" rx="2"/>
-      <text class="label" x="988" y="332">NO VIABLE</text>
+      <text class="label" x="988" y="332">NO ROUTE</text>
+      <rect class="label-mask" x="568" y="364" width="128" height="12" rx="2"/>
+      <text class="label" x="632" y="372">CONFIG/PROFILE</text>
 
       <!-- Opaque masks -->
       <rect class="node-mask" x="40" y="160" width="224" height="128" rx="6"/>
@@ -78,36 +81,37 @@
       <rect class="tag" x="52" y="172" width="72" height="16" rx="2"/>
       <text class="tag-text" x="88" y="184">CONSUMER</text>
       <text class="name" x="152" y="224">Active consumer extension</text>
-      <text class="sub" x="152" y="248">OWNS MODELTASK DECLARATION</text>
+      <text class="sub" x="152" y="248">Model Task declaration</text>
       <text class="sub" x="152" y="264">registerModelTask(ModelTask)</text>
 
       <!-- Control-plane stages -->
       <rect class="node" x="304" y="160" width="192" height="128" rx="6"/>
       <rect class="tag" x="316" y="172" width="56" height="16" rx="2"/>
       <text class="tag-text" x="344" y="184">SELECT</text>
-      <text class="name" x="400" y="224">Effective task profile</text>
+      <text class="name" x="400" y="224">Effective Task Profile</text>
       <text class="sub" x="400" y="248">EXPLICIT TASK OVERRIDE</text>
       <text class="sub" x="400" y="264">OR DECLARED DEFAULT</text>
 
       <rect class="node" x="528" y="160" width="192" height="128" rx="6"/>
       <rect class="tag" x="540" y="172" width="56" height="16" rx="2"/>
       <text class="tag-text" x="568" y="184">PROFILE</text>
-      <text class="name" x="624" y="224">Selected profile</text>
-      <text class="sub" x="624" y="248">PRIMARY + FALLBACK MODEL</text>
-      <text class="sub" x="624" y="264">THINKING LEVEL FOR EACH</text>
+      <text class="name" x="624" y="224">Selected Task Profile</text>
+      <text class="sub" x="624" y="244">PRIMARY + OPTIONAL FALLBACK</text>
+      <text class="sub" x="624" y="260">NONE FOR fav</text>
+      <text class="sub" x="624" y="276">THINKING LEVEL FOR EACH</text>
 
       <rect class="node-focal" x="752" y="160" width="176" height="128" rx="6"/>
       <rect class="tag-focal" x="764" y="172" width="56" height="16" rx="2"/>
       <text class="tag-text-focal" x="792" y="184">RESOLVE</text>
-      <text class="name" x="840" y="224">Route resolver</text>
+      <text class="name" x="840" y="224">Resolve Task Routes</text>
       <text class="sub" x="840" y="248">PRIMARY FIRST</text>
-      <text class="sub" x="840" y="264">FALLBACK SECOND</text>
+      <text class="sub" x="840" y="264">OPTIONAL FALLBACK</text>
 
       <!-- Consumer result -->
       <rect class="node-input" x="968" y="160" width="272" height="128" rx="6"/>
       <rect class="tag" x="980" y="172" width="56" height="16" rx="2"/>
       <text class="tag-text" x="1008" y="184">RETURN</text>
-      <text class="name" x="1104" y="224">Consumer receives routes</text>
+      <text class="name" x="1104" y="224">Consumer gets Task Routes</text>
       <text class="sub" x="1104" y="248">VIABLE PRIMARY → FALLBACK</text>
       <text class="sub" x="1104" y="264">CANONICAL MODEL + THINKING</text>
 
@@ -118,8 +122,9 @@
       <text class="name" x="152" y="432">Effective model registry</text>
       <text class="sub" x="152" y="456">SCOPED MODELS</text>
       <text class="sub" x="152" y="472">PINNED THINKING IS AUTHORITATIVE</text>
-      <text class="sub" x="152" y="488">EMPTY SCOPE → FULL PI REGISTRY</text>
-      <text class="sub" x="152" y="504">AVAILABILITY + CANONICAL IDS</text>
+      <text class="sub" x="152" y="488">EMPTY SCOPE → AVAILABLE TEXT</text>
+      <text class="sub" x="152" y="504">MODELS FROM PI’S REGISTRY</text>
+      <text class="sub" x="152" y="520">AVAILABILITY + CANONICAL IDS</text>
 
       <rect class="node-store" x="304" y="400" width="192" height="120" rx="6"/>
       <rect class="tag" x="316" y="412" width="56" height="16" rx="2"/>
@@ -132,12 +137,13 @@
       <rect class="tag" x="980" y="412" width="48" height="16" rx="2"/>
       <text class="tag-text" x="1004" y="424">ERROR</text>
       <text class="name" x="1104" y="448">Visible TaskRouteError</text>
-      <text class="sub" x="1104" y="472">CONFIG · PROFILE · NO-ROUTE</text>
-      <text class="sub" x="1104" y="488">RUN /TASK-MODELS</text>
+      <text class="sub" x="1104" y="472">config-missing · config-disabled</text>
+      <text class="sub" x="1104" y="488">profile-missing · no-route</text>
+      <text class="sub" x="1104" y="504">RUN /task-models</text>
 
       <!-- Bottom reading key -->
       <line x1="40" y1="624" x2="1240" y2="624" stroke="rgba(16,24,40,.141)" stroke-width=".8"/>
       <text class="zone-label" x="40" y="656">OWNERSHIP</text>
       <text class="key" x="144" y="656">Only task-models writes config. Consumers use its API.</text>
-      <text class="key-note" x="1240" y="656">PRIMARY → FALLBACK · FAILURE STAYS VISIBLE</text>
+      <text class="key-note" x="1240" y="656">PRIMARY → OPTIONAL FALLBACK · VISIBLE FAILURE</text>
     </svg>
