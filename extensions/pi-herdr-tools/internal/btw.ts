@@ -433,9 +433,8 @@ export async function registerBtwExtension(
 	}
 	function ensurePolling(): void {
 		if (pollTimer) return;
-		// Stale cleanup runs at startup, settlement, and launch; the poll only scans.
 		pollTimer = setInterval(() => {
-			void coordinator.scan();
+			void scanMerges();
 		}, MERGE_POLL_INTERVAL_MS);
 		// Never keep the process alive just to poll the merge mailbox.
 		pollTimer.unref?.();
