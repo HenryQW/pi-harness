@@ -1605,15 +1605,18 @@ async function loadPullRequestDetails(
 		`refs/heads/${candidate.base.ref}`,
 	]);
 
-	const threads = candidate.lifecycle === "open"
-		? await readUnresolvedReviewThreads(pi, context, candidate)
-		: { unresolved: 0, codexFindings: 0 };
-	const codex: CodexReview | undefined = candidate.lifecycle === "open" && context.codexReview
-		? { status: await readCodexReviewStatus(pi, context, candidate), findings: threads.codexFindings }
+	const [threads, codexStatus, liveBaseOid] = await Promise.all([
+		candidate.lifecycle === "open"
+			? readUnresolvedReviewThreads(pi, context, candidate)
+			: { unresolved: 0, codexFindings: 0 },
+		candidate.lifecycle === "open" && context.codexReview
+			? readCodexReviewStatus(pi, context, candidate)
+			: undefined,
+		candidate.lifecycle === "open" ? readBaseRefOid(pi, context, candidate) : null,
+	]);
+	const codex: CodexReview | undefined = codexStatus !== undefined
+		? { status: codexStatus, findings: threads.codexFindings }
 		: undefined;
-	const liveBaseOid = candidate.lifecycle === "open"
-		? await readBaseRefOid(pi, context, candidate)
-		: null;
 	const pullRequestConditions = conditions(candidate, threads.unresolved, codex);
 	const inspected = inspectedLocal ?? await inspectLocalMergeSafety({
 		exec: (command, args, options) => pi.exec(command, args, {
