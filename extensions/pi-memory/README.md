@@ -41,7 +41,7 @@ Run `/remember I prefer concise release notes.` Pi proposes and reviews an entry
 
 `pi-memory/reviewCandidate` independently reviews single adds and batches containing adds. It defaults to `balanced`, tries configured Pi registry primary then fallback routes, and never substitutes the session model. Only verified bounded JSON evidence is accepted.
 
-![pi-memory architecture showing reviewed writes and frozen session snapshots](./docs/memory-architecture.svg)
+![/remember prepares a candidate before preflight. The memory tool enters preflight directly. Adds need review; exact duplicates skip it. Replace/remove go directly to locked storage. Session snapshots stay fixed.](./docs/memory-architecture.svg)
 
 Review sends live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md` snapshots to the configured model. Initially missing `SYSTEM.md` counts as empty. Unreadable, oversized, or over-cap sources block review. Restore a SYSTEM file that disappears after review proved it present.
 

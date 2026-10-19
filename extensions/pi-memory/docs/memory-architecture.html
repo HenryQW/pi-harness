@@ -49,7 +49,7 @@
     <div class="diagram-container" tabindex="0" role="region" aria-label="Memory architecture diagram; scroll horizontally on narrow screens">
     <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="memory-architecture-title memory-architecture-desc">
       <title id="memory-architecture-title">How pi-memory writes reviewed memory</title>
-      <desc id="memory-architecture-desc">Memory requests pass through validation, live-source review, conflict resolution, and locked atomic storage, while session start creates a frozen prompt snapshot.</desc>
+      <desc id="memory-architecture-desc">/remember prepares one candidate or declines before preflight, the memory tool enters preflight directly, adds need review unless they are exact duplicates, replace/remove go directly to locked storage, and session start creates a frozen prompt snapshot.</desc>
       <defs>
         <marker id="memory-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
           <polygon points="0 0, 8 4, 0 8" fill="#4c5665"/>
@@ -75,9 +75,22 @@
       <rect x="952" y="84" width="128" height="16" rx="2" fill="#f0eee9"/>
       <text x="1016" y="96" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">DURABLE STATE</text>
 
-      <!-- Connectors: primary write path -->
-      <path d="M216 208 H256" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <!-- Requests: /remember prepares a candidate; the tool enters preflight directly. -->
+      <path d="M216 208 H280" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <rect x="216" y="188" width="64" height="12" rx="2" fill="#f0eee9"/>
+      <text x="248" y="196" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">MEMORY TOOL</text>
+      <path d="M140 256 V336" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <rect x="148" y="288" width="56" height="12" rx="2" fill="#f0eee9"/>
+      <text x="176" y="296" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">/remember</text>
+      <path d="M216 376 H336 Q344 376 344 368 V256" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+
+      <!-- Adds, including batches with adds, use live sources for review. -->
       <path d="M412 208 H480" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <rect x="428" y="188" width="36" height="12" rx="2" fill="#f0eee9"/>
+      <text x="446" y="196" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">ADDS</text>
+      <path d="M344 160 V136 Q344 128 352 128 H1080 Q1088 128 1088 136 V160" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <rect x="632" y="108" width="108" height="12" rx="2" fill="#f0eee9"/>
+      <text x="686" y="116" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">REPLACE/REMOVE</text>
       <path d="M664 208 H708" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
       <path d="M892 208 H960" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#memory-arrow-accent)"/>
 
@@ -94,22 +107,29 @@
       <path d="M1088 520 V576 Q1088 584 1080 584 H332 Q324 584 324 576 V520" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
       <rect x="612" y="564" width="128" height="12" rx="2" fill="#f0eee9"/>
       <text x="676" y="572" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SESSION START</text>
-      <path d="M280 416 V316 Q280 308 272 308 H136 Q128 308 128 300 V256" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
+      <path d="M236 468 H60 Q52 468 52 460 V240 Q52 232 60 232 H64" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-arrow)"/>
 
       <!-- Nodes: current session -->
       <rect x="64" y="160" width="152" height="96" rx="8" fill="#f0eee9"/>
       <rect x="64" y="160" width="152" height="96" rx="8" fill="rgba(76,86,101,0.10)" stroke="#6a7282" stroke-width="1"/>
       <rect x="76" y="172" width="64" height="16" rx="2" fill="rgba(76,86,101,0.14)"/>
       <text x="108" y="184" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SESSION</text>
-      <text x="140" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Agent request</text>
-      <text x="140" y="236" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">/remember · memory</text>
+      <text x="140" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Memory request</text>
+      <text x="140" y="236" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">/remember · memory tool</text>
 
-      <rect x="256" y="160" width="156" height="96" rx="8" fill="#f0eee9"/>
-      <rect x="256" y="160" width="156" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-width="1"/>
-      <rect x="268" y="172" width="48" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
-      <text x="292" y="184" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
-      <text x="334" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Preflight</text>
-      <text x="334" y="236" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">shape · size · content</text>
+      <rect x="280" y="160" width="132" height="96" rx="8" fill="#f0eee9"/>
+      <rect x="280" y="160" width="132" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-width="1"/>
+      <rect x="292" y="172" width="48" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
+      <text x="316" y="184" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+      <text x="346" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Preflight</text>
+      <text x="346" y="236" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">shape · size · content</text>
+
+      <rect x="64" y="336" width="152" height="80" rx="8" fill="#f0eee9"/>
+      <rect x="64" y="336" width="152" height="80" rx="8" fill="#ffffff" stroke="#101828" stroke-width="1"/>
+      <rect x="76" y="348" width="48" height="16" rx="2" fill="rgba(16,24,40,0.08)"/>
+      <text x="100" y="360" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
+      <text x="140" y="384" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Prepare candidate</text>
+      <text x="140" y="404" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">entry + target · or decline</text>
 
       <rect x="236" y="416" width="176" height="104" rx="8" fill="#f0eee9"/>
       <rect x="236" y="416" width="176" height="104" rx="8" fill="rgba(16,24,40,0.05)" stroke="#4c5665" stroke-width="1"/>
@@ -132,7 +152,7 @@
       <rect x="720" y="172" width="48" height="16" rx="2" fill="rgba(29,78,216,0.14)"/>
       <text x="744" y="184" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TASK</text>
       <text x="800" y="212" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Candidate review</text>
-      <text x="800" y="236" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">independent model route</text>
+      <text x="800" y="236" fill="#1d4ed8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">adds only · duplicates skip</text>
 
       <rect x="708" y="376" width="184" height="96" rx="8" fill="#f0eee9"/>
       <rect x="708" y="376" width="184" height="96" rx="8" fill="rgba(16,24,40,0.02)" stroke="rgba(16,24,40,0.28)" stroke-width="1" stroke-dasharray="4,4"/>
