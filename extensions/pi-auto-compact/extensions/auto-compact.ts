@@ -122,19 +122,28 @@ function contextTokens(messages: AgentMessage[]): number {
 function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[] | null {
 	const systemTokens = estimateTotalTokens(messages.filter((message) => message.role === "system"));
 	const suffixTokens = new Array<number>(messages.length + 1).fill(0);
+	const prefixCounts = new Array<number>(messages.length + 1).fill(0);
+	const prefixTokens = new Array<number>(messages.length + 1).fill(0);
+	for (let i = 0; i < messages.length; i++) {
+		const nonSystem = messages[i].role !== "system";
+		const tokens = nonSystem ? estimateMessageTokens(messages[i]) : 0;
+		prefixCounts[i + 1] = prefixCounts[i] + (nonSystem ? 1 : 0);
+		prefixTokens[i + 1] = prefixTokens[i] + tokens;
+		suffixTokens[i] = tokens;
+	}
 	for (let i = messages.length - 1; i >= 0; i--) {
-		suffixTokens[i] = suffixTokens[i + 1] + (messages[i].role === "system" ? 0 : estimateMessageTokens(messages[i]));
+		suffixTokens[i] += suffixTokens[i + 1];
 	}
 
 	const userBoundaries = messages.flatMap((message, index) => message.role === "user" ? [index] : []);
 	if (userBoundaries.length === 0) return null;
 
 	for (const boundary of userBoundaries) {
-		const removed = messages.slice(0, boundary).filter((message) => message.role !== "system");
-		if (removed.length === 0) continue;
+		const removedCount = prefixCounts[boundary];
+		if (removedCount === 0) continue;
 		const notice: AgentMessage = {
 			role: "user",
-			content: `[Temporary context reduction: ${removed.length} earlier messages (~${Math.round(estimateTotalTokens(removed) / 1000)}K tokens) are omitted from this request while compaction runs. Continue with the current task.]`,
+			content: `[Temporary context reduction: ${removedCount} earlier messages (~${Math.round(prefixTokens[boundary] / 1000)}K tokens) are omitted from this request while compaction runs. Continue with the current task.]`,
 			timestamp: Date.now(),
 		};
 		if (systemTokens + suffixTokens[boundary] + estimateMessageTokens(notice) > keepTokens) continue;
