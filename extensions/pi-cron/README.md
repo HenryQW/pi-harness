@@ -38,7 +38,7 @@ The run inherits the current session environment plus `env`. Open its saved run 
 
 The extension checks jobs at session start and every minute. First sighting sets the anchor; a new job waits for its next slot. Missed slots produce one catch-up run, not a backlog. Open Pi sessions do not run the same job concurrently.
 
-`limits` bounds turns, idle time, and runtime. The extension saves the outcome, bounded output summary, and available session path before delivery.
+The extension saves the outcome, bounded output summary, and available session path before delivery.
 
 | `notify` value | Delivery |
 | --- | --- |
