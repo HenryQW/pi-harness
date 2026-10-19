@@ -798,7 +798,7 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 	}
 });
 
-test("injects the memory check without claiming the current agent performs review", async () => {
+test("injects only qualification guidance in the per-turn memory check", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-policy-"));
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
@@ -818,10 +818,7 @@ test("injects the memory check without claiming the current agent performs revie
 		const injected = promptEvent();
 		assert.equal(await handlers.get("before_agent_start")!(injected), undefined);
 		const section = memoryPrompt(injected);
-		assert.match(section, /^MEMORY CHECK:/);
-		assert.match(section, /memory tool; it independently reviews adds and asks the user about conflicts/);
-		assert.match(section, /Do not perform its review yourself/);
-		assert.doesNotMatch(section, /Before any single add \(action="add"\)/);
+		assert.equal(section, "MEMORY CHECK: Before replying, save newly learned durable user identity/preferences/corrections to user and stable cross-project environment/workflow facts to memory. Inferred habits need two independent signals. Skip project-specific, task-local, temporary, or trivial facts. Use the memory tool.");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
