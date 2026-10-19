@@ -150,7 +150,7 @@ Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. Missing files silen
 | `maxSubagents` | Concurrent direct workers and ephemeral children | Safe integer ≥ 1 | `5` |
 | `maxTurns` | Provider turns per child | Safe integer ≥ 1 | `50` |
 | `maxTokens` | Optional tokens per child | Safe integer ≥ 1 | Unlimited |
-| `maxCorrections` | Same-worker automatic corrections per isolated request | Safe integer ≥ 0 | `1` |
+| `maxCorrections` | Same-worker corrections per isolated request, including Main's `revise` and `retry` corrections | Safe integer ≥ 0 | `1` |
 | `timeout.idleMinutes` | Direct worker and ephemeral child idle timeout | Positive; within Node's timer range | `10` |
 | `timeout.maxMinutes` | Ephemeral child hard runtime | Greater than idle; within Node's timer range | `30` |
 | `roleDefaults` | Shared resources for built-in and user Roles | Object with `extensions`, `tools`, or `skills` arrays; same validation as Role fields | — |

@@ -31,7 +31,7 @@ The package also keeps the JSON store for user-edited config. It provides safe l
 - Missing required config becomes visible without destructive startup writes; optional defaults stay quiet.
 - Invalid or unknown keys warn at launch with the same text in every extension.
 - Shared file safety can improve once without centralizing formats, schemas, or locking policy.
-- The one-time migration must coordinate owners, consumers, tests, documentation, versions, and local user files.
+- The one-time migration coordinated owners, consumers, tests, documentation, versions, and local user files.
 
 ## Rejected Alternatives
 
