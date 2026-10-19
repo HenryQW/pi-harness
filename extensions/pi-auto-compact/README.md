@@ -46,7 +46,7 @@ Read trim has no separate switch. Disable or remove this extension to opt out.
 
 - Context measurement matches Pi's status bar: latest provider usage plus estimates for later messages. Without usage data, including after compaction, estimates use about four characters per token. Replayed reasoning can make estimates too high until the next response.
 - Between completed turns, read trim replaces older successful, text-only `read` results only if identical full reads remain in protected recent context. Tool names, arguments, and text must match. Failed, changed, already edited, and image results stay intact. Sufficient read trim avoids a summary request.
-- Otherwise, the extension sends older effective context for summary compaction. It tries the configured primary route, fallback route, then the current session model. Malformed shared config also selects the current session model.
+- Otherwise, summary compaction sends older effective context to the configured primary route, fallback route, then the current session model. Malformed shared config also selects the current session model.
 - Resumed or forked sessions and oversized fresh input can require emergency compaction. This interrupts the current task, then resumes it.
 
 ## Config

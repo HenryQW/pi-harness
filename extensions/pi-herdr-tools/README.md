@@ -80,7 +80,7 @@ The side-thread model receives Main's fixed, compaction-aware context snapshot. 
 
 ![Side-thread merge delivery.](./docs/btw-merge-sequence.svg)
 
-Run `/btw merge Apply the smallest safe fix` after the answer. The merge request contains user and assistant text, without tool payloads. Herdr focuses Main and closes the side pane. Pending delivery survives shutdown until consumption or 24-hour stale cleanup. Once idle and authenticated, Main appends the transcript without starting a turn, then submits the prompt.
+Run `/btw merge Apply the smallest safe fix` after the answer. The merge request contains user and assistant text, without tool payloads. Pending delivery survives shutdown until consumption or 24-hour stale cleanup. Once idle and authenticated, Main appends the transcript without starting a turn, then submits the prompt.
 
 ### Titles
 

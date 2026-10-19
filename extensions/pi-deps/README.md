@@ -25,9 +25,9 @@ After package updates, run `/deps` twice in each opted-in repository to replace 
 
 ![Dependency preparation with synchronous validation and detached installs](./docs/dependency-preparation-flow.svg)
 
-The hook validates lockfiles before worktree creation returns. Conflicting Node lockfiles, mismatched `packageManager`, and unsupported declarations fail the worktree command immediately.
+Synchronous lockfile validation immediately fails the worktree command for conflicting Node lockfiles, mismatched `packageManager`, and unsupported declarations.
 
-A detached installer runs frozen installs after validation. Node and uv both run when both lockfile types exist. Worktree creation and Pi startup do not wait: dependencies can still be unavailable when you use the worktree.
+After validation, detached frozen installs run. Node and uv both run when both lockfile types exist. Worktree creation and Pi startup do not wait: dependencies can still be unavailable when you use the worktree.
 
 Only tools that run `post-checkout` prepare dependencies. `git worktree add --no-checkout` does not; `git worktree add --detach` with checkout does.
 

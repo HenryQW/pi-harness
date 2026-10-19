@@ -1,6 +1,6 @@
 # `@henryqw/pi-prompt-creator`
 
-Turn repeated requests or corrections in the Current Conversation into a global Pi prompt. A child with no tools prepares one Prompt Candidate. Review it with Main and approve it before saving.
+Turn repeated requests or corrections in the Current Conversation into a global Pi prompt. Review the Prompt Candidate with Main and approve it before saving.
 
 ## Install
 
@@ -47,7 +47,7 @@ Manual and automatic analysis send Pi's current model-visible session context to
 
 The payload includes the active compaction or branch summary, user text, completed assistant text, and effective prompt names and descriptions. It excludes tool traffic, thinking, images, custom messages, and inactive branches. The child has no tools, user extensions, Skills, saved session, project context files, or prompt templates. It returns one JSON response.
 
-New input does not stop analysis. Branch navigation discards the old result without stopping the child. Background work does not interrupt the conversation. Manual candidates appear immediately, without the diagram's WAIT stage. Automatic candidates stay behind `Prompt ready — /promptor` until you show them with `/promptor` or discard them with `/promptor dismiss`.
+New input does not stop analysis. Branch navigation discards the old result without stopping the child. Background work does not interrupt the conversation. Manual candidates appear immediately. Automatic candidates stay behind `Prompt ready — /promptor` until you show them with `/promptor` or discard them with `/promptor dismiss`.
 
 ### Review safeguards
 

@@ -16,7 +16,7 @@ Ask the agent to search distinctive keywords:
 { "query": "database migration rollback" }
 ```
 
-Discovery returns ranked metadata and snippets. Use a result's `path` and `matchMessageId` for transcript retrieval.
+Use a result's `path` and `matchMessageId` for transcript retrieval.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
@@ -111,7 +111,7 @@ Search makes no model calls.
 
 Browse, discovery, and preparation sync the index before use. Preparation reports `sync.walkComplete`, `sync.backlogRemaining`, and `sync.complete`. Completion requires a complete walk and zero backlog.
 
-Preparation returns non-empty user and assistant text, never thinking or tool results. Unreadable sources retain citation and lineage metadata. Read and scroll retrieve raw messages, including tool results.
+Preparation returns non-empty user and assistant text, never thinking or tool results. Unreadable sources retain citation and lineage metadata.
 
 **Historical tool output can contain secrets or sensitive data. Raw retrieval puts that output in active model context.** All returned content follows your configured model provider's data path.
 
