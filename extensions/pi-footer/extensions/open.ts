@@ -6,33 +6,36 @@ import { createOpenInConfigStore } from "./open-in-config.ts";
 
 export type OpenInConfig = { command: string };
 
-let cachedOpenInConfig: { path: string; key: string; loaded: ConfigLoad<OpenInConfig> } | undefined;
-
 /** An invalid or unknown key is an issue; an invalid `command` falls back to `code`. */
 export function loadOpenInConfig(agentDir?: string): ConfigLoad<OpenInConfig> {
-	const store = createOpenInConfigStore(agentDir);
-	let key: string;
+	return createOpenInConfigStore(agentDir).loadSync();
+}
+
+// The footer renders often; reload only when the config file identity changes.
+let cachedCommand: { path: string; key: string | undefined; command: string | undefined } | undefined;
+
+function configuredCommand(): string | undefined {
+	const store = createOpenInConfigStore();
+	let key: string | undefined;
 	try {
 		const { size, mtimeMs, ctimeMs } = statSync(store.path);
 		key = `${size}:${mtimeMs}:${ctimeMs}`;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			cachedOpenInConfig = undefined;
-			return store.loadSync();
-		}
-		key = "missing";
+		// Other stat failures bypass the cache.
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") key = "missing";
 	}
-	if (cachedOpenInConfig?.path !== store.path || cachedOpenInConfig.key !== key) {
-		cachedOpenInConfig = { path: store.path, key, loaded: store.loadSync() };
+	if (key === undefined || cachedCommand?.path !== store.path || cachedCommand.key !== key) {
+		const loaded = store.loadSync();
+		cachedCommand = { path: store.path, key, command: loaded.status === "disabled" ? undefined : loaded.value.command };
 	}
-	return cachedOpenInConfig.loaded;
+	return cachedCommand.command;
 }
 
 /** Runs on every footer render, so it never notifies; the footer and open extensions report issues at session start. */
 export function configuredOpenUri(path: string): string | undefined {
-	const loaded = loadOpenInConfig();
-	if (loaded.status === "disabled") return undefined;
-	const [executable, ...args] = loaded.value.command.split(/\s+/);
+	const command = configuredCommand();
+	if (command === undefined) return undefined;
+	const [executable, ...args] = command.split(/\s+/);
 	if (executable !== "code") return undefined;
 	const query = args.includes("-n") || args.includes("--new-window") ? "?windowId=_blank" : "";
 	if (path.startsWith("\\\\")) {
