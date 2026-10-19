@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { readFile, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { realpathSync, type Stats } from "node:fs";
+import { open, readFile, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -136,73 +136,137 @@ export interface DirectToolActivity {
 	latest?: { name: string; durationMs?: number };
 }
 
-// Ignore a partial trailing JSONL entry while the child is writing it.
-export function directSessionUsage(jsonl: string, prompt: string): { tokens?: number; activity?: DirectToolActivity } {
-	let active = false;
-	let total = 0;
-	let observed = false;
-	const pending = new Map<string, string>();
-	let latest: DirectToolActivity["latest"];
-	for (const line of jsonl.split("\n")) {
-		if (!line.trim()) continue;
+class DirectSessionState {
+	private active = false;
+	private total = 0;
+	private observed = false;
+	private pending = new Map<string, string>();
+	private latest: DirectToolActivity["latest"];
+	private texts: string[] = [];
+	private trailingSpace = "";
+
+	private prompt: string;
+	constructor(prompt: string) { this.prompt = prompt; }
+
+	consume(line: string): boolean {
+		if (!line.trim()) return true;
 		let entry: Json;
-		try { entry = JSON.parse(line) as Json; } catch { break; }
-		if (!entry || entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+		try { entry = JSON.parse(line) as Json; } catch { return false; }
+		if (!entry || entry.type !== "message" || !entry.message || typeof entry.message !== "object") return true;
 		const message = entry.message as Json;
 		if (message.role === "user") {
-			active = Array.isArray(message.content) && message.content.length === 1
-				&& (message.content[0] as Json)?.text === prompt;
-			if (active) { total = 0; observed = false; pending.clear(); latest = undefined; }
-		} else if (active && message.role === "assistant") {
+			this.active = Array.isArray(message.content) && message.content.length === 1
+				&& (message.content[0] as Json)?.text === this.prompt;
+			if (this.active) {
+				this.total = 0; this.observed = false; this.pending.clear(); this.latest = undefined;
+				this.texts = []; this.trailingSpace = "";
+			}
+		} else if (this.active && message.role === "assistant") {
 			if (message.usage && typeof message.usage === "object") {
 				const usage = message.usage as Json;
 				const values = [usage.input, usage.output];
 				if (values.every((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
-					total += (values as number[]).reduce((sum, value) => sum + value, 0);
-					observed = true;
+					this.total += (values as number[]).reduce((sum, value) => sum + value, 0);
+					this.observed = true;
 				}
 			}
 			if (Array.isArray(message.content)) for (const part of message.content) {
 				if (part?.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
-					pending.set(part.id, part.name);
+					this.pending.set(part.id, part.name);
+				} else if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
+					const text = part.text.trimEnd();
+					// Keep final whitespace separate until another text part makes it internal.
+					const next = this.texts.length ? `${this.trailingSpace}\n${text}` : text.trimStart();
+					for (const char of next) this.texts.push(char);
+					this.trailingSpace = part.text.slice(text.length);
 				}
 			}
-		} else if (active && message.role === "toolResult" && typeof message.toolCallId === "string") {
-			const name = pending.get(message.toolCallId);
-			if (name === undefined) continue;
-			pending.delete(message.toolCallId);
-			latest = { name };
-			if (typeof message.durationMs === "number" && Number.isFinite(message.durationMs) && message.durationMs >= 0) {
-				latest.durationMs = message.durationMs;
+		} else if (this.active && message.role === "toolResult" && typeof message.toolCallId === "string") {
+			const name = this.pending.get(message.toolCallId);
+			if (name !== undefined) {
+				this.pending.delete(message.toolCallId);
+				this.latest = { name };
+				if (typeof message.durationMs === "number" && Number.isFinite(message.durationMs) && message.durationMs >= 0) {
+					this.latest.durationMs = message.durationMs;
+				}
 			}
 		}
+		return true;
 	}
-	return { tokens: observed ? total : undefined,
-		activity: pending.size || latest ? { pending: [...pending.values()], latest } : undefined };
+
+	usage(): { tokens?: number; activity?: DirectToolActivity } {
+		return { tokens: this.observed ? this.total : undefined,
+			activity: this.pending.size || this.latest ? { pending: [...this.pending.values()], latest: this.latest } : undefined };
+	}
+
+	partialText(maxChars: number): string | undefined {
+		if (!this.texts.length) return undefined;
+		return this.texts.length <= maxChars ? this.texts.join("") : `…${this.texts.slice(-maxChars).join("")}`;
+	}
 }
 
+function parseDirectSession(jsonl: string, prompt: string): DirectSessionState {
+	const state = new DirectSessionState(prompt);
+	for (const line of jsonl.split("\n")) if (!state.consume(line)) break;
+	return state;
+}
+
+// Ignore a partial trailing JSONL entry while the child is writing it.
+export function directSessionUsage(jsonl: string, prompt: string): { tokens?: number; activity?: DirectToolActivity } {
+	return parseDirectSession(jsonl, prompt).usage();
+}
 
 /** The last `maxChars` of assistant text in the exact prompt's turn; ignores a partial trailing entry. */
 export function directPartialText(jsonl: string, prompt: string, maxChars: number): string | undefined {
-	let active = false;
-	let texts: string[] = [];
-	for (const line of jsonl.split("\n")) {
-		if (!line.trim()) continue;
-		let entry: Json;
-		try { entry = JSON.parse(line) as Json; } catch { break; }
-		if (!entry || entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
-		const message = entry.message as Json;
-		if (message.role === "user") {
-			active = Array.isArray(message.content) && message.content.length === 1
-				&& (message.content[0] as Json)?.text === prompt;
-			if (active) texts = [];
-		} else if (active && message.role === "assistant" && Array.isArray(message.content)) {
-			for (const part of message.content) if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) texts.push(part.text);
-		}
-	}
-	const chars = Array.from(texts.join("\n").trim());
-	if (!chars.length) return undefined;
-	return chars.length <= maxChars ? chars.join("") : `…${chars.slice(-maxChars).join("")}`;
+	return parseDirectSession(jsonl, prompt).partialText(maxChars);
+}
+
+/** One reader per handle; only complete, valid lines advance the byte offset. */
+export function createDirectSessionReader(sessionFile: string, prompt: string): Pick<DirectHandle, "usageTokens" | "partialText" | "activity"> {
+	let offset = 0;
+	let previous: Stats | undefined;
+	let state = new DirectSessionState(prompt);
+	let lastUsage: ReturnType<typeof directSessionUsage> = {};
+	let reading: Promise<boolean> | undefined;
+	const read = async () => {
+		const file = await open(sessionFile, "r");
+		try {
+			const info = await file.stat();
+			if (info.size > SESSION_LIMIT) { previous = info; return false; }
+			if (previous && (info.dev !== previous.dev || info.ino !== previous.ino || info.size < previous.size
+				|| (info.size === previous.size && (info.mtimeMs !== previous.mtimeMs || info.ctimeMs !== previous.ctimeMs)))) {
+				offset = 0;
+				state = new DirectSessionState(prompt);
+			}
+			previous = info;
+			const buffer = Buffer.alloc(info.size - offset);
+			let length = 0;
+			while (length < buffer.length) {
+				const { bytesRead } = await file.read({ buffer, offset: length, length: buffer.length - length, position: offset + length });
+				if (!bytesRead) break;
+				length += bytesRead;
+			}
+			let start = 0;
+			for (let end = buffer.indexOf(10); end >= 0 && end < length; end = buffer.indexOf(10, start)) {
+				if (!state.consume(buffer.toString("utf8", start, end))) break;
+				offset += end + 1 - start;
+				start = end + 1;
+			}
+			return true;
+		} finally { await file.close(); }
+	};
+	// Timer samples and failure evidence can request the same file at the same time.
+	const sample = () => reading ??= read().finally(() => { reading = undefined; });
+	return {
+		get activity() { return lastUsage.activity; },
+		async usageTokens() {
+			lastUsage = await sample() ? state.usage() : {};
+			return lastUsage.tokens;
+		},
+		async partialText(maxChars) {
+			return await sample() ? state.partialText(maxChars) : undefined;
+		},
+	};
 }
 
 /** `turn` is the prompt's random turn identity; it proves which session turn a record owns.
@@ -346,24 +410,12 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				const accepted = await herdr.json(["agent", "prompt", name, prompt], options(signal));
 				const state = inspect(accepted, "agent_prompted", name, paneId, tabId);
 				if (state === "blocked" || state === "unknown") throw new Error(`Herdr agent became ${state}; inspect it before retrying.`);
-				let lastUsageSize = -1;
-				let lastUsage: ReturnType<typeof directSessionUsage> = {};
+				const session = createDirectSessionReader(sessionFile, prompt);
 				return {
 				name, tabId, paneId, sessionFile, prompt,
-				get activity() { return lastUsage.activity; },
-				async usageTokens() {
-					const info = await stat(sessionFile);
-					if (info.size > SESSION_LIMIT) { lastUsage = {}; return undefined; }
-					if (info.size !== lastUsageSize) {
-						lastUsage = directSessionUsage(await readFile(sessionFile, "utf8"), prompt);
-						lastUsageSize = info.size;
-					}
-					return lastUsage.tokens;
-				},
-				async partialText(maxChars) {
-					if ((await stat(sessionFile)).size > SESSION_LIMIT) return undefined;
-					return directPartialText(await readFile(sessionFile, "utf8"), prompt, maxChars);
-				},
+				get activity() { return session.activity; },
+				usageTokens: session.usageTokens,
+				partialText: session.partialText,
 				async answer(maxBytes) {
 					const readAnswer = async () => {
 						const info = await stat(sessionFile);
