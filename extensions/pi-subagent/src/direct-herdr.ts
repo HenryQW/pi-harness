@@ -143,7 +143,6 @@ class DirectSessionState {
 	private pending = new Map<string, string>();
 	private latest: DirectToolActivity["latest"];
 	private texts: string[] = [];
-	private trailingSpace = "";
 
 	private prompt: string;
 	constructor(prompt: string) { this.prompt = prompt; }
@@ -159,7 +158,7 @@ class DirectSessionState {
 				&& (message.content[0] as Json)?.text === this.prompt;
 			if (this.active) {
 				this.total = 0; this.observed = false; this.pending.clear(); this.latest = undefined;
-				this.texts = []; this.trailingSpace = "";
+				this.texts = [];
 			}
 		} else if (this.active && message.role === "assistant") {
 			if (message.usage && typeof message.usage === "object") {
@@ -174,11 +173,7 @@ class DirectSessionState {
 				if (part?.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
 					this.pending.set(part.id, part.name);
 				} else if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
-					const text = part.text.trimEnd();
-					// Keep final whitespace separate until another text part makes it internal.
-					const next = this.texts.length ? `${this.trailingSpace}\n${text}` : text.trimStart();
-					for (const char of next) this.texts.push(char);
-					this.trailingSpace = part.text.slice(text.length);
+					this.texts.push(part.text);
 				}
 			}
 		} else if (this.active && message.role === "toolResult" && typeof message.toolCallId === "string") {
@@ -200,8 +195,9 @@ class DirectSessionState {
 	}
 
 	partialText(maxChars: number): string | undefined {
-		if (!this.texts.length) return undefined;
-		return this.texts.length <= maxChars ? this.texts.join("") : `…${this.texts.slice(-maxChars).join("")}`;
+		const chars = Array.from(this.texts.join("\n").trim());
+		if (!chars.length) return undefined;
+		return chars.length <= maxChars ? chars.join("") : `…${chars.slice(-maxChars).join("")}`;
 	}
 }
 
