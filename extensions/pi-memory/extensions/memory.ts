@@ -66,7 +66,7 @@ export const MEMORY_PREPARE_TASK = {
 	defaultProfile: "balanced",
 } as const satisfies ModelTask;
 const MEMORY_REVIEW_NOTICE = "Adds are independently reviewed against live SYSTEM.md, MEMORY.md, and USER.md. Exact duplicate adds skip review; conflicts ask the user after the current response settles. Queued conflicts are not saved yet; continue replying without retrying or asking the user yourself. Do not review them yourself or repeat a successful write.";
-const MEMORY_CHECK = "MEMORY CHECK: Before replying, save newly learned durable user identity/preferences/corrections to user and stable cross-project environment/workflow facts to memory. Inferred habits need two independent signals. Skip project-specific, task-local, temporary, or trivial facts. Use the memory tool; it independently reviews adds and asks the user about conflicts after the response settles. Queued conflicts are not saved yet; do not retry or ask the user yourself. Do not perform its review yourself.";
+const MEMORY_CHECK = "MEMORY CHECK: Before replying, save newly learned durable user identity/preferences/corrections to user and stable cross-project environment/workflow facts to memory. Inferred habits need two independent signals. Skip project-specific, task-local, temporary, or trivial facts. Use the memory tool.";
 const REMEMBER_USAGE = "Usage: /remember <instruction>";
 const DREAM_TASK = {
 	id: "pi-memory/promoteEntries",
