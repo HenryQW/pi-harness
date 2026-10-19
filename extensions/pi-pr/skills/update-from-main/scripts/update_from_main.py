@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: Apache-2.0
-# Derived from HenryQW/skills; modified for exact backup identity, retention, worktree ownership, and regressions.
-# See ../../../NOTICE.md for the source snapshot and modification notices.
 """Update current non-main worktree branch from fetched origin/main."""
 
 from __future__ import annotations

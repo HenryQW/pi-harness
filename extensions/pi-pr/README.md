@@ -77,10 +77,6 @@ The helper retains backups of tracked, untracked, and colliding ignored files. R
 
 From this source checkout, run `pnpm --filter @henryqw/pi-pr test:git-workflows`. It uses temporary Git repositories and does not write to live GitHub. See [executed cases and acceptance instructions](./docs/git-workflows-tested.md).
 
-### Licences
-
-Existing code uses MIT; imported skills, Python helpers, and their modifications use Apache-2.0. See [licence scope and notices](./NOTICE.md). The package includes `LICENSE` and `LICENSE-APACHE-2.0`.
-
 ## Flow
 
 ![Flowchart showing /pr linking an inferred open PR before draft handling, repeating discovery, and choosing the next safe route](./docs/pr-routing.svg)
