@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { DiscardPlan } from "../dist/discard.js";
 
 /** Saved before launch for user matching only; never ownership or mutation authority. */
 export interface DirectDisplay {
@@ -39,6 +40,10 @@ export interface IsolatedTask {
 }
 export interface IsolatedRequest {
 	id: string;
+	/** Saved state address for a removed parent checkout. */
+	directory?: string;
+	root?: string;
+	orphaned?: boolean;
 	name: string;
 	status: string;
 	tasks: readonly IsolatedTask[];
@@ -75,6 +80,8 @@ export interface SubagentCommandAdapter {
 	recover(cwd: string): Promise<string>;
 	/** Read-only review of pi-subagent worktrees and branches in the canonical repository. */
 	prunePlan(cwd: string): Promise<PrunePlan>;
+	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
+	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<string>;
 	/** Re-verify and remove reviewed prunable items; returns a bounded report. */
 	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<string>;
 	/** Read-only Role catalog report with routes and per-file load errors. */
@@ -99,11 +106,11 @@ const PRUNE_IGNORED_CONFIRM_CODE_POINTS = 4_000;
 const NOT_SHOWN = "they are not removed in this run; run /subagent prune again after this run.";
 
 /** Fit whole item lines within `max` code points; never cut silently, and report exactly which items were shown. */
-function fitItems<T>(header: string, items: readonly T[], line: (item: T) => string, max: number): { text: string; shown: T[] } {
+function fitItems<T>(header: string, items: readonly T[], line: (item: T) => string, max: number, omitted = NOT_SHOWN): { text: string; shown: T[] } {
 	const lines = [header];
 	const shown: T[] = [];
 	let size = [...header].length;
-	const reserve = [...NOT_SHOWN].length + 32;
+	const reserve = [...omitted].length + 32;
 	for (const item of items) {
 		const text = line(item);
 		const length = [...text].length + 1;
@@ -112,7 +119,7 @@ function fitItems<T>(header: string, items: readonly T[], line: (item: T) => str
 		size += length;
 		shown.push(item);
 	}
-	if (shown.length < items.length) lines.push(`+${items.length - shown.length} more not shown; ${NOT_SHOWN}`);
+	if (shown.length < items.length) lines.push(`+${items.length - shown.length} more not shown; ${omitted}`);
 	return { text: lines.join("\n"), shown };
 }
 
@@ -124,6 +131,18 @@ function pruneReview({ root, items }: PrunePlan): { text: string; shown: PruneIt
 		[...items.filter((item) => item.prunable), ...items.filter((item) => !item.prunable)],
 		(item) => clean(`${item.prunable ? "✓ prunable" : "✗ blocked"} · ${item.path ?? "(no checkout)"} · ${item.branch} · ${item.tip.slice(0, 12)} · ${item.reason} · ignored: ${ignoredSummary(item)}`, 600),
 		ROLES_REPORT_CODE_POINTS);
+}
+
+function discardReview(plan: DiscardPlan) {
+	if (!plan.items.length) return { text: `No remaining owned resources for ${plan.requestId}.`, shown: [] };
+	return fitItems(`Close and delete request ${plan.requestId}:`, plan.items, (item) => clean([
+		`${item.key}: ${item.blockers.length ? `blocked: ${item.blockers.join("; ")}` : "can delete"}`,
+		`path: ${item.path ?? "none"}; checkout: ${item.checkout ? "yes" : "no"}; branch: ${item.branch ?? "none"}; tip: ${item.tip ?? "none"}`,
+		`commits ahead of recorded base: ${item.commits ?? "unknown"}; dirty: ${item.dirty === undefined ? "not inspected" : item.dirty ? "yes" : "no"}`,
+		`ignored entries (including all content inside them): ${item.ignored.length ? item.ignored.join(", ") : "none"}`,
+		`Herdr resources: ${item.hosts.length ? item.hosts.join("; ") : "none"}`,
+	].join("\n"), Number.MAX_SAFE_INTEGER, true), ROLES_REPORT_CODE_POINTS,
+	"they are not removed; reopen this request to review them.");
 }
 
 type Choice<T> = { label: string; value: T };
@@ -147,7 +166,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				else pi.sendMessage({ customType: "pi-subagent-roles", content: report, display: true });
 				return;
 			}
-			if (!command && !ctx.hasUI) throw new Error("/subagent requires interactive UI (TUI or RPC); use the subagent agent tools in non-interactive mode.");
+
 			const manager = ctx.sessionManager;
 			const session = manager.getSessionId();
 			const file = manager.getSessionFile();
@@ -207,6 +226,14 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				} catch (error) { if (valid()) ctx.ui.notify(`Prune failed: ${errorText(error)}`, "error"); }
 				return;
 			}
+			if (!ctx.hasUI) {
+				const inventory = await adapter.isolated(ctx.cwd, current);
+				const report = fitItems("Isolated requests (report only):", inventory.requests,
+					(request) => clean(`${request.orphaned ? "orphaned · " : ""}${request.name} · ${request.status} · ${request.id}`, 500), ROLES_REPORT_CODE_POINTS,
+					"open /subagent with interactive UI to inspect them.");
+				pi.sendMessage({ customType: "pi-subagent-discard", content: `${report.text}\nUnreadable state files preserved: ${inventory.invalidIds.length}.\nRemoval requires interactive confirmation.`, display: true });
+				return;
+			}
 			let history = false;
 			for (;;) {
 				if (!valid()) return;
@@ -223,7 +250,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				const selections: Choice<Selection>[] = [
 					// One row per workflow; new records keep opaque IDs in details. Status is last so clipping preserves the reference.
 					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${directLabel(task)} · ${task.status}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct" as const, task } })),
-					...(inventory?.requests ?? []).filter((request) => history || !completed(request.status) || /retained/i.test(request.status)).map((request) => ({ label: `Isolated · ${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
+					...(inventory?.requests ?? []).filter((request) => request.orphaned || history || !completed(request.status) || /retained/i.test(request.status)).map((request) => ({ label: `Isolated · ${request.orphaned ? "orphaned · " : ""}${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
 					{ label: "Refresh", value: { kind: "refresh" as const } },
 					{ label: history ? "Active work" : "Completed / history (including retained work)", value: { kind: "history" as const } },
 					{ label: "Close", value: { kind: "close" as const } },
@@ -275,16 +302,35 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				const { root, request } = selected;
 				for (;;) {
 					if (!valid()) return;
-					type Action = "inspect" | "send" | "edit" | "back";
+					type Action = "inspect" | "send" | "edit" | "discard" | "back";
 					const eligible = request.tasks.filter((task) => task.kind === "changeset" && adapter.canFollowup(root, request.id, task.id));
 					const actions: Choice<Action>[] = [
-						{ label: "Inspect status and recovery", value: "inspect" },
+						...(!request.orphaned ? [{ label: "Inspect status and recovery", value: "inspect" as const }] : []),
+						{ label: "Close and delete worktrees (discard work)", value: "discard" },
 						...(eligible.length ? [{ label: "Send follow-up instructions", value: "send" as const }, { label: "Edit queued instructions (withdraw ALL pending; Cancel leaves withdrawn)", value: "edit" as const }] : []),
 						{ label: "Back / refresh", value: "back" },
 					];
 					const action = await choose(ctx, `Isolated · ${clean(request.name)} · ${request.id}`, actions);
 					if (!valid() || !action) return;
 					if (action === "back") break;
+					if (action === "discard") {
+						try {
+							const plan = await adapter.discardPlan(ctx.cwd, request);
+							const reviewed = discardReview(plan);
+							if (!valid()) return;
+							ctx.ui.notify(reviewed.text, "warning");
+							const items = reviewed.shown.filter((item) => !item.blockers.length);
+							if (!items.length) continue;
+							const confirmed = await ctx.ui.confirm("Close and delete worktrees (discard work)",
+								`Stop the listed workers and delete the ${items.length} unblocked resource group(s) shown above? Committed, uncommitted, and ignored content in the listed checkouts is permanently deleted. Their listed branches, Herdr tabs, and workspaces are removed. Items not shown or blocked are kept.`);
+							if (!valid()) return;
+							if (confirmed) {
+								const report = await adapter.discard(ctx.cwd, { ...plan, items }, current);
+								if (valid()) ctx.ui.notify(clean(report, ROLES_REPORT_CODE_POINTS, true), "info");
+							}
+						} catch (error) { if (valid()) ctx.ui.notify(`Close and delete failed: ${errorText(error)}`, "error"); }
+						break;
+					}
 					if (action === "inspect") {
 						try {
 							const tab = await adapter.inspectInTab(root, request.id, ctx, current);

@@ -251,6 +251,8 @@ After readiness, use `subagent_stage revise` with the exact candidate, generatio
 
 To select work by label, open `/subagent` without arguments. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout. This includes requests launched in other sessions. Select an isolated request. Then select **Inspect status and recovery**.
 
+The menu also shows **Isolated · orphaned** requests whose saved parent checkout no longer exists. You can open this view from any checkout of the same repository. The saved worker or integration path identifies the primary repository. Orphaned requests have the same **Close and delete worktrees (discard work)** action, but no inspection or follow-up actions. The extension reads their original state directories; it does not recreate the removed parent checkout. Unreadable files stay preserved and are reported.
+
 This launches a Herdr tab without focus, with the configured `scout` Role on the configured `fast` route. The tab runs a read-access task with the resources of the Role. Its prompt contains bounded saved status, including retained paths, but not the raw launch environment or session transcripts. The analysis stays in that tab and does not queue a Main turn. The tab shows in the direct list with its own reference and name, such as `D9.1 · scout · Inspect <request ID>`. The extension records the tab and session file for recovery, even if the launch becomes uncertain.
 
 Before any stage or recovery action, the read-only `subagent_status` tool stays Main's authority for exact identities. If Herdr, the `scout` Role, or the fast route is not available, inspection fails and does not change the request. Main can then use `subagent_status`.
@@ -356,6 +358,20 @@ After a coordinator interruption, run `/subagent recover` one time. It gets the 
 If another productive run holds the lease, the command only reads status and reports the live owner. Wait. Do not take over. You can safely run the command again.
 
 Main uses `subagent_status` for exact identities. Main uses the recovery tools in the interface table above for deliberate decisions. The command never stages or promotes. Direct Herdr tab recovery stays in `/subagent`.
+
+### Close and delete isolated worktrees
+
+Open `/subagent`, select an isolated request, then select **Close and delete worktrees (discard work)**. This is a user action, not an agent tool. Without interactive UI, `/subagent` only reports requests.
+
+The read-only review groups resources by worker attempt or integration generation. It shows each recorded checkout path, branch, tip, commits ahead of the recorded base, dirty state, ignored entries, and Herdr resources. Text attempts do not save their base; their commit count is shown as unknown. The review also includes owned branches with no checkout. If a complete resource group does not fit, the report gives the number of groups not shown. Those groups are not removed.
+
+One confirmation permits permanent deletion of committed, uncommitted, and ignored content in the listed checkouts. It also permits closure of the listed Herdr tabs and workspaces. Cancel makes no change. The command uses the existing abort termination and host cleanup paths before forced checkout removal. It deletes a branch only at its reviewed tip. It saves each completed cleanup step.
+
+Each resource is checked again before removal. A live productive lease or local job blocks the action. Uncertain allocations, changed branch tips, locked or redirected checkouts, and other Herdr panes inside a checkout block that resource. Initialized submodules and index flags that hide clean-state evidence also require separate inspection. If Herdr cannot be inspected, checkouts stay in place.
+
+Main cannot run inside a checkout selected for deletion. A session change stops further removal. Only this request's recorded `pi-subagent/subagent-<24hex>` branches and their exact primary `.worktrees/` paths can be removed. The primary checkout is never removed.
+
+The report lists removed, skipped, and failed resources. After complete cleanup, the request is `aborted`, candidates are `released`, and integration generations are superseded with completed cleanup. Partial cleanup remains visible as retained work. Reopen the request to review the remaining resources. Abort, prune, and release keep their existing preservation rules.
 
 ### Prune leftover worktrees
 

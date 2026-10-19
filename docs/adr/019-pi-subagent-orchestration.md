@@ -22,6 +22,10 @@ A finished direct worker can be continued with `continueFrom` and its direct ref
 
 Completed workflows deliver Pi messages to their launching session with `triggerTurn: true, deliverAs: "followUp"`. A busy Main finishes its current turn before consuming a result; idle Main starts a turn. Session replacement suppresses stale delivery but retains exact recoverable identity. No new daemon or whole-run wall-clock deadline is introduced.
 
+User-confirmed discard from `/subagent` is the one explicit exception to preservation of committed work. The user reviews exact owned resources and confirms permanent deletion of committed, uncommitted, and ignored content. Agents and tools cannot trigger this action.
+
+The command keeps termination, ownership, lease, session, and Herdr pane checks. It deletes only shown resources and branches at their reviewed tips. Saved requests whose parent checkout no longer exists remain available from other checkouts of the same repository through their state-directory addresses. Unreadable state stays preserved.
+
 Execution policy comes only from `config/pi-subagent/config.json`; requests cannot override or replenish limits. Child turn/token/idle/runtime, external I/O, status, termination, and cleanup remain independently bounded. Pi is the Role and model authority; Herdr owns worker tabs and isolated workspaces. The extension stops at Main-authorized checked local integration and never pushes, publishes, deploys, or opens a pull request.
 
 ## Consequences

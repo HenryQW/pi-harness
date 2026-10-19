@@ -475,7 +475,7 @@ const IntegrationGenerationSchema = Type.Object({
 	cleanup: Type.Optional(Type.Array(CleanupStepSchema, { minItems: 2, maxItems: 2 })),
 	supersededFrom: Type.Optional(Type.Union([
 		Type.Literal("staging"), Type.Literal("conflict"), Type.Literal("validation_failed"),
-		Type.Literal("ready"), Type.Literal("promotion_failed"),
+		Type.Literal("ready"), Type.Literal("promotion_failed"), Type.Literal("discarded"),
 	])),
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
@@ -1095,6 +1095,9 @@ export function parseRunState(value: unknown): RunState {
 	const state = value as RunState;
 	const request = parseExecuteRequest(state.request);
 	parseIntegrationState(state.integration, request);
+	if (state.status !== "aborted" && state.integration.generations.some((generation) => generation.supersededFrom === "discarded")) {
+		throw new Error("User-discarded generations require an aborted request.");
+	}
 	const refresh = state.integration.refresh;
 	if (refresh && (refresh.generation === 1 && !sameIdentity(refresh.from, state.requestStartMain)
 		|| (state.integration.generations.at(-1)?.status !== "promoted" && !sameIdentity(refresh.to, state.main)))) {

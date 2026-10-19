@@ -1,4 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
+import { inspectDiscard, primaryCheckout, removeDiscardResources, type DiscardGuards, type DiscardPlan, type DiscardResource } from "./discard.ts";
 import { utf8Prefix, type EphemeralSubagentExecutor } from "./ephemeral.ts";
 import { createChildWorktree, finalizeChildWorktree, inspectWorktreeDirty, type WorktreeInfo } from "./worktree.ts";
 import type { PruneOwnership } from "./prune.ts";
@@ -54,7 +56,7 @@ const CHANGESET_TASK_PROMPT_MAX_BYTES = 96 * 1024;
 const CORRECTION_DELIVERY_RESERVE_BYTES = 1024;
 const MAX_WORKER_PROMPTS = 32;
 const MAX_QUEUED_FOLLOWUPS = 16;
-/** One durable follow-up per attempt; the runner itself never commits, stages, stashes, or discards. */
+/** One durable follow-up per attempt; this instruction permits a worker commit, never discarded work. */
 export const COMMIT_NUDGE_INSTRUCTION = "Your turn ended with uncommitted changes in your worktree. Commit the intended changes now so the worktree is clean, or explain in your reply why they must not be committed. Do not discard work.";
 export const CLEANUP_SAFETY_BUDGET_MS = 30_000;
 export const TERMINATION_SAFETY_BUDGET_MS = 15_000;
@@ -712,6 +714,15 @@ function terminal(state: RunState): boolean {
 	return state.status === "completed" || state.status === "final_failed" || state.status === "superseded" || state.status === "aborted";
 }
 
+function inventoryStatus(state: RunState): string {
+	const retained = state.tasks.some((task) => task.kind === "changeset"
+		? task.attempts.some((attempt) => attempt.cleanup.some((step) => step.status !== "completed"))
+		: task.attempts.some((attempt) => attempt.cleanup && attempt.cleanup.outcome !== "pruned"))
+		|| state.integration.generations.some((generation) => generation.cleanup?.some((step) => step.status !== "completed")
+			|| (generation.worktree && generation.cleanup?.every((step) => step.status === "completed") !== true));
+	return ["completed", "aborted"].includes(state.status) && retained ? `${state.status} · retained` : state.status;
+}
+
 export type TextTaskContext = { taskId: string; text: string };
 
 /** Build one bounded changeset assignment. Call this before acquiring its Role launch. */
@@ -869,16 +880,11 @@ export class IsolatedRunner {
 		this.currentPolicy = currentPolicy;
 	}
 
-	async listRequests(root: string): Promise<{ requests: Array<{ id: string; name: string; status: string; tasks: Array<{ id: string; name: string; status: string; kind: string }> }>; invalidIds: string[]; states: RunState[] }> {
+	async listRequests(root: string): Promise<{ requests: Array<{ id: string; name: string; status: string; directory: string; root: string; tasks: Array<{ id: string; name: string; status: string; kind: string }> }>; invalidIds: string[]; states: RunState[] }> {
 		const { states: entries, invalidIds } = await this.store.list(root);
-		return { invalidIds, states: entries.map(({ state }) => state), requests: entries.map(({ state }) => ({
-			id: state.request.id, name: state.request.goal,
-			status: ["completed", "aborted"].includes(state.status) && (state.tasks.some((task) => task.kind === "changeset"
-				? task.attempts.some((attempt) => attempt.cleanup.some((step) => step.status !== "completed"))
-				: task.attempts.some((attempt) => attempt.cleanup && attempt.cleanup.outcome !== "pruned"))
-				|| state.integration.generations.some((generation) => generation.cleanup?.some((step) => step.status !== "completed")
-					|| (generation.worktree && generation.cleanup?.every((step) => step.status === "completed") !== true)))
-				? `${state.status} · retained` : state.status,
+		return { invalidIds, states: entries.map(({ state }) => state), requests: entries.map(({ state, path }) => ({
+			id: state.request.id, name: state.request.goal, directory: dirname(path), root: state.root,
+			status: inventoryStatus(state),
 			tasks: state.request.tasks.map((task) => ({
 				id: task.id, name: task.requirements, kind: task.kind,
 				status: state.tasks.find((item) => item.taskId === task.id)!.status,
@@ -1922,6 +1928,125 @@ export class IsolatedRunner {
 		if (!sameIdentity(main, generation.expectedMain)) throw new Error("Main changed or became dirty before promotion.");
 	}
 
+	async listOrphanRequests(cwd: string) {
+		const primary = await primaryCheckout(cwd);
+		const { states, invalidIds } = await this.store.listOrphans(primary);
+		return { invalidIds, requests: states.map((handle) => ({
+			id: handle.state.request.id, name: handle.state.request.goal, status: inventoryStatus(handle.state),
+			directory: dirname(handle.path), root: handle.state.root, orphaned: true, tasks: [],
+		})) };
+	}
+
+	private discardGuards(directory: string, root: string, guards: DiscardGuards): DiscardGuards {
+		return { ...guards, blocked: async () => {
+			if (this.productiveLifecycles.has(root)) return "A local productive job is active.";
+			if (await this.store.hasProductiveRunLeaseInDirectory(directory)) return "A live productive lease owns this request root.";
+			return await guards.blocked();
+		} };
+	}
+
+	async discardPlan(cwd: string, id: string, directory: string | undefined, guards: DiscardGuards): Promise<DiscardPlan> {
+		const primary = await primaryCheckout(cwd);
+		directory ??= this.store.stateDirectory(realpathSync.native(cwd));
+		const handle = await this.store.loadFromDirectory(directory, id);
+		return { directory, root: handle.state.root, requestId: id, items: await inspectDiscard(primary, cwd, handle.state,
+			this.discardGuards(directory, handle.state.root, guards)) };
+	}
+
+	/** Command-only explicit discard. No tool calls this method. */
+	async discard(cwd: string, plan: DiscardPlan, guards: DiscardGuards) {
+		const primary = await primaryCheckout(cwd);
+		return await this.store.withDirectoryLock(plan.directory, async () => {
+			const handle = await this.store.loadFromDirectory(plan.directory, plan.requestId);
+			const state = handle.state;
+			if (state.root !== plan.root) throw new Error("Request root changed since review.");
+			const checked = this.discardGuards(plan.directory, state.root, guards);
+			const blocked = await checked.blocked();
+			if (blocked || !checked.current()) throw new Error(blocked ?? "Session changed; reopen /subagent.");
+			const removals = await removeDiscardResources(handle, primary, cwd, plan.items, checked, async (resource, verify) => {
+				await verify();
+				state.status = "aborted";
+				state.accepted = false;
+				delete state.acceptedAt;
+				if (state.final.status === "passed") {
+					state.final.status = "superseded";
+					state.final.failure = "User confirmed discard from /subagent.";
+				}
+				delete state.recovery;
+				state.updatedAt = this.coordinatorRuntime.now();
+				// Invalidate readiness before termination or supersession; rejected candidates retain exact accounting.
+				for (const candidate of state.integration.candidates) {
+					candidate.decision = "rejected";
+					const task = changesetTaskState(state, candidate.taskId);
+					if (candidate.attempt !== task.attempts.length) continue;
+					if (candidate.worker !== "retained") { task.status = "rejected"; delete task.failure; }
+					else this.attention(task, "User confirmed discard of this request.");
+				}
+				for (const generation of state.integration.generations) {
+					if (generation.status === "superseded") continue;
+					generation.status = "superseded";
+					generation.supersededFrom = "discarded";
+					generation.failure = "User confirmed discard from /subagent.";
+					delete generation.promotion;
+					delete generation.supersededPromotion;
+					delete generation.combinedTip;
+					delete generation.checks;
+					delete generation.review;
+				}
+				await handle.save();
+				await this.closeDiscardResource(handle, resource, verify);
+			});
+			for (const candidate of state.integration.candidates) {
+				const task = changesetTaskState(state, candidate.taskId);
+				const attempt = task.attempts[candidate.attempt - 1]!;
+				if (candidate.decision !== "rejected" || attempt.termination?.status !== "terminated"
+					|| attempt.cleanup.some((step) => step.status !== "completed")) continue;
+				candidate.worker = "released";
+				if (attempt === task.attempts.at(-1)) { task.status = "rejected"; delete task.failure; }
+			}
+			await handle.save();
+			return removals;
+		});
+	}
+
+	private async terminateAbortedAttempt(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt,
+		signal?: AbortSignal, deadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS): Promise<void> {
+		if (!allocationByKind(attempt, "agent")?.agentName || attempt.termination?.status === "terminated") return;
+		await this.proveTermination(handle, task, attempt, this.terminationCandidate(attempt),
+			async () => await handle.save(), signal, deadline);
+	}
+
+	private async cleanupAbortedHost(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt,
+		kind: "worker_tab" | "workspace", scope: RuntimeScope): Promise<void> {
+		const result = await scope.call((context) => this.hostRuntime.cleanupHost({
+			requestId: handle.state.request.id, kind, task: changesetTaskRequest(handle.state, task.taskId), attempt,
+		}, context));
+		if (result.outcome === "blocked") throw new Error(result.failure);
+	}
+
+	private async closeDiscardResource(handle: RunStateHandle, resource: DiscardResource,
+		verify: () => Promise<void>): Promise<void> {
+		const { task, attempt } = resource;
+		if (!task || !attempt) return;
+		await verify();
+		await this.terminateAbortedAttempt(handle, task, attempt);
+		if (allocationByKind(attempt, "agent") && attempt.termination?.status !== "terminated") throw new Error("Worker termination remains unproved.");
+		const scope = new DeadlineScope(this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS, () => this.coordinatorRuntime.now());
+		try {
+			for (const step of attempt.cleanup) {
+				if (step.kind !== "worker_tab" && step.kind !== "workspace" || step.status === "completed") continue;
+				await verify();
+				step.status = "running";
+				delete step.failure;
+				await handle.save();
+				await verify();
+				if (allocationByKind(attempt, step.kind)) await this.cleanupAbortedHost(handle, task, attempt, step.kind, scope);
+				step.status = "completed";
+				await handle.save();
+			}
+		} finally { scope.close(); }
+	}
+
 	async abort(id: string, root: string, outerSignal?: AbortSignal): Promise<RunResponse> {
 		root = realpathSync.native(root);
 		return await this.store.withLock(root, async (lifecycle) => {
@@ -1957,13 +2082,8 @@ export class IsolatedRunner {
 			for (const task of state.tasks) {
 				if (task.kind !== "changeset") continue;
 				for (const attempt of task.attempts) {
-					if (!allocationByKind(attempt, "agent")?.agentName || attempt.termination?.status === "terminated") continue;
-					try {
-						await this.proveTermination(handle, task, attempt, this.terminationCandidate(attempt),
-							async () => await handle.save(), outerSignal, safetyDeadline);
-					} catch (error) {
-						this.attention(task, errorText(error));
-					}
+					try { await this.terminateAbortedAttempt(handle, task, attempt, outerSignal, safetyDeadline); }
+					catch (error) { this.attention(task, errorText(error)); }
 				}
 			}
 			state.status = "aborted";
@@ -2026,11 +2146,7 @@ export class IsolatedRunner {
 							delete step.failure;
 							await handle.save();
 							if ((kind === "worker_tab" || kind === "workspace") && allocationByKind(attempt, kind)) {
-								const result = await scope.call((context) => this.hostRuntime.cleanupHost({
-									requestId: state.request.id, kind,
-									task: changesetTaskRequest(state, task.taskId), attempt,
-								}, context));
-								if (result.outcome === "blocked") throw new Error(result.failure);
+								await this.cleanupAbortedHost(handle, task, attempt, kind, scope);
 							} else if ((kind === "worktree" || kind === "branch") && worker && expected) {
 								const result = await scope.call((context) => this.integrationGit.release(state.root,
 									worker, expected, kind, context.signal));

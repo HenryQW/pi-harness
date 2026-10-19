@@ -38,7 +38,8 @@ import {
 } from "../dist/schema.js";
 import { FileRunStore } from "../dist/store.js";
 import { workerOutputForMain } from "./result-transport.ts";
-import type { IsolatedInventory, PrunePlan } from "./subagent-command.ts";
+import type { IsolatedInventory, IsolatedRequest, PrunePlan } from "./subagent-command.ts";
+import type { DiscardPlan } from "../dist/discard.js";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
 const PUBLIC_EVIDENCE_MAX_BYTES = 512;
@@ -471,6 +472,8 @@ export interface IsolatedSurface {
 	inventory(cwd: string, current?: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
 	prunePlan(cwd: string): Promise<PrunePlan>;
+	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
+	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<string>;
 	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<string>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
@@ -790,7 +793,8 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				try { renderWorkspaceWidget(latestContext(), workspaceRowsByRequest); }
 				catch (error) { console.error("Pi Subagent workspace widget update failed.", error); }
 			}
-			return { root, requests, invalidIds };
+			const orphans = await getComponents().runner.listOrphanRequests(root);
+			return { root, requests: [...requests, ...orphans.requests], invalidIds: [...new Set([...invalidIds, ...orphans.invalidIds])] };
 		},
 		async recover(cwd) {
 			const root = await lookupRoot(cwd);
@@ -822,6 +826,22 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				: "Main: inspect subagent_status for exact identities and blockers before deciding stage, promote, resume, or guarded release. No worker prompt, merge, promotion, or cleanup was replayed.",
 			];
 			return boundedReport(lines, "recovery report lines omitted; use subagent_status for exact request evidence.");
+		},
+		async discardPlan(cwd, request) {
+			return await getComponents().runner.discardPlan(cwd, request.id, request.directory, {
+				panes: () => listHerdrPanes(cwd), current: () => !sessionClosed,
+				blocked: async () => jobOwners.has(`${request.root}\0${request.id}`) ? "A local job is active for this request." : undefined,
+			});
+		},
+		async discard(cwd, plan, current) {
+			requireCurrent(current);
+			const removals = await getComponents().runner.discard(cwd, plan, {
+				panes: () => listHerdrPanes(cwd), current: () => current() && !sessionClosed,
+				blocked: async () => jobOwners.has(`${plan.root}\0${plan.requestId}`) ? "A local job is active for this request." : undefined,
+			});
+			return boundedReport([`Close and delete ${plan.requestId}:`,
+				...removals.map((item) => `${item.outcome}: ${item.key}: ${item.reason}`),
+			], "removal report lines omitted; reopen /subagent to inspect retained resources.");
 		},
 		async prunePlan(cwd) {
 			const root = await lookupRoot(cwd);

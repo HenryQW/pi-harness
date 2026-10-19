@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { check, lock } from "proper-lockfile";
 import { parseRunState, RUN_STATE_VERSION, type RunState } from "./schema.ts";
+import { discardResources } from "./discard.ts";
 
 const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
 /*
@@ -150,7 +151,7 @@ export class FileRunStore {
 	}
 
 	private async assertSafeDestination(root: string, destination: string): Promise<void> {
-		if (isWithin(realpathSync.native(root), await canonicalPlannedPath(destination))) {
+		if (isWithin(await canonicalPlannedPath(root), await canonicalPlannedPath(destination))) {
 			throw new Error("Pi Subagent state directory must be outside the Git workspace.");
 		}
 	}
@@ -254,6 +255,69 @@ export class FileRunStore {
 			throw new Error("pi-subagent state identity does not match its repository and filename.");
 		}
 		return this.handle(state, path);
+	}
+
+	/** Address saved state without resolving a parent checkout that may no longer exist. */
+	private async validateDirectory(directory: string): Promise<void> {
+		const parent = join(extensionConfigDir("pi-subagent", this.agentDir), "state");
+		if (dirname(directory) !== parent || !/^[a-f0-9]{64}$/.test(basename(directory))
+			|| !(await lstat(directory)).isDirectory() || await realpath(directory) !== join(await realpath(parent), basename(directory))) {
+			throw new Error("Invalid Pi Subagent state directory.");
+		}
+	}
+
+	async loadFromDirectory(directory: string, id: string): Promise<RunStateHandle> {
+		await this.validateDirectory(directory);
+		if (basename(id) !== id || !id || id === "." || id === "..") throw new Error("Invalid request ID.");
+		const path = join(directory, `${id}.json`);
+		if (!(await lstat(path)).isFile()) throw new Error("State is not a regular file.");
+		const state = parseRunState(JSON.parse(await readTextFileBounded(path, STATE_MAX_BYTES)));
+		if (state.request.id !== id || !isAbsolute(state.root)
+			|| createHash("sha256").update(state.root).digest("hex") !== basename(directory)) {
+			throw new Error("pi-subagent state identity does not match its directory and filename.");
+		}
+		await this.assertSafeDestination(state.root, path);
+		return this.handle(state, path);
+	}
+
+	async hasProductiveRunLeaseInDirectory(directory: string): Promise<boolean> {
+		await this.validateDirectory(directory);
+		const path = join(directory, "productive-run");
+		return await check(path, { realpath: false, stale: LOCK_OPTIONS.stale, lockfilePath: `${path}.lock` });
+	}
+
+	async withDirectoryLock<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+		await this.validateDirectory(directory);
+		const path = join(directory, "lifecycle.lock");
+		const release = await lock(path, { ...LIFECYCLE_LOCK_OPTIONS, lockfilePath: `${path}.lock` });
+		try { return await operation(); } finally { await release(); }
+	}
+
+	/** Missing roots only; repoRoot records the stable primary checkout, not the removed parent. */
+	async listOrphans(primary: string): Promise<{ states: RunStateHandle[]; invalidIds: string[] }> {
+		const parent = join(extensionConfigDir("pi-subagent", this.agentDir), "state");
+		let directories;
+		try { directories = await readdir(parent, { withFileTypes: true }); }
+		catch (error) { if (isMissing(error)) return { states: [], invalidIds: [] }; throw error; }
+		const states: RunStateHandle[] = [];
+		const invalidIds: string[] = [];
+		for (const entry of directories) {
+			const directory = join(parent, entry.name);
+			try {
+				await this.validateDirectory(directory);
+				for (const file of await readdir(directory)) {
+					if (!file.endsWith(".json")) continue;
+					try {
+						const handle = await this.loadFromDirectory(directory, file.slice(0, -5));
+						try { await lstat(handle.state.root); continue; }
+						catch (error) { if (!isMissing(error)) throw error; }
+						const worktrees = discardResources(handle.state).flatMap((resource) => resource.worktree ? [resource.worktree] : []);
+						if (worktrees.length && worktrees.every((item) => item.repoRoot === primary)) states.push(handle);
+					} catch { invalidIds.push(join(directory, file)); }
+				}
+			} catch { invalidIds.push(directory); }
+		}
+		return { states, invalidIds };
 	}
 
 	private async stateEntries(root: string) {
