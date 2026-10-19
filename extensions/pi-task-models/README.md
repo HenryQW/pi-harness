@@ -3,7 +3,7 @@
 Configure shared Task Profiles for `fast`, `balanced`, `frontier`, and `fav`. Each Task Route pairs a model with a thinking level; each consumer owns its Model Tasks and defaults.
 
 ![Pi showing task model profiles and task routes](./example.png)
-![Task routing from consumer declaration to route or error](./docs/task-routing-architecture.svg)
+![A Model Task selects a Task Profile and resolves Task Routes; config and profile errors occur before resolution, and no-route follows it.](./docs/task-routing-architecture.svg)
 
 ## Install
 
