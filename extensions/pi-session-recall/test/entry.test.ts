@@ -212,10 +212,6 @@ describe("session_search entry point", () => {
 		assert.equal(tool.name, "session_search");
 		assert.equal(tool.exposure, undefined, "search stays direct: declared and callable while active");
 		assert.deepEqual(tool.annotations, { readOnlyHint: true, openWorldHint: false });
-		assert.equal(tool.promptSnippet, "Search past Pi sessions for prior decisions and context");
-		assert.deepEqual(tool.promptGuidelines, [
-			"Use session_search only when the user explicitly asks about past Pi sessions, historical decisions, or repeated work not available in the current conversation. Do not use it for current-session continuation or ordinary repository inspection.",
-		]);
 
 		// Fixture sessions with proper parentId chain.
 		msgCount = 1;

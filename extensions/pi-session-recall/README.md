@@ -59,7 +59,7 @@ Start pattern mining with:
 
 Repository scope selects exact and descendant `cwd` values before applying the limit. It excludes the current session file. Use `scope:"all"` across repositories, including when inventory is unavailable.
 
-The TUI shows the last five visual lines and earlier-line count. Press `Ctrl+O` for the full bounded response; the model always receives it.
+The TUI shows the last five visual lines and earlier-line count. Press the tool expand key (`Ctrl+O` by default) for the full bounded response; the model always receives it.
 
 ### Programmatic output
 

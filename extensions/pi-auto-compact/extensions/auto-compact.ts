@@ -221,23 +221,28 @@ async function summarize(
 		signal, thinking, registryStream(ctx), auth.env);
 }
 
-/** An unchanged, successful read result with a matching persisted assistant call. */
-function readResult(entry: ProjectedSessionEntry, projected: ProjectedSessionEntry[], editedIds: Set<string>) {
-	const raw = entry.sourceEntry;
-	const message = entry.messages[0];
-	if (raw.type !== "message" || raw.message.role !== "toolResult" || message?.role !== "toolResult" ||
-		message.toolName !== "read" || message.isError || raw.message.isError || editedIds.has(raw.id) ||
-		!isDeepStrictEqual(message.content, raw.message.content) || !message.content.length ||
-		message.content.some((block) => block.type !== "text")) return null;
-	for (const candidate of projected.slice(0, projected.indexOf(entry))) {
-		const assistant = candidate.messages[0];
-		if (candidate.sourceEntry.type !== "message" || candidate.sourceEntry.message.role !== "assistant" ||
-			editedIds.has(candidate.sourceEntry.id) || assistant?.role !== "assistant" ||
-			!Array.isArray(assistant.content) || !isDeepStrictEqual(assistant.content, candidate.sourceEntry.message.content)) continue;
-		const call = assistant.content.find((block) => block.type === "toolCall" && block.id === message.toolCallId);
-		if (call?.type === "toolCall" && call.name === "read") return { message, args: call.arguments };
-	}
-	return null;
+/** Index unchanged, successful read results with their first matching earlier assistant call. */
+function readResults(projected: ProjectedSessionEntry[], editedIds: Set<string>) {
+	const calls = new Map<string, unknown>();
+	return projected.map((entry) => {
+		const raw = entry.sourceEntry;
+		const message = entry.messages[0];
+		if (raw.type === "message" && raw.message.role === "assistant" && message?.role === "assistant" &&
+			!editedIds.has(raw.id) && Array.isArray(message.content) && isDeepStrictEqual(message.content, raw.message.content)) {
+			const seen = new Set<string>();
+			for (const block of message.content) {
+				if (block.type !== "toolCall" || seen.has(block.id)) continue;
+				// Only the first call with this ID in each assistant entry can match.
+				seen.add(block.id);
+				if (block.name === "read" && !calls.has(block.id)) calls.set(block.id, block.arguments);
+			}
+		}
+		if (raw.type !== "message" || raw.message.role !== "toolResult" || message?.role !== "toolResult" ||
+			message.toolName !== "read" || message.isError || raw.message.isError || editedIds.has(raw.id) ||
+			!isDeepStrictEqual(message.content, raw.message.content) || !message.content.length ||
+			message.content.some((block) => block.type !== "text") || !calls.has(message.toolCallId)) return null;
+		return { entry, message, args: calls.get(message.toolCallId) };
+	});
 }
 
 export default function (pi: ExtensionAPI) {
@@ -297,17 +302,17 @@ export default function (pi: ExtensionAPI) {
 			: -1;
 		const protectedStart = current < 0 ? initialCut.firstKeptEntryIndex : Math.min(current, initialCut.firstKeptEntryIndex);
 		const edits: ContextEditEntryDraft[] = [];
+		// This loop edits only older tool results, so calls and protected reads stay unchanged.
+		const reads = readResults(projected, existingEdits);
+		const protectedReads = reads.slice(protectedStart).filter((result) => result !== null);
 		for (let index = start; index < protectedStart && tokens > threshold; index++) {
 			const older = projected[index]!;
-			const original = readResult(older, projected, existingEdits);
+			const original = reads[index];
 			if (!original) continue;
-			const keeper = projected.slice(protectedStart).find((entry) => {
-				const later = readResult(entry, projected, existingEdits);
-				return later && later.message.toolName === original.message.toolName &&
-				isDeepStrictEqual(later.args, original.args) && isDeepStrictEqual(later.message.content, original.message.content);
-			});
-			if (!keeper || !ctx.sessionManager.getEntry(older.sourceEntry.id) || !ctx.sessionManager.getEntry(keeper.sourceEntry.id)) continue;
-			const notice = [{ type: "text" as const, text: `[Duplicate read; full result retained at entry ${keeper.sourceEntry.id}.]` }];
+			const keeper = protectedReads.find((later) => later.message.toolName === original.message.toolName &&
+				isDeepStrictEqual(later.args, original.args) && isDeepStrictEqual(later.message.content, original.message.content));
+			if (!keeper || !ctx.sessionManager.getEntry(older.sourceEntry.id) || !ctx.sessionManager.getEntry(keeper.entry.sourceEntry.id)) continue;
+			const notice = [{ type: "text" as const, text: `[Duplicate read; full result retained at entry ${keeper.entry.sourceEntry.id}.]` }];
 			const replacement = { ...original.message, content: notice };
 			const saved = estimateTokens(original.message) - estimateTokens(replacement);
 			if (saved <= 0) continue;
