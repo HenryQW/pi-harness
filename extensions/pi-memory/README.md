@@ -53,11 +53,13 @@ An approved merge or replacement requires a single add conflicting with exactly 
 
 ### `/remember` and queued work
 
-`/remember` uses bounded `pi-memory/prepareCandidate` proposals for one exact entry and target, or declines unsuitable, project-specific, temporary, or trivial content. It requires the configured `balanced` route, checks source changes, and saves through reviewed memory. It does not send open-ended instructions to the session agent.
+![Remember requests and conflicts wait in separate queues; after settlement, conflicts run first, then requests, with live-source checks before review and writes](./docs/remember-queue-flow.svg)
 
-During an active response, trimmed `/remember` requests queue; interactive conflict questions queue separately. Conflicts return `queued: true`, `saved: false`: nothing is saved. The agent must finish replying without retrying or asking the user itself.
+`/remember` uses bounded `pi-memory/prepareCandidate` proposals: one exact entry and target, or a decline for unsuitable, project-specific, temporary, or trivial content. It requires the configured `balanced` route, unchanged sources, and candidate review. It never sends open-ended instructions to the session agent.
 
-After the response settles, conflicts run first, then remember requests, each in FIFO order while idle. Each reads live sources again; remaining conflicts use `ask_question`. Idle requests can ask immediately. Deferred results and failures appear as UI notifications, not new agent turns.
+Active responses queue trimmed `/remember` requests and interactive conflict questions separately. Queued conflicts return `queued: true`, `saved: false`; nothing is saved. The agent must finish replying without retrying or asking the user itself.
+
+After settlement, conflicts run first, then remember requests: FIFO within each queue, only while idle. Each item re-reads live sources; remaining conflicts use `ask_question`. Idle requests can ask immediately. Deferred results and failures use UI notifications, not new agent turns.
 
 Cancellation drops both queues before further preparation, dialogs, or writes, even without a context cancellation signal. Shutdown, reload, or session replacement also clears queues. Dropped requests never return; completed writes remain saved. Issue a new `/remember` if needed.
 
