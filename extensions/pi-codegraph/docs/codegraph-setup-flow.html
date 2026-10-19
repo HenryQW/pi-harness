@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodeGraph worktree index setup</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+  <style>
+    body { margin: 0; background: #f0eee9; color: #101828; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+    svg { display: block; width: 100%; min-width: 1280px; height: auto; }
+    @media print { .diagram-container { overflow-x: visible; } svg { min-width: 0; } }
+  </style>
+</head>
+<body>
+<div class="diagram-container">
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="codegraph-setup-flow-title codegraph-setup-flow-desc">
+  <title id="codegraph-setup-flow-title">CodeGraph worktree index setup</title>
+  <desc id="codegraph-setup-flow-desc">Pi gets primary-index consent, checks copied indexes before synchronization, creates an index if no copy is usable, and starts the MCP watcher.</desc>
+  <defs>
+    <style>
+      .heading { fill: #101828; font: 400 28px 'Instrument Serif', serif; }
+      .note { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }
+      .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+      .terminal { fill: #e6e4de; stroke: #6a7282; stroke-width: 1; }
+      .decision { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+      .gate { fill: rgba(29,78,216,.08); stroke: #1d4ed8; stroke-width: 1.2; }
+      .name { fill: #101828; font: 600 14px 'Geist', sans-serif; text-anchor: middle; }
+      .detail { fill: #4c5665; font: 400 12px 'Geist', sans-serif; text-anchor: middle; }
+      .code { fill: #4c5665; font: 400 10px 'Geist Mono', monospace; text-anchor: middle; }
+      .edge { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#arrow); }
+      .retry { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#arrow); }
+      .accepted { fill: none; stroke: #1d4ed8; stroke-width: 1.2; marker-end: url(#arrow-accent); }
+      .label-mask { fill: #f0eee9; }
+      .label { fill: #4c5665; font: 500 10px 'Geist Mono', monospace; text-anchor: middle; }
+    </style>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+  </defs>
+  <rect width="1280" height="720" fill="#f0eee9"/>
+  <text class="heading" x="40" y="48">Prepare a linked worktree index</text>
+  <text class="note" x="40" y="72">New linked worktree without an index. Existing indexes and lock recovery are described in the README.</text>
+
+  <!-- Connectors precede labels and nodes. The copied-index gate runs before sync. -->
+  <line class="edge" x1="264" y1="140" x2="320" y2="140"/>
+  <line class="edge" x1="560" y1="140" x2="680" y2="140"/>
+  <line class="edge" x1="440" y1="200" x2="440" y2="284"/>
+  <path class="edge" d="M860 208 V236 Q860 244 852 244 H568 Q560 244 560 252 V284"/>
+  <line class="edge" x1="600" y1="336" x2="680" y2="336"/>
+  <line class="edge" x1="820" y1="388" x2="820" y2="424"/>
+  <line class="edge" x1="400" y1="388" x2="400" y2="472"/>
+  <path class="retry" d="M680 496 H640 Q632 496 632 488 V424 Q632 416 624 416 H536 Q528 416 528 408 V388"/>
+  <line class="accepted" x1="960" y1="496" x2="1008" y2="496"/>
+  <line class="edge" x1="1124" y1="536" x2="1124" y2="600"/>
+  <path class="edge" d="M460 568 V628 Q460 636 468 636 H1008"/>
+
+  <rect class="label-mask" x="600" y="116" width="40" height="14" rx="2"/>
+  <text class="label" x="620" y="126">NO</text>
+  <rect class="label-mask" x="448" y="232" width="40" height="14" rx="2"/>
+  <text class="label" x="468" y="242">YES</text>
+  <rect class="label-mask" x="680" y="220" width="64" height="14" rx="2"/>
+  <text class="label" x="712" y="230">ACCEPT</text>
+  <rect class="label-mask" x="280" y="424" width="112" height="14" rx="2"/>
+  <text class="label" x="336" y="434">NONE USABLE</text>
+  <rect class="label-mask" x="472" y="440" width="152" height="14" rx="2"/>
+  <text class="label" x="548" y="450">DELETE + RETRY</text>
+  <rect class="label-mask" x="964" y="472" width="40" height="14" rx="2"/>
+  <text class="label" x="984" y="482">PASS</text>
+
+  <!-- Nine nodes: start, primary check, consent, selection, copy, gate, sync, init, watcher. -->
+  <rect class="terminal" x="40" y="100" width="224" height="80" rx="20"/>
+  <text class="name" x="152" y="136">Pi starts</text>
+  <text class="detail" x="152" y="156">In a Git checkout</text>
+
+  <polygon class="decision" points="440,80 560,140 440,200 320,140"/>
+  <text class="name" x="440" y="136">Primary index</text>
+  <text class="name" x="440" y="156">present?</text>
+
+  <rect class="node" x="680" y="80" width="360" height="128" rx="6"/>
+  <text class="name" x="860" y="108">TUI consent once per repository</text>
+  <text class="detail" x="860" y="132">Accept: initialize the primary checkout</text>
+  <text class="code" x="860" y="152">codegraph init --yes</text>
+  <text class="detail" x="860" y="176">Decline: write the marker and stop</text>
+  <text class="code" x="860" y="192">pi-codegraph-declined</text>
+
+  <rect class="node" x="320" y="284" width="280" height="104" rx="6"/>
+  <text class="name" x="460" y="312">Pick the closest seed index</text>
+  <text class="detail" x="460" y="336">Complete, compatible, same repository</text>
+  <text class="detail" x="460" y="360">Fewest changed files against worktree HEAD</text>
+
+  <rect class="node" x="680" y="284" width="280" height="104" rx="6"/>
+  <text class="name" x="820" y="316">Copy under the source writer lock</text>
+  <text class="code" x="820" y="340">.codegraph/codegraph.lock</text>
+  <text class="detail" x="820" y="364">Skip a locked source; try the next index</text>
+
+  <polygon class="gate" points="820,424 960,496 820,568 680,496"/>
+  <text class="name" x="820" y="468">Accept this copy?</text>
+  <text class="code" x="820" y="488">codegraph status --json</text>
+  <text class="code" x="820" y="508">exit 0 · complete</text>
+  <text class="code" x="820" y="528">reindexRecommended:false</text>
+
+  <rect class="node" x="1008" y="456" width="232" height="80" rx="6"/>
+  <text class="name" x="1124" y="484">Synchronize the accepted copy</text>
+  <text class="code" x="1124" y="508">codegraph sync &lt;worktree-root&gt;</text>
+
+  <rect class="node" x="320" y="472" width="280" height="96" rx="6"/>
+  <text class="name" x="460" y="504">Create a new worktree index</text>
+  <text class="code" x="460" y="532">codegraph init --yes &lt;worktree-root&gt;</text>
+
+  <rect class="terminal" x="1008" y="600" width="232" height="72" rx="20"/>
+  <text class="name" x="1124" y="628">MCP watcher keeps it current</text>
+  <text class="detail" x="1124" y="648">Includes uncommitted edits</text>
+
+  <text class="note" x="40" y="680">Dashed path: reject the copy and try the next seed index. Setup failures stop; see Limits and recovery.</text>
+</svg>
+</div>
+</body>
+</html>

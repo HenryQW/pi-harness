@@ -20,7 +20,7 @@ Put the `codegraph` executable on Pi's `PATH`. Keep Pi's built-in MCP support en
 
 ## Use
 
-Start `pi` in a linked worktree. If the primary checkout has no index, the TUI asks for indexing consent once per repository. Accept to run `codegraph init --yes` there, then create the worktree index. Alternatively, run this command in the primary checkout yourself:
+Start `pi` in a linked worktree. If the primary checkout has no index, the TUI asks for indexing consent once per repository. Accept to run `codegraph init --yes` there. Alternatively, run this command in the primary checkout yourself:
 
 ```bash
 codegraph init --yes
@@ -38,11 +38,13 @@ Works with `codemode`, including `codemode.mode` set to `only`. Scripts call `to
 
 ## Flow
 
+![Worktree setup: primary-index consent, seed selection, locked copy, status check, synchronization or new index, and MCP watcher.](./docs/codegraph-setup-flow.svg)
+
 Setup starts with Pi, not when Git creates a worktree. In the TUI, setup runs in the background. RPC, print, and JSON modes do not ask for consent. RPC waits for setup before it can accept an answer.
 
 If you decline or press Escape, the extension writes `pi-codegraph-declined` in the Git common directory. Delete that file to permit another consent request. Automatic worktree setup requires a primary index. The extension does not initialize non-Git directories or offer to index bare repositories.
 
-Each checkout has a separate index. Once ready, the MCP file watcher updates it, including uncommitted edits and changes in the primary checkout. Sessions share one CodeGraph daemon per checkout. It stops five minutes after the last session closes.
+The MCP file watcher updates each checkout's separate index, including uncommitted edits and changes in the primary checkout. Sessions share one CodeGraph daemon per checkout. It stops five minutes after the last session closes.
 
 ### Index status
 
@@ -56,9 +58,15 @@ Creating, resuming, or forking a session waits for active initialization without
 
 Each checkout owns `.codegraph/codegraph.db`. The extension can read other indexes to prepare it, but does not change them. It writes `pi-codegraph-init.lock` in the worktree's Git metadata and `pi-codegraph-declined` in the Git common directory.
 
-To create a worktree index, the extension copies a complete index of the same repository that the installed CodeGraph version built. It picks the index with the fewest changed files compared to the worktree `HEAD`. During the copy, it holds the source writer lock `.codegraph/codegraph.lock` and skips a source that another writer locks. It then runs `codegraph sync <worktree-root>`.
-
-The extension accepts a copied index only when `codegraph status --json` exits with code 0 and reports `index.state:"complete"` and `index.reindexRecommended:false`. Otherwise, it deletes the copy and tries the next index. If no index is usable, it runs `codegraph init --yes <worktree-root>`.
+| Setup rule | Requirement or result |
+| --- | --- |
+| Seed index | Complete index of the same repository, built by the installed CodeGraph version, with matching `codegraph.json` contents. |
+| Selection | Fewest changed files compared to the worktree `HEAD`. |
+| Copy | Holds the source writer lock `.codegraph/codegraph.lock`. Skips a source that another writer locks. |
+| Status check | Accepts the copy only if `codegraph status --json` exits with code 0 and reports `index.state:"complete"` and `index.reindexRecommended:false`. |
+| Accepted copy | Runs `codegraph sync <worktree-root>` after the status check. |
+| Rejected copy | Deletes the copy and tries the next index. |
+| No usable index | Runs `codegraph init --yes <worktree-root>`. |
 
 The extension does not add ignore rules, delete indexes, or prune worktrees. Add `.codegraph/` to your ignore rules if necessary. Pi Subagent retains ignored files to prevent data loss, so indexed worker worktrees can require manual cleanup.
 
