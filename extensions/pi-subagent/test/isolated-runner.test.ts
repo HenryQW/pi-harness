@@ -43,7 +43,7 @@ import {
 import { FileRunStore, type RunStateHandle } from "../src/store.ts";
 import { IntegrationGit, type StageReceipt, type GitOutcome } from "../src/integration-git.ts";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
-import type { WorktreeInfo } from "../src/worktree.ts";
+import { createChildWorktree, type WorktreeInfo } from "../src/worktree.ts";
 
 const oid = (character: string): string => character.repeat(40);
 
@@ -3027,4 +3027,208 @@ test("Main refreshes after prior rejection already froze its integration generat
 		attempt: second.attempt, candidate: second.tip,
 		expectedTip: refreshed.state.integration.generations[1]!.integrationBase }, root);
 	assert.equal(result.state.integration.generations[1]?.stages[0]?.status, "staged");
+});
+
+const discardGuards = { current: () => true, blocked: async () => undefined, panes: async () => [] };
+
+async function discardFixture(t: test.TestContext, orphan = false, taskIds = ["change"]) {
+	const fixture = await harness(t);
+	const { root, runtime, runner, store } = fixture;
+	let launchRoot = root;
+	if (orphan) {
+		launchRoot = join(root, "..", "parent");
+		execFileSync("git", ["worktree", "add", "-b", "parent", launchRoot], { cwd: root, stdio: "pipe" });
+	}
+	const checked = new CheckedGitRuntime();
+	runtime.main = await checked.inspectMain({ root: launchRoot }, { signal: new AbortController().signal });
+	runtime.allocateWorktree = checked.allocateWorktree.bind(checked);
+	runtime.runWorker = async ({ attempt }) => {
+		const worktree = attempt.allocations.find((item) => item.kind === "worktree")!.worktree!;
+		await writeFile(join(worktree.path, "worker.txt"), "committed work\n");
+		execFileSync("git", ["add", "worker.txt"], { cwd: worktree.path });
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "worker"], { cwd: worktree.path });
+		return { outcome: "candidate", candidate: await checked.inspectMain({ root: worktree.path }, { signal: new AbortController().signal }) };
+	};
+	const response = await runner.execute(request("discard-request", taskIds.map((id) => changesetTask(id))), launchRoot);
+	assert.equal(response.state.integration.candidates.length, taskIds.length, response.text);
+	const handle = await store.load(launchRoot, "discard-request");
+	const worker = changesetState(handle.state, "change").attempts[0]!.allocations.find((item) => item.kind === "worktree")!.worktree!;
+	await writeFile(join(worker.path, "worker.txt"), "uncommitted work\n");
+	await writeFile(join(worker.path, ".gitignore"), "cache/\n");
+	await mkdir(join(worker.path, "cache"));
+	await writeFile(join(worker.path, "cache", "ignored.txt"), "ignored work\n");
+	const directory = store.stateDirectory(launchRoot);
+	if (orphan) execFileSync("git", ["worktree", "remove", launchRoot], { cwd: root });
+	return { ...fixture, worker, directory, launchRoot };
+}
+
+test("confirmed discard removes committed, dirty, ignored work and saves released aborted state", async (t) => {
+	const { root, worker, runner, runtime, store } = await discardFixture(t);
+	const integration = (await createChildWorktree(root, "discard-integration"))!;
+	const saved = await store.load(root, "discard-request");
+	const integrationBase = { ...saved.state.main, branch: `refs/heads/${integration.branch}` };
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "merge", "--no-ff", "-m", "integration", worker.branch], { cwd: integration.path, stdio: "pipe" });
+	const tip = await new CheckedGitRuntime().inspectMain({ root: integration.path }, { signal: new AbortController().signal });
+	saved.state.integration.generations.push({ number: 1, status: "staging", expectedMain: saved.state.main,
+		integrationBase, order: ["change"], stages: [{ taskId: "change", attempt: 1, status: "staged", onto: integrationBase,
+			source: saved.state.integration.candidates[0]!.tip, tip }], worktree: integration });
+	await saved.save();
+	await writeFile(join(integration.path, "leftover.txt"), "integration work\n");
+	const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+	assert.equal(plan.items[0]!.commits, 1);
+	assert.equal(plan.items[0]!.dirty, true);
+	assert.deepEqual(plan.items[0]!.ignored, ["cache/"]);
+	assert.deepEqual(plan.items[0]!.blockers, []);
+	const results = await runner.discard(root, plan, discardGuards);
+	assert.equal(results[0]!.outcome, "removed", JSON.stringify(results));
+	await assert.rejects(readFile(join(worker.path, "worker.txt")), /ENOENT/);
+	assert.equal(execFileSync("git", ["for-each-ref", `refs/heads/${worker.branch}`], { cwd: root, encoding: "utf8" }), "");
+	const state = (await store.load(root, "discard-request")).state;
+	assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted");
+	assert.equal(state.integration.candidates[0]!.worker, "released");
+	assert.equal(state.integration.generations[0]!.status, "superseded");
+	assert.ok(state.integration.generations[0]!.cleanup!.every((step) => step.status === "completed"));
+	await assert.rejects(readFile(join(integration.path, "leftover.txt")), /ENOENT/);
+	assert.deepEqual(runtime.cleanupCalls, ["worker_tab", "workspace"]);
+	assertParsed(state);
+	assert.deepEqual((await runner.discardPlan(root, "discard-request", undefined, discardGuards)).items, []);
+});
+
+test("discard keeps a branch that moved after review and does not close its host resources", async (t) => {
+	const { root, worker, runner, runtime } = await discardFixture(t);
+	const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "moved"], { cwd: worker.path });
+	const results = await runner.discard(root, plan, discardGuards);
+	assert.equal(results[0]!.outcome, "skipped");
+	assert.match(results[0]!.reason, /moved since review/);
+	assert.equal(await readFile(join(worker.path, "worker.txt"), "utf8"), "uncommitted work\n");
+	assert.deepEqual(runtime.cleanupCalls, []);
+});
+
+test("a foreign Herdr pane, unavailable Herdr, a lease, or a stale session blocks discard", async (t) => {
+	const { root, worker, runner, store, runtime } = await discardFixture(t);
+	const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+	for (const panes of [async () => [{ paneId: "foreign", cwds: [join(worker.path, "cache")] }], async () => { throw new Error("Herdr offline"); }]) {
+		const results = await runner.discard(root, plan, { ...discardGuards, panes });
+		assert.equal(results[0]!.outcome, "skipped");
+		assert.match(results[0]!.reason, /Herdr/);
+	}
+	await store.withProductiveRunLease(root, async () => {
+		await assert.rejects(runner.discard(root, plan, discardGuards), /live productive lease/);
+	});
+	await assert.rejects(runner.discard(root, plan, { ...discardGuards, current: () => false }), /Session changed/);
+	assert.deepEqual(runtime.cleanupCalls, []);
+	assert.equal(await readFile(join(worker.path, "worker.txt"), "utf8"), "uncommitted work\n");
+});
+
+test("removed-parent requests are listed from another checkout and can be discarded; other repositories stay out", async (t) => {
+	const { root, worker, directory, runner, store } = await discardFixture(t, true);
+	const other = join(root, "..", "other");
+	await initializeRepository(other);
+	assert.deepEqual((await runner.listOrphanRequests(other)).requests, []);
+	const viewer = join(root, "..", "viewer");
+	execFileSync("git", ["worktree", "add", "-b", "viewer", viewer], { cwd: root, stdio: "pipe" });
+	const inventory = await runner.listOrphanRequests(viewer);
+	assert.equal(inventory.requests.length, 1);
+	assert.equal(inventory.requests[0]!.orphaned, true);
+	assert.equal(inventory.requests[0]!.directory, directory);
+	const plan = await runner.discardPlan(viewer, "discard-request", directory, discardGuards);
+	const results = await runner.discard(viewer, plan, discardGuards);
+	assert.equal(results[0]!.outcome, "removed", JSON.stringify(results));
+	await assert.rejects(readFile(join(worker.path, "worker.txt")), /ENOENT/);
+	const state = (await store.loadFromDirectory(directory, "discard-request")).state;
+	assert.equal(state.status, "aborted");
+	assert.equal(state.integration.candidates[0]!.worker, "released");
+	await writeFile(join(directory, "broken.json"), "not state");
+	assert.deepEqual((await runner.listOrphanRequests(viewer)).invalidIds, [join(directory, "broken.json")]);
+	assert.equal(await readFile(join(directory, "broken.json"), "utf8"), "not state");
+});
+
+test("discard deletes an owned branch without a checkout; uncertain allocations remain blocked", async (t) => {
+	const { root, worker, runner, store } = await discardFixture(t);
+	const handle = await store.load(root, "discard-request");
+	const allocation = changesetState(handle.state, "change").attempts[0]!.allocations.find((item) => item.kind === "agent")!;
+	allocation.status = "unknown";
+	allocation.failure = "Allocation inspection was interrupted.";
+	await handle.save();
+	const uncertain = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+	assert.match(uncertain.items[0]!.blockers.join("; "), /ownership is uncertain/);
+	assert.equal((await runner.discard(root, uncertain, discardGuards))[0]!.outcome, "skipped");
+	allocation.status = "owned";
+	delete allocation.failure;
+	await handle.save();
+	execFileSync("git", ["worktree", "remove", "--force", worker.path], { cwd: root });
+	const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+	assert.equal(plan.items[0]!.checkout, false);
+	assert.ok(plan.items[0]!.tip);
+	assert.equal((await runner.discard(root, plan, discardGuards))[0]!.outcome, "removed");
+	assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted");
+});
+
+test("discard refuses symbolic branch references and preserves their target", async (t) => {
+	const { root, worker, runner } = await discardFixture(t);
+	execFileSync("git", ["worktree", "remove", "--force", worker.path], { cwd: root });
+	const main = execFileSync("git", ["rev-parse", "refs/heads/main"], { cwd: root, encoding: "utf8" });
+	execFileSync("git", ["symbolic-ref", `refs/heads/${worker.branch}`, "refs/heads/main"], { cwd: root });
+	const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+	assert.match(plan.items[0]!.blockers.join("; "), /symbolic reference/);
+	assert.equal((await runner.discard(root, plan, discardGuards))[0]!.outcome, "skipped");
+	assert.equal(execFileSync("git", ["rev-parse", "refs/heads/main"], { cwd: root, encoding: "utf8" }), main);
+});
+
+test("discard includes a text attempt's retained checkout without inventing a recorded base", async (t) => {
+	const fixture = await harness(t, { executor: { run: async ({ prepare }) => {
+		const launch = await prepare();
+		await writeFile(join(launch.cwd, "untracked.txt"), "text worker output\n");
+		return { outcome: "success", exitCode: 0, output: "answer", outputTruncated: false, stderr: "" };
+	} } });
+	const { root, runtime, runner } = fixture;
+	runtime.main = await new CheckedGitRuntime().inspectMain({ root }, { signal: new AbortController().signal });
+	await runner.execute(request("text-discard", [textTask("research")]), root);
+	const plan = await runner.discardPlan(root, "text-discard", undefined, discardGuards);
+	assert.equal(plan.items[0]!.dirty, true);
+	assert.equal(plan.items[0]!.commits, undefined);
+	const results = await runner.discard(root, plan, discardGuards);
+	assert.equal(results[0]!.outcome, "removed", JSON.stringify(results));
+	assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted");
+});
+
+test("discard keeps Main's checkout, moved checkouts, hidden changes, and initialized submodules", async (t) => {
+	const { root, worker, runner, directory } = await discardFixture(t);
+	const inspect = () => runner.discardPlan(root, "discard-request", directory, discardGuards);
+	const inside = await runner.discardPlan(worker.path, "discard-request", directory, discardGuards);
+	assert.match(inside.items[0]!.blockers.join("; "), /Main runs inside/);
+	const foreignPath = join(root, "..", "moved-worker");
+	execFileSync("git", ["worktree", "move", worker.path, foreignPath], { cwd: root });
+	const moved = await inspect();
+	assert.match(moved.items[0]!.blockers.join("; "), /another path/);
+	assert.equal((await runner.discard(root, moved, discardGuards))[0]!.outcome, "skipped");
+	execFileSync("git", ["worktree", "move", foreignPath, worker.path], { cwd: root });
+	execFileSync("git", ["restore", "worker.txt"], { cwd: worker.path });
+	await rm(join(worker.path, ".gitignore"));
+	await rm(join(worker.path, "cache"), { recursive: true });
+	execFileSync("git", ["update-index", "--assume-unchanged", "worker.txt"], { cwd: worker.path });
+	await writeFile(join(worker.path, "worker.txt"), "hidden changes\n");
+	const hidden = await inspect();
+	assert.equal(hidden.items[0]!.dirty, undefined);
+	assert.match(hidden.items[0]!.blockers.join("; "), /Index flags/);
+	execFileSync("git", ["update-index", "--no-assume-unchanged", "worker.txt"], { cwd: worker.path });
+	const module = join(root, "..", "module");
+	await initializeRepository(module);
+	execFileSync("git", ["-c", "protocol.file.allow=always", "submodule", "add", module, "dependency"], { cwd: worker.path, stdio: "pipe" });
+	assert.match((await inspect()).items[0]!.blockers.join("; "), /Initialized submodules/);
+});
+
+test("discard closes all reviewed workers before deleting any checkout", async (t) => {
+	const { root, runner, runtime } = await discardFixture(t, false, ["change", "second"]);
+	const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+	const cleanup = runtime.cleanupHost.bind(runtime);
+	runtime.cleanupHost = async (input, context) => {
+		for (const item of plan.items) await readFile(join(item.path!, "worker.txt"));
+		return await cleanup(input, context);
+	};
+	const results = await runner.discard(root, plan, discardGuards);
+	assert.equal(results.length, 2);
+	assert.ok(results.every((item) => item.outcome === "removed"), JSON.stringify(results));
+	assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted");
 });

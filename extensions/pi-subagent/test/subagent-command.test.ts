@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { DiscardPlan } from "../src/discard.ts";
 import { registerSubagentCommand, type IsolatedInventory, type PrunePlan, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
-function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan } = {}) {
+function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
@@ -24,6 +25,8 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	let recoverCount = 0;
 	const messages: string[] = [];
 	const confirms: boolean[] = [];
+	const discarded: string[] = [];
+	const discardedKeys: string[] = [];
 	const pruned: { branches: string[]; allowIgnored: boolean }[] = [];
 	let recoverPause: (() => Promise<void>) | undefined;
 	const inventory = options.inventory ?? { root: "/git", requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
@@ -35,6 +38,11 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
 		roles: () => "scout · built-in",
 		prunePlan: async () => options.prune ?? { root: "/git", items: [] },
+		discardPlan: async (_cwd, request) => options.discard ?? ({ root: "/git", directory: "/state", requestId: request.id, items: [{
+			key: "task/1", identity: "saved", path: "/owned", branch: "pi-subagent/subagent-000000000000000000000000", tip: "a".repeat(40),
+			checkout: true, commits: 1, dirty: true, ignored: ["cache/"], hosts: ["tab worker-tab"], blockers: [],
+		}] }),
+		discard: async (_cwd, plan, current) => { assert.equal(current(), true); discarded.push(plan.requestId); discardedKeys.push(...plan.items.map((item) => item.key)); return "removed: task/1"; },
 		prune: async (_cwd, items, allowIgnored, current) => {
 			assert.equal(current(), true);
 			pruned.push({ branches: items.map(({ branch }) => branch), allowIgnored });
@@ -89,7 +97,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick, closed, stopped, confirms, pruned,
+	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick, closed, stopped, confirms, pruned, discarded, discardedKeys,
 		setRecoverPause: (pause: () => Promise<void>) => { recoverPause = pause; },
 		get recoverCount() { return recoverCount; },
 		setActive: (value: boolean) => { active = value; },
@@ -291,9 +299,11 @@ test("recover does not deliver a stale follow-up after session replacement", asy
 	assert.deepEqual(h.messages, []);
 });
 
-test("no UI and unknown arguments fail before dialogs or mutations", async () => {
+test("no UI reports requests without dialogs or mutations; unknown arguments fail", async () => {
 	const h = harness({ ui: false });
-	await assert.rejects(h.run(), /interactive UI/);
+	await h.run();
+	assert.match(h.messages[0]!, /report only/);
+	assert.deepEqual(h.discarded, []);
 	await assert.rejects(h.run("task-id"), /Usage/);
 	assert.deepEqual(h.dialogs, []);
 	assert.equal(h.queues.get("task")!.length, 3);
@@ -405,4 +415,43 @@ test("prune removes only items its dialogs showed, never items cut from a long l
 	assert.match(ignoredDialog, new RegExp(`^Also remove ${approved.length} checkout\\(s\\)`));
 	assert.equal(h.pruned.length, 1);
 	assert.deepEqual(h.pruned[0]!.branches, approved.map(({ branch }) => branch), "only items shown in both dialogs are removed");
+});
+
+test("isolated discard requires one explicit confirmation; cancel changes nothing", async () => {
+	for (const confirmed of [false, true]) {
+		const h = harness();
+		h.confirms.push(confirmed);
+		h.responses.push(h.pick("Isolated"), h.pick("Close and delete"), h.pick("Close"));
+		await h.run();
+		assert.deepEqual(h.discarded, confirmed ? ["request"] : []);
+		const dialogs = h.dialogs.filter((dialog) => dialog.kind === "confirm");
+		assert.equal(dialogs.length, 1);
+		assert.match(dialogs[0]!.options![0]!, /Committed, uncommitted, and ignored content.*permanently deleted/);
+		assert.ok(h.notices.some((notice) => /commits ahead of recorded base: 1; dirty: yes/.test(notice.message) && notice.message.includes("cache/")));
+	}
+});
+
+test("orphaned requests show the delete action without status or follow-up actions", async () => {
+	const h = harness({ inventory: { root: "/git", invalidIds: [], requests: [{
+		id: "orphan", name: "Lost parent", status: "aborted", orphaned: true, directory: "/state", root: "/removed", tasks: [],
+	}] } });
+	h.confirms.push(true);
+	h.responses.push(h.pick("Isolated · orphaned"), (dialog) => {
+		assert.ok(!dialog.options!.some((label) => /Inspect|follow-up/.test(label)));
+		return h.pick("Close and delete")(dialog);
+	}, h.pick("Close"));
+	await h.run();
+	assert.deepEqual(h.discarded, ["orphan"]);
+});
+
+test("discard deletes only fully shown groups, including their full ignored-entry lists", async () => {
+	const item = { key: "shown", identity: "owned", checkout: true, path: "/owned", branch: "owned", tip: "a".repeat(40), ignored: [], hosts: [], blockers: [] };
+	const h = harness({ discard: { root: "/git", directory: "/state", requestId: "request", items: [
+		item, { ...item, key: "hidden", ignored: ["x".repeat(16_001)] },
+	] } });
+	h.confirms.push(true);
+	h.responses.push(h.pick("Isolated"), h.pick("Close and delete"), h.pick("Close"));
+	await h.run();
+	assert.deepEqual(h.discardedKeys, ["shown"]);
+	assert.ok(h.notices.some((notice) => notice.message.includes("+1 more not shown")));
 });

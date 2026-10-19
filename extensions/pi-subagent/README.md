@@ -29,7 +29,7 @@ Commands and UI are for you. Tools and the packaged skill are for Main, except `
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/subagent` | command | Browse direct and isolated work. Stop or close owned direct workers, inspect isolated status, send follow-ups, or edit pending instructions. Requires interactive TUI or RPC. |
+| `/subagent` | command | Browse direct and isolated work, including requests whose parent checkout was removed. Stop direct workers, inspect isolated work, send follow-ups, or delete owned isolated worktrees after confirmation. Without interactive UI, only reports. |
 | `/subagent roles` | command | List Role sources, resources, resolved model and thinking level, route errors, and file errors. Read-only; requires no Herdr pane. |
 | `/subagent prune` | command | Review remaining worker and integration branches and worktrees. Remove merged resources after confirmation. Requires a running Herdr server; without interactive UI, only reports. |
 | `/subagent recover` | command | Classify orphaned isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
@@ -130,6 +130,10 @@ The extension sends follow-ups when a candidate becomes ready, a worker needs at
 ### Inspect work
 
 Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. **Refresh** reloads saved status without recovery or mutation. Invalid state IDs stay preserved with a warning. Direct recovery remains available outside Git or without isolated inventory.
+
+Requests whose parent checkout was removed show as **Isolated · orphaned** from any checkout of the same repository. Select **Close and delete worktrees (discard work)** to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
+
+Only shown resources can be removed; live jobs, uncertain ownership, or other Herdr panes can block removal. Agents and tools cannot trigger this action. See [Close and delete isolated worktrees](./docs/orchestration.md#close-and-delete-isolated-worktrees) for guards and partial cleanup.
 
 Inspection needs a Herdr pane, the configured `scout` Role, and the `fast` route. If it cannot start, the request stays unchanged; Main can use `subagent_status` to read state. See [Inspect and revise active work](./docs/orchestration.md#inspect-and-revise-active-work) for inspection and follow-up details.
 

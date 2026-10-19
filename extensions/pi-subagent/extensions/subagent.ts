@@ -331,6 +331,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		isolated: isolatedSurface.inventory,
 		recover: (cwd) => isolatedSurface.recover(cwd),
 		prunePlan: (cwd) => isolatedSurface.prunePlan(cwd),
+		discardPlan: (cwd, request) => isolatedSurface.discardPlan(cwd, request),
+		discard: (cwd, plan, current) => isolatedSurface.discard(cwd, plan, current),
 		prune: (cwd, items, allowIgnored, current) => isolatedSurface.prune(cwd, items, allowIgnored, current),
 		async inspectInTab(root, id, ctx, current) {
 			const notices = await isolatedSurface.inspect(root, id);
