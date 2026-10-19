@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type ConfigLoad, registerConfigReporting } from "@henryqw/pi-config-store";
@@ -5,9 +6,26 @@ import { createOpenInConfigStore } from "./open-in-config.ts";
 
 export type OpenInConfig = { command: string };
 
+let cachedOpenInConfig: { path: string; key: string; loaded: ConfigLoad<OpenInConfig> } | undefined;
+
 /** An invalid or unknown key is an issue; an invalid `command` falls back to `code`. */
 export function loadOpenInConfig(agentDir?: string): ConfigLoad<OpenInConfig> {
-	return createOpenInConfigStore(agentDir).loadSync();
+	const store = createOpenInConfigStore(agentDir);
+	let key: string;
+	try {
+		const { size, mtimeMs, ctimeMs } = statSync(store.path);
+		key = `${size}:${mtimeMs}:${ctimeMs}`;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			cachedOpenInConfig = undefined;
+			return store.loadSync();
+		}
+		key = "missing";
+	}
+	if (cachedOpenInConfig?.path !== store.path || cachedOpenInConfig.key !== key) {
+		cachedOpenInConfig = { path: store.path, key, loaded: store.loadSync() };
+	}
+	return cachedOpenInConfig.loaded;
 }
 
 /** Runs on every footer render, so it never notifies; the footer and open extensions report issues at session start. */
