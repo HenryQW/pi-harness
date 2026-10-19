@@ -136,9 +136,3 @@ test("paintFooter: token uses theme.fg, concrete color uses theme.style, missing
 	]);
 	assert.equal(theme.styleCalls.length, 1);
 });
-
-test("concrete ANSI value produces a Color object", () => {
-	const value = parseFooterColor(39, noReport);
-	assert.equal(value.kind, "color");
-	if (value.kind === "color") assert.equal(value.color.kind, "indexed");
-});

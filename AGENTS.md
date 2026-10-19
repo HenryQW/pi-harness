@@ -38,7 +38,7 @@ For README/template-only changes, preserve unique guidance and run `pnpm run doc
 
 ## First-party skills
 
-This repository owns [pi-extension-workbench](.agents/skills/pi-extension-workbench/SKILL.md); maintain it here, not in `HenryQW/skills` or `skills-lock.json`. Keep installed Pi docs, examples, and declarations as runtime authority. Validate skill changes with `python3 .agents/skills/pi-extension-workbench/scripts/validate.py`.
+This repository owns [pi-extension-workbench](.agents/skills/pi-extension-workbench/SKILL.md); maintain it here, not in `HenryQW/skills` or `skills-lock.json`. Keep installed Pi docs, examples, and declarations as runtime authority. Validate skill changes with `python3 .agents/skills/pi-extension-workbench/scripts/validate.py`. The repository also owns [extension-sweep](.agents/skills/extension-sweep/SKILL.md) for cross-package optimization, test-pruning, and documentation sweeps.
 
 After you change a package skill that has a suite in [evals/](evals/README.md), run `node evals/run.ts --skill <name>` and report the results. Evals call a model, so CI does not run them.
 

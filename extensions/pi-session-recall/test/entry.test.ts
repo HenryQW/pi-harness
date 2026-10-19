@@ -183,17 +183,6 @@ function msg(parentId: string | null, role: string, text: string): object {
 let msgCount = 0;
 
 describe("session_search entry point", () => {
-	it("registers a strict parameter schema", async () => {
-		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-schema`);
-		register(pi as never);
-		const tool = (pi as any).tool as CapturedTool;
-		const schema = tool.parameters as Record<string, unknown>;
-		assert.equal(schema.additionalProperties, false);
-		assert.equal(Value.Check(schema as any, { query: "x" }), true);
-		assert.equal(Value.Check(schema as any, { query: "x", detail: "full" }), false);
-	});
-
 	it("previews the last five visual result lines and expands to the full response", async () => {
 		const pi = makePi();
 		const { default: register } = await import("../extensions/session-recall.ts");

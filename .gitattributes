@@ -1,0 +1,2 @@
+# Vendored upstream skill; keep files byte-identical to skills-lock.json.
+.agents/skills/diagram-design/** -whitespace

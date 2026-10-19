@@ -890,7 +890,7 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 			{ role: "assistant", content: big, timestamp: 2 },
 			promptUpdate,
 			{ role: "toolResult", content: big, timestamp: 3 },
-			{ role: "user", content: "m".repeat(200), timestamp: 4 },
+			{ role: "user", content: "m".repeat(6_002), timestamp: 4 },
 			{ role: "assistant", content: "m".repeat(200), timestamp: 5 },
 			{ role: "user", content: "continue", timestamp: 6 },
 			{ role: "assistant", content: "done", timestamp: 7 },
@@ -907,9 +907,9 @@ test("emergency context truncation cuts on user boundary and prepends notice", a
 		assert.equal(result.messages[1], promptUpdate);
 		const [notice, firstKept] = result.messages.slice(2);
 		assert.equal(notice.role, "user");
-		assert.match(notice.content as string, /^\[Temporary context reduction: 3 earlier messages/);
-		assert.equal(firstKept, messages[5]);
-		assert.deepEqual(result.messages.slice(3), messages.slice(5));
+		assert.equal(notice.content, "[Temporary context reduction: 5 earlier messages (~12K tokens) are omitted from this request while compaction runs. Continue with the current task.]");
+		assert.equal(firstKept, messages[7]);
+		assert.deepEqual(result.messages.slice(3), messages.slice(7));
 
 		// Truncation schedules exactly one compaction and blocks re-entry.
 		assert.equal(compactions, 0);

@@ -64,4 +64,4 @@ Every SVG must include `role="img"`, a prefixed `aria-labelledby`, and matching 
 
 Place `<title>` first inside the SVG. Keep font imports inside `<defs>` so the exported SVG renders in browsers.
 
-Run the diagram skill's self-check and geometry check before publishing. Also run `git diff --check`.
+Run the vendored [diagram-design](../.agents/skills/diagram-design/SKILL.md) self-check (`python3 .agents/skills/diagram-design/scripts/self_check.py <file>`) and, from a diagram-design repository checkout, `scripts/verify-geometry.py` before publishing. Also run `git diff --check`.

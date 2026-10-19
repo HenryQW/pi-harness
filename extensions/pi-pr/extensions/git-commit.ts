@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
-import { inspectWorktreeState, parseNulPaths, parseStatusSnapshot, readHead, requiredOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
+import { inspectGitOperation, parseNulPaths, parseStatusSnapshot, readHead, requiredOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 export type PendingCommit = { head: string; status: string; integrity: string };
 
@@ -24,7 +24,7 @@ export function commitPaths(input: string[]): string[] {
 
 /** Integrity includes file bytes, symlink targets, modes, and the index, not only status letters. */
 export async function inspectPendingCommit(exec: Exec, options: ExecOptions): Promise<PendingCommit> {
-	if (await inspectWorktreeState(exec, options) === "operation") throw new Error("Git operation in progress");
+	if (await inspectGitOperation(exec, options) !== null) throw new Error("Git operation in progress");
 	const head = await readHead(exec, options);
 	const status = (await runChecked(exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], options)).stdout;
 	const hash = createHash("sha256").update(status);
