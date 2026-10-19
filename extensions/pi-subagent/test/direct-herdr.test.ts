@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, open, realpath, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createDirectHerdr, directSessionUsage, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
+import { createDirectHerdr, createDirectSessionReader, directPartialText, directSessionUsage, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
 
 const prompt = "inspect\n\nTurn identity: unique";
 const lines = (messages: unknown[]) => [
@@ -117,6 +117,111 @@ test("direct activity stays inside the exact prompt boundary and resets on a new
 	assert.equal(directSessionUsage(session, "different prompt").activity, undefined);
 	const next = session + [user(prompt), result("task"), call("new", "new tool")].map((entry) => JSON.stringify(entry)).join("\n");
 	assert.deepEqual(directSessionUsage(next, prompt).activity, { pending: ["new tool"], latest: undefined });
+});
+
+test("direct session samples read and parse only appended complete lines for usage and text", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-direct-incremental-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const path = join(dir, "session.jsonl");
+	const assistant = (input: number, text: string) => ({ type: "message", message: { role: "assistant",
+		usage: { input, output: 2 }, content: [{ type: "text", text }, { type: "toolCall", id: "a", name: "read" },
+			{ type: "toolCall", id: "b", name: "bash" }] } });
+	const entry = (message: unknown) => JSON.stringify({ type: "message", message }) + "\n";
+	let complete = lines([assistant(10, "  first 😀 \t")]);
+	await writeFile(path, complete);
+	const reader = createDirectSessionReader(path, prompt);
+	const file = await open(path, "r");
+	const reads = t.mock.method(Object.getPrototypeOf(file) as Pick<typeof file, "read">, "read");
+	await file.close();
+	const parses = t.mock.method(JSON, "parse");
+	const check = async (newLines: number, position?: number) => {
+		const expected = directSessionUsage(complete, prompt);
+		const expectedText = directPartialText(complete, prompt, 8);
+		const readCount = reads.mock.callCount();
+		const parseCount = parses.mock.callCount();
+		const [text, tokens] = await Promise.all([reader.partialText(8), reader.usageTokens()]);
+		assert.equal(tokens, expected.tokens);
+		assert.deepEqual(reader.activity, expected.activity);
+		assert.equal(text, expectedText);
+		assert.equal(parses.mock.callCount() - parseCount, newLines);
+		assert.deepEqual(reads.mock.calls.slice(readCount).map((call) => call.arguments[0]?.position), position === undefined ? [] : [position]);
+	};
+	await check(3, 0);
+	assert.equal(await reader.partialText(100), "first 😀");
+	await check(0);
+
+	const result = entry({ role: "toolResult", toolCallId: "b", durationMs: 250 });
+	const tail = Buffer.from(JSON.stringify(assistant(20, " second 🚀  ")) + "\n");
+	const split = tail.indexOf(Buffer.from("🚀")) + 1;
+	let position = Buffer.byteLength(complete);
+	await appendFile(path, Buffer.concat([Buffer.from(result), tail.subarray(0, split)]));
+	complete += result;
+	await check(1, position);
+	position = Buffer.byteLength(complete);
+	await appendFile(path, tail.subarray(split, -1));
+	// Even valid JSON must wait for its newline before it advances the offset.
+	await check(0, position);
+	await appendFile(path, "\n");
+	complete += tail.toString();
+	await check(1, position);
+	assert.equal(await reader.partialText(100), "first 😀 \t\n second 🚀");
+	await check(0);
+
+	const outside = entry({ role: "user", content: [{ type: "text", text: `${prompt} extra` }] })
+		+ JSON.stringify(assistant(999, "unrelated")) + "\n";
+	position = Buffer.byteLength(complete);
+	await appendFile(path, outside);
+	complete += outside;
+	await check(2, position);
+	const reset = entry({ role: "user", content: [{ type: "text", text: prompt }] })
+		+ entry({ role: "toolResult", toolCallId: "b", durationMs: 999 })
+		+ JSON.stringify(assistant(0, "new")) + "\n";
+	position = Buffer.byteLength(complete);
+	await appendFile(path, reset);
+	complete += reset;
+	await check(3, position);
+	assert.equal(await reader.usageTokens(), 2);
+	assert.equal(await reader.partialText(100), "new");
+	assert.deepEqual(reader.activity, { pending: ["read", "bash"], latest: undefined });
+
+	position = Buffer.byteLength(complete);
+	await appendFile(path, "malformed\n" + JSON.stringify(assistant(999, "ignored")) + "\n");
+	await check(1, position);
+	await appendFile(path, "\n");
+	await check(1, position);
+});
+
+test("direct session samples reset after shrink, rewrite, replacement, and the size limit", async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "pi-direct-reset-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const path = join(dir, "session.jsonl");
+	const session = (input: number, text: string) => lines([{ type: "message", message: { role: "assistant",
+		usage: { input, output: 1 }, content: [{ type: "text", text }, { type: "toolCall", id: "a", name: text }] } }]);
+	await writeFile(path, session(10, "original long text"));
+	const reader = createDirectSessionReader(path, prompt);
+	const check = async (input: number, text: string) => {
+		assert.equal(await reader.usageTokens(), input + 1);
+		assert.equal(await reader.partialText(100), text);
+		assert.deepEqual(reader.activity, { pending: [text], latest: undefined });
+	};
+	await check(10, "original long text");
+	await writeFile(path, session(2, "short"));
+	await check(2, "short");
+	await writeFile(path, session(3, "equal"));
+	const time = new Date(Date.now() + 1000);
+	await utimes(path, time, time);
+	await check(3, "equal");
+	const replacement = join(dir, "replacement.jsonl");
+	await writeFile(replacement, session(4, "other"));
+	await utimes(replacement, time, time);
+	await rename(replacement, path);
+	await check(4, "other");
+	await truncate(path, 16 * 1024 * 1024 + 1);
+	assert.equal(await reader.usageTokens(), undefined);
+	assert.equal(reader.activity, undefined);
+	assert.equal(await reader.partialText(100), undefined);
+	await writeFile(path, session(5, "after"));
+	await check(5, "after");
 });
 
 test("native Pi session errors and unrelated turns cannot masquerade as successful results", () => {
