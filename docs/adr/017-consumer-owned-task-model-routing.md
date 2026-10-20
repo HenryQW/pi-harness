@@ -5,7 +5,7 @@
 
 ## Context
 
-Task-model routing defaults are centralized in `DEFAULT_TASK_ASSIGNMENTS` inside `@henryqw/pi-task-models`, so the shared routing package must name every consumer task and release when a consumer changes its defaults. Moving model settings into each consumer config would instead duplicate routing policy, while bundling the shared control plane into consumers would create duplicate extensions. The architecture also needs a clear boundary between current-session-agent work and independently executed model operations.
+Task-model routing defaults were centralized in `DEFAULT_TASK_ASSIGNMENTS` inside `@henryqw/pi-task-models`, so the shared routing package had to name every consumer task and release when a consumer changed its defaults. Moving model settings into each consumer config would instead duplicate routing policy, while bundling the shared control plane into consumers would create duplicate extensions. The architecture also needs a clear boundary between current-session-agent work and independently executed model operations.
 
 ## Decision
 
@@ -24,14 +24,14 @@ Task-model routing defaults are centralized in `DEFAULT_TASK_ASSIGNMENTS` inside
 
 **No core package split.** Absent evidence, `@henryqw/pi-task-models` remains a single package.
 
-**pi-memory specifics.** `pi-memory` declares the independently invoked `pi-memory/reviewCandidate` Model Task with default **balanced** Profile and imports `@henryqw/pi-task-models` as a normal runtime dependency. `/dream` and the final memory check stay current-agent work until separately executed.
+**pi-memory specifics.** `pi-memory` declares three independently invoked Model Tasks, each with default **balanced** Profile: `pi-memory/reviewCandidate` (candidate review), `pi-memory/prepareCandidate` (`/remember` candidate preparation), and `pi-memory/promoteEntries` (`/dream` promotion proposal). It imports `@henryqw/pi-task-models` as a normal runtime dependency. The final memory check stays current-agent work.
 
 ## Consequences
 
 - Dependency inversion: consumers declare, `pi-task-models` resolves. No package-wide model settings, no central defaults map.
 - Request/response discovery avoids making extension load order part of the contract.
 - Single control-plane extension prevents duplicate UI/state conflicts.
-- `pi-memory` uses task-model routing only for independent candidate review; current-agent commands add no routed model invocation.
+- `pi-memory` uses task-model routing only for independent candidate review, candidate preparation, and promotion proposals; current-agent work adds no routed model invocation.
 - Clear boundary: "Model Task" = independent model execution only.
 
 ## Rejected Alternatives
