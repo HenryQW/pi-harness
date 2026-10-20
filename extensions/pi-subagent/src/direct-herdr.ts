@@ -37,10 +37,10 @@ export interface DirectHandle {
 	sessionFile: string;
 	prompt: string;
 	answer(maxBytes: number): Promise<string>;
-	usageTokens(): Promise<number | undefined>;
+	usage(): Promise<DirectUsage>;
 	/** Bounded assistant text from this turn so far; failure evidence only, never completion. */
 	partialText(maxChars: number): Promise<string | undefined>;
-	/** Display-only activity from the last usageTokens() sample. */
+	/** Display-only activity from the last usage() sample. */
 	readonly activity?: DirectToolActivity;
 	cancel(): Promise<void>;
 }
@@ -131,6 +131,13 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 	return completion.answer;
 }
 
+/** Measured from one session read; each field is absent when no turn record carried it. */
+export interface DirectUsage {
+	tokens?: number;
+	/** Sum of assistant `usage.cost.total`. */
+	cost?: number;
+}
+
 export interface DirectToolActivity {
 	pending: string[];
 	latest?: { name: string; durationMs?: number };
@@ -140,6 +147,7 @@ class DirectSessionState {
 	private active = false;
 	private total = 0;
 	private observed = false;
+	private cost: number | undefined;
 	private pending = new Map<string, string>();
 	private latest: DirectToolActivity["latest"];
 	private texts: string[] = [];
@@ -157,7 +165,7 @@ class DirectSessionState {
 			this.active = Array.isArray(message.content) && message.content.length === 1
 				&& (message.content[0] as Json)?.text === this.prompt;
 			if (this.active) {
-				this.total = 0; this.observed = false; this.pending.clear(); this.latest = undefined;
+				this.total = 0; this.observed = false; this.cost = undefined; this.pending.clear(); this.latest = undefined;
 				this.texts = [];
 			}
 		} else if (this.active && message.role === "assistant") {
@@ -168,6 +176,8 @@ class DirectSessionState {
 					this.total += (values as number[]).reduce((sum, value) => sum + value, 0);
 					this.observed = true;
 				}
+				const cost = (usage.cost as Json | undefined)?.total;
+				if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) this.cost = (this.cost ?? 0) + cost;
 			}
 			if (Array.isArray(message.content)) for (const part of message.content) {
 				if (part?.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
@@ -189,8 +199,8 @@ class DirectSessionState {
 		return true;
 	}
 
-	usage(): { tokens?: number; activity?: DirectToolActivity } {
-		return { tokens: this.observed ? this.total : undefined,
+	usage(): DirectUsage & { activity?: DirectToolActivity } {
+		return { tokens: this.observed ? this.total : undefined, cost: this.cost,
 			activity: this.pending.size || this.latest ? { pending: [...this.pending.values()], latest: this.latest } : undefined };
 	}
 
@@ -208,7 +218,7 @@ function parseDirectSession(jsonl: string, prompt: string): DirectSessionState {
 }
 
 // Ignore a partial trailing JSONL entry while the child is writing it.
-export function directSessionUsage(jsonl: string, prompt: string): { tokens?: number; activity?: DirectToolActivity } {
+export function directSessionUsage(jsonl: string, prompt: string): DirectUsage & { activity?: DirectToolActivity } {
 	return parseDirectSession(jsonl, prompt).usage();
 }
 
@@ -218,7 +228,7 @@ export function directPartialText(jsonl: string, prompt: string, maxChars: numbe
 }
 
 /** One reader per handle; only complete, valid lines advance the byte offset. */
-export function createDirectSessionReader(sessionFile: string, prompt: string): Pick<DirectHandle, "usageTokens" | "partialText" | "activity"> {
+export function createDirectSessionReader(sessionFile: string, prompt: string): Pick<DirectHandle, "usage" | "partialText" | "activity"> {
 	let offset = 0;
 	let previous: Stats | undefined;
 	let state = new DirectSessionState(prompt);
@@ -255,9 +265,9 @@ export function createDirectSessionReader(sessionFile: string, prompt: string): 
 	const sample = () => reading ??= read().finally(() => { reading = undefined; });
 	return {
 		get activity() { return lastUsage.activity; },
-		async usageTokens() {
+		async usage() {
 			lastUsage = await sample() ? state.usage() : {};
-			return lastUsage.tokens;
+			return { tokens: lastUsage.tokens, cost: lastUsage.cost };
 		},
 		async partialText(maxChars) {
 			return await sample() ? state.partialText(maxChars) : undefined;
@@ -410,7 +420,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				return {
 				name, tabId, paneId, sessionFile, prompt,
 				get activity() { return session.activity; },
-				usageTokens: session.usageTokens,
+				usage: session.usage,
 				partialText: session.partialText,
 				async answer(maxBytes) {
 					const readAnswer = async () => {

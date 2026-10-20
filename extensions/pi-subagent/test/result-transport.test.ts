@@ -12,19 +12,20 @@ function rejected(index: number, failure: string, extra: Partial<WorkflowTranspo
 	return { id: `call:parallel:${index}`, index, name: `Task ${index + 1}`, role: `role-${index}`, status: "rejected", failure, ...extra } as WorkflowTransportEntry;
 }
 
-test("formats ordered success and partial failure with exact follow-up details and per-worker usage", () => {
+test("formats ordered success and partial failure with exact follow-up details, per-worker usage, and cost total", () => {
 	const result = formatWorkflowResult("parallel", [
-		succeeded(1, "second evidence", { model: "provider/two", thinkingLevel: "low", tokens: 1_540, elapsedMs: 65_000 }),
-		rejected(0, "failure evidence", { model: "provider/one", thinkingLevel: "high", elapsedMs: 3_000 }),
+		succeeded(1, "second evidence", { model: "provider/two", thinkingLevel: "low", tokens: 1_540, cost: 0.1234, elapsedMs: 65_000 }),
+		rejected(0, "failure evidence", { model: "provider/one", thinkingLevel: "high", cost: 0, elapsedMs: 3_000 }),
 		{ id: "call:parallel:2", index: 2, name: "Task 3", role: "role-2", status: "skipped" },
 	]);
-	assert.equal(result.text, `Parallel delegation failed · 1 failed · 1 completed · 1 skipped\n✗ [1/3] Task 1 · role-0 · provider/one · thinking high · tokens unknown · 3s — failure evidence\n✓ [2/3] Task 2 · role-1 · provider/two · thinking low · 1.5k tok · 1m 5s — second evidence\n– [3/3] Task 3 · role-2 — skipped\nResults:\n- [1/3] Task 1 · role-0 · failure:\nfailure evidence\n- [2/3] Task 2 · role-1 · result:\nsecond evidence`);
+	assert.equal(result.text, `Parallel delegation failed · 1 failed · 1 completed · 1 skipped · total $0.12\n✗ [1/3] Task 1 · role-0 · provider/one · thinking high · tokens unknown · 3s — failure evidence\n✓ [2/3] Task 2 · role-1 · provider/two · thinking low · 1.5k tok · $0.12 · 1m 5s — second evidence\n– [3/3] Task 3 · role-2 — skipped\nResults:\n- [1/3] Task 1 · role-0 · failure:\nfailure evidence\n- [2/3] Task 2 · role-1 · result:\nsecond evidence`);
 	assert.equal(result.failed, true);
 	assert.deepEqual(result.details.entries, [
-		{ id: "call:parallel:0", index: 0, name: "Task 1", role: "role-0", status: "rejected", summary: "failure evidence", model: "provider/one", thinkingLevel: "high", elapsedMs: 3_000 },
-		{ id: "call:parallel:1", index: 1, name: "Task 2", role: "role-1", status: "succeeded", summary: "second evidence", model: "provider/two", thinkingLevel: "low", tokens: 1_540, elapsedMs: 65_000 },
+		{ id: "call:parallel:0", index: 0, name: "Task 1", role: "role-0", status: "rejected", summary: "failure evidence", model: "provider/one", thinkingLevel: "high", cost: 0, elapsedMs: 3_000 },
+		{ id: "call:parallel:1", index: 1, name: "Task 2", role: "role-1", status: "succeeded", summary: "second evidence", model: "provider/two", thinkingLevel: "low", tokens: 1_540, cost: 0.1234, elapsedMs: 65_000 },
 		{ id: "call:parallel:2", index: 2, name: "Task 3", role: "role-2", status: "skipped" },
 	]);
+	assert.equal(result.details.cost, 0.1234);
 });
 
 test("bounds aggregate output on valid UTF-8 boundaries and rejects non-terminal finals", () => {

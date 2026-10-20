@@ -25,6 +25,7 @@ export const DIRECT_ACCESS = ["read", "write"] as const;
 export type DirectAccess = (typeof DIRECT_ACCESS)[number];
 const ACCESS_GUIDANCE = `Declare "write" when the task may change files, Git state, or external resources, otherwise "read". "read" is not enforced (no sandbox): it skips checkout admission and runs concurrently. Use mode isolated for checked writes.`;
 const AccessSchema = StringEnum(DIRECT_ACCESS, { description: ACCESS_GUIDANCE });
+const DryRunSchema = Type.Boolean({ description: "Optional. When true, run every launch validation and return the resolved plan without starting workers, saving state, or reserving the checkout." });
 const ContinueFromSchema = Type.String({ pattern: "^D[1-9][0-9]*\\.[1-9][0-9]*$", description: "Optional direct worker reference such as D7.1. Continues that finished worker's Pi session in a new tab with this task; role must equal the recorded Role." });
 
 export const DelegationSchema = Type.Object({
@@ -64,6 +65,7 @@ export const DelegateTaskParameters = Type.Object({
 	])),
 	finalChecks: ExecuteRequestSchema.properties.finalChecks,
 	finalJudgment: ExecuteRequestSchema.properties.finalJudgment,
+	dryRun: Type.Optional(DryRunSchema),
 }, { additionalProperties: false });
 
 export type Delegation = Static<typeof DelegationSchema> & { kind: "text" };
@@ -72,7 +74,7 @@ export type ParsedWorkflow =
 	| { mode: "single"; delegations: [Delegation] }
 	| { mode: "parallel"; delegations: Delegation[] }
 	| { mode: "chain"; delegations: Delegation[] };
-export type ParsedDelegateTask = { mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest };
+export type ParsedDelegateTask = ({ mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest }) & { dryRun: boolean };
 
 type DirectInput = Static<typeof DirectWorkflowSchema>;
 const DELEGATION_KEYS = ["role", "name", "task", "access", "continueFrom", "kind", "model", "modelClass"] as const;
@@ -148,11 +150,19 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 /** A direct request is a writer request when any task declares write access. */
 export const writesCheckout = (workflow: ParsedWorkflow): boolean => workflow.delegations.some(({ access }) => access === "write");
 
+/** `dryRun` is a tool-call option, not part of the direct workflow or the durable isolated request. */
 export function parseDelegateTask(value: unknown): ParsedDelegateTask {
-	if (value && typeof value === "object" && !Array.isArray(value) && (value as { mode?: unknown }).mode === "isolated") {
-		return { mode: "isolated", request: parseExecuteRequest(value) };
+	let dryRun = false;
+	if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "dryRun")) {
+		const { dryRun: option, ...rest } = value as Record<string, unknown>;
+		if (typeof option !== "boolean") throw new Error(`delegate_task dryRun must be a boolean, got ${JSON.stringify(option)}.`);
+		dryRun = option;
+		value = rest;
 	}
-	return { mode: "direct", workflow: parseWorkflow(value) };
+	if (value && typeof value === "object" && !Array.isArray(value) && (value as { mode?: unknown }).mode === "isolated") {
+		return { mode: "isolated", request: parseExecuteRequest(value), dryRun };
+	}
+	return { mode: "direct", workflow: parseWorkflow(value), dryRun };
 }
 
 export type WorkflowEntry = { id: string; index: number; delegation: Delegation };
