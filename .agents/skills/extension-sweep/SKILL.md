@@ -11,7 +11,9 @@ A sweep has three independent tracks: **optimize**, **prune tests**, and **docs*
 
 Delegate read-only scouts in parallel, one for each size group. Measure groups first, for example by source and test line counts for each `extensions/*` and `packages/*` directory. The usual groups are pi-subagent; pi-pr; pi-herdr-tools with pi-session-recall and pi-memory; then all small extensions with patterns that they share.
 
-Give each scout exact criteria, a finding limit (8–12), `file:line` evidence, a concrete change, an effect estimate, a risk, and a word cap (600–700). Without a cap, scouts can fail to persist a final answer. If a scout fails, start a fresh scout with a smaller scope; `continueFrom` needs a finished final turn.
+Give each scout [the rejected findings](rejected.md) and the base commit of the last sweep; scouts inspect later commits with `git_read`. Give exact criteria, a finding limit (8–12), and a word cap (600–700). Without a cap, scouts can fail to persist a final answer.
+
+Each finding needs `file:line` evidence, its trigger and call frequency (for example, every footer render, each Main tool call, or once for each command), real data sizes when cost depends on size, a concrete change, an effect estimate, and a risk. Do not report guard paths that run only after user confirmation. If a scout fails, start a fresh scout with a smaller scope; `continueFrom` needs a finished final turn.
 
 Optimize criteria: per-turn or per-render work (hooks, footer renders, timers), full rereads or reparses of growing files, quadratic loops, duplicate subprocesses or sequential independent network calls, repeated text in tool descriptions, `promptGuidelines`, per-turn injections, or skills, dead code, and duplication of `packages/*`.
 
@@ -27,6 +29,7 @@ Read every cited range yourself before you report it. For each finding, keep it,
 - Check Pi runtime facts in installed `dist/`, not from memory (for example, `session-manager.js` appends `JSON.stringify(entry) + "\n"` in one call).
 - Keep a test that is the only coverage of an observable behavior, even if it asserts a literal.
 - Ask the user about real tradeoffs. Do not choose silently (for example, removing a wait that protects a plugin race).
+- Add each rejected or deferred finding, with its reason, to [rejected.md](rejected.md) in the sweep PR.
 
 Report a ranked table with the evidence and the verdict for each finding. Mark which items you did not verify.
 
