@@ -268,6 +268,10 @@ export class FileRunStore {
 
 	async loadFromDirectory(directory: string, id: string): Promise<RunStateHandle> {
 		await this.validateDirectory(directory);
+		return await this.loadFromValidatedDirectory(directory, id);
+	}
+
+	private async loadFromValidatedDirectory(directory: string, id: string): Promise<RunStateHandle> {
 		if (basename(id) !== id || !id || id === "." || id === "..") throw new Error("Invalid request ID.");
 		const path = join(directory, `${id}.json`);
 		if (!(await lstat(path)).isFile()) throw new Error("State is not a regular file.");
@@ -305,16 +309,20 @@ export class FileRunStore {
 			const directory = join(parent, entry.name);
 			try {
 				await this.validateDirectory(directory);
+				// Every state in a directory shares one root; a live root means no orphan can be here.
+				const invalid: string[] = [];
+				let live = false;
 				for (const file of await readdir(directory)) {
 					if (!file.endsWith(".json")) continue;
 					try {
-						const handle = await this.loadFromDirectory(directory, file.slice(0, -5));
-						try { await lstat(handle.state.root); continue; }
+						const handle = await this.loadFromValidatedDirectory(directory, file.slice(0, -5));
+						try { await lstat(handle.state.root); live = true; break; }
 						catch (error) { if (!isMissing(error)) throw error; }
 						const worktrees = discardResources(handle.state).flatMap((resource) => resource.worktree ? [resource.worktree] : []);
 						if (worktrees.length && worktrees.every((item) => item.repoRoot === primary)) states.push(handle);
-					} catch { invalidIds.push(join(directory, file)); }
+					} catch { invalid.push(join(directory, file)); }
 				}
+				if (!live) invalidIds.push(...invalid);
 			} catch { invalidIds.push(directory); }
 		}
 		return { states, invalidIds };
