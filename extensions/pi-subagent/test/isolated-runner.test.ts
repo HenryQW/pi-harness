@@ -3095,7 +3095,10 @@ test("confirmed discard removes committed, dirty, ignored work and saves release
 });
 
 test("discard keeps a branch that moved after review and does not close its host resources", async (t) => {
-	const { root, worker, runner, runtime } = await discardFixture(t);
+	const { root, worker, runner, runtime, directory } = await discardFixture(t);
+	// A live root proves its directory holds no orphan, so unreadable siblings are not reported.
+	await writeFile(join(directory, "broken.json"), "not state");
+	assert.deepEqual((await runner.listOrphanRequests(root)).invalidIds, []);
 	const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
 	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "moved"], { cwd: worker.path });
 	const results = await runner.discard(root, plan, discardGuards);

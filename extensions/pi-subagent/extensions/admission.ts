@@ -25,6 +25,16 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 	const heldCalls = new Set<string>();
 	const ownerByCheckout = new Map<string, string>();
 	const calls = new Map<string, { direct: boolean; key?: string }>();
+	// One Git lookup per working directory per session; a failed lookup is retried.
+	const checkouts = new Map<string, Promise<string>>();
+	const lookup = (ctx: ExtensionContext) => {
+		const cached = checkouts.get(ctx.cwd);
+		if (cached) return cached;
+		const key = checkoutKey(pi, ctx);
+		checkouts.set(ctx.cwd, key);
+		key.catch(() => { if (checkouts.get(ctx.cwd) === key) checkouts.delete(ctx.cwd); });
+		return key;
+	};
 	const release = (toolCallId: string) => {
 		if (heldCalls.has(toolCallId)) return;
 		const call = calls.get(toolCallId);
@@ -36,7 +46,7 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 		if (direct ? !directCanWrite(event.input) : MAIN_NON_WRITING_TOOLS.has(event.toolName)) return;
 		const call: { direct: boolean; key?: string } = { direct };
 		calls.set(event.toolCallId, call);
-		const key = await checkoutKey(pi, ctx);
+		const key = await lookup(ctx);
 		if (calls.get(event.toolCallId) !== call) {
 			return { block: true, reason: `Call ${event.toolCallId} already settled; use mode: isolated to keep Main free.` };
 		}
@@ -54,7 +64,9 @@ export function registerCheckoutAdmission(pi: ExtensionAPI, directCanWrite: (inp
 	});
 	pi.on("tool_result", (event) => release(event.toolCallId));
 	pi.on("tool_execution_end", (event) => release(event.toolCallId));
+	pi.on("session_start", () => checkouts.clear());
 	pi.on("session_shutdown", () => {
+		checkouts.clear();
 		// Session replacement is not proof that a held direct worker stopped.
 		for (const toolCallId of calls.keys()) release(toolCallId);
 	});

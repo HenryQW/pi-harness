@@ -32,7 +32,7 @@ Commands and UI are for you. Tools and the packaged skill are for Main, except `
 | `/subagent` | command | Browse direct and isolated work, including requests whose parent checkout was removed. Stop direct workers, inspect isolated work, send follow-ups, or delete owned isolated worktrees after confirmation. Without interactive UI, only reports. |
 | `/subagent roles` | command | List Role sources, resources, resolved model and thinking level, route errors, and file errors. Read-only; requires no Herdr pane. |
 | `/subagent prune` | command | Review remaining worker and integration branches and worktrees. Remove merged resources after confirmation. Requires a running Herdr server; without interactive UI, only reports. |
-| `/subagent recover` | command | Classify orphaned isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
+| `/subagent recover` | command | Classify interrupted isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
 | `delegate_task` | tool | Start authorized shared-checkout work or a durable isolated checked graph. |
 | `subagent_status` | tool | Read saved isolated state, exact identities, failed review verdicts, and allowed continuation. Does not replay work. Supports structured output for `codemode`. |
 | `subagent_resume` | tool | Perform the reported `retry`, `verify`, or `finalize` continuation, not staging or integration. Same-worker correction retries accept optional `instruction` text. |
@@ -131,7 +131,7 @@ The extension sends follow-ups when a candidate becomes ready, a worker needs at
 
 Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. **Refresh** reloads saved status without recovery or mutation. Invalid state IDs stay preserved with a warning. Direct recovery remains available outside Git or without isolated inventory.
 
-Requests whose parent checkout was removed show as **Isolated · orphaned** from any checkout of the same repository. Select **Close and delete worktrees (discard work)** to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
+Requests whose parent checkout was removed show as **Isolated · orphaned** from any checkout of the same repository. Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
 
 Only shown resources can be removed; live jobs, uncertain ownership, or other Herdr panes can block removal. Agents and tools cannot trigger this action. See [Close and delete isolated worktrees](./docs/orchestration.md#close-and-delete-isolated-worktrees) for guards and partial cleanup.
 
@@ -226,4 +226,4 @@ After coordinator interruption, restart Pi and run `/subagent recover` in the ca
 
 Run `/subagent prune` for merged leftovers. Removing a checkout deletes its ignored files only after a separate confirmation naming those entries. Dirty, conflicted, changed, or uncertain resources require deliberate inspection. See [Prune leftover worktrees](./docs/orchestration.md#prune-leftover-worktrees) before removal.
 
-For aborted requests with retained resources, inspect status, resolve blockers, and repeat `subagent_abort` to reconcile cleanup without replaying work. Release rejected candidates and superseded generations explicitly. The extension never pushes, opens pull requests, publishes, deploys, force-cleans recoverable work, or silently falls back to Main.
+For aborted requests with retained resources, inspect status, resolve blockers, and repeat `subagent_abort` to reconcile cleanup without replaying work. Release rejected candidates and superseded generations explicitly. The extension never pushes, opens pull requests, publishes, deploys, or silently falls back to Main. It force-deletes recoverable work only after the user confirms **Close and delete worktrees (discard work)** in `/subagent`.

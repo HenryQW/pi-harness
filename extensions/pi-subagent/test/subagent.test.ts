@@ -36,9 +36,11 @@ async function admissionHarness(t: { after: (callback: () => Promise<void>) => v
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const app = {
 		lookup: async () => {},
+		execs: 0,
 		hold: registerCheckoutAdmission({
 			on(event: string, handler: (...args: any[]) => any) { handlers.set(event, handler); },
 			exec: async () => {
+				app.execs++;
 				await app.lookup();
 				return { stdout: `${checkout}\n`, stderr: "", code: 0, killed: false };
 			},
@@ -49,6 +51,7 @@ async function admissionHarness(t: { after: (callback: () => Promise<void>) => v
 		call: (toolCallId: string, toolName = "delegate_task", input: Record<string, unknown> = { mode: "direct" }, parentToolCallId?: string) =>
 			handlers.get("tool_call")!({ toolCallId, toolName, input, parentToolCallId }, { cwd: checkout }),
 		end: (toolCallId: string, event = "tool_result") => handlers.get(event)!({ toolCallId }),
+		newSession: () => handlers.get("session_start")!({}),
 	};
 	return app;
 }
@@ -121,6 +124,12 @@ test("shutdown releases unheld direct and Main admissions", async (t) => {
 
 test("concurrent checkout lookups check the current owner and Main calls when they resolve", async (t) => {
 	const app = await admissionHarness(t);
+	// A failed lookup is not cached; a successful one is shared until the next session.
+	app.lookup = async () => { throw new Error("git unavailable"); };
+	await assert.rejects(app.call("failed", "edit"), /git unavailable/);
+	app.end("failed");
+	app.newSession();
+	app.execs = 0;
 	let entered!: () => void;
 	let resume!: () => void;
 	const started = new Promise<void>((resolve) => { entered = resolve; });
@@ -130,6 +139,7 @@ test("concurrent checkout lookups check the current owner and Main calls when th
 	await started;
 	resume();
 	const results = await Promise.all(pending);
+	assert.equal(app.execs, 1);
 	const winner = results.findIndex((result) => result === undefined);
 	assertAdmissionBlocked(results[1 - winner], `direct-${winner + 1}`);
 	app.end(`direct-${winner + 1}`);
@@ -140,8 +150,10 @@ test("concurrent checkout lookups check the current owner and Main calls when th
 		const gate = new Promise<void>((resolve) => { pause = resolve; });
 		app.lookup = async () => { start(); await gate; };
 		const second = first === "direct" ? "main" : "direct";
+		app.newSession();
 		const waiting = app.call(second, second === "main" ? "edit" : "delegate_task");
 		await reached;
+		app.newSession();
 		app.lookup = async () => {};
 		assert.equal(await app.call(first, first === "main" ? "bash" : "delegate_task"), undefined);
 		pause();
@@ -154,6 +166,7 @@ test("concurrent checkout lookups check the current owner and Main calls when th
 	const reached = new Promise<void>((resolve) => { start = resolve; });
 	const gate = new Promise<void>((resolve) => { pause = resolve; });
 	app.lookup = async () => { start(); await gate; };
+	app.newSession();
 	const late = app.call("late");
 	await reached;
 	app.end("late", "session_shutdown");

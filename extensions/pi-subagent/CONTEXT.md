@@ -56,6 +56,12 @@ The guarded transfer of a validated integration generation into unchanged, clean
 **Release**:
 Main's explicit cleanup of an exact rejected worker or superseded generation after proving that it is no longer selected. Release does not discard dirty, conflicted, or uncertain work.
 
+**Discard**:
+The user-confirmed deletion of owned isolated resources from `/subagent`, including committed, uncommitted, and ignored content. Unlike Release, only the user can trigger it.
+
+**Orphaned request**:
+An isolated request whose parent checkout was removed. Other checkouts of the same repository can still list and discard it.
+
 **Productive lease**:
 Repository-scoped ownership that excludes concurrent execution or resumption while permitting status inspection and abort.
 
