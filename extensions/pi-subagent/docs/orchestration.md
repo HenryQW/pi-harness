@@ -375,7 +375,7 @@ The report lists removed, skipped, and failed resources. After complete cleanup,
 
 ### Prune leftover worktrees
 
-Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-` plus 24 hex characters. The command also cleans up such branches that have no checkout. The review lists each item with its path, branch, and tip. For each item, it also shows why the command can remove the item, or it shows every exact blocker. The command can remove an item only when all of these conditions are true:
+Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-` plus 24 hex characters. The command also cleans up such branches that have no checkout. The review starts with the number of removable and blocked items. It groups the items by the exact reason that the command can remove them, or by their exact blockers, and shows each reason once. Under each reason, it identifies each item by the first 8 of its 24 hex characters. The command can remove an item only when all of these conditions are true:
 
 - Its branch tip is already in Main's HEAD or in the local `origin` default-branch ref. The command does not fetch.
 - Its checkout has no tracked or untracked changes. No merge, rebase, cherry-pick, revert, or bisect is in progress.
@@ -387,7 +387,7 @@ One confirmation removes every listed removable item. When the command removes a
 
 If a top-level ignored entry is new or changed, the command skips the checkout. If the full list of ignored entries of a checkout does not fit in that dialog, the command excludes the checkout. The command blocks checkouts with initialized submodules. It also blocks owned checkouts that are detached or on another branch. Remove them manually.
 
-The list shows removable items first. The command never cuts a long list silently. The list ends with `+N more not shown`, and the command does not remove the items that it did not show in that run. Run `/subagent prune` again to review them.
+The list shows removable items first. The command never cuts a long list silently. The list ends with `+N more not shown`, where `N` counts items, and the command does not remove the items that it did not show in that run. Run `/subagent prune` again to review them.
 
 The command checks each item again immediately before removal and skips an item that changed. If the session or branch changes during removal, the command skips the remaining steps. The command deletes a branch only if the branch still points at the reviewed tip. Then the command reconciles each aborted request that recorded a removed resource. It uses the same guarded path as a repeated `subagent_abort`, so the cleanup of that request no longer shows as pending.
 

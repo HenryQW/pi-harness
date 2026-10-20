@@ -340,19 +340,30 @@ test("Stop this worker targets one exact running worker and refuses stale dialog
 });
 
 const prunePlan: PrunePlan = { root: "/git", items: [
+	{ branch: "pi-subagent/subagent-e", tip: "e".repeat(40), prunable: false, reason: "branch has commits not in Main HEAD", ignored: [] },
 	{ branch: "pi-subagent/subagent-a", tip: "a".repeat(40), path: "/git/.worktrees/subagent-a", prunable: true, reason: "merged into Main HEAD; clean checkout", ignored: [] },
+	{ branch: "pi-subagent/subagent-c", tip: "c".repeat(40), path: "/git/.worktrees/subagent-c", prunable: false, reason: "checkout has tracked or untracked changes", ignored: ["node_modules/"] },
 	{ branch: "pi-subagent/subagent-b", tip: "b".repeat(40), path: "/git/.worktrees/subagent-b", prunable: true, reason: "merged into origin/main; clean checkout", ignored: ["node_modules/", "dist/"] },
-	{ branch: "pi-subagent/subagent-c", tip: "c".repeat(40), path: "/git/.worktrees/subagent-c", prunable: false, reason: "checkout has tracked or untracked changes", ignored: [] },
+	{ branch: "pi-subagent/subagent-d", tip: "d".repeat(40), path: "/git/.worktrees/subagent-d", prunable: false, reason: "checkout has tracked or untracked changes", ignored: [] },
 ] };
 
 test("prune without UI only reports the review list", async () => {
 	const h = harness({ ui: false, prune: prunePlan });
 	await h.run("prune");
 	assert.equal(h.messages.length, 1);
-	assert.match(h.messages[0]!, /^Subagent prune review in \/git: 2 prunable, 1 blocked\./);
-	assert.match(h.messages[0]!, /✗ blocked · \/git\/\.worktrees\/subagent-c · pi-subagent\/subagent-c · cccccccccccc · checkout has tracked or untracked changes · ignored: none/);
-	assert.match(h.messages[0]!, /ignored: 2 \(node_modules\/, dist\/\)/);
-	assert.match(h.messages[0]!, /Report only/);
+	// Prunable groups come first; each group names its exact reason once.
+	assert.equal(h.messages[0]!, [
+		"Subagent prune review in /git: 2 prunable, 3 blocked. IDs are the first 8 characters after pi-subagent/subagent-.",
+		"✓ Prunable: merged into Main HEAD; clean checkout (1):",
+		"  a",
+		"✓ Prunable: merged into origin/main; clean checkout (1):",
+		"  b",
+		"✗ Blocked: branch has commits not in Main HEAD; no checkout (1):",
+		"  e",
+		"✗ Blocked: checkout has tracked or untracked changes (2):",
+		"  c, d",
+		"Report only: removal requires interactive confirmation.",
+	].join("\n"));
 	assert.deepEqual(h.dialogs, []);
 	assert.deepEqual(h.pruned, []);
 });
@@ -396,18 +407,20 @@ test("prune approval names every ignored entry and leaves out a checkout whose l
 });
 
 test("prune removes only items its dialogs showed, never items cut from a long list", async () => {
-	const item = (index: number, prunable: boolean) => ({ branch: `pi-subagent/subagent-${String(index).padStart(3, "0")}`, tip: "d".repeat(40),
-		path: `/git/.worktrees/subagent-${"x".repeat(60)}-${index}`, prunable, reason: prunable ? "merged into Main HEAD; clean checkout" : "branch has commits not in Main HEAD",
+	const id = (index: number) => `${index.toString(16).padStart(8, "0")}${"0".repeat(16)}`;
+	const item = (index: number, prunable: boolean) => ({ branch: `pi-subagent/subagent-${id(index)}`, tip: "d".repeat(40),
+		path: `/git/.worktrees/subagent-${id(index)}`, prunable, reason: prunable ? "merged into Main HEAD; clean checkout" : "branch has commits not in Main HEAD",
 		ignored: prunable ? ["node_modules/", "dist/", ".codegraph/"] : [] });
 	// Blocked items sort first by branch; prunable ones must still be listed and selectable.
-	const plan: PrunePlan = { root: "/git", items: [...Array.from({ length: 30 }, (_, index) => item(index, false)), ...Array.from({ length: 60 }, (_, index) => item(100 + index, true))] };
+	const plan: PrunePlan = { root: "/git", items: [...Array.from({ length: 30 }, (_, index) => item(index, false)), ...Array.from({ length: 2_000 }, (_, index) => item(100 + index, true))] };
 	const h = harness({ prune: plan });
 	h.confirms.push(true, true);
 	await h.run("prune");
 	const review = h.notices[0]!.message;
-	const shown = plan.items.filter(({ branch }) => review.includes(`${branch} `)).sort((left, right) => review.indexOf(`${left.branch} `) - review.indexOf(`${right.branch} `));
-	assert.ok(shown.length < plan.items.length && /\+\d+ more not shown; they are not removed/.test(review), "the review names omitted items");
-	assert.ok(shown.slice(0, 2).every(({ prunable }) => prunable), "prunable items are listed first");
+	const ids = new Set(review.split(/[\s,]+/));
+	const shown = plan.items.filter(({ branch }) => ids.has(branch.slice(-24, -16)));
+	assert.ok(shown.length && shown.every(({ prunable }) => prunable), "prunable items are listed first");
+	assert.match(review, new RegExp(`\\n\\+${plan.items.length - shown.length} more not shown; they are not removed`), "the review counts every omitted item");
 	const ignoredDialog = h.dialogs[1]!.options![0]!;
 	assert.match(ignoredDialog, /\+\d+ more not shown; they are not removed/);
 	assert.ok([...ignoredDialog].length <= 4_000);
