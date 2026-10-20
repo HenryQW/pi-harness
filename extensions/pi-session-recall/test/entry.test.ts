@@ -51,7 +51,7 @@ interface CapturedTool {
 		options: { expanded: boolean },
 		theme: { fg(color: string, text: string): string },
 		context: unknown,
-	) => { render(width: number): string[] };
+	) => { render(width: number): string[]; invalidate(): void };
 }
 
 function makePi(commands: object[] = []): {
@@ -196,7 +196,14 @@ describe("session_search entry point", () => {
 		const theme = { fg: (_color: string, text: string) => text };
 		initTheme("dark");
 
-		const collapsed = tool.renderResult(result, { expanded: false }, theme, {}).render(width);
+		const preview = tool.renderResult(result, { expanded: false }, theme, {});
+		const collapsed = preview.render(width);
+		assert.equal(preview.render(width), collapsed);
+		assert.notEqual(preview.render(width + 10), collapsed);
+		preview.invalidate();
+		const rerendered = preview.render(width);
+		assert.notEqual(rerendered, collapsed);
+		assert.deepEqual(rerendered, collapsed);
 		assert.deepEqual(collapsed.slice(-5), allLines.slice(-5));
 		assert.match(collapsed[1]!, /earlier lines/);
 		assert.match(collapsed[1]!, /to expand/);

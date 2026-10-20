@@ -405,15 +405,27 @@ export default function (pi: ExtensionAPI): void {
 			const output = result.content.find((part) => part.type === "text")?.text ?? "";
 			const styledOutput = theme.fg("toolOutput", output);
 			if (expanded) return new Text(`\n${styledOutput}`, 0, 0);
+			// Pi renders every transcript component on every frame, so cache lines per width.
+			let cachedWidth: number | undefined;
+			let cachedLines: string[] | undefined;
 			return {
 				render(width: number) {
+					if (cachedLines !== undefined && cachedWidth === width) return cachedLines;
 					const preview = truncateToVisualLines(styledOutput, 5, width);
-					if (preview.skippedCount === 0) return ["", ...preview.visualLines];
-					const hint = theme.fg("muted", `... (${preview.skippedCount} earlier lines,`) +
-						` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-					return ["", truncateToWidth(hint, width, "..."), ...preview.visualLines];
+					if (preview.skippedCount === 0) {
+						cachedLines = ["", ...preview.visualLines];
+					} else {
+						const hint = theme.fg("muted", `... (${preview.skippedCount} earlier lines,`) +
+							` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+						cachedLines = ["", truncateToWidth(hint, width, "..."), ...preview.visualLines];
+					}
+					cachedWidth = width;
+					return cachedLines;
 				},
-				invalidate() {},
+				invalidate() {
+					cachedWidth = undefined;
+					cachedLines = undefined;
+				},
 			};
 		},
 		// Failures throw: Pi marks the result as an error for the model, and
