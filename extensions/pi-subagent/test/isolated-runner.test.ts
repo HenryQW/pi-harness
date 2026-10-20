@@ -1970,7 +1970,8 @@ class StagingGit extends IntegrationGit {
 	}
 	readonly merged: string[] = [];
 	promotions = 0;
-	cleanupBlocked = false;
+	/** Worker checkout path whose promoted cleanup is blocked by retained changes. */
+	cleanupBlockedPath?: string;
 	releaseBlocked = false;
 	readonly releases: string[] = [];
 	promoteResult?: GitOutcome<WorkspaceIdentity>;
@@ -1998,8 +1999,8 @@ class StagingGit extends IntegrationGit {
 		return this.promoteResult?.outcome === "unknown" ? { outcome: "unknown", failure: "Main still at base; no replay." }
 			: { outcome: "ready", value: { ...stages.at(-1)!.tip, branch: base.branch } };
 	}
-	override async cleanup(): Promise<GitOutcome<"removed">> {
-		return this.cleanupBlocked ? { outcome: "blocked", failure: "Exact checkout is dirty; inspect the retained worktree." }
+	override async cleanup(_root: string, _integration: WorktreeInfo, worker: WorktreeInfo): Promise<GitOutcome<"removed">> {
+		return worker.path === this.cleanupBlockedPath ? { outcome: "blocked", failure: "Exact checkout is dirty; inspect the retained worktree." }
 			: { outcome: "ready", value: "removed" };
 	}
 	/** Branches whose checkout and ref were removed outside Pi Subagent. */
@@ -2550,22 +2551,66 @@ test("a resolved conflict in a superseded generation stays recorded after select
 	assertParsed(done.state);
 });
 
-test("promotion remains accepted with dirty retained owned resources and cleanup can be retried exactly", async (t) => {
-	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "dirty-cleanup");
+test("blocked promoted cleanup still releases sibling stages and keeps the request visible until a retry completes it", async (t) => {
+	const git = new StagingGit();
+	const { root, runner, runtime } = await harness(t, { integrationGit: git });
+	const id = "dirty-cleanup";
+	const ready = await runner.execute(request(id, [changesetTask("first"), changesetTask("second")]), root);
+	const [first, second] = ready.state.integration.candidates;
+	const choose = (action: "stage" | "resolve", candidate: typeof first, expectedTip: WorkspaceIdentity) => ({
+		id, generation: 1, action, taskId: candidate!.taskId, attempt: candidate!.attempt, candidate: candidate!.tip, expectedTip,
+	});
+	const firstStage = await runner.stage(choose("stage", first, ready.state.main), root);
+	const firstTip = firstStage.state.integration.generations[0]!.combinedTip!;
+	await runner.stage(choose("stage", second, firstTip), root);
+	git.resolved = true;
+	const resolved = await runner.stage(choose("resolve", second, firstTip), root);
+	const action = { id, generation: 1, expectedTip: resolved.state.integration.generations[0]!.combinedTip! };
 	git.promoteMain = (main) => { runtime.main = main; };
-	git.cleanupBlocked = true;
+	git.cleanupBlockedPath = changesetState(ready.state, "first").attempts[0]!.allocations
+		.find((allocation) => allocation.kind === "worktree")?.worktree?.path;
 	await runner.integrate({ ...action, action: "validate" }, root);
 	const promoted = await runner.integrate({ ...action, action: "promote" }, root);
-	assert.equal(promoted.state.status, "completed");
-	assert.equal(promoted.state.integration.candidates[0]?.worker, "release_pending");
-	assert.equal(promoted.state.tasks[0]?.status, "completed");
-	assert.equal(changesetState(promoted.state, "change").attempts[0]?.cleanup[2]?.status, "running");
-	assert.match(changesetState(promoted.state, "change").attempts[0]?.cleanup[2]?.failure ?? "", /dirty/);
+	assert.equal(promoted.state.status, "needs_attention");
+	assert.equal(promoted.state.accepted, false);
+	assert.deepEqual(promoted.state.tasks.map((task) => task.status), ["completed", "completed"]);
+	const blocked = changesetState(promoted.state, "first").attempts[0]!;
+	assert.equal(blocked.termination?.status, "terminated");
+	assert.deepEqual(blocked.cleanup.map((step) => step.status), ["completed", "completed", "running", "pending"]);
+	assert.match(blocked.cleanup[2]?.failure ?? "", /dirty/);
+	assert.equal(changesetState(promoted.state, "second").attempts[0]?.termination?.status, "terminated");
+	assert.ok(changesetState(promoted.state, "second").attempts[0]?.cleanup.every((step) => step.status === "completed"));
+	assert.deepEqual(promoted.state.integration.candidates.map((candidate) => candidate.worker), ["release_pending", "released"]);
+	assert.ok(promoted.state.integration.generations[0]?.cleanup?.every((step) => step.status === "completed"));
+	assert.match(promoted.text, /subagent_integrate cleanup/);
+	assert.equal((await runner.listRequests(root)).requests[0]?.status, "needs_attention");
 	assertParsed(promoted.state);
-	git.cleanupBlocked = false;
+	git.cleanupBlockedPath = undefined;
 	const cleaned = await runner.integrate({ ...action, action: "cleanup" }, root);
-	assert.equal(cleaned.state.integration.candidates[0]?.worker, "released");
+	assert.equal(cleaned.state.status, "completed");
 	assert.equal(cleaned.state.accepted, true);
+	assert.deepEqual(cleaned.state.integration.candidates.map((candidate) => candidate.worker), ["released", "released"]);
+	assert.equal(runtime.terminationCalls.length, 2);
+	assertParsed(cleaned.state);
+});
+
+test("unproved promoted worker termination keeps the task completed and retries by reconciliation", async (t) => {
+	const { runner, root, runtime, git, action } = await stagedForPromotion(t, "unproved-termination");
+	git.promoteMain = (main) => { runtime.main = main; };
+	runtime.terminationResults.push({ outcome: "unknown", failure: "Agent did not stop." });
+	await runner.integrate({ ...action, action: "validate" }, root);
+	const promoted = await runner.integrate({ ...action, action: "promote" }, root);
+	assert.equal(promoted.state.status, "needs_attention");
+	assert.equal(promoted.state.tasks[0]?.status, "completed");
+	const attempt = changesetState(promoted.state, "change").attempts[0]!;
+	assert.equal(attempt.termination?.status, "unknown");
+	assert.match(attempt.cleanup[0]?.failure ?? "", /termination was not proved/);
+	assert.deepEqual(runtime.cleanupCalls, []);
+	assertParsed(promoted.state);
+	runtime.terminationReconciliations.push({ outcome: "terminated" });
+	const cleaned = await runner.integrate({ ...action, action: "cleanup" }, root);
+	assert.equal(cleaned.state.status, "completed");
+	assert.equal(runtime.terminationCalls.length, 1);
 	assertParsed(cleaned.state);
 });
 

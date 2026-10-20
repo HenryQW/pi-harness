@@ -295,6 +295,8 @@ Rejection invalidates dependent work. Rejection and revision ignore dependent wo
 
 Use the generation's exact `combinedTip` as `expectedTip`. `advance` dispatches ready dependents from that snapshot. `correct` records one clean committed correction after a definitive failed check or review. `reconcile` inspects interrupted validation or promotion without replaying uncertain promotion. `cleanup` finishes proved post-promotion cleanup.
 
+Post-promotion cleanup handles each promoted stage separately. A blocked termination or cleanup step records its failure on that step, and cleanup continues with the other stages and then the promoted integration checkout. Clean Main at the promoted identity is a shared precondition; if Main changed, every pending step records the blocker. Dirty, untracked, or ignored files block worktree removal and stay preserved. Until every promoted termination and cleanup step completes, the request stays `needs_attention` with promotion proven, selected tasks `completed`, and not accepted, so `/subagent` lists it. Resolve the recorded blockers, then call `cleanup` again; the request becomes `completed` and accepted only after cleanup completes.
+
 Validation acknowledges only after saving the exact generation's validation intent. Checks and final judgment then run in the background. Later turn cancellation does not cancel acknowledged validation; session replacement or shutdown does. Acknowledgement is not passing evidence. Inspect status if the completion follow-up fails.
 
 #### Refresh
