@@ -305,7 +305,6 @@ export class PullRequestCreator {
 			throw new Error("PR creation is not prepared for verification");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			const head = await this.requireCleanHead();
 			if (!isPullRequestCreationEligible((await this.freshNone()).branch) || await readHead(this.exec, this.options()) !== head) {
@@ -338,8 +337,6 @@ export class PullRequestCreator {
 			throw new Error("PR creation is not ready to push");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			await this.freshNone();
-			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			const head = await this.requireCleanHead();
 			if (head !== this.state.verifiedHead) throw new Error("PR creation verified HEAD changed");
 			const original = this.target.remoteOid;

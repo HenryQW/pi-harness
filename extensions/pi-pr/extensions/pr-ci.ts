@@ -707,10 +707,8 @@ export class PullRequestCiFixer {
 		}
 	}
 
-	private async validatePublishAuthority(): Promise<string> {
-		await this.requireCollectedEvidence();
+	private async validateRepairHead(): Promise<string> {
 		const original = this.authority.head.oid;
-		await this.requireSavedDestination(original);
 		const branch = requiredText(parseSingleOutputLine(
 			(await runChecked(this.exec, "git", ["branch", "--show-current"], this.options())).stdout,
 			"current branch",
@@ -740,7 +738,7 @@ export class PullRequestCiFixer {
 		if (this.state.phase !== "collected") throw new Error("CI repair publish action is unavailable or was already consumed");
 		try {
 			return await withWorktreeLock(this.cwd, async () => {
-				const repairHead = await this.validatePublishAuthority();
+				const repairHead = await this.validateRepairHead();
 				const original = this.authority.head.oid;
 				await this.finalPublishRevalidation(original, repairHead);
 				this.run?.beforePush(original, repairHead);

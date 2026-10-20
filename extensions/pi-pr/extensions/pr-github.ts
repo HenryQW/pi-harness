@@ -1551,29 +1551,6 @@ async function readCodexReviewStatus(
 		: "running";
 }
 
-async function readBaseRefOid(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	candidate: ListedPullRequest,
-): Promise<string> {
-	const [owner, name] = candidate.base.repository.split("/");
-	const result = await execute(pi, context, "Read base ref", "gh", [
-		"api",
-		"graphql",
-		"--hostname",
-		candidate.url.hostname,
-		"-f",
-		`query=${BASE_REF_QUERY}`,
-		"-F",
-		`owner=${owner}`,
-		"-F",
-		`name=${name}`,
-		"-F",
-		`qualifiedName=refs/heads/${candidate.base.ref}`,
-	]);
-	return parseBaseRefAuthority(result.stdout, candidate.base);
-}
-
 export async function readPullRequestBaseRefOid(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1612,7 +1589,7 @@ async function loadPullRequestDetails(
 		candidate.lifecycle === "open" && context.codexReview
 			? readCodexReviewStatus(pi, context, candidate)
 			: undefined,
-		candidate.lifecycle === "open" ? readBaseRefOid(pi, context, candidate) : null,
+		candidate.lifecycle === "open" ? readPullRequestBaseRefOid(pi, context, { host: candidate.url.hostname, repository: candidate.base.repository, ref: candidate.base.ref }) : null,
 	]);
 	const codex: CodexReview | undefined = codexStatus !== undefined
 		? { status: codexStatus, findings: threads.codexFindings }

@@ -1009,17 +1009,17 @@ export default function pullRequestExtension(
 		await refresh().catch(reportRefreshFailure);
 	});
 
-	pi.on("tool_result", async (event, ctx) => {
+	pi.on("tool_result", (event, ctx) => {
 		if (!ctx.hasUI || event.isError || lastDiscovery === "inactive") return;
 		if (DELEGATED_TOOLS.has(event.toolName)) delegatedWorkPending = true;
 		if (event.toolName === "pi_git_commit" && event.input.action === "commit") {
-			await refresh().catch(reportRefreshFailure);
+			refreshInBackground();
 			return;
 		}
 		if (!isBashToolResult(event)) return;
 		const command = event.input.command;
 		if (typeof command === "string" && (GH_PR_CREATE.test(command) || GIT_COMMIT.test(command) || GIT_PUSH.test(command))) {
-			await refresh().catch(reportRefreshFailure);
+			refreshInBackground();
 		}
 	});
 

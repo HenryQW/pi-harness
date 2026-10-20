@@ -769,22 +769,21 @@ test("does not push when HEAD or target authority changes after final base check
 	for (const race of ["HEAD", "authority"] as const) {
 		let localHead = head;
 		let latestTarget = target(true);
-		let baseReads = 0;
 		const calls: Array<[string, string[]]> = [];
 		const exec: Exec = async (command, args) => {
 			calls.push([command, [...args]]);
 			const text = args.join(" ");
 			if (command === "git" && text === "branch --show-current") return result("feature\n");
 			if (command === "gh" && args[0] === "api") {
-				if (++baseReads === (race === "HEAD" ? 2 : 1)) {
-					if (race === "HEAD") localHead = "d".repeat(40);
-					else latestTarget = { ...latestTarget, fetchSource: "git@github.com:acme/moved.git", remoteOid: "e".repeat(40) };
-				}
+				if (race === "HEAD") localHead = "d".repeat(40);
 				return result(baseOutput());
 			}
 			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
 			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
-			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${localHead}\n`);
+			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") {
+				if (race === "authority") latestTarget = { ...latestTarget, fetchSource: "git@github.com:acme/moved.git", remoteOid: "e".repeat(40) };
+				return result(`${localHead}\n`);
+			}
 			throw new Error(`Unexpected ${command} ${text}`);
 		};
 		const app = creator(exec, target(true));
