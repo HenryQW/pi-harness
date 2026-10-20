@@ -82,6 +82,8 @@ Tasks in write requests must return one JSON completion object:
 
 `outcome` accepts `succeeded`, `failed`, or `blocked`; `answer` must be non-empty. Plain text, malformed completion, blocked work, or failure stops later dispatch. Success is the worker's report, not independent validation. Checkout admission depends on proved termination, not the reported outcome.
 
+A write task can declare `"paths": ["src/**"]` with repo-relative globs. For each task in a write request, the result lists new commits and changed paths, and it flags changed paths outside `paths`. This is a report only, not enforcement, and it cannot exclude changes from other processes. For a read request, the result warns `checkout changed during task; result may be stale` when the checkout changed while the task ran. Outside a Git repository, the extension makes no report. See [Checkout change reports](./docs/orchestration.md#checkout-change-reports).
+
 The launch returns a task ID and first Herdr tab, not the answer. One follow-up delivers results when the workflow finishes. Busy Main receives it after its current turn; idle Main starts a turn. Failed partial output stays marked as partial, never success. Worker output carries no user authority.
 
 To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`. This opens a new tab with the saved conversation and a new reference. Continue the newest reference from the original checkout and workspace. For eligibility and stop behavior, see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).

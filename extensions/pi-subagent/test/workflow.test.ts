@@ -4,6 +4,7 @@ import test from "node:test";
 import {
 	MAX_WORKFLOW_ENTRIES,
 	identifyWorkflowEntries,
+	parseDelegateTask,
 	parseWorkflow as parseDirectWorkflow,
 	runForegroundWorkflow as runEntries,
 	type DelegationRunner,
@@ -292,4 +293,12 @@ test("direct schema excludes changesets and their writer-only fields", () => {
 	}
 	assert.throws(() => parseWorkflow({ ...delegation(), kind: "changeset" }), /use mode isolated for changesets/);
 	assert.throws(() => parseWorkflow({ ...delegation(), background: false }), /declared tool schema/);
+});
+
+test("declared paths belong only to direct write tasks", () => {
+	assert.deepEqual(parseWorkflow({ ...delegation(), access: "write", paths: [" src/** "] }).delegations[0]!.paths, ["src/**"]);
+	assert.throws(() => parseWorkflow({ ...delegation(), paths: ["src/**"] }), /paths requires access "write"/);
+	assert.throws(() => parseWorkflow({ ...delegation(), access: "write", paths: ["../src"] }), /repo-relative glob/);
+	assert.throws(() => parseDelegateTask({ mode: "isolated", id: "request", goal: "Change", tasks: [{ id: "task", kind: "text", role: "scout",
+		requirements: "Inspect", deliverable: "Report", dependsOn: [], contextFrom: [], paths: ["src/**"] }] }), /strict task schema/);
 });

@@ -69,6 +69,7 @@ Each entry has:
 | `name` | yes | Short display name without terminal controls |
 | `task` | yes | Non-empty task packet |
 | `access` | yes | `read` or `write`; Main's honest classification, not enforced |
+| `paths` | no | Write tasks only: 1 to 32 repo-relative globs (`path.matchesGlob` syntax, such as `src/**`). The change report flags changed paths outside them. A report only, not enforced |
 | `continueFrom` | no | Direct reference such as `D7.1`; continues that finished worker's Pi session. `role` must equal the recorded Role |
 | `kind` | no | `text` only (default); direct `changeset` is rejected |
 | `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav` route |
@@ -141,6 +142,19 @@ The result details contain the same values in each entry as `model`, `thinkingLe
 Every worker result delivered to Main starts with a header. The header states that the text is the output of the worker and carries no user authority. The extension inserts a backslash in text that imitates harness framing. Examples are `<system-reminder>`-style tags and lines that start with `Human:` or `Assistant:`. Nothing else changes. Isolated status and follow-up answer previews use the same header.
 
 A session switch or shutdown stops observation and preserves tab identities for recovery. To inspect exact tabs, agents, and Pi session files, open `/subagent` on the session branch. This includes tabs launched after the first. The menu has one row for each workflow.
+
+### Checkout change reports
+
+For each task in a write request, the extension takes a Git snapshot of Main's checkout before the worker starts and again when the task ends (success, failure, blocked work, or stop). A snapshot contains the `HEAD` OID and `git status --porcelain=v1 -z --untracked-files=all`, with the content identity of each dirty path. The result of the task then lists:
+
+- New commits from `git rev-list before..after`, as a short OID and subject. If `HEAD` moved to a commit that does not descend from the start `HEAD`, the report says so.
+- Paths with a changed status or content, and the paths that the new commits changed. If the task declares `paths`, each changed path outside them shows `outside declared paths`.
+
+The report shows at most 10 commits and 20 paths, and it counts the omitted items. Paths outside the declaration come first. The same report is in the `checkout` field of the result details entry. The report does not enforce scope. Checkout admission blocks Main writes during a write request, so the report assigns changes to the worker. It cannot exclude changes from other processes.
+
+For a read request, the extension compares the same snapshot at launch and when each task ends. If `HEAD`, status, or dirty content changed, the result of that task shows `checkout changed during task; result may be stale`.
+
+Outside a Git repository, the extension makes no report and the task continues. If a snapshot fails, the task does not fail; the result shows `change report unavailable: <reason>` (or `stale-read check unavailable: <reason>` for a read request).
 
 A single worker shows its reference, Role, and name (`D7.1 · worker · Search audit`). A multi-worker workflow shows its reference and worker count (`D8 · 3 workers`). When you select it, the menu lists each recorded worker by reference, Role, and name with its exact IDs. References and names help you match rows. The extension never uses them to decide ownership.
 

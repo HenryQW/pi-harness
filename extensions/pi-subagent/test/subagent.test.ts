@@ -757,6 +757,72 @@ test("a failed writer with a normal final turn stops later tasks and releases ad
 });
 
 
+async function gitCheckout(t: { after: (callback: () => Promise<void>) => void }) {
+	const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-report-")));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
+	git("init", "-q");
+	git("config", "user.name", "Direct test");
+	git("config", "user.email", "direct@example.test");
+	await writeFile(join(cwd, "dirty.txt"), "base\n");
+	git("add", "."); git("commit", "-qm", "base");
+	await writeFile(join(cwd, "dirty.txt"), "dirty before launch\n");
+	return { cwd, git };
+}
+
+test("direct write reports new commits and changed paths and flags paths outside the declaration", async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrite only authorized files.\n`);
+		const { cwd, git } = await gitCheckout(t);
+		await herdrEnvironment(async () => {
+			let worked = false;
+			const fake = fakeHerdr(cwd, async () => {
+				if (!worked) {
+					worked = true;
+					await mkdir(join(cwd, "src"));
+					await writeFile(join(cwd, "src", "x.ts"), "export {};\n");
+					git("add", "src/x.ts"); git("commit", "-qm", "worker commit");
+					await writeFile(join(cwd, "dirty.txt"), "edited again by worker\n");
+					await writeFile(join(cwd, "notes.txt"), "outside\n");
+				}
+				return JSON.stringify({ outcome: "succeeded", answer: "done" });
+			});
+			const app = harness({ cwd, herdr: fake.exec });
+			const params = { mode: "direct", role: "writer", name: "Edit", task: "edit", access: "write", paths: ["src/**", "dirty.txt"] };
+			await app.handlers.get("tool_call")!({ toolCallId: "write", toolName: "delegate_task", input: params }, app.ctx);
+			await app.tool.execute("write", params, undefined, undefined, app.ctx);
+			app.handlers.get("tool_result")!({ toolCallId: "write" });
+			await waitFor(() => app.sentMessages.length === 1);
+			const { content, details } = app.sentMessages[0]!.message;
+			assert.match(content, new RegExp(`\\n  commit ${git("rev-parse", "--short", "HEAD")} worker commit\\n  changed notes\\.txt \\(outside declared paths\\)\\n  changed dirty\\.txt\\n  changed src/x\\.ts\\n[^]*Results:`));
+			assert.deepEqual(details.entries[0].checkout.report.paths, [{ path: "notes.txt", outside: true }, { path: "dirty.txt" }, { path: "src/x.ts" }]);
+		});
+	});
+});
+
+test("direct read warns when the checkout changed during the task", async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const { cwd } = await gitCheckout(t);
+		await herdrEnvironment(async () => {
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				if (prompt.startsWith("changed")) await writeFile(join(cwd, "dirty.txt"), "changed during read\n");
+				return "exact answer";
+			});
+			const app = harness({ cwd, herdr: fake.exec });
+			await app.tool.execute("read", { mode: "direct", chain: [
+				{ role: "worker", name: "Stable", task: "stable", access: "read" },
+				{ role: "worker", name: "Changed", task: "changed", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			const { content, details } = app.sentMessages[0]!.message;
+			assert.match(content, /\n- \[2\/2\] Changed · worker:\n  checkout changed during task; result may be stale\n/);
+			assert.deepEqual(details.entries.map(({ checkout }: any) => checkout), [undefined, { kind: "stale" }]);
+		});
+	});
+});
+
 test("failed direct termination retains admission and exact Close retries without replay or data loss", async (t) => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
