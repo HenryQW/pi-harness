@@ -100,13 +100,12 @@ const errorText = (error: unknown): string => clean(error instanceof Error ? err
 const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
 
-const ignoredSummary = ({ ignored }: PruneItem) => !ignored.length ? "none"
-	: `${ignored.length} (${ignored.slice(0, 5).join(", ")}${ignored.length > 5 ? `, +${ignored.length - 5} more` : ""})`;
 const PRUNE_IGNORED_CONFIRM_CODE_POINTS = 4_000;
 const NOT_SHOWN = "they are not removed in this run; run /subagent prune again after this run.";
 
 /** Fit whole item lines within `max` code points; never cut silently, and report exactly which items were shown. */
-function fitItems<T>(header: string, items: readonly T[], line: (item: T) => string, max: number, omitted = NOT_SHOWN): { text: string; shown: T[] } {
+function fitItems<T>(header: string, items: readonly T[], line: (item: T) => string, max: number, omitted = NOT_SHOWN,
+	count: (item: T) => number = () => 1): { text: string; shown: T[] } {
 	const lines = [header];
 	const shown: T[] = [];
 	let size = [...header].length;
@@ -119,18 +118,30 @@ function fitItems<T>(header: string, items: readonly T[], line: (item: T) => str
 		size += length;
 		shown.push(item);
 	}
-	if (shown.length < items.length) lines.push(`+${items.length - shown.length} more not shown; ${omitted}`);
+	const hidden = items.slice(shown.length).reduce((sum, item) => sum + count(item), 0);
+	if (hidden) lines.push(`+${hidden} more not shown; ${omitted}`);
 	return { text: lines.join("\n"), shown };
 }
 
-/** Prunable items come first so a long blocked list cannot hide them; only shown items may be removed. */
+/** Groups items by exact reason, prunable groups first, in lines of 10 IDs so a long list is cut at whole lines.
+ * Only shown items may be removed. IDs are display-only; removal uses the reviewed items. */
 function pruneReview({ root, items }: PrunePlan): { text: string; shown: PruneItem[] } {
 	if (!items.length) return { text: `No pi-subagent worktrees or branches in ${root}.`, shown: [] };
+	const groups = new Map<string, PruneItem[]>();
+	for (const item of [...items.filter((item) => item.prunable), ...items.filter((item) => !item.prunable)]) {
+		const title = item.prunable ? `✓ Prunable: ${item.reason}` : `✗ Blocked: ${item.path ? item.reason : `${item.reason}; no checkout`}`;
+		if (groups.has(title)) groups.get(title)!.push(item);
+		else groups.set(title, [item]);
+	}
+	const rows = [...groups].flatMap(([title, group]) => Array.from({ length: Math.ceil(group.length / 10) }, (_, index) => {
+		const chunk = group.slice(index * 10, index * 10 + 10);
+		const ids = chunk.map(({ branch }) => clean(branch.replace(/^pi-subagent\/subagent-/, "").slice(0, 8))).join(", ");
+		return { items: chunk, text: `${index ? "" : `${clean(title, 600)} (${group.length}):\n`}  ${ids}` };
+	}));
 	const prunable = items.filter((item) => item.prunable).length;
-	return fitItems(`Subagent prune review in ${root}: ${prunable} prunable, ${items.length - prunable} blocked.`,
-		[...items.filter((item) => item.prunable), ...items.filter((item) => !item.prunable)],
-		(item) => clean(`${item.prunable ? "✓ prunable" : "✗ blocked"} · ${item.path ?? "(no checkout)"} · ${item.branch} · ${item.tip.slice(0, 12)} · ${item.reason} · ignored: ${ignoredSummary(item)}`, 600),
-		ROLES_REPORT_CODE_POINTS);
+	const reviewed = fitItems(`Subagent prune review in ${root}: ${prunable} prunable, ${items.length - prunable} blocked. IDs are the first 8 characters after pi-subagent/subagent-.`,
+		rows, (row) => row.text, ROLES_REPORT_CODE_POINTS, NOT_SHOWN, (row) => row.items.length);
+	return { text: reviewed.text, shown: reviewed.shown.flatMap((row) => row.items) };
 }
 
 function discardReview(plan: DiscardPlan) {
