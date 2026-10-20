@@ -20,7 +20,7 @@ Configure `balanced` in `/task-models`.
 | --- | --- | --- |
 | [`@henryqw/pi-ask-question`](https://pi.henry.wang/extensions/pi-ask-question) | Required | Provides validated conflict prompts. |
 | [`@henryqw/pi-herdr-tools`](https://pi.henry.wang/extensions/pi-herdr-tools) | Improves | Marks side-thread children to exclude parent-only memory injection and dream advice. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides candidate-review routes. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Provides routes for candidate review, `/remember` preparation, and `/dream` promotion. |
 
 ## Use
 
@@ -31,9 +31,9 @@ Run `/remember I prefer concise release notes.` Pi proposes and reviews an entry
 | `/remember <instruction>` | command | For humans: request compact durable memory. |
 | `/dream` | command | For humans: promote invariant memory instructions into agent-global `~/.pi/agent/SYSTEM.md`. |
 | `memory` | tool | For agents: add, replace, remove, or batch-edit entries. |
-| `pi-memory/reviewCandidate` | model task | For consuming extensions: review additions. |
-| `pi-memory/prepareCandidate` | model task | For consuming extensions: propose a `/remember` entry and target, or decline. |
-| `pi-memory/promoteEntries` | model task | For consuming extensions: propose one guarded `/dream` promotion. |
+| `pi-memory/reviewCandidate` | model task | For humans: assign a profile in `/task-models`. The task reviews additions. |
+| `pi-memory/prepareCandidate` | model task | For humans: assign a profile in `/task-models`. The task proposes a `/remember` entry and target, or declines. |
+| `pi-memory/promoteEntries` | model task | For humans: assign a profile in `/task-models`. The task proposes one guarded `/dream` promotion. |
 
 ## Flow
 

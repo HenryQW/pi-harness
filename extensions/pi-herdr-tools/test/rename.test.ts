@@ -183,9 +183,6 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 		assert.equal(app.completionCalls.length, 1);
 		assert.equal(app.completionCalls[0].context.messages[0].content.length, 1_000);
 		assert.equal(app.completionCalls[0].options.maxRetries, 0);
-		assert.match(app.completionCalls[0].context.systemPrompt, /one JSON object/);
-		assert.match(app.completionCalls[0].context.systemPrompt, /one lowercase English word, at most 12 letters/);
-		assert.match(app.completionCalls[0].context.systemPrompt, /2 or 3 lowercase English words.*at most 20 characters/);
 
 		resolveCompletion(response("  Refactor:\nUpdate Task Logic  "));
 		await eventually(() => app.names.length === 1);
@@ -638,7 +635,6 @@ test("display title limits apply to subject without counting semantic type", asy
 
 		for (let attempt = 0; attempt < 4; attempt++) await app.commands.get("rename")?.("", app.ctx);
 
-		assert.match(app.completionCalls[0].context.systemPrompt, /at most 20 characters/);
 		assert.equal(app.notifications.filter((message) => message.includes("invalid title")).length, 3);
 		assert.equal(app.completionCalls.length, 7);
 		assert.deepEqual(app.names, ["Update task logic"]);

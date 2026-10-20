@@ -843,6 +843,67 @@ export function readyPendingTasks(state: RunState): TaskState[] {
 	return state.tasks.filter((task) => task.status === "pending" && taskDependenciesCompleted(state, task.taskId));
 }
 
+const ADVANCE_HINT = "Main may call subagent_integrate advance with this generation and its exact staged combinedTip to launch ready dependents.";
+const RUNNING_TASK_STATUSES: readonly TaskState["status"][] = ["running", "allocating", "working", "integrating", "cleanup"];
+
+function activeGeneration(state: RunState): IntegrationGeneration | undefined {
+	const generation = state.integration.generations.at(-1);
+	return generation?.status === "superseded" ? undefined : generation;
+}
+
+/** Undecided retained candidates that Main can still stage into the latest open generation. */
+function stageableCandidates(state: RunState): IntegrationCandidate[] {
+	const generation = activeGeneration(state);
+	if (generation && generation.status !== "staging") return [];
+	return state.integration.candidates.filter((candidate) => !candidate.decision && candidate.worker === "retained"
+		&& !generation?.stages.some((stage) => stage.taskId === candidate.taskId && stage.attempt === candidate.attempt));
+}
+
+function advanceReady(state: RunState): boolean {
+	const generation = state.integration.generations.at(-1);
+	return generation?.status === "staging" && readyPendingTasks(state).some((task) => generation.combinedTip
+		&& hasChangesetDependency(state, task.taskId) && stagedDependencySnapshot(state, task.taskId, generation.combinedTip));
+}
+
+/** Main's next integration step while the request waits only for Main; undefined when a task or the final gate needs attention. */
+export function nextIntegrationAction(state: RunState): string | undefined {
+	if (state.status !== "needs_attention" || state.final.failure
+		|| state.tasks.some((task) => task.status === "needs_attention")) return undefined;
+	const stageable = stageableCandidates(state);
+	if (stageable.length) {
+		return `Stage ${stageable.map((item) => `${item.taskId}#${item.attempt}`).join(", ")} with subagent_stage using exact status identities; Main remains unchanged.`;
+	}
+	const generation = activeGeneration(state);
+	if (!generation) return undefined;
+	const exact = `generation ${generation.number} and expectedTip ${JSON.stringify(generation.combinedTip)}`;
+	const worktree = generation.worktree?.path ?? "allocation not proven";
+	switch (generation.status) {
+		case "staging":
+			if (!generation.combinedTip || generation.stages.some((stage) => stage.status !== "staged")) return undefined;
+			if (advanceReady(state)) return ADVANCE_HINT;
+			if (state.tasks.some((task) => RUNNING_TASK_STATUSES.includes(task.status))) return undefined;
+			return `Every candidate is staged; run subagent_integrate validate with ${exact}.`;
+		case "validating":
+			return `Combined validation of generation ${generation.number} is running; wait for its follow-up.`;
+		case "ready":
+			return `Combined validation passed; promote with subagent_integrate promote using ${exact}.`;
+		case "conflict": {
+			const stage = generation.stages.at(-1)!;
+			return `Resolve and commit the merge of ${stage.taskId}#${stage.attempt} in the retained integration worktree ${worktree}, then call subagent_stage resolve with generation ${generation.number}, its exact candidate, and expectedTip ${JSON.stringify(stage.onto)}.`;
+		}
+		case "validation_failed":
+			if (generation.checks && !generation.correction && (!generation.checks.passed || generation.review?.passed === false)) {
+				return `Fix and commit the combined failure in the retained integration worktree ${worktree}, then call subagent_integrate correct with ${exact}.`;
+			}
+			if (!generation.checks && !generation.review && !generation.correction && generation.combinedTip) {
+				return `Call subagent_integrate refresh with generation ${generation.number + 1}, expectedTip ${JSON.stringify(generation.combinedTip)}, and identical expectedMain and newMain; then restage the candidates and validate again.`;
+			}
+			return undefined;
+		default:
+			return undefined;
+	}
+}
+
 function isDeadline(error: unknown, scope: RuntimeScope): boolean {
 	return error instanceof DeadlineExpired || scope.signal.reason instanceof DeadlineExpired;
 }
@@ -3494,6 +3555,9 @@ export class IsolatedRunner {
 		const attention = continuation && "taskId" in continuation
 			? taskState(state, continuation.taskId)
 			: state.tasks.find((task) => task.status === "needs_attention");
+		const next = nextIntegrationAction(state);
+		const stageable = stageableCandidates(state).length > 0;
+		const advance = advanceReady(state);
 		return {
 			text: bounded([
 				`Pi Subagent ${state.request.id}: ${state.status}.`,
@@ -3509,14 +3573,11 @@ export class IsolatedRunner {
 				...(main?.status === "unavailable" ? [`Main: ${main.failure}`] : []),
 				...(attention?.failure ? [`Needs attention (${attention.taskId}): ${attention.failure}`] : []),
 				...(state.integration.candidates.length && state.integration.generations.at(-1)?.status !== "promoted" ? [
-					`Candidates: ${state.integration.candidates.map((item) => `${item.taskId}#${item.attempt}@${item.tip.head}${item.decision ? " (rejected)" : ""}`).join(", ")}. Use subagent_stage with exact status identities; Main remains unchanged.`,
+					`Candidates: ${state.integration.candidates.map((item) => `${item.taskId}#${item.attempt}@${item.tip.head}${item.decision ? " (rejected)" : ""}`).join(", ")}.${stageable ? " Use subagent_stage with exact status identities; Main remains unchanged." : ""}`,
 				] : []),
 				...(state.integration.generations.at(-1) ? [
 					`Integration generation ${state.integration.generations.at(-1)!.number}: ${state.integration.generations.at(-1)!.status}; worktree: ${state.integration.generations.at(-1)!.worktree?.path ?? "allocation not proven"}; stage: ${state.integration.generations.at(-1)!.stages.at(-1)?.status ?? "none"}.`,
-					...(state.integration.generations.at(-1)!.status === "staging" && readyPendingTasks(state).some((task) =>
-						state.integration.generations.at(-1)!.combinedTip && hasChangesetDependency(state, task.taskId)
-						&& stagedDependencySnapshot(state, task.taskId, state.integration.generations.at(-1)!.combinedTip!))
-						? ["Main may call subagent_integrate advance with this generation and its exact staged combinedTip to launch ready dependents."] : []),
+					...(advance ? [ADVANCE_HINT] : []),
 					...(state.integration.generations.at(-1)!.failure ? [`Integration: ${state.integration.generations.at(-1)!.failure}`] : []),
 				...(state.integration.generations.at(-1)!.promotion?.failure ? [`Promotion: ${state.integration.generations.at(-1)!.promotion!.failure}`] : []),
 				...(state.integration.generations.at(-1)!.checks?.passed === false ? ["Combined checks failed; Main was not changed."] : []),
@@ -3530,6 +3591,7 @@ export class IsolatedRunner {
 					"Rejected candidate resources remain retained. Release every generation that staged it, then use subagent_integrate release with the exact task, attempt and candidate tip; release first proves or performs exact worker termination.",
 				] : []),
 				...(state.final.failure ? [`Final: ${state.final.failure}`] : []),
+				...(next && !stageable && !advance ? [`Next: ${next}`] : []),
 				...(continuation ? [`Continuation: ${JSON.stringify(continuation)}`] : []),
 			].join("\n")),
 			state,

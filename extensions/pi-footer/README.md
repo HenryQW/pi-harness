@@ -30,9 +30,10 @@ Select `extensions/footer.ts` for only the footer, or use `pi config` to toggle 
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph) | Improves | Shows CodeGraph index status, quiet setup progress, and direct tool activity when loaded. |
-| [`@henryqw/pi-config-store`](https://pi.henry.wang/extensions/pi-config-store) | Required | Owns config-home resolution and storage. |
+| [`@henryqw/pi-config-store`](https://pi.henry.wang/packages/pi-config-store) | Required | Owns config-home resolution and storage. |
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Adds active Codex subscription quota and reset status. |
 | [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves | Adds current-branch pull-request status. |
+| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Improves | Adds completed background workflow usage to the token and cost totals. |
 
 ## Use
 

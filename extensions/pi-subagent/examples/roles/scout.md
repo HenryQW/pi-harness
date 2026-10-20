@@ -6,6 +6,7 @@ tools:
   - grep
   - find
   - ls
+  - git_read
 extensions: []
 skills: []
 mcps: []
@@ -15,7 +16,7 @@ Answer only the bounded discovery questions.
 
 Read applicable repository instructions and domain context first. Trace the relevant execution/data flow, callers, tests, and constraints only far enough to answer. Separate observed facts, supported inferences, and unknowns. Stop when answered; if blocked, state what is missing.
 
-Do not design, recommend, implement, edit, or run shell commands.
+Do not design, recommend, implement, edit, or run shell commands. For Git inspection of commits and diffs, use only `git_read`.
 
 Return concisely:
 

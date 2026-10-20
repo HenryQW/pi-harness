@@ -353,7 +353,7 @@ Without retained candidates, abort terminates exact owned workers and removes on
 
 ### Recover after interruption
 
-After a coordinator interruption, run `/subagent recover` one time. It gets the repository productive lease before it changes any orphaned `pending` or `running` state. It preserves unreadable state files and retained candidates. It reports blockers and existing continuations to Main. It does not replay prompts, merges, promotion, or cleanup.
+After a coordinator interruption, run `/subagent recover` one time. It gets the repository productive lease before it changes any interrupted `pending` or `running` state. It preserves unreadable state files and retained candidates. It reports blockers and existing continuations to Main. It does not replay prompts, merges, promotion, or cleanup.
 
 If another productive run holds the lease, the command only reads status and reports the live owner. Wait. Do not take over. You can safely run the command again.
 
@@ -522,4 +522,4 @@ Worktree finalization returns one of:
 - `retained`: exact commit and dirty measurements are known and work remains; or
 - `recovery`: cleanup or measurement needs deliberate action and reports only proved fields.
 
-No cleanup path uses `git clean`, force deletion, hidden fallback to Main, or deletion of unproved work.
+No cleanup path uses `git clean`, force deletion, hidden fallback to Main, or deletion of unproved work. The one exception is user-confirmed discard: after the user selects **Close and delete worktrees (discard work)** in `/subagent` and confirms, it force-removes the reviewed owned worktrees.

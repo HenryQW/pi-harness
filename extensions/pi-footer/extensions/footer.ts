@@ -298,9 +298,11 @@ export default function footerExtension(pi: ExtensionAPI): void {
 			tps = milliseconds >= MIN_TPS_WINDOW_MS ? output / (milliseconds / 1000) : undefined;
 		});
 
-		// Session entries are append-only; the leaf also changes on tree navigation.
+		// Session entries are append-only; the leaf also changes on tree navigation. The routed model comes from
+		// the branch, so the selected model completes the context window identity.
 		let usageKey: string | undefined;
 		let routed: ReturnType<typeof latestResponse>;
+		let context: number | null | undefined;
 		let input = 0;
 		let output = 0;
 		let cost = 0;
@@ -352,16 +354,16 @@ export default function footerExtension(pi: ExtensionAPI): void {
 				invalidate() { },
 				render(width: number): string[] {
 					const entries = ctx.sessionManager.getEntries();
-					const key = `${entries.length}:${ctx.sessionManager.getLeafId()}`;
+					const key = `${entries.length}:${ctx.sessionManager.getLeafId()}:${ctx.model?.provider}/${ctx.model?.id}`;
 					if (key !== usageKey) {
 						usageKey = key;
 						computeUsage(entries);
 						routed = latestResponse(ctx);
+						context = ctx.getContextUsage()?.percent;
 					}
 
 					const reportedBranch = data.getGitBranch()?.replace(/^worktree\//, "");
 					const branch = reportedBranch === "detached" && gitSummary.detachedOid ? `@${gitSummary.detachedOid}` : reportedBranch;
-					const context = ctx.getContextUsage()?.percent;
 					const openUri = configuredOpenUri(ctx.cwd);
 					const extensionStatuses = data.getExtensionStatuses();
 					const prStatus = sanitizeStatus(extensionStatuses.get("pi-pr") ?? "");

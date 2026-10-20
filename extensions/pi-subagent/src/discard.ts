@@ -1,10 +1,10 @@
 import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { runGit, type GitRunner } from "./git-process.ts";
 import type { ChangesetTaskAttempt, ChangesetTaskState, CleanupStep, IntegrationGeneration, RunState, TextTaskAttempt } from "./schema.ts";
 import type { RunStateHandle } from "./store.ts";
 import { inspectIndexFlags, OWNED_BRANCH_PATTERN, WORKTREES_DIRNAME, type WorktreeInfo } from "./worktree.ts";
-import type { PruneGuards } from "./prune.ts";
+import { requireGit, within, type PruneGuards } from "./prune.ts";
 
 export interface DiscardItem {
 	key: string;
@@ -54,19 +54,12 @@ export function discardResources(state: RunState): DiscardResource[] {
 	];
 }
 
-async function git(args: string[], root: string, run: GitRunner): Promise<string> {
-	const result = await run(args, root);
-	if (result.code !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr.trim().slice(0, 300)}`);
-	return result.stdout.trimEnd();
-}
-
 export async function primaryCheckout(root: string, run: GitRunner = runGit): Promise<string> {
-	const first = (await git(["worktree", "list", "--porcelain", "-z"], root, run)).split("\0")[0];
+	const first = (await requireGit(run, ["worktree", "list", "--porcelain", "-z"], root)).split("\0")[0];
 	if (!first?.startsWith("worktree ")) throw new Error("Primary Git checkout is unavailable.");
 	return realpathSync.native(first.slice(9));
 }
 
-const within = (root: string, path: string) => path === root || path.startsWith(`${root}${sep}`);
 const identity = (resource: DiscardResource) => JSON.stringify([resource.worktree, resource.attempt?.allocations]);
 
 /** Read-only evidence. A resource is one worker attempt or integration generation, including its host resources. */
@@ -92,12 +85,12 @@ export async function inspectDiscardResource(primary: string, mainCwd: string, r
 		return item;
 	}
 	const ref = `refs/heads/${worktree.branch}`;
-	const branches = (await git(["for-each-ref", "--format=%(refname) %(objectname) %(symref)", ref], primary, run)).split("\n");
+	const branches = (await requireGit(run, ["for-each-ref", "--format=%(refname) %(objectname) %(symref)", ref], primary)).split("\n");
 	const branch = branches.find((line) => line.startsWith(`${ref} `))?.split(" ");
 	item.tip = branch?.[1];
 	if (branch?.[2]) item.blockers.push("Owned branch is a symbolic reference; inspect it manually.");
-	if (item.tip && worktree.baseCommit) item.commits = Number(await git(["rev-list", "--count", `${worktree.baseCommit}..${item.tip}`], primary, run));
-	const records = (await git(["worktree", "list", "--porcelain", "-z"], primary, run)).split("\0\0");
+	if (item.tip && worktree.baseCommit) item.commits = Number(await requireGit(run, ["rev-list", "--count", `${worktree.baseCommit}..${item.tip}`], primary));
+	const records = (await requireGit(run, ["worktree", "list", "--porcelain", "-z"], primary)).split("\0\0");
 	const registered = records.filter((record) => record.split("\0").includes(`branch refs/heads/${worktree.branch}`));
 	const owned = records.find((record) => record.startsWith(`worktree ${worktree.path}\0`));
 	if (registered.some((record) => !record.startsWith(`worktree ${worktree.path}\0`))) item.blockers.push("Branch is checked out at another path.");
@@ -116,7 +109,7 @@ export async function inspectDiscardResource(primary: string, mainCwd: string, r
 	const real = realpathSync.native(worktree.path);
 	if (real !== worktree.path) item.blockers.push("Owned checkout path is redirected.");
 	if (within(real, realpathSync.native(mainCwd))) item.blockers.push("Main runs inside the checkout.");
-	const status = (await git(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=normal", "--ignore-submodules=none"], worktree.path, run)).split("\0").filter(Boolean);
+	const status = (await requireGit(run, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=normal", "--ignore-submodules=none"], worktree.path)).split("\0").filter(Boolean);
 	item.ignored = status.filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
 	item.dirty = status.some((entry) => !entry.startsWith("!! "));
 	if (!item.dirty) {
@@ -126,7 +119,7 @@ export async function inspectDiscardResource(primary: string, mainCwd: string, r
 			item.blockers.push(flags.failure ?? "Index flags hide tracked files; dirty state cannot be proved.");
 		}
 	}
-	const submodules = await git(["submodule", "status", "--recursive"], worktree.path, run);
+	const submodules = await requireGit(run, ["submodule", "status", "--recursive"], worktree.path);
 	if (submodules.split("\n").some((line) => line && !line.startsWith("-"))) {
 		item.blockers.push("Initialized submodules require separate inspection of their commits and ignored files.");
 	}
@@ -201,10 +194,10 @@ export async function removeDiscardResources(handle: RunStateHandle, primary: st
 				await handle.save();
 				await verify();
 				if (kind === "worktree" && item.checkout) {
-					await git(["worktree", "remove", "--force", item.path!], primary, run);
+					await requireGit(run, ["worktree", "remove", "--force", item.path!], primary);
 					checkoutRemoved = true;
 				} else if (kind === "branch" && item.tip) {
-					await git(["update-ref", "--no-deref", "-d", `refs/heads/${item.branch}`, item.tip], primary, run);
+					await requireGit(run, ["update-ref", "--no-deref", "-d", `refs/heads/${item.branch}`, item.tip], primary);
 				}
 				step.status = "completed";
 				if (resource.textAttempt) resource.textAttempt.cleanup = kind === "branch"

@@ -607,7 +607,7 @@ test("revalidates destination, open PR, failed evidence, and HEAD immediately be
 	await t.test("saved push URL changed", async (t) => {
 		const app = harness({
 			snapshots: [oneFailure()],
-			pushUrls: ["git@github.com:acme/fork.git", "git@github.com:acme/other.git"],
+			pushUrls: ["git@github.com:acme/other.git"],
 		});
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await app.workflow.collect();
@@ -619,7 +619,7 @@ test("revalidates destination, open PR, failed evidence, and HEAD immediately be
 	await t.test("saved remote ref moved", async (t) => {
 		const app = harness({
 			snapshots: [oneFailure()],
-			remoteHeads: [original, "d".repeat(40)],
+			remoteHeads: ["d".repeat(40)],
 		});
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await app.workflow.collect();
@@ -631,7 +631,7 @@ test("revalidates destination, open PR, failed evidence, and HEAD immediately be
 	await t.test("pull request closed", async (t) => {
 		const open = pullRequest();
 		const closed = { ...pullRequest(), lifecycle: "closed" as const };
-		const app = harness({ snapshots: [oneFailure()], pullRequests: [open, open, open, closed] });
+		const app = harness({ snapshots: [oneFailure()], pullRequests: [open, open, closed] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await app.workflow.collect();
 		app.setLocalHead(repair);
@@ -642,7 +642,7 @@ test("revalidates destination, open PR, failed evidence, and HEAD immediately be
 	await t.test("failure evidence changed", async (t) => {
 		const first = oneFailure();
 		const changed = { checks: [check(12, 102)], jobs: [job(102, 12)] };
-		const app = harness({ snapshots: [first, first, first, changed] });
+		const app = harness({ snapshots: [first, first, changed] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await app.workflow.collect();
 		app.setLocalHead(repair);
@@ -734,6 +734,6 @@ test("captures repair HEAD internally and pushes one explicit OID refspec with a
 	]]);
 	const pushIndex = app.calls.findIndex(({ command, args }) => command === "git" && args[0] === "push");
 	assert.equal(app.calls[pushIndex - 1]?.args.join(" "), "rev-parse --verify HEAD^{commit}");
-	assert.equal(app.calls.filter(({ command, args }) => command === "gh" && args[0] === "repo" && args[1] === "view").length, 2);
-	assert.equal(app.calls.filter(({ args }) => /check-runs\?.*page=1$/.test(args.at(-1) ?? "")).length, 4);
+	assert.equal(app.calls.filter(({ command, args }) => command === "gh" && args[0] === "repo" && args[1] === "view").length, 1);
+	assert.equal(app.calls.filter(({ args }) => /check-runs\?.*page=1$/.test(args.at(-1) ?? "")).length, 3);
 });

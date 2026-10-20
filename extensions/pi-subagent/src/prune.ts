@@ -46,13 +46,13 @@ type Snapshot = {
 	targets: { label: string; head: string }[];
 };
 
-async function requireGit(run: GitRunner, args: string[], cwd: string): Promise<string> {
+export async function requireGit(run: GitRunner, args: string[], cwd: string): Promise<string> {
 	const result = await run(args, cwd);
 	if (result.code !== 0) throw new Error(`git ${args[0]} failed (exit ${result.code}): ${result.stderr.trim().slice(0, 200)}`);
 	return result.stdout.trimEnd();
 }
 
-const within = (directory: string, path: string) => path === directory || path.startsWith(`${directory}${sep}`);
+export const within = (directory: string, path: string) => path === directory || path.startsWith(`${directory}${sep}`);
 
 /** Every pane in every Herdr workspace with its shell and foreground working directories. */
 export async function listHerdrPanes(cwd: string): Promise<{ paneId: string; cwds: string[] }[]> {
