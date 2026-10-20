@@ -1,10 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="auto-compact-flow-title auto-compact-flow-desc">
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="auto-compact-flow-title auto-compact-flow-desc" id="auto-compact-flow-root">
       <title id="auto-compact-flow-title">How auto-compact handles a full context</title>
       <desc id="auto-compact-flow-desc">After a completed turn or final answer, context above the threshold is reduced by replacing older exact duplicate read results. If that is insufficient, older context is summarized using the fast task routes and then the session model. Successful summaries become checkpoints; failures are reported without a checkpoint. A separate emergency path compacts already-full resumed sessions directly. Oversized fresh input is temporarily reduced before compaction when safe; otherwise the limit is reported without discarding input.</desc>
       <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #auto-compact-flow-root figure { margin: 0; width: min(100%, 1280px); }
+      #auto-compact-flow-root .title { fill: #101828; font: 400 28px 'Instrument Serif', Georgia, serif; }
+      #auto-compact-flow-root .intro { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }
+      #auto-compact-flow-root .label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .14em; }
+      #auto-compact-flow-root .name { fill: #101828; font: 600 12px 'Geist', sans-serif; text-anchor: middle; }
+      #auto-compact-flow-root .detail { fill: #4c5665; font: 400 9px 'Geist Mono', monospace; text-anchor: middle; }
+      #auto-compact-flow-root .note { fill: #4c5665; font: 400 10px 'Geist', sans-serif; }
+      #auto-compact-flow-root .branch { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .06em; }
+      #auto-compact-flow-root .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+      #auto-compact-flow-root .input { fill: #e6e4de; stroke: #6a7282; stroke-width: 1; }
+      #auto-compact-flow-root .focus { fill: #e3e9f8; stroke: #1d4ed8; stroke-width: 1.2; }
+      #auto-compact-flow-root .state { fill: #e6e4de; stroke: #4c5665; stroke-width: 1; }
+      #auto-compact-flow-root .path { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#auto-compact-flow-auto-arrow); }
+      #auto-compact-flow-root .primary { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#auto-compact-flow-auto-arrow-accent); }
+      #auto-compact-flow-root .emergency { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#auto-compact-flow-auto-arrow); }</style>
         <style>
-          @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
           .title { fill: #101828; font: 400 28px 'Instrument Serif', Georgia, serif; }
           .intro { fill: #4c5665; font: 400 12px 'Geist', sans-serif; }
           .label { fill: #4c5665; font: 500 8px 'Geist Mono', monospace; letter-spacing: .14em; }
@@ -16,13 +31,13 @@
           .input { fill: #e6e4de; stroke: #6a7282; stroke-width: 1; }
           .focus { fill: #e3e9f8; stroke: #1d4ed8; stroke-width: 1.2; }
           .state { fill: #e6e4de; stroke: #4c5665; stroke-width: 1; }
-          .path { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#auto-arrow); }
-          .primary { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#auto-arrow-accent); }
-          .emergency { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#auto-arrow); }
+          .path { fill: none; stroke: #4c5665; stroke-width: 1.2; marker-end: url(#auto-compact-flow-auto-arrow); }
+          .primary { fill: none; stroke: #1d4ed8; stroke-width: 1.4; marker-end: url(#auto-compact-flow-auto-arrow-accent); }
+          .emergency { fill: none; stroke: #4c5665; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#auto-compact-flow-auto-arrow); }
         </style>
-        <marker id="auto-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
-        <marker id="auto-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
-        <marker id="auto-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+        <marker id="auto-compact-flow-auto-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4c5665"/></marker>
+        <marker id="auto-compact-flow-auto-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
+        <marker id="auto-compact-flow-auto-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
       </defs>
 
       <rect width="1280" height="720" fill="#f0eee9"/>
@@ -66,7 +81,7 @@
       <text class="detail" x="388" y="430">COMMIT EDITS, IF ANY</text>
       <rect class="focus" x="692" y="376" width="180" height="76" rx="8"/>
       <text class="name" x="782" y="408">Summarize older context</text>
-      <text class="detail" x="782" y="430">FAST → FALLBACK → SESSION</text>
+      <text class="detail" x="782" y="430">PRIMARY → FALLBACK → SESSION</text>
       <rect class="node" x="692" y="488" width="180" height="76" rx="8"/>
       <text class="name" x="782" y="514">Summary outcome</text>
       <text class="detail" x="782" y="538">VALID → CHECKPOINT</text>
@@ -93,6 +108,6 @@
       <text class="note" x="184" y="665">Context reduction</text>
       <polygon class="node" points="388,652 400,660 388,668 376,660"/>
       <text class="note" x="412" y="665">Threshold decision</text>
-      <line x1="624" y1="660" x2="656" y2="660" stroke="#4c5665" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#auto-arrow)"/>
+      <line x1="624" y1="660" x2="656" y2="660" stroke="#4c5665" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#auto-compact-flow-auto-arrow)"/>
       <text class="note" x="672" y="665">Exceptional path</text>
     </svg>

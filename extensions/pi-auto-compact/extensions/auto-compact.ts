@@ -283,12 +283,12 @@ export default function (pi: ExtensionAPI) {
 		// A virtual model declares no window; Pi reports the limits of the physical model that answered last.
 		const window = ctx.getContextUsage()?.contextWindow;
 		if (!window) return;
-		const projected = event.context.contextEntries.map((entry) => ({ ...entry, messages: [...entry.messages] }));
 		const pendingTokens = estimateTotalTokens(event.context.pendingMessages);
 		let tokens = contextTokens(event.context.contextMessages) + pendingTokens;
 		const threshold = window * autoCompactThreshold / 100;
 		if (tokens <= threshold) return;
 
+		const projected = event.context.contextEntries.map((entry) => ({ ...entry, messages: [...entry.messages] }));
 		const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
 			projectTrusted: ctx.isProjectTrusted(),
 		}).getCompactionSettings(ctx.model);
