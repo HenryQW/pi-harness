@@ -81,7 +81,7 @@ Direct `changeset` is rejected; use isolated mode for checked integration. Resou
 
 ### Dry run
 
-Set `"dryRun": true` on a direct or isolated `delegate_task` request to check it without a launch. The dry run does the same checks as a launch: request shape, Role lookup, route and model with thinking level, Skills, tools, MCP allowlist, Role extensions, config, and `continueFrom` eligibility. For an isolated request, it also checks the task graph, the canonical root `package.json` test script, final-check normalization (it adds `pnpm test`), and that Main is clean and committed. A failed check gives the same error as a launch.
+Set `"dryRun": true` on a direct or isolated `delegate_task` request to check it without a launch. The dry run does the same checks as a launch: request shape, Role lookup, route and model with thinking level, Skills, tools, MCP allowlist, Role extensions, config, and `continueFrom` eligibility. For an isolated request, it also checks the task graph and that Main is clean and committed. If the request has a changeset task, it also checks the canonical root `package.json` test script and adds `pnpm test` to the final checks. A failed check gives the same error as a launch.
 
 The result is a bounded plan. It shows each task's Role, resolved `provider/model`, thinking level, access or kind, dependencies, and checks. An isolated plan also shows the final checks. The dry run makes no Herdr call, Herdr tab, session record, saved state, worktree, lease, checkout admission, or follow-up. The plan lists each check it cannot do without such an effect as `Not checked: <reason>`. Examples are the Herdr host preflight, checkout admission, and the stop of a continued agent.
 
