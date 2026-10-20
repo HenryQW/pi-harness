@@ -470,12 +470,17 @@ test("only a Role declaring git_read loads and activates the internal Git tool",
 	const mainPi = { getCommands: () => [] } as unknown as Pick<ExtensionAPI, "getCommands">;
 	const originalArgv = process.argv;
 	try {
-		for (const name of ["reviewer", "scout"] as const) {
+		const scout = loadBuiltinRole("scout");
+		for (const [role, declared] of [
+			[loadBuiltinRole("reviewer"), true],
+			[scout, true],
+			[{ ...scout, tools: scout.tools.filter((tool) => tool !== "git_read") }, false],
+		] as const) {
 			const launch = createRoleLaunch(mainPi, { isProjectTrusted: () => true }, {
-				role: loadBuiltinRole(name), route: { model, thinkingLevel: "high" },
+				role, route: { model, thinkingLevel: "high" },
 			});
 			const selected = roleToolPolicyFromArgv(launch.args);
-			assert.equal(valuesAfter(launch.args, "--extension").some((path) => path.endsWith("/git-read.ts")), name === "reviewer");
+			assert.equal(valuesAfter(launch.args, "--extension").some((path) => path.endsWith("/git-read.ts")), declared);
 			process.argv = ["node", "pi", ...launch.args];
 			const registry = selected.filter((tool) => tool !== "git_read").map((tool) => ({ name: tool, sourceInfo: { source: "builtin" } }));
 			let active: string[] = [];
@@ -492,8 +497,8 @@ test("only a Role declaring git_read loads and activates the internal Git tool",
 			gitRead(pi);
 			childToolPolicy(pi);
 			start();
-			assert.equal(registry.some((tool) => tool.name === "git_read"), name === "reviewer");
-			assert.equal(active.includes("git_read"), name === "reviewer");
+			assert.equal(registry.some((tool) => tool.name === "git_read"), declared);
+			assert.equal(active.includes("git_read"), declared);
 			assert.equal(active.includes("bash"), false);
 		}
 		process.argv = ["node", "pi"];

@@ -16,7 +16,7 @@ import { HerdrHostRuntime } from "../dist/herdr-runtime.js";
 import { inspectPruneCandidates, listHerdrPanes, removePruneCandidates, type PruneGuards, type PruneItem } from "../dist/prune.js";
 import { runProcess as directRunProcess } from "../dist/process.js";
 import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../dist/launch-runtime.js";
-import { IsolatedRunner, type OperationContext, type RunResponse } from "../dist/runner.js";
+import { IsolatedRunner, nextIntegrationAction, type OperationContext, type RunResponse } from "../dist/runner.js";
 import {
 	IdOnlySchema,
 	ResumeRequestParameters,
@@ -289,9 +289,10 @@ function publicNeedsAttention(state: RunState, verdictMaxBytes: number, preferre
 			...(failedReview ? { failedReview } : {}),
 		};
 	}
+	const nextAction = nextIntegrationAction(state);
 	return {
 		scope: "request" as const,
-		failure: "Request needs attention without a task or final failure.",
+		...(nextAction ? { nextAction } : { failure: "Request needs attention without a task or final failure." }),
 	};
 }
 
@@ -395,7 +396,8 @@ function inspectionNotices({ state, main, continuation }: RunResponse): string[]
 		: `Main ${main.status}: ${JSON.stringify({ expected: main.expected, actual: main.actual })}`);
 	if (state.integration.refresh) lines.push(`Integration refresh: ${state.integration.refresh.status}${state.integration.refresh.failure ? `; blockage: ${boundedPublicText(state.integration.refresh.failure)}` : ""}.`);
 	const attention = publicNeedsAttention(state, PUBLIC_EVIDENCE_MAX_BYTES);
-	if (attention) lines.push(`Reported blockage: ${JSON.stringify({ scope: attention.scope, failure: attention.failure, failedCheck: "failedCheck" in attention ? attention.failedCheck : undefined, failedReview: "failedReview" in attention ? attention.failedReview : undefined })}`);
+	if (attention && "nextAction" in attention) lines.push(`Next integration action: ${attention.nextAction}`);
+	else if (attention) lines.push(`Reported blockage: ${JSON.stringify({ scope: attention.scope, failure: attention.failure, failedCheck: "failedCheck" in attention ? attention.failedCheck : undefined, failedReview: "failedReview" in attention ? attention.failedReview : undefined })}`);
 	if (state.final.failure) lines.push(`Final blockage: ${boundedPublicText(state.final.failure)}`);
 	for (const task of state.tasks) {
 		lines.push(`Task ${task.taskId}: ${task.status}${task.failure ? `; blockage: ${boundedPublicText(task.failure)}` : ""}.`);

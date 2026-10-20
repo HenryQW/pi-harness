@@ -2058,6 +2058,8 @@ test("dirty Main retains a checked candidate until exact clean Main allows stagi
 	const ready = await runner.execute(definition, root);
 	assert.equal(ready.state.integration.candidates.length, 1);
 	assert.equal(ready.state.integration.generations.length, 0);
+	assert.match(ready.text, /Candidates: change#1@\w+\. Use subagent_stage with exact status identities/);
+	assert.doesNotMatch(ready.text, /Next:/);
 	const candidate = ready.state.integration.candidates[0]!;
 	const action = { id: definition.id, action: "stage" as const, generation: 1,
 		taskId: candidate.taskId, attempt: candidate.attempt, candidate: candidate.tip, expectedTip: ready.state.main };
@@ -2068,9 +2070,12 @@ test("dirty Main retains a checked candidate until exact clean Main allows stagi
 	const staged = await runner.stage(action, root);
 	assert.equal(staged.state.integration.generations[0]?.stages[0]?.status, "staged");
 	const tip = staged.state.integration.generations[0]!.combinedTip!;
+	assert.doesNotMatch(staged.text, /Use subagent_stage/);
+	assert.ok(staged.text.includes(`Next: Every candidate is staged; run subagent_integrate validate with generation 1 and expectedTip ${JSON.stringify(tip)}.`), staged.text);
 	git.promoteMain = (main) => { runtime.main = main; };
 	const validated = await runner.integrate({ id: definition.id, action: "validate", generation: 1, expectedTip: tip }, root);
 	assert.equal(validated.state.integration.generations[0]?.status, "ready");
+	assert.ok(validated.text.includes(`Next: Combined validation passed; promote with subagent_integrate promote using generation 1 and expectedTip ${JSON.stringify(tip)}.`), validated.text);
 	const completed = await runner.integrate({ id: definition.id, action: "promote", generation: 1, expectedTip: tip }, root);
 	assert.equal(completed.state.status, "completed");
 });
@@ -2358,6 +2363,7 @@ test("interrupted validation rebuilds explicitly on unchanged Main without reusi
 		}
 	};
 	await assert.rejects(runner.integrate({ ...action, action: "validate" }, root), /coordinator stopped/);
+	assert.match((await runner.status(id, root)).text, /Next: Combined validation of generation 1 is running; wait for its follow-up\./);
 	const refresh = { ...action, action: "refresh" as const, generation: 2,
 		expectedMain: ready.state.main, newMain: ready.state.main };
 	await assert.rejects(runner.integrate(refresh, root), /unresolved integration intent/);
