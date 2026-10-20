@@ -29,6 +29,7 @@ import {
 	type ChangesetTaskRequest,
 	type ChangesetTaskState,
 	type CleanupKind,
+	type CleanupStep,
 	type CommandEvidence,
 	type ExecuteRequest,
 	type ExecutionPolicySnapshot,
@@ -899,6 +900,8 @@ export function nextIntegrationAction(state: RunState): string | undefined {
 				return `Call subagent_integrate refresh with generation ${generation.number + 1}, expectedTip ${JSON.stringify(generation.combinedTip)}, and identical expectedMain and newMain; then restage the candidates and validate again.`;
 			}
 			return undefined;
+		case "promoted":
+			return `Promotion is proven, but cleanup retained resources; resolve the recorded cleanup failures without discarding work, then call subagent_integrate cleanup with ${exact}.`;
 		default:
 			return undefined;
 	}
@@ -1366,6 +1369,7 @@ export class IsolatedRunner {
 				await this.saveProductive(handle); // Freeze before touching the exact worker.
 				if (action.action === "reject" && allocationByKind(attempt!, "agent")) {
 					if (await this.terminateWithSafety(handle, task, attempt!, action.candidate, scope.signal)) task.status = "rejected";
+					else this.attention(task, `Worker termination is unproved: ${attempt!.termination!.failure}`);
 					await this.saveProductive(handle);
 				}
 				if (action.action === "revise") {
@@ -1874,84 +1878,48 @@ export class IsolatedRunner {
 		if (generation.status !== "promoted" || !promoted || !generation.worktree) throw new Error("Cleanup requires exact proven promotion.");
 		// Promotion proves selection independently of worker or checkout cleanup.
 		for (const stage of generation.stages) changesetTaskState(state, stage.taskId).status = "completed";
+		const generationCleanup = generation.cleanup ??= [{ kind: "worktree", status: "pending" }, { kind: "branch", status: "pending" }];
+		const stepLists = [...generation.stages.map((stage) => changesetTaskState(state, stage.taskId).attempts[stage.attempt - 1]!.cleanup),
+			generationCleanup];
+		// Record each failure on the step it blocks; other stages and the integration checkout continue.
+		const blocked = (steps: CleanupStep[], error: unknown) => {
+			const step = steps.find((item) => item.status === "running") ?? steps.find((item) => item.status !== "completed");
+			if (step) step.failure = bounded(`Cleanup requires attention: ${errorText(error)}`);
+		};
 		await this.saveProductive(handle);
+		let main: WorkspaceIdentity | undefined;
 		try {
-			const main = await this.callProductive(handle, scope, (context) => this.gitRuntime.inspectMain({ root: state.root }, context));
-			if (!sameIdentity(main, promoted)) throw new Error("Main changed or became dirty after promotion; cleanup is blocked.");
+			main = await this.callProductive(handle, scope, (context) => this.gitRuntime.inspectMain({ root: state.root }, context));
+		} catch (error) { for (const steps of stepLists) blocked(steps, error); }
+		if (main && !sameIdentity(main, promoted)) {
+			for (const steps of stepLists) blocked(steps, new Error("Main changed or became dirty after promotion; cleanup is blocked."));
+		} else if (main) {
 			for (const stage of generation.stages) {
 				const task = changesetTaskState(state, stage.taskId);
 				const attempt = task.attempts[stage.attempt - 1]!;
-				const candidate = state.integration.candidates.find((item) => item.taskId === stage.taskId && item.attempt === stage.attempt
-					&& sameIdentity(item.tip, stage.source))!;
-				const worker = allocationByKind(attempt, "worktree")?.worktree;
-				if (!worker) throw new Error("Promoted worker lacks a proven checkout.");
-				candidate.worker = "release_pending";
+				try {
+					await this.cleanupPromotedStage(handle, generation, receipts, promoted, stage, task, attempt, scope);
+				} catch (error) { blocked(attempt.cleanup, error); }
 				await this.saveProductive(handle);
-				if (attempt.termination?.status !== "terminated") {
-					if (attempt.termination) {
-						const result = await this.callProductive(handle, scope, (context) => this.hostRuntime.reconcileWorkerTermination({
-							task: changesetTaskRequest(state, task.taskId), attempt,
-							workerId: attempt.termination!.workerId, candidate: stage.source,
-						}, context));
-						if (result.outcome !== "terminated") throw new Error("Worker termination cannot be proved; never replay termination.");
-						attempt.termination = { status: "terminated", workerId: attempt.termination.workerId,
-							candidate: stage.source, at: this.coordinatorRuntime.now() };
-						await this.saveProductive(handle);
-					} else if (!await this.terminateWithSafety(handle, task, attempt, stage.source, scope.signal)) {
-						throw new Error("Worker termination was not proved.");
-					}
-				}
-				for (const kind of CLEANUP_KINDS) {
-					const step = attempt.cleanup.find((item) => item.kind === kind)!;
+			}
+			try {
+				for (const step of generationCleanup) {
 					if (step.status === "completed") continue;
 					step.status = "running";
 					await this.saveProductive(handle);
-					if (kind === "worker_tab" || kind === "workspace") {
-						const result = await this.callProductive(handle, scope, (context) => this.hostRuntime.cleanupHost({
-							requestId: state.request.id, kind, task: changesetTaskRequest(state, task.taskId), attempt,
-						}, context));
-						if (result.outcome === "blocked") throw new Error(result.failure);
-					} else {
-						const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
-							generation.worktree!, worker as WorktreeInfo, generation.expectedMain, receipts,
-							promoted, kind, context.signal, generation.correction));
-						if (result.outcome !== "ready") throw new Error(result.failure);
-					}
+					const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
+						generation.worktree!, generation.worktree!, generation.expectedMain, receipts,
+						promoted, step.kind as "worktree" | "branch", context.signal, generation.correction));
+					if (result.outcome !== "ready") throw new Error(result.failure);
 					step.status = "completed";
 					delete step.failure;
 					await this.saveProductive(handle);
 				}
-				candidate.worker = "released";
-				// Same-attempt revisions share this exact worker checkout; release historical
-				// rejected tips only after the physical checkout has been proved removed.
-				for (const old of state.integration.candidates.filter((item) => item.decision === "rejected"
-					&& item.taskId === stage.taskId && item.attempt === stage.attempt)) old.worker = "released";
-				await this.saveProductive(handle);
-			}
-			generation.cleanup ??= [{ kind: "worktree", status: "pending" }, { kind: "branch", status: "pending" }];
-			await this.saveProductive(handle);
-			for (const kind of ["worktree", "branch"] as const) {
-				const step = generation.cleanup.find((item) => item.kind === kind)!;
-				if (step.status === "completed") continue;
-				step.status = "running";
-				await this.saveProductive(handle);
-				const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
-					generation.worktree!, generation.worktree!, generation.expectedMain, receipts,
-					promoted, kind, context.signal, generation.correction));
-				if (result.outcome !== "ready") throw new Error(result.failure);
-				step.status = "completed";
-				delete step.failure;
-				await this.saveProductive(handle);
-			}
-		} catch (error) {
-			generation.failure = undefined; // Promotion remains proven; cleanup evidence stays inspectable.
-			const pending = generation.cleanup?.find((step) => step.status === "running")
-				?? generation.stages.flatMap((stage) => changesetTaskState(state, stage.taskId).attempts[stage.attempt - 1]!.cleanup)
-					.find((step) => step.status === "running");
-			if (pending) pending.failure = bounded(`Cleanup requires attention: ${errorText(error)}`);
-			await this.saveProductive(handle);
+			} catch (error) { blocked(generationCleanup, error); }
 		}
-		if (state.tasks.every((task) => task.status === "completed" || task.status === "rejected")
+		// Promotion remains proven; the request stays visible until every promoted resource is released.
+		if (stepLists.every((steps) => steps.every((step) => step.status === "completed"))
+			&& state.tasks.every((task) => task.status === "completed" || task.status === "rejected")
 			&& state.integration.candidates.every((candidate) => candidate.decision || generation.stages.some((stage) =>
 				stage.taskId === candidate.taskId && stage.attempt === candidate.attempt && sameIdentity(stage.source, candidate.tip)))) {
 			state.final = { status: "passed", identity: promoted, checks: generation.checks,
@@ -1959,8 +1927,59 @@ export class IsolatedRunner {
 			state.status = "completed";
 			state.accepted = true;
 			state.acceptedAt = this.coordinatorRuntime.now();
+		}
+		await this.saveProductive(handle);
+	}
+
+	private async cleanupPromotedStage(handle: RunStateHandle, generation: IntegrationGeneration, receipts: StageReceipt[],
+		promoted: WorkspaceIdentity, stage: IntegrationGeneration["stages"][number], task: ChangesetTaskState,
+		attempt: TaskAttempt, scope: RuntimeScope): Promise<void> {
+		const state = handle.state;
+		const candidate = state.integration.candidates.find((item) => item.taskId === stage.taskId && item.attempt === stage.attempt
+			&& sameIdentity(item.tip, stage.source))!;
+		const worker = allocationByKind(attempt, "worktree")?.worktree;
+		if (!worker) throw new Error("Promoted worker lacks a proven checkout.");
+		candidate.worker = "release_pending";
+		await this.saveProductive(handle);
+		if (attempt.termination?.status !== "terminated") {
+			if (attempt.termination) {
+				const result = await this.callProductive(handle, scope, (context) => this.hostRuntime.reconcileWorkerTermination({
+					task: changesetTaskRequest(state, task.taskId), attempt,
+					workerId: attempt.termination!.workerId, candidate: stage.source,
+				}, context));
+				if (result.outcome !== "terminated") throw new Error("Worker termination cannot be proved; never replay termination.");
+				attempt.termination = { status: "terminated", workerId: attempt.termination.workerId,
+					candidate: stage.source, at: this.coordinatorRuntime.now() };
+				await this.saveProductive(handle);
+			} else if (!await this.terminateWithSafety(handle, task, attempt, stage.source, scope.signal)) {
+				throw new Error(`Worker termination was not proved: ${attempt.termination!.failure}`);
+			}
+		}
+		for (const kind of CLEANUP_KINDS) {
+			const step = attempt.cleanup.find((item) => item.kind === kind)!;
+			if (step.status === "completed") continue;
+			step.status = "running";
+			await this.saveProductive(handle);
+			if (kind === "worker_tab" || kind === "workspace") {
+				const result = await this.callProductive(handle, scope, (context) => this.hostRuntime.cleanupHost({
+					requestId: state.request.id, kind, task: changesetTaskRequest(state, task.taskId), attempt,
+				}, context));
+				if (result.outcome === "blocked") throw new Error(result.failure);
+			} else {
+				const result = await this.callProductive(handle, scope, (context) => this.integrationGit.cleanup(state.root,
+					generation.worktree!, worker as WorktreeInfo, generation.expectedMain, receipts,
+					promoted, kind, context.signal, generation.correction));
+				if (result.outcome !== "ready") throw new Error(result.failure);
+			}
+			step.status = "completed";
+			delete step.failure;
 			await this.saveProductive(handle);
 		}
+		candidate.worker = "released";
+		// Same-attempt revisions share this exact worker checkout; release historical
+		// rejected tips only after the physical checkout has been proved removed.
+		for (const old of state.integration.candidates.filter((item) => item.decision === "rejected"
+			&& item.taskId === stage.taskId && item.attempt === stage.attempt)) old.worker = "released";
 	}
 
 	private async requireExactIntegration(handle: RunStateHandle, generation: IntegrationGeneration,
@@ -2977,7 +2996,6 @@ export class IsolatedRunner {
 			if (result.outcome !== "terminated") {
 				const failure = boundedRuntimeText(result.failure, "Worker termination failure");
 				attempt.termination = { status: "unknown", workerId, candidate, failure };
-				this.attention(task, `Worker termination is unproved: ${failure}`);
 				return false;
 			}
 			attempt.termination = { status: "terminated", workerId, candidate, at: this.coordinatorRuntime.now() };
@@ -2985,7 +3003,6 @@ export class IsolatedRunner {
 		} catch (error) {
 			this.rethrowStopped(error);
 			attempt.termination = { status: "unknown", workerId, candidate, failure: errorText(error) };
-			this.attention(task, `Worker termination is unproved: ${errorText(error)}`);
 			return false;
 		} finally {
 			safety.close();
