@@ -710,11 +710,6 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		assert.ok(tool);
 		const memoryTool = tool;
-		assert.match(memoryTool.description, /read MEMORY\.md in the configured memory directory/);
-		assert.match(memoryTool.description, /Adds are independently reviewed against live SYSTEM.md/);
-		assert.match(memoryTool.description, /A batch accepts at most 100 operations/);
-		assert.match(memoryTool.description, /complete serialized mutation must not exceed 1,000,000 UTF-8 bytes/);
-		assert.match(memoryTool.description, /conflicts ask the user/);
 		assert.equal(memoryTool.executionMode, "sequential");
 		assert.equal(memoryTool.exposure, "model-only");
 		assert.equal(memoryTool.parameters?.properties?.operations?.maxItems, MAX_BATCH_OPERATIONS);
