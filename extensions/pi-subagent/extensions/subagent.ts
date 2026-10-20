@@ -10,7 +10,7 @@ import { registerIsolatedExtension } from "./isolated.ts";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { compactTokens, ENTRY_STATUS_PRESENTATION, formatWorkflowResult, workerOutputForMain, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
-import { DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, writesCheckout, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
+import { checkoutNote, DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, snapshotCheckout, writesCheckout, type CheckoutSnapshot, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
 import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
@@ -623,7 +623,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate explicitly authorized direct work in the shared checkout or a durable checked isolated graph to Pi Roles. Every direct task declares access read or write; classify honestly, because read is not enforced (no sandbox). Roles: ${roleSummary()}.`,
+		description: `Delegate explicitly authorized direct work in the shared checkout or a durable checked isolated graph to Pi Roles. Every direct task declares access read or write; classify honestly, because read is not enforced (no sandbox). Write tasks may declare paths (repo-relative globs); the result reports each write task's new commits and changed paths and flags changes outside its paths. This is a report, not enforcement. A read result warns when the checkout changed during the task. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate authorized shared-checkout work or a checked isolated task graph",
 		promptGuidelines: [
 			"Keep trivial mechanically verifiable work in Main. Use mode direct for bounded, explicitly authorized work with the Role's declared resources in the shared checkout, including writes or commits. Specify allowed scope and exclusions; preserve unrelated changes. Direct work has no isolated checks, rollback, or integration guarantees. Use mode isolated for checked changesets; explicit mode never falls back.",
@@ -688,6 +688,13 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				name: delegation.continueFrom === undefined ? delegation.name : `${delegation.name} (continued from ${delegation.continueFrom})`,
 			}]));
 			const startedAt = new Map<string, number>();
+			// Launch snapshots: write requests report changes; read requests detect a stale checkout.
+			const snapshots = new Map<string, CheckoutSnapshot | Error | undefined>();
+			const checkout = async ({ id, delegation }: WorkflowEntry) => {
+				if (!snapshots.has(id)) return {};
+				const note = await checkoutNote(ctx.cwd, snapshots.get(id), writes, delegation.paths);
+				return note ? { checkout: note } : {};
+			};
 			const measured = (id: string, tokens: number | undefined) => ({
 				...(tokens === undefined ? {} : { tokens }),
 				...(startedAt.has(id) ? { elapsedMs: Date.now() - startedAt.get(id)! } : {}),
@@ -762,6 +769,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				startWidgetItem(entry.id, taskId, display, prepared.model.id, prepared.thinkingLevel, ctx);
 				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
 					promptArgIndex: prepared.promptArgIndex }, activeSignal);
+				snapshots.set(entry.id, await snapshotCheckout(ctx.cwd).catch((error: unknown) => error instanceof Error ? error : new Error(String(error))));
 				let handle: DirectHandle;
 				try {
 					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
@@ -842,7 +850,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 								const item = widgetItems.get(entry.id);
 								if (item) { item.tokens = tokens; item.activity = handle.activity; }
 							} catch { /* Optional telemetry. */ }
-							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer, ...measured(entry.id, tokens) });
+							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer, ...measured(entry.id, tokens), ...await checkout(entry) });
 							finishWidgetItem(entry.id, "success");
 							return answer;
 						} catch (error) {
@@ -855,7 +863,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 								(stopError: unknown) => `${STOPPED_BY_USER}; termination unproved: ${message(stopError)}`);
 							const tab = tabByEntry.get(entry.id);
 							const recover = tab && stopped !== STOPPED_BY_USER ? `recover from Herdr tab ${tab.tabId}, agent ${tab.name}, session ${tab.sessionFile}: ` : "";
-							states.set(entry.id, { ...base, status: "rejected", ...(partialOutput ? { partialOutput } : {}), ...measured(entry.id, tokens), failure: `${recover}${capOutput(stopped ?? message(error))}` });
+							states.set(entry.id, { ...base, status: "rejected", ...(partialOutput ? { partialOutput } : {}), ...measured(entry.id, tokens), ...await checkout(entry), failure: `${recover}${capOutput(stopped ?? message(error))}` });
 							finishWidgetItem(entry.id, "failure");
 							throw error;
 						} finally { release(); }
