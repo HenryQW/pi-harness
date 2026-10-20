@@ -1221,8 +1221,8 @@ test("an isolated dry run returns the bounded resolved plan without execute, sav
 		`Dry run passed: isolated request request-one in ${CANONICAL_ROOT} at Main ${RECORDED_MAIN.head.slice(0, 12)} (${RECORDED_MAIN.branch}). No state, worktree, Herdr tab, lease, or follow-up was created.`,
 		"1. unit-one · changeset · implementer · fast → test/fast · thinking low",
 		"   depends on: none · context from: none",
-		"   checks: pnpm test",
-		"Final checks: pnpm test; pnpm typecheck",
+		"   checks: pnpm \"test\"",
+		"Final checks: pnpm \"test\"; pnpm \"typecheck\"",
 		"Not checked: Herdr host preflight (client and server versions, API schema, lsof, current workspace identity): it calls Herdr.",
 		"Not checked: request ID uniqueness and saved-state admission: they need the state lock.",
 	].join("\n"));

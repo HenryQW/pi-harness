@@ -219,20 +219,21 @@ async function contentIdentity(path: string): Promise<string> {
 	return hash.digest("hex");
 }
 
+async function git(cwd: string, args: string[], codes = [0]) {
+	const result = await runGit(args, cwd);
+	if (!codes.includes(result.code)) throw new Error(`git ${args[0]} exited ${result.code}: ${result.stderr.trim() || "no diagnostic"}`);
+	return result;
+}
+
 /** Snapshot the checkout that contains `cwd`; undefined outside a Git repository. Other Git failures throw. */
 export async function snapshotCheckout(cwd: string): Promise<CheckoutSnapshot | undefined> {
 	const top = await runGit(["rev-parse", "--show-toplevel"], cwd);
 	if (top.code !== 0 && /not a git repository/i.test(top.stderr)) return undefined;
-	const git = async (args: string[], codes = [0]) => {
-		const result = await runGit(args, root);
-		if (!codes.includes(result.code)) throw new Error(`git ${args[0]} exited ${result.code}: ${result.stderr.trim() || "no diagnostic"}`);
-		return result.stdout;
-	};
 	const root = top.stdout.trim();
 	if (top.code !== 0 || !root) throw new Error(`git rev-parse exited ${top.code}: ${top.stderr.trim() || "no diagnostic"}`);
-	const head = (await git(["rev-parse", "--verify", "--quiet", "HEAD"], [0, 1])).trim() || undefined;
+	const head = (await git(root, ["rev-parse", "--verify", "--quiet", "HEAD"], [0, 1])).stdout.trim() || undefined;
 	// Porcelain paths are repository-relative; a rename or copy lists its source after the destination.
-	const fields = (await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])).split("\0");
+	const fields = (await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout.split("\0");
 	const entries = new Map<string, string>();
 	for (let index = 0; index < fields.length; index++) {
 		const field = fields[index]!;
@@ -249,29 +250,24 @@ export async function snapshotCheckout(cwd: string): Promise<CheckoutSnapshot | 
 
 /** Commits and changed paths between two snapshots of the same checkout. */
 export async function reportCheckoutChanges(cwd: string, before: CheckoutSnapshot, after: CheckoutSnapshot, declared?: readonly string[]): Promise<ChangeReport> {
-	const git = async (args: string[], codes = [0]) => {
-		const result = await runGit(args, cwd);
-		if (!codes.includes(result.code)) throw new Error(`git ${args[0]} exited ${result.code}: ${result.stderr.trim() || "no diagnostic"}`);
-		return result;
-	};
 	const changed = new Set([...before.entries.keys(), ...after.entries.keys()].filter((path) => before.entries.get(path) !== after.entries.get(path)));
 	const report: ChangeReport = { commits: [], omittedCommits: 0, paths: [], omittedPaths: 0 };
 	const short = (oid: string) => oid.slice(0, 12);
 	if (before.head !== after.head && after.head === undefined) report.headMove = `HEAD moved from ${short(before.head!)} to an unborn branch`;
 	else if (before.head !== after.head) {
 		const range = before.head === undefined ? [after.head!] : [`${before.head}..${after.head}`];
-		const total = Number((await git(["rev-list", "--count", ...range, "--"])).stdout.trim());
-		const log = (await git(["log", "--no-show-signature", `--max-count=${CHANGE_REPORT_LIMITS.commits}`, "--format=%h%x00%s", ...range, "--"])).stdout;
+		const total = Number((await git(cwd, ["rev-list", "--count", ...range, "--"])).stdout.trim());
+		const log = (await git(cwd, ["log", "--no-show-signature", `--max-count=${CHANGE_REPORT_LIMITS.commits}`, "--format=%h%x00%s", ...range, "--"])).stdout;
 		report.commits = log.split("\n").filter(Boolean).map((line) => {
 			const [oid, subject = ""] = line.split("\0");
 			return { oid: oid!, subject: Array.from(subject).slice(0, CHANGE_REPORT_LIMITS.subject).join("") };
 		});
 		report.omittedCommits = Math.max(0, total - report.commits.length);
 		const names = before.head === undefined
-			? await git(["ls-tree", "-r", "--name-only", "-z", "--full-tree", after.head!])
-			: await git(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", before.head, after.head!, "--"]);
+			? await git(cwd, ["ls-tree", "-r", "--name-only", "-z", "--full-tree", after.head!])
+			: await git(cwd, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", before.head, after.head!, "--"]);
 		for (const path of names.stdout.split("\0")) if (path) changed.add(path);
-		if (before.head !== undefined && (await git(["merge-base", "--is-ancestor", before.head, after.head!], [0, 1])).code === 1) {
+		if (before.head !== undefined && (await git(cwd, ["merge-base", "--is-ancestor", before.head, after.head!], [0, 1])).code === 1) {
 			report.headMove = `HEAD moved from ${short(before.head)} to ${short(after.head!)}, which does not descend from it`;
 		}
 	}

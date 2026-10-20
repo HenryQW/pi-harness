@@ -22,6 +22,7 @@ import {
 	reusableCheckSource,
 	reviewEvidencePasses,
 	sameIdentity,
+	formatCheckCommand,
 	stagedCheckSources,
 	RUN_STATE_VERSION,
 	type AllocationIntent,
@@ -698,8 +699,8 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 }
 
 function reusedCheckLines(checks: CheckBatchEvidence | undefined): string[] {
-	return (checks?.results ?? []).flatMap(({ command, args, reusedFrom }) => reusedFrom
-		? [`Combined check ${JSON.stringify([command, ...args])} reused the passed preliminary result of ${reusedFrom.taskId}#${reusedFrom.attempt}@${reusedFrom.candidate.head} on the same tree; it did not run again.`]
+	return (checks?.results ?? []).flatMap((result) => result.reusedFrom
+		? [`Combined check ${formatCheckCommand(result)} reused the passed preliminary result of ${result.reusedFrom.taskId}#${result.reusedFrom.attempt}@${result.reusedFrom.candidate.head} on the same tree; it did not run again.`]
 		: []);
 }
 

@@ -32,6 +32,11 @@ export const CheckCommandSchema = Type.Object({
 	args: Type.Array(Type.String({ maxLength: 16_000 }), { maxItems: 128 }),
 }, { additionalProperties: false });
 
+/** One display form for a check command; quoted args keep argv boundaries visible. */
+export function formatCheckCommand({ command, args }: { command: string; args: readonly string[] }): string {
+	return [command, ...args.map((arg) => JSON.stringify(arg))].join(" ");
+}
+
 export const JudgmentSchema = Type.Object({
 	role: RoleNameSchema,
 	modelClass: ModelClassSchema,

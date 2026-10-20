@@ -25,6 +25,7 @@ import {
 	parseIntegrationAction,
 	parseStageRequest,
 	parseIdOnly,
+	formatCheckCommand,
 	parseResumeRequest,
 	sameIdentity,
 	StatusOutputSchema,
@@ -208,7 +209,7 @@ function publicFailedCheck(evidence: CheckBatchEvidence | undefined) {
 		phase: evidence.phase,
 		identityChanged: !sameIdentity(evidence.candidate, evidence.identityAfter),
 		...(result ? {
-			command: boundedPublicText([result.command, ...result.args.map((arg) => JSON.stringify(arg))].join(" ")),
+			command: boundedPublicText(formatCheckCommand(result)),
 			code: result.code,
 			killed: result.killed,
 			...(result.stdout ? { stdout: boundedPublicText(result.stdout) } : {}),
@@ -334,8 +335,8 @@ function publicState(state: RunState, verdictMaxBytes: number, preferredTaskId?:
 				...(combinedTip ? { combinedTip } : {}),
 				...(correction ? { correction } : {}),
 				...(checks ? { checked: checks.passed, failedCheck: publicFailedCheck(checks) } : {}),
-				...(checks?.results.some((result) => result.reusedFrom) ? { reusedChecks: checks.results.flatMap(({ command, args, reusedFrom }) =>
-					reusedFrom ? [{ command: boundedPublicText([command, ...args.map((arg) => JSON.stringify(arg))].join(" ")), reusedFrom }] : []) } : {}),
+				...(checks?.results.some((result) => result.reusedFrom) ? { reusedChecks: checks.results.flatMap((result) =>
+					result.reusedFrom ? [{ command: boundedPublicText(formatCheckCommand(result)), reusedFrom: result.reusedFrom }] : []) } : {}),
 				...(review ? { reviewed: review.passed, failedReview: publicFailedReview(review, verdictMaxBytes) } : {}),
 				...(promotion ? { promotion: promotion.status, ...(promotion.mainAfter ? { mainAfter: promotion.mainAfter } : {}),
 					...(promotion.failure ? { promotionFailure: boundedPublicText(promotion.failure) } : {}) } : {}),
@@ -471,8 +472,6 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 	};
 }
 
-const command = ({ command, args }: { command: string; args: readonly string[] }) => [command, ...args].join(" ");
-
 /** Bounded dry-run plan; a route missing from the coordinator report shows as unresolved. */
 export function formatExecutePlan({ request, root, main, routes }: ExecutePlan, hostChecked: boolean): { content: [{ type: "text"; text: string }]; details: unknown } {
 	const route = (role: string, modelClass: ModelClass) => {
@@ -493,10 +492,10 @@ export function formatExecutePlan({ request, root, main, routes }: ExecutePlan, 
 		...request.tasks.map((task, index) => [
 			`${index + 1}. ${task.id} · ${task.kind} · ${label(task.role, task.modelClass)}`,
 			`   depends on: ${task.dependsOn.join(", ") || "none"} · context from: ${task.contextFrom.join(", ") || "none"}`,
-			...(task.kind === "changeset" ? [`   checks: ${task.checks.map(command).join("; ")}`,
+			...(task.kind === "changeset" ? [`   checks: ${task.checks.map(formatCheckCommand).join("; ")}`,
 				...(task.judgment ? [`   judgment: ${label(task.judgment.role, task.judgment.modelClass)}`] : [])] : []),
 		].join("\n")),
-		`Final checks: ${request.finalChecks.map(command).join("; ") || "none"}`,
+		`Final checks: ${request.finalChecks.map(formatCheckCommand).join("; ") || "none"}`,
 		...(request.finalJudgment ? [`Final judgment: ${label(request.finalJudgment.role, request.finalJudgment.modelClass)}`] : []),
 		...notChecked.map((reason) => `Not checked: ${reason}.`),
 	];

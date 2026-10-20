@@ -2466,7 +2466,7 @@ test("combined validation reuses identical passed checks on the candidate tree a
 	assert.deepEqual(runtime.finalCheckRuns, [[]]);
 	const reusedFrom = { taskId: "change", attempt: candidate.attempt, candidate: candidate.tip };
 	assert.deepEqual(generation.checks?.results.map((result) => result.reusedFrom), [reusedFrom, reusedFrom]);
-	assert.match(validated.text, /Combined check \["pnpm","test"\] reused the passed preliminary result of change#1@/);
+	assert.match(validated.text, /Combined check pnpm "test" reused the passed preliminary result of change#1@/);
 	assertParsed(validated.state);
 	git.promoteMain = (main) => { runtime.main = main; };
 	const done = await runner.integrate({ ...action, action: "promote" }, root);

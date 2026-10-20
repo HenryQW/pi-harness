@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
 import {
+	checkoutNote,
 	MAX_WORKFLOW_ENTRIES,
 	identifyWorkflowEntries,
 	parseDelegateTask,
@@ -301,4 +302,9 @@ test("declared paths belong only to direct write tasks", () => {
 	assert.throws(() => parseWorkflow({ ...delegation(), access: "write", paths: ["../src"] }), /repo-relative glob/);
 	assert.throws(() => parseDelegateTask({ mode: "isolated", id: "request", goal: "Change", tasks: [{ id: "task", kind: "text", role: "scout",
 		requirements: "Inspect", deliverable: "Report", dependsOn: [], contextFrom: [], paths: ["src/**"] }] }), /strict task schema/);
+});
+
+test("a failed checkout snapshot becomes a note, never a task failure", async () => {
+	assert.deepEqual(await checkoutNote(process.cwd(), new Error("x"), true), { kind: "unavailable", check: "change report", reason: "x" });
+	assert.deepEqual(await checkoutNote(process.cwd(), new Error("x"), false), { kind: "unavailable", check: "stale-read check", reason: "x" });
 });

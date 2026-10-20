@@ -801,6 +801,28 @@ test("direct write reports new commits and changed paths and flags paths outside
 	});
 });
 
+test("a direct write succeeds with an unavailable change report when the checkout leaves Git", async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const { cwd } = await gitCheckout(t);
+		await herdrEnvironment(async () => {
+			const fake = fakeHerdr(cwd, async () => {
+				await rm(join(cwd, ".git"), { recursive: true, force: true });
+				return JSON.stringify({ outcome: "succeeded", answer: "done" });
+			});
+			const app = harness({ cwd, herdr: fake.exec });
+			const params = { mode: "direct", role: "worker", name: "Edit", task: "edit", access: "write" };
+			await app.handlers.get("tool_call")!({ toolCallId: "write", toolName: "delegate_task", input: params }, app.ctx);
+			await app.tool.execute("write", params, undefined, undefined, app.ctx);
+			app.handlers.get("tool_result")!({ toolCallId: "write" });
+			await waitFor(() => app.sentMessages.length === 1);
+			const { content, details } = app.sentMessages[0]!.message;
+			assert.match(content, /change report unavailable: the checkout is no longer a Git repository/);
+			assert.equal(details.entries[0].status, "succeeded");
+		});
+	});
+});
+
 test("direct read warns when the checkout changed during the task", async (t) => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
