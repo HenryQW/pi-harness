@@ -333,6 +333,7 @@ function harness(options: {
 		},
 		async tool(event: unknown, ctx: ExtensionContext): Promise<void> {
 			await handler(toolResult, "tool_result")(event, callbackContext(ctx));
+			await flush();
 		},
 		async callTool(
 			name: string,
@@ -1906,11 +1907,12 @@ test("warns once for one blocked issue and warns again after recovery", async ()
 });
 
 test("renders the shared projection and refreshes after successful create, push, or guarded commit", async () => {
-	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery> = [
+	const commitDiscovery = deferred<CurrentPullRequestDiscovery>();
+	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery | Promise<CurrentPullRequestDiscovery>> = [
 		currentPullRequest({ conditions: { ci: "failure" } }),
 		currentPullRequest({ conditions: { ci: "running" } }),
 		noPullRequest(1),
-		noPullRequest(2),
+		commitDiscovery.promise,
 	];
 	const signals: Array<AbortSignal | undefined> = [];
 	const app = harness({
@@ -1950,8 +1952,10 @@ test("renders the shared projection and refreshes after successful create, push,
 	await app.tool({ toolName: "pi_git_commit", input: { action: "inspect" }, isError: false }, ctx);
 	await app.tool({ toolName: "pi_git_commit", input: { action: "commit" }, isError: true }, ctx);
 	assert.equal(signals.length, 3);
+	// Tool results must not wait for PR discovery.
 	await app.tool({ toolName: "pi_git_commit", input: { action: "commit" }, isError: false }, ctx);
 	assert.equal(signals.length, 4);
+	commitDiscovery.resolve(noPullRequest(2));
 
 	await app.shutdown(ctx);
 });

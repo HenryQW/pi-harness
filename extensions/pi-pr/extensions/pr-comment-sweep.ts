@@ -864,8 +864,6 @@ export class PullRequestCommentSweep {
 			state.pendingScope = null;
 			state.validation = null;
 			await this.requireCleanPublication(state, head);
-			await this.currentAuthority(state.authority, state.original.lease, true);
-			await this.requireCleanPublication(state, head);
 			await this.save(location, state);
 			return status(state);
 		}, { agentDir: this.agentDir, signal: this.signal });
@@ -1016,12 +1014,11 @@ export class PullRequestCommentSweep {
 				commit.state = "applied";
 			}
 		}
-		let remote = await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref);
+		const remote = await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref);
 		if (remote === null) throw new Error("Comment sweep remote ref disappeared");
 		if (state.attempts.push.state === "attempting" || state.attempts.push.state === "unknown") {
 			const attemptedHead = state.attempts.push.head;
 			if (!attemptedHead) throw new Error("Attempted push has no captured head");
-			await this.currentAuthority(state.authority, remote, true);
 			if (remote === attemptedHead) {
 				state.attempts.push.state = "applied";
 				state.phase = "published";
@@ -1034,7 +1031,6 @@ export class PullRequestCommentSweep {
 		const expectedRemote = state.attempts.push.state === "applied" && state.publicationHead
 			? state.publicationHead
 			: state.original.lease;
-		remote = await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref);
 		if (remote !== expectedRemote) throw new Error("Comment sweep remote authority cannot be reconciled");
 		await this.currentAuthority(state.authority, expectedRemote, true);
 
@@ -1101,7 +1097,6 @@ export class PullRequestCommentSweep {
 			const published = state.attempts.push.state === "applied";
 			if (!published) state.version = STATE_VERSION;
 			const expectedRemote = published ? state.publicationHead! : state.original.lease;
-			await this.currentAuthority(state.authority, expectedRemote, true);
 			if (state.ledger) {
 				state.approved = true;
 				state.approvalGeneration = state.feedback.generation;
@@ -1358,9 +1353,12 @@ export class PullRequestCommentSweep {
 				Buffer.byteLength(JSON.stringify(state), "utf8") + 2 * reserveBytes > SWEEP_RECOVERY_MAX_BYTES) {
 				throw new Error("Comment sweep has insufficient feedback capacity for review thread replies");
 			}
-			for (const threadId of threadIds) {
+			// Every iteration ends with fresh authority and clean publication checks for the next one.
+			if (threadIds.length) {
 				await this.requireCleanPublication(state, state.publicationHead);
 				await this.currentAuthority(state.authority, state.publicationHead);
+			}
+			for (const threadId of threadIds) {
 				const before = await this.collect(state.authority, state.publicationHead);
 				if (!sameDecisions(state.feedback.snapshot, before, state.ledger) ||
 					!isDeepStrictEqual(threadStates(before), threadStates(state.feedback.snapshot))) {
@@ -1518,8 +1516,8 @@ export class PullRequestCommentSweep {
 				}
 				state.attempts.finalize.state = "applied";
 				await this.save(location, state);
+				await this.freshProjection(state);
 			}
-			await this.freshProjection(state);
 			await this.save(location, state);
 			await markFeedbackHandled(state.feedback.snapshot, { cwd: this.cwd, agentDir: this.agentDir, signal: this.signal, exec: this.exec,
 				blockedIds: state.ledger!.filter(({ disposition }) => disposition === "blocked").map(({ id }) => id) });
