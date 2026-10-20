@@ -19,8 +19,10 @@ import {
 	type IntegrationGeneration,
 	parseResumeRequest,
 	parseStageRequest,
+	reusableCheckSource,
 	reviewEvidencePasses,
 	sameIdentity,
+	stagedCheckSources,
 	RUN_STATE_VERSION,
 	type AllocationIntent,
 	type AllocationKind,
@@ -37,6 +39,7 @@ import {
 	type HostAllocationPlan,
 	type ModelClass,
 	type PromptRecord,
+	type ReusedCheckSource,
 	type ReviewEvidence,
 	type ResumeRequest,
 	type RunState,
@@ -679,6 +682,12 @@ function exactCommandResults(results: readonly CommandResult[], checks: readonly
 			&& result.args.length === check.args.length
 			&& result.args.every((arg, argIndex) => arg === check.args[argIndex]);
 	});
+}
+
+function reusedCheckLines(checks: CheckBatchEvidence | undefined): string[] {
+	return (checks?.results ?? []).flatMap(({ command, args, reusedFrom }) => reusedFrom
+		? [`Combined check ${JSON.stringify([command, ...args])} reused the passed preliminary result of ${reusedFrom.taskId}#${reusedFrom.attempt}@${reusedFrom.candidate.head} on the same tree; it did not run again.`]
+		: []);
 }
 
 function isCommitNudge(prompt: PromptRecord): boolean {
@@ -1734,11 +1743,13 @@ export class IsolatedRunner {
 						throw new Error("Combined tip changed the admitted canonical root test script.");
 					}
 					await this.requireExactIntegration(handle, generation, receipts, scope);
+					const sources = stagedCheckSources(generation, state.integration.candidates);
 					const checks = await this.runCheckBatch(handle, request.finalChecks, action.expectedTip,
-						"final", scope, undefined, generation.worktree.path);
+						"final", scope, undefined, generation.worktree.path,
+						request.finalChecks.map((check) => reusableCheckSource(check, action.expectedTip, sources)));
 					generation.checks = checks;
 					await this.saveProductive(handle);
-					if (!checkBatchPasses(checks, request.finalChecks, action.expectedTip)) throw new Error("Combined full-suite check failed or changed the integration tip.");
+					if (!checkBatchPasses(checks, request.finalChecks, action.expectedTip, sources)) throw new Error("Combined full-suite check failed or changed the integration tip.");
 					await this.requireExactIntegration(handle, generation, receipts, scope);
 					if (request.finalJudgment) {
 						const judgment = request.finalJudgment;
@@ -1750,10 +1761,10 @@ export class IsolatedRunner {
 						}
 					}
 					await this.requireExactIntegration(handle, generation, receipts, scope);
-					if (!integrationGenerationPasses(generation, request)) throw new Error("Combined validation is incomplete.");
+					if (!integrationGenerationPasses(generation, request, state.integration.candidates)) throw new Error("Combined validation is incomplete.");
 					generation.status = "ready";
 				} catch (error) {
-					if (integrationGenerationPasses(generation, request)) {
+					if (integrationGenerationPasses(generation, request, state.integration.candidates)) {
 						delete generation.checks;
 						delete generation.review; // Drift invalidates otherwise passing evidence.
 					}
@@ -1763,7 +1774,7 @@ export class IsolatedRunner {
 				await this.saveProductive(handle);
 				return this.response(state);
 			}
-			if (generation.status !== "ready" || !integrationGenerationPasses(generation, request)) {
+			if (generation.status !== "ready" || !integrationGenerationPasses(generation, request, state.integration.candidates)) {
 				throw new Error("Promotion requires exact successful combined validation.");
 			}
 			for (const definition of request.tasks.filter((task) => hasChangesetDependency(state, task.id))) {
@@ -1791,6 +1802,7 @@ export class IsolatedRunner {
 				outcome = await scope.call((context) => this.integrationGit.promote({
 					root, integration: generation.worktree!, base: generation.expectedMain, stages: receipts,
 					checks: generation.checks!, commands: request.finalChecks,
+					sources: stagedCheckSources(generation, state.integration.candidates),
 					review: generation.review, criterion: request.finalJudgment?.criterion, correction: generation.correction,
 				}, context.signal));
 			} catch (error) { outcome = { outcome: "unknown", failure: `Interrupted promotion: ${errorText(error)}` }; }
@@ -3019,17 +3031,20 @@ export class IsolatedRunner {
 		scope: RuntimeScope,
 		taskId?: string,
 		root = handle.state.root,
+		reuse: readonly (ReusedCheckSource | undefined)[] = [],
 	): Promise<CheckBatchEvidence> {
 		const attempt = taskId ? latestAttempt(changesetTaskState(handle.state, taskId)) : undefined;
+		// Run every non-reused check, even none, so the runtime still proves the post-check identity.
+		const run = checks.filter((_, index) => !reuse[index]);
 		const result = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.runChecks({
 			root,
 			scope: phase === "final" ? "final" : "task",
 			...(taskId ? { taskId, attempt } : {}),
-			checks,
+			checks: run,
 			candidate,
 		}, context));
 		const identityAfter = runtimeIdentity(result.identityAfter, "Post-check identity");
-		if (!exactCommandResults(result.results, checks)) {
+		if (!exactCommandResults(result.results, run)) {
 			throw new Error("Check runtime did not return one result with the exact command and argv for every declared check.");
 		}
 		if (result.results.some((item) => !Number.isSafeInteger(item.code)
@@ -3037,22 +3052,28 @@ export class IsolatedRunner {
 			|| typeof item.stdout !== "string" || typeof item.stderr !== "string")) {
 			throw new Error("Check runtime returned malformed result evidence.");
 		}
-		const commandsPassed = result.results.every((item) => item.code === 0 && !item.killed);
+		let ran = 0;
+		const results = checks.map((check, index) => {
+			const reusedFrom = reuse[index];
+			return reusedFrom ? { ...check, code: 0, killed: false, stdout: "", stderr: "" } : result.results[ran++]!;
+		});
+		const commandsPassed = results.every((item) => item.code === 0 && !item.killed);
 		const identityMatches = sameIdentity(identityAfter, candidate);
 		const passed = identityMatches && commandsPassed;
-		let diagnosticIndex = passed ? -1 : result.results.findIndex((item) => item.code !== 0 || item.killed);
-		if (diagnosticIndex < 0 && commandsPassed && !identityMatches) diagnosticIndex = result.results.length - 1;
+		let diagnosticIndex = passed ? -1 : results.findIndex((item) => item.code !== 0 || item.killed);
+		if (diagnosticIndex < 0 && commandsPassed && !identityMatches) diagnosticIndex = results.length - 1;
 		const evidence: CheckBatchEvidence = {
 			phase,
 			candidate,
 			identityAfter,
-			results: result.results.map((item, index): CommandEvidence => ({
+			results: results.map((item, index): CommandEvidence => ({
 				command: item.command,
 				args: [...item.args],
 				code: item.code,
 				killed: item.killed ?? false,
 				stdout: index === diagnosticIndex ? bounded(item.stdout) : "",
 				stderr: index === diagnosticIndex ? bounded(item.stderr) : "",
+				...(reuse[index] ? { reusedFrom: reuse[index] } : {}),
 			})),
 			passed,
 			at: this.coordinatorRuntime.now(),
@@ -3598,6 +3619,7 @@ export class IsolatedRunner {
 					...(state.integration.generations.at(-1)!.failure ? [`Integration: ${state.integration.generations.at(-1)!.failure}`] : []),
 				...(state.integration.generations.at(-1)!.promotion?.failure ? [`Promotion: ${state.integration.generations.at(-1)!.promotion!.failure}`] : []),
 				...(state.integration.generations.at(-1)!.checks?.passed === false ? ["Combined checks failed; Main was not changed."] : []),
+				...reusedCheckLines(state.integration.generations.at(-1)!.checks),
 				...(state.integration.generations.at(-1)!.status === "promoted" ? ["Promotion proven; worker cleanup is pending or completed. Use subagent_integrate cleanup with the exact tip if interrupted."] : []),
 				] : []),
 				...(state.integration.generations.some((item) => item.status === "superseded" && item.worktree

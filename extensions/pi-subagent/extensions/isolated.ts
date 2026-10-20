@@ -334,6 +334,8 @@ function publicState(state: RunState, verdictMaxBytes: number, preferredTaskId?:
 				...(combinedTip ? { combinedTip } : {}),
 				...(correction ? { correction } : {}),
 				...(checks ? { checked: checks.passed, failedCheck: publicFailedCheck(checks) } : {}),
+				...(checks?.results.some((result) => result.reusedFrom) ? { reusedChecks: checks.results.flatMap(({ command, args, reusedFrom }) =>
+					reusedFrom ? [{ command: boundedPublicText([command, ...args.map((arg) => JSON.stringify(arg))].join(" ")), reusedFrom }] : []) } : {}),
 				...(review ? { reviewed: review.passed, failedReview: publicFailedReview(review, verdictMaxBytes) } : {}),
 				...(promotion ? { promotion: promotion.status, ...(promotion.mainAfter ? { mainAfter: promotion.mainAfter } : {}),
 					...(promotion.failure ? { promotionFailure: boundedPublicText(promotion.failure) } : {}) } : {}),

@@ -26,6 +26,7 @@ import {
 	type WorktreeAllocationResult,
 } from "../src/runner.ts";
 import {
+	integrationGenerationPasses,
 	MAX_PERSISTED_RUNTIME_TEXT_BYTES,
 	parseExecuteRequest,
 	parseRunState,
@@ -79,6 +80,9 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	failFinalChecks = 0;
 	failCombinedExit = false;
 	failPreliminaryChecks = 0;
+	/** Final commands that must not run again, for example because combined validation reuses them. */
+	readonly forbiddenFinalChecks = new Set<string>();
+	readonly finalCheckRuns: string[][] = [];
 	expireMainInspections = 0;
 	preflightCalls = 0;
 	readonly acquisitions: RoleCall[] = [];
@@ -341,6 +345,12 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 
 	async runChecks(input: Parameters<GitRuntime["runChecks"]>[0], _context: OperationContext): Promise<CheckRunResult> {
 		this.checkCalls.push({ scope: input.scope, ...(input.taskId ? { taskId: input.taskId } : {}) });
+		if (input.scope === "final") {
+			const commands = input.checks.map(({ command, args }) => [command, ...args].join(" "));
+			const forbidden = commands.find((command) => this.forbiddenFinalChecks.has(command));
+			if (forbidden) throw new Error(`Forbidden final check ran: ${forbidden}`);
+			this.finalCheckRuns.push(commands);
+		}
 		if (input.scope === "final" && this.failFinalChecks > 0) {
 			this.failFinalChecks -= 1;
 			throw new Error("final check transport interrupted");
@@ -1977,6 +1987,8 @@ class StagingGit extends IntegrationGit {
 	promoteResult?: GitOutcome<WorkspaceIdentity>;
 	promoteMain?: (tip: WorkspaceIdentity) => void;
 	combinedTip?: WorkspaceIdentity;
+	/** Model a merge onto unchanged pinned Main: a new commit with the candidate's tree. */
+	stageKeepsTree = false;
 	override async inspectCombined(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
 		stages: readonly StageReceipt[]): Promise<WorkspaceIdentity> {
 		return this.combinedTip ?? stages.at(-1)!.tip;
@@ -2038,7 +2050,9 @@ class StagingGit extends IntegrationGit {
 		this.merged.push(candidate.head);
 		if (stages.length) return { outcome: "conflict", failure: "Resolve overlapping edits in the integration worktree." };
 		const previous = identity("a", `refs/heads/${_integration.branch}`);
-		return { outcome: "ready", value: { previous, worker: candidate, tip: identity("d", previous.branch) } };
+		const tip = identity("d", previous.branch);
+		return { outcome: "ready", value: { previous, worker: candidate,
+			tip: this.stageKeepsTree ? { ...tip, index: candidate.tree, tree: candidate.tree } : tip } };
 	}
 	override async reconcileStage(_root: string, _integration: WorktreeInfo, _base: WorkspaceIdentity,
 		stages: readonly StageReceipt[], _worker: WorktreeInfo, candidate: WorkspaceIdentity): Promise<GitOutcome<StageReceipt | "not_started">> {
@@ -2407,6 +2421,67 @@ test("interrupted validation rebuilds explicitly on unchanged Main without reusi
 	assert.equal(git.promotions, 0);
 	assert.deepEqual(runtime.main, ready.state.main);
 	assertParsed(validated.state);
+});
+
+async function stagedForReuse(t: test.TestContext, id: string, checks: ChangesetTaskRequest["checks"], stageKeepsTree: boolean) {
+	const git = new StagingGit();
+	git.stageKeepsTree = stageKeepsTree;
+	const { runner, root, runtime, store } = await harness(t, { integrationGit: git });
+	const ready = await runner.execute(request(id, [changesetTask("change", { checks })]), root);
+	const candidate = ready.state.integration.candidates[0]!;
+	const staged = await runner.stage({ id, action: "stage", generation: 1, taskId: "change",
+		attempt: candidate.attempt, candidate: candidate.tip, expectedTip: ready.state.main }, root);
+	const expectedTip = staged.state.integration.generations[0]!.combinedTip!;
+	return { runner, root, runtime, store, git, candidate, action: { id, generation: 1, expectedTip } };
+}
+
+const FINAL_SUITE_CHECKS = [{ command: "pnpm", args: ["test"] }, { command: "check-final", args: [] }];
+
+test("combined validation reuses identical passed checks on the candidate tree and promotes with that evidence", async (t) => {
+	const { runner, root, runtime, git, candidate, action } = await stagedForReuse(t, "reuse-identical", FINAL_SUITE_CHECKS, true);
+	assert.equal(action.expectedTip.tree, candidate.tip.tree);
+	assert.notEqual(action.expectedTip.head, candidate.tip.head);
+	runtime.forbiddenFinalChecks.add("pnpm test").add("check-final");
+	const validated = await runner.integrate({ ...action, action: "validate" }, root);
+	const generation = validated.state.integration.generations[0]!;
+	assert.equal(generation.status, "ready", generation.failure ?? "unknown");
+	assert.deepEqual(runtime.finalCheckRuns, [[]]);
+	const reusedFrom = { taskId: "change", attempt: candidate.attempt, candidate: candidate.tip };
+	assert.deepEqual(generation.checks?.results.map((result) => result.reusedFrom), [reusedFrom, reusedFrom]);
+	assert.match(validated.text, /Combined check \["pnpm","test"\] reused the passed preliminary result of change#1@/);
+	assertParsed(validated.state);
+	git.promoteMain = (main) => { runtime.main = main; };
+	const done = await runner.integrate({ ...action, action: "promote" }, root);
+	assert.equal(done.state.accepted, true);
+	assert.equal(git.promotions, 1);
+	assertParsed(done.state);
+});
+
+test("combined validation reruns checks with different argv or a different tree", async (t) => {
+	const argv = await stagedForReuse(t, "reuse-argv", [{ command: "pnpm", args: ["test", "--", "change"] }, FINAL_SUITE_CHECKS[1]!], true);
+	const differentArgv = await argv.runner.integrate({ ...argv.action, action: "validate" }, argv.root);
+	assert.equal(differentArgv.state.integration.generations[0]?.status, "ready");
+	assert.deepEqual(argv.runtime.finalCheckRuns, [["pnpm test"]]);
+	assert.deepEqual(differentArgv.state.integration.generations[0]?.checks?.results.map((result) => Boolean(result.reusedFrom)), [false, true]);
+	const tree = await stagedForReuse(t, "reuse-tree", FINAL_SUITE_CHECKS, false);
+	assert.notEqual(tree.action.expectedTip.tree, tree.candidate.tip.tree);
+	const differentTree = await tree.runner.integrate({ ...tree.action, action: "validate" }, tree.root);
+	assert.equal(differentTree.state.integration.generations[0]?.status, "ready");
+	assert.deepEqual(tree.runtime.finalCheckRuns, [["pnpm test", "check-final"]]);
+	assert.equal(differentTree.state.integration.generations[0]?.checks?.results.some((result) => result.reusedFrom), false);
+});
+
+test("forged reuse evidence on a different tree blocks promotion", async (t) => {
+	const { runner, root, store, git, candidate, action } = await stagedForReuse(t, "reuse-forged", FINAL_SUITE_CHECKS, false);
+	const validated = await runner.integrate({ ...action, action: "validate" }, root);
+	const forged = structuredClone(validated.state);
+	const generation = forged.integration.generations[0]!;
+	generation.checks!.results[0]!.reusedFrom = { taskId: "change", attempt: candidate.attempt, candidate: candidate.tip };
+	assert.equal(integrationGenerationPasses(generation, parseExecuteRequest(forged.request), forged.integration.candidates), false);
+	assert.throws(() => parseRunState(structuredClone(forged)), /inconsistent status/);
+	await writeFile(store.statePath(root, action.id), JSON.stringify(forged));
+	await assert.rejects(runner.integrate({ ...action, action: "promote" }, root), /inconsistent status/);
+	assert.equal(git.promotions, 0);
 });
 
 test("failed combined root full-suite check leaves Main unchanged and forbids promotion", async (t) => {

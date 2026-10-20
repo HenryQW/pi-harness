@@ -599,7 +599,7 @@ function integrationFixture(): { request: ExecuteRequest; state: IntegrationStat
 test("Main-owned integration accepts independently based candidates and ordered combined evidence", () => {
 	const { request: definition, state: valid } = integrationFixture();
 	assert.equal(parseIntegrationState(structuredClone(valid), definition).generations[0]?.status, "ready");
-	assert.equal(integrationGenerationPasses(valid.generations[0]!, definition), true);
+	assert.equal(integrationGenerationPasses(valid.generations[0]!, definition, valid.candidates), true);
 	const generation = valid.generations[0]!;
 	generation.status = "promoting";
 	generation.promotion = { status: "promoting", expectedMain: generation.expectedMain, tip: generation.combinedTip! };

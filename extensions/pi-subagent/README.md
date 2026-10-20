@@ -127,6 +127,10 @@ Keep the durable ID; Main can work or end its turn without polling. Inspect read
 
 Readiness requires preliminary checks and any task `judgment`; it does not permit promotion. Checks and judgments bind to exact Git identities. Staging, combined validation, and promotion require unchanged, clean Main at the pinned identity. Changed identities, conflicts, or uncertain outcomes block promotion and preserve evidence. A definitive combined check or review failure permits one committed integration correction, recorded with `subagent_integrate correct`, and another validation.
 
+Combined validation can reuse a passed preliminary check of a staged candidate. The candidate must have the same tree as the combined tip, and the check must have the identical command and argv. Then the final check does not run again. This usually occurs when you stage one candidate onto unchanged Main. Status shows each reused result and its candidate. Final judgment still runs.
+
+Reuse assumes that checks use only tracked content. Ignored files, for example `node_modules`, can be different between worktrees.
+
 The extension sends follow-ups when a candidate becomes ready, a worker needs attention, and the wave finishes. A missed follow-up does not authorize replay. Read [Isolated contract](./docs/orchestration.md#isolated-contract) and [Exact integration actions](./docs/orchestration.md#exact-integration-actions) for graph, judgment, revision, refresh, and release details.
 
 ### Inspect work

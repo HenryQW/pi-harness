@@ -245,7 +245,7 @@ Admission and worker-wave dispatch pin Main's exact committed branch, HEAD, and 
 
 Main selects exact candidates through `subagent_stage` into an owned integration checkout in explicit order. Each stage is a committed merge of the candidate, not a mutation of Main. Conflicts retain the checkout for Main to resolve; `resolve` verifies the exact two-parent merge instead of replaying an uncertain merge. Main can explicitly run dependent tasks from an exact staged tip with `subagent_integrate advance` and stage their results afterward. Independent candidates may be staged without re-running workers.
 
-Once all selected work is staged, Main calls `subagent_integrate validate` on the exact clean combined tip. It acknowledges the durably saved validation intent and continues in the session-owned background, independent of later turn cancellation; session replacement/shutdown still cancels it. A follow-up reports completion; status remains authoritative if delivery is missed. This runs every final check, including `pnpm test`, and optional final judgment in the integration checkout before any Main mutation. A failed check/review can be followed by one Main-authored committed correction in that checkout, recorded with `correct`, then another `validate`.
+Once all selected work is staged, Main calls `subagent_integrate validate` on the exact clean combined tip. It acknowledges the durably saved validation intent and continues in the session-owned background, independent of later turn cancellation; session replacement/shutdown still cancels it. A follow-up reports completion; status remains authoritative if delivery is missed. This runs every final check, including `pnpm test`, unless [exact check reuse](#validate-and-promote) applies, and optional final judgment in the integration checkout before any Main mutation. A failed check/review can be followed by one Main-authored committed correction in that checkout, recorded with `correct`, then another `validate`.
 
 Staging, combined validation, and `promote` require clean Main at the recorded committed identity. Dirty edits block these actions even when the checked candidate stays retained. The extension never replays or merges dirty work automatically. `promote` requires exact passing combined evidence and unchanged Main and uses a guarded update to Main. Only proven promotion leads to selected-worker termination and verified cleanup. A changed candidate, integration tip, or Main identity invalidates prior evidence or blocks promotion; review accepts only exact `PASS`.
 
@@ -312,6 +312,15 @@ Use the generation's exact `combinedTip` as `expectedTip`. `advance` dispatches 
 Post-promotion cleanup handles each promoted stage separately. A blocked termination or cleanup step records its failure on that step, and cleanup continues with the other stages and then the promoted integration checkout. Clean Main at the promoted identity is a shared precondition; if Main changed, every pending step records the blocker. Dirty, untracked, or ignored files block worktree removal and stay preserved. Until every promoted termination and cleanup step completes, the request stays `needs_attention` with promotion proven, selected tasks `completed`, and not accepted, so `/subagent` lists it. Resolve the recorded blockers, then call `cleanup` again; the request becomes `completed` and accepted only after cleanup completes.
 
 Validation acknowledges only after saving the exact generation's validation intent. Checks and final judgment then run in the background. Later turn cancellation does not cancel acknowledged validation; session replacement or shutdown does. Acknowledgement is not passing evidence. Inspect status if the completion follow-up fails.
+
+Validation reuses a passed preliminary result for a final check, and does not run that check again, only when all of these conditions are true:
+
+- The candidate is staged in this generation.
+- The tree OID of the combined tip is equal to the tree OID of the candidate. This usually occurs when you stage one candidate onto unchanged pinned Main.
+- The saved preliminary checks of the candidate passed, and their `candidate` and `identityAfter` are equal to the candidate tip.
+- The preliminary result has the identical command and argv, exit code 0, and no timeout or signal.
+
+Any mismatch runs the check normally. Each reused result records `reusedFrom` with `taskId`, `attempt`, and `candidate`. Status text and the validation follow-up show each reused command. Promotion, reconciliation, and state loading accept a reused result only after they prove these conditions again from saved identities. Final judgment still runs. Reuse assumes that checks use only tracked content. Ignored files, for example `node_modules`, can be different between the worker and integration worktrees.
 
 #### Refresh
 

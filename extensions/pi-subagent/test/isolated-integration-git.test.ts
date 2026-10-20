@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { IntegrationGit, type StageReceipt } from "../src/integration-git.ts";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
-import type { CheckBatchEvidence, WorkspaceIdentity } from "../src/schema.ts";
+import type { CheckBatchEvidence, IntegrationCandidate, WorkspaceIdentity } from "../src/schema.ts";
 import { createChildWorktree, finalizeChildWorktree, type WorktreeInfo } from "../src/worktree.ts";
 
 const signal = new AbortController().signal;
@@ -173,7 +173,15 @@ test("post-promotion cleanup preserves ignored files", async (t) => {
 	await commit(worker.path, "worker");
 	const staged = await runtime.stage(root, integration, base, [], worker, await inspected(worker.path), signal);
 	const stages = [staged.outcome === "ready" ? staged.value : assert.fail(JSON.stringify(staged))];
-	const promoted = await runtime.promote({ root, integration, base, stages, checks: checks(stages[0]!.tip), commands: [] }, signal);
+	const workerTip = stages[0]!.worker;
+	assert.equal(stages[0]!.tip.tree, workerTip.tree, "a merge onto unchanged Main keeps the candidate tree");
+	const suite = { command: "pnpm", args: ["test"] };
+	const passed = { ...suite, code: 0, killed: false, stdout: "", stderr: "" };
+	const source: IntegrationCandidate = { taskId: "worker", attempt: 1, base, tip: workerTip, worker: "retained",
+		checks: { phase: "preliminary", candidate: workerTip, identityAfter: workerTip, passed: true, results: [passed], at: Date.now() } };
+	const reused = { ...checks(stages[0]!.tip), results: [{ ...passed, reusedFrom: { taskId: "worker", attempt: 1, candidate: workerTip } }] };
+	assert.equal((await runtime.promote({ root, integration, base, stages, checks: reused, commands: [suite] }, signal)).outcome, "blocked");
+	const promoted = await runtime.promote({ root, integration, base, stages, checks: reused, commands: [suite], sources: [source] }, signal);
 	const approved = promoted.outcome === "ready" ? promoted.value : assert.fail(JSON.stringify(promoted));
 	await appendFile(join(root, ".git", "info", "exclude"), "*.log\n");
 	const ignored = join(worker.path, "ignored.log");
