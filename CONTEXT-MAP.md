@@ -37,7 +37,7 @@ Arrows mean that the first context uses a capability owned by the second, unless
 | --- | --- |
 | `pi-auto-compact`, `pi-cron`, `pi-herdr-tools`, `pi-memory`, `pi-prompt-creator`, `pi-subagent` → `pi-task-models` | Consumers declare their own Model Tasks and use shared Task Profiles. Pi remains the model authority; see [ADR 017](docs/adr/017-consumer-owned-task-model-routing.md). |
 | `pi-cron` → `pi-subagent` | Scheduled jobs use Role launch policy and the bounded executor, not direct shared-checkout delegation or checked integration; see [ADR 020](docs/adr/020-pi-cron-in-session-scheduler.md). |
-| `pi-prompt-creator` → `pi-subagent` | Prompt analysis uses the bounded executor for a tool-free child, not a Role changeset; see [prompt analysis](extensions/pi-prompt-creator/README.md#automatic-analysis). |
+| `pi-prompt-creator` → `pi-subagent` | Prompt analysis uses the bounded executor for a tool-free child, not a Role changeset; see [prompt analysis](extensions/pi-prompt-creator/README.md#analysis). |
 | `pi-herdr-tools`, `pi-subagent`, `pi-pr` → `pi-herdr` | The shared package supplies Herdr access. Consumers retain conversation, worker, and PR workflow ownership; see [ADR 002](docs/adr/002-shared-herdr-cli-client.md). |
 | `pi-memory` → `pi-ask-question` | Memory conflict resolution uses the shared question UI; see [candidate review](extensions/pi-memory/README.md#candidate-review). |
 | `pi-footer` ← `pi-pr`, `pi-multi-codex`, `pi-codegraph`, `pi-subagent` | The footer displays PR, quota, and index status and counts completed subagent usage. It does not own those workflows; see [footer display](extensions/pi-footer/README.md#use). |
