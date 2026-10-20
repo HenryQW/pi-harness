@@ -209,13 +209,14 @@ test("shows the routed physical model under a virtual selection", async () => {
 	let branch = entries;
 	let leaf = "failed";
 	let model = { id: "auto", api: "pi-virtual" };
+	let contextReads = 0;
 	const factory = await start({
 		mode: "tui",
 		cwd: "/repo",
 		get model() { return model; },
 		thinkingLevel: "high",
 		sessionManager: { getEntries: () => entries, getBranch: () => branch, getLeafId: () => leaf },
-		getContextUsage: () => undefined,
+		getContextUsage: () => ({ tokens: 1, contextWindow: 100, percent: ++contextReads }),
 	});
 	const footer = factory(
 		{ requestRender() {} },
@@ -225,12 +226,19 @@ test("shows the routed physical model under a virtual selection", async () => {
 	const modelText = () => stripTerminalSequences(footer.render(100)[1]!).replace(/^.* {2}/, "");
 	// The failed response is skipped; the routed level is omitted when the response has none.
 	assert.equal(modelText(), "auto • high → claude-sonnet-4-5");
+	// Context usage is a full session scan, so unchanged frames reuse it.
+	assert.match(footer.render(100)[1]!, /◔ 1\.0%/);
+	assert.equal(contextReads, 1);
 	// Tree navigation changes the branch and leaf and refreshes the routed model.
 	branch = [haiku];
 	leaf = "haiku";
-	assert.match(footer.render(100)[1]!, /→ claude-haiku-4-5 • \x1b\[38;5;118mmedium\x1b\[39m$/);
+	assert.match(footer.render(100)[1]!, /◔ 2\.0%.*→ claude-haiku-4-5 • \x1b\[38;5;118mmedium\x1b\[39m$/);
 	model = { id: "claude-sonnet-4-5", api: "anthropic-messages" };
 	assert.equal(modelText(), "claude-sonnet-4-5 • high");
+	assert.match(footer.render(100)[1]!, /◔ 3\.0%/);
+	entries.push(haiku);
+	assert.match(footer.render(100)[1]!, /◔ 4\.0%/);
+	assert.equal(contextReads, 4);
 	footer.dispose();
 });
 
