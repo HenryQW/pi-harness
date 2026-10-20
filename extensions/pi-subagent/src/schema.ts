@@ -191,6 +191,7 @@ export type HostAllocationPlan = WorkspaceAllocationPlan | WorkerTabAllocationPl
 export type PromptRecord = Static<typeof PromptRecordSchema>;
 export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
 export type CheckBatchEvidence = Static<typeof CheckBatchEvidenceSchema>;
+export type ReusedCheckSource = NonNullable<CommandEvidence["reusedFrom"]>;
 export type ReviewEvidence = Static<typeof ReviewEvidenceSchema>;
 export type WorkerTermination = Static<typeof WorkerTerminationSchema>;
 
@@ -289,6 +290,12 @@ const CommandEvidenceSchema = Type.Object({
 	killed: Type.Boolean(),
 	stdout: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
 	stderr: Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }),
+	// A final result copied from a staged candidate's passing preliminary result on the same tree.
+	reusedFrom: Type.Optional(Type.Object({
+		taskId: IdSchema,
+		attempt: Type.Integer({ minimum: 1, maximum: 2 }),
+		candidate: WorkspaceSchema,
+	}, { additionalProperties: false })),
 }, { additionalProperties: false });
 
 const CheckBatchEvidenceSchema = Type.Object({
@@ -784,6 +791,9 @@ function validateCheckBatchEvidence(evidence: CheckBatchEvidence, checks: readon
 		|| evidence.results.some((result, index) => !sameCheck(result, checks[index]!))) {
 		throw new Error(`${field} does not retain every exact declared command and argv.`);
 	}
+	if (evidence.results.some((result) => result.reusedFrom && (evidence.phase !== "final" || result.code !== 0 || result.killed))) {
+		throw new Error(`${field} has invalid reused check evidence.`);
+	}
 	const commandsPassed = evidence.results.every((result) => result.code === 0 && !result.killed);
 	const identityMatches = sameIdentity(evidence.candidate, evidence.identityAfter);
 	if (evidence.passed !== (commandsPassed && identityMatches)) {
@@ -798,13 +808,36 @@ function validateCheckBatchEvidence(evidence: CheckBatchEvidence, checks: readon
 	}
 }
 
-export function checkBatchPasses(evidence: CheckBatchEvidence | undefined, checks: readonly CheckCommand[], candidate: WorkspaceIdentity): boolean {
+/** Reused results pass only when they still cite one of `sources` exactly; no sources accept no reuse. */
+export function checkBatchPasses(evidence: CheckBatchEvidence | undefined, checks: readonly CheckCommand[], candidate: WorkspaceIdentity,
+	sources: readonly IntegrationCandidate[] = []): boolean {
 	return Boolean(evidence
 		&& evidence.passed
 		&& sameIdentity(evidence.candidate, candidate)
 		&& sameIdentity(evidence.identityAfter, candidate)
 		&& evidence.results.length === checks.length
-		&& evidence.results.every((result, index) => sameCheck(result, checks[index]!) && result.code === 0 && !result.killed));
+		&& evidence.results.every((result, index) => sameCheck(result, checks[index]!) && result.code === 0 && !result.killed
+			&& (!result.reusedFrom || reusedCheckExact(result, result.reusedFrom, candidate, sources))));
+}
+
+/** Candidates exactly staged in this generation; only they can supply reused final results. */
+export function stagedCheckSources(generation: IntegrationGeneration, candidates: readonly IntegrationCandidate[]): IntegrationCandidate[] {
+	return generation.stages.flatMap((stage) => candidates.filter((candidate) => stage.status === "staged"
+		&& candidate.taskId === stage.taskId && candidate.attempt === stage.attempt && sameIdentity(candidate.tip, stage.source)));
+}
+
+/** A passed preliminary result stands in for a final check only on the same tree with identical command and argv. */
+export function reusableCheckSource(check: CheckCommand, tip: WorkspaceIdentity, sources: readonly IntegrationCandidate[]): ReusedCheckSource | undefined {
+	const source = sources.find(({ tip: candidate, checks }) => candidate.tree === tip.tree
+		&& checks.phase === "preliminary" && checks.passed
+		&& sameIdentity(checks.candidate, candidate) && sameIdentity(checks.identityAfter, candidate)
+		&& checks.results.some((result) => !result.reusedFrom && sameCheck(result, check) && result.code === 0 && !result.killed));
+	return source && { taskId: source.taskId, attempt: source.attempt, candidate: { ...source.tip } };
+}
+
+function reusedCheckExact(check: CheckCommand, reused: ReusedCheckSource, tip: WorkspaceIdentity, sources: readonly IntegrationCandidate[]): boolean {
+	return Boolean(reusableCheckSource(check, tip, sources.filter((source) => source.taskId === reused.taskId
+		&& source.attempt === reused.attempt && sameIdentity(source.tip, reused.candidate))));
 }
 
 export function reviewEvidencePasses(
@@ -1010,7 +1043,7 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 		if (generation.checks && !sameIdentity(generation.checks.candidate, generation.combinedTip!)) {
 			throw new Error(`Generation ${generation.number} checks target another tip.`);
 		}
-		const passes = integrationGenerationPasses(generation, request);
+		const passes = integrationGenerationPasses(generation, request, state.candidates);
 		const promotion = generation.promotion;
 		if (promotion && (!passes || generation.failure !== undefined
 			|| !sameIdentity(promotion.expectedMain, generation.expectedMain)
@@ -1073,12 +1106,13 @@ export function parseIntegrationState(value: unknown, request: ExecuteRequest): 
 }
 
 /** Passing final evidence is bound to the exact assembled identity, not any worker tip. */
-export function integrationGenerationPasses(generation: IntegrationGeneration, request: ExecuteRequest): boolean {
+export function integrationGenerationPasses(generation: IntegrationGeneration, request: ExecuteRequest,
+	candidates: readonly IntegrationCandidate[]): boolean {
 	return Boolean(generation.combinedTip && isCleanCommitted(generation.combinedTip)
 		&& generation.stages.length === generation.order.length
 		&& generation.stages.every((stage, index) => stage.status === "staged" && stage.taskId === generation.order[index])
 		&& generation.checks?.phase === "final"
-		&& checkBatchPasses(generation.checks, request.finalChecks, generation.combinedTip)
+		&& checkBatchPasses(generation.checks, request.finalChecks, generation.combinedTip, stagedCheckSources(generation, candidates))
 		&& (!request.finalJudgment || reviewEvidencePasses(generation.review, "final",
 			request.finalJudgment.criterion, generation.expectedMain, generation.combinedTip)));
 }
@@ -1399,7 +1433,7 @@ export function parseRunState(value: unknown): RunState {
 				&& generation.combinedTip.tree === state.final.identity.tree
 				&& generation.promotion?.mainAfter && sameIdentity(generation.promotion.mainAfter, state.final.identity)
 				&& JSON.stringify(generation.checks) === JSON.stringify(state.final.checks)
-				&& integrationGenerationPasses(generation, request))
+				&& integrationGenerationPasses(generation, request, state.integration.candidates))
 			: checkBatchPasses(state.final.checks, request.finalChecks, state.final.identity);
 		if (!acceptedChecks) throw new Error("Accepted request lacks passing final checks on its exact identity.");
 		if (request.finalJudgment && !(generation?.status === "promoted"
