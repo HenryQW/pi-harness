@@ -16,8 +16,9 @@ pi install npm:@henryqw/pi-task-models
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-auto-compact`](https://pi.henry.wang/extensions/pi-auto-compact) | Consumer | Compaction defaults to `fast`. |
+| [`@henryqw/pi-cron`](https://pi.henry.wang/extensions/pi-cron) | Consumer | Scheduled jobs default to `fast`. |
 | [`@henryqw/pi-herdr-tools`](https://pi.henry.wang/extensions/pi-herdr-tools) | Consumer | Side-thread and rename tasks default to `fast`. |
-| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Consumer | Candidate review defaults to `balanced`. |
+| [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Consumer | Candidate review, `/remember` preparation, and `/dream` promotion default to `balanced`. |
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Numbered Codex slots become one route. |
 | [`@henryqw/pi-prompt-creator`](https://pi.henry.wang/extensions/pi-prompt-creator) | Consumer | Prompt drafting defaults to `fast`. |
 | [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Consumer | Delegation defaults to `fast`. Callers can declare their own task. |
