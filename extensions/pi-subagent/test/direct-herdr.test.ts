@@ -63,13 +63,15 @@ test("exact terminal turn evidence includes failed and aborted assistant turns b
 	assert.equal(exactDirectTerminalTurn(lines([{ type: "message", id: "tool", parentId: "user", message: { role: "assistant", stopReason: "toolUse", content: [] } }]), prompt), false);
 });
 
-test("direct usage sums input and output without cache for the exact turn", () => {
-	const usage = (input: number) => ({ input, output: 2, cacheRead: 300_000, cacheWrite: 40_000 });
+test("direct usage sums input and output without cache, and total cost, for the exact turn", () => {
+	const usage = (input: number, cost?: unknown) => ({ input, output: 2, cacheRead: 300_000, cacheWrite: 40_000, ...(cost === undefined ? {} : { cost: { total: cost } }) });
 	const session = lines([
-		{ type: "message", id: "one", message: { role: "assistant", usage: usage(10) } },
-		{ type: "message", id: "two", message: { role: "assistant", usage: usage(20) } },
+		{ type: "message", id: "one", message: { role: "assistant", usage: usage(10, 0.25) } },
+		{ type: "message", id: "two", message: { role: "assistant", usage: usage(20, 0.125) } },
+		{ type: "message", id: "bad", message: { role: "assistant", usage: usage(0, "1") } },
 	]) + '{"type":"message"';
-	assert.equal(directSessionUsage(session, prompt).tokens, 34);
+	assert.deepEqual([directSessionUsage(session, prompt).tokens, directSessionUsage(session, prompt).cost], [36, 0.375]);
+	assert.equal(directSessionUsage(lines([{ type: "message", id: "one", message: { role: "assistant", usage: usage(10) } }]), prompt).cost, undefined);
 	assert.equal(directSessionUsage(session, "another prompt").tokens, undefined);
 	assert.equal(directSessionUsage(lines([]), prompt).tokens, undefined);
 });
@@ -139,7 +141,7 @@ test("direct session samples read and parse only appended complete lines for usa
 		const expectedText = directPartialText(complete, prompt, 8);
 		const readCount = reads.mock.callCount();
 		const parseCount = parses.mock.callCount();
-		const [text, tokens] = await Promise.all([reader.partialText(8), reader.usageTokens()]);
+		const [text, tokens] = await Promise.all([reader.partialText(8), reader.usage().then(({ tokens }) => tokens)]);
 		assert.equal(tokens, expected.tokens);
 		assert.deepEqual(reader.activity, expected.activity);
 		assert.equal(text, expectedText);
@@ -180,7 +182,7 @@ test("direct session samples read and parse only appended complete lines for usa
 	await appendFile(path, reset);
 	complete += reset;
 	await check(3, position);
-	assert.equal(await reader.usageTokens(), 2);
+	assert.equal((await reader.usage()).tokens, 2);
 	assert.equal(await reader.partialText(100), "new");
 	assert.deepEqual(reader.activity, { pending: ["read", "bash"], latest: undefined });
 
@@ -200,7 +202,7 @@ test("direct session samples reset after shrink, rewrite, replacement, and the s
 	await writeFile(path, session(10, "original long text"));
 	const reader = createDirectSessionReader(path, prompt);
 	const check = async (input: number, text: string) => {
-		assert.equal(await reader.usageTokens(), input + 1);
+		assert.equal((await reader.usage()).tokens, input + 1);
 		assert.equal(await reader.partialText(100), text);
 		assert.deepEqual(reader.activity, { pending: [text], latest: undefined });
 	};
@@ -217,7 +219,7 @@ test("direct session samples reset after shrink, rewrite, replacement, and the s
 	await rename(replacement, path);
 	await check(4, "other");
 	await truncate(path, 16 * 1024 * 1024 + 1);
-	assert.equal(await reader.usageTokens(), undefined);
+	assert.equal((await reader.usage()).tokens, undefined);
 	assert.equal(reader.activity, undefined);
 	assert.equal(await reader.partialText(100), undefined);
 	await writeFile(path, session(5, "after"));

@@ -12,6 +12,7 @@ import { registerModelTask } from "@henryqw/pi-task-models";
 import type {
 	CoordinatorRuntime,
 	OperationContext,
+	ResolvedRoute,
 	TransientLaunchHandle,
 	VerifiedLaunch,
 } from "./runner.ts";
@@ -190,9 +191,10 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		});
 	}
 
-	async preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext): Promise<{
+	async preflight(input: { request: ExecuteRequest; cwd: string; dryRun?: boolean }, context: OperationContext): Promise<{
 		root: string;
 		main: WorkspaceIdentity;
+		routes: ResolvedRoute[];
 	}> {
 		context.signal?.throwIfAborted();
 		const resolvedRoot = await this.options.resolveRoot(input.cwd, context);
@@ -204,7 +206,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		const rootInfo = await lstat(root);
 		if (!rootInfo.isDirectory()) throw new Error("Pi Subagent root must be an existing local directory.");
 		context.signal?.throwIfAborted();
-		if (input.request.tasks.some((task) => task.kind === "changeset")) {
+		if (!input.dryRun && input.request.tasks.some((task) => task.kind === "changeset")) {
 			await this.options.preflightHost?.({ request: input.request, cwd: input.cwd, root }, context);
 		}
 		const main = await this.options.inspectMainBase({ root }, context);
@@ -221,10 +223,14 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		if (input.request.finalJudgment) {
 			addRequired(input.request.finalJudgment.role, input.request.finalJudgment.modelClass);
 		}
+		const routes: ResolvedRoute[] = [];
 		for (const [role, modelClasses] of required) {
-			for (const modelClass of modelClasses) await this.prepareLaunch(role, modelClass, context);
+			for (const modelClass of modelClasses) {
+				const { launch } = await this.prepareLaunch(role, modelClass, context);
+				routes.push({ role, modelClass, model: launch.model, thinkingLevel: launch.thinkingLevel });
+			}
 		}
-		return { root, main };
+		return { root, main, routes };
 	}
 
 	async acquireLaunch(

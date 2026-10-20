@@ -24,6 +24,8 @@ export type WorkflowTransportEntry = {
 	thinkingLevel?: string;
 	/** Measured session tokens; absent when usage was unavailable. */
 	tokens?: number;
+	/** Measured session cost in USD; absent when no usage record carried a cost. */
+	cost?: number;
 	elapsedMs?: number;
 	status: WorkflowTransportStatus;
 	assistantOutput?: string;
@@ -39,6 +41,8 @@ export type WorkflowTransportEntryDetails = Omit<WorkflowTransportEntry, "assist
 export type WorkflowTransportDetails = {
 	mode: WorkflowMode;
 	entries: WorkflowTransportEntryDetails[];
+	/** Request total of the measured entry costs. */
+	cost?: number;
 };
 
 export type BackgroundWorkflowTransportDetails = WorkflowTransportDetails & {
@@ -85,6 +89,18 @@ export function compactTokens(tokens: number): string {
 	return `${tokens < 1_000 ? tokens : `${(tokens / 1_000).toFixed(1).replace(/\.0$/, "")}k`} tok`;
 }
 
+/** Compact USD cost such as `$0.12`; absent for unknown or zero-priced usage. */
+export function compactCost(cost: number | undefined): string | undefined {
+	if (cost === undefined || !(cost > 0)) return undefined;
+	return cost < 0.01 ? "<$0.01" : `$${cost.toFixed(2)}`;
+}
+
+/** Sum of the measured costs; absent when no entry has one. */
+export function totalCost(costs: readonly (number | undefined)[]): number | undefined {
+	const known = costs.filter((cost): cost is number => cost !== undefined);
+	return known.length ? known.reduce((sum, cost) => sum + cost, 0) : undefined;
+}
+
 /** Launched workers carry a model; workers that never launched show no usage. */
 function usageFor(entry: WorkflowTransportEntry): string {
 	if (entry.model === undefined) return "";
@@ -92,6 +108,7 @@ function usageFor(entry: WorkflowTransportEntry): string {
 		entry.model,
 		...(entry.thinkingLevel === undefined ? [] : [`thinking ${entry.thinkingLevel}`]),
 		entry.tokens === undefined ? "tokens unknown" : compactTokens(entry.tokens),
+		...(compactCost(entry.cost) === undefined ? [] : [compactCost(entry.cost)!]),
 		...(entry.elapsedMs === undefined ? [] : [formatDuration(entry.elapsedMs)]),
 	].map((part) => ` · ${part}`).join("");
 }
@@ -157,8 +174,9 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 		const value = evidenceFor(entry, position, ordered.length);
 		return value ? [value] : [];
 	});
+	const cost = totalCost(ordered.map((entry) => entry.cost));
 	const lines = [
-		[`${workflowTitle(mode)} ${failed ? "failed" : "completed"}`, ...statusCounts(ordered)].join(" · "),
+		[`${workflowTitle(mode)} ${failed ? "failed" : "completed"}`, ...statusCounts(ordered), ...(compactCost(cost) === undefined ? [] : [`total ${compactCost(cost)}`])].join(" · "),
 		...positioned.map(({ entry, position }) => {
 			const { glyph, fallback } = ENTRY_STATUS_PRESENTATION[entry.status];
 			const summary = displaySummary(sourceFor(entry) ?? "") || fallback;
@@ -197,10 +215,12 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 					...(entry.model === undefined ? {} : { model: entry.model }),
 					...(entry.thinkingLevel === undefined ? {} : { thinkingLevel: entry.thinkingLevel }),
 					...(entry.tokens === undefined ? {} : { tokens: entry.tokens }),
+					...(entry.cost === undefined ? {} : { cost: entry.cost }),
 					...(entry.elapsedMs === undefined ? {} : { elapsedMs: entry.elapsedMs }),
 					...(entry.checkout === undefined ? {} : { checkout: entry.checkout }),
 				};
 			}),
+			...(cost === undefined ? {} : { cost }),
 		},
 		failed,
 	};

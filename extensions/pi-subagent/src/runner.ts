@@ -144,6 +144,16 @@ export interface VerifiedLaunch {
 	readonly tools: readonly string[];
 }
 
+export type ResolvedRoute = Pick<VerifiedLaunch, "role" | "modelClass" | "model" | "thinkingLevel">;
+
+/** A dry-run result: the normalized request and the resolved routes; no state exists for it. */
+export interface ExecutePlan {
+	request: ExecuteRequest;
+	root: string;
+	main: WorkspaceIdentity;
+	routes: readonly ResolvedRoute[];
+}
+
 export interface TransientLaunchHandle<Launch extends VerifiedLaunch = VerifiedLaunch> {
 	readonly launch: Launch;
 	cleanup(): Promise<void>;
@@ -184,9 +194,12 @@ export async function withTransientLaunch<Launch extends VerifiedLaunch, Result>
 export interface CoordinatorRuntime {
 	now(): number;
 	randomToken(): string;
-	preflight(input: { request: ExecuteRequest; cwd: string }, context: OperationContext): Promise<{
+	/** `dryRun` skips checks that call Herdr; every other check runs. */
+	preflight(input: { request: ExecuteRequest; cwd: string; dryRun?: boolean }, context: OperationContext): Promise<{
 		root: string;
 		main: WorkspaceIdentity;
+		/** Resolved route of each distinct Role and model class, when the coordinator reports it. */
+		routes?: readonly ResolvedRoute[];
 	}>;
 	acquireLaunch(role: string, modelClass: ModelClass, context: OperationContext): Promise<TransientLaunchHandle<VerifiedLaunch>>;
 }
@@ -1134,12 +1147,12 @@ export class IsolatedRunner {
 		if (error instanceof DurableRunStopped) throw error;
 	}
 
-	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
+	/** Every execute check before durable state; a dry run also skips the Herdr host preflight. */
+	private async admitExecute(value: unknown, cwd: string, scope: RuntimeScope, dryRun: boolean) {
 		const request = parseExecuteRequest(value);
 		const policy = Object.freeze({ ...this.currentPolicy() });
-		const scope = new ProductiveScope(outerSignal);
 		const canonicalCwd = realpathSync.native(cwd);
-		const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd }, context));
+		const prepared = await scope.call(async (context) => await this.coordinatorRuntime.preflight({ request, cwd: canonicalCwd, ...(dryRun ? { dryRun } : {}) }, context));
 		const root = realpathSync.native(prepared.root);
 		if (root !== prepared.root) throw new Error("Preflight repository root must be canonical.");
 		if (request.tasks.some((task) => task.kind === "changeset")) {
@@ -1154,6 +1167,18 @@ export class IsolatedRunner {
 		if (this.hasAnyActiveControl(root)) {
 			throw new Error("Another Pi Subagent request has active changeset work in this repository.");
 		}
+		return { request, policy, root, preparedMain, routes: prepared.routes ?? [] };
+	}
+
+	/** Dry run of execute: no state, lock, lease, worktree, or Herdr call. */
+	async plan(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<ExecutePlan> {
+		const { request, root, preparedMain, routes } = await this.admitExecute(value, cwd, new ProductiveScope(outerSignal), true);
+		return { request, root, main: preparedMain, routes };
+	}
+
+	async execute(value: unknown, cwd: string, outerSignal?: AbortSignal): Promise<RunResponse> {
+		const scope = new ProductiveScope(outerSignal);
+		const { request, policy, root, preparedMain } = await this.admitExecute(value, cwd, scope, false);
 		return await this.withProductiveRun(root, async (lifecycle) => {
 			const createdAt = this.coordinatorRuntime.now();
 			const state: RunState = {

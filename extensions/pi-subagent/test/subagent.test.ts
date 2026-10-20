@@ -996,7 +996,7 @@ test("direct resource resolution still rejects recursive delegation packages bef
 	});
 });
 
-test("direct widget and /subagent show the same saved reference, role and name", async () => {
+test("direct widget, follow-up and /subagent show the same saved reference, role, name and cost", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
@@ -1011,6 +1011,7 @@ test("direct widget and /subagent show the same saved reference, role and name",
 					records.splice(2, 0,
 						{ type: "message", id: "call", message: { role: "assistant", content: [{ type: "toolCall", id: "a", name: "read" }] } },
 						{ type: "message", id: "result", message: { role: "toolResult", toolCallId: "a", durationMs: 125 } });
+					records.at(-1).message.usage.cost = { total: 0.1234 };
 					await writeFile(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
 				}
 				return response;
@@ -1025,9 +1026,24 @@ test("direct widget and /subagent show the same saved reference, role and name",
 			assert.deepEqual(rows.filter((row) => row.startsWith("Direct")), ["Direct · D1.1 · worker · Search audit · observed locally [1]"]);
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
-			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.2k tok · /);
-			assert.equal(app.sentMessages[0]!.message.details.entries[0].tokens, 1_240);
-			assert.match(app.sentMessages[0]!.message.content, /1\.2k tok/);
+			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.2k tok · \$0\.12 · /);
+			const { details, content } = app.sentMessages[0]!.message;
+			assert.deepEqual([details.entries[0].tokens, details.entries[0].cost, details.cost], [1_240, 0.1234, 0.1234]);
+			assert.match(content, /Delegation completed · 1 completed · total \$0\.12\n.* · 1\.2k tok · \$0\.12 · /);
+			// Pi persists the delivered result on the branch; /subagent reads its measured costs.
+			app.sessionEntries.push({ type: "custom_message", customType: "subagent-direct-result", content, details, display: true });
+			const notices: string[] = [];
+			app.ctx.ui.notify = (message: string) => { notices.push(message); };
+			let selected = false;
+			app.ctx.ui.select = async (_title: string, choices: string[]) => {
+				if (selected) return undefined;
+				selected = true;
+				rows = choices;
+				return choices.find((choice) => choice.startsWith("Direct"));
+			};
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.match(rows.find((row) => row.startsWith("Direct"))!, /^Direct · D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
+			assert.match(notices.find((notice) => notice.includes("session"))!, / · \$0\.12$/);
 			assert.match(app.widget!.render(220)[0]!, /last read 125ms recorded/);
 			for (const width of [26, 12]) {
 				const [row] = app.widget!.render(width);
@@ -1496,6 +1512,38 @@ test("direct tasks require an access declaration and only write access reserves 
 		assert.equal((await call("write", "delegate_task", write)).block, true);
 		assert.equal((await call("unparsed", "delegate_task", { mode: "direct", role: "worker", name: "One", task: "one" })).block, true, "invalid input fails closed");
 		app.handlers.get("tool_result")!({ toolCallId: "main-edit" });
+	});
+});
+
+test("dryRun resolves a direct request without Herdr calls, records, admission, or follow-up and fails like a launch", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			const call = (toolCallId: string, input: unknown) => app.handlers.get("tool_call")!({ toolCallId, toolName: "delegate_task", input }, app.ctx);
+			const chain = [
+				{ role: "worker", name: "Edit", task: "edit", access: "write" },
+				{ role: "worker", name: "Review", task: "review {previous}", access: "read", modelClass: "fast" },
+			];
+			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "main-edit", toolName: "edit", input: {} }, app.ctx), undefined);
+			assert.equal((await call("real", { mode: "direct", chain })).block, true);
+			assert.equal(await call("dry", { mode: "direct", chain, dryRun: true }), undefined, "a dry run takes no checkout admission");
+			const result = await app.tool.execute("dry", app.tool.prepareArguments!({ chain, dryRun: true }), undefined, undefined, app.ctx);
+			assert.match(result.content[0].text, /^Dry run passed: direct chain request with 2 task\(s\) in .*\n1\. Edit · worker · test\/text-model · thinking low · access write \(JSON completion required\)\n2\. Review · worker · test\/text-model · thinking low · access read · after 1\nWrite request: .*\nNot checked: checkout admission/);
+			assert.deepEqual(result.details.entries.map(({ model, thinkingLevel, access }: any) => [model, thinkingLevel, access]),
+				[["test/text-model", "low", "write"], ["test/text-model", "low", "read"]]);
+			const unknown = { role: "worker", name: "Check", task: "inspect", access: "read", model: "test/missing" };
+			const failure = await app.tool.execute("dry-model", { ...unknown, dryRun: true }, undefined, undefined, app.ctx).then(() => "", (error: Error) => error.message);
+			assert.match(failure, /^Unknown delegate_task model: test\/missing/);
+			await assert.rejects(app.tool.execute("dry-role", { ...unknown, role: "missing", dryRun: true }, undefined, undefined, app.ctx), /missing/);
+			await assert.rejects(app.tool.execute("dry-continue", { ...unknown, continueFrom: "D9.1", dryRun: true }, undefined, undefined, app.ctx), /Cannot continue D9\.1: no direct worker/);
+			await new Promise(setImmediate);
+			assert.deepEqual([fake.calls, app.sessionEntries, app.sentMessages], [[], [], []]);
+			await assert.rejects(app.tool.execute("real-model", unknown, undefined, undefined, app.ctx), { message: failure });
+			app.handlers.get("tool_result")!({ toolCallId: "main-edit" });
+		});
 	});
 });
 

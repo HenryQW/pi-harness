@@ -79,6 +79,12 @@ An explicit model must support the route's thinking level. A launched child is n
 
 Direct `changeset` is rejected; use isolated mode for checked integration. Resource validation and recursive-delegation exclusions apply to every task. A request becomes a write request when any task declares `access: "write"`.
 
+### Dry run
+
+Set `"dryRun": true` on a direct or isolated `delegate_task` request to check it without a launch. The dry run does the same checks as a launch: request shape, Role lookup, route and model with thinking level, Skills, tools, MCP allowlist, Role extensions, config, and `continueFrom` eligibility. For an isolated request, it also checks the task graph, the canonical root `package.json` test script, final-check normalization (it adds `pnpm test`), and that Main is clean and committed. A failed check gives the same error as a launch.
+
+The result is a bounded plan. It shows each task's Role, resolved `provider/model`, thinking level, access or kind, dependencies, and checks. An isolated plan also shows the final checks. The dry run makes no Herdr call, Herdr tab, session record, saved state, worktree, lease, checkout admission, or follow-up. The plan lists each check it cannot do without such an effect as `Not checked: <reason>`. Examples are the Herdr host preflight, checkout admission, and the stop of a continued agent.
+
 Read requests skip checkout admission and return plain text. Parallel `tasks` run concurrently up to `maxSubagents`; chains stay ordered. The extension does not enforce `read`. Results stay in request order.
 
 Direct tasks use the declared tools, extensions, Skills, and MCP servers of the selected Role, including resources that can write. Authorization comes from your request and Main's bounded task packet, not from the capabilities of the Role. Name the permitted paths, actions, and exclusions. Preserve unrelated edits and staged changes. Authorize commits or external actions explicitly.
@@ -135,13 +141,17 @@ The extension retrieves each final answer from its exact Pi session file, not it
 
 The tool returns a task ID and the first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues the result after the current turn. If Main is idle, the result starts a turn. The extension does not report a blocked, stalled, unknown, or truncated result as success.
 
-In the result, each launched worker has a line with its model, thinking level, measured task tokens, and elapsed time. For example: `✓ [1/2] Check · worker · provider/model · thinking high · 1.5k tok · 42s`. If Pi recorded no usage, the line shows `tokens unknown`. Failed and stopped workers show the usage that the extension measured until they ended. A worker that the extension skipped before launch shows no usage.
+In the result, each launched worker has a line with its model, thinking level, measured task tokens, cost, and elapsed time. For example: `✓ [1/2] Check · worker · provider/model · thinking high · 1.5k tok · $0.12 · 42s`. The first line also shows the request total, such as `total $0.12`. Unknown and zero cost are not shown. If Pi recorded no usage, the line shows `tokens unknown`. Failed and stopped workers show the usage that the extension measured until they ended. A worker that the extension skipped before launch shows no usage.
 
-The result details contain the same values in each entry as `model`, `thinkingLevel`, `tokens`, and `elapsedMs`. When the token count is unknown, `tokens` is absent. If a task fails after its worker produced text, the result keeps a bounded excerpt marked as partial output. This excerpt is never success.
+The result details contain the same values in each entry as `model`, `thinkingLevel`, `tokens`, `cost`, and `elapsedMs`, and the request total as `cost`. When a value is unknown, its field is absent. If a task fails after its worker produced text, the result keeps a bounded excerpt marked as partial output. This excerpt is never success.
 
 Every worker result delivered to Main starts with a header. The header states that the text is the output of the worker and carries no user authority. The extension inserts a backslash in text that imitates harness framing. Examples are `<system-reminder>`-style tags and lines that start with `Human:` or `Assistant:`. Nothing else changes. Isolated status and follow-up answer previews use the same header.
 
 A session switch or shutdown stops observation and preserves tab identities for recovery. To inspect exact tabs, agents, and Pi session files, open `/subagent` on the session branch. This includes tabs launched after the first. The menu has one row for each workflow.
+
+A single worker shows its reference, Role, and name (`D7.1 · worker · Search audit`). A multi-worker workflow shows its reference and worker count (`D8 · 3 workers`). When you select it, the menu lists each recorded worker by reference, Role, and name with its exact IDs. After Main receives the result, the row shows the request cost and each worker line shows its cost. References and names help you match rows. The extension never uses them to decide ownership.
+
+Older records without saved references show their saved allocation label or exact task ID. A `recorded only` row does not prove that its workers run or finished. The menu labels locally observed work separately.
 
 ### Checkout change reports
 
@@ -156,10 +166,6 @@ For a read request, the extension compares the same snapshot at launch and when 
 
 Outside a Git repository, the extension makes no report and the task continues. If a snapshot fails, the task does not fail; the result shows `change report unavailable: <reason>` (or `stale-read check unavailable: <reason>` for a read request).
 
-A single worker shows its reference, Role, and name (`D7.1 · worker · Search audit`). A multi-worker workflow shows its reference and worker count (`D8 · 3 workers`). When you select it, the menu lists each recorded worker by reference, Role, and name with its exact IDs. References and names help you match rows. The extension never uses them to decide ownership.
-
-Older records without saved references show their saved allocation label or exact task ID. A `recorded only` row does not prove that its workers run or finished. The menu labels locally observed work separately.
-
 ### Status widgets
 
 The TUI has two separate compact status widgets. Each widget has one row for each visible worker or task. `D` marks direct work, and `I` marks isolated work. Badges such as `[S]` and `[I3]` identify the Role initial. Isolated badges also include the model class: `1` fast, `2` balanced, `3` frontier, `*` fav.
@@ -168,13 +174,13 @@ Each direct row starts with a saved direct reference such as `D7.1`. `D7` is the
 
 A session switch can move a workflow into a session that already uses its number. In that case, the workflow gets a new number there. An existing Herdr tab keeps its original launch label.
 
-The direct widget shows the launched model, thinking level, elapsed time, and measured task tokens (`— tok` until usage is available). Failed rows show before working and completed rows. When rows overflow, `… N more` includes counts by status.
+The direct widget shows the launched model, thinking level, elapsed time, measured task tokens (`— tok` until usage is available), and cost next to the tokens (such as `$0.12`; not shown when unknown or zero). Failed rows show before working and completed rows. When rows overflow, `… N more` includes counts by status.
 
 The isolated widget shows the recorded task state and any retained workspace. It does not show reliable live model, thinking, or token readings from Herdr. Attention shows before ordinary work, and overflow uses `+N more · /subagent`. An aborted request with visible tasks has its own `request aborted` row. This row does not change the recorded statuses of the tasks.
 
 A committed worker without a checked candidate can show attention, not readiness. Status glyphs use the active TUI theme. The text also names the status without color.
 
-The direct widget and result summaries show measured tokens for the current task turn. This count adds input and output tokens from completed assistant usage records. It excludes cache-read and cache-write tokens. A continued worker counts only its new task turn. Missing usage stays unknown. This display count does not change token-limit accounting.
+The direct widget and result summaries show measured tokens for the current task turn. This count adds input and output tokens from completed assistant usage records. It excludes cache-read and cache-write tokens. A continued worker counts only its new task turn. Missing usage stays unknown. This display count does not change token-limit accounting. The cost is the sum of `usage.cost.total` from the same records, read in the same session read. Isolated task state records no usage, so isolated rows show no tokens or cost.
 
 A ready isolated candidate is **not promoted** to Main. To reload the menu and the isolated widget from saved state, choose **Refresh** in `/subagent`. Refresh does not recover or change a request. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
 

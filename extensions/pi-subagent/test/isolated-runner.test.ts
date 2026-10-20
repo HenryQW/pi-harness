@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import test from "node:test";
@@ -581,6 +581,24 @@ function runtimeCallDelta(runtime: FakeRuntime, before: ReturnType<typeof runtim
 		value - before[key as keyof typeof before],
 	])) as ReturnType<typeof runtimeCallCounts>;
 }
+
+test("plan runs execute admission checks without state, host calls, or workers and fails like execute", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	const inputs: Array<Parameters<CoordinatorRuntime["preflight"]>[0]> = [];
+	const preflight = runtime.preflight.bind(runtime);
+	runtime.preflight = async (input, context) => { inputs.push(input); return await preflight(input, context); };
+	const before = runtimeCallCounts(runtime);
+	const plan = await runner.plan(request("dry-run", [changesetTask("change")]), root);
+	assert.deepEqual(plan.request.finalChecks, [{ command: "pnpm", args: ["test"] }, { command: "check-final", args: [] }]);
+	assert.deepEqual([plan.root, plan.main, inputs.map(({ dryRun }) => dryRun)], [await realpath(root), runtime.main, [true]]);
+	assert.deepEqual(runtimeCallDelta(runtime, before), { ...Object.fromEntries(Object.keys(before).map((key) => [key, 0])), preflights: 1 });
+	await assert.rejects(readdir(store.stateDirectory(plan.root)), { code: "ENOENT" }, "no state, lock, or lease file");
+	await writeFile(join(root, "package.json"), "{}");
+	await assert.rejects(runner.plan(request("dry-run", [changesetTask("change")]), root), /Canonical root test script is missing/);
+	await assert.rejects(runner.execute(request("dry-run", [changesetTask("change")]), root), /Canonical root test script is missing/);
+	runtime.main = { ...runtime.main, index: oid("d") };
+	await assert.rejects(runner.plan(request("dry-run", [textTask("text")]), root), /Main identity must be clean and committed/);
+});
 
 test("v4 unfinished requests block v5 admission without changing legacy state or launching workers", async (t) => {
 	const { root, runtime, runner, store } = await harness(t);

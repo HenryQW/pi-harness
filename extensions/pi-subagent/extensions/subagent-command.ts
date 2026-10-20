@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DiscardPlan } from "../dist/discard.js";
+import { compactCost } from "./result-transport.ts";
 
 /** Saved before launch for user matching only; never ownership or mutation authority. */
 export interface DirectDisplay {
@@ -23,10 +24,13 @@ export interface DirectTask {
 	/** Entry IDs of running workers in a locally owned all-read workflow; each can be stopped alone. */
 	stoppable?: readonly string[];
 	recovery?: string;
+	/** Request total cost from the delivered result; absent before delivery or when unmeasured. */
+	cost?: number;
 	/** Recorded workers by original index; empty for legacy records. */
 	workers: readonly DirectDisplay[];
-	tabs: readonly { entryId: string; name: string; tabId: string; paneId: string; sessionFile: string; display?: DirectDisplay }[];
+	tabs: readonly { entryId: string; name: string; tabId: string; paneId: string; sessionFile: string; display?: DirectDisplay; cost?: number }[];
 }
+const costSuffix = (cost: number | undefined) => compactCost(cost) === undefined ? "" : ` · ${compactCost(cost)}`;
 
 const workerLabel = (display: DirectDisplay) => `${directRef(display)} · ${display.role} · ${display.title}`;
 const directLabel = ({ name, workers: [first] }: DirectTask): string => !first ? name
@@ -260,7 +264,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "close" };
 				const selections: Choice<Selection>[] = [
 					// One row per workflow; new records keep opaque IDs in details. Status is last so clipping preserves the reference.
-					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${directLabel(task)} · ${task.status}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct" as const, task } })),
+					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct" as const, task } })),
 					...(inventory?.requests ?? []).filter((request) => request.orphaned || history || !completed(request.status) || /retained/i.test(request.status)).map((request) => ({ label: `Isolated · ${request.orphaned ? "orphaned · " : ""}${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
 					{ label: "Refresh", value: { kind: "refresh" as const } },
 					{ label: history ? "Active work" : "Completed / history (including retained work)", value: { kind: "history" as const } },
@@ -279,10 +283,10 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (selected.kind === "direct") {
 					const { task } = selected;
 					const label = clean(directLabel(task));
-					ctx.ui.notify(`Direct workflow ${label} · ${clean(task.status)} · ID ${JSON.stringify(task.id)}`, "info");
+					ctx.ui.notify(`Direct workflow ${label} · ${clean(task.status)}${costSuffix(task.cost)} · ID ${JSON.stringify(task.id)}`, "info");
 					if (task.recovery) ctx.ui.notify(clean(task.recovery, 4000), "warning");
 					for (const tab of task.tabs) {
-						ctx.ui.notify(`${tab.display ? `${clean(workerLabel(tab.display))} · ` : ""}task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}`, "info");
+						ctx.ui.notify(`${tab.display ? `${clean(workerLabel(tab.display))} · ` : ""}task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}${costSuffix(tab.cost)}`, "info");
 					}
 					const untabbed = task.workers.filter((worker) => !task.tabs.some((tab) => tab.display?.worker === worker.worker));
 					for (const worker of untabbed) ctx.ui.notify(`${clean(workerLabel(worker))} · no verified tab recorded`, "info");

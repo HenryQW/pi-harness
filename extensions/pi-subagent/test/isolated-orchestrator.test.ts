@@ -1205,6 +1205,32 @@ test("resume saved before session replacement cannot acknowledge or paint the ne
 	assert.equal(harness.sent.length, 0);
 });
 
+test("an isolated dry run returns the bounded resolved plan without execute, saved state, or follow-up", async () => {
+	const planned: unknown[][] = [];
+	const harness = createHarness({ runner: {
+		async plan(...args: unknown[]) {
+			planned.push(args);
+			return { request: { ...EXECUTE_REQUEST, finalChecks: [{ command: "pnpm", args: ["test"] }, ...EXECUTE_REQUEST.finalChecks] },
+				root: CANONICAL_ROOT, main: RECORDED_MAIN, routes: [{ role: "implementer", modelClass: "fast", model: "test/fast", thinkingLevel: "low" }] };
+		},
+		async execute() { throw new Error("A dry run must not execute."); },
+	} as never });
+	const result = await harness.surface.plan(EXECUTE_REQUEST, undefined, context("/workspace"));
+	assert.deepEqual(planned, [[EXECUTE_REQUEST, "/workspace", undefined]]);
+	assert.equal(result.content[0].text, [
+		`Dry run passed: isolated request request-one in ${CANONICAL_ROOT} at Main ${RECORDED_MAIN.head.slice(0, 12)} (${RECORDED_MAIN.branch}). No state, worktree, Herdr tab, lease, or follow-up was created.`,
+		"1. unit-one · changeset · implementer · fast → test/fast · thinking low",
+		"   depends on: none · context from: none",
+		"   checks: pnpm test",
+		"Final checks: pnpm test; pnpm typecheck",
+		"Not checked: Herdr host preflight (client and server versions, API schema, lsof, current workspace identity): it calls Herdr.",
+		"Not checked: request ID uniqueness and saved-state admission: they need the state lock.",
+	].join("\n"));
+	assert.deepEqual((result.details as { tasks: unknown[] }).tasks, [{ id: "unit-one", kind: "changeset", role: "implementer", modelClass: "fast",
+		model: "test/fast", thinkingLevel: "low", dependsOn: [], contextFrom: [], checks: [{ command: "pnpm", args: ["test"] }] }]);
+	assert.deepEqual(harness.sent, []);
+});
+
 test("production components complete host preflight before inspecting Main", async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-components-")));
 	t.after(async () => await rm(root, { recursive: true, force: true }));
