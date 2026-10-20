@@ -35,7 +35,7 @@ test("missing config directory still returns validated built-in implementer, rev
 	assert.deepEqual(roles.map(({ name, tools, extensions, skills, mcps }) => ({ name, tools, extensions, skills, mcps })), [
 		{ name: "implementer", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
 		{ name: "reviewer", tools: ["read", "grep", "find", "ls", "git_read"], extensions: [], skills: [], mcps: [] },
-		{ name: "scout", tools: ["read", "grep", "find", "ls"], extensions: [], skills: [], mcps: [] },
+		{ name: "scout", tools: ["read", "grep", "find", "ls", "git_read"], extensions: [], skills: [], mcps: [] },
 	]);
 
 	assert.deepEqual(roles.map(({ modelClass }) => modelClass), [undefined, undefined, undefined]);
@@ -63,6 +63,7 @@ test("missing config directory still returns validated built-in implementer, rev
 
 	assert.match(scout!.systemPrompt, /Answer only the bounded discovery questions/i);
 	assert.match(scout!.systemPrompt, /Do not design, recommend, implement, edit, or run shell commands/i);
+	assert.match(scout!.systemPrompt, /use only `git_read`/i);
 	assert.match(scout!.systemPrompt, /path:line evidence/i);
 });
 

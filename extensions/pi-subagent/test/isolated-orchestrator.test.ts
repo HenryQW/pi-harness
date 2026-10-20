@@ -1406,6 +1406,39 @@ test("text recovery exposes only bounded text attempt evidence", async () => {
 	assert.doesNotMatch(recovery.attempt.failure, /UNEXPOSED_ATTEMPT_TAIL/);
 });
 
+test("status projects Main's next integration action instead of an unexplained request failure", async () => {
+	const tip = { ...CURRENT_MAIN, branch: "refs/heads/request-one-integration-1" };
+	const attempt = PRIVATE_STATE.tasks[0]!.attempts[0]!;
+	const stateFor = (status: "staging" | "validating" | "ready") => ({
+		...PRIVATE_STATE,
+		tasks: [{ ...PRIVATE_STATE.tasks[0], status: "ready_to_integrate", failure: undefined, attempts: [{ ...attempt, number: 1 }] }],
+		integration: {
+			candidates: [{ taskId: "unit-one", attempt: 1, base: RECORDED_MAIN, tip: CURRENT_MAIN,
+				checks: { passed: true }, worker: "retained" }],
+			generations: [{
+				number: 1, status, expectedMain: RECORDED_MAIN, integrationBase: RECORDED_MAIN, order: ["unit-one"],
+				stages: [{ taskId: "unit-one", attempt: 1, source: CURRENT_MAIN, onto: RECORDED_MAIN, status: "staged", tip }],
+				worktree: { path: "/tmp/pi-integration", cwd: "/tmp/pi-integration", branch: "request-one-integration-1" },
+				combinedTip: tip,
+			}],
+		},
+	}) as unknown as RunState;
+	const exact = `generation 1 and expectedTip ${JSON.stringify(tip)}`;
+	for (const [status, nextAction] of [
+		["staging", `Every candidate is staged; run subagent_integrate validate with ${exact}.`],
+		["validating", "Combined validation of generation 1 is running; wait for its follow-up."],
+		["ready", `Combined validation passed; promote with subagent_integrate promote using ${exact}.`],
+	] as const) {
+		const state = stateFor(status);
+		const harness = createHarness({ runner: { async status() { return { text: "bounded status", state }; } } as never });
+		const result = await executeTool(namedTool(harness, "subagent_status"), { id: "request-one" },
+			new AbortController().signal, context(CANONICAL_ROOT));
+		assert.deepEqual((result.details as { state: { needsAttention: unknown } }).state.needsAttention,
+			{ scope: "request", nextAction }, status);
+		assert.ok(Check(StatusOutputSchema, result.structuredContent), status);
+	}
+});
+
 test("execute keeps raw cwd while lookup actions use canonical root, bounded context, and signals", async () => {
 	const harness = createHarness();
 	const nestedCwd = "/canonical/repository/nested/deeper";
