@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
 import {
 	checkoutNote,
+	snapshotCheckout,
 	MAX_WORKFLOW_ENTRIES,
 	identifyWorkflowEntries,
 	parseDelegateTask,
@@ -307,4 +312,16 @@ test("declared paths belong only to direct write tasks", () => {
 test("a failed checkout snapshot becomes a note, never a task failure", async () => {
 	assert.deepEqual(await checkoutNote(process.cwd(), new Error("x"), true), { kind: "unavailable", check: "change report", reason: "x" });
 	assert.deepEqual(await checkoutNote(process.cwd(), new Error("x"), false), { kind: "unavailable", check: "stale-read check", reason: "x" });
+});
+
+test("a checkout snapshot reads a worktree rename source as a path, not a status entry", async (t) => {
+	const cwd = await mkdtemp(join(tmpdir(), "pi-snapshot-rename-"));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", ...args], { cwd });
+	git("init", "-q");
+	await writeFile(join(cwd, "a.txt"), "rename detection needs enough shared content\n".repeat(5));
+	git("add", "."); git("commit", "-qm", "base");
+	await rename(join(cwd, "a.txt"), join(cwd, "b.txt"));
+	git("add", "-N", "b.txt");
+	assert.deepEqual([...(await snapshotCheckout(cwd))!.entries.keys()].sort(), ["a.txt", "b.txt"]);
 });

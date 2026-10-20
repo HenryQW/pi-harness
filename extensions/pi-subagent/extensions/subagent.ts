@@ -675,7 +675,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "delegate_task",
 		label: "Subagent",
-		description: `Delegate explicitly authorized direct work in the shared checkout or a durable checked isolated graph to Pi Roles. Every direct task declares access read or write; classify honestly, because read is not enforced (no sandbox). Write tasks may declare paths (repo-relative globs); the result reports each write task's new commits and changed paths and flags changes outside its paths. This is a report, not enforcement. A read result warns when the checkout changed during the task. Roles: ${roleSummary()}.`,
+		description: `Delegate explicitly authorized direct work in the shared checkout or a durable checked isolated graph to Pi Roles. Every direct task declares access read or write; classify honestly, because read is not enforced (no sandbox). Write tasks may declare paths (repo-relative globs); the result reports new commits and changed paths for each task in a write request and flags changes outside its paths. This is a report, not enforcement. A read request's result warns when the checkout changed during the task. Roles: ${roleSummary()}.`,
 		promptSnippet: "Delegate authorized shared-checkout work or a checked isolated task graph",
 		promptGuidelines: [
 			"Keep trivial mechanically verifiable work in Main. Use mode direct for bounded, explicitly authorized work with the Role's declared resources in the shared checkout, including writes or commits. Specify allowed scope and exclusions; preserve unrelated changes. Direct work has no isolated checks, rollback, or integration guarantees. Use mode isolated for checked changesets; explicit mode never falls back.",

@@ -219,20 +219,21 @@ async function contentIdentity(path: string): Promise<string> {
 	return hash.digest("hex");
 }
 
+// Background snapshots must not take index.lock while Main or a worker writes.
 async function git(cwd: string, args: string[], codes = [0]) {
-	const result = await runGit(args, cwd);
+	const result = await runGit(["--no-optional-locks", ...args], cwd);
 	if (!codes.includes(result.code)) throw new Error(`git ${args[0]} exited ${result.code}: ${result.stderr.trim() || "no diagnostic"}`);
 	return result;
 }
 
 /** Snapshot the checkout that contains `cwd`; undefined outside a Git repository. Other Git failures throw. */
 export async function snapshotCheckout(cwd: string): Promise<CheckoutSnapshot | undefined> {
-	const top = await runGit(["rev-parse", "--show-toplevel"], cwd);
+	const top = await runGit(["--no-optional-locks", "rev-parse", "--show-toplevel"], cwd);
 	if (top.code !== 0 && /not a git repository/i.test(top.stderr)) return undefined;
 	const root = top.stdout.trim();
 	if (top.code !== 0 || !root) throw new Error(`git rev-parse exited ${top.code}: ${top.stderr.trim() || "no diagnostic"}`);
 	const head = (await git(root, ["rev-parse", "--verify", "--quiet", "HEAD"], [0, 1])).stdout.trim() || undefined;
-	// Porcelain paths are repository-relative; a rename or copy lists its source after the destination.
+	// Porcelain paths are repository-relative; an index or worktree rename or copy lists its source after the destination.
 	const fields = (await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout.split("\0");
 	const entries = new Map<string, string>();
 	for (let index = 0; index < fields.length; index++) {
@@ -240,7 +241,7 @@ export async function snapshotCheckout(cwd: string): Promise<CheckoutSnapshot | 
 		if (!field) continue;
 		const status = field.slice(0, 2);
 		entries.set(field.slice(3), status);
-		if (/[RC]/.test(status[0]!)) entries.set(fields[++index]!, status);
+		if (/[RC]/.test(status)) entries.set(fields[++index]!, status);
 	}
 	// Status alone misses a further edit to a path that was already dirty.
 	for (const [path, status] of entries) entries.set(path, `${status} ${await contentIdentity(posix.join(root, path))}`);
