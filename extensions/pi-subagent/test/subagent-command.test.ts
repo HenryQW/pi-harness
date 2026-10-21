@@ -11,7 +11,7 @@ const TAGGED = { fg: (color: string, text: string) => `<${color}>${text}</${colo
 const plainLines = (component: Box, width: number) => component.render(width).map((line) => line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
 
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
-function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan } = {}) {
+function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan; cleanup?: { failed: number; skipped: number } } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
@@ -49,11 +49,11 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 			key: "task/1", identity: "saved", path: "/owned", branch: "pi-subagent/subagent-000000000000000000000000", tip: "a".repeat(40),
 			checkout: true, commits: 1, dirty: true, ignored: ["cache/"], hosts: ["tab worker-tab"], blockers: [],
 		}] }),
-		discard: async (_cwd, plan, current) => { assert.equal(current(), true); discarded.push(plan.requestId); discardedKeys.push(...plan.items.map((item) => item.key)); return "removed: task/1"; },
+		discard: async (_cwd, plan, current) => { assert.equal(current(), true); discarded.push(plan.requestId); discardedKeys.push(...plan.items.map((item) => item.key)); return { text: "removed: task/1", failed: 0, skipped: 0, ...options.cleanup }; },
 		prune: async (_cwd, items, allowIgnored, current) => {
 			assert.equal(current(), true);
 			pruned.push({ branches: items.map(({ branch }) => branch), allowIgnored });
-			return "Pi Subagent prune in /git: removed";
+			return { text: "Pi Subagent prune in /git: removed", failed: 0, skipped: 0, ...options.cleanup };
 		},
 		inspectInTab: async (_root, id, _ctx, current) => {
 			assert.equal(current(), true); inspectCount++;
@@ -174,11 +174,11 @@ test("TUI reports use Pi's custom-message box: a tone-colored title over a Markd
 
 test("picker rows start with an uncolored status glyph; identity comes first", async () => {
 	const task = (id: string, status: string) => ({ id, name: id, status, workers: [], tabs: [] });
-	const h = harness({ direct: ["working", "admission retained", "failed", "completed"].map((status) => task(`t-${status}`, status)) });
+	const h = harness({ direct: ["working", "admission retained", "failed", "completed", "recorded only; not proof of running or completion"].map((status) => task(`t-${status}`, status)) });
 	h.responses.push(h.pick("Completed / history"), h.pick("Close"));
 	await h.run();
 	const rows = h.dialogs[1]!.options!.filter((label) => label.startsWith("  "));
-	assert.deepEqual(rows, ["  ⚠ t-admission retained · admission retained", "  ✗ t-failed · failed", "  ● t-working · working", "  ✓ t-completed · completed", "  ● request · working · Same"]);
+	assert.deepEqual(rows, ["  ⚠ t-admission retained · admission retained", "  ✗ t-failed · failed", "  ● t-working · working", "  ⚠ t-recorded only; not proof of running or completion · recorded only; not proof of running or completion", "  ✓ t-completed · completed", "  ● request · working · Same"]);
 });
 
 test("legacy direct recovery, history and duplicate labels retain exact records", async () => {
@@ -469,7 +469,14 @@ test("prune removes listed prunable items after one confirmation; ignored conten
 	all.confirms.push(true, true);
 	await all.run("prune");
 	assert.deepEqual(all.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
-	assert.equal(all.reports.at(-1), "**● Pi Subagent prune in /git: removed**");
+	assert.equal(all.reports.at(-1), "**✓ Pi Subagent prune in /git: removed**");
+	// Retained resources never read as a normal completion.
+	for (const [cleanup, glyph] of [[{ failed: 1, skipped: 1 }, "✗"], [{ failed: 0, skipped: 1 }, "⚠"]] as const) {
+		const partial = harness({ prune: prunePlan, cleanup });
+		partial.confirms.push(true, true);
+		await partial.run("prune");
+		assert.equal(partial.reports.at(-1), `**${glyph} Pi Subagent prune in /git: removed**`);
+	}
 });
 
 test("prune approval names every ignored entry and leaves out a checkout whose list does not fit", async () => {
@@ -523,7 +530,7 @@ test("isolated discard requires one explicit confirmation; cancel changes nothin
 		assert.deepEqual(h.discarded, confirmed ? ["request"] : []);
 		const dialogs = h.dialogs.filter((dialog) => dialog.kind === "confirm");
 		assert.equal(dialogs.length, 1);
-		assert.deepEqual(h.reports.slice(1), confirmed ? ["**● removed: task/1**"] : []);
+		assert.deepEqual(h.reports.slice(1), confirmed ? ["**✓ removed: task/1**"] : []);
 		assert.match(dialogs[0]!.options![0]!, /Committed, uncommitted, and ignored content.*permanently deleted/);
 		assert.match(h.reports[0]!, /^\*\*⚠ Close and delete request request\*\*\n\n### ⚠ task\/1 · can delete\n- \*\*path:\*\* `\/owned`\n[\s\S]*\*\*commits ahead of recorded base:\*\* 1\n- \*\*dirty:\*\* yes\n- \*\*ignored entries, deleted with all content inside them:\*\* `cache\/`/);
 	}

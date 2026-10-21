@@ -1065,7 +1065,7 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 				return choices.find((choice) => choice.startsWith("  "));
 			};
 			await app.commands.get("subagent")!.handler("", app.ctx);
-			assert.match(rows.find((row) => row.startsWith("  "))!, /^  ● D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
+			assert.match(rows.find((row) => row.startsWith("  "))!, /^  ⚠ D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
 			assert.match(notices.find((notice) => notice.includes("session"))!, /\n- \*\*cost:\*\* \\\$0\.12$/);
 			assert.match(app.widget!.render(220)[0]!, /last read 125ms recorded/);
 			for (const width of [26, 12]) {
@@ -1380,10 +1380,10 @@ test("display numbers continue after reload and carried workflows never reuse a 
 			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices.filter((row) => row.startsWith("  ")); return undefined; };
 			await app.commands.get("subagent")!.handler("", app.ctx);
 			assert.deepEqual(rows.map((row) => row.replace(/ \[\d+\]$/, "")).sort(), [
-				"  ● D1.1 · worker · Other · recorded only; not proof of running or completion",
-				"  ● D2 · 2 workers · recorded only; not proof of running or completion",
-				"  ● direct-legacy · recorded only; not proof of running or completion",
+				"  ⚠ D1.1 · worker · Other · recorded only; not proof of running or completion",
+				"  ⚠ D2 · 2 workers · recorded only; not proof of running or completion",
 				"  ⚠ Legacy label · allocation unverified; admission retained · direct-alloc",
+				"  ⚠ direct-legacy · recorded only; not proof of running or completion",
 			]);
 			const next = await app.tool.execute("next", { role: "worker", name: "Next", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
 			assert.match(next.content[0].text, /^Direct delegation started · D3 · /);

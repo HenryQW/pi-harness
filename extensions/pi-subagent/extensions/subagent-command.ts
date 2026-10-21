@@ -86,9 +86,9 @@ export interface SubagentCommandAdapter {
 	/** Read-only review of pi-subagent worktrees and branches in the canonical repository. */
 	prunePlan(cwd: string): Promise<PrunePlan>;
 	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
-	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<string>;
+	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<CleanupReport>;
 	/** Re-verify and remove reviewed prunable items; returns a bounded report. */
-	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<string>;
+	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<CleanupReport>;
 	/** Read-only Role catalog report with routes and per-file load errors. */
 	roles(ctx: ExtensionContext): RolesReport;
 	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ ref: string; tabId: string; name: string; sessionFile: string }>;
@@ -99,6 +99,8 @@ export interface SubagentCommandAdapter {
 	epoch(): number;
 }
 
+/** Bounded removal report with outcome counts, so retained resources never read as a normal completion. */
+export interface CleanupReport { text: string; failed: number; skipped: number }
 export interface RoleReport {
 	name: string;
 	source: string;
@@ -199,10 +201,12 @@ const summary = (text: string, max = 60): string => {
 const isolatedLabel = ({ id, status, name }: IsolatedRequest): string => `${id} · ${status} · ${summary(name)}`;
 const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
-const statusTone = (status: string): Tone => /attention|blocked|retained/i.test(status) ? "warning"
+// Recorded-only and unverified work is uncertain, not active.
+const statusTone = (status: string): Tone => /attention|blocked|retained|recorded only|unverified/i.test(status) ? "warning"
 	: /failed|failure|aborted/i.test(status) ? "error" : completed(status) ? "success" : "info";
 /** Uncolored: the selector colors each whole option, and inner ANSI resets break its highlight. */
 const glyph = (status: string) => TONES[statusTone(status)].glyph;
+const cleanupReport = ({ text, failed, skipped }: CleanupReport): Report => textReport(failed ? "error" : skipped ? "warning" : "success", text);
 
 const PRUNE_IGNORED_CONFIRM_CODE_POINTS = 4_000;
 const NOT_SHOWN = "they are not removed in this run; run /subagent prune again after this run.";
@@ -380,7 +384,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (!selected.length) return;
 				try {
 					const report = await adapter.prune(ctx.cwd, selected, allowIgnored, current);
-					if (valid()) deliver(ctx, textReport("info", report));
+					if (valid()) deliver(ctx, cleanupReport(report));
 				} catch (error) { if (valid()) ctx.ui.notify(`Prune failed: ${errorText(error)}`, "error"); }
 				return;
 			}
@@ -483,7 +487,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 							if (!valid()) return;
 							if (confirmed) {
 								const report = await adapter.discard(ctx.cwd, { ...plan, items }, current);
-								if (valid()) deliver(ctx, textReport("info", report));
+								if (valid()) deliver(ctx, cleanupReport(report));
 							}
 						} catch (error) { if (valid()) ctx.ui.notify(`Close and delete failed: ${errorText(error)}`, "error"); }
 						break;
