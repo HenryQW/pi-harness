@@ -89,8 +89,8 @@ type HarnessOptions = {
 	repositoryApiResults?: Record<string, ReturnType<typeof result>>;
 	codexReactions?: unknown[];
 	codexComments?: unknown[];
-	branchRules?: unknown[];
-	rulesets?: Record<string, unknown>;
+	/** Exact REST endpoint to response body; unlisted endpoints stay unexpected. */
+	restResults?: Record<string, unknown>;
 };
 
 const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed });
@@ -383,11 +383,8 @@ function harness(options: HarnessOptions = {}) {
 				if (options.codexComments && endpoint === "repos/acme/project/issues/42/comments?per_page=100") {
 					return result(JSON.stringify([options.codexComments]));
 				}
-				if (options.branchRules && endpoint === "repos/acme/project/rules/branches/main?per_page=100") {
-					return result(JSON.stringify([options.branchRules]));
-				}
-				const ruleset = options.rulesets?.[endpoint];
-				if (ruleset) return result(JSON.stringify(ruleset));
+				const rest = options.restResults?.[endpoint];
+				if (rest) return result(JSON.stringify(rest));
 				if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
 					const configuredResult = options.repositoryApiResults?.[endpoint];
 					if (configuredResult) return configuredResult;
@@ -2332,36 +2329,53 @@ test("derives the opt-in Codex review gate from reactions, the current-head summ
 });
 
 test("a named PR blocked only by required review is ready through a bypassable ruleset with passed required checks", async () => {
+	const rule = (type: string, parameters?: Record<string, unknown>, id = 25064846) =>
+		({ type, ruleset_id: id, ruleset_source_type: "Repository", ...(parameters ? { parameters } : {}) });
 	const rules = [
-		{ type: "pull_request", ruleset_id: 25064846, ruleset_source_type: "Repository", parameters: { required_approving_review_count: 1, allowed_merge_methods: ["squash"] } },
-		{ type: "required_status_checks", ruleset_id: 25064846, ruleset_source_type: "Repository", parameters: { required_status_checks: [{ context: "test", integration_id: 15368 }], strict_required_status_checks_policy: false } },
-		{ type: "required_linear_history", ruleset_id: 25064846, ruleset_source_type: "Repository" },
+		rule("pull_request", { required_approving_review_count: 1, allowed_merge_methods: ["squash"] }),
+		rule("required_status_checks", { required_status_checks: [{ context: "test", integration_id: 15368 }], strict_required_status_checks_policy: false }),
+		rule("required_linear_history"),
+		// A deletion-only ruleset needs no bypass, so its ruleset is never read.
+		rule("deletion", undefined, 7),
 	];
-	const ruleset = (bypass: string) => ({ "repos/acme/project/rulesets/25064846": { id: 25064846, name: "main: require approval", current_user_can_bypass: bypass } });
+	const passed = [actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" })];
 	const cases = [
-		{ name: "bypassable ruleset with passed check", bypass: "pull_requests_only", checks: [actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "ready" },
-		{ name: "required check that never started", bypass: "pull_requests_only", checks: [actionsCheck({ name: "lint", conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "wait" },
-		{ name: "ruleset without bypass", bypass: "never", checks: [actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "block" },
+		{ name: "bypassable ruleset with passed check", checks: passed, verdict: "ready" },
+		{ name: "required check that never started", checks: [actionsCheck({ name: "lint", conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "wait" },
+		{ name: "ruleset without bypass", bypass: "never", checks: passed, verdict: "block", reason: "ruleset 25064846 cannot be bypassed by the current user" },
+		{ name: "unverified rule type", extra: [rule("workflows", { workflows: [] })], checks: passed, verdict: "block", reason: "ruleset 25064846 rule workflows is not verified for a bypass merge" },
+		{ name: "classic branch protection", protection: { enabled: true }, checks: passed, verdict: "block", reason: "classic branch protection applies to main" },
 	];
-	for (const { name, bypass, checks, verdict } of cases) {
+	for (const { name, bypass = "pull_requests_only", extra = [], protection = { enabled: false }, checks, verdict, reason } of cases) {
 		const { pi, context } = harness({
 			pushUrls: { origin: "git@github.com:acme/project.git" },
 			candidates: [pullRequest({ reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED", statusCheckRollup: checks })],
-			branchRules: rules,
-			rulesets: ruleset(bypass),
+			restResults: {
+				"repos/acme/project/rules/branches/main?per_page=100": [[...rules, ...extra]],
+				"repos/acme/project/branches/main": { name: "main", protected: true, protection },
+				"repos/acme/project/rulesets/25064846": { id: 25064846, name: "main: require approval", current_user_can_bypass: bypass },
+			},
 		});
 		const loaded = await loadNamedPullRequest(pi, context, 42);
 		const initial = deriveNamedPullRequestVerdict(loaded.lifecycle, loaded.conditions, loaded.unresolvedThreads.blocking);
 		assert.deepEqual(initial.reasons, ["required review pending", "merge policy not satisfied"], name);
 		assert.ok(isRulesetBypassCandidate(initial, loaded.mergeStateStatus), name);
 		const evidence = await readRulesetBypass(pi, context, loaded);
-		assert.deepEqual(evidence.rulesets[0]?.allowedMergeMethods, ["squash"], name);
+		assert.deepEqual(evidence.rulesets.map(({ id, allowedMergeMethods }) => [id, allowedMergeMethods]), [[25064846, ["squash"]]], name);
 		const derived = applyRulesetBypass(initial, evidence, loaded.checks, "squash");
 		assert.equal(derived.verdict, verdict, name);
 		if (verdict === "ready") assert.deepEqual(derived.bypass, { rulesets: [{ id: 25064846, name: "main: require approval" }], reason: "required review pending; merge policy not satisfied" });
 		if (verdict === "wait") assert.deepEqual(derived.reasons, ["required check test has not passed"]);
-		if (verdict === "block") assert.ok(derived.reasons.includes("ruleset 25064846 cannot be bypassed by the current user"));
+		if (reason) assert.ok(derived.reasons.includes(reason), name);
 	}
+
+	// The whole branch name is one path parameter; the strict mock rejects any other endpoint.
+	const slash = harness({ restResults: {
+		"repos/acme/project/rules/branches/release%2F1.x?per_page=100": [[]],
+		"repos/acme/project/branches/release%2F1.x": { name: "release/1.x", protection: { enabled: false } },
+	} });
+	const evidence = await readRulesetBypass(slash.pi, slash.context, { host: "github.com", base: { repository: "acme/project", ref: "release/1.x", oid: BASE_HEAD } });
+	assert.deepEqual(evidence, { rulesets: [], requiredChecks: [], classicProtection: false, ref: "release/1.x" });
 });
 
 test("loads a named origin pull request read-only and applies the P0/P1 merge bar", async () => {

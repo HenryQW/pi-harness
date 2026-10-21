@@ -105,9 +105,15 @@ export type NamedPullRequestVerdict = {
 export type CheckOutcome = "success" | "failure" | "running";
 /** Rulesets that apply to the base branch and the check contexts they require. */
 export type RulesetBypassEvidence = {
-	/** `currentUserCanBypass` is null when unknown; `allowedMergeMethods` is null without a merge method limit. */
-	rulesets: Array<{ id: number; name: string | null; currentUserCanBypass: string | null; allowedMergeMethods: string[] | null }>;
+	/**
+	 * Rulesets with a rule that a merge must satisfy. `currentUserCanBypass` is null when unknown;
+	 * `allowedMergeMethods` is null without a merge method limit; `unverifiedRules` lists rule types pi-pr cannot check.
+	 */
+	rulesets: Array<{ id: number; name: string | null; currentUserCanBypass: string | null; allowedMergeMethods: string[] | null; unverifiedRules: string[] }>;
 	requiredChecks: string[];
+	/** True unless GitHub reports classic branch protection disabled for the base branch. */
+	classicProtection: boolean;
+	ref: string;
 };
 const BYPASS_GRANTS = new Set(["always", "pull_requests_only", "exempt"]);
 const POLICY_REASONS = new Set(["required review pending", "merge policy not satisfied"]);
@@ -158,9 +164,12 @@ export function applyRulesetBypass(
 ): NamedPullRequestVerdict {
 	const block: string[] = [];
 	const wait: string[] = [];
+	if (evidence.classicProtection) block.push(`classic branch protection applies to ${evidence.ref}`);
 	if (!evidence.rulesets.length) block.push("no ruleset applies to the base branch, so no bypass is available");
 	for (const ruleset of evidence.rulesets) {
 		if (!BYPASS_GRANTS.has(ruleset.currentUserCanBypass ?? "")) block.push(`ruleset ${ruleset.id} cannot be bypassed by the current user`);
+		// A bypass skips every rule of the ruleset, so a rule that pi-pr cannot check fails closed.
+		for (const type of ruleset.unverifiedRules) block.push(`ruleset ${ruleset.id} rule ${type} is not verified for a bypass merge`);
 		if (ruleset.allowedMergeMethods && !ruleset.allowedMergeMethods.includes(mergeMethod)) {
 			block.push(`ruleset ${ruleset.id} does not allow merge method ${mergeMethod}`);
 		}

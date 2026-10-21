@@ -122,13 +122,15 @@ For a manager workflow, each worker agent checks its own PR with `pi_pr_status` 
 
 ### Ruleset bypass
 
-A pending required review or a `BLOCKED` merge policy can block the PR when no other reason applies. Then the tools read the rulesets that apply to the base branch. They give `ready` with `bypass` only when all of these conditions are true:
+A pending required review or a `BLOCKED` merge policy can block the PR when no other reason applies. Then the tools read the rulesets and the classic branch protection of the base branch. They give `ready` with `bypass` only when all of these conditions are true:
 
-- Every ruleset that applies to the base branch lets the current user bypass it.
+- Classic branch protection is disabled for the base branch. If it applies, the PR stays blocked, because this check does not bypass it.
+- Every ruleset with a merge rule lets the current user bypass it. Rulesets with only `creation`, `deletion`, or `non_fast_forward` rules do not apply to a merge.
+- The rulesets contain only `pull_request`, `required_status_checks`, and `required_linear_history` merge rules. Any other rule type blocks, because the tools cannot verify it.
 - Each check that these rulesets require passed on the exact head. A missing or running check gives `wait`, and a failed check gives `block`.
 - Every ruleset allows the configured `mergeMethod`. Required linear history does not allow `merge`.
 
-Checks match the required context by check name only. The tools do not read classic branch protection, so this check does not bypass it. The confirmation names the bypassed ruleset IDs. GitHub enforces the bypass when the merge occurs.
+Checks match the required context by check name only. The confirmation names the bypassed ruleset IDs. GitHub enforces the bypass when the merge occurs.
 
 ## Flow
 

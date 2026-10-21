@@ -1546,7 +1546,10 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 		},
 		async readRulesetBypass() {
 			assert.ok(reviewRequired, "rulesets are read only for a bypass candidate");
-			return { rulesets: [{ id: 25064846, name: "main: require approval", currentUserCanBypass: "pull_requests_only", allowedMergeMethods: ["squash"] }], requiredChecks: ["test"] };
+			return {
+				rulesets: [{ id: 25064846, name: "main: require approval", currentUserCanBypass: "pull_requests_only", allowedMergeMethods: ["squash"], unverifiedRules: [] }],
+				requiredChecks: ["test"], classicProtection: false, ref: "main",
+			};
 		},
 		exec(command, args) {
 			if (command !== "gh" || !args.some((arg) => arg.includes("mergePullRequest("))) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);

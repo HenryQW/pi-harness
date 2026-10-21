@@ -45,6 +45,10 @@ const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 /** The repository ruleset endpoint reports `current_user_can_bypass` only for these sources. */
 const BYPASS_RULESET_SOURCES = new Set(["Repository", "Organization"]);
+/** Branch rules that a merge must satisfy and pi-pr verifies before it permits a bypass. */
+const VERIFIED_MERGE_RULES = new Set(["pull_request", "required_status_checks", "required_linear_history"]);
+/** Branch rules that restrict only ref creation, deletion, or force pushes, not a PR merge. */
+const NON_MERGE_RULES = new Set(["creation", "deletion", "non_fast_forward"]);
 const FAILED_CHECK_STATES = new Set([
 	"ACTION_REQUIRED",
 	"CANCELLED",
@@ -1697,8 +1701,8 @@ export async function loadNamedPullRequest(
 }
 
 /**
- * Read the rulesets that apply to the named PR's base branch, for a bypass candidate only. Classic branch
- * protection is not read, so a block it causes stays a block. `gh pr merge --admin` sends the same
+ * Read the rulesets and classic protection state of the named PR's base branch, for a bypass candidate only.
+ * Rulesets with only non-merge rules need no bypass and are omitted. `gh pr merge --admin` sends the same
  * `mergePullRequest` mutation; GitHub enforces the bypass on the server.
  */
 export async function readRulesetBypass(
@@ -1708,12 +1712,19 @@ export async function readRulesetBypass(
 ): Promise<RulesetBypassEvidence> {
 	const action = "Read base branch rules";
 	const { host, base: { repository, ref } } = pullRequest;
-	const branch = ref.split("/").map(encodeURIComponent).join("/");
-	const pages = parseJson((await execute(pi, context, action, "gh", [
-		"api", "--hostname", host, "--paginate", "--slurp", `repos/${repository}/rules/branches/${branch}?per_page=100`,
-	])).stdout, action);
+	const branch = encodeURIComponent(ref);
+	const [rulesOutput, branchOutput] = await Promise.all([
+		execute(pi, context, action, "gh", [
+			"api", "--hostname", host, "--paginate", "--slurp", `repos/${repository}/rules/branches/${branch}?per_page=100`,
+		]),
+		execute(pi, context, "Read base branch protection", "gh", ["api", "--hostname", host, `repos/${repository}/branches/${branch}`]),
+	]);
+	const pages = parseJson(rulesOutput.stdout, action);
 	if (!Array.isArray(pages) || !pages.every(Array.isArray)) fail(action, "invalid GitHub CLI output");
-	const rulesets = new Map<number, { source: string; allowed: string[] | null }>();
+	const branchValue = parseJson(branchOutput.stdout, "Read base branch protection");
+	if (!isRecord(branchValue) || branchValue.name !== ref) fail("Read base branch protection", "invalid GitHub CLI output");
+	const classicProtection = !isRecord(branchValue.protection) || branchValue.protection.enabled !== false;
+	const rulesets = new Map<number, { source: string; allowed: string[] | null; unverified: string[] }>();
 	const requiredChecks = new Set<string>();
 	for (const rule of pages.flat() as unknown[]) {
 		if (
@@ -1721,9 +1732,11 @@ export async function readRulesetBypass(
 			typeof rule.ruleset_id !== "number" || !Number.isSafeInteger(rule.ruleset_id) || rule.ruleset_id <= 0 ||
 			(rule.parameters !== undefined && !isRecord(rule.parameters))
 		) fail(action, "invalid GitHub CLI output");
+		if (NON_MERGE_RULES.has(rule.type)) continue;
 		const parameters = isRecord(rule.parameters) ? rule.parameters : {};
-		const ruleset = rulesets.get(rule.ruleset_id) ?? { source: rule.ruleset_source_type, allowed: null };
+		const ruleset = rulesets.get(rule.ruleset_id) ?? { source: rule.ruleset_source_type, allowed: null, unverified: [] };
 		rulesets.set(rule.ruleset_id, ruleset);
+		if (!VERIFIED_MERGE_RULES.has(rule.type) && !ruleset.unverified.includes(rule.type)) ruleset.unverified.push(rule.type);
 		// A bypass also skips required linear history, so a merge commit must not use it.
 		const methods = rule.type === "pull_request" ? parameters.allowed_merge_methods
 			: rule.type === "required_linear_history" ? ["squash", "rebase"] : undefined;
@@ -1739,8 +1752,8 @@ export async function readRulesetBypass(
 			}
 		}
 	}
-	const read = [...rulesets].map(async ([id, { source, allowed }]) => {
-		const unknown = { id, name: null, currentUserCanBypass: null, allowedMergeMethods: allowed };
+	const read = [...rulesets].map(async ([id, { source, allowed, unverified }]) => {
+		const unknown = { id, name: null, currentUserCanBypass: null, allowedMergeMethods: allowed, unverifiedRules: unverified };
 		if (!BYPASS_RULESET_SOURCES.has(source)) return unknown;
 		const value = parseJson((await execute(pi, context, "Read ruleset", "gh", [
 			"api", "--hostname", host, `repos/${repository}/rulesets/${id}`,
@@ -1749,7 +1762,7 @@ export async function readRulesetBypass(
 		const bypass = value.current_user_can_bypass;
 		return { ...unknown, name: value.name, currentUserCanBypass: typeof bypass === "string" ? bypass : null };
 	});
-	return { rulesets: await Promise.all(read), requiredChecks: [...requiredChecks] };
+	return { rulesets: await Promise.all(read), requiredChecks: [...requiredChecks], classicProtection, ref };
 }
 
 async function loadObservedPullRequest(
