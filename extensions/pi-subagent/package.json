@@ -19,6 +19,7 @@
     "extensions",
     "docs",
     "examples",
+    "prompts",
     "example.png",
     "README.md",
     "CONTEXT.md",
@@ -62,6 +63,9 @@
     ],
     "skills": [
       "./skills"
+    ],
+    "prompts": [
+      "./prompts"
     ],
     "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-subagent/example.png"
   },

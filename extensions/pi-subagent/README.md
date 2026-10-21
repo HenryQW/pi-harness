@@ -25,13 +25,14 @@ Configure the profiles that your Roles use in `/task-models`. Direct writer term
 
 Ask Main: “Have a scout trace sign-in without editing files.” Main calls `delegate_task` and stays available until progress and results arrive.
 
-Commands and UI are for you. Tools and the packaged skill are for Main, except `git_read`, which is only for Role-declared children.
+Commands, prompts, and UI are for you. Tools and the packaged skill are for Main, except `git_read`, which is only for Role-declared children.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/subagent` | command | Browse direct and isolated work, including requests whose parent checkout was removed. Stop direct workers, inspect isolated work, send follow-ups, or delete owned isolated worktrees after confirmation. **Select multiple…** applies one action to many rows. Without interactive UI, only reports. |
 | `/subagent roles` | command | List Role sources, resources, resolved model and thinking level, route errors, and file errors. Read-only; requires no Herdr pane. |
 | `/subagent prune` | command | Review remaining worker and integration branches and worktrees. Select the items to remove; merged items are selected first. Some blocked items can also be selected, after a separate confirmation. Requires a running Herdr server; without interactive UI, only reports. |
+| `/review [target] [focus]` | prompt | Tell Main to review a change with parallel `reviewer` tasks and give one ship verdict. See [Review a change](#review-a-change). |
 | `/subagent recover` | command | Classify interrupted isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
 | `delegate_task` | tool | Start authorized shared-checkout work or a durable isolated checked graph. With `dryRun: true`, check the request and show the resolved plan without a launch. |
 | `subagent_status` | tool | Read saved isolated state, exact identities, failed review verdicts, and allowed continuation. Does not replay work. Supports structured output for `codemode`. |
@@ -89,6 +90,21 @@ To check a request before a launch, add `"dryRun": true`. The dry run does the l
 The launch returns a task ID and first Herdr tab, not the answer. One follow-up delivers results when the workflow finishes. The results show the tokens and cost of each worker and the total cost of the request. Busy Main receives it after its current turn; idle Main starts a turn. Failed partial output stays marked as partial, never success. Worker output carries no user authority.
 
 To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`. This opens a new tab with the saved conversation and a new reference. Continue the newest reference from the original checkout and workspace. For eligibility and stop behavior, see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).
+
+### Review a change
+
+Run `/review` to review uncommitted changes against `HEAD`. To review other work, give one target:
+
+| Target | Reviewed change |
+| --- | --- |
+| `A..B` | From `A` to `B` |
+| `feature-branch` | From the merge-base with `main` to the branch |
+| `a1b2c3d` | The commit against its first parent |
+| `#42` | The pull request head against its merge-base with the pull request base |
+
+Text after the target adds a review focus, for example `/review #42 cache invalidation`. If the first word is not a target, Main reviews uncommitted changes and uses all text as the focus. Main changes the target to exact local commit IDs. Reviewers can read only local Git. So, for a pull request, Main fetches the head and base from the pull request repository to `refs/pi-review/`. Main groups changed files by location, starts one read-only `reviewer` task for each group, and merges the findings.
+
+The verdict is **Ship** only if each reviewer task succeeded and answered exactly `PASS`. Otherwise, the verdict is **Do not ship**, with the findings in priority order. If the checkout changed during a review task, the verdict is also **Do not ship**, and you must run the review again. Main does not fix findings. If another `/review` prompt template loads first, Pi keeps that template and reports a name collision.
 
 ### Isolated workflow
 
@@ -199,6 +215,12 @@ Role Markdown files in `~/.pi/agent/config/pi-subagent/` require frontmatter and
 | body | Required system instructions |
 
 The package ships `implementer`, `reviewer`, and `scout`; same-name user Roles override built-ins. Roles define capabilities, not access or isolation. Unknown frontmatter keys invalidate that file and report its path and key. Other valid Roles load; duplicate names become unavailable. Delegation to an invalid file's claimed Role fails with that file's error. Inspect `/subagent roles`.
+
+The built-in reviewer answers exactly `PASS` when it finds no actionable correctness risk. Otherwise, each finding starts with a priority and a confidence (`high`, `medium`, or `low`), for example `[P1] confidence: high`. Then it gives file and line evidence, the trigger, the impact, and the smallest fix. Each finding blocks approval.
+
+- `P0`: breaks release or operation on ordinary input.
+- `P1`: wrong behavior under a realistic condition.
+- `P2`: wrong behavior in a narrow edge case with limited impact.
 
 The built-in reviewer and scout include `git_read`; existing user reviewers and scouts must add it to `tools`. No additional extension or Bash access is necessary. See [Reviewer Git inspection](./docs/orchestration.md#reviewer-git-inspection) for operations, parameters, limits, and Git requirements.
 

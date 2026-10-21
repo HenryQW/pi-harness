@@ -92,9 +92,9 @@ Herdr updates the pane and sole-pane tab. Linked worktrees get semantic branches
 
 ### Idle recaps
 
-When an agent run settles, a four-minute idle timer starts. Then the recap model reads the user and assistant text of the current branch, without tool payloads. It writes an idle recap of at most 40 words. The widget above the editor shows `↺ Recap: <text>`. The recap does not go into the model context.
+When an agent run settles, a four-minute idle timer starts. Then the recap model reads the user and assistant text and the compaction and branch summaries of the current branch, without tool payloads. It writes an idle recap of at most 40 words. The widget above the editor shows `↺ Recap: <text>`. The recap does not go into the model context.
 
-Idle recaps require an interactive UI. Pi does not start the timer when the editor has text. Input, a new agent run, tree navigation, `/reload`, session switch, and exit stop the timer, cancel a recap request, and remove the widget. Without new entries on the branch since the last recap, Pi does not make a new recap.
+Idle recaps require an interactive UI. Pi does not start the timer when the editor has text. In the TUI, a key press stops the timer and cancels a recap request. Submitted input, `!` shell commands, a new agent run, tree navigation, `/reload`, session switch, and exit also remove the widget. Without new entries on the branch since the last recap, Pi does not make a new recap.
 
 ### Dialog status
 
@@ -159,4 +159,4 @@ After a failed primary update, the removed worktree stays removed. Correct prima
 
 `/rename` warns without user text. For Herdr or Git synchronization warnings, correct the problem and retry `/rename`. Newer renames silently cancel older requests.
 
-When an idle recap request fails, Pi shows a warning and does not retry. The next settled run starts a new idle timer.
+When an idle recap request fails, Pi shows a warning and does not retry. Pi shows the same warning only one time. The next settled run starts a new idle timer.
