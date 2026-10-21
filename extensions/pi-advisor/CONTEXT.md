@@ -33,5 +33,5 @@ A visible `pi-advisor-blocker` message that states the blockers, asks the agent 
 _Avoid_: retry, continuation
 
 **Malformed reply**:
-A Review reply that is not exactly `PASS` and is not only valid Note lines. Pi Advisor ignores it.
+A Review reply that is not exactly `PASS`, is not only valid Note lines, or is longer than 8,000 characters. Pi Advisor ignores it.
 _Avoid_: parse error

@@ -7,7 +7,7 @@ import {
 	AgentSession, ExtensionRunner, SessionManager,
 	type AgentBeforeSettleEvent, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import advisorExtension, { BLOCKER_MESSAGE, ITEM_CAP, PROMPT_CAP, RUN_CAP, parseReview, reviewInput, runEntries } from "../extensions/advisor.ts";
+import advisorExtension, { BLOCKER_MESSAGE, ITEM_CAP, PROMPT_CAP, REPLY_CAP, RUN_CAP, parseReview, reviewInput, runEntries } from "../extensions/advisor.ts";
 
 type Handler = (event: AgentBeforeSettleEvent, ctx: ExtensionContext) => unknown;
 type Response = { stopReason: string; errorMessage?: string; content: unknown[] };
@@ -279,11 +279,13 @@ test("a reply is dropped when the leaf changes, input arrives, or Pi is busy bef
 });
 
 test("a cancelled review is silent; a timeout or model error warns and does not start a turn", async () => {
-	for (const event of ["agent_start", "session_tree", "session_shutdown"]) {
+	for (const event of ["agent_start", "session_tree", "session_shutdown", "/advisor off"]) {
 		const h = await enabled();
 		h.replies.push(deferred().reply);
 		await h.settle();
-		await h.emit(event);
+		if (event === "/advisor off") await h.command("off");
+		else await h.emit(event);
+		if (event === "/advisor off") h.notifications.pop();
 		await flush();
 		assert.deepEqual(h.notifications, [], event);
 		assert.equal(h.state.status, undefined, event);
@@ -343,7 +345,7 @@ test("parseReview accepts only PASS or graded lines with a finding and evidence"
 		{ grade: "concern", finding: "A.", evidence: "B" },
 		{ grade: "blocker", finding: "C", evidence: "D" },
 	]);
-	for (const reply of ["", "pass", "PASS\nnit: A Evidence: B", "nit: A", "nit:  Evidence: B", "nit: A Evidence: ", "Blocker: A Evidence: B", "- nit: A Evidence: B"]) {
+	for (const reply of ["", "pass", "PASS\nnit: A Evidence: B", "nit: A", "nit:  Evidence: B", "nit: A Evidence: ", "Blocker: A Evidence: B", "- nit: A Evidence: B", `blocker: ${"x".repeat(REPLY_CAP)} Evidence: B`]) {
 		assert.equal(parseReview(reply), undefined, reply);
 	}
 });

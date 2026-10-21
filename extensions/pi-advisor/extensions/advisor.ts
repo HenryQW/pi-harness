@@ -10,6 +10,7 @@ export const REVIEW_TIMEOUT_MS = 90_000;
 export const PROMPT_CAP = 8_000;
 export const ITEM_CAP = 4_000;
 export const RUN_CAP = 48_000;
+export const REPLY_CAP = 8_000;
 export const REVIEW_TASK = {
 	id: "pi-advisor/review",
 	label: "Advisor review",
@@ -39,6 +40,8 @@ const NOTE = /^(nit|concern|blocker): (\S.*?) Evidence: (\S.*)$/;
 export function parseReview(reply: string): Note[] | undefined {
 	const text = reply.trim();
 	if (text === "PASS") return [];
+	// An oversized reply would flood the notice and the follow-up context; treat it as off-contract.
+	if (text.length > REPLY_CAP) return undefined;
 	const notes: Note[] = [];
 	for (const line of text.split("\n").map((value) => value.trim()).filter(Boolean)) {
 		const match = NOTE.exec(line);
@@ -173,6 +176,7 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Usage: /advisor on|off|status", "error");
 				return;
 			}
+			if (action === "off") cancel(ctx);
 			pi.appendEntry(ADVISOR_ENTRY, { enabled: action === "on" });
 			ctx.ui.notify(`Advisor is ${action} on this branch.`, "info");
 		},

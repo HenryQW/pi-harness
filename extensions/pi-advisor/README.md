@@ -38,7 +38,7 @@ The advisor is off by default.
 | Only `nit` notes | One notice with all notes. | No |
 | A `concern` note | One warning with all notes. | No |
 | A `blocker` note | One warning with all notes. | One follow-up for each user prompt |
-| Malformed reply | One warning, one time in each session. | No |
+| Malformed reply, or a reply longer than 8,000 characters | One warning, one time in each session. | No |
 
 ## Flow
 
@@ -64,7 +64,7 @@ Each blocker follow-up is a visible `pi-advisor-blocker` message on the branch. 
 | Interactive only | The advisor does not run in print mode or other modes without UI. | Examine the run manually. |
 | No route | Pi shows a warning that names `/task-models`. The advisor does not use the session model. | Run `/task-models` and set a route for the `pi-advisor/review` profile. |
 | Time limit | The review stops after 90 seconds and Pi shows a warning. Pi shows no notes. | Send the next prompt. |
-| Cancel | A new prompt, a new run, branch navigation, or session exit cancels the review. Pi shows no notice. Escape in an idle session does not cancel it. | Send a prompt to cancel the review. |
+| Cancel | A new prompt, a new run, branch navigation, `/advisor off`, or session exit cancels the review. Pi shows no notice. Escape in an idle session does not cancel it. | Send a prompt to cancel the review. |
 | Old reply | When the branch changes or Pi starts work before the reply arrives, Pi Advisor ignores the reply. | Send a prompt to start a new run. |
 | Model error | Pi shows a warning. Pi shows no notes. | Run `/task-models` to examine the route, or send the next prompt. |
 | Run record size | Each item is truncated to 4,000 characters, and the prompt to 8,000. The record keeps the newest 48,000 characters and marks earlier items as omitted. | Ask for a smaller run when early steps must be examined. |
