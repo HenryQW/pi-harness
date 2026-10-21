@@ -52,13 +52,20 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 	const reportTaskModels = registerTaskModelsConfigReporting(pi);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let active: AbortController | undefined;
+	let stopTerminalInput: (() => void) | undefined;
 	let recappedLeaf: string | null | undefined;
+	let warned: string | undefined;
 
-	const cancel = (ctx: ExtensionContext) => {
+	const cancelPending = () => {
 		clearTimeout(timer);
 		timer = undefined;
 		active?.abort();
 		active = undefined;
+		stopTerminalInput?.();
+		stopTerminalInput = undefined;
+	};
+	const cancel = (ctx: ExtensionContext) => {
+		cancelPending();
 		ctx.ui.setWidget(WIDGET_KEY, undefined);
 	};
 	const idle = (ctx: ExtensionContext) => ctx.isIdle() && !ctx.ui.getEditorText().trim();
@@ -67,19 +74,30 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 		timer = undefined;
 		const leaf = ctx.sessionManager.getLeafId();
 		if (leaf === recappedLeaf || !idle(ctx)) return;
-		const transcript = buildMergeTranscript(buildSessionContext(ctx.sessionManager.getEntries(), leaf).messages);
-		if (!transcript) return;
+		const messages = buildSessionContext(ctx.sessionManager.getEntries(), leaf).messages;
+		// buildMergeTranscript keeps only user and assistant turns; summaries carry the goal after compaction or branch navigation.
+		const summaries = messages.flatMap((message) =>
+			message.role === "compactionSummary" || message.role === "branchSummary" ? [`Earlier summary: ${message.summary}`] : [],
+		);
+		const transcript = buildMergeTranscript(messages);
+		if (!transcript && !summaries.length) return;
 		const title = pi.getSessionName();
+		const prompt = [title && `Conversation title: ${title}`, ...summaries, transcript].filter(Boolean).join("\n\n");
 		const controller = new AbortController();
 		active = controller;
 		try {
-			const text = await generateRecap(title ? `Conversation title: ${title}\n\n${transcript}` : transcript, ctx, controller.signal, reportTaskModels);
+			const text = await generateRecap(prompt, ctx, controller.signal, reportTaskModels);
 			if (active !== controller || !idle(ctx) || ctx.sessionManager.getLeafId() !== leaf) return;
 			recappedLeaf = leaf;
 			const icon = ctx.mode === "tui" ? ctx.ui.theme.fg("accent", "↺") : "↺";
 			ctx.ui.setWidget(WIDGET_KEY, [`${icon} Recap: ${text}`]);
 		} catch (error) {
-			if (active === controller) ctx.ui.notify(error instanceof Error ? error.message : "Idle recap failed.", "warning");
+			// Route errors repeat on every idle cycle until /task-models changes, so show each message once.
+			const message = error instanceof Error ? error.message : "Idle recap failed.";
+			if (active === controller && message !== warned) {
+				warned = message;
+				ctx.ui.notify(message, "warning");
+			}
 		} finally {
 			if (active === controller) active = undefined;
 		}
@@ -90,10 +108,20 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI || ctx.ui.getEditorText().trim()) return;
 		timer = setTimeout(() => void recap(ctx), RECAP_IDLE_MS);
 		timer.unref();
+		// Extension commands, built-in commands, and `!` shell commands do not emit `input`; any key cancels the pending recap.
+		if (ctx.mode === "tui") {
+			stopTerminalInput = ctx.ui.onTerminalInput(() => {
+				cancelPending();
+				return undefined;
+			});
+		}
 	});
 	pi.on("input", (_event, ctx) => {
 		cancel(ctx);
 		return { action: "continue" };
+	});
+	pi.on("user_bash", (_event, ctx) => {
+		cancel(ctx);
 	});
 	pi.on("agent_start", (_event, ctx) => cancel(ctx));
 	pi.on("session_tree", (_event, ctx) => cancel(ctx));
