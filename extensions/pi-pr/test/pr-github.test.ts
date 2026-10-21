@@ -384,7 +384,10 @@ function harness(options: HarnessOptions = {}) {
 					return result(JSON.stringify([options.codexComments]));
 				}
 				const rest = options.restResults?.[endpoint];
-				if (rest) return result(JSON.stringify(rest));
+				if (rest) {
+					if (endpoint.includes("/commits/")) assert.deepEqual(args.slice(0, -1), ["api", "--hostname", "github.com", "--paginate", "--slurp"]);
+					return result(JSON.stringify(rest));
+				}
 				if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
 					const configuredResult = options.repositoryApiResults?.[endpoint];
 					if (configuredResult) return configuredResult;
@@ -2333,25 +2336,38 @@ test("a named PR blocked only by required review is ready through a bypassable r
 		({ type, ruleset_id: id, ruleset_source_type: "Repository", ...(parameters ? { parameters } : {}) });
 	const rules = [
 		rule("pull_request", { required_approving_review_count: 1, allowed_merge_methods: ["squash"] }),
-		rule("required_status_checks", { required_status_checks: [{ context: "test", integration_id: 15368 }], strict_required_status_checks_policy: false }),
 		rule("required_linear_history"),
 		// A deletion-only ruleset needs no bypass, so its ruleset is never read.
 		rule("deletion", undefined, 7),
 	];
 	const passed = [actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" })];
+	const run = { name: "test", status: "completed", conclusion: "success", app: { id: 15368 } };
+	const runPages = [{ total_count: 1, check_runs: [run] }];
 	const cases = [
 		{ name: "bypassable ruleset with passed check", checks: passed, verdict: "ready" },
-		{ name: "required check that never started", checks: [actionsCheck({ name: "lint", conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "wait" },
+		{ name: "same name from another app", runs: [{ total_count: 1, check_runs: [{ ...run, app: { id: 7 } }] }], checks: passed, verdict: "wait" },
+		{ name: "required check on later page outside rollup", runs: [{ total_count: 2, check_runs: [{ ...run, app: { id: 7 } }] }, { total_count: 2, check_runs: [run] }], checks: [], verdict: "ready" },
+		{ name: "invalid later page after success", runs: [...runPages, { total_count: 1 }], checks: passed, error: /invalid check run page/ },
+		{ name: "failed latest run", runs: [{ total_count: 1, check_runs: [{ ...run, conclusion: "failure" }] }], checks: passed, verdict: "block", reason: "required check test failed" },
+		{ name: "running latest run", runs: [{ total_count: 1, check_runs: [{ ...run, status: "in_progress", conclusion: null }] }], checks: passed, verdict: "wait" },
+		{ name: "one successful latest run", runs: [{ total_count: 2, check_runs: [{ ...run, conclusion: "failure" }, run] }], checks: passed, verdict: "ready" },
+		{ name: "unbound latest status on later page", integrationId: null, runs: [{ total_count: 0, check_runs: [] }], statuses: [[], [{ context: "test", state: "success" }, { context: "test", state: "failure" }]], checks: passed, verdict: "ready" },
+		{ name: "newer status failure", integrationId: null, runs: [{ total_count: 0, check_runs: [] }], statuses: [[{ context: "test", state: "failure" }], [{ context: "test", state: "success" }]], checks: passed, verdict: "block", reason: "required check test failed" },
+		{ name: "required check that never started", runs: [{ total_count: 0, check_runs: [] }], checks: [actionsCheck({ name: "lint", conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "wait" },
 		{ name: "ruleset without bypass", bypass: "never", checks: passed, verdict: "block", reason: "ruleset 25064846 cannot be bypassed by the current user" },
 		{ name: "unverified rule type", extra: [rule("workflows", { workflows: [] })], checks: passed, verdict: "block", reason: "ruleset 25064846 rule workflows is not verified for a bypass merge" },
 		{ name: "classic branch protection", protection: { enabled: true }, checks: passed, verdict: "block", reason: "classic branch protection applies to main" },
 	];
-	for (const { name, bypass = "pull_requests_only", extra = [], protection = { enabled: false }, checks, verdict, reason } of cases) {
+	for (const { name, bypass = "pull_requests_only", extra = [], protection = { enabled: false }, runs = runPages, integrationId = 15368, statuses, checks, verdict, reason, error } of cases) {
 		const { pi, context } = harness({
 			pushUrls: { origin: "git@github.com:acme/project.git" },
 			candidates: [pullRequest({ reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED", statusCheckRollup: checks })],
 			restResults: {
-				"repos/acme/project/rules/branches/main?per_page=100": [[...rules, ...extra]],
+				"repos/acme/project/rules/branches/main?per_page=100": [[...rules, ...extra,
+					rule("required_status_checks", { required_status_checks: [{ context: "test", integration_id: integrationId }] }),
+				]],
+				[`repos/acme/project/commits/${REMOTE_HEAD}/check-runs?check_name=test&filter=latest&per_page=100`]: runs,
+				...(statuses ? { [`repos/acme/project/commits/${REMOTE_HEAD}/statuses?per_page=100`]: statuses } : {}),
 				"repos/acme/project/branches/main": { name: "main", protected: true, protection },
 				"repos/acme/project/rulesets/25064846": { id: 25064846, name: "main: require approval", current_user_can_bypass: bypass },
 			},
@@ -2360,9 +2376,13 @@ test("a named PR blocked only by required review is ready through a bypassable r
 		const initial = deriveNamedPullRequestVerdict(loaded.lifecycle, loaded.conditions, loaded.unresolvedThreads.blocking);
 		assert.deepEqual(initial.reasons, ["required review pending", "merge policy not satisfied"], name);
 		assert.ok(isRulesetBypassCandidate(initial, loaded.mergeStateStatus), name);
+		if (error) {
+			await assert.rejects(readRulesetBypass(pi, context, loaded), error, name);
+			continue;
+		}
 		const evidence = await readRulesetBypass(pi, context, loaded);
 		assert.deepEqual(evidence.rulesets.map(({ id, allowedMergeMethods }) => [id, allowedMergeMethods]), [[25064846, ["squash"]]], name);
-		const derived = applyRulesetBypass(initial, evidence, loaded.checks, "squash");
+		const derived = applyRulesetBypass(initial, evidence, "squash");
 		assert.equal(derived.verdict, verdict, name);
 		if (verdict === "ready") assert.deepEqual(derived.bypass, { rulesets: [{ id: 25064846, name: "main: require approval" }], reason: "required review pending; merge policy not satisfied" });
 		if (verdict === "wait") assert.deepEqual(derived.reasons, ["required check test has not passed"]);
@@ -2374,7 +2394,7 @@ test("a named PR blocked only by required review is ready through a bypassable r
 		"repos/acme/project/rules/branches/release%2F1.x?per_page=100": [[]],
 		"repos/acme/project/branches/release%2F1.x": { name: "release/1.x", protection: { enabled: false } },
 	} });
-	const evidence = await readRulesetBypass(slash.pi, slash.context, { host: "github.com", base: { repository: "acme/project", ref: "release/1.x", oid: BASE_HEAD } });
+	const evidence = await readRulesetBypass(slash.pi, slash.context, { host: "github.com", base: { repository: "acme/project", ref: "release/1.x", oid: BASE_HEAD }, head: { repository: "acme/project", ref: "feature", oid: REMOTE_HEAD } });
 	assert.deepEqual(evidence, { rulesets: [], requiredChecks: [], classicProtection: false, ref: "release/1.x" });
 });
 

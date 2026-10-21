@@ -1261,7 +1261,7 @@ export default function pullRequestExtension(
 				let verdict = deriveNamedPullRequestVerdict(pullRequest.lifecycle, pullRequest.conditions, pullRequest.unresolvedThreads.blocking);
 				// Rulesets are read only when a bypass could make the PR ready.
 				if (isRulesetBypassCandidate(verdict, pullRequest.mergeStateStatus)) {
-					verdict = applyRulesetBypass(verdict, await readBypass(pi, { cwd, signal }, pullRequest), pullRequest.checks, policy.mergeMethod);
+					verdict = applyRulesetBypass(verdict, await readBypass(pi, { cwd, signal }, pullRequest), policy.mergeMethod);
 				}
 				return { pullRequest, status: namedStatus(pullRequest, verdict) };
 			}

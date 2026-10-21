@@ -110,7 +110,7 @@ export type RulesetBypassEvidence = {
 	 * `allowedMergeMethods` is null without a merge method limit; `unverifiedRules` lists rule types pi-pr cannot check.
 	 */
 	rulesets: Array<{ id: number; name: string | null; currentUserCanBypass: string | null; allowedMergeMethods: string[] | null; unverifiedRules: string[] }>;
-	requiredChecks: string[];
+	requiredChecks: Array<{ context: string; integrationId: number | null; outcome: CheckOutcome }>;
 	/** True unless GitHub reports classic branch protection disabled for the base branch. */
 	classicProtection: boolean;
 	ref: string;
@@ -159,7 +159,6 @@ export function isRulesetBypassCandidate(verdict: NamedPullRequestVerdict, merge
 export function applyRulesetBypass(
 	verdict: NamedPullRequestVerdict,
 	evidence: RulesetBypassEvidence,
-	checks: Array<{ name: string; outcome: CheckOutcome }>,
 	mergeMethod: string,
 ): NamedPullRequestVerdict {
 	const block: string[] = [];
@@ -174,10 +173,9 @@ export function applyRulesetBypass(
 			block.push(`ruleset ${ruleset.id} does not allow merge method ${mergeMethod}`);
 		}
 	}
-	for (const context of evidence.requiredChecks) {
-		const outcomes = checks.filter(({ name }) => name === context).map(({ outcome }) => outcome);
-		if (outcomes.includes("failure")) block.push(`required check ${context} failed`);
-		else if (!outcomes.length || outcomes.includes("running")) wait.push(`required check ${context} has not passed`);
+	for (const { context, outcome } of evidence.requiredChecks) {
+		if (outcome === "failure") block.push(`required check ${context} failed`);
+		else if (outcome === "running") wait.push(`required check ${context} has not passed`);
 	}
 	if (block.length) return { verdict: "block", reasons: [...verdict.reasons, ...block, ...wait] };
 	if (wait.length) return { verdict: "wait", reasons: wait };

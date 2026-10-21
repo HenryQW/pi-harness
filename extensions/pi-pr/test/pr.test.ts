@@ -1548,7 +1548,7 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 			assert.ok(reviewRequired, "rulesets are read only for a bypass candidate");
 			return {
 				rulesets: [{ id: 25064846, name: "main: require approval", currentUserCanBypass: "pull_requests_only", allowedMergeMethods: ["squash"], unverifiedRules: [] }],
-				requiredChecks: ["test"], classicProtection: false, ref: "main",
+				requiredChecks: [{ context: "test", integrationId: 15368, outcome: "success" }], classicProtection: false, ref: "main",
 			};
 		},
 		exec(command, args) {

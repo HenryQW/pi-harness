@@ -1708,7 +1708,7 @@ export async function loadNamedPullRequest(
 export async function readRulesetBypass(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	pullRequest: Pick<NamedPullRequest, "host" | "base">,
+	pullRequest: Pick<NamedPullRequest, "host" | "base" | "head">,
 ): Promise<RulesetBypassEvidence> {
 	const action = "Read base branch rules";
 	const { host, base: { repository, ref } } = pullRequest;
@@ -1725,7 +1725,7 @@ export async function readRulesetBypass(
 	if (!isRecord(branchValue) || branchValue.name !== ref) fail("Read base branch protection", "invalid GitHub CLI output");
 	const classicProtection = !isRecord(branchValue.protection) || branchValue.protection.enabled !== false;
 	const rulesets = new Map<number, { source: string; allowed: string[] | null; unverified: string[] }>();
-	const requiredChecks = new Set<string>();
+	const requiredChecks: Array<{ context: string; integrationId: number | null }> = [];
 	for (const rule of pages.flat() as unknown[]) {
 		if (
 			!isRecord(rule) || typeof rule.type !== "string" || typeof rule.ruleset_source_type !== "string" ||
@@ -1748,7 +1748,15 @@ export async function readRulesetBypass(
 			const checks = parameters.required_status_checks;
 			if (!Array.isArray(checks)) fail(action, "invalid required_status_checks");
 			for (const check of checks) {
-				requiredChecks.add(text(isRecord(check) ? check.context : undefined, action, "required status check context"));
+				if (!isRecord(check)) fail(action, "invalid required status check");
+				const name = text(check.context, action, "required status check context");
+				const integrationId = check.integration_id ?? null;
+				if (integrationId !== null && (typeof integrationId !== "number" || !Number.isSafeInteger(integrationId) || integrationId <= 0)) {
+					fail(action, "invalid required status check integration_id");
+				}
+				if (!requiredChecks.some((required) => required.context === name && required.integrationId === integrationId)) {
+					requiredChecks.push({ context: name, integrationId });
+				}
 			}
 		}
 	}
@@ -1762,7 +1770,65 @@ export async function readRulesetBypass(
 		const bypass = value.current_user_can_bypass;
 		return { ...unknown, name: value.name, currentUserCanBypass: typeof bypass === "string" ? bypass : null };
 	});
-	return { rulesets: await Promise.all(read), requiredChecks: [...requiredChecks], classicProtection, ref };
+	return {
+		rulesets: await Promise.all(read),
+		requiredChecks: await readRequiredCheckOutcomes(pi, context, pullRequest, requiredChecks),
+		classicProtection, ref,
+	};
+}
+
+/** Read required checks from all pages on the exact head, not the bounded PR rollup. */
+async function readRequiredCheckOutcomes(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	pullRequest: Pick<NamedPullRequest, "host" | "base" | "head">,
+	required: Array<{ context: string; integrationId: number | null }>,
+): Promise<RulesetBypassEvidence["requiredChecks"]> {
+	const action = "Read required checks";
+	const endpoint = `repos/${pullRequest.base.repository}/commits/${pullRequest.head.oid}`;
+	const readPages = async (path: string): Promise<unknown[]> => {
+		const pages = parseJson((await execute(pi, context, action, "gh", [
+			"api", "--hostname", pullRequest.host, "--paginate", "--slurp", path,
+		])).stdout, action);
+		if (!Array.isArray(pages) || !pages.length) fail(action, "invalid GitHub CLI pages");
+		return pages;
+	};
+	const statuses = new Map<string, CheckOutcome>();
+	if (required.some(({ integrationId }) => integrationId === null)) {
+		for (const page of await readPages(`${endpoint}/statuses?per_page=100`)) {
+			if (!Array.isArray(page)) fail(action, "invalid commit status page");
+			for (const status of page) {
+				if (!isRecord(status) || typeof status.context !== "string" || typeof status.state !== "string" || !["success", "failure", "error", "pending"].includes(status.state)) {
+					fail(action, "invalid commit status");
+				}
+				// Commit statuses arrive newest first. An older success cannot replace a newer failure.
+				if (!statuses.has(status.context)) statuses.set(status.context, checkOutcome(status.state.toUpperCase()));
+			}
+		}
+	}
+	const results: RulesetBypassEvidence["requiredChecks"] = [];
+	for (const check of required) {
+		const outcomes: CheckOutcome[] = [];
+		for (const page of await readPages(`${endpoint}/check-runs?check_name=${encodeURIComponent(check.context)}&filter=latest&per_page=100`)) {
+			if (!isRecord(page) || typeof page.total_count !== "number" || !Number.isSafeInteger(page.total_count) || page.total_count < 0 || !Array.isArray(page.check_runs)) {
+				fail(action, "invalid check run page");
+			}
+			for (const run of page.check_runs) {
+				if (!isRecord(run) || typeof run.name !== "string" || typeof run.status !== "string" ||
+					(run.conclusion !== null && typeof run.conclusion !== "string") || !isRecord(run.app) ||
+					typeof run.app.id !== "number" || !Number.isSafeInteger(run.app.id) || run.app.id <= 0) {
+					fail(action, "invalid check run");
+				}
+				if (run.name === check.context && (check.integrationId === null || run.app.id === check.integrationId)) {
+					outcomes.push(run.status === "completed" && typeof run.conclusion === "string" ? checkOutcome(run.conclusion.toUpperCase()) : "running");
+				}
+			}
+		}
+		if (check.integrationId === null && statuses.has(check.context)) outcomes.push(statuses.get(check.context)!);
+		const outcome = outcomes.includes("success") ? "success" : outcomes.includes("failure") ? "failure" : "running";
+		results.push({ ...check, outcome });
+	}
+	return results;
 }
 
 async function loadObservedPullRequest(

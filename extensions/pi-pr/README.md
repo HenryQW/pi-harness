@@ -130,7 +130,7 @@ A pending required review or a `BLOCKED` merge policy can block the PR when no o
 - Each check that these rulesets require passed on the exact head. A missing or running check gives `wait`, and a failed check gives `block`.
 - Every ruleset allows the configured `mergeMethod`. Required linear history does not allow `merge`.
 
-Checks match the required context by check name only. The confirmation names the bypassed ruleset IDs. GitHub enforces the bypass when the merge occurs.
+Required checks are read for the exact head. If a required check sets an integration ID, the check run app must match it. A commit status cannot satisfy a check with a set integration ID. The confirmation names the bypassed ruleset IDs. GitHub enforces the bypass when the merge occurs.
 
 ## Flow
 
