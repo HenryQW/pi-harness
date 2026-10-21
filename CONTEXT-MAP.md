@@ -15,6 +15,7 @@ Each context defines package-specific language and its boundary. Contexts are ad
 | `pi-cron` | [Pi Cron](extensions/pi-cron/CONTEXT.md) | Scheduled jobs, slots, claims, and run delivery |
 | `pi-deps` | [Pi Deps](extensions/pi-deps/CONTEXT.md) | Repository opt-in and dependency preparation for new worktrees |
 | `pi-footer` | [Pi Footer](extensions/pi-footer/CONTEXT.md) | Checkout identity, usage, work time, status, and opening the current directory |
+| `pi-goal` | [Pi Goal](extensions/pi-goal/CONTEXT.md) | Branch-derived Goals, Evidence-based completion, Continuation limits, and Budget |
 | `pi-herdr` | [Pi Herdr](packages/pi-herdr/CONTEXT.md) | Herdr panes, Pi-agent launches, and shell readiness |
 | `pi-herdr-tools` | [Pi Herdr Tools](extensions/pi-herdr-tools/CONTEXT.md) | Conversation clones, handoffs, side questions, titles, and worktree completion |
 | `pi-memory` | [Pi Memory](extensions/pi-memory/CONTEXT.md) | Durable cross-session facts, candidate review, and approved rule promotion |
@@ -42,6 +43,7 @@ Arrows mean that the first context uses a capability owned by the second, unless
 | `pi-memory` → `pi-ask-question` | Memory conflict resolution uses the shared question UI; see [candidate review](extensions/pi-memory/README.md#candidate-review). |
 | `pi-footer` ← `pi-pr`, `pi-multi-codex`, `pi-codegraph`, `pi-subagent` | The footer displays PR, quota, and index status and counts completed subagent usage. It does not own those workflows; see [footer display](extensions/pi-footer/README.md#use). |
 | `pi-bark`, `pi-memory` ← `pi-herdr-tools` | Bark uses the Pi session name also shown by Herdr, without reading Herdr state. Memory recognizes side-thread children to omit parent-only injection; see their [Bark](extensions/pi-bark/README.md#automatic-status-notifications) and [Memory](extensions/pi-memory/README.md#works-with) guidance. |
+| `pi-goal`, `pi-auto-compact`, `pi-pr` | All three handle Pi's final-settlement boundary. Each keeps earlier boundary entries; Pi Goal yields when another handler already continues. See [Pi Goal flow](extensions/pi-goal/README.md#flow). |
 | Config-owning extensions → `pi-config-store` | Shared loading and reporting enforce safe config rules; each extension owns its schema, generated state, and home. Consumers use owner APIs or events, not direct cross-owner file access; see [ADR 004](docs/adr/004-extension-config-safety.md) and [ADR 018](docs/adr/018-extension-config-homes.md). |
 
 Scope boundaries also matter:
@@ -49,7 +51,7 @@ Scope boundaries also matter:
 - `pi-memory` keeps curated cross-session facts; `pi-session-recall` retrieves historical evidence; `pi-notes` keeps user reminders for one worktree. These are not interchangeable stores. See [ADR 005](docs/adr/005-knowledge-tier-model.md).
 - `pi-herdr-tools` manages human-directed conversations and worktree completion; `pi-subagent` owns checked delegation and integration; `pi-pr` owns guarded GitHub publication and confirmed merge. A side-thread merge is text delivery, not a Git merge. See [ADR 019](docs/adr/019-pi-subagent-orchestration.md) and [ADR 021](docs/adr/021-herdr-workflow-consolidation.md).
 - `pi-deps` prepares dependencies when Git creates an opted-in worktree; `pi-codegraph` prepares indexes when Pi starts. One does not prove the other is ready. See [dependency preparation](extensions/pi-deps/README.md#flow) and [index setup](extensions/pi-codegraph/README.md#flow).
-- `pi-auto-compact` reduces active model context; `pi-prompt-creator` analyzes effective retained context; `pi-undo` rewinds a conversation branch. None of these operations restores filesystem changes.
+- `pi-auto-compact` reduces active model context; `pi-prompt-creator` analyzes effective retained context; `pi-undo` rewinds a conversation branch. None of these operations restores filesystem changes. A `pi-undo` rewind also removes `pi-goal` records after the rewind point, because `pi-goal` reads its Goal from the branch.
 
 ## Retired contexts
 

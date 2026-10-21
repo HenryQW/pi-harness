@@ -25,6 +25,7 @@ EXTENSIONS='
 @henryqw/pi-cron
 @henryqw/pi-deps
 @henryqw/pi-footer
+@henryqw/pi-goal
 @henryqw/pi-herdr-tools
 @henryqw/pi-memory
 @henryqw/pi-multi-codex
