@@ -74,7 +74,7 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 		active = controller;
 		try {
 			const text = await generateRecap(title ? `Conversation title: ${title}\n\n${transcript}` : transcript, ctx, controller.signal, reportTaskModels);
-			if (active !== controller || !idle(ctx)) return;
+			if (active !== controller || !idle(ctx) || ctx.sessionManager.getLeafId() !== leaf) return;
 			recappedLeaf = leaf;
 			const icon = ctx.mode === "tui" ? ctx.ui.theme.fg("accent", "↺") : "↺";
 			ctx.ui.setWidget(WIDGET_KEY, [`${icon} Recap: ${text}`]);

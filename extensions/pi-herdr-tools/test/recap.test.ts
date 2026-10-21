@@ -102,6 +102,19 @@ test("user input cancels the idle timer and aborts an in-flight recap", async ()
 	});
 });
 
+test("a recap for a leaf that changed during the request is not shown", async () => {
+	await withTaskModels(async () => {
+		let resolve!: (value: unknown) => void;
+		const app = harness({ complete: () => new Promise((done) => { resolve = done; }) });
+		app.emit("agent_settled", { aborted: false });
+		await app.idleFor(RECAP_IDLE_MS);
+		app.manager.appendMessage({ role: "user", content: "background entry", timestamp: 2 });
+		resolve({ stopReason: "stop", content: [{ type: "text", text: "stale" }] });
+		await flush();
+		assert.deepEqual(app.shown(), []);
+	});
+});
+
 test("no recap starts without UI or with composer text", async () => {
 	await withTaskModels(async () => {
 		for (const app of [harness({ hasUI: false }), harness({ editorText: "draft" })]) {
