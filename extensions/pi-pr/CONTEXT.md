@@ -101,3 +101,9 @@ _Avoid_: Unbounded CI watcher, automatic retry, rerun loop
 **PR merge workflow**:
 A merge of the exact confirmed PR head after explicit user confirmation and a fresh readiness check. It does not enable auto-merge or include branch or worktree cleanup.
 _Avoid_: Unchecked merge, auto-merge, branch cleanup, worktree completion
+
+### Conflict resolution
+
+**Conflict block**:
+One numbered region between Git conflict markers in an unmerged file. Its id changes when its text or start line changes, so a stale address fails instead of resolving another block.
+_Avoid_: Hunk, marker edit

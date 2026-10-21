@@ -38,6 +38,7 @@ Commands are for you; tools and skills are for the agent.
 | `pi_pr_publish_work` | tool | Publish scoped local work. |
 | `pi_pr_sweep` | tool | Triage feedback and publish fixes. |
 | `pi_pr_update_branch` | tool | Rebase onto the pinned base and publish. |
+| `git_conflict` | tool | List, show, and resolve Git conflict blocks. Never stages files. |
 | `git-commit` | skill | Make scoped Conventional Commits. |
 | `git-pr` | skill | Create or publish a PR with permission. |
 | `update-from-main` | skill | Merge exact fetched `origin/main` with a Python helper. |
@@ -72,6 +73,20 @@ An explicit `base` must match the existing PR base or configured/default creatio
 [update-from-main](./skills/update-from-main/SKILL.md) requires Python 3.9 or newer and Git with `fetch --porcelain`. It fetches, then **merges** the exact fetched `origin/main` OID without pushing. This differs from the `/pr` rebase route.
 
 The helper retains backups of tracked, untracked, and colliding ignored files. Retained backups block their owning worktree; unowned legacy backups block every worktree. Follow the linked skill for exact-OID restoration, interrupted runs, legacy backup adoption, and recovery completion. Verify restored bytes and staging before explicitly requesting completion. Never drop a backup or repeat an uncertain operation automatically. Removing a worktree removes ownership refs, not stash entries.
+
+### Conflict blocks
+
+The `git_conflict` tool resolves Git conflict markers without manual marker edits. Use it for merge, rebase, or stash conflicts. The `update-from-main` and `pi-pr-update-branch` skills use it.
+
+| Tool call | Result |
+| --- | --- |
+| `git_conflict` `{ action: "list" }` | Returns each unmerged path with numbered blocks, `id`, and line ranges. |
+| `git_conflict` `{ action: "show", path, block }` | Returns the `ours`, `base`, and `theirs` sides of one block. |
+| `git_conflict` `{ action: "resolve", path, resolutions }` | Replaces blocks of one file. Each resolution has `block`, `id`, and `side`. Returns the remaining blocks. |
+
+A `side` is `@ours`, `@theirs`, `@both` (ours, then theirs), or `@base`. `@base` needs diff3 or zdiff3 markers (`|||||||`). To get them, set `merge.conflictStyle` to `zdiff3` or `diff3` before the merge. Without them, `@base` fails with an error.
+
+Before it writes, the tool reads the file again and compares each block `id`. The `id` changes when the block text or its start line changes. If a block changed, the tool writes nothing and returns an error. Block numbers change after each resolve, so use the returned blocks. The tool does not stage files: run `git add` yourself. The `show` action limits each side to 300 lines or 16 KiB.
 
 ## Flow
 

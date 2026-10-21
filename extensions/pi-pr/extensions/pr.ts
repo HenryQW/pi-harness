@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GitCommitter } from "./git-commit.ts";
+import { GitConflicts } from "./git-conflict.ts";
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
@@ -170,6 +171,18 @@ const PublicationParameters = Type.Object({
 const FixCiActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("collect") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
+]);
+
+const ConflictPath = Type.String({ minLength: 1, maxLength: 4_096 });
+const ConflictBlock = Type.Integer({ minimum: 1 });
+const ConflictActions = Type.Union([
+	Type.Object({ action: Type.Literal("list") }, CLOSED),
+	Type.Object({ action: Type.Literal("show"), path: ConflictPath, block: ConflictBlock }, CLOSED),
+	Type.Object({ action: Type.Literal("resolve"), path: ConflictPath, resolutions: Type.Array(Type.Object({
+		block: ConflictBlock,
+		id: Type.String({ pattern: "^[0-9a-f]{12}$" }),
+		side: Type.Union([Type.Literal("@ours"), Type.Literal("@theirs"), Type.Literal("@both"), Type.Literal("@base")]),
+	}, CLOSED), { minItems: 1, maxItems: 256 }) }, CLOSED),
 ]);
 
 type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
@@ -723,6 +736,22 @@ export default function pullRequestExtension(
 					}
 				}
 			});
+		},
+	});
+
+	const conflicts = new GitConflicts();
+	pi.registerTool({
+		name: "git_conflict",
+		label: "Resolve Git Conflicts",
+		description: "Resolve Git conflict marker blocks without manual marker edits. list: unmerged paths with numbered blocks, ids, and line ranges. show: one block's ours, base, and theirs sides. resolve: replace blocks of one file with @ours, @theirs, @both (ours then theirs), or @base (diff3/zdiff3 markers only); pass several resolutions in one call. Each resolution needs the block number and id from the latest list or resolve result; a changed block fails without writing. Block numbers change after a resolve, so use the returned remaining blocks. Never stages files.",
+		parameters: flatRoot(ConflictActions),
+		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
+			const params = checkedAction(ConflictActions, raw);
+			switch (params.action) {
+				case "list": return toolResult(await conflicts.list(ctx.cwd, signal));
+				case "show": return toolResult(await conflicts.show(ctx.cwd, params.path, params.block, signal));
+				case "resolve": return toolResult(await conflicts.resolve(ctx.cwd, params.path, params.resolutions, signal));
+			}
 		},
 	});
 
