@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { truncateHead, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { canonicalWorktree, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
@@ -90,7 +90,7 @@ function sideLines(block: ConflictBlock, side: ConflictSide, path: string): stri
 		case "@both": return [...block.ours, ...block.theirs];
 		case "@base":
 			if (block.base) return block.base;
-			throw new Error(`Conflict block ${block.block} in ${path} has no base section. @base needs diff3 or zdiff3 markers (|||||||): set git config merge.conflictStyle to zdiff3 or diff3 before the merge, or recreate this file's markers with git checkout --conflict=zdiff3 -- ${path} (this discards edits to that file).`);
+			throw new Error(`Conflict block ${block.block} in ${path} has no base section. @base needs diff3 or zdiff3 markers (|||||||): set git config merge.conflictStyle to zdiff3 or diff3 before the merge, or recreate this file's markers with git checkout --conflict=zdiff3 on it (this discards edits to that file).`);
 	}
 }
 
@@ -142,8 +142,16 @@ function stageText(text: string): StageText {
 
 /** Return the first line index at or after `from` where `run` starts, or -1. */
 function findRun({ lines, at }: StageText, run: readonly string[], from: number): number {
-	for (const start of at.get(run[0]!) ?? []) {
-		if (start >= from && run.every((line, offset) => lines[start + offset] === line)) return start;
+	const starts = at.get(run[0]!) ?? [];
+	let low = 0;
+	for (let high = starts.length; low < high;) {
+		const middle = (low + high) >> 1;
+		if (starts[middle]! < from) low = middle + 1;
+		else high = middle;
+	}
+	for (let index = low; index < starts.length; index += 1) {
+		const start = starts[index]!;
+		if (run.every((line, offset) => lines[start + offset] === line)) return start;
 	}
 	return -1;
 }
@@ -326,7 +334,7 @@ export class GitConflicts {
 			const text = resolveConflicts((await this.parse(entry, signal)).text, path, resolutions, entry.width);
 			signal?.throwIfAborted();
 			// Replace the file atomically so a failed write cannot truncate manual edits outside the blocks.
-			const temporary = join(dirname(absolute), `.${basename(absolute)}.git-conflict-${randomUUID()}`);
+			const temporary = join(dirname(absolute), `.git-conflict-${randomUUID()}`);
 			try {
 				await writeFile(temporary, text, { encoding: "utf8", mode: (await lstat(absolute)).mode });
 				await rename(temporary, absolute);
