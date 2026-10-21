@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="advisor-flow-title advisor-flow-desc" id="advisor-flow-root">
 <title id="advisor-flow-title">Pi Advisor review flow</title>
-<desc id="advisor-flow-desc">When an agent run reaches the settle boundary, review gates decide whether the advisor runs. If all gates pass, one tool-free Model Task request returns a reply. PASS, nit, concern, malformed, timeout, or error replies show a notice and the run settles. A blocker adds a visible pi-advisor-blocker message and continues the run one time for each user prompt.</desc>
+<desc id="advisor-flow-desc">After an agent run settles, review gates decide whether the advisor runs. If all gates pass, one tool-free Model Task request runs in the background and returns a reply. PASS, nit, concern, malformed, timeout, error, cancelled, or stale replies end the review and Pi stays idle. A blocker sends a visible pi-advisor-blocker follow-up message that starts one new run for each user prompt.</desc>
 <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');
       #advisor-flow-root { color: #101828; }</style>
@@ -9,7 +9,7 @@
 <marker id="advisor-flow-arrow-blue" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#1d4ed8"/></marker>
 </defs>
 <rect width="1280" height="720" fill="#f0eee9"/>
-<text x="40" y="52" font-family="Instrument Serif, serif" font-size="28" fill="#101828">An advisor review before the run settles</text>
+<text x="40" y="52" font-family="Instrument Serif, serif" font-size="28" fill="#101828">An advisor review after the run settles</text>
 <!-- Connections precede nodes. Each path has its own attachment point. -->
 <g fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#advisor-flow-arrow)">
 <path d="M240 168 H320"/>
@@ -25,17 +25,19 @@
 <!-- Label masks stay clear of their connectors and all node rectangles. -->
 <g fill="#f0eee9">
 <rect x="612" y="148" width="56" height="12"/>
+<rect x="244" y="148" width="72" height="12"/>
 <rect x="464" y="306" width="72" height="12"/>
-<rect x="730" y="364" width="140" height="12"/>
+<rect x="746" y="364" width="108" height="12"/>
 <rect x="1184" y="406" width="44" height="12"/>
-<rect x="400" y="508" width="120" height="12"/>
+<rect x="420" y="508" width="80" height="12"/>
 </g>
 <g font-family="Geist Mono, monospace" font-size="8" fill="#4c5665">
 <text x="640" y="157" text-anchor="middle">ALL PASS</text>
+<text x="280" y="157" text-anchor="middle">AGENT_SETTLED</text>
 <text x="468" y="315">ANY GATE FAILS</text>
-<text x="800" y="373" text-anchor="middle">NO BLOCKER, OR CAP REACHED</text>
+<text x="800" y="373" text-anchor="middle">NO BLOCKER, OR CAPPED</text>
 <text x="1188" y="415" fill="#1d4ed8">BLOCKER</text>
-<text x="460" y="517" text-anchor="middle" fill="#1d4ed8">NEXT TURN, SAME RUN</text>
+<text x="460" y="517" text-anchor="middle" fill="#1d4ed8">NEW RUN</text>
 </g>
 <rect x="40" y="120" width="200" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-opacity="0.2"/>
 <rect x="320" y="96" width="280" height="200" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity="0.2"/>
@@ -48,31 +50,31 @@
 <text x="344" y="128">Review gates</text>
 <text x="700" y="152">Advisor review</text>
 <text x="1004" y="128">Reply</text>
-<text x="340" y="368">Settle</text>
-<text x="700" y="512">Blocker continuation</text>
+<text x="340" y="368">Idle</text>
+<text x="700" y="512">Blocker follow-up</text>
 </g>
 <g font-family="Geist Mono, monospace" font-size="8" fill="#4c5665">
-<text x="60" y="176">model turns and tool calls</text>
-<text x="60" y="196">then agent_before_settle</text>
+<text x="60" y="176">before_agent_start: run start</text>
+<text x="60" y="196">continuations stay in the run</text>
 <text x="344" y="152">advisor on for this branch</text>
 <text x="344" y="176">UI available</text>
-<text x="344" y="200">outcome: completed</text>
-<text x="344" y="224">a tool call since the prompt</text>
-<text x="344" y="248">no other continuation draft</text>
+<text x="344" y="200">not aborted, stopReason: stop</text>
+<text x="344" y="224">a tool call in this run</text>
+<text x="344" y="248">run start recorded</text>
 <text x="700" y="176">Model Task pi-advisor/review</text>
-<text x="700" y="196">one tool-free request, 90 s limit</text>
+<text x="700" y="196">in the background, 90 s limit</text>
 <text x="1004" y="152">PASS: info notice</text>
 <text x="1004" y="176">nit, concern: notes notice</text>
 <text x="1004" y="200">blocker: notes warning</text>
 <text x="1004" y="224">malformed: one warning per session</text>
 <text x="1004" y="248">timeout or model error: one warning</text>
-<text x="340" y="392">agent_settled</text>
-<text x="340" y="412">no review, or notes only</text>
+<text x="1004" y="272">cancelled or stale: no notice</text>
+<text x="340" y="392">no review, or notes only</text>
+<text x="340" y="412">no new turn</text>
 <text x="700" y="536">visible pi-advisor-blocker</text>
-<text x="700" y="556">continue: true, once per prompt</text>
+<text x="700" y="556">triggerTurn, once per prompt</text>
 </g>
 <text x="344" y="276" font-family="Geist, sans-serif" font-size="12" fill="#4c5665">All gates must pass.</text>
-<text x="1004" y="276" font-family="Geist, sans-serif" font-size="12" fill="#4c5665">Only a blocker continues.</text>
 <path d="M40 644 H1240" stroke="#101828" stroke-opacity="0.12"/>
-<text x="40" y="680" font-family="Geist, sans-serif" font-size="12" fill="#4c5665">The advisor reads only the user prompt and the run record. Each check reads the advisor state from the current conversation branch.</text>
+<text x="40" y="680" font-family="Geist, sans-serif" font-size="12" fill="#4c5665">The advisor reads only the user prompt and the run record. The review runs in the background, so Pi stays idle.</text>
 </svg>

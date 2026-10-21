@@ -7,10 +7,11 @@ import {
 	AgentSession, ExtensionRunner, SessionManager,
 	type AgentBeforeSettleEvent, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import advisorExtension, { BLOCKER_MESSAGE, ITEM_CAP, PROMPT_CAP, RUN_CAP, parseReview, reviewInput } from "../extensions/advisor.ts";
+import advisorExtension, { BLOCKER_MESSAGE, ITEM_CAP, PROMPT_CAP, RUN_CAP, parseReview, reviewInput, runEntries } from "../extensions/advisor.ts";
 
 type Handler = (event: AgentBeforeSettleEvent, ctx: ExtensionContext) => unknown;
-type Reply = string | ((signal: AbortSignal) => Promise<{ stopReason: string; content: unknown[] }>);
+type Response = { stopReason: string; errorMessage?: string; content: unknown[] };
+type Reply = string | ((signal: AbortSignal) => Promise<Response>);
 
 const model = { provider: "openai", id: "advisor-model", input: ["text"], reasoning: false };
 const agentDir = mkdtempSync(join(tmpdir(), "pi-advisor-"));
@@ -20,16 +21,31 @@ writeFileSync(join(agentDir, "config", "pi-task-models", "config.json"),
 process.env.PI_CODING_AGENT_DIR = agentDir;
 test.after(() => rmSync(agentDir, { recursive: true, force: true }));
 
-function harness(options: { hasUI?: boolean; before?: Handler; after?: Handler; signal?: AbortSignal; available?: unknown[] } = {}) {
+const flush = async () => {
+	for (let tick = 0; tick < 10; tick++) await new Promise((resolve) => setImmediate(resolve));
+};
+/** A model reply that the test resolves later; it rejects when the review signal aborts. */
+function deferred() {
+	let resolve!: (response: Response) => void;
+	const reply = (signal: AbortSignal) => new Promise<Response>((done, reject) => {
+		resolve = done;
+		signal.addEventListener("abort", () => reject(signal.reason));
+	});
+	return { reply, resolve: (text: string) => resolve({ stopReason: "stop", content: [{ type: "text", text }] }) };
+}
+
+function harness(options: { hasUI?: boolean; available?: unknown[]; other?: { order: "before" | "after"; handler: Handler } } = {}) {
 	const manager = SessionManager.inMemory("/repo");
 	const handlers = new Map<string, Function[]>();
 	let command!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 	const notifications: Array<[string, string]> = [];
 	const requests: Array<{ context: { systemPrompt: string; messages: Array<{ content: string }>; tools?: unknown } }> = [];
 	const replies: Reply[] = [];
+	const sent: Array<{ message: { customType: string; content: string; display: boolean; details?: unknown }; options: unknown }> = [];
+	const state = { idle: true, status: undefined as string | undefined };
 	const host = {
-		cwd: "/repo", hasUI: options.hasUI ?? true, sessionManager: manager, model, scopedModels: [], signal: options.signal,
-		ui: { notify: (message: string, level: string) => notifications.push([message, level]), setStatus() {} },
+		cwd: "/repo", hasUI: options.hasUI ?? true, sessionManager: manager, model, scopedModels: [], isIdle: () => state.idle,
+		ui: { notify: (message: string, level: string) => notifications.push([message, level]), setStatus: (_key: string, value?: string) => { state.status = value; } },
 		modelRegistry: {
 			getAvailable: () => options.available ?? [model],
 			streamSimple: (_model: unknown, context: never, streamOptions: { signal: AbortSignal }) => ({
@@ -42,19 +58,29 @@ function harness(options: { hasUI?: boolean; before?: Handler; after?: Handler; 
 		},
 	};
 	const ctx = host as unknown as ExtensionContext;
+	const emit = async (type: string, event: object = {}) => {
+		for (const handler of handlers.get(type) ?? []) await handler({ type, ...event }, ctx);
+	};
+	/** Pi's order for a new run: before_agent_start, then the starting message joins the branch. */
+	const customRun = async (customType: string, content: string, display = false) => {
+		await emit("before_agent_start", { messageType: "custom" });
+		manager.appendCustomMessageEntry(customType, content, display);
+	};
 	advisorExtension({
 		on(name: string, handler: Function) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: { on: () => () => {}, emit() {} },
 		registerCommand(_name: string, registered: { handler: typeof command }) { command = registered.handler; },
 		appendEntry: (customType: string, data: unknown) => manager.appendCustomEntry(customType, data),
+		sendMessage(message: (typeof sent)[number]["message"], sendOptions: { triggerTurn?: boolean }) {
+			sent.push({ message, options: sendOptions });
+			if (sendOptions.triggerTurn && state.idle) void customRun(message.customType, message.content, message.display);
+		},
 	} as unknown as ExtensionAPI);
-	const settleExtension = (path: string, handler: Handler) => ({ path, handlers: new Map([["agent_before_settle", [handler]]]) });
+
+	// A real boundary runner with one other extension, so a test can show the advisor takes no part in agent_before_settle.
+	const other = options.other && { path: "/other", handlers: new Map([["agent_before_settle", [options.other.handler]]]) };
 	const runner = Object.assign(Object.create(ExtensionRunner.prototype), {
-		extensions: [
-			...(options.before ? [settleExtension("/before", options.before)] : []),
-			{ path: "/pi-advisor", handlers },
-			...(options.after ? [settleExtension("/after", options.after)] : []),
-		],
+		extensions: options.other?.order === "before" ? [other, { path: "/pi-advisor", handlers }] : [{ path: "/pi-advisor", handlers }, ...(other ? [other] : [])],
 		createContext: () => ctx,
 		emitError(error: { error: string }) { throw new Error(error.error); },
 	});
@@ -64,60 +90,53 @@ function harness(options: { hasUI?: boolean; before?: Handler; after?: Handler; 
 		_pendingCustomMessages: [], _eventListeners: [], _entryIdsByMessage: new WeakMap(),
 		_steeringMessages: [], _followUpMessages: [],
 		agent: { state: { messages: [] }, peekQueuedMessages: () => [], hasQueuedMessages: () => false, abort() {} },
-	}) as { _lastActivityOutcome: string; _runBeforeSettleBoundary(): Promise<boolean> };
+	}) as { _runBeforeSettleBoundary(): Promise<boolean> };
+
 	let calls = 0;
-	const assistant = (content: unknown[]) => manager.appendMessage({
-		role: "assistant", content, stopReason: "stop", api: "openai-responses", provider: "openai", model: "agent",
+	const assistant = (content: unknown[], stopReason = "stop") => manager.appendMessage({
+		role: "assistant", content, stopReason, api: "openai-responses", provider: "openai", model: "agent",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 		timestamp: Date.now(),
 	} as never);
 	return {
-		manager, notifications, requests, replies, handlers,
+		manager, notifications, requests, replies, sent, state, handlers, emit, customRun, assistant,
 		command: (args: string) => command(args, ctx as ExtensionCommandContext),
-		emit: (type: string, event: object = {}) => runner.emit({ type, ...event }),
-		prompt: (text = "Fix the bug.") => manager.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() }),
+		async prompt(text = "Fix the bug.") {
+			await emit("before_agent_start", { messageType: "user", prompt: text });
+			manager.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+		},
 		/** One tool round trip, then a final assistant reply. */
-		work(output = "ok") {
+		work(output = "ok", stopReason = "stop") {
 			const toolCallId = `bash-${++calls}`;
-			assistant([{ type: "toolCall", id: toolCallId, name: "bash", arguments: { command: `step ${calls}` } }]);
+			assistant([{ type: "toolCall", id: toolCallId, name: "bash", arguments: { command: `step ${calls}` } }], "toolUse");
 			manager.appendMessage({ role: "toolResult", toolCallId, toolName: "bash", content: [{ type: "text", text: output }], isError: false, timestamp: Date.now() } as never);
-			assistant([{ type: "text", text: "Done." }]);
+			assistant([{ type: "text", text: "Done." }], stopReason);
 		},
-		assistant,
-		settle(outcome = "completed") {
-			session._lastActivityOutcome = outcome;
-			return session._runBeforeSettleBoundary();
+		boundary: () => session._runBeforeSettleBoundary(),
+		/** agent_settled, then time for the review that it starts without blocking. */
+		async settle(aborted = false) {
+			await emit("agent_settled", { aborted });
+			await flush();
 		},
-		blockers: () => manager.getBranch().filter((entry) => entry.type === "custom_message" && entry.customType === BLOCKER_MESSAGE),
 	};
 }
 
 async function enabled(options: Parameters<typeof harness>[0] = {}) {
 	const h = harness(options);
 	await h.command("on");
-	h.prompt();
+	await h.prompt();
 	h.work();
 	h.notifications.length = 0;
 	return h;
 }
 
 const BLOCKER = "blocker: Tests were not run. Evidence: no test command in the run";
-const piGoalDraft: Handler = (event) => ({
-	// pi-goal/extensions/goal.ts: spread prior drafts, append a hidden continuation, continue.
-	entries: [...event.entries, { type: "custom_message", customType: "pi-goal-continuation", display: false, content: "Continue the active goal." }],
-	continue: true,
-});
-const piPrDraft: Handler = (event) => ({
-	// pi-pr/extensions/pr.ts: spread prior drafts, append a hidden workflow message, continue.
-	entries: [...event.entries, { type: "custom_message", customType: "pi-pr-workflow", display: false, content: "PR workflow" }],
-	continue: true,
-});
 
 test("advisor is off by default, and /advisor on|off|status persists on the branch", async () => {
 	const h = harness();
-	h.prompt();
+	await h.prompt();
 	h.work();
-	assert.equal(await h.settle(), false);
+	await h.settle();
 	assert.equal(h.requests.length, 0);
 	await h.command("status");
 	assert.deepEqual(h.notifications.at(-1), ["Advisor is off on this branch.", "info"]);
@@ -138,99 +157,137 @@ test("advisor is off by default, and /advisor on|off|status persists on the bran
 	assert.deepEqual(h.notifications.at(-1), ["Usage: /advisor on|off|status", "error"]);
 });
 
-test("review skips tool-free runs, incomplete outcomes, and sessions without UI", async () => {
+test("review skips tool-free, aborted, unfinished, unrecorded, and headless runs", async () => {
 	const h = harness();
 	await h.command("on");
-	h.prompt();
+	await h.prompt();
 	h.assistant([{ type: "text", text: "Hello." }]);
-	assert.equal(await h.settle(), false);
+	await h.settle();
 
+	await h.prompt();
 	h.work();
-	assert.equal(await h.settle("aborted"), false);
-	assert.equal(await h.settle("error"), false);
+	await h.settle(true);
+	await h.prompt();
+	h.work("ok", "length");
+	await h.settle();
 	assert.equal(h.requests.length, 0);
 
+	const unrecorded = harness();
+	await unrecorded.command("on");
+	unrecorded.manager.appendMessage({ role: "user", content: [{ type: "text", text: "Fix." }], timestamp: Date.now() });
+	unrecorded.work();
+	await unrecorded.settle();
+	assert.equal(unrecorded.requests.length, 0, "no before_agent_start in this session");
+
 	const headless = await enabled({ hasUI: false });
-	assert.equal(await headless.settle(), false);
+	await headless.settle();
 	assert.equal(headless.requests.length, 0);
 });
 
 test("the review is one tool-free request with the prompt and the run; PASS shows one info", async () => {
 	const h = await enabled();
-	assert.equal(await h.settle(), false);
+	await h.settle();
 	const [request] = h.requests;
+	assert.equal(h.requests.length, 1);
 	assert.equal(request?.context.tools, undefined);
 	assert.match(request!.context.systemPrompt, /PASS[\s\S]*<grade>: <finding> Evidence: <evidence>/);
-	assert.match(request!.context.messages[0]!.content, /^User prompt:\nFix the bug\.[\s\S]*Tool call bash: \{"command":"step 1"\}[\s\S]*Tool result bash: ok[\s\S]*Assistant: Done\.$/);
+	assert.match(request!.context.messages[0]!.content, /^Latest user prompt:\nFix the bug\.[\s\S]*Tool call bash: \{"command":"step 1"\}[\s\S]*Tool result bash: ok[\s\S]*Assistant: Done\.$/);
 	assert.deepEqual(h.notifications, [["Advisor: PASS", "info"]]);
+	assert.equal(h.state.status, undefined);
 });
 
-test("nits and concerns show notes and never continue", async () => {
+test("a later tool-free run started by a custom message makes no new review", async () => {
+	const h = await enabled();
+	await h.settle();
+	assert.equal(h.requests.length, 1);
+	await h.customRun("pi-cron-run", "Report the status.");
+	h.assistant([{ type: "text", text: "All good." }]);
+	await h.settle();
+	assert.equal(h.requests.length, 1);
+});
+
+test("nits and concerns show notes and never start a turn", async () => {
 	const h = await enabled();
 	h.replies.push("nit: Name is vague. Evidence: step 1", "concern: No rollback. Evidence: step 1\nnit: Typo. Evidence: Done.");
-	assert.equal(await h.settle(), false);
+	await h.settle();
 	assert.deepEqual(h.notifications.at(-1), ["Advisor:\nnit: Name is vague. Evidence: step 1", "info"]);
-	assert.equal(await h.settle(), false);
+	await h.prompt();
+	h.work();
+	await h.settle();
 	assert.equal(h.notifications.at(-1)?.[1], "warning");
-	assert.equal(h.blockers().length, 0);
+	assert.equal(h.sent.length, 0);
 });
 
-test("a blocker continues once for each user prompt and keeps earlier drafts", async () => {
-	const prior: Handler = (event) => ({ entries: [...event.entries, { type: "custom", customType: "other", data: 1 }] });
-	const h = await enabled({ before: prior });
-	h.replies.push(BLOCKER, BLOCKER);
-	assert.equal(await h.settle(), true);
-	const [other, draft] = h.manager.getBranch().slice(-2);
-	assert.equal(other?.type === "custom" && other.customType, "other");
-	assert.ok(draft?.type === "custom_message" && draft.customType === BLOCKER_MESSAGE);
-	assert.equal(draft.display, true);
-	assert.match(String(draft.content), /found blockers[\s\S]*blocker: Tests were not run\. Evidence: no test command/);
-	assert.equal(h.notifications.at(-1)?.[1], "warning");
-
-	h.work();
-	assert.equal(await h.settle(), false, "the cap applies until the next user prompt");
-	assert.match(h.notifications.at(-1)![0], /already continued once for this prompt/);
-	assert.equal(h.blockers().length, 1);
-
-	h.prompt("Try again.");
-	h.work();
-	h.replies.push(BLOCKER);
-	assert.equal(await h.settle(), true);
-	assert.equal(h.blockers().length, 2);
-});
-
-test("advisor yields without a model call when another handler already continues", async () => {
-	for (const before of [piGoalDraft, piPrDraft]) {
-		const h = await enabled({ before });
-		assert.equal(await h.settle(), true);
-		assert.equal(h.requests.length, 0);
-		assert.equal(h.blockers().length, 0);
-	}
-	// A pending context message without continue: true still belongs to another handler's decision.
-	const message = await enabled({ before: (event, ctx) => ({ ...piPrDraft(event, ctx) as object, continue: false }) });
-	assert.equal(await message.settle(), false);
-	assert.equal(message.requests.length, 0);
+test("a blocker sends one follow-up that starts a turn, once for each user prompt", async () => {
 	const h = await enabled();
-	const handler = h.handlers.get("agent_before_settle")![0]!;
-	assert.equal(await handler({ type: "agent_before_settle", entries: [], continue: true, outcome: "completed" }, {}), undefined);
-	assert.equal(h.requests.length, 0);
+	h.replies.push(BLOCKER, BLOCKER, BLOCKER);
+	await h.settle();
+	assert.equal(h.sent.length, 1);
+	const [{ message, options }] = h.sent;
+	assert.deepEqual(options, { triggerTurn: true, deliverAs: "followUp" });
+	assert.equal(message.customType, BLOCKER_MESSAGE);
+	assert.equal(message.display, true);
+	assert.match(message.content, /found blockers[\s\S]*blocker: Tests were not run\. Evidence: no test command/);
+	assert.equal(h.notifications.at(-1)?.[1], "warning");
 
-	// A later handler spreads the advisor's draft, so both continuation messages survive.
-	const both = await enabled({ after: piPrDraft });
-	both.replies.push(BLOCKER);
-	assert.equal(await both.settle(), true);
-	assert.deepEqual(both.manager.getBranch().slice(-2).map((entry) => entry.type === "custom_message" && entry.customType), [BLOCKER_MESSAGE, "pi-pr-workflow"]);
+	// The follow-up run is reviewed too, but the cap holds until the next user prompt.
+	h.work();
+	await h.settle();
+	assert.equal(h.requests.length, 2);
+	assert.equal(h.sent.length, 1);
+	assert.match(h.notifications.at(-1)![0], /already continued once for this prompt/);
+
+	await h.prompt("Try again.");
+	h.work();
+	await h.settle();
+	assert.equal(h.sent.length, 2);
 });
 
-test("an aborted review is silent; a timeout or model error warns and does not continue", async () => {
-	const waitForAbort = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
-	const run = new AbortController();
-	const aborted = await enabled({ signal: run.signal });
-	aborted.replies.push(waitForAbort);
-	const settling = aborted.settle();
-	setImmediate(() => run.abort());
-	assert.equal(await settling, false);
-	assert.deepEqual(aborted.notifications, []);
+for (const order of ["before", "after"] as const) test(`a continuation by another extension ${order} the advisor gives one review of the whole run`, async () => {
+	const continueOnce: Handler = (event, ctx) => ctx.sessionManager.getBranch().some((entry) => entry.type === "custom_message") ? undefined : {
+		entries: [...event.entries, { type: "custom_message", customType: "other-continue", display: false, content: "Keep going." }],
+		continue: true,
+	};
+	const h = await enabled({ other: { order, handler: continueOnce } });
+	assert.equal(h.handlers.has("agent_before_settle"), false);
+	assert.equal(await h.boundary(), true);
+	await flush();
+	assert.equal(h.requests.length, 0, "no review before the run settles");
+	h.work("second");
+	assert.equal(await h.boundary(), false);
+	await h.settle();
+	assert.equal(h.requests.length, 1);
+	assert.match(h.requests[0]!.context.messages[0]!.content, /Tool result bash: ok[\s\S]*Message other-continue: Keep going\.[\s\S]*Tool result bash: second/);
+});
+
+test("a reply is dropped when the leaf changes, input arrives, or Pi is busy before it returns", async () => {
+	for (const interrupt of ["leaf", "input", "busy"] as const) {
+		const h = await enabled();
+		const pending = deferred();
+		h.replies.push(pending.reply);
+		await h.settle();
+		assert.equal(h.state.status, "Advisor reviewing…");
+		if (interrupt === "leaf") h.manager.appendCustomEntry("other", {});
+		if (interrupt === "input") await h.emit("input", { text: "next", source: "interactive" });
+		if (interrupt === "busy") h.state.idle = false;
+		pending.resolve(BLOCKER);
+		await flush();
+		assert.deepEqual(h.notifications, [], interrupt);
+		assert.equal(h.sent.length, 0, interrupt);
+		assert.equal(h.state.status, undefined, interrupt);
+	}
+});
+
+test("a cancelled review is silent; a timeout or model error warns and does not start a turn", async () => {
+	for (const event of ["agent_start", "session_tree", "session_shutdown"]) {
+		const h = await enabled();
+		h.replies.push(deferred().reply);
+		await h.settle();
+		await h.emit(event);
+		await flush();
+		assert.deepEqual(h.notifications, [], event);
+		assert.equal(h.state.status, undefined, event);
+	}
 
 	const clock = new AbortController();
 	mock.method(AbortSignal, "timeout", () => {
@@ -239,27 +296,33 @@ test("an aborted review is silent; a timeout or model error warns and does not c
 	});
 	try {
 		const timed = await enabled();
-		timed.replies.push(waitForAbort);
-		assert.equal(await timed.settle(), false);
+		timed.replies.push(deferred().reply);
+		await timed.settle();
 		assert.deepEqual(timed.notifications, [["Advisor review timed out after 90 seconds.", "warning"]]);
+		assert.equal(timed.state.status, undefined);
 	} finally {
 		mock.restoreAll();
 	}
 
 	const failed = await enabled();
-	failed.replies.push(async () => ({ stopReason: "error", errorMessage: "rate limited", content: [] }) as never);
-	assert.equal(await failed.settle(), false);
+	failed.replies.push(async () => ({ stopReason: "error", errorMessage: "rate limited", content: [] }));
+	await failed.settle();
 	assert.deepEqual(failed.notifications, [["Advisor review failed: rate limited", "warning"]]);
+	assert.equal(failed.sent.length, 0);
 });
 
 test("a malformed reply warns once for each session and does nothing else", async () => {
 	const h = await enabled();
 	h.replies.push("Looks good to me.", "BLOCKER: Bad. Evidence: x");
-	assert.equal(await h.settle(), false);
-	assert.equal(await h.settle(), false);
+	await h.settle();
+	await h.prompt();
+	h.work();
+	await h.settle();
 	assert.deepEqual(h.notifications, [["Advisor reply did not follow the output contract and was ignored.", "warning"]]);
-	assert.equal(h.blockers().length, 0);
+	assert.equal(h.sent.length, 0);
 	await h.emit("session_start", { reason: "new" });
+	await h.prompt();
+	h.work();
 	h.replies.push("PASS please");
 	await h.settle();
 	assert.equal(h.notifications.length, 2);
@@ -267,7 +330,7 @@ test("a malformed reply warns once for each session and does nothing else", asyn
 
 test("without a task route the advisor warns with /task-models and does not use the session model", async () => {
 	const h = await enabled({ available: [] });
-	assert.equal(await h.settle(), false);
+	await h.settle();
 	assert.equal(h.requests.length, 0);
 	assert.equal(h.notifications.length, 1);
 	assert.match(h.notifications[0]![0], /^Advisor review skipped: .*Run \/task-models\.$/);
@@ -285,20 +348,29 @@ test("parseReview accepts only PASS or graded lines with a finding and evidence"
 	}
 });
 
-test("review input keeps the newest material within the caps", () => {
+test("review input keeps the newest material of the current run within the caps", async () => {
 	const h = harness();
-	h.prompt("p".repeat(PROMPT_CAP + 100));
+	h.work("previous-run");
+	const start = h.manager.getLeafId();
+	h.manager.appendMessage({ role: "user", content: [{ type: "text", text: "p".repeat(PROMPT_CAP + 100) }], timestamp: Date.now() });
+	// A custom message that steers the run is part of the run record.
+	h.manager.appendCustomMessageEntry("pi-cron-run", [{ type: "text", text: "Run the nightly report." }], false);
 	for (let step = 0; step < 30; step++) h.work(`${step}:`.padEnd(ITEM_CAP + 500, "x"));
-	const input = reviewInput(h.manager.getBranch())!;
+	const branch = h.manager.getBranch();
+	const input = reviewInput(branch, runEntries(branch, start)!)!;
 	assert.ok(input.length < PROMPT_CAP + RUN_CAP + 500, `${input.length}`);
 	assert.match(input, /\[truncated 100 chars\]/);
 	assert.match(input, /\[\d+ earlier run items omitted\.\]/);
 	assert.match(input, /Tool result bash: 29:x+ \[truncated/);
-	assert.doesNotMatch(input, /Tool result bash: 0:/);
+	assert.doesNotMatch(input, /Tool result bash: 0:|previous-run/);
 	assert.match(input, /Assistant: Done\.$/);
 
-	// A custom message that triggers the run after the prompt is part of the run record.
-	h.manager.appendCustomMessageEntry("pi-cron-run", [{ type: "text", text: "Run the nightly report." }], false);
-	h.work();
-	assert.match(reviewInput(h.manager.getBranch())!, /Message pi-cron-run: Run the nightly report\.\n\nTool call bash/);
+	const short = harness();
+	const shortStart = short.manager.getLeafId();
+	short.manager.appendMessage({ role: "user", content: [{ type: "text", text: "Go." }], timestamp: Date.now() });
+	short.manager.appendCustomMessageEntry("pi-cron-run", [{ type: "text", text: "Run the nightly report." }], false);
+	short.work();
+	const shortBranch = short.manager.getBranch();
+	assert.match(reviewInput(shortBranch, runEntries(shortBranch, shortStart)!)!, /Message pi-cron-run: Run the nightly report\.\n\nTool call bash/);
+	assert.equal(runEntries(shortBranch, "missing"), undefined);
 });

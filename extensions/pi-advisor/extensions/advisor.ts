@@ -13,7 +13,7 @@ export const RUN_CAP = 48_000;
 export const REVIEW_TASK = {
 	id: "pi-advisor/review",
 	label: "Advisor review",
-	purpose: "Review the tool calls and results of a finished agent run and grade problems before the run settles.",
+	purpose: "Review the tool calls and results of a settled agent run and grade the problems it finds.",
 	defaultProfile: "balanced",
 } as const satisfies ModelTask;
 
@@ -52,13 +52,19 @@ const clip = (text: string, max: number) => text.length > max ? `${text.slice(0,
 const plain = (content: string | Array<{ type: string; text?: string }>) =>
 	typeof content === "string" ? content : content.map((part) => part.type === "text" ? part.text : `[${part.type}]`).join("\n");
 
-/** The latest user prompt and the newest run material since it, or undefined when the run made no tool call. */
-export function reviewInput(branch: SessionEntry[]): string | undefined {
-	const userIndex = branch.findLastIndex((entry) => entry.type === "message" && entry.message.role === "user");
-	const prompt = branch[userIndex];
+/** Branch entries after the run start, or undefined when the start is not on this branch. A null start is an empty session. */
+export function runEntries(branch: SessionEntry[], start: string | null): SessionEntry[] | undefined {
+	if (start === null) return branch;
+	const index = branch.findIndex((entry) => entry.id === start);
+	return index < 0 ? undefined : branch.slice(index + 1);
+}
+
+/** The latest user prompt and the newest material of the run, or undefined when the run made no tool call. */
+export function reviewInput(branch: SessionEntry[], run: SessionEntry[]): string | undefined {
+	const prompt = branch.findLast((entry) => entry.type === "message" && entry.message.role === "user");
 	const items: string[] = [];
 	let toolCalls = false;
-	for (const entry of branch.slice(userIndex + 1)) {
+	for (const entry of run) {
 		// A custom message can start or steer the run, for example a scheduled follow-up; it carries the actual task.
 		if (entry.type === "custom_message") items.push(`Message ${entry.customType}: ${clip(plain(entry.content), ITEM_CAP)}`);
 		if (entry.type !== "message") continue;
@@ -80,7 +86,7 @@ export function reviewInput(branch: SessionEntry[]): string | undefined {
 	while (start > 0 && size + items[start - 1]!.length <= RUN_CAP) size += items[--start]!.length;
 	const omitted = start ? [`[${start} earlier run items omitted.]`] : [];
 	const request = prompt?.type === "message" && prompt.message.role === "user" ? clip(plain(prompt.message.content), PROMPT_CAP) : "";
-	return `User prompt:\n${request}\n\nRun since that prompt, oldest first:\n\n${[...omitted, ...items.slice(start)].join("\n\n")}`;
+	return `Latest user prompt:\n${request}\n\nThe run, oldest first:\n\n${[...omitted, ...items.slice(start)].join("\n\n")}`;
 }
 
 export function advisorEnabled(branch: SessionEntry[]): boolean {
@@ -95,8 +101,10 @@ function formatNotes(notes: Note[]): string {
 export default function advisorExtension(pi: ExtensionAPI): void {
 	registerModelTask(pi, REVIEW_TASK);
 	const reportTaskModels = registerTaskModelsConfigReporting(pi);
-	// Transient notice state only; on/off state is always derived from the branch.
+	// Transient state only; on/off state is always derived from the branch.
 	let malformedShown = false;
+	let runStart: { session: string; leaf: string | null } | undefined;
+	let active: AbortController | undefined;
 
 	/** Pi routes only: when no Task Profile route resolves, the review does not use the session model. */
 	const routes = (ctx: ExtensionContext): ResolvedTaskRoute[] | undefined => {
@@ -122,55 +130,14 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 		return response.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
 	}, { signal, shouldFallback: () => true });
 
-	pi.registerCommand("advisor", {
-		description: "Turn the advisor review on or off, or show its status: /advisor on|off|status",
-		handler: async (args, ctx) => {
-			const action = args.trim();
-			if (action === "status") {
-				ctx.ui.notify(`Advisor is ${advisorEnabled(ctx.sessionManager.getBranch()) ? "on" : "off"} on this branch.`, "info");
-				return;
-			}
-			if (action !== "on" && action !== "off") {
-				ctx.ui.notify("Usage: /advisor on|off|status", "error");
-				return;
-			}
-			pi.appendEntry(ADVISOR_ENTRY, { enabled: action === "on" });
-			ctx.ui.notify(`Advisor is ${action} on this branch.`, "info");
-		},
-	});
+	const cancel = (ctx: ExtensionContext) => {
+		if (!active) return;
+		active.abort();
+		active = undefined;
+		ctx.ui.setStatus(ADVISOR_ENTRY, undefined);
+	};
 
-	pi.on("session_start", () => {
-		malformedShown = false;
-	});
-
-	pi.on("agent_before_settle", async (event, ctx) => {
-		// Another handler already requests the next turn; the review waits for a run that would settle.
-		if (event.continue || event.entries.some((entry) => entry.type === "custom_message")) return;
-		if (!ctx.hasUI || event.outcome !== "completed") return;
-		const branch = ctx.sessionManager.getBranch();
-		if (!advisorEnabled(branch)) return;
-		const input = reviewInput(branch);
-		if (!input) return;
-		const resolved = routes(ctx);
-		if (!resolved) return;
-
-		// Pi 1.3.0 has no run signal at this boundary; use it when a later Pi supplies one.
-		const run = ctx.signal;
-		const timeout = AbortSignal.timeout(REVIEW_TIMEOUT_MS);
-		let reply: string;
-		ctx.ui.setStatus(ADVISOR_ENTRY, "Advisor reviewing…");
-		try {
-			reply = await review(ctx, resolved, input, run ? AbortSignal.any([run, timeout]) : timeout);
-		} catch (error) {
-			if (run?.aborted) return;
-			ctx.ui.notify(timeout.aborted
-				? `Advisor review timed out after ${REVIEW_TIMEOUT_MS / 1000} seconds.`
-				: `Advisor review failed: ${(error as Error).message}`, "warning");
-			return;
-		} finally {
-			ctx.ui.setStatus(ADVISOR_ENTRY, undefined);
-		}
-
+	const deliver = (ctx: ExtensionContext, reply: string, branch: SessionEntry[]) => {
 		const notes = parseReview(reply);
 		if (!notes) {
 			if (!malformedShown) ctx.ui.notify("Advisor reply did not follow the output contract and was ignored.", "warning");
@@ -188,12 +155,80 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Advisor:\n${formatNotes(notes)}${capped ? "\nThe advisor already continued once for this prompt. Send a prompt to address the blockers." : ""}`,
 			notes.some((note) => note.grade !== "nit") ? "warning" : "info");
 		if (!blockers.length || capped) return;
-		return {
-			entries: [...event.entries, {
-				type: "custom_message" as const, customType: BLOCKER_MESSAGE, display: true, details: { notes },
-				content: `The advisor reviewed this run and found blockers. Address each blocker, verify the fix with tools, then report the result.\n\n${formatNotes(blockers)}`,
-			}],
-			continue: true,
-		};
+		pi.sendMessage({
+			customType: BLOCKER_MESSAGE, display: true, details: { notes },
+			content: `The advisor reviewed this run and found blockers. Address each blocker, verify the fix with tools, then report the result.\n\n${formatNotes(blockers)}`,
+		}, { triggerTurn: true, deliverAs: "followUp" });
+	};
+
+	pi.registerCommand("advisor", {
+		description: "Turn the advisor review on or off, or show its status: /advisor on|off|status",
+		handler: async (args, ctx) => {
+			const action = args.trim();
+			if (action === "status") {
+				ctx.ui.notify(`Advisor is ${advisorEnabled(ctx.sessionManager.getBranch()) ? "on" : "off"} on this branch.`, "info");
+				return;
+			}
+			if (action !== "on" && action !== "off") {
+				ctx.ui.notify("Usage: /advisor on|off|status", "error");
+				return;
+			}
+			pi.appendEntry(ADVISOR_ENTRY, { enabled: action === "on" });
+			ctx.ui.notify(`Advisor is ${action} on this branch.`, "info");
+		},
+	});
+
+	pi.on("session_start", (_event, ctx) => {
+		cancel(ctx);
+		malformedShown = false;
+		runStart = undefined;
+	});
+	// Fires once for each run that a user message or an idle triggerTurn message starts, before the message is appended.
+	pi.on("before_agent_start", (_event, ctx) => {
+		runStart = { session: ctx.sessionManager.getSessionId(), leaf: ctx.sessionManager.getLeafId() };
+	});
+	pi.on("input", (_event, ctx) => {
+		cancel(ctx);
+		return { action: "continue" };
+	});
+	pi.on("agent_start", (_event, ctx) => cancel(ctx));
+	pi.on("session_tree", (_event, ctx) => cancel(ctx));
+	pi.on("session_shutdown", (_event, ctx) => cancel(ctx));
+
+	// Pi emits agent_settled only when no retry, compaction, or queued continuation will run, so the review never races another handler.
+	pi.on("agent_settled", (event, ctx) => {
+		cancel(ctx);
+		if (event.aborted || !ctx.hasUI || runStart?.session !== ctx.sessionManager.getSessionId()) return;
+		const branch = ctx.sessionManager.getBranch();
+		if (!advisorEnabled(branch)) return;
+		const run = runEntries(branch, runStart.leaf);
+		const last = run?.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
+		if (last?.type !== "message" || last.message.role !== "assistant" || last.message.stopReason !== "stop") return;
+		const input = reviewInput(branch, run!);
+		if (!input) return;
+		const resolved = routes(ctx);
+		if (!resolved) return;
+
+		const leaf = ctx.sessionManager.getLeafId();
+		const controller = new AbortController();
+		const timeout = AbortSignal.timeout(REVIEW_TIMEOUT_MS);
+		active = controller;
+		ctx.ui.setStatus(ADVISOR_ENTRY, "Advisor reviewing…");
+		// Not awaited: Pi waits for agent_settled handlers before the session counts as idle.
+		void review(ctx, resolved, input, AbortSignal.any([controller.signal, timeout])).then((reply) => {
+			if (active !== controller || controller.signal.aborted || !ctx.isIdle() || ctx.sessionManager.getLeafId() !== leaf) return;
+			active = undefined;
+			ctx.ui.setStatus(ADVISOR_ENTRY, undefined);
+			deliver(ctx, reply, branch);
+		}, (error) => {
+			if (active !== controller || controller.signal.aborted) return;
+			ctx.ui.notify(timeout.aborted
+				? `Advisor review timed out after ${REVIEW_TIMEOUT_MS / 1000} seconds.`
+				: `Advisor review failed: ${(error as Error).message}`, "warning");
+		}).finally(() => {
+			if (active !== controller) return;
+			active = undefined;
+			ctx.ui.setStatus(ADVISOR_ENTRY, undefined);
+		});
 	});
 }
