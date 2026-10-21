@@ -61,6 +61,6 @@ Branch navigation, `/tree`, forks, resume, and `/undo` rewinds show the goal of 
 | Interactive only | Continuation needs a UI. Print mode and other modes without UI do not continue. | Send each next prompt manually. |
 | Maximum continuations | Continuation stops after 20 automatic turns since the latest user prompt. The count includes all goals, so a new goal does not reset it. | Send a prompt to continue. |
 | No progress | Continuation stops when two automatic turns in sequence show identical tool activity. | Send a prompt with new direction, or run `/goal drop`. |
-| Budget | Tokens used are the total tokens of assistant responses after `create`, including cache reads and writes. Continuation stops when tokens used reach `token_budget`. The goal stays active; it is not complete. | Send a prompt to continue, or run `/goal drop`. |
+| Budget | Tokens used are the input, cache write, and output tokens of assistant responses after `create`. Cache reads do not count, because each turn reads the cached context again. Continuation stops when tokens used reach `token_budget`. The goal stays active; it is not complete. | Send a prompt to continue, or run `/goal drop`. |
 | Abort, error, compaction | Continuation stops after an abort or error. A compaction aborts the run, and Pi itself then stops continuation. | Send a prompt to continue. |
 | Evidence | Evidence is model-reported text. Pi Goal checks that it is present, not that it is true. | Examine the evidence in the `complete` result before you accept the work. |

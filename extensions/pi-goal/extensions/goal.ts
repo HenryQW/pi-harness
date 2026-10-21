@@ -92,7 +92,10 @@ function goalRecord(entry: SessionEntry): Goal | undefined {
 	return message.toolName === "goal" && !message.isError ? (message.details as { goal?: Goal } | undefined)?.goal : undefined;
 }
 
-/** The latest goal record on the branch wins. Tokens count assistant total usage after the goal's first record. */
+/**
+ * The latest goal record on the branch wins. Tokens count assistant input, cache writes, and output after the
+ * goal's first record. Cache reads are excluded: each turn rereads the cached prefix, which measures context size.
+ */
 export function branchGoal(branch: SessionEntry[]): { goal: Goal; used: number } | undefined {
 	let latest: { goal: Goal; start: number } | undefined;
 	branch.forEach((entry, index) => {
@@ -102,7 +105,7 @@ export function branchGoal(branch: SessionEntry[]): { goal: Goal; used: number }
 	if (!latest) return undefined;
 	let used = 0;
 	for (const entry of branch.slice(latest.start + 1)) {
-		if (entry.type === "message" && entry.message.role === "assistant") used += entry.message.usage.totalTokens;
+		if (entry.type === "message" && entry.message.role === "assistant") used += entry.message.usage.input + entry.message.usage.cacheWrite + entry.message.usage.output;
 	}
 	return { goal: latest.goal, used };
 }

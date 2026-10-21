@@ -10,8 +10,8 @@ import goalExtension, { CONTINUATION_MESSAGE, MAX_CONTINUATIONS, branchGoal, typ
 type Handler = (event: AgentBeforeSettleEvent, ctx: ExtensionContext) => unknown;
 type Session = { _lastActivityOutcome: string; _runBeforeSettleBoundary(): Promise<boolean>; abort(): Promise<void> };
 
-const usage = (input: number, output: number, cacheRead: number) => ({
-	input, output, cacheRead, cacheWrite: 0, totalTokens: input + output + cacheRead,
+const usage = (input: number, output: number, cacheRead: number, cacheWrite: number) => ({
+	input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
 
@@ -52,9 +52,9 @@ function harness(options: { hasUI?: boolean; before?: Handler; after?: (session:
 		...(options.after ? [settleExtension("/after", options.after(session))] : []),
 	];
 	let calls = 0;
-	const assistant = (content: unknown[], input = 0, output = 0, cacheRead = 0) => manager.appendMessage({
+	const assistant = (content: unknown[], input = 0, output = 0, cacheRead = 0, cacheWrite = 0) => manager.appendMessage({
 		role: "assistant", content, stopReason: "stop", api: "openai-responses", provider: "openai", model: "probe",
-		usage: usage(input, output, cacheRead), timestamp: Date.now(),
+		usage: usage(input, output, cacheRead, cacheWrite), timestamp: Date.now(),
 	} as never);
 	return {
 		manager, host, ctx, tool, notifications, status, handlers, assistant,
@@ -119,10 +119,11 @@ test("goal create, get, and complete require evidence for every deliverable", as
 	assert.equal(goal.objective, "Ship the feature");
 	assert.match(h.status.value ?? "", /Goal: Ship the feature \(0\/1000 tokens\)/);
 	await assert.rejects(h.call({ action: "create", objective: "Other" }), /already active/);
-	h.assistant([{ type: "text", text: "Working." }], 30, 12, 100);
+	// cacheRead is excluded: it rereads the cached prefix and measures context size, not new work.
+	h.assistant([{ type: "text", text: "Working." }], 30, 12, 100, 8);
 	const fetched = await h.tool.execute("get", { action: "get" } as never, undefined, undefined, h.ctx as never);
 	assert.deepEqual(fetched.details, { goal });
-	assert.match((fetched.content[0] as { text: string }).text, /Tokens used: 142\nToken budget: 1000\nTokens remaining: 858/);
+	assert.match((fetched.content[0] as { text: string }).text, /Tokens used: 50\nToken budget: 1000\nTokens remaining: 950/);
 
 	const evidence = (items: Array<[string, string]>) => ({ action: "complete", evidence: items.map(([deliverable, text]) => ({ deliverable, evidence: text })) });
 	await assert.rejects(h.call(evidence([["tests pass", "node --test: 12 passed"]])), /Missing evidence for: "docs updated"/);
