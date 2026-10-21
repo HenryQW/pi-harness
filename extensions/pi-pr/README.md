@@ -35,7 +35,9 @@ Commands are for you; tools and skills are for the agent.
 | `pi_git_pr` | tool | Create or publish a PR, without repair or merge authority. |
 | `pi_pr_create` | tool | Run guarded PR creation steps. |
 | `pi_pr_fix_ci` | tool | Repair failed GitHub Actions. |
+| `pi_pr_merge` | tool | Merge a ready named pull request after you confirm. |
 | `pi_pr_publish_work` | tool | Publish scoped local work. |
+| `pi_pr_status` | tool | Check the readiness of a named pull request. |
 | `pi_pr_sweep` | tool | Triage feedback and publish fixes. |
 | `pi_pr_update_branch` | tool | Rebase onto the pinned base and publish. |
 | `git_conflict` | tool | List, show, and resolve Git conflict blocks. Never stages files. |
@@ -50,7 +52,7 @@ Commands are for you; tools and skills are for the agent.
 | Footer | ui | Show a linked PR number and its lifecycle or condition. |
 | Widget | ui | Show a PR next-step widget hint or temporary PR routing widget status. |
 
-Only `/pr` and `pi_git_pr` authorize `pi_pr_*` helpers, for one invocation in the current session and worktree. Direct calls cannot grant authority. Only the model can call these tools, one action at a time; Codemode scripts and other tools cannot call them. They remain available with `codemode.mode` set to `only`. Cancellation does not return workflow guidance to the editor.
+Only `/pr` and `pi_git_pr` authorize the `pi_pr_*` workflow helpers, for one invocation in the current session and worktree. `pi_pr_status` and `pi_pr_merge` are not workflow helpers; see [Named pull requests](#named-pull-requests). Direct calls cannot grant authority. Only the model can call these tools, one action at a time; Codemode scripts and other tools cannot call them. They remain available with `codemode.mode` set to `only`. Cancellation does not return workflow guidance to the editor.
 
 ### Local commits and publication
 
@@ -91,6 +93,31 @@ Before it writes, the tool reads the file again and compares each block `id`. Th
 The tool reads the `conflict-marker-size` attribute for the marker width. It changes only UTF-8 text files of 8 MiB or less. Each side of a block must match the related Git index stage.
 
 Some files show a `note` and no blocks. These include binary and larger files, files deleted or renamed on one side, and files whose merge attributes are unmerged or differ from `HEAD`. Files with a binary or custom merge driver (also from `merge.default`), submodules, and symlinks also show a `note`. Markers out of sequence, an unclosed block, or a marker line that is also in a merge side give a `note`. The tool does not guess block limits. Resolve these files as a whole.
+
+### Named pull requests
+
+A named pull request is one pull request in the `origin` repository, addressed by number. Use these tools when one session manages pull requests from other worktrees. They read only GitHub and the remote configuration, and they never change the local checkout. They do not list pull requests.
+
+| Tool call | Result |
+| --- | --- |
+| `pi_pr_status` `{ number }` | Returns `verdict` (`ready`, `wait`, or `block`), `reasons`, `number`, `url`, `lifecycle`, `baseRef`, full `headOid`, `mergeable`, `mergeStateStatus`, `failingChecks`, `pendingChecks`, `codex`, and `unresolvedThreads`. |
+| `pi_pr_merge` `{ number, headOid }` | Returns `merged: true` with `headOid` and `mergeMethod`, or `merged: false` with `reason` and the fresh `status`. |
+
+The merge bar uses these reasons:
+
+- `block`: the PR is not open, is a draft, has a conflict, or needs a base update.
+- `block`: CI failed, a reviewer requested changes, or a required review is missing.
+- `block`: unresolved Codex P0/P1 threads remain. `unresolvedThreads.blocking` counts them. `unresolvedThreads.other` counts the other unresolved threads, which do not block.
+- `wait`: mergeability stays unknown after three re-reads five seconds apart, CI is running, or the Codex review of the current head did not finish.
+- `block`: the merge policy is not clean and no wait reason applies.
+
+Any block reason gives `block`. If no block reason applies, any wait reason gives `wait`. If no reason applies, the verdict is `ready`. `codex` is `disabled` unless `codexReview` is `true`; then the [Codex review gate](#codex-review-gate) rules apply.
+
+`pi_pr_merge` checks readiness again. It refuses unless the verdict is `ready` and the live head equals `headOid`. Without an interactive UI, it refuses and the PR stays unchanged. Otherwise, it asks `Merge PR #<number>?` with the URL, the short head OID, the base ref, and `mergeMethod`. If you decline, the PR stays unchanged. After you confirm, it checks readiness, PR identity, head, and base OID again, then merges the exact head through GitHub.
+
+`pi_pr_merge` does not do the local merge safety checks of `/pr`, because your checkout is not the PR branch. It does not delete branches or worktrees, enable automatic merging, or use a merge queue.
+
+For a manager workflow, each worker agent checks its own PR with `pi_pr_status` and reports the verdict and `headOid`. The manager session checks the PR again with `pi_pr_status`. Then it calls `pi_pr_merge` with that `headOid`, and you confirm in the manager's own pane.
 
 ## Flow
 
@@ -165,9 +192,9 @@ Package-owned: `<agent-dir>/config/pi-pr/config.json`
 | `ciWaitMinutes` | Shared CI/Codex wait budget, including waits after later pushes. | Integer ≥ 0; `0` disables waiting | `10` |
 | `checkTimeoutMinutes` | Time limit per validation check. Git and GitHub helpers keep shorter limits. | Integer `1` to `35791` | `10` |
 | `mergeMethod` | Direct merge method, subject to repository policy. | `squash`, `merge`, or `rebase` | `squash` |
-| `codexReview` | Require a complete current-head Codex review before merge confirmation. Adds at most two GitHub endpoint reads per open-PR discovery. | `true` or `false` | `false` |
+| `codexReview` | Require a complete current-head Codex review before merge confirmation, also for named pull requests. Adds at most two GitHub endpoint reads per open-PR discovery. | `true` or `false` | `false` |
 
-Missing or malformed files use defaults without changes to the file. Unknown/invalid keys warn with path and reason, then use their defaults; valid keys remain effective. Each issue appears once per session, at session start or the next `/pr`. Fix the file, then run `/pr` again. Each explicit `/pr` reads config once; a later `/pr` or reload resets limits.
+Missing or malformed files use defaults without changes to the file. Unknown/invalid keys warn with path and reason, then use their defaults; valid keys remain effective. Each issue appears once per session, at session start or the next `/pr`. Fix the file, then run `/pr` again. Each explicit `/pr` reads config once; a later `/pr` or reload resets limits. Each `pi_pr_status` or `pi_pr_merge` call also reads config.
 
 ## State and storage
 
@@ -188,4 +215,4 @@ Private recovery uses `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json` 
 - Preflight changes can select another route at most twice without resetting budgets. Changed authority, dirty/divergent work, unreconciled recovery, or uncertain outcomes stop continuation. Repeated completed routes on the same head also stop.
 - [Branch-update guidance](./skills/pi-pr-update-branch/SKILL.md) explains base advancement and changed authority during conflicts. [CI-fix guidance](./skills/pi-pr-fix-ci/SKILL.md) explains preflight changes. Base movement during or after evidence collection blocks CI repair; never reuse stale evidence.
 - Verified rebases can resume through `/pr`, including detached HEAD. Unverified interrupted rebases need manual recovery. Merge commits after the fork point need manual resolution. Other branch refs stay unchanged, even with `rebase.updateRefs=true`.
-- Every merge needs explicit confirmation, clean safe local Git state, and fresh matching authority. A changed PR head during confirmation cancels merging. Active Git operations block merging. `/pr` deletes no branch or worktree.
+- Every `/pr` merge needs explicit confirmation, clean safe local Git state, and fresh matching authority. A changed PR head during confirmation cancels merging. Active Git operations block merging. `/pr` deletes no branch or worktree.

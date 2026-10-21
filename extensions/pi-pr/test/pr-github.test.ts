@@ -8,6 +8,7 @@ import {
 	GitHubRateLimitError,
 	linkInferredPullRequest,
 	loadCurrentPullRequest as discoverCurrentPullRequest,
+	loadNamedPullRequest,
 	preflightPullRequestCreation,
 	PullRequestLoadError,
 	readPullRequestBaseRefOid,
@@ -21,7 +22,7 @@ async function loadCurrentPullRequest(
 	if (discovery.kind === "none" || discovery.kind === "inactive") return null;
 	throw new PullRequestLoadError(`Discovery blocked: ${discovery.issue.kind}`);
 }
-import { derivePullRequestNextStep, type PullRequestTarget } from "../extensions/pr-routing.ts";
+import { deriveNamedPullRequestVerdict, derivePullRequestNextStep, type PullRequestTarget } from "../extensions/pr-routing.ts";
 
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
@@ -203,6 +204,7 @@ function candidateSearchOutput(
 function actionsCheck(overrides: Record<string, unknown> = {}) {
 	return {
 		__typename: "CheckRun",
+		name: "test",
 		workflowName: "CI",
 		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
 		...overrides,
@@ -210,7 +212,7 @@ function actionsCheck(overrides: Record<string, unknown> = {}) {
 }
 
 function statusContext(overrides: Record<string, unknown> = {}) {
-	return { __typename: "StatusContext", ...overrides };
+	return { __typename: "StatusContext", context: "status", ...overrides };
 }
 
 function pullRequest(overrides: Record<string, unknown> = {}) {
@@ -385,7 +387,7 @@ function harness(options: HarnessOptions = {}) {
 			}
 			if (command === "gh" && args[0] === "pr" && args[1] === "view") {
 				if (options.pullRequestResult) return options.pullRequestResult;
-				const candidate = candidates.find((value) => value.url === args[2]);
+				const candidate = candidates.find((value) => value.url === (args[3] === "-R" ? `https://${args[4]}/pull/${args[2]}` : args[2]));
 				if (candidate) return result(JSON.stringify(candidate));
 			}
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
@@ -2313,4 +2315,41 @@ test("derives the opt-in Codex review gate from reactions, the current-head summ
 	const invalid = harness({ codexReactions: [{ content: "eyes", user: "chatgpt-codex-connector[bot]" }] });
 	invalid.context.codexReview = true;
 	await assert.rejects(loadCurrentPullRequest(invalid.pi, invalid.context), /Read Codex review reactions failed: invalid GitHub CLI output/);
+});
+
+test("loads a named origin pull request read-only and applies the P0/P1 merge bar", async () => {
+	const codex = { login: "chatgpt-codex-connector[bot]" };
+	const summary = (sha: string) => ({
+		user: codex,
+		body: `<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | ✅ **Completed** | \`${sha}\` | Push |\n`,
+	});
+	const thread = (badge: string) => ({
+		isResolved: false,
+		comments: { nodes: [{ author: { login: "chatgpt-codex-connector" }, body: `**![${badge} Badge](https://img.shields.io/badge/${badge}-orange?style=flat)** Fix it` }] },
+	});
+	const passed = [actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" })];
+	const cases = [
+		{ name: "ready with only a P2 thread", checks: passed, comments: [summary(REMOTE_HEAD.slice(0, 7))], threads: [thread("P2")], verdict: "ready", reasons: [], unresolved: { blocking: 0, other: 1 } },
+		{ name: "running CI waits", checks: [actionsCheck({ name: "build", status: "IN_PROGRESS" })], mergeStateStatus: "BLOCKED", comments: [summary(REMOTE_HEAD.slice(0, 7))], threads: [], verdict: "wait", reasons: ["CI running"], unresolved: { blocking: 0, other: 0 } },
+		{ name: "a Codex review of an older head waits", checks: passed, comments: [summary("36e8693")], threads: [], verdict: "wait", reasons: ["Codex review of the current head not finished"], unresolved: { blocking: 0, other: 0 } },
+		{ name: "a P1 Codex thread blocks", checks: passed, comments: [summary(REMOTE_HEAD.slice(0, 7))], threads: [thread("P1"), thread("P2")], verdict: "block", reasons: ["1 unresolved P0/P1 threads"], unresolved: { blocking: 1, other: 1 } },
+	];
+	for (const { name, checks, mergeStateStatus, comments, threads, verdict, reasons, unresolved } of cases) {
+		const { pi, context, calls } = harness({
+			pushUrls: { origin: "git@github.com:acme/project.git" },
+			candidates: [pullRequest({ statusCheckRollup: checks, ...(mergeStateStatus ? { mergeStateStatus } : {}) })],
+			codexReactions: [],
+			codexComments: comments,
+			threads: reviewThreadOutput(reviewThreadPage(threads)),
+		});
+		context.codexReview = true;
+		const loaded = await loadNamedPullRequest(pi, context, 42);
+		assert.deepEqual(deriveNamedPullRequestVerdict(loaded.lifecycle, loaded.conditions, loaded.unresolvedThreads.blocking), { verdict, reasons }, name);
+		assert.deepEqual(loaded.unresolvedThreads, unresolved, name);
+		assert.equal(loaded.head.oid, REMOTE_HEAD, name);
+		assert.deepEqual(loaded.pendingChecks, verdict === "wait" && reasons[0] === "CI running" ? ["build"] : [], name);
+		assert.ok(calls.some(({ args }) => args.join(" ").startsWith("pr view 42 -R github.com/acme/project --json")), name);
+		// The caller's checkout is not the PR branch: only remote configuration and ref-name validation touch Git.
+		assert.ok(calls.every(({ command, args }) => command !== "git" || ["remote", "check-ref-format"].includes(args[0]!)), name);
+	}
 });

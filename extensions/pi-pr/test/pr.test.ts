@@ -28,6 +28,7 @@ import {
 	pullRequestObservation,
 	type CurrentPullRequest,
 	type CurrentPullRequestDiscovery,
+	type NamedPullRequest,
 	type PullRequestLoadContext,
 } from "../extensions/pr-github.ts";
 import pullRequestExtension from "../extensions/pr.ts";
@@ -198,6 +199,7 @@ function harness(options: {
 	createCiFixer?: ExtensionDependencies["createCiFixer"];
 	createWorkPublisher?: ExtensionDependencies["createWorkPublisher"];
 	syncLocalHead?: ExtensionDependencies["syncLocalHead"];
+	loadNamedPullRequest?: ExtensionDependencies["loadNamedPullRequest"];
 	policy?: Partial<PrPolicy>;
 	policyIssues?: ConfigIssue[];
 	isIdle?: () => boolean;
@@ -243,6 +245,8 @@ function harness(options: {
 		createCiFixer: options.createCiFixer,
 		createWorkPublisher: options.createWorkPublisher,
 		syncLocalHead: options.syncLocalHead,
+		loadNamedPullRequest: options.loadNamedPullRequest,
+		refreshDelayMs: 0,
 		loadPrPolicy: () => ({ status: "ok", source: "missing", value: { ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ...options.policy }, issues: options.policyIssues ?? [] }),
 		needsFeedbackAttention: async () => false,
 	};
@@ -373,7 +377,7 @@ test("registers tools with flat object roots and strict actions", async () => {
 		["git_conflict", ["list", "show", "resolve"]],
 	]);
 
-	assert.deepEqual(app.tools.map(({ name }) => name), [...expected.keys(), "pi_git_pr"]);
+	assert.deepEqual(app.tools.map(({ name }) => name), [...expected.keys(), "pi_git_pr", "pi_pr_status", "pi_pr_merge"]);
 	for (const tool of app.tools) {
 		// The conflict tool holds no workflow authority, so models and Codemode scripts may call it in parallel.
 		if (tool.name !== "git_conflict") {
@@ -392,7 +396,7 @@ test("registers tools with flat object roots and strict actions", async () => {
 		assert.equal(schema.type, "object", tool.name);
 		assert.equal(schema.anyOf, undefined, tool.name);
 		assert.equal(schema.additionalProperties, false, tool.name);
-		if (tool.name === "pi_git_pr") continue;
+		if (!expected.has(tool.name)) continue;
 		assert.deepEqual(schema.required, ["pi_git_commit", "git_conflict"].includes(tool.name) ? ["action"] : ["runId", "action"], tool.name);
 		assert.deepEqual(schema.properties.action.anyOf.map(({ const: value }) => value), expected.get(tool.name), tool.name);
 	}
@@ -1515,6 +1519,57 @@ test("routes create, sweep, and CI tool actions directly to their bound helpers"
 	} finally {
 		await ci.shutdown(ciContext);
 	}
+});
+
+test("named PR merge requires a ready exact head, UI, and confirmation before the expected-head mutation", async () => {
+	const head = "b".repeat(40);
+	const current = currentPullRequest();
+	let pendingReads = 1;
+	const named = (): NamedPullRequest => ({
+		id: current.id, number: 42, url: current.url, host: "github.com", lifecycle: "open",
+		conditions: { ...current.conditions, mergeability: pendingReads-- > 0 ? "pending" : "known" },
+		base: current.base, head: current.head,
+		mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", failingChecks: [], pendingChecks: [],
+		unresolvedThreads: { blocking: 0, other: 1 },
+	});
+	const app = harness({
+		async load() { return { kind: "inactive" }; },
+		async loadNamedPullRequest(_pi, context, number) {
+			assert.deepEqual([number, context.codexReview], [42, false]);
+			return named();
+		},
+		exec(command, args) {
+			if (command !== "gh" || !args.some((arg) => arg.includes("mergePullRequest("))) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+			return execResult(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: current.id, state: "MERGED" } } } }));
+		},
+	});
+	const confirmations: string[] = [];
+	let answer = false;
+	const base = app.context();
+	const ctx = { ...base, ui: { ...base.ui, async confirm(title: string, message: string) { confirmations.push(`${title}\n${message}`); return answer; } } } as ExtensionContext;
+
+	// A pending mergeability read is re-read before the verdict.
+	const status = (await app.callTool("pi_pr_status", { number: 42 }, ctx)).details as Record<string, unknown>;
+	assert.deepEqual([status.verdict, status.headOid, status.codex, status.unresolvedThreads], ["ready", head, "disabled", { blocking: 0, other: 1 }]);
+
+	const refusal = async (params: unknown, context: ExtensionContext) => {
+		const details = (await app.callTool("pi_pr_merge", params, context)).details as { merged: boolean; reason: string };
+		assert.equal(details.merged, false);
+		return details.reason;
+	};
+	assert.match(await refusal({ number: 42, headOid: "c".repeat(40) }, ctx), /head is b{40}, not the requested c{40}/);
+	assert.match(await refusal({ number: 42, headOid: head }, { ...ctx, hasUI: false }), /needs confirmation in an interactive session/);
+	assert.deepEqual(confirmations, []);
+	assert.match(await refusal({ number: 42, headOid: head }, ctx), /merge declined/);
+	assert.equal(app.execCalls.length, 0);
+
+	answer = true;
+	const merged = await app.callTool("pi_pr_merge", { number: 42, headOid: head }, ctx);
+	assert.deepEqual(merged.details, { merged: true, number: 42, url: current.url.href, headOid: head, mergeMethod: "squash" });
+	assert.equal(confirmations.at(-1), `Merge PR #42?\n${current.url.href}\nHead ${head.slice(0, 12)} into main with squash.`);
+	assert.equal(app.execCalls.length, 1);
+	assert.ok(app.execCalls[0]!.args.includes(`expectedHeadOid=${head}`));
+	assert.ok(app.execCalls[0]!.args.includes("mergeMethod=SQUASH"));
 });
 
 test("feedback record, commit, resolution, and finalization require no UI confirmation", async () => {

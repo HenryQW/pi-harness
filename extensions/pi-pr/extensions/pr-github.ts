@@ -107,6 +107,16 @@ export type CurrentPullRequest = PullRequest & {
 
 export type CurrentPullRequestDiscovery = PullRequestDiscovery<CurrentPullRequest>;
 
+/** A pull request addressed by number in the `origin` repository, with no local merge safety state. */
+export type NamedPullRequest = Pick<CurrentPullRequest, "id" | "number" | "url" | "host" | "lifecycle" | "conditions" | "base" | "head"> & {
+	mergeable: ListedPullRequest["mergeable"];
+	mergeStateStatus: ListedPullRequest["mergeStateStatus"];
+	failingChecks: string[];
+	pendingChecks: string[];
+	/** `blocking` counts unresolved Codex P0/P1 threads; `other` counts the remaining unresolved threads. */
+	unresolvedThreads: { blocking: number; other: number };
+};
+
 export function cloneCurrentPullRequest(value: CurrentPullRequest): CurrentPullRequest {
 	return {
 		...value,
@@ -247,6 +257,7 @@ type SearchPage = {
 };
 
 type CheckState = {
+	name: string;
 	state: string;
 	diagnosableFailure: boolean;
 };
@@ -631,7 +642,10 @@ function checkState(value: unknown): CheckState {
 		(states.includes("COMPLETED") && outcomes.includes("running"))
 	) fail("Find pull requests", "invalid statusCheckRollup");
 	const selected = conclusion ?? state ?? status ?? fail("Find pull requests", "invalid statusCheckRollup");
+	const name = value.__typename === "CheckRun" ? value.name : value.context;
+	if (typeof name !== "string" || !name) fail("Find pull requests", "invalid statusCheckRollup");
 	return {
+		name,
 		state: selected,
 		diagnosableFailure: FAILED_CHECK_STATES.has(selected) && value.__typename === "CheckRun" &&
 			isDiagnosableActionsCheck(value),
@@ -1511,6 +1525,7 @@ async function readUnresolvedReviewThreads(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	candidate: ListedPullRequest,
+	classifyThreads: boolean,
 ): Promise<{ unresolved: number; codexFindings: number }> {
 	const result = await execute(pi, context, "Read unresolved review threads", "gh", [
 		"api",
@@ -1520,7 +1535,7 @@ async function readUnresolvedReviewThreads(
 		"--paginate",
 		"--slurp",
 		"-f",
-		`query=${context.codexReview ? CODEX_REVIEW_THREADS_QUERY : REVIEW_THREADS_QUERY}`,
+		`query=${classifyThreads ? CODEX_REVIEW_THREADS_QUERY : REVIEW_THREADS_QUERY}`,
 		"-F",
 		`id=${candidate.id}`,
 	]);
@@ -1570,13 +1585,13 @@ export async function readPullRequestBaseRefOid(
 	return parseBaseRefAuthority(result.stdout, { repository, ref });
 }
 
-async function loadPullRequestDetails(
+/** GitHub condition reads shared by current-branch and named pull requests; `classifyThreads` reads Codex P0/P1 findings. */
+async function readPullRequestConditions(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
 	candidate: ListedPullRequest,
-	pushTarget: PushTarget,
-	inspectedLocal?: LocalMergeSafety,
-): Promise<CurrentPullRequest> {
+	classifyThreads: boolean,
+): Promise<{ conditions: PullRequestConditions; base: PullRequestRef; codexFindings: number }> {
 	await execute(pi, context, "Validate pull request base ref", "git", [
 		"check-ref-format",
 		`refs/heads/${candidate.base.ref}`,
@@ -1584,7 +1599,7 @@ async function loadPullRequestDetails(
 
 	const [threads, codexStatus, liveBaseOid] = await Promise.all([
 		candidate.lifecycle === "open"
-			? readUnresolvedReviewThreads(pi, context, candidate)
+			? readUnresolvedReviewThreads(pi, context, candidate, classifyThreads)
 			: { unresolved: 0, codexFindings: 0 },
 		candidate.lifecycle === "open" && context.codexReview
 			? readCodexReviewStatus(pi, context, candidate)
@@ -1594,7 +1609,21 @@ async function loadPullRequestDetails(
 	const codex: CodexReview | undefined = codexStatus !== undefined
 		? { status: codexStatus, findings: threads.codexFindings }
 		: undefined;
-	const pullRequestConditions = conditions(candidate, threads.unresolved, codex);
+	return {
+		conditions: conditions(candidate, threads.unresolved, codex),
+		base: liveBaseOid ? { ...candidate.base, oid: liveBaseOid } : candidate.base,
+		codexFindings: threads.codexFindings,
+	};
+}
+
+async function loadPullRequestDetails(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	candidate: ListedPullRequest,
+	pushTarget: PushTarget,
+	inspectedLocal?: LocalMergeSafety,
+): Promise<CurrentPullRequest> {
+	const read = await readPullRequestConditions(pi, context, candidate, context.codexReview === true);
 	const inspected = inspectedLocal ?? await inspectLocalMergeSafety({
 		exec: (command, args, options) => pi.exec(command, args, {
 			...options,
@@ -1613,12 +1642,55 @@ async function loadPullRequestDetails(
 		host: candidate.url.hostname.toLowerCase(),
 		approved: candidate.reviewDecision === "APPROVED",
 		lifecycle: candidate.lifecycle,
-		conditions: pullRequestConditions,
+		conditions: read.conditions,
 		local,
-		base: liveBaseOid ? { ...candidate.base, oid: liveBaseOid } : candidate.base,
+		base: read.base,
 		head: candidate.head,
 		headFetchSource: pushTarget.fetchSource,
 		target: publicTarget(pushTarget),
+	};
+}
+
+/**
+ * Load one pull request of the validated `origin` repository by number. It reads only GitHub and the
+ * remote configuration, so it never changes or inspects the local checkout, which need not be the PR branch.
+ * `conditions.codex` is present only with `codexReview`; P0/P1 thread counts are always read.
+ */
+export async function loadNamedPullRequest(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	number: number,
+): Promise<NamedPullRequest> {
+	const authority = await readValidatedRemoteAuthority(pi, context, "origin");
+	const loaded = await execute(pi, context, "Load named pull request", "gh", [
+		"pr", "view", String(number), "-R", `${authority.host}/${authority.repository}`, "--json", PR_FIELDS,
+	]);
+	const candidate = listedPullRequest(parseJson(loaded.stdout, "Load named pull request"));
+	if (candidate === null) fail("Load named pull request", "pull request head repository is unavailable");
+	if (
+		candidate.number !== number || candidate.url.hostname.toLowerCase() !== authority.host ||
+		normalizeRepository(candidate.base.repository) !== normalizeRepository(authority.repository)
+	) fail("Load named pull request", "response does not match the origin repository");
+	const read = await readPullRequestConditions(pi, context, candidate, true);
+	const failing = candidate.checkStates.filter(({ state }) => FAILED_CHECK_STATES.has(state));
+	const pending = candidate.checkStates.filter(({ state }) => !FAILED_CHECK_STATES.has(state) && !SUCCESSFUL_CHECK_STATES.has(state));
+	return {
+		id: candidate.id,
+		number: candidate.number,
+		url: candidate.url,
+		host: authority.host,
+		lifecycle: candidate.lifecycle,
+		conditions: read.conditions,
+		base: read.base,
+		head: candidate.head,
+		mergeable: candidate.mergeable,
+		mergeStateStatus: candidate.mergeStateStatus,
+		failingChecks: failing.map(({ name }) => name),
+		pendingChecks: pending.map(({ name }) => name),
+		unresolvedThreads: {
+			blocking: read.codexFindings,
+			other: read.conditions.unresolvedThreads - read.codexFindings,
+		},
 	};
 }
 

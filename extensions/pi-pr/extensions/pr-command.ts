@@ -31,8 +31,8 @@ const WORKFLOWS: Record<WorkflowNextStep, string> = {
 };
 export const WORKFLOW_ROUTES: ReadonlySet<string> = new Set(Object.keys(WORKFLOWS));
 /** GitHub recomputes mergeability shortly after a push; re-read a few times before giving up. */
-const REFRESH_ATTEMPTS = 3;
-const REFRESH_DELAY_MS = 5_000;
+export const REFRESH_ATTEMPTS = 3;
+export const REFRESH_DELAY_MS = 5_000;
 type WorkflowReservation =
 	| { route: "create"; target: PullRequestTarget }
 	| { route: Exclude<WorkflowNextStep, "create">; pullRequest: CurrentPullRequest };
@@ -158,7 +158,9 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 	return { message: `PR #${pullRequest.number} has no available action`, type: "warning" };
 }
 
-function isSameConfirmedMerge(current: CurrentPullRequest, fresh: CurrentPullRequest): boolean {
+type ConfirmedMerge = Pick<CurrentPullRequest, "id" | "number" | "url" | "host" | "head" | "base">;
+
+export function isSameConfirmedMerge(current: ConfirmedMerge, fresh: ConfirmedMerge): boolean {
 	return current.id === fresh.id && current.number === fresh.number &&
 		current.url.href === fresh.url.href && current.host === fresh.host &&
 		current.head.repository === fresh.head.repository &&

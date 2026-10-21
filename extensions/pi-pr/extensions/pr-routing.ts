@@ -96,6 +96,36 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 	return "merge";
 }
 
+export type NamedPullRequestVerdict = { verdict: "ready" | "wait" | "block"; reasons: string[] };
+
+/**
+ * Merge bar for a named pull request: any block reason blocks, then any wait reason waits.
+ * `blockingThreads` counts unresolved P0/P1 threads; other unresolved threads never block.
+ */
+export function deriveNamedPullRequestVerdict(
+	lifecycle: PullRequestLifecycle,
+	conditions: PullRequestConditions,
+	blockingThreads: number,
+): NamedPullRequestVerdict {
+	if (lifecycle !== "open") return { verdict: "block", reasons: [`pull request is ${lifecycle}`] };
+	const block: string[] = [];
+	const wait: string[] = [];
+	if (conditions.draft) block.push("draft");
+	if (conditions.conflict) block.push("merge conflict");
+	if (conditions.baseUpdateRequired) block.push("base update required");
+	if (conditions.ci === "failure" || conditions.ci === "failure-blocked") block.push("CI failed");
+	if (conditions.changesRequested) block.push("changes requested");
+	else if (conditions.review === "pending") block.push("required review pending");
+	if (blockingThreads > 0) block.push(`${blockingThreads} unresolved P0/P1 threads`);
+	if (conditions.mergeability === "pending") wait.push("mergeability pending");
+	if (conditions.ci === "running") wait.push("CI running");
+	if (conditions.codex?.status === "running") wait.push("Codex review of the current head not finished");
+	// Running checks usually leave merge policy BLOCKED, so the policy gate applies only without a wait reason.
+	if (conditions.policy === "pending" && !wait.length) block.push("merge policy not satisfied");
+	if (block.length) return { verdict: "block", reasons: [...block, ...wait] };
+	return wait.length ? { verdict: "wait", reasons: wait } : { verdict: "ready", reasons: [] };
+}
+
 export function isPullRequestCreationEligible(branch: BranchCreationState): boolean {
 	return branch.relation === "distinct-ref" && branch.worktree !== "operation" &&
 		(branch.ahead > 0 || branch.worktree === "dirty");
