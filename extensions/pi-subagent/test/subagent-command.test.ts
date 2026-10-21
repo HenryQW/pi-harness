@@ -563,7 +563,7 @@ test("prune routes selected request-owned items to one discard of each whole own
 		blockers: [{ kind: "owner" as const, text: "owned by orphaned needs_attention request orphan-req" }, { kind: "unmerged" as const, text: "branch has commits not in Main HEAD" }] });
 	const h = harness({ prune: { root: "/git", items: [owned("f"), owned("g")] } });
 	h.responses.push((dialog) => {
-		assert.equal(dialog.options![0], "[ ] f · delete whole request orphan-req · owned by orphaned needs_attention request orphan-req; branch has commits not in Main HEAD");
+		assert.equal(dialog.options![0], "[ ] f · delete whole request orphan-req (needs_attention) · branch has commits not in Main HEAD");
 		return h.pick("Select all")(dialog);
 	}, h.pick("Continue (2 selected)"));
 	h.confirms.push(true);

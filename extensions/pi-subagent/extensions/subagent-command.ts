@@ -321,7 +321,10 @@ async function chooseMany<T>(ctx: ExtensionContext, title: string, items: readon
 	}
 }
 
-const pruneLabel = (item: PruneItem) => `${shortId(item)} · ${item.prunable ? "" : item.override === "discard" ? `delete whole request ${item.owner!.id} · ` : "force · "}${item.reason}`;
+// The owner is named once, so clipping keeps the other blockers.
+const pruneLabel = (item: PruneItem) => item.override === "discard"
+	? [`${shortId(item)} · delete whole request ${item.owner!.id} (${item.owner!.status})`, ...item.blockers.filter(({ kind }) => kind !== "owner").map(({ text }) => text)].join(" · ")
+	: `${shortId(item)} · ${item.prunable ? "" : "force · "}${item.reason}`;
 
 export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentCommandAdapter): void {
 	pi.registerEntryRenderer<Report>(REPORT_ENTRY, (entry, _options, theme) => entry.data && reportComponent(entry.data, theme, 1));
