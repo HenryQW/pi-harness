@@ -410,7 +410,7 @@ Run `/subagent prune` to clean up leftover worker and integration checkouts unde
 
 - Its branch tip is already in Main's HEAD or in the local `origin` default-branch ref. The command does not fetch.
 - Its checkout has no tracked or untracked changes. No merge, rebase, cherry-pick, revert, or bisect is in progress.
-- No unfinished isolated request, in any checkout of this repository, records it. An unreadable state file blocks every item that it mentions.
+- No unfinished isolated request, in any checkout of this repository, records it. An unreadable state file blocks every item that it mentions. An unfinished orphaned request, whose parent checkout was removed, also blocks its items. To remove them, open that request in `/subagent` and use **Close and delete worktrees (discard work)**.
 - No productive run holds a repository lease.
 - No Herdr pane works inside the checkout. If the command cannot inspect Herdr, it refuses every checkout.
 

@@ -28,7 +28,7 @@ export interface PruneOwnership {
 }
 
 export interface PruneGuards {
-	/** Ownership and lease evidence across the repository's existing checkouts. */
+	/** Ownership and lease evidence across the repository's existing checkouts, primary first. */
 	ownership(checkouts: readonly string[]): Promise<PruneOwnership>;
 	/** Every Herdr pane; rejects when Herdr cannot be inspected. */
 	panes(): Promise<readonly { paneId: string; cwds: readonly string[] }[]>;
