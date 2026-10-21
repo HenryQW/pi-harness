@@ -2336,6 +2336,58 @@ test("refreshes a stale open PR in the background only on idle settlement", asyn
 	} finally { await app.shutdown(ctx); }
 });
 
+test("polls an idle transient PR with backoff until its state is terminal", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const responses = [
+		...Array<CurrentPullRequest>(3).fill(currentPullRequest({ conditions: { ci: "running" } })),
+		currentPullRequest({ conditions: { mergeability: "pending" } }),
+		currentPullRequest({ lifecycle: "merged" }),
+	];
+	let loads = 0;
+	const app = harness({ async load() { return responses[loads++]!; } });
+	const ctx = app.context();
+	const advance = async (ms: number) => { t.mock.timers.tick(ms); await flush(); };
+	try {
+		await app.start(ctx);
+		assert.match(plain(String(app.statuses.at(-1))), /PR #42.*CI running/);
+		for (const delay of [30_000, 60_000, 120_000]) {
+			const before = loads;
+			await advance(delay - 1);
+			assert.equal(loads, before, `no poll before ${delay} ms`);
+			await advance(1);
+			assert.equal(loads, before + 1, `one poll after ${delay} ms`);
+		}
+		await advance(30_000);
+		assert.equal(loads, 5, "a state change resets the backoff");
+		assert.match(plain(String(app.statuses.at(-1))), /PR #42.*merged/);
+		await advance(3_600_000);
+		assert.equal(loads, 5, "a terminal state stops polling");
+	} finally { await app.shutdown(ctx); }
+});
+
+test("defers polling while busy and stops polling at shutdown", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let idle = false;
+	let loads = 0;
+	const app = harness({
+		isIdle: () => idle,
+		async load() { loads += 1; return currentPullRequest({ conditions: { ci: "running" } }); },
+	});
+	const ctx = app.context();
+	await app.start(ctx);
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(loads, 1, "a busy session skips the poll");
+	idle = true;
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(loads, 2, "a skipped poll is rescheduled");
+	await app.shutdown(ctx);
+	t.mock.timers.tick(3_600_000);
+	await flush();
+	assert.equal(loads, 2);
+});
+
 for (const state of ["inactive", "absent", "blocked", "merged", "closed"] as const) {
 	test(`does not stale-refresh ${state} discovery`, async () => {
 		let now = 0;

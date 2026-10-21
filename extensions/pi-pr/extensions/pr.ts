@@ -50,6 +50,8 @@ import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater, type UpdateBra
 
 const MAX_STALE_REDISCOVERIES = 2;
 const STALE_PR_REFRESH_MS = 2 * 60_000;
+const POLL_MIN_MS = 30_000;
+const POLL_MAX_MS = 5 * 60_000;
 const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
@@ -337,10 +339,51 @@ export default function pullRequestExtension(
 	let widgetKind: "presentation" | "routing" = "presentation";
 	let routingSpinnerFrame = 0;
 	let routingSpinnerTimer: ReturnType<typeof setInterval> | undefined;
+	let pollTimer: ReturnType<typeof setTimeout> | undefined;
+	let pollKey: string | undefined;
+	let pollDelay = POLL_MIN_MS;
 
 	const stopRoutingSpinner = (): void => {
 		if (routingSpinnerTimer !== undefined) clearInterval(routingSpinnerTimer);
 		routingSpinnerTimer = undefined;
+	};
+
+	const stopPolling = (): void => {
+		if (pollTimer !== undefined) clearTimeout(pollTimer);
+		pollTimer = undefined;
+		pollKey = undefined;
+		pollDelay = POLL_MIN_MS;
+	};
+
+	// Idle sessions get no refresh events, so poll only while the footer shows a transient PR state.
+	const schedulePoll = (): void => {
+		if (pollTimer !== undefined) clearTimeout(pollTimer);
+		const generation = sessionGeneration;
+		pollTimer = setTimeout(() => {
+			pollTimer = undefined;
+			if (generation !== sessionGeneration || pollKey === undefined) return;
+			if (active || queued || activeInvocations.size > 0 || !context?.isIdle()) {
+				schedulePoll();
+				return;
+			}
+			pollDelay = Math.min(pollDelay * 2, POLL_MAX_MS);
+			refreshInBackground();
+		}, pollDelay);
+		pollTimer.unref();
+	};
+
+	const updatePolling = (discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>): void => {
+		const pullRequest = discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" ? discovery.pullRequest : undefined;
+		const conditions = pullRequest?.conditions;
+		if (!pullRequest || !conditions || conditions.ci !== "running" && conditions.codex?.status !== "running" &&
+			conditions.mergeability !== "pending") {
+			stopPolling();
+			return;
+		}
+		const key = JSON.stringify([pullRequest.number, pullRequest.head.oid, conditions.ci, conditions.codex?.status, conditions.mergeability]);
+		if (key !== pollKey) pollDelay = POLL_MIN_MS;
+		pollKey = key;
+		schedulePoll();
 	};
 
 	const clearWorkflow = (selected: WorkflowContext | undefined): void => {
@@ -739,6 +782,7 @@ export default function pullRequestExtension(
 		ctx: ExtensionContext,
 		discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
 	): void => {
+		updatePolling(discovery);
 		if (discovery.kind === "inactive") {
 			displayEstablished = true;
 			lastDiscovery = "inactive";
@@ -790,6 +834,7 @@ export default function pullRequestExtension(
 		clearWorkflow(workflowContext);
 		activeInvocations.clear();
 		stopRoutingSpinner();
+		stopPolling();
 		widgetKind = "presentation";
 		active?.abort();
 		active = undefined;
@@ -838,6 +883,9 @@ export default function pullRequestExtension(
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
 						displayEstablished = true;
 					}
+					// Back off on a stale transient footer, but never retry exhausted quota.
+					if (error instanceof GitHubRateLimitError) stopPolling();
+					else if (pollKey !== undefined) schedulePoll();
 					reportRefreshFailure(error);
 				}
 				return;

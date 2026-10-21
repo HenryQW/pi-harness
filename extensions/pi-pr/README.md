@@ -122,7 +122,9 @@ The footer shows linked `PR #number` with statuses such as `N unresolved`, `CI f
 
 The widget shows `⠋ Checking pull request…` during discovery, then a route hint. Errors use `✗`, warnings `!`, success `✓`, and neutral routes `●`. Hints stay hidden during workflows.
 
-Background discovery starts with the session. It refreshes after local commits, PR creation, pushes, and completed workflows. When Pi becomes idle, an open PR also refreshes. This requires no active or queued refresh and a last check at least two minutes old. Failed checks reset this wait. There is no timer, so external changes can stay hidden until a later idle settlement.
+Background discovery starts with the session. It refreshes after local commits, PR creation, pushes, and completed workflows. When Pi becomes idle, an open PR also refreshes. This requires no active or queued refresh and a last check at least two minutes old. Failed checks reset this wait.
+
+While Pi is idle and an open PR shows running CI, running Codex review, or pending mergeability, the footer also refreshes on a timer. The first refresh occurs after 30 seconds. The interval doubles to a maximum of 5 minutes and resets when the status changes. A busy agent delays the refresh. The timer stops when the status is final, the PR merges or closes, an API quota failure occurs, or the session ends.
 
 The UI stays silent outside Git or without a supported GitHub remote. Lookup failures show `PR · status unavailable`. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying.
 
