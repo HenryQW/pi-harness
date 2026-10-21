@@ -3,7 +3,7 @@ import { lstat, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { truncateHead, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
-import { canonicalWorktree, runChecked, validatePaths } from "./pr-execution.ts";
+import { canonicalWorktree, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 export type ConflictSide = "@ours" | "@theirs" | "@both" | "@base";
 export type ConflictResolution = { block: number; id: string; side: ConflictSide };
@@ -159,7 +159,11 @@ type Unmerged = { root: string; path: string; absolute: string; stages: Map<stri
 
 export class GitConflicts {
 	private readonly exec: Exec;
-	constructor(exec: Exec = spawnBounded) { this.exec = exec; }
+	private readonly agentDir?: string;
+	constructor(options: { exec?: Exec; agentDir?: string } = {}) {
+		this.exec = options.exec ?? spawnBounded;
+		this.agentDir = options.agentDir;
+	}
 
 	/**
 	 * Read unmerged index stages, then the `merge` and `conflict-marker-size` attributes Git used,
@@ -187,20 +191,23 @@ export class GitConflicts {
 			const fields = (await runChecked(this.exec, "git", ["check-attr", "-z", "merge", "conflict-marker-size", "--", ...paths], options)).stdout.split("\0");
 			for (let index = 0; index + 2 < fields.length; index += 3) attributes.set(`${fields[index]}\0${fields[index + 1]}`, fields[index + 2]!);
 		}
-		// An unspecified `merge` attribute uses merge.default, then the text driver.
+		// An unspecified `merge` attribute uses merge.default, then the text driver. A configured
+		// driver wins over a built-in name, and check-attr prints a driver named `set` like a bare attribute.
 		const fallback = (await runChecked(this.exec, "git", ["config", "--get", "merge.default"], options, [0, 1])).stdout.trim() || "text";
+		const drivers = new Set((await runChecked(this.exec, "git", ["config", "--name-only", "--get-regexp", "^merge\\..+\\.driver$"], options, [0, 1])).stdout
+			.split("\n").filter(Boolean).map((key) => key.slice("merge.".length, -".driver".length)));
 		// Attributes read from a conflicted .gitattributes may differ from the ones Git merged with.
 		const attributeDirs = [...stages.keys()].filter((path) => path.split("/").at(-1) === ".gitattributes").map((path) => path.slice(0, -".gitattributes".length));
 		const entries = paths.map((path) => {
 			const size = Number(attributes.get(`${path}\0conflict-marker-size`));
 			const attribute = attributes.get(`${path}\0merge`);
-			const merge = attribute === "unspecified" ? fallback : attribute === "set" ? "text" : attribute;
+			const merge = drivers.has(attribute!) ? attribute : attribute === "unspecified" ? fallback : attribute === "set" ? "text" : attribute;
 			const current = stages.get(path)!;
 			const refusal = !current.has("2") || !current.has("3") ? "is deleted or renamed on one side"
 				: special.has(path) ? "is a submodule or symlink conflict"
 				: attributeDirs.some((dir) => path.startsWith(dir)) ? "is governed by an unmerged .gitattributes, so its merge attributes are unknown"
-				: merge === "unset" || merge === "binary" ? "uses a binary merge driver, so Git kept one side without markers"
-				: merge !== "text" && merge !== "union" ? "uses a custom merge driver, so its markers are unknown"
+				: !drivers.has(merge!) && (merge === "unset" || merge === "binary") ? "uses a binary merge driver, so Git kept one side without markers"
+				: drivers.has(merge!) || (merge !== "text" && merge !== "union") ? "uses a custom merge driver, so its markers are unknown"
 				: undefined;
 			return { root, path, absolute: join(root, path), stages: current, width: Number.isSafeInteger(size) && size > 0 ? size : 7, ...(refusal ? { refusal } : {}) };
 		});
@@ -272,16 +279,16 @@ export class GitConflicts {
 				if (at < 0) throw new WholeFileConflict(`${path} conflict block ${block.block} does not match the index stages; resolve it as a whole file`);
 				cursors.set(stage, at + run.length);
 			}
-			// A literal base marker line inside two-way ours reads as a base section; refuse when that reading also fits.
-			if (block.base && findRun(await blob("2"), plain.slice(block.start + 1, block.start + 2 + block.ours.length + block.base.length), 0) >= 0) {
-				throw new WholeFileConflict(`${path} conflict block ${block.block} has a base marker that may be ours content; resolve it as a whole file`);
-			}
-			// Git writes real markers; a marked span already present in a side is inherited file content.
-			const span = plain.slice(block.start, block.end + 1);
+			// Git writes marker lines; one that is also an ordinary line of a merge side may be file content.
+			const markers = [block.start, ...block.base ? [block.start + 1 + block.ours.length] : [], block.end].map((index) => plain[index]!);
 			for (const stage of ["2", "3"]) {
-				if (findRun(await blob(stage), span, 0) >= 0) throw new WholeFileConflict(`${path} conflict block ${block.block} is marker text already in a merge side; resolve it as a whole file`);
+				const { at } = await blob(stage);
+				if (markers.some((line) => at.has(line))) throw new WholeFileConflict(`${path} conflict block ${block.block} has a marker line that is also in a merge side; resolve it as a whole file`);
 			}
 		}
+		// Markers of another width outside blocks mean the attributes changed after the merge, or are file content.
+		const outside = plain.findIndex((line, index) => /^<{7,}(?: |$)/.test(line) && !blocks.some((block) => index >= block.start && index <= block.end));
+		if (outside >= 0) throw new WholeFileConflict(`${path} has a marker line of another width at line ${outside + 1}; resolve it as a whole file`);
 		return { text, blocks };
 	}
 
@@ -311,12 +318,12 @@ export class GitConflicts {
 	async resolve(cwd: string, input: string, resolutions: readonly ConflictResolution[], signal?: AbortSignal) {
 		const entry = await this.target(cwd, input, signal);
 		const { path, absolute } = entry;
-		return await withFileMutationQueue(absolute, async () => {
+		return await withWorktreeLock(cwd, () => withFileMutationQueue(absolute, async () => {
 			const text = resolveConflicts((await this.parse(entry, signal)).text, path, resolutions, entry.width);
 			signal?.throwIfAborted();
 			await writeFile(absolute, text, "utf8");
 			const { blocks, note } = await summaries(async () => parseConflicts(text.split("\n"), path, entry.width));
 			return { path, resolved: resolutions.map(({ block }) => block), remaining: blocks, ...(note ? { note } : {}) };
-		});
+		}), { agentDir: this.agentDir, signal });
 	}
 }
