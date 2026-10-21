@@ -8,16 +8,18 @@ import { GitConflicts, parseConflicts, resolveConflicts } from "../extensions/gi
 
 test("parses two-way and diff3 blocks and resolves @both and @base", () => {
 	const twoWay = "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\nb\n";
-	const [block] = parseConflicts(twoWay.split("\n"));
+	const [block] = parseConflicts(twoWay.split("\n"), "f");
 	assert.deepEqual({ ...block!, id: undefined }, { block: 1, id: undefined, start: 1, end: 5, oursLabel: "HEAD", theirsLabel: "main", ours: ["ours"], theirs: ["theirs"] });
 	assert.equal(resolveConflicts(twoWay, "f", [{ block: 1, id: block!.id, side: "@both" }]), "a\nours\ntheirs\nb\n");
 	assert.throws(() => resolveConflicts(twoWay, "f", [{ block: 1, id: block!.id, side: "@base" }]), /no base section.*merge\.conflictStyle/);
 
 	// conflict-marker-size=9: seven-character markers inside the block stay content.
 	const diff3 = "<<<<<<<<< HEAD\nours\n=======\n||||||||| base\nbase\n=========\ntheirs\n>>>>>>>>> main";
-	const [withBase] = parseConflicts(diff3.split("\n"));
+	const [withBase] = parseConflicts(diff3.split("\n"), "f");
 	assert.deepEqual([withBase!.ours, withBase!.base], [["ours", "======="], ["base"]]);
 	assert.equal(resolveConflicts(diff3, "f", [{ block: 1, id: withBase!.id, side: "@base" }]), "base");
+	// A same-width opener inside a side makes block extents uncertain: refuse the file instead of guessing.
+	assert.throws(() => parseConflicts("<<<<<<< HEAD\n<<<<<<< literal\n=======\nb\n>>>>>>> main".split("\n"), "f"), /ambiguous conflict markers at line 2/);
 });
 
 test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files without writing, and never stages", async (t) => {

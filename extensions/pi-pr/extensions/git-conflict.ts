@@ -22,6 +22,7 @@ export type ConflictBlock = {
 
 const SHOW_LIMIT = { maxLines: 300, maxBytes: 16 * 1024 };
 const MAX_LIST_FILES = 100;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 // Keep a BOM, and refuse bytes that a lossy decode would rewrite.
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -31,47 +32,55 @@ function marker(line: string, char: string, width: number): string | undefined {
 	return line.slice(width + 1);
 }
 
+/** A conflict this tool cannot address by block; the caller must resolve the whole file. */
+export class WholeFileConflict extends Error {}
+
 /**
  * Parse complete Git conflict blocks. Side lines keep any trailing `\r` so a splice preserves CRLF files.
  * The id covers the start line and the exact block text, so an edited or shifted block gets a new id.
  * The opening marker sets the width for the block, so `conflict-marker-size` is honored and
- * markers of another width inside a block stay content.
+ * markers of another width inside a block stay content. A same-width marker out of sequence or an
+ * unclosed block makes block extents uncertain, so the whole file is refused instead of guessed.
  */
-export function parseConflicts(lines: readonly string[]): ConflictBlock[] {
+export function parseConflicts(lines: readonly string[], path: string): ConflictBlock[] {
 	const blocks: ConflictBlock[] = [];
 	let open: Omit<ConflictBlock, "block" | "id" | "end" | "theirsLabel"> | undefined;
 	let width = 0;
 	let phase: "ours" | "base" | "theirs" = "ours";
-	lines.forEach((raw, index) => {
+	const ambiguous = (index: number) => new WholeFileConflict(`${path} has ambiguous conflict markers at line ${index + 1}; resolve it as a whole file`);
+	for (const [index, raw] of lines.entries()) {
 		const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
 		const opening = /^<{7,}(?= |$)/.exec(line)?.[0].length;
-		if (opening !== undefined && (!open || opening === width)) {
+		if (!open) {
+			if (opening === undefined) continue;
 			width = opening;
 			open = { start: index, oursLabel: line.slice(width + 1), ours: [], theirs: [] };
 			phase = "ours";
-			return;
+			continue;
 		}
-		if (!open) return;
+		if (opening === width) throw ambiguous(index);
 		if (marker(line, "|", width) !== undefined) {
-			if (phase === "ours") { open.base = []; phase = "base"; } else open = undefined;
-			return;
+			if (phase !== "ours") throw ambiguous(index);
+			open.base = [];
+			phase = "base";
+			continue;
 		}
 		if (line === "=".repeat(width)) {
-			if (phase === "theirs") open = undefined;
-			else phase = "theirs";
-			return;
+			if (phase === "theirs") throw ambiguous(index);
+			phase = "theirs";
+			continue;
 		}
 		const theirsLabel = marker(line, ">", width);
 		if (theirsLabel !== undefined) {
-			if (phase === "theirs") {
-				const id = createHash("sha256").update(`${open.start}\0${lines.slice(open.start, index + 1).join("\n")}`).digest("hex").slice(0, 12);
-				blocks.push({ ...open, block: blocks.length + 1, id, end: index, theirsLabel });
-			}
+			if (phase !== "theirs") throw ambiguous(index);
+			const id = createHash("sha256").update(`${open.start}\0${lines.slice(open.start, index + 1).join("\n")}`).digest("hex").slice(0, 12);
+			blocks.push({ ...open, block: blocks.length + 1, id, end: index, theirsLabel });
 			open = undefined;
-			return;
+			continue;
 		}
 		(phase === "ours" ? open.ours : phase === "base" ? open.base! : open.theirs).push(raw);
-	});
+	}
+	if (open) throw ambiguous(open.start);
 	return blocks;
 }
 
@@ -89,7 +98,7 @@ function sideLines(block: ConflictBlock, side: ConflictSide, path: string): stri
 /** Apply every resolution to one parse, or throw before any change when a block is stale or invalid. */
 export function resolveConflicts(text: string, path: string, resolutions: readonly ConflictResolution[]): string {
 	const lines = text.split("\n");
-	const blocks = parseConflicts(lines);
+	const blocks = parseConflicts(lines, path);
 	if (new Set(resolutions.map(({ block }) => block)).size !== resolutions.length) throw new Error("Each conflict block can be resolved only once per call");
 	const planned = resolutions.map(({ block, id, side }) => {
 		const current = blocks[block - 1];
@@ -106,12 +115,18 @@ function summary(block: ConflictBlock) {
 	return { block: block.block, id: block.id, lines: `${block.start + 1}-${block.end + 1}`, base: block.base !== undefined, ours: block.ours.length, theirs: block.theirs.length };
 }
 
+async function summaries(path: string, read: () => Promise<string>): Promise<{ blocks: ReturnType<typeof summary>[]; note?: string }> {
+	try { return { blocks: parseConflicts((await read()).split("\n"), path).map(summary) }; }
+	catch (error) {
+		if (error instanceof WholeFileConflict) return { blocks: [], note: error.message };
+		throw error;
+	}
+}
+
 function sideText(lines: readonly string[]) {
 	const result = truncateHead(lines.map((line) => line.endsWith("\r") ? line.slice(0, -1) : line).join("\n"), SHOW_LIMIT);
 	return { text: result.content, truncated: result.truncated };
 }
-
-class WholeFileConflict extends Error {}
 
 export class GitConflicts {
 	private readonly exec: Exec;
@@ -139,6 +154,7 @@ export class GitConflicts {
 		const stat = await lstat(absolute).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
 		if (!stat) throw new WholeFileConflict(`${path} is missing from the worktree; resolve it as a whole file`);
 		if (!stat.isFile()) throw new WholeFileConflict(`${path} is not a regular file; resolve it as a whole file`);
+		if (stat.size > MAX_FILE_BYTES) throw new WholeFileConflict(`${path} is larger than 8 MiB; resolve it as a whole file`);
 		try { return UTF8.decode(await readFile(absolute)); }
 		catch (error) {
 			if (error instanceof TypeError) throw new WholeFileConflict(`${path} is binary or not UTF-8 text; resolve it as a whole file`);
@@ -147,11 +163,7 @@ export class GitConflicts {
 	}
 
 	private async entry(path: string, absolute: string) {
-		try { return { path, blocks: parseConflicts((await this.text(path, absolute)).split("\n")).map(summary) }; }
-		catch (error) {
-			if (error instanceof WholeFileConflict) return { path, blocks: [], note: error.message };
-			throw error;
-		}
+		return { path, ...await summaries(path, () => this.text(path, absolute)) };
 	}
 
 	async list(cwd: string, input?: string, signal?: AbortSignal) {
@@ -169,7 +181,7 @@ export class GitConflicts {
 
 	async show(cwd: string, input: string, number: number, signal?: AbortSignal) {
 		const { path, absolute } = await this.target(cwd, input, signal);
-		const block = parseConflicts((await this.text(path, absolute)).split("\n"))[number - 1];
+		const block = parseConflicts((await this.text(path, absolute)).split("\n"), path)[number - 1];
 		if (!block) throw new Error(`${path} has no conflict block ${number}; run git_conflict list`);
 		const sides = { ours: sideText(block.ours), ...(block.base ? { base: sideText(block.base) } : {}), theirs: sideText(block.theirs) };
 		const truncated = Object.values(sides).some((side) => side.truncated);
@@ -186,7 +198,8 @@ export class GitConflicts {
 			const text = resolveConflicts(await this.text(path, absolute), path, resolutions);
 			signal?.throwIfAborted();
 			await writeFile(absolute, text, "utf8");
-			return { path, resolved: resolutions.map(({ block }) => block), remaining: parseConflicts(text.split("\n")).map(summary) };
+			const { blocks, note } = await summaries(path, async () => text);
+			return { path, resolved: resolutions.map(({ block }) => block), remaining: blocks, ...(note ? { note } : {}) };
 		});
 	}
 }
