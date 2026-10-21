@@ -397,21 +397,17 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 			let catalog: ReturnType<typeof loadRoleCatalog>;
 			reportConfig(ctx);
-			try { catalog = loadRoleCatalog(); } catch (error) { return `Role catalog unavailable: ${message(error)}`; }
-			const list = (values: readonly string[] | undefined) => values?.length ? values.join(", ") : "none";
-			const lines = catalog.roles.flatMap((role) => {
-				let route: string;
+			try { catalog = loadRoleCatalog(); } catch (error) { return { unavailable: message(error) }; }
+			const roles = catalog.roles.map((role) => {
+				let route: { model: string; thinking: string } | { error: string };
 				try {
 					const resolved = role.modelClass === undefined ? resolveConfiguredTaskRoute(ctx, DELEGATE_TASK) : resolveTaskRoute(ctx, role.modelClass);
-					route = `${modelReference(resolved.model)} · thinking ${resolved.thinkingLevel}`;
-				} catch (error) { route = `route error: ${message(error)}`; }
-				return [
-					`${role.name} · ${catalog.sources.get(role.name)} · ${role.modelClass ?? "default route"} → ${route}`,
-					`  tools: ${list(role.tools)} · extensions: ${list(role.extensions)} · skills: ${list(role.skills)} · mcps: ${list(role.mcps)}`,
-				];
+					route = { model: modelReference(resolved.model), thinking: resolved.thinkingLevel };
+				} catch (error) { route = { error: message(error) }; }
+				return { name: role.name, source: catalog.sources.get(role.name) ?? "unknown", modelClass: role.modelClass, route,
+					tools: role.tools ?? [], extensions: role.extensions ?? [], skills: role.skills ?? [], mcps: role.mcps ?? [] };
 			});
-			if (catalog.errors.length) lines.push(`Invalid Role files (${catalog.errors.length}):`, ...catalog.errors.map((error) => `- ${error.message}`));
-			return lines.join("\n") || "No Roles configured.";
+			return { roles, errors: catalog.errors.map((error) => error.message) };
 		},
 		canFollowup: (root, id, task) => isolatedSurface.canFollowup(root, id, task),
 		enqueue: (root, id, task, text, current) => isolatedSurface.enqueue(root, id, task, text, current),

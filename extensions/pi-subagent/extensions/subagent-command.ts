@@ -1,4 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../dist/discard.js";
 import { compactCost } from "./result-transport.ts";
 
@@ -89,13 +90,101 @@ export interface SubagentCommandAdapter {
 	/** Re-verify and remove reviewed prunable items; returns a bounded report. */
 	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<string>;
 	/** Read-only Role catalog report with routes and per-file load errors. */
-	roles(ctx: ExtensionContext): string;
+	roles(ctx: ExtensionContext): RolesReport;
 	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ ref: string; tabId: string; name: string; sessionFile: string }>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
 	drain(root: string, requestId: string, taskId: string, current: () => boolean): readonly string[];
 	/** Session start/shutdown epoch; prevents same-session reload after an awaited dialog. */
 	epoch(): number;
+}
+
+export interface RoleReport {
+	name: string;
+	source: string;
+	/** Role modelClass, or undefined for the configured default route. */
+	modelClass?: string;
+	route: { model: string; thinking: string } | { error: string };
+	tools: readonly string[];
+	extensions: readonly string[];
+	skills: readonly string[];
+	mcps: readonly string[];
+}
+export type RolesReport = { roles: readonly RoleReport[]; errors: readonly string[] } | { unavailable: string };
+
+type Tone = "info" | "success" | "warning" | "error";
+/** `code` shows the value as inline code: IDs, paths, branches, model references, and session files. */
+type Row = { label: string; value: string; tone?: Tone; code?: boolean } | { text: string; tone?: Tone; code?: boolean };
+interface Section { heading?: string; note?: string; tone?: Tone; rows: readonly Row[] }
+/** One /subagent output; every delivery mode renders it as Markdown. */
+export interface Report { tone: Tone; title: string; sections: readonly Section[] }
+const REPORT_ENTRY = "pi-subagent-report";
+const RECOVERY_MESSAGE = "pi-subagent-recovery";
+
+const TONES: Record<Tone, { glyph: string; color: Parameters<Theme["fg"]>[0] }> = {
+	info: { glyph: "●", color: "accent" }, success: { glyph: "✓", color: "success" },
+	warning: { glyph: "⚠", color: "warning" }, error: { glyph: "✗", color: "error" },
+};
+const LEVEL = { info: "info", success: "info", warning: "warning", error: "error" } as const;
+const field = (text: string) => clean(text, Number.MAX_SAFE_INTEGER);
+/** Escapes inline and line-start Markdown. Brackets, parentheses, and `!` stay literal because Pi reads `\(` and `\[` as LaTeX. */
+const escapeMarkdown = (text: string) => field(text).replace(/[\\`*_~<>&|$]/g, "\\$&").replace(/^(\s*)([#+-])/, "$1\\$2").replace(/^(\s*\d+)([.)])/, "$1\\$2");
+const inlineCode = (text: string) => {
+	const value = field(text);
+	const fence = "`".repeat(Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length)) + 1);
+	const pad = /^`|`$/.test(value) ? " " : "";
+	return value ? `${fence}${pad}${value}${pad}${fence}` : "";
+};
+const glyphPrefix = (tone?: Tone) => tone ? `${TONES[tone].glyph} ` : "";
+
+/** `### heading · note`, then one list item per row. */
+function sectionMarkdown({ heading, note, tone, rows }: Section, bullet = "-"): string {
+	const value = (text: string, row: Row) => row.code ? `${glyphPrefix(row.tone)}${inlineCode(text)}` : escapeMarkdown(`${glyphPrefix(row.tone)}${text}`);
+	return [
+		...(heading ? [`### ${glyphPrefix(tone)}${escapeMarkdown(heading)}${note ? ` · ${escapeMarkdown(note)}` : ""}`] : []),
+		...rows.map((row) => `${bullet} ${"label" in row ? `**${escapeMarkdown(row.label)}:** ${value(row.value, row)}` : value(row.text, row)}`),
+	].join("\n");
+}
+/** A headless section switches its bullet so Markdown does not merge it into the list above. */
+function reportBody(sections: readonly Section[]): string {
+	let bullet = "*";
+	return sections.map((section) => sectionMarkdown(section, bullet = section.heading || bullet === "*" ? "-" : "*")).join("\n\n");
+}
+const titleText = ({ tone, title }: Report) => `${TONES[tone].glyph} ${field(title)}`;
+/** Bold glyph and title, then the section body: the RPC and message form of the TUI entry. */
+export function reportMarkdown(report: Report): string {
+	return [`**${TONES[report.tone].glyph} ${escapeMarkdown(report.title)}**`, ...report.sections.length ? [reportBody(report.sections)] : []].join("\n\n");
+}
+/** Pi's custom-message look: a tone-colored bold title over a Markdown body. */
+function reportComponent(report: Report, theme: Theme, paddingX: number): Box {
+	const box = new Box(paddingX, 1, (text) => theme.bg("customMessageBg", text));
+	box.addChild(new Text(theme.bold(theme.fg(TONES[report.tone].color, titleText(report))), 0, 0));
+	if (report.sections.length) {
+		box.addChild(new Spacer(1));
+		box.addChild(new Markdown(clean(reportBody(report.sections), ROLES_REPORT_CODE_POINTS, true), 0, 0, getMarkdownTheme(),
+			{ color: (text) => theme.fg("customMessageText", text) }));
+	}
+	return box;
+}
+/** Adapter text: the first line is the title unless one is given; other lines are rows. */
+function textReport(tone: Tone, text: string, title?: string): Report {
+	const lines = text.split("\n").filter((line) => line.trim());
+	const head = title ?? lines.shift() ?? "";
+	return { tone, title: head, sections: lines.length ? [{ rows: lines.map((line) => ({ text: line })) }] : [] };
+}
+const moreSection = (more: string | undefined): Section[] => more ? [{ rows: [{ text: more, tone: "warning" }] }] : [];
+
+function rolesReport(report: RolesReport): Report {
+	if ("unavailable" in report) return { tone: "error", title: `Role catalog unavailable: ${report.unavailable}`, sections: [] };
+	return { tone: "info", title: `Roles (${report.roles.length})`, sections: [
+		...report.roles.map((role): Section => ({ heading: role.name, note: role.source, rows: [
+			{ label: "model class", value: role.modelClass ?? "default" },
+			..."error" in role.route ? [{ label: "route", value: `error: ${role.route.error}`, tone: "error" as const }]
+				: [{ label: "model", value: role.route.model, code: true }, { label: "thinking", value: role.route.thinking }],
+			...(["tools", "skills", "extensions", "mcps"] as const).map((key) => ({ label: key, value: role[key].join(", ") || "none" })),
+		] })),
+		...(report.errors.length ? [{ heading: `Invalid Role files (${report.errors.length})`, tone: "error" as const, rows: report.errors.map((text) => ({ text })) }] : []),
+	] };
 }
 
 const clean = (text: string, max = 110, multiline = false): string => [...text.replace(multiline ? /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g : /[\u0000-\u001f\u007f-\u009f]/g, " ")].slice(0, max).join("");
@@ -110,13 +199,17 @@ const summary = (text: string, max = 60): string => {
 const isolatedLabel = ({ id, status, name }: IsolatedRequest): string => `${id} · ${status} · ${summary(name)}`;
 const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
+const statusTone = (status: string): Tone => /attention|blocked|retained/i.test(status) ? "warning"
+	: /failed|failure|aborted/i.test(status) ? "error" : completed(status) ? "success" : "info";
+/** Uncolored: the selector colors each whole option, and inner ANSI resets break its highlight. */
+const glyph = (status: string) => TONES[statusTone(status)].glyph;
 
 const PRUNE_IGNORED_CONFIRM_CODE_POINTS = 4_000;
 const NOT_SHOWN = "they are not removed in this run; run /subagent prune again after this run.";
 
 /** Fit whole item lines within `max` code points; never cut silently, and report exactly which items were shown. */
 function fitItems<T>(header: string, items: readonly T[], line: (item: T) => string, max: number, omitted = NOT_SHOWN,
-	count: (item: T) => number = () => 1): { text: string; shown: T[] } {
+	count: (item: T) => number = () => 1): { text: string; shown: T[]; more?: string } {
 	const lines = [header];
 	const shown: T[] = [];
 	let size = [...header].length;
@@ -130,41 +223,76 @@ function fitItems<T>(header: string, items: readonly T[], line: (item: T) => str
 		shown.push(item);
 	}
 	const hidden = items.slice(shown.length).reduce((sum, item) => sum + count(item), 0);
-	if (hidden) lines.push(`+${hidden} more not shown; ${omitted}`);
-	return { text: lines.join("\n"), shown };
+	const more = hidden ? `+${hidden} more not shown; ${omitted}` : undefined;
+	if (more) lines.push(more);
+	return { text: lines.join("\n"), shown, more };
 }
 
 /** Groups items by exact reason, prunable groups first, in lines of 10 IDs so a long list is cut at whole lines.
  * Only shown items may be removed. IDs are display-only; removal uses the reviewed items. */
-function pruneReview({ root, items }: PrunePlan): { text: string; shown: PruneItem[] } {
-	if (!items.length) return { text: `No pi-subagent worktrees or branches in ${root}.`, shown: [] };
+function pruneReview({ root, items }: PrunePlan): { report: Report; shown: PruneItem[] } {
+	if (!items.length) return { report: { tone: "info", title: `No pi-subagent worktrees or branches in ${root}.`, sections: [] }, shown: [] };
 	const groups = new Map<string, PruneItem[]>();
 	for (const item of [...items.filter((item) => item.prunable), ...items.filter((item) => !item.prunable)]) {
-		const title = item.prunable ? `✓ Prunable: ${item.reason}` : `✗ Blocked: ${item.path ? item.reason : `${item.reason}; no checkout`}`;
+		const title = item.prunable ? `Prunable: ${item.reason}` : `Blocked: ${item.path ? item.reason : `${item.reason}; no checkout`}`;
 		if (groups.has(title)) groups.get(title)!.push(item);
 		else groups.set(title, [item]);
 	}
-	const rows = [...groups].flatMap(([title, group]) => Array.from({ length: Math.ceil(group.length / 10) }, (_, index) => {
-		const chunk = group.slice(index * 10, index * 10 + 10);
-		const ids = chunk.map(({ branch }) => clean(branch.replace(/^pi-subagent\/subagent-/, "").slice(0, 8))).join(", ");
-		return { items: chunk, text: `${index ? "" : `${clean(title, 600)} (${group.length}):\n`}  ${ids}` };
-	}));
+	const rows = [...groups].flatMap(([title, group]) => {
+		const section: Section = { heading: `${title} (${group.length})`, tone: group[0]!.prunable ? "success" : "error", rows: [] };
+		return Array.from({ length: Math.ceil(group.length / 10) }, (_, index) => {
+			const chunk = group.slice(index * 10, index * 10 + 10);
+			return { section, index, items: chunk, row: { text: chunk.map(({ branch }) => branch.replace(/^pi-subagent\/subagent-/, "").slice(0, 8)).join(", "), code: true } };
+		});
+	});
 	const prunable = items.filter((item) => item.prunable).length;
-	const reviewed = fitItems(`Subagent prune review in ${root}: ${prunable} prunable, ${items.length - prunable} blocked. IDs are the first 8 characters after pi-subagent/subagent-.`,
-		rows, (row) => row.text, ROLES_REPORT_CODE_POINTS, NOT_SHOWN, (row) => row.items.length);
-	return { text: reviewed.text, shown: reviewed.shown.flatMap((row) => row.items) };
+	const head: Report = { tone: "info", title: "Subagent prune review", sections: [{ rows: [
+		{ label: "root", value: root, code: true }, { label: "prunable", value: String(prunable) }, { label: "blocked", value: String(items.length - prunable) },
+		{ label: "IDs", value: "first 8 characters after pi-subagent/subagent-" },
+	] }] };
+	// Each line measures its exact Markdown, so the cap never cuts a shown item.
+	const reviewed = fitItems(reportMarkdown(head), rows, ({ section, index, row }) => index ? sectionMarkdown({ rows: [row] }) : `\n${sectionMarkdown({ ...section, rows: [row] })}`,
+		ROLES_REPORT_CODE_POINTS, NOT_SHOWN, (row) => row.items.length);
+	const sections = [...new Set(reviewed.shown.map(({ section }) => section))]
+		.map((section) => ({ ...section, rows: reviewed.shown.filter((row) => row.section === section).map(({ row }) => row) }));
+	return { report: { ...head, sections: [...head.sections, ...sections, ...moreSection(reviewed.more)] }, shown: reviewed.shown.flatMap((row) => row.items) };
 }
 
-function discardReview(plan: DiscardPlan) {
-	if (!plan.items.length) return { text: `No remaining owned resources for ${plan.requestId}.`, shown: [] };
-	return fitItems(`Close and delete request ${plan.requestId}:`, plan.items, (item) => clean([
-		`${item.key}: ${item.blockers.length ? `blocked: ${item.blockers.join("; ")}` : "can delete"}`,
-		`path: ${item.path ?? "none"}; checkout: ${item.checkout ? "yes" : "no"}; branch: ${item.branch ?? "none"}; tip: ${item.tip ?? "none"}`,
-		`commits ahead of recorded base: ${item.commits ?? "unknown"}; dirty: ${item.dirty === undefined ? "not inspected" : item.dirty ? "yes" : "no"}`,
-		`ignored entries (including all content inside them): ${item.ignored.length ? item.ignored.join(", ") : "none"}`,
-		`Herdr resources: ${item.hosts.length ? item.hosts.join("; ") : "none"}`,
-	].join("\n"), Number.MAX_SAFE_INTEGER, true), ROLES_REPORT_CODE_POINTS,
-	"they are not removed; reopen this request to review them.");
+function discardReview(plan: DiscardPlan): { report: Report; shown: DiscardPlan["items"] } {
+	if (!plan.items.length) return { report: { tone: "info", title: `No remaining owned resources for ${plan.requestId}.`, sections: [] }, shown: [] };
+	const section = (item: DiscardPlan["items"][number]): Section => ({ heading: item.key, note: item.blockers.length ? "blocked" : "can delete",
+		tone: item.blockers.length ? "error" : "warning", rows: [
+			{ label: "path", value: item.path ?? "none", code: item.path !== undefined },
+			{ label: "checkout", value: item.checkout ? "yes" : "no" },
+			{ label: "branch", value: item.branch ?? "none", code: item.branch !== undefined },
+			{ label: "tip", value: item.tip ?? "none", code: item.tip !== undefined },
+			{ label: "commits ahead of recorded base", value: `${item.commits ?? "unknown"}` },
+			{ label: "dirty", value: item.dirty === undefined ? "not inspected" : item.dirty ? "yes" : "no" },
+			{ label: "ignored entries, deleted with all content inside them", value: item.ignored.join(", ") || "none", code: item.ignored.length > 0 },
+			{ label: "Herdr resources", value: item.hosts.join("; ") || "none" },
+			{ label: "blockers", value: item.blockers.join("; ") || "none", ...item.blockers.length ? { tone: "error" as const } : {} },
+		] });
+	const head: Report = { tone: "warning", title: `Close and delete request ${plan.requestId}`, sections: [] };
+	const reviewed = fitItems(reportMarkdown(head), plan.items, (item) => `\n${sectionMarkdown(section(item))}`, ROLES_REPORT_CODE_POINTS,
+		"they are not removed; reopen this request to review them.");
+	return { report: { ...head, sections: [...reviewed.shown.map(section), ...moreSection(reviewed.more)] }, shown: reviewed.shown };
+}
+
+function directReport(task: DirectTask): Report {
+	const [first] = task.workers;
+	const missing = first ? first.workers - task.workers.length : 0;
+	const untabbed = task.workers.filter((worker) => !task.tabs.some((tab) => tab.display?.worker === worker.worker));
+	return { tone: statusTone(task.status), title: `Direct workflow ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}`, sections: [
+		{ rows: [{ label: "ID", value: task.id, code: true }, ...(task.recovery ? [{ label: "recovery", value: clean(task.recovery, 4000), tone: "warning" as const }] : [])] },
+		...task.tabs.map((tab): Section => ({ heading: tab.display ? workerLabel(tab.display) : tab.name, rows: [
+			...([["task", tab.entryId], ["agent", tab.name], ["tab", tab.tabId], ["pane", tab.paneId], ["session", tab.sessionFile]] as const).map(([label, value]) => ({ label, value, code: true })),
+			...(compactCost(tab.cost) === undefined ? [] : [{ label: "cost", value: compactCost(tab.cost)! }]),
+		] })),
+		...(untabbed.length || missing > 0 ? [{ rows: [
+			...untabbed.map((worker) => ({ text: `${workerLabel(worker)} · no verified tab recorded` })),
+			...(missing > 0 ? [{ text: `${missing} other worker(s) in D${first!.workflow} have no recorded tab.` }] : []),
+		] }] : []),
+	] };
 }
 
 type Choice<T> = { label: string; value: T };
@@ -178,15 +306,23 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 }
 
 export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentCommandAdapter): void {
+	pi.registerEntryRenderer<Report>(REPORT_ENTRY, (entry, _options, theme) => entry.data && reportComponent(entry.data, theme, 1));
+	pi.registerMessageRenderer(RECOVERY_MESSAGE, (message, { outputPad }, theme) => reportComponent(textReport("info", typeof message.content === "string"
+		? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n"), "Recovery report"), theme, outputPad));
+	/** The TUI gets a themed transcript entry that stays out of model context; other modes get the same capped Markdown. */
+	const deliver = (ctx: ExtensionContext, report: Report, customType = REPORT_ENTRY) => {
+		if (ctx.hasUI && ctx.mode === "tui") return pi.appendEntry(REPORT_ENTRY, report);
+		const text = clean(reportMarkdown(report), ROLES_REPORT_CODE_POINTS, true);
+		if (ctx.hasUI) ctx.ui.notify(text, LEVEL[report.tone]);
+		else pi.sendMessage({ customType, content: text, display: true });
+	};
 	pi.registerCommand("subagent", {
 		description: "Inspect direct and isolated work, list Roles with /subagent roles, recover orphaned isolated requests with /subagent recover, or remove merged leftover worktrees with /subagent prune",
 		handler: async (args, ctx) => {
 			const command = args.trim();
 			if (command && !["prune", "recover", "roles"].includes(command)) throw new Error("Usage: /subagent [prune|recover|roles]");
 			if (command === "roles") {
-				const report = clean(adapter.roles(ctx), ROLES_REPORT_CODE_POINTS, true);
-				if (ctx.hasUI) ctx.ui.notify(report, "info");
-				else pi.sendMessage({ customType: "pi-subagent-roles", content: report, display: true });
+				deliver(ctx, rolesReport(adapter.roles(ctx)), "pi-subagent-roles");
 				return;
 			}
 
@@ -207,7 +343,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			if (command === "recover") {
 				const report = await adapter.recover(ctx.cwd);
 				if (!current()) return;
-				pi.sendMessage({ customType: "pi-subagent-recovery", content: report, display: true },
+				pi.sendMessage({ customType: RECOVERY_MESSAGE, content: report, display: true },
 					{ triggerTurn: true, deliverAs: "followUp" });
 				return;
 			}
@@ -219,13 +355,12 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			if (command === "prune") {
 				const plan = await adapter.prunePlan(ctx.cwd);
 				const reviewed = pruneReview(plan);
-				const review = clean(reviewed.text, ROLES_REPORT_CODE_POINTS, true);
 				if (!ctx.hasUI) {
-					pi.sendMessage({ customType: "pi-subagent-prune", content: `${review}\nReport only: removal requires interactive confirmation.`, display: true });
+					deliver(ctx, { ...reviewed.report, sections: [...reviewed.report.sections, { rows: [{ text: "Report only: removal requires interactive confirmation." }] }] }, "pi-subagent-prune");
 					return;
 				}
 				if (!valid()) return;
-				ctx.ui.notify(review, "info");
+				deliver(ctx, reviewed.report);
 				const prunable = reviewed.shown.filter((item) => item.prunable);
 				if (!prunable.length) return;
 				const confirmed = await ctx.ui.confirm("Prune subagent worktrees", `Remove all ${prunable.length} prunable item(s) listed above? Each is re-verified first; unique commits, tracked or untracked changes, and unlisted items are never removed.`);
@@ -245,16 +380,20 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (!selected.length) return;
 				try {
 					const report = await adapter.prune(ctx.cwd, selected, allowIgnored, current);
-					if (valid()) ctx.ui.notify(clean(report, ROLES_REPORT_CODE_POINTS, true), "info");
+					if (valid()) deliver(ctx, textReport("info", report));
 				} catch (error) { if (valid()) ctx.ui.notify(`Prune failed: ${errorText(error)}`, "error"); }
 				return;
 			}
 			if (!ctx.hasUI) {
 				const inventory = await adapter.isolated(ctx.cwd, current);
-				const report = fitItems("Isolated requests (report only):", inventory.requests,
-					(request) => clean(`${request.orphaned ? "orphaned · " : ""}${isolatedLabel(request)}`, 500), ROLES_REPORT_CODE_POINTS,
+				const head: Report = { tone: "info", title: "Isolated requests (report only)", sections: [] };
+				const row = (request: IsolatedRequest): Row => ({ text: `${glyph(request.status)} ${request.orphaned ? "orphaned · " : ""}${isolatedLabel(request)}` });
+				const listed = fitItems(`${reportMarkdown(head)}\n`, inventory.requests, (request) => sectionMarkdown({ rows: [row(request)] }), ROLES_REPORT_CODE_POINTS,
 					"open /subagent with interactive UI to inspect them.");
-				pi.sendMessage({ customType: "pi-subagent-discard", content: `${report.text}\nUnreadable state files preserved: ${inventory.invalidIds.length}.\nRemoval requires interactive confirmation.`, display: true });
+				deliver(ctx, { ...head, sections: [
+					...(listed.shown.length ? [{ rows: listed.shown.map(row) }] : []), ...moreSection(listed.more),
+					{ rows: [{ text: `Unreadable state files preserved: ${inventory.invalidIds.length}.` }, { text: "Removal requires interactive confirmation." }] },
+				] }, "pi-subagent-discard");
 				return;
 			}
 			let history = false;
@@ -275,10 +414,10 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					items.length ? [{ label: `── ${title} (${items.length}) ──`, value: { kind: "refresh" } },
 						...[...items].sort((a, b) => priority(a.status) - priority(b.status)).map(choice)] : [];
 				const requests = inventory?.requests ?? [];
-				const isolatedChoice = (request: IsolatedRequest): Choice<Selection> => ({ label: `  ${isolatedLabel(request)}`, value: { kind: "isolated", request, root: inventory!.root } });
+				const isolatedChoice = (request: IsolatedRequest): Choice<Selection> => ({ label: `  ${glyph(request.status)} ${isolatedLabel(request)}`, value: { kind: "isolated", request, root: inventory!.root } });
 				const selections: Choice<Selection>[] = [
 					// One row per workflow; new records keep opaque IDs in details. Status is last so clipping preserves the reference.
-					...group("Direct", direct.filter((task) => history || !completed(task.status)), (task) => ({ label: `  ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct", task } })),
+					...group("Direct", direct.filter((task) => history || !completed(task.status)), (task) => ({ label: `  ${glyph(task.status)} ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct", task } })),
 					...group("Isolated", requests.filter((request) => !request.orphaned && (history || !completed(request.status) || /retained/i.test(request.status))), isolatedChoice),
 					...group("Orphaned · parent checkout removed", requests.filter((request) => request.orphaned), isolatedChoice),
 					{ label: "Refresh", value: { kind: "refresh" } },
@@ -293,14 +432,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (selected.kind === "direct") {
 					const { task } = selected;
 					const label = clean(directLabel(task));
-					ctx.ui.notify(`Direct workflow ${label} · ${clean(task.status)}${costSuffix(task.cost)} · ID ${JSON.stringify(task.id)}`, "info");
-					if (task.recovery) ctx.ui.notify(clean(task.recovery, 4000), "warning");
-					for (const tab of task.tabs) {
-						ctx.ui.notify(`${tab.display ? `${clean(workerLabel(tab.display))} · ` : ""}task ${JSON.stringify(tab.entryId)} · agent ${JSON.stringify(tab.name)} · tab ${JSON.stringify(tab.tabId)} · pane ${JSON.stringify(tab.paneId)} · session ${JSON.stringify(tab.sessionFile)}${costSuffix(tab.cost)}`, "info");
-					}
-					const untabbed = task.workers.filter((worker) => !task.tabs.some((tab) => tab.display?.worker === worker.worker));
-					for (const worker of untabbed) ctx.ui.notify(`${clean(workerLabel(worker))} · no verified tab recorded`, "info");
-					if (task.workers[0] && task.workers.length < task.workers[0].workers) ctx.ui.notify(`${task.workers[0].workers - task.workers.length} other worker(s) in D${task.workers[0].workflow} have no recorded tab.`, "info");
+					deliver(ctx, directReport(task));
 					const stoppable = task.tabs.filter((tab) => task.stoppable?.includes(tab.entryId));
 					if (task.canClose || stoppable.length) {
 						const action = await choose<{ kind: "close" | "back" } | { kind: "stop"; entryId: string }>(ctx, `Direct · ${label}`, [
@@ -312,13 +444,13 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 						if (action?.kind === "stop") {
 							try {
 								const report = await adapter.stopDirect(task, action.entryId, current);
-								if (valid()) ctx.ui.notify(report, "info");
+								if (valid()) deliver(ctx, textReport("success", report));
 							} catch (error) { if (valid()) ctx.ui.notify(`Worker stop failed: ${errorText(error)}. Inspect the exact tab/session before retrying.`, "error"); }
 						}
 						if (action?.kind === "close") {
 							try {
 								const report = await adapter.closeDirect(task, current);
-								if (valid()) ctx.ui.notify(report, "info");
+								if (valid()) deliver(ctx, textReport("success", report));
 							} catch (error) { if (valid()) ctx.ui.notify(`Admission retained: ${errorText(error)}. Inspect the exact tab/session; retry Close/cancel-and-release after resolving termination.`, "error"); }
 						}
 					}
@@ -343,7 +475,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 							const plan = await adapter.discardPlan(ctx.cwd, request);
 							const reviewed = discardReview(plan);
 							if (!valid()) return;
-							ctx.ui.notify(reviewed.text, "warning");
+							deliver(ctx, reviewed.report);
 							const items = reviewed.shown.filter((item) => !item.blockers.length);
 							if (!items.length) continue;
 							const confirmed = await ctx.ui.confirm("Close and delete worktrees (discard work)",
@@ -351,7 +483,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 							if (!valid()) return;
 							if (confirmed) {
 								const report = await adapter.discard(ctx.cwd, { ...plan, items }, current);
-								if (valid()) ctx.ui.notify(clean(report, ROLES_REPORT_CODE_POINTS, true), "info");
+								if (valid()) deliver(ctx, textReport("info", report));
 							}
 						} catch (error) { if (valid()) ctx.ui.notify(`Close and delete failed: ${errorText(error)}`, "error"); }
 						break;
@@ -359,7 +491,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					if (action === "inspect") {
 						try {
 							const tab = await adapter.inspectInTab(root, request.id, ctx, current);
-							if (valid()) ctx.ui.notify(`Status inspection ${tab.ref} started in Herdr tab ${tab.tabId} · agent ${tab.name} · session ${tab.sessionFile}.`, "info");
+							if (valid()) deliver(ctx, { tone: "success", title: `Status inspection ${tab.ref} started`, sections: [{ rows: [
+								{ label: "tab", value: tab.tabId, code: true }, { label: "agent", value: tab.name, code: true }, { label: "session", value: tab.sessionFile, code: true }] }] });
 						}
 						catch (error) { if (valid()) ctx.ui.notify(`Inspection failed: ${errorText(error)}`, "error"); }
 						continue;

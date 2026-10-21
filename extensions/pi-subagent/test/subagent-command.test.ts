@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../src/discard.ts";
-import { registerSubagentCommand, type IsolatedInventory, type PrunePlan, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
+import { registerSubagentCommand, reportMarkdown, type IsolatedInventory, type PrunePlan, type Report, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
+
+// The Markdown body uses Pi's global Markdown theme; the explicit theme below tags titles and backgrounds.
+initTheme("dark");
+const TAGGED = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<b>${text}</b>` };
+const plainLines = (component: Box, width: number) => component.render(width).map((line) => line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
 
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
-function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan } = {}) {
+function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
@@ -36,7 +42,8 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 		stopDirect: async (task, entryId, current) => { if (!current()) throw new Error("stale"); stopped.push(`${task.id}:${entryId}`); return "Worker stopped"; },
 		isolated: async (_cwd, current) => { inventoryCount++; assert.equal(current(), true); if (options.isolatedError) throw options.isolatedError; return inventory; },
 		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
-		roles: () => "scout · built-in",
+		roles: () => ({ roles: [{ name: "scout", source: "built-in", modelClass: "fast", route: { model: "test/fast", thinking: "low" },
+			tools: ["read", "grep"], extensions: [], skills: [], mcps: [] }], errors: ["/roles/bad.md: unknown Role frontmatter key"] }),
 		prunePlan: async () => options.prune ?? { root: "/git", items: [] },
 		discardPlan: async (_cwd, request) => options.discard ?? ({ root: "/git", directory: "/state", requestId: request.id, items: [{
 			key: "task/1", identity: "saved", path: "/owned", branch: "pi-subagent/subagent-000000000000000000000000", tip: "a".repeat(40),
@@ -90,14 +97,24 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 			},
 		},
 	} as unknown as ExtensionContext;
+	const appended: { customType: string; data: unknown }[] = [];
+	let renderEntry!: (entry: { data: unknown }, options: object, theme: typeof TAGGED) => Box | undefined;
+	let renderMessage!: (message: { content: string }, options: object, theme: typeof TAGGED) => Box | undefined;
 	registerSubagentCommand({ registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
 		sendMessage: (message: { content: string }) => { messages.push(message.content); },
+		appendEntry: (customType: string, data: unknown) => { appended.push({ customType, data }); },
+		registerEntryRenderer: (type: string, renderer: typeof renderEntry) => { assert.equal(type, "pi-subagent-report"); renderEntry = renderer; },
+		registerMessageRenderer: (type: string, renderer: typeof renderMessage) => { assert.equal(type, "pi-subagent-recovery"); renderMessage = renderer; },
 	} as unknown as ExtensionAPI, adapter);
 	const pick = (contains: string) => (dialog: Dialog) => {
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), responses, dialogs, notices, queues, sent, messages, pick, closed, stopped, confirms, pruned, discarded, discardedKeys,
+	return { run: (args = "") => handler(args, ctx), appended, responses,
+		renderEntry: (data: unknown) => renderEntry({ data }, {}, TAGGED)!,
+		renderMessage: (content: string) => renderMessage({ content }, { outputPad: 2 }, TAGGED)!,
+		/** Every appended report as the Markdown that RPC and no-UI modes receive. */
+		get reports() { return appended.map(({ customType, data }) => { assert.equal(customType, "pi-subagent-report"); return reportMarkdown(data as Report); }); }, dialogs, notices, queues, sent, messages, pick, closed, stopped, confirms, pruned, discarded, discardedKeys,
 		setRecoverPause: (pause: () => Promise<void>) => { recoverPause = pause; },
 		get recoverCount() { return recoverCount; },
 		setActive: (value: boolean) => { active = value; },
@@ -112,6 +129,58 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc"; inventory?: Isol
 	};
 }
 
+test("/subagent roles shows one labeled field per line; the TUI gets a themed entry outside model context", async () => {
+	const expected = [
+		"**● Roles (1)**", "",
+		"### scout · built-in",
+		"- **model class:** fast",
+		"- **model:** `test/fast`",
+		"- **thinking:** low",
+		"- **tools:** read, grep",
+		"- **skills:** none",
+		"- **extensions:** none",
+		"- **mcps:** none", "",
+		"### ✗ Invalid Role files (1)",
+		"- /roles/bad.md: unknown Role frontmatter key",
+	].join("\n");
+	const tui = harness();
+	await tui.run("roles");
+	assert.deepEqual([tui.reports, tui.notices, tui.messages], [[expected], [], []]);
+	const rpc = harness({ mode: "rpc" });
+	await rpc.run("roles");
+	assert.deepEqual(rpc.notices, [{ message: expected, level: "info" }]);
+	const print = harness({ ui: false, mode: "print" });
+	await print.run("roles");
+	assert.deepEqual(print.messages, [expected]);
+});
+
+test("TUI reports use Pi's custom-message box: a tone-colored title over a Markdown body", async () => {
+	const h = harness({ direct: [{ id: "direct_1", name: "Fix *now*", status: "admission retained", recovery: "inspect tab", workers: [], tabs: [] }] });
+	h.responses.push(h.pick("Fix *now* ·"), h.pick("Close"));
+	await h.run();
+	const box = h.renderEntry(h.appended[0]!.data);
+	assert.ok(box instanceof Box);
+	const [title, spacer, body] = box.children;
+	assert.ok(title instanceof Text && spacer instanceof Spacer && body instanceof Markdown);
+	const lines = plainLines(box, 200);
+	assert.match(lines[1]!, /^<customMessageBg> <b><warning>⚠ Direct workflow Fix \*now\* · admission retained<\/warning><\/b>/);
+	assert.match(lines[3]!, /<customMessageText>ID:<\/customMessageText>/, "body text uses Pi's custom-message text color");
+	assert.deepEqual(lines.slice(3, 5).map((line) => line.replace(/<\/?\w+>/g, "").trim()), ["- ID: direct_1", "- recovery: ⚠ inspect tab"]);
+	const recovery = h.renderMessage("Pi Subagent recovery in /git: no work replayed.");
+	assert.deepEqual(recovery.children.map((child) => child.constructor), [Text, Spacer, Markdown]);
+	assert.match(plainLines(recovery, 200)[1]!, /^<customMessageBg> {2}<b><accent>● Recovery report<\/accent><\/b>/);
+	assert.match(plainLines(recovery, 200)[3]!.replace(/<\/?\w+>/g, ""), /^ {2}- Pi Subagent recovery in \/git: no work replayed\./);
+});
+
+test("picker rows start with an uncolored status glyph; identity comes first", async () => {
+	const task = (id: string, status: string) => ({ id, name: id, status, workers: [], tabs: [] });
+	const h = harness({ direct: ["working", "admission retained", "failed", "completed"].map((status) => task(`t-${status}`, status)) });
+	h.responses.push(h.pick("Completed / history"), h.pick("Close"));
+	await h.run();
+	const rows = h.dialogs[1]!.options!.filter((label) => label.startsWith("  "));
+	assert.deepEqual(rows, ["  ⚠ t-admission retained · admission retained", "  ✗ t-failed · failed", "  ● t-working · working", "  ✓ t-completed · completed", "  ● request · working · Same"]);
+});
+
 test("legacy direct recovery, history and duplicate labels retain exact records", async () => {
 	const h = harness({ direct: [
 		{ id: "direct-a", name: "Same", status: "recorded (not observed)", workers: [], tabs: [{ entryId: "entry-1", name: "worker", tabId: "tab-1", paneId: "pane-1", sessionFile: "/one" }, { entryId: "entry-2", name: "worker", tabId: "tab-2", paneId: "pane-2", sessionFile: "/two" }] },
@@ -119,9 +188,10 @@ test("legacy direct recovery, history and duplicate labels retain exact records"
 	] });
 	h.responses.push(h.pick("Same · recorded"), h.pick("Completed / history"), h.pick("direct-b"), h.pick("request ·"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
-	assert.match(h.notices[1]!.message, /tab-1/);
-	assert.match(h.notices[2]!.message, /tab-2/);
-	assert.match(h.notices[4]!.message, /tab-3/);
+	const [first, second] = h.reports;
+	assert.match(first!, /\*\*tab:\*\* `tab-1`[\s\S]*\*\*tab:\*\* `tab-2`/);
+	assert.match(second!, /^\*\*✓ Direct workflow Same · completed\*\*/);
+	assert.match(second!, /\*\*tab:\*\* `tab-3`/);
 	assert.equal(h.inspectCount, 1);
 	assert.ok(h.dialogs[0]!.options!.some((label) => label === "── Isolated (1) ──"));
 	assert.ok(h.dialogs[0]!.options!.some((label) => label === "── Direct (1) ──"));
@@ -144,17 +214,26 @@ test("direct rows use saved references; multi-worker workflows group under one r
 		return h.pick("Back")(dialog);
 	}, h.pick("Close"));
 	await h.run();
-	const rows = h.dialogs[0]!.options!.filter((label) => label.startsWith("  D"));
+	const rows = h.dialogs[0]!.options!.filter((label) => /^  . D/.test(label));
 	assert.equal(rows.length, 3);
-	for (const prefix of ["  D1.1 · worker · Same · observed locally", "  D2.1 · worker · Same · admission retained", "  D3 · 3 workers · allocation unverified"]) {
+	for (const prefix of ["  ● D1.1 · worker · Same · observed locally", "  ⚠ D2.1 · worker · Same · admission retained", "  ⚠ D3 · 3 workers · allocation unverified"]) {
 		assert.ok(rows.some((label) => label.startsWith(prefix)), prefix);
 	}
 	assert.ok(rows.every((label) => !label.includes("direct-")), "opaque IDs stay in details");
-	const notices = h.notices.map(({ message }) => message);
-	assert.ok(notices.includes('Direct workflow D3 · 3 workers · allocation unverified; admission retained · ID "direct-3-x"'));
-	assert.ok(notices.includes('D3.1 · worker · Scan · task "entry-3" · agent "d-3" · tab "tab-3" · pane "pane-3" · session "/s3"'));
-	assert.ok(notices.includes("D3.2 · worker · Fix · no verified tab recorded"));
-	assert.ok(notices.includes("1 other worker(s) in D3 have no recorded tab."));
+	assert.deepEqual(h.notices, []);
+	assert.equal(h.reports[0], [
+		"**⚠ Direct workflow D3 · 3 workers · allocation unverified; admission retained**", "",
+		"- **ID:** `direct-3-x`",
+		"- **recovery:** ⚠ allocation evidence", "",
+		"### D3.1 · worker · Scan",
+		"- **task:** `entry-3`",
+		"- **agent:** `d-3`",
+		"- **tab:** `tab-3`",
+		"- **pane:** `pane-3`",
+		"- **session:** `/s3`", "",
+		"* D3.2 · worker · Fix · no verified tab recorded",
+		"* 1 other worker(s) in D3 have no recorded tab.",
+	].join("\n"));
 	assert.deepEqual(h.closed, []);
 });
 
@@ -169,7 +248,7 @@ test("inspection launches a Herdr tab without queuing a Main turn or changing wo
 	const h = harness();
 	h.responses.push(h.pick("request ·"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
-	assert.ok(h.notices.some(({ message }) => message.includes("Status inspection D9.1 started in Herdr tab tab-request · agent status-scout")));
+	assert.deepEqual(h.reports, ["**✓ Status inspection D9.1 started**\n\n- **tab:** `tab-request`\n- **agent:** `status-scout`\n- **session:** `/status/session.jsonl`"]);
 	assert.equal(h.inspectCount, 1);
 	assert.deepEqual(h.queues.get("task"), ["first", "first", "third"]);
 	assert.deepEqual(h.sent, []);
@@ -191,7 +270,7 @@ test("failed isolated discovery preserves direct branch recovery and invalid inv
 	failed.responses.push(failed.pick("Rescue ·"), failed.pick("Close"));
 	await failed.run();
 	assert.ok(failed.notices.some((notice) => notice.message.includes("outside Git")));
-	assert.ok(failed.notices.some((notice) => notice.message.includes("/recover")));
+	assert.match(failed.reports[0]!, /\*\*session:\*\* `\/recover`/);
 	const invalid = harness({ inventory: { root: "/git", requests: [{ id: "good", name: "Healthy", status: "working", tasks: [] }], invalidIds: ["broken-state-id"] } });
 	invalid.responses.push(invalid.pick("Healthy"), invalid.pick("Inspect"), invalid.pick("Back"), invalid.pick("Close"));
 	await invalid.run();
@@ -302,7 +381,8 @@ test("recover does not deliver a stale follow-up after session replacement", asy
 test("no UI reports requests without dialogs or mutations; unknown arguments fail", async () => {
 	const h = harness({ ui: false });
 	await h.run();
-	assert.match(h.messages[0]!, /report only/);
+	assert.equal(h.messages[0]!, ["**● Isolated requests (report only)**", "", "- ● request · working · Same", "",
+		"* Unreadable state files preserved: 0.", "* Removal requires interactive confirmation."].join("\n"));
 	assert.deepEqual(h.discarded, []);
 	await assert.rejects(h.run("task-id"), /Usage/);
 	assert.deepEqual(h.dialogs, []);
@@ -353,16 +433,20 @@ test("prune without UI only reports the review list", async () => {
 	assert.equal(h.messages.length, 1);
 	// Prunable groups come first; each group names its exact reason once.
 	assert.equal(h.messages[0]!, [
-		"Subagent prune review in /git: 2 prunable, 3 blocked. IDs are the first 8 characters after pi-subagent/subagent-.",
-		"✓ Prunable: merged into Main HEAD; clean checkout (1):",
-		"  a",
-		"✓ Prunable: merged into origin/main; clean checkout (1):",
-		"  b",
-		"✗ Blocked: branch has commits not in Main HEAD; no checkout (1):",
-		"  e",
-		"✗ Blocked: checkout has tracked or untracked changes (2):",
-		"  c, d",
-		"Report only: removal requires interactive confirmation.",
+		"**● Subagent prune review**", "",
+		"- **root:** `/git`",
+		"- **prunable:** 2",
+		"- **blocked:** 3",
+		"- **IDs:** first 8 characters after pi-subagent/subagent-", "",
+		"### ✓ Prunable: merged into Main HEAD; clean checkout (1)",
+		"- `a`", "",
+		"### ✓ Prunable: merged into origin/main; clean checkout (1)",
+		"- `b`", "",
+		"### ✗ Blocked: branch has commits not in Main HEAD; no checkout (1)",
+		"- `e`", "",
+		"### ✗ Blocked: checkout has tracked or untracked changes (2)",
+		"- `c, d`", "",
+		"* Report only: removal requires interactive confirmation.",
 	].join("\n"));
 	assert.deepEqual(h.dialogs, []);
 	assert.deepEqual(h.pruned, []);
@@ -385,7 +469,7 @@ test("prune removes listed prunable items after one confirmation; ignored conten
 	all.confirms.push(true, true);
 	await all.run("prune");
 	assert.deepEqual(all.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
-	assert.ok(all.notices.some(({ message }) => message === "Pi Subagent prune in /git: removed"));
+	assert.equal(all.reports.at(-1), "**● Pi Subagent prune in /git: removed**");
 });
 
 test("prune approval names every ignored entry and leaves out a checkout whose list does not fit", async () => {
@@ -416,11 +500,11 @@ test("prune removes only items its dialogs showed, never items cut from a long l
 	const h = harness({ prune: plan });
 	h.confirms.push(true, true);
 	await h.run("prune");
-	const review = h.notices[0]!.message;
-	const ids = new Set(review.split(/[\s,]+/));
+	const review = h.reports[0]!;
+	const ids = new Set(review.split(/[\s,`]+/));
 	const shown = plan.items.filter(({ branch }) => ids.has(branch.slice(-24, -16)));
 	assert.ok(shown.length && shown.every(({ prunable }) => prunable), "prunable items are listed first");
-	assert.match(review, new RegExp(`\\n\\+${plan.items.length - shown.length} more not shown; they are not removed`), "the review counts every omitted item");
+	assert.match(review, new RegExp(`\\n\\* ⚠ \\+${plan.items.length - shown.length} more not shown; they are not removed`), "the review counts every omitted item");
 	const ignoredDialog = h.dialogs[1]!.options![0]!;
 	assert.match(ignoredDialog, /\+\d+ more not shown; they are not removed/);
 	assert.ok([...ignoredDialog].length <= 4_000);
@@ -439,8 +523,9 @@ test("isolated discard requires one explicit confirmation; cancel changes nothin
 		assert.deepEqual(h.discarded, confirmed ? ["request"] : []);
 		const dialogs = h.dialogs.filter((dialog) => dialog.kind === "confirm");
 		assert.equal(dialogs.length, 1);
+		assert.deepEqual(h.reports.slice(1), confirmed ? ["**● removed: task/1**"] : []);
 		assert.match(dialogs[0]!.options![0]!, /Committed, uncommitted, and ignored content.*permanently deleted/);
-		assert.ok(h.notices.some((notice) => /commits ahead of recorded base: 1; dirty: yes/.test(notice.message) && notice.message.includes("cache/")));
+		assert.match(h.reports[0]!, /^\*\*⚠ Close and delete request request\*\*\n\n### ⚠ task\/1 · can delete\n- \*\*path:\*\* `\/owned`\n[\s\S]*\*\*commits ahead of recorded base:\*\* 1\n- \*\*dirty:\*\* yes\n- \*\*ignored entries, deleted with all content inside them:\*\* `cache\/`/);
 	}
 });
 
@@ -450,7 +535,7 @@ test("orphaned requests show the delete action without status or follow-up actio
 	}] } });
 	h.confirms.push(true);
 	h.responses.push((dialog) => {
-		assert.deepEqual(dialog.options!.slice(0, 2), ["── Orphaned · parent checkout removed (1) ──", `  orphan · aborted · Lost parent ${"goal ".repeat(9)}go…`]);
+		assert.deepEqual(dialog.options!.slice(0, 2), ["── Orphaned · parent checkout removed (1) ──", `  ✗ orphan · aborted · Lost parent ${"goal ".repeat(9)}go…`]);
 		return h.pick("orphan ·")(dialog);
 	}, (dialog) => {
 		assert.ok(!dialog.options!.some((label) => /Inspect|follow-up/.test(label)));
@@ -469,5 +554,5 @@ test("discard deletes only fully shown groups, including their full ignored-entr
 	h.responses.push(h.pick("request ·"), h.pick("Close and delete"), h.pick("Close"));
 	await h.run();
 	assert.deepEqual(h.discardedKeys, ["shown"]);
-	assert.ok(h.notices.some((notice) => notice.message.includes("+1 more not shown")));
+	assert.match(h.reports[0]!, /\n\* ⚠ \+1 more not shown; they are not removed/);
 });
