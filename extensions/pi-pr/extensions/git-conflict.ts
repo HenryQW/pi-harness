@@ -127,7 +127,8 @@ function sideText(lines: readonly string[]) {
 	return { text: result.content, truncated: result.truncated };
 }
 
-type Unmerged = { path: string; absolute: string; stages: Set<string>; width: number; binary: boolean };
+/** `stages` maps each unmerged index stage (1 base, 2 ours, 3 theirs) to its blob id. */
+type Unmerged = { root: string; path: string; absolute: string; stages: Map<string, string>; width: number; binary: boolean };
 
 export class GitConflicts {
 	private readonly exec: Exec;
@@ -142,12 +143,12 @@ export class GitConflicts {
 		const options = { cwd: root, signal, stdoutLimitBytes: 4 * 1024 * 1024 };
 		const output = (await runChecked(this.exec, "git", ["ls-files", "-u", "-z"], options)).stdout;
 		if (output && !output.endsWith("\0")) throw new Error("Unmerged index listing returned malformed records");
-		const stages = new Map<string, Set<string>>();
+		const stages = new Map<string, Map<string, string>>();
 		for (const record of output ? output.slice(0, -1).split("\0") : []) {
-			const match = /^\d{6} [0-9a-f]+ ([123])\t([^]+)$/.exec(record);
+			const match = /^\d{6} ([0-9a-f]+) ([123])\t([^]+)$/.exec(record);
 			if (!match) throw new Error("Unmerged index listing returned a malformed record");
-			validatePaths([match[2]!], "Unmerged index listing");
-			stages.set(match[2]!, (stages.get(match[2]!) ?? new Set()).add(match[1]!));
+			validatePaths([match[3]!], "Unmerged index listing");
+			stages.set(match[3]!, (stages.get(match[3]!) ?? new Map()).set(match[2]!, match[1]!));
 		}
 		if (only !== undefined && !stages.has(only)) throw new Error(`${only} is not an unmerged path; use a path from git_conflict list`);
 		const paths = only !== undefined ? [only] : [...stages.keys()].slice(0, MAX_LIST_FILES);
@@ -159,7 +160,7 @@ export class GitConflicts {
 		const entries = paths.map((path) => {
 			const size = Number(attributes.get(`${path}\0conflict-marker-size`));
 			const merge = attributes.get(`${path}\0merge`);
-			return { path, absolute: join(root, path), stages: stages.get(path)!, width: Number.isSafeInteger(size) && size > 0 ? size : 7, binary: merge === "unset" || merge === "binary" };
+			return { root, path, absolute: join(root, path), stages: stages.get(path)!, width: Number.isSafeInteger(size) && size > 0 ? size : 7, binary: merge === "unset" || merge === "binary" };
 		});
 		return { entries, total: stages.size };
 	}
@@ -169,29 +170,39 @@ export class GitConflicts {
 		return (await this.unmerged(cwd, path, signal)).entries[0]!;
 	}
 
+	/**
+	 * Git merges as binary, keeping ours without markers, when any stage is binary. A blob-to-blob
+	 * numstat has no path, so attributes do not apply and it reports `-` only for binary content.
+	 */
+	private async binaryStage({ root, stages }: Unmerged, signal?: AbortSignal): Promise<boolean> {
+		for (const [left, right] of [["1", "2"], ["2", "3"]] as const) {
+			if (!stages.has(left)) continue;
+			const output = (await runChecked(this.exec, "git", ["diff", "--numstat", stages.get(left)!, stages.get(right)!], { cwd: root, signal })).stdout;
+			if (output.startsWith("-\t-\t")) return true;
+		}
+		return false;
+	}
+
 	/** Read strict UTF-8 text so a write never rewrites bytes the parse did not see; refuse markerless conflicts. */
-	private async text({ path, absolute, stages, binary }: Unmerged): Promise<string> {
+	private async text(entry: Unmerged, signal?: AbortSignal): Promise<string> {
+		const { path, absolute, stages, binary } = entry;
 		if (!stages.has("2") || !stages.has("3")) throw new WholeFileConflict(`${path} is deleted or renamed on one side; resolve it as a whole file`);
-		if (binary) throw new WholeFileConflict(`${path} uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file`);
+		if (binary || await this.binaryStage(entry, signal)) throw new WholeFileConflict(`${path} is binary or uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file`);
 		const stat = await lstat(absolute).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
 		if (!stat) throw new WholeFileConflict(`${path} is missing from the worktree; resolve it as a whole file`);
 		if (!stat.isFile()) throw new WholeFileConflict(`${path} is not a regular file; resolve it as a whole file`);
 		if (stat.size > MAX_FILE_BYTES) throw new WholeFileConflict(`${path} is larger than 8 MiB; resolve it as a whole file`);
-		let text;
-		try { text = UTF8.decode(await readFile(absolute)); }
+		try { return UTF8.decode(await readFile(absolute)); }
 		catch (error) {
-			if (error instanceof TypeError) throw new WholeFileConflict(`${path} is binary or not UTF-8 text; resolve it as a whole file`);
+			if (error instanceof TypeError) throw new WholeFileConflict(`${path} is not UTF-8 text; resolve it as a whole file`);
 			throw error;
 		}
-		// Git's binary detection also keeps one side without markers.
-		if (text.includes("\0")) throw new WholeFileConflict(`${path} is binary, so Git kept one side without markers; resolve it as a whole file`);
-		return text;
 	}
 
 	async list(cwd: string, input?: string, signal?: AbortSignal) {
 		const { entries, total } = await this.unmerged(cwd, input === undefined ? undefined : validatePaths([input], "Conflict path")[0], signal);
 		const files = [];
-		for (const entry of entries) files.push({ path: entry.path, ...await summaries(entry.path, entry.width, () => this.text(entry)) });
+		for (const entry of entries) files.push({ path: entry.path, ...await summaries(entry.path, entry.width, () => this.text(entry, signal)) });
 		return input === undefined && total > files.length
 			? { files, omitted: total - files.length, note: "Pass path to list blocks of an omitted file; git diff --name-only --diff-filter=U lists every path" }
 			: { files };
@@ -200,7 +211,7 @@ export class GitConflicts {
 	async show(cwd: string, input: string, number: number, signal?: AbortSignal) {
 		const entry = await this.target(cwd, input, signal);
 		const { path } = entry;
-		const block = parseConflicts((await this.text(entry)).split("\n"), path, entry.width)[number - 1];
+		const block = parseConflicts((await this.text(entry, signal)).split("\n"), path, entry.width)[number - 1];
 		if (!block) throw new Error(`${path} has no conflict block ${number}; run git_conflict list`);
 		const sides = { ours: sideText(block.ours), ...(block.base ? { base: sideText(block.base) } : {}), theirs: sideText(block.theirs) };
 		const truncated = Object.values(sides).some((side) => side.truncated);
@@ -215,7 +226,7 @@ export class GitConflicts {
 		const entry = await this.target(cwd, input, signal);
 		const { path, absolute } = entry;
 		return await withFileMutationQueue(absolute, async () => {
-			const text = resolveConflicts(await this.text(entry), path, resolutions, entry.width);
+			const text = resolveConflicts(await this.text(entry, signal), path, resolutions, entry.width);
 			signal?.throwIfAborted();
 			await writeFile(absolute, text, "utf8");
 			const { blocks, note } = await summaries(path, entry.width, async () => text);

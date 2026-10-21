@@ -30,26 +30,27 @@ test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files with
 	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: root, env, stdio: "pipe" });
 	const file = join(root, "f.txt");
 	const write = (first: string, last: string) => writeFile(file, [first, ...Array.from({ length: 8 }, (_, i) => `ctx${i}`), last, ""].join("\n"));
-	const binary = (text: string) => writeFile(join(root, "b.bin"), `\0${text}\n`);
+	const binary = (text: string) => writeFile(join(root, "b.bin"), text);
 	git("init", "-q", "-b", "main");
 	await write("base1", "base2");
-	await binary("base");
+	await binary("a\nb\n");
 	git("add", "b.bin");
 	git("add", "f.txt");
 	git("commit", "-qm", "base");
 	git("checkout", "-qb", "topic");
 	await write("topic1", "topic2");
-	await binary("topic");
+	// Only theirs is binary: Git keeps the text ours without markers or NUL bytes.
+	await binary("a\0\nc\n");
 	git("commit", "-qam", "topic");
 	git("checkout", "-q", "main");
 	await write("main1", "main2");
-	await binary("main");
+	await binary("a\nB\n");
 	git("commit", "-qam", "main");
 	assert.throws(() => git("merge", "-q", "topic"));
 
 	const conflicts = new GitConflicts();
 	const [binaryFile, listed] = (await conflicts.list(root)).files;
-	assert.deepEqual(binaryFile, { path: "b.bin", blocks: [], note: "b.bin is binary, so Git kept one side without markers; resolve it as a whole file" });
+	assert.deepEqual(binaryFile, { path: "b.bin", blocks: [], note: "b.bin is binary or uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file" });
 	assert.equal(listed!.path, "f.txt");
 	assert.equal(listed!.blocks.length, 2);
 	const resolutions = [{ block: 1, id: listed!.blocks[0]!.id, side: "@ours" as const }, { block: 2, id: listed!.blocks[1]!.id, side: "@theirs" as const }];
@@ -57,7 +58,7 @@ test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files with
 	const shifted = `new\n${await readFile(file, "utf8")}`;
 	const invalid = Buffer.concat([Buffer.from(shifted), Buffer.from([0xff])]);
 	await writeFile(file, invalid);
-	await assert.rejects(conflicts.resolve(root, "f.txt", resolutions), /binary or not UTF-8/);
+	await assert.rejects(conflicts.resolve(root, "f.txt", resolutions), /not UTF-8 text/);
 	assert.deepEqual(await readFile(file), invalid);
 
 	await writeFile(file, shifted);
