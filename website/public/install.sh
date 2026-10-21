@@ -17,27 +17,27 @@ RETIRED_PACKAGE_SOURCES="npm:@henryqw/pi-auto-dag npm:@henryqw/pi-orchestrator"
 
 # BEGIN GENERATED EXTENSIONS
 EXTENSIONS='
-@henryqw/pi-add-dir
-@henryqw/pi-advisor
 @henryqw/pi-ask-question
+@henryqw/pi-add-dir
 @henryqw/pi-auto-compact
-@henryqw/pi-bark
-@henryqw/pi-codegraph
-@henryqw/pi-cron
+@henryqw/pi-session-recall
+@henryqw/pi-prompt-creator
 @henryqw/pi-deps
+@henryqw/pi-codegraph
 @henryqw/pi-footer
-@henryqw/pi-goal
-@henryqw/pi-herdr-tools
-@henryqw/pi-memory
-@henryqw/pi-multi-codex
 @henryqw/pi-notes
 @henryqw/pi-pr
-@henryqw/pi-prompt-creator
-@henryqw/pi-rtk-test
-@henryqw/pi-session-recall
-@henryqw/pi-subagent
 @henryqw/pi-task-models
+@henryqw/pi-herdr-tools
+@henryqw/pi-bark
+@henryqw/pi-multi-codex
+@henryqw/pi-subagent
+@henryqw/pi-memory
 @henryqw/pi-undo
+@henryqw/pi-goal
+@henryqw/pi-advisor
+@henryqw/pi-rtk-test
+@henryqw/pi-cron
 '
 # END GENERATED EXTENSIONS
 

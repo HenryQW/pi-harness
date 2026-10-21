@@ -9,9 +9,16 @@ const installerPath = join(websiteDir, "public", "install.sh");
 const generatedExtensions = /(# BEGIN GENERATED EXTENSIONS\nEXTENSIONS='\n)([\s\S]*?)(\n'\n# END GENERATED EXTENSIONS)/;
 const packageName = /^@henryqw\/[a-z0-9][a-z0-9-]*$/;
 
+/**
+ * Pi loads installed packages in install order, and boundary handlers run in load order. The root manifest's
+ * pi.extensions list sets that order; packages absent from it go last, by name.
+ */
 export function collectInstallablePackages(root = repoRoot) {
   const extensionsDir = join(root, "extensions");
-  const names = readdirSync(extensionsDir, { withFileTypes: true })
+  const loadOrder = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).pi.extensions
+    .map((path) => path.split("/")[2]);
+  const rank = (directory) => (loadOrder.indexOf(directory) + 1 || loadOrder.length + 1);
+  const packages = readdirSync(extensionsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && existsSync(join(extensionsDir, entry.name, "package.json")))
     .map((entry) => {
       const manifestPath = join(extensionsDir, entry.name, "package.json");
@@ -20,10 +27,11 @@ export function collectInstallablePackages(root = repoRoot) {
       if (typeof manifest.name !== "string" || !packageName.test(manifest.name)) {
         throw new Error(`Invalid installable package name in ${manifestPath}`);
       }
-      return manifest.name;
+      return { directory: entry.name, name: manifest.name };
     })
     .filter(Boolean)
-    .sort();
+    .sort((a, b) => rank(a.directory) - rank(b.directory) || (a.name < b.name ? -1 : 1));
+  const names = packages.map(({ name }) => name);
 
   if (new Set(names).size !== names.length) {
     throw new Error("Installable package names must be unique.");
