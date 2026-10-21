@@ -42,6 +42,8 @@ The advisor is off by default.
 
 ## Flow
 
+![Pi Advisor flow: at the settle boundary, review gates decide whether the advisor runs; a PASS or notes reply settles the run, and a blocker continues it one time](./docs/advisor-flow.svg)
+
 1. The agent completes a run.
 2. Pi Advisor does no review when another extension already continues the run. It also does no review for a run without tool calls, an incomplete run, or a session without UI.
 3. Pi Advisor sends one tool-free request to the advisor model. The request contains the latest user prompt and the run record: custom messages, assistant text, tool calls, and tool results.
