@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import {
 	parseExecuteRequest,
@@ -196,22 +196,24 @@ test("prune ownership treats non-terminal and unreadable states as owners and re
 		pending.request.goal = `Recorded resource ${name}.`;
 		const handle = await store.create(pending);
 		let ownership = await runner.pruneOwnership([root]);
-		assert.equal(ownership.owner(name), "owned by pending request request-one");
-		assert.equal(ownership.owner(other), undefined);
+		// Readable owners carry the identity that /subagent prune passes to discard.
+		assert.deepEqual(ownership.owners(name), [{ label: "owned by pending request request-one", request: {
+			id: "request-one", name: pending.request.goal, status: "pending", directory: dirname(handle.path), root, orphaned: false } }]);
+		assert.deepEqual(ownership.owners(other), []);
 		assert.equal(ownership.lease, undefined);
 		handle.state.status = "aborted";
 		await handle.save();
-		assert.equal((await runner.pruneOwnership([root])).owner(name), undefined, "terminal requests own nothing");
+		assert.deepEqual((await runner.pruneOwnership([root])).owners(name), [], "terminal requests own nothing");
 		await writeFile(store.statePath(root, "broken"), `{"note":"${name}"`);
 		ownership = await runner.pruneOwnership([root]);
-		assert.equal(ownership.owner(name), `unreadable state broken in ${root} may own it`);
-		assert.equal(ownership.owner(other), undefined);
+		assert.deepEqual(ownership.owners(name), [{ label: `unreadable state broken in ${root} may own it` }]);
+		assert.deepEqual(ownership.owners(other), []);
 		await rm(store.statePath(root, "broken"));
 		// A non-regular entry is unreadable state: it may own any name, never nothing.
 		await mkdir(store.statePath(root, "folder"));
 		assert.deepEqual((await store.list(root)).invalidIds, ["folder"]);
 		ownership = await runner.pruneOwnership([root]);
-		assert.equal(ownership.owner(other), `unreadable state folder in ${root} may own it`);
+		assert.deepEqual(ownership.owners(other), [{ label: `unreadable state folder in ${root} may own it` }]);
 		await rm(store.statePath(root, "folder"), { recursive: true });
 		await store.withProductiveRunLease(root, async () => {
 			assert.equal((await runner.pruneOwnership([root])).lease, `productive lease is held by a live run in ${root}`);
@@ -223,10 +225,11 @@ test("prune ownership treats non-terminal and unreadable states as owners and re
 		orphan.tasks[0]!.attempts[0]!.cleanup = { outcome: "retained", path: join(root, ".worktrees", other), branch: `pi-subagent/${other}`, commits: 1, dirty: false };
 		const orphaned = await store.create(orphan);
 		await rm(orphan.root, { recursive: true });
-		assert.equal((await runner.pruneOwnership([root])).owner(other), "owned by orphaned pending request orphan; close and delete it from /subagent");
+		assert.deepEqual((await runner.pruneOwnership([root])).owners(other).map(({ label, request }) => [label, request?.orphaned, request?.directory]),
+			[["owned by orphaned pending request orphan; close and delete it from /subagent", true, dirname(orphaned.path)]]);
 		orphaned.state.status = "aborted";
 		await orphaned.save();
-		assert.equal((await runner.pruneOwnership([root])).owner(other), undefined, "terminal orphans own nothing");
+		assert.deepEqual((await runner.pruneOwnership([root])).owners(other), [], "terminal orphans own nothing");
 	} finally {
 		await rm(sandbox, { recursive: true, force: true });
 	}

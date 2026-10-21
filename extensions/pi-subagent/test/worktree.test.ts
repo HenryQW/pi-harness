@@ -774,7 +774,7 @@ test("loadRoleCatalog rejects retired Role isolation values", async (t) => {
 
 function pruneGuards(options: { owner?: string; panes?: { paneId: string; cwds: string[] }[] | Error } = {}): PruneGuards {
 	return {
-		ownership: async () => ({ owner: (name) => name === options.owner ? "owned by running request r" : undefined }),
+		ownership: async () => ({ owners: (name) => name === options.owner ? [{ label: "owned by running request r" }] : [] }),
 		panes: async () => {
 			if (options.panes instanceof Error) throw options.panes;
 			return options.panes ?? [];
@@ -802,7 +802,7 @@ test("prune removes only a merged clean worktree and names each blocker", async 
 	assert.equal(reason(owned.branch), "owned by running request r");
 	assert.equal(reason(paned.branch), "Herdr pane w1:p2 works inside the checkout");
 
-	const { removals, checkouts } = await removePruneCandidates(repo, repo, items.filter((item) => item.prunable), false, guards);
+	const { removals, checkouts } = await removePruneCandidates(repo, repo, items.filter((item) => item.prunable), false, false, guards);
 	assert.deepEqual(removals.map(({ outcome, item }) => [outcome, item.branch]), [["removed", merged.branch]]);
 	assert.equal(existsSync(merged.path), false);
 	assert.equal(git(repo, "branch", "--list", merged.branch), "");
@@ -811,6 +811,44 @@ test("prune removes only a merged clean worktree and names each blocker", async 
 
 	const unavailable = await inspectPruneCandidates(repo, repo, pruneGuards({ panes: new Error("herdr pane list failed: server not running") }));
 	assert.match(unavailable.find((item) => item.branch === owned.branch)!.reason, /^Herdr unavailable \(herdr pane list failed: server not running\); cannot prove no pane uses the checkout$/);
+});
+
+test("forced prune removes reviewed unowned unmerged, dirty, or merging work and keeps items with new or hard blockers", async (t) => {
+	const repo = await realpath(await initializedRepository(t));
+	const add = async (id: string) => (await createChildWorktree(repo, id))!;
+	const [unique, grown, paned, owned, merging] = [await add("unique"), await add("grown"), await add("paned"), await add("owned"), await add("merging")];
+	git(repo, "branch", "side", git(repo, "commit-tree", "-p", "HEAD", "-m", "side", "HEAD^{tree}"));
+	git(merging.path, "merge", "-q", "--no-ff", "--no-commit", "-s", "ours", "side");
+	for (const worktree of [unique, grown]) {
+		await writeFile(join(worktree.path, "work.txt"), "unique\n");
+		git(worktree.path, "add", "work.txt");
+		git(worktree.path, "commit", "-qm", "unique");
+	}
+	for (const worktree of [unique, paned, owned]) await writeFile(join(worktree.path, "draft.txt"), "draft\n");
+	const request = { id: "r", name: "goal", status: "needs_attention", directory: "/state", root: "/gone", orphaned: true };
+	const guards: PruneGuards = { ...pruneGuards(), ownership: async () => ({ owners: (name) => name === basename(owned.branch) ? [{ label: "owned by r", request }] : [] }) };
+	const items = await inspectPruneCandidates(repo, repo, guards);
+	const item = (branch: string) => items.find((entry) => entry.branch === branch)!;
+	assert.deepEqual([unique, grown, paned, owned, merging].map(({ branch }) => [item(branch).override, item(branch).blockers.map(({ kind }) => kind)]),
+		[["force", ["unmerged", "changes"]], ["force", ["unmerged"]], ["force", ["changes"]], ["discard", ["owner", "changes"]], ["force", ["operation"]]]);
+	assert.deepEqual(item(owned.branch).owner, request);
+	const reviewed = [unique, grown, paned, owned, merging].map(({ branch }) => item(branch));
+	const unforced = await removePruneCandidates(repo, repo, reviewed, false, false, guards);
+	assert.ok(unforced.removals.every(({ outcome }) => outcome === "skipped"), "only an explicit force removes blocked work");
+	await writeFile(join(grown.path, "draft.txt"), "draft\n");
+	const { removals } = await removePruneCandidates(repo, repo, reviewed, false, true, { ...guards, panes: async () => [{ paneId: "w1:p1", cwds: [paned.path] }] });
+	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [
+		["removed", "branch has commits not in Main HEAD; checkout has tracked or untracked changes"],
+		["skipped", "branch has commits not in Main HEAD; checkout has tracked or untracked changes"],
+		["skipped", "checkout has tracked or untracked changes; Herdr pane w1:p1 works inside the checkout"],
+		["skipped", "owned by r; checkout has tracked or untracked changes"],
+		["removed", "Git operation in progress (MERGE_HEAD)"],
+	]);
+	for (const removed of [unique, merging]) {
+		assert.equal(existsSync(removed.path), false);
+		assert.equal(git(repo, "branch", "--list", removed.branch), "");
+	}
+	for (const kept of [grown, paned, owned]) assert.equal(existsSync(kept.path), true);
 });
 
 test("prune deletes ignored content only after approval", async (t) => {
@@ -824,21 +862,21 @@ test("prune deletes ignored content only after approval", async (t) => {
 	const [item] = await inspectPruneCandidates(repo, repo, pruneGuards());
 	assert.equal(item!.prunable, true);
 	assert.deepEqual(item!.ignored, ["node_modules/"]);
-	const declined = await removePruneCandidates(repo, repo, [item!], false, pruneGuards());
+	const declined = await removePruneCandidates(repo, repo, [item!], false, false, pruneGuards());
 	assert.deepEqual(declined.removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "ignored content was not approved or changed since review"]]);
 	assert.equal(existsSync(join(worktree.path, "node_modules", "pkg", "index.js")), true);
 	await mkdir(join(worktree.path, "dist"));
 	await writeFile(join(repo, ".git", "info", "exclude"), "/.worktrees/\ndist/\n");
 	await writeFile(join(worktree.path, "dist", "out.js"), "x\n");
-	const grown = await removePruneCandidates(repo, repo, [item!], true, pruneGuards());
+	const grown = await removePruneCandidates(repo, repo, [item!], true, false, pruneGuards());
 	assert.equal(grown.removals[0]!.outcome, "skipped", "unreviewed ignored entries are not approved");
 	await rm(join(worktree.path, "dist"), { recursive: true });
-	const approved = await removePruneCandidates(repo, repo, [item!], true, pruneGuards());
+	const approved = await removePruneCandidates(repo, repo, [item!], true, false, pruneGuards());
 	assert.deepEqual(approved.removals.map(({ outcome }) => outcome), ["removed"]);
 	assert.equal(existsSync(worktree.path), false);
 });
 
-test("prune blocks initialized submodules and stops when the session changes", async (t) => {
+test("prune blocks initialized submodules until forced and stops when the session changes", async (t) => {
 	const source = await initializedRepository(t);
 	const repo = await realpath(await initializedRepository(t));
 	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
@@ -850,9 +888,17 @@ test("prune blocks initialized submodules and stops when the session changes", a
 	const module = items.find((item) => item.branch === withModule.branch)!;
 	assert.equal(module.prunable, false);
 	assert.match(module.reason, /initialized submodules; Git cannot remove it without force/);
+	assert.deepEqual([module.override, module.blockers.map(({ kind }) => kind)], ["force", ["submodules"]]);
+	const unforced = await removePruneCandidates(repo, repo, [module], false, false, pruneGuards());
+	assert.deepEqual(unforced.removals.map(({ outcome }) => outcome), ["skipped"]);
+	assert.equal(existsSync(withModule.path), true);
+	const forced = await removePruneCandidates(repo, repo, [module], false, true, pruneGuards());
+	assert.deepEqual(forced.removals.map(({ outcome, reason }) => [outcome, reason]), [["removed", module.reason]]);
+	assert.equal(existsSync(withModule.path), false);
+	assert.equal(git(repo, "branch", "--list", withModule.branch), "");
 	const item = items.find((entry) => entry.branch === plain.branch)!;
 	assert.equal(item.prunable, true);
-	const { removals } = await removePruneCandidates(repo, repo, [item], false, { ...pruneGuards(), current: () => false });
+	const { removals } = await removePruneCandidates(repo, repo, [item], false, false, { ...pruneGuards(), current: () => false });
 	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "session or branch changed before removal; reopen /subagent prune"]]);
 	assert.equal(existsSync(plain.path), true);
 	assert.notEqual(git(repo, "branch", "--list", plain.branch), "");
@@ -869,8 +915,8 @@ test("prune blocks an owned checkout that is detached or on another branch", asy
 	assert.deepEqual([reason(detached.branch).prunable, reason(detached.branch).path], [false, detached.path]);
 	assert.match(reason(detached.branch).reason, /owned checkout is detached; inspect it manually/);
 	assert.match(reason(switched.branch).reason, /owned checkout is on branch elsewhere; inspect it manually/);
-	const { removals } = await removePruneCandidates(repo, repo, items, false, pruneGuards());
-	assert.ok(removals.every(({ outcome }) => outcome === "skipped"));
+	const { removals } = await removePruneCandidates(repo, repo, items, false, true, pruneGuards());
+	assert.ok(removals.every(({ outcome }) => outcome === "skipped"), "force never overrides a hard blocker");
 	assert.notEqual(git(repo, "branch", "--list", detached.branch), "");
 	assert.equal(existsSync(detached.path), true);
 });
@@ -883,7 +929,7 @@ test("prune skips a branch whose ref moved after review", async (t) => {
 	assert.deepEqual({ prunable: item!.prunable, reason: item!.reason, path: item!.path }, { prunable: true, reason: "merged into Main HEAD; no checkout", path: undefined });
 	git(repo, "commit", "--allow-empty", "-qm", "advance");
 	git(repo, "update-ref", `refs/heads/${worktree.branch}`, "HEAD");
-	const { removals } = await removePruneCandidates(repo, repo, [item!], false, pruneGuards());
+	const { removals } = await removePruneCandidates(repo, repo, [item!], false, false, pruneGuards());
 	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "branch was deleted or moved since review"]]);
 	assert.equal(git(repo, "rev-parse", `refs/heads/${worktree.branch}`), git(repo, "rev-parse", "HEAD"));
 });

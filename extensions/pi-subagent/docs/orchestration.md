@@ -402,6 +402,8 @@ Each resource is checked again before removal. A live productive lease or local 
 
 Main cannot run inside a checkout selected for deletion. A session change stops further removal. Only this request's recorded `pi-subagent/subagent-<24hex>` branches and their exact primary `.worktrees/` paths can be removed. The primary checkout is never removed.
 
+To close and delete many requests, select **Select multiple…** in `/subagent`, select the requests, then select **Continue** and **Close and delete worktrees (discard work)**. The command shows the review of each request. Then one confirmation covers the unblocked resource groups of all of them. The same menu can close all owned workers of each selected direct workflow that can close. The command reports the number of selected rows that the action skipped.
+
 The report lists removed, skipped, and failed resources. After complete cleanup, the request is `aborted`, candidates are `released`, and integration generations are superseded with completed cleanup. Partial cleanup remains visible as retained work. Reopen the request to review the remaining resources. Abort, prune, and release keep their existing preservation rules.
 
 ### Prune leftover worktrees
@@ -410,13 +412,22 @@ Run `/subagent prune` to clean up leftover worker and integration checkouts unde
 
 - Its branch tip is already in Main's HEAD or in the local `origin` default-branch ref. The command does not fetch.
 - Its checkout has no tracked or untracked changes. No merge, rebase, cherry-pick, revert, or bisect is in progress.
-- No unfinished isolated request, in any checkout of this repository, records it. An unreadable state file blocks every item that it mentions. An unfinished orphaned request, whose parent checkout was removed, also blocks its items. To remove them, open that request in `/subagent` and use **Close and delete worktrees (discard work)**.
+- No unfinished isolated request, in any checkout of this repository, records it. An unreadable state file blocks every item that it mentions. An unfinished orphaned request, whose parent checkout was removed, also blocks its items.
 - No productive run holds a repository lease.
 - No Herdr pane works inside the checkout. If the command cannot inspect Herdr, it refuses every checkout.
 
-One confirmation removes every listed removable item. When the command removes a checkout, it also deletes the ignored files of the checkout, such as `node_modules` or `dist`. So the command includes a checkout with ignored files only after a second confirmation. That confirmation names each ignored entry, and its approval covers all contents of each named entry.
+After the review, the command shows a selection list. Removable items are selected (`[x]`). Blocked items that the command can still remove are not selected; each one shows its short ID and its blockers. Select a row to change it, or use **Select all** or **Clear**. Select **Continue** to remove the selected removable items, or **Cancel** to make no change. Items with other blockers are not in the list.
 
-If a top-level ignored entry is new or changed, the command skips the checkout. If the full list of ignored entries of a checkout does not fit in that dialog, the command excludes the checkout. The command blocks checkouts with initialized submodules. It also blocks owned checkouts that are detached or on another branch. Remove them manually.
+You can select these blocked items:
+
+- **An item that one readable unfinished request owns**, orphaned or not. The row shows `delete whole request <id>`. The command does not remove the item alone. It shows the [Close and delete](#close-and-delete-isolated-worktrees) review of the whole owning request. After one confirmation, it closes the request and deletes its unblocked resources, as in `/subagent`. That flow also closes the request's own workers and Herdr panes. When you select items of different requests, one confirmation covers all of them.
+- **An unowned item whose blockers are only unique commits, tracked or untracked changes, a Git operation in progress, or initialized submodules.** The row shows `force`. A separate confirmation names each item and its blockers. **This permanently deletes those commits and changes.** Before removal, the command checks the item again. It keeps the item if a new kind of blocker appears. Then it uses `git worktree remove --force` and deletes the branch only at the reviewed tip.
+
+These blockers always keep an item: a productive lease, unreadable state, more than one owner, Main inside the checkout, a locked checkout, a checkout that is not at its owned path or that is detached or on another branch, a missing checkout directory, Herdr that cannot be inspected, and Herdr panes inside an unowned checkout.
+
+When the command removes a checkout, it also deletes the ignored files of the checkout, such as `node_modules` or `dist`. So the command includes a checkout with ignored files only after a second confirmation. That confirmation names each ignored entry, and its approval covers all contents of each named entry.
+
+If a top-level ignored entry is new or changed, the command skips the checkout. If the full list of ignored entries of a checkout does not fit in that dialog, the command excludes the checkout. Remove owned checkouts that are detached or on another branch manually.
 
 The list shows removable items first. The command never cuts a long list silently. The list ends with `+N more not shown`, where `N` counts items, and the command does not remove the items that it did not show in that run. Run `/subagent prune` again to review them.
 

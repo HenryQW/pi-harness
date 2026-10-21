@@ -33,7 +33,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 	const confirms: boolean[] = [];
 	const discarded: string[] = [];
 	const discardedKeys: string[] = [];
-	const pruned: { branches: string[]; allowIgnored: boolean }[] = [];
+	const pruned: { branches: string[]; allowIgnored: boolean; force?: boolean }[] = [];
 	let recoverPause: (() => Promise<void>) | undefined;
 	const inventory = options.inventory ?? { root: "/git", requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
 	const adapter: SubagentCommandAdapter = {
@@ -50,9 +50,9 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 			checkout: true, commits: 1, dirty: true, ignored: ["cache/"], hosts: ["tab worker-tab"], blockers: [],
 		}] }),
 		discard: async (_cwd, plan, current) => { assert.equal(current(), true); discarded.push(plan.requestId); discardedKeys.push(...plan.items.map((item) => item.key)); return { text: "removed: task/1", failed: 0, skipped: 0, ...options.cleanup }; },
-		prune: async (_cwd, items, allowIgnored, current) => {
+		prune: async (_cwd, items, allowIgnored, force, current) => {
 			assert.equal(current(), true);
-			pruned.push({ branches: items.map(({ branch }) => branch), allowIgnored });
+			pruned.push({ branches: items.map(({ branch }) => branch), allowIgnored, ...force ? { force } : {} });
 			return { text: "Pi Subagent prune in /git: removed", failed: 0, skipped: 0, ...options.cleanup };
 		},
 		inspectInTab: async (_root, id, _ctx, current) => {
@@ -419,12 +419,14 @@ test("Stop this worker targets one exact running worker and refuses stale dialog
 	}
 });
 
+const blocked = (kind: "unmerged" | "changes" | "hard", text: string) => ({ prunable: false, reason: text, blockers: [{ kind, text }], ...kind === "hard" ? {} : { override: "force" as const } });
 const prunePlan: PrunePlan = { root: "/git", items: [
-	{ branch: "pi-subagent/subagent-e", tip: "e".repeat(40), prunable: false, reason: "branch has commits not in Main HEAD", ignored: [] },
-	{ branch: "pi-subagent/subagent-a", tip: "a".repeat(40), path: "/git/.worktrees/subagent-a", prunable: true, reason: "merged into Main HEAD; clean checkout", ignored: [] },
-	{ branch: "pi-subagent/subagent-c", tip: "c".repeat(40), path: "/git/.worktrees/subagent-c", prunable: false, reason: "checkout has tracked or untracked changes", ignored: ["node_modules/"] },
-	{ branch: "pi-subagent/subagent-b", tip: "b".repeat(40), path: "/git/.worktrees/subagent-b", prunable: true, reason: "merged into origin/main; clean checkout", ignored: ["node_modules/", "dist/"] },
-	{ branch: "pi-subagent/subagent-d", tip: "d".repeat(40), path: "/git/.worktrees/subagent-d", prunable: false, reason: "checkout has tracked or untracked changes", ignored: [] },
+	{ branch: "pi-subagent/subagent-e", tip: "e".repeat(40), ...blocked("unmerged", "branch has commits not in Main HEAD"), ignored: [] },
+	{ branch: "pi-subagent/subagent-a", tip: "a".repeat(40), path: "/git/.worktrees/subagent-a", prunable: true, reason: "merged into Main HEAD; clean checkout", blockers: [], ignored: [] },
+	{ branch: "pi-subagent/subagent-c", tip: "c".repeat(40), path: "/git/.worktrees/subagent-c", ...blocked("changes", "checkout has tracked or untracked changes"), ignored: ["node_modules/"] },
+	{ branch: "pi-subagent/subagent-b", tip: "b".repeat(40), path: "/git/.worktrees/subagent-b", prunable: true, reason: "merged into origin/main; clean checkout", blockers: [], ignored: ["node_modules/", "dist/"] },
+	// A hard-blocked item: never offered for selection.
+	{ branch: "pi-subagent/subagent-d", tip: "d".repeat(40), path: "/git/.worktrees/subagent-d", ...blocked("hard", "checkout has tracked or untracked changes"), ignored: [] },
 ] };
 
 test("prune without UI only reports the review list", async () => {
@@ -452,28 +454,36 @@ test("prune without UI only reports the review list", async () => {
 	assert.deepEqual(h.pruned, []);
 });
 
-test("prune removes listed prunable items after one confirmation; ignored content needs a second", async () => {
-	const declinedFirst = harness({ prune: prunePlan });
-	declinedFirst.confirms.push(false);
-	await declinedFirst.run("prune");
-	assert.deepEqual(declinedFirst.pruned, []);
+test("prune preselects prunable items; Continue removes them and ignored content needs a confirmation", async () => {
+	const cancelled = harness({ prune: prunePlan });
+	cancelled.responses.push(cancelled.pick("Cancel"));
+	await cancelled.run("prune");
+	assert.deepEqual(cancelled.pruned, []);
 
 	const keepIgnored = harness({ prune: prunePlan });
-	keepIgnored.confirms.push(true, false);
+	keepIgnored.responses.push(keepIgnored.pick("Continue (2 selected)"));
+	keepIgnored.confirms.push(false);
 	await keepIgnored.run("prune");
-	assert.deepEqual(keepIgnored.dialogs.map(({ title }) => title), ["Prune subagent worktrees", "Delete ignored content"]);
+	assert.deepEqual(keepIgnored.dialogs.map(({ title }) => title), ["Prune subagent worktrees · prunable items are selected", "Delete ignored content"]);
+	assert.deepEqual(keepIgnored.dialogs[0]!.options, [
+		"[x] a · merged into Main HEAD; clean checkout", "[x] b · merged into origin/main; clean checkout",
+		"[ ] e · force · branch has commits not in Main HEAD", "[ ] c · force · checkout has tracked or untracked changes",
+		"Select all", "Clear", "Continue (2 selected)", "Cancel",
+	]);
 	assert.match(keepIgnored.dialogs[1]!.options![0]!, /permanently deletes[\s\S]*\/git\/\.worktrees\/subagent-b: node_modules\/, dist\/$/);
 	assert.deepEqual(keepIgnored.pruned, [{ branches: ["pi-subagent/subagent-a"], allowIgnored: false }]);
 
 	const all = harness({ prune: prunePlan });
-	all.confirms.push(true, true);
+	all.responses.push(all.pick("Continue"));
+	all.confirms.push(true);
 	await all.run("prune");
 	assert.deepEqual(all.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
 	assert.equal(all.reports.at(-1), "**✓ Pi Subagent prune in /git: removed**");
 	// Retained resources never read as a normal completion.
 	for (const [cleanup, glyph] of [[{ failed: 1, skipped: 1 }, "✗"], [{ failed: 0, skipped: 1 }, "⚠"]] as const) {
 		const partial = harness({ prune: prunePlan, cleanup });
-		partial.confirms.push(true, true);
+		partial.responses.push(partial.pick("Continue"));
+		partial.confirms.push(true);
 		await partial.run("prune");
 		assert.equal(partial.reports.at(-1), `**${glyph} Pi Subagent prune in /git: removed**`);
 	}
@@ -482,12 +492,13 @@ test("prune removes listed prunable items after one confirmation; ignored conten
 test("prune approval names every ignored entry and leaves out a checkout whose list does not fit", async () => {
 	const many = Array.from({ length: 8 }, (_, index) => `generated-${index}/`);
 	const plan: PrunePlan = { root: "/git", items: [
-		{ branch: "pi-subagent/subagent-many", tip: "e".repeat(40), path: "/git/.worktrees/subagent-many", prunable: true, reason: "merged into Main HEAD; clean checkout", ignored: many },
-		{ branch: "pi-subagent/subagent-huge", tip: "f".repeat(40), path: "/git/.worktrees/subagent-huge", prunable: true, reason: "merged into Main HEAD; clean checkout",
+		{ branch: "pi-subagent/subagent-many", tip: "e".repeat(40), path: "/git/.worktrees/subagent-many", prunable: true, reason: "merged into Main HEAD; clean checkout", blockers: [], ignored: many },
+		{ branch: "pi-subagent/subagent-huge", tip: "f".repeat(40), path: "/git/.worktrees/subagent-huge", prunable: true, reason: "merged into Main HEAD; clean checkout", blockers: [],
 			ignored: Array.from({ length: 400 }, (_, index) => `huge-${index}/`) },
 	] };
 	const h = harness({ prune: plan });
-	h.confirms.push(true, true);
+	h.responses.push(h.pick("Continue"));
+	h.confirms.push(true);
 	await h.run("prune");
 	const dialog = h.dialogs[1]!.options![0]!;
 	assert.ok(many.every((entry) => dialog.includes(entry)), "every ignored entry is named");
@@ -501,11 +512,12 @@ test("prune removes only items its dialogs showed, never items cut from a long l
 	const id = (index: number) => `${index.toString(16).padStart(8, "0")}${"0".repeat(16)}`;
 	const item = (index: number, prunable: boolean) => ({ branch: `pi-subagent/subagent-${id(index)}`, tip: "d".repeat(40),
 		path: `/git/.worktrees/subagent-${id(index)}`, prunable, reason: prunable ? "merged into Main HEAD; clean checkout" : "branch has commits not in Main HEAD",
-		ignored: prunable ? ["node_modules/", "dist/", ".codegraph/"] : [] });
+		blockers: prunable ? [] : [{ kind: "hard" as const, text: "branch has commits not in Main HEAD" }], ignored: prunable ? ["node_modules/", "dist/", ".codegraph/"] : [] });
 	// Blocked items sort first by branch; prunable ones must still be listed and selectable.
 	const plan: PrunePlan = { root: "/git", items: [...Array.from({ length: 30 }, (_, index) => item(index, false)), ...Array.from({ length: 2_000 }, (_, index) => item(100 + index, true))] };
 	const h = harness({ prune: plan });
-	h.confirms.push(true, true);
+	h.responses.push(h.pick("Continue"));
+	h.confirms.push(true);
 	await h.run("prune");
 	const review = h.reports[0]!;
 	const ids = new Set(review.split(/[\s,`]+/));
@@ -519,6 +531,82 @@ test("prune removes only items its dialogs showed, never items cut from a long l
 	assert.match(ignoredDialog, new RegExp(`^Also remove ${approved.length} checkout\\(s\\)`));
 	assert.equal(h.pruned.length, 1);
 	assert.deepEqual(h.pruned[0]!.branches, approved.map(({ branch }) => branch), "only items shown in both dialogs are removed");
+});
+
+test("prune toggles blocked items; force removal needs its own confirmation naming the lost data", async () => {
+	const forced = harness({ prune: prunePlan });
+	forced.responses.push(forced.pick("Select all"), forced.pick("Clear"), (dialog) => {
+		assert.ok(dialog.options!.includes("Continue (0 selected)") && dialog.options!.every((label) => !label.startsWith("[x]")));
+		return forced.pick("[ ] e ·")(dialog);
+	}, (dialog) => {
+		assert.ok(dialog.options!.includes("[x] e · force · branch has commits not in Main HEAD"));
+		return forced.pick("Continue (1 selected)")(dialog);
+	});
+	forced.confirms.push(true);
+	await forced.run("prune");
+	assert.deepEqual(forced.dialogs.filter(({ kind }) => kind === "confirm").map(({ title }) => title), ["Force remove blocked worktrees"]);
+	assert.match(forced.dialogs.at(-1)!.options![0]!, /^Force remove 1 blocked item\(s\)\? This permanently deletes their unique commits[\s\S]*\ne: branch has commits not in Main HEAD$/);
+	assert.deepEqual(forced.pruned, [{ branches: ["pi-subagent/subagent-e"], allowIgnored: false, force: true }]);
+
+	const declined = harness({ prune: prunePlan });
+	declined.responses.push(declined.pick("[ ] e ·"), declined.pick("Continue (3 selected)"));
+	declined.confirms.push(false, true);
+	await declined.run("prune");
+	assert.ok(declined.notices.some(({ message }) => message === "Kept 1 blocked item(s); force removal was not approved."));
+	assert.deepEqual(declined.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
+});
+
+test("prune routes selected request-owned items to one discard of each whole owning request", async () => {
+	const owner = { id: "orphan-req", name: "Lost goal", status: "needs_attention", directory: "/state", root: "/gone", orphaned: true };
+	const owned = (id: string) => ({ branch: `pi-subagent/subagent-${id}`, tip: id.repeat(40), path: `/git/.worktrees/subagent-${id}`, prunable: false,
+		reason: "owned by orphaned needs_attention request orphan-req; branch has commits not in Main HEAD", ignored: [], owner, override: "discard" as const,
+		blockers: [{ kind: "owner" as const, text: "owned by orphaned needs_attention request orphan-req" }, { kind: "unmerged" as const, text: "branch has commits not in Main HEAD" }] });
+	const h = harness({ prune: { root: "/git", items: [owned("f"), owned("g")] } });
+	h.responses.push((dialog) => {
+		assert.equal(dialog.options![0], "[ ] f · delete whole request orphan-req (needs_attention) · branch has commits not in Main HEAD");
+		return h.pick("Select all")(dialog);
+	}, h.pick("Continue (2 selected)"));
+	h.confirms.push(true);
+	await h.run("prune");
+	assert.deepEqual([h.discarded, h.pruned], [["orphan-req"], []]);
+	const confirms = h.dialogs.filter(({ kind }) => kind === "confirm");
+	assert.equal(confirms.length, 1);
+	assert.match(confirms[0]!.options![0]!, /^This closes and deletes each whole owning request \(orphan-req\), not only the selected worktrees\./);
+	assert.match(h.reports[1]!, /^\*\*⚠ Close and delete request orphan-req\*\*/);
+});
+
+test("Select multiple batches discard of isolated requests and close of direct workflows, reporting skipped rows", async () => {
+	const inventory: IsolatedInventory = { root: "/git", invalidIds: [], requests: [
+		{ id: "one", name: "First", status: "working", tasks: [] },
+		{ id: "lost", name: "Second", status: "needs_attention", orphaned: true, directory: "/state", root: "/gone", tasks: [] },
+	] };
+	const direct = [{ id: "owned", name: "Rescue", status: "admission retained", canClose: true, workers: [], tabs: [] }];
+	const discard = harness({ inventory, direct });
+	discard.responses.push(discard.pick("Select multiple…"), (dialog) => {
+		assert.deepEqual(dialog.options!.slice(0, 3), ["[ ] ⚠ Rescue · admission retained · owned", "[ ] ● one · working · First", "[ ] ⚠ lost · needs_attention · Second"]);
+		return discard.pick("Select all")(dialog);
+	}, discard.pick("Continue (3 selected)"), (dialog) => {
+		assert.deepEqual(dialog.options, ["Close and delete worktrees (discard work) of 2 isolated request(s)",
+			"Close/cancel-and-release ALL owned workers in 1 direct workflow(s) (preserve files and commits)", "Back / refresh"]);
+		return discard.pick("Close and delete")(dialog);
+	}, discard.pick("Close"));
+	discard.confirms.push(true);
+	await discard.run();
+	assert.deepEqual([discard.discarded, discard.closed], [["one", "lost"], []]);
+	assert.equal(discard.dialogs.filter(({ kind }) => kind === "confirm").length, 1, "one confirmation covers every reviewed request");
+	assert.match(discard.dialogs.find(({ kind }) => kind === "confirm")!.options![0]!, /delete the 2 unblocked resource group\(s\) shown above across 2 requests\?/);
+	assert.ok(discard.notices.some(({ message }) => message === "Skipped 1 selected item(s) that this action does not apply to."));
+
+	const close = harness({ inventory, direct });
+	close.responses.push(close.pick("Select multiple…"), close.pick("Select all"), close.pick("Continue"), close.pick("Close/cancel"), close.pick("Close"));
+	await close.run();
+	assert.deepEqual([close.discarded, close.closed], [[], ["owned"]]);
+	assert.ok(close.notices.some(({ message }) => message === "Skipped 2 selected item(s) that this action does not apply to."));
+
+	const stale = harness({ inventory, direct });
+	stale.responses.push(stale.pick("Select multiple…"), stale.pick("Select all"), (dialog) => { stale.changeSession(); return stale.pick("Continue")(dialog); });
+	await stale.run();
+	assert.equal(stale.dialogs.length, 3, "a changed session ends the selection");
 });
 
 test("isolated discard requires one explicit confirmation; cancel changes nothing", async () => {
