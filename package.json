@@ -32,6 +32,7 @@
       "./extensions/pi-memory/extensions/memory.ts",
       "./extensions/pi-undo/extensions/undo.ts",
       "./extensions/pi-goal/extensions/goal.ts",
+      "./extensions/pi-advisor/extensions/advisor.ts",
       "./extensions/pi-rtk-test/extensions/rtk-test.ts",
       "./extensions/pi-cron/extensions/cron.ts"
     ],
