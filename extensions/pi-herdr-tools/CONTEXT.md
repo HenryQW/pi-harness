@@ -77,5 +77,9 @@ _Avoid_: generated worktree label
 A tab containing only the current pane, so its label can represent the current conversation without misrepresenting another pane.
 _Avoid_: single-pane session, empty tab
 
+**Idle recap**:
+A model-generated summary of at most 40 words with the goal, current state, and next action, shown to the user after a settled run stays idle. It never enters model context.
+_Avoid_: session summary, compaction summary
+
 **Dialog blocked status**:
 The Herdr indication that Pi waits for a user answer in an interactive dialog. It carries no dialog title or content.

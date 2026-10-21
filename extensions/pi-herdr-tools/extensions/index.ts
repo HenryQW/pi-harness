@@ -3,12 +3,14 @@ import registerBtwExtension, { BTW_TASK } from "../internal/btw.ts";
 import herdrCloneExtension from "../internal/clone-tab.ts";
 import herdrDoneExtension from "../internal/done.ts";
 import herdrHandoffExtension from "../internal/handoff.ts";
+import idleRecapExtension, { RECAP_TASK } from "../internal/recap.ts";
 import herdrRenameExtension, { RENAME_TASK } from "../internal/rename.ts";
 import { registerTaskModelsWarning } from "../internal/task-models.ts";
 
 export default async function herdrToolsExtension(pi: ExtensionAPI): Promise<void> {
-	registerTaskModelsWarning(pi, [RENAME_TASK, BTW_TASK]);
+	registerTaskModelsWarning(pi, [RENAME_TASK, BTW_TASK, RECAP_TASK]);
 	herdrRenameExtension(pi);
+	idleRecapExtension(pi);
 	await registerBtwExtension(pi);
 	herdrCloneExtension(pi);
 	herdrDoneExtension(pi);
