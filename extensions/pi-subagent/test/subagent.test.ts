@@ -491,7 +491,7 @@ async function recoverDirect(app: ReturnType<typeof harness>, reference = ""): P
 	app.ctx.ui.select = async (_title: string, choices: string[]) => {
 		if (shown) return undefined;
 		shown = true;
-		return choices.find((choice) => choice.startsWith("Direct ·") && choice.includes(reference));
+		return choices.find((choice) => choice.startsWith("  ") && choice.includes(reference));
 	};
 	await app.commands.get("subagent")!.handler("", app.ctx);
 }
@@ -892,7 +892,7 @@ test("failed direct termination retains admission and exact Close retries withou
 				const close = async () => {
 					let menu = 0;
 					app.ctx.hasUI = true;
-					app.ctx.ui.select = async (_title, choices) => menu++ === 0 ? choices.find((choice) => choice.startsWith("Direct ·"))
+					app.ctx.ui.select = async (_title, choices) => menu++ === 0 ? choices.find((choice) => choice.startsWith("  "))
 						: menu === 2 ? choices.find((choice) => choice.startsWith("Close/cancel")) : undefined;
 					await app.commands.get("subagent")!.handler("", app.ctx);
 				};
@@ -948,7 +948,7 @@ test("active Close cancellation retains admission when its scope changes during 
 			let menu = 0;
 			app.ctx.hasUI = true;
 			app.ctx.ui.select = async (_title, choices) => {
-				if (menu++ === 0) return choices.find((choice) => choice.startsWith("Direct ·"));
+				if (menu++ === 0) return choices.find((choice) => choice.startsWith("  "));
 				if (menu !== 2) return undefined;
 				assert.ok(!choices.some((choice) => choice.startsWith("Stop this worker")), "write workflows keep all-or-nothing Close only");
 				return choices.find((choice) => choice.startsWith("Close/cancel"));
@@ -1045,7 +1045,7 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 			let rows: string[] = [];
 			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices; return undefined; };
 			await app.commands.get("subagent")!.handler("", app.ctx);
-			assert.deepEqual(rows.filter((row) => row.startsWith("Direct")), ["Direct · D1.1 · worker · Search audit · observed locally [1]"]);
+			assert.deepEqual(rows.filter((row) => row.startsWith("  ")), ["  D1.1 · worker · Search audit · observed locally"]);
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
 			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.2k tok · \$0\.12 · /);
@@ -1061,10 +1061,10 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 				if (selected) return undefined;
 				selected = true;
 				rows = choices;
-				return choices.find((choice) => choice.startsWith("Direct"));
+				return choices.find((choice) => choice.startsWith("  "));
 			};
 			await app.commands.get("subagent")!.handler("", app.ctx);
-			assert.match(rows.find((row) => row.startsWith("Direct"))!, /^Direct · D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
+			assert.match(rows.find((row) => row.startsWith("  "))!, /^  D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
 			assert.match(notices.find((notice) => notice.includes("session"))!, / · \$0\.12$/);
 			assert.match(app.widget!.render(220)[0]!, /last read 125ms recorded/);
 			for (const width of [26, 12]) {
@@ -1376,13 +1376,13 @@ test("display numbers continue after reload and carried workflows never reuse a 
 			assert.deepEqual(app.sessionEntries.slice(3).map(({ data }) => [data.tabId, data.display.workflow, data.display.worker]), [["w-test:t2", 2, 1], ["w-test:t3", 2, 2]]);
 			let rows: string[] = [];
 			app.ctx.hasUI = true;
-			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices.filter((row) => row.startsWith("Direct")); return undefined; };
+			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices.filter((row) => row.startsWith("  ")); return undefined; };
 			await app.commands.get("subagent")!.handler("", app.ctx);
 			assert.deepEqual(rows.map((row) => row.replace(/ \[\d+\]$/, "")).sort(), [
-				"Direct · D1.1 · worker · Other · recorded only; not proof of running or completion",
-				"Direct · D2 · 2 workers · recorded only; not proof of running or completion",
-				"Direct · Legacy label · allocation unverified; admission retained · direct-alloc",
-				"Direct · direct-legacy · recorded only; not proof of running or completion",
+				"  D1.1 · worker · Other · recorded only; not proof of running or completion",
+				"  D2 · 2 workers · recorded only; not proof of running or completion",
+				"  Legacy label · allocation unverified; admission retained · direct-alloc",
+				"  direct-legacy · recorded only; not proof of running or completion",
 			]);
 			const next = await app.tool.execute("next", { role: "worker", name: "Next", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
 			assert.match(next.content[0].text, /^Direct delegation started · D3 · /);
@@ -1767,7 +1767,7 @@ test("Stop this worker ends one read worker while siblings finish and Main gets 
 			let actions: string[] = [];
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {
 				menu++;
-				if (menu === 1) return choices.find((choice) => choice.startsWith("Direct · D1 · 2 workers"));
+				if (menu === 1) return choices.find((choice) => choice.startsWith("  D1 · 2 workers"));
 				if (menu === 2) { actions = choices; return choices.find((choice) => choice.startsWith("Stop this worker: D1.2")); }
 				return undefined;
 			};
@@ -1819,7 +1819,7 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 			let actions: string[] = [];
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {
 				menu++;
-				if (menu === 1) return choices.find((choice) => choice.startsWith("Direct · D1 · 2 workers"));
+				if (menu === 1) return choices.find((choice) => choice.startsWith("  D1 · 2 workers"));
 				if (menu === 2) { actions = choices; return choices.find((choice) => choice.startsWith("Stop this worker: D1.2")); }
 				return undefined;
 			};
@@ -1831,7 +1831,7 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 			menu = 0;
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {
 				menu++;
-				if (menu === 1) return choices.find((choice) => choice.startsWith("Direct · D1 · 2 workers"));
+				if (menu === 1) return choices.find((choice) => choice.startsWith("  D1 · 2 workers"));
 				if (menu === 2) actions = choices;
 				return undefined;
 			};
