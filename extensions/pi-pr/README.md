@@ -90,7 +90,7 @@ Before it writes, the tool reads the file again and compares each block `id`. Th
 
 The tool reads the `conflict-marker-size` attribute for the marker width. It changes only UTF-8 text files of 8 MiB or less. Each side of a block must match the related Git index stage.
 
-Some files show a `note` and no blocks. These include binary and larger files, and files deleted or renamed on one side. Files with a binary or custom merge driver also show a `note`. Markers out of sequence, an unclosed block, or a marker line in a side also give a `note`. The tool does not guess block limits. Resolve these files as a whole.
+Some files show a `note` and no blocks. These include binary and larger files, and files deleted or renamed on one side. Files with a binary or custom merge driver, submodules, and symlinks also show a `note`. Markers out of sequence, an unclosed block, a marker line in a side, or marker text already in a merge side also give a `note`. The tool does not guess block limits. Resolve these files as a whole.
 
 ## Flow
 

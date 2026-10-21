@@ -122,13 +122,39 @@ async function summaries(read: () => Promise<ConflictBlock[]>): Promise<{ blocks
 	}
 }
 
+function withoutCr(line: string): string {
+	return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
+/** Stage lines with an index of where each line text occurs. */
+type StageText = { lines: string[]; at: Map<string, number[]> };
+
+function stageText(text: string): StageText {
+	const lines = text.replaceAll("\r\n", "\n").split("\n");
+	const at = new Map<string, number[]>();
+	lines.forEach((line, index) => {
+		const list = at.get(line);
+		if (list) list.push(index);
+		else at.set(line, [index]);
+	});
+	return { lines, at };
+}
+
+/** Return the first line index at or after `from` where `run` starts, or -1. */
+function findRun({ lines, at }: StageText, run: readonly string[], from: number): number {
+	for (const start of at.get(run[0]!) ?? []) {
+		if (start >= from && run.every((line, offset) => lines[start + offset] === line)) return start;
+	}
+	return -1;
+}
+
 function sideText(lines: readonly string[]) {
 	const result = truncateHead(lines.map((line) => line.endsWith("\r") ? line.slice(0, -1) : line).join("\n"), SHOW_LIMIT);
 	return { text: result.content, truncated: result.truncated };
 }
 
 /** `stages` maps each unmerged index stage (1 base, 2 ours, 3 theirs) to its blob id. */
-type Unmerged = { root: string; path: string; absolute: string; stages: Map<string, string>; width: number; driver: "text" | "binary" | "custom" };
+type Unmerged = { root: string; path: string; absolute: string; stages: Map<string, string>; special: boolean; width: number; driver: "text" | "binary" | "custom" };
 
 export class GitConflicts {
 	private readonly exec: Exec;
@@ -144,11 +170,14 @@ export class GitConflicts {
 		const output = (await runChecked(this.exec, "git", ["ls-files", "-u", "-z"], options)).stdout;
 		if (output && !output.endsWith("\0")) throw new Error("Unmerged index listing returned malformed records");
 		const stages = new Map<string, Map<string, string>>();
+		// Paths with a gitlink or symlink stage; their stage ids are not text blobs.
+		const special = new Set<string>();
 		for (const record of output ? output.slice(0, -1).split("\0") : []) {
-			const match = /^\d{6} ([0-9a-f]+) ([123])\t([^]+)$/.exec(record);
+			const match = /^(\d{6}) ([0-9a-f]+) ([123])\t([^]+)$/.exec(record);
 			if (!match) throw new Error("Unmerged index listing returned a malformed record");
-			validatePaths([match[3]!], "Unmerged index listing");
-			stages.set(match[3]!, (stages.get(match[3]!) ?? new Map()).set(match[2]!, match[1]!));
+			validatePaths([match[4]!], "Unmerged index listing");
+			stages.set(match[4]!, (stages.get(match[4]!) ?? new Map()).set(match[3]!, match[2]!));
+			if (match[1] !== "100644" && match[1] !== "100755") special.add(match[4]!);
 		}
 		if (only !== undefined && !stages.has(only)) throw new Error(`${only} is not an unmerged path; use a path from git_conflict list`);
 		const paths = only !== undefined ? [only] : [...stages.keys()].slice(0, MAX_LIST_FILES);
@@ -162,7 +191,7 @@ export class GitConflicts {
 			const merge = attributes.get(`${path}\0merge`);
 			const driver = merge === "unset" || merge === "binary" ? "binary" as const
 				: ["unspecified", "set", "text", "union"].includes(merge!) ? "text" as const : "custom" as const;
-			return { root, path, absolute: join(root, path), stages: stages.get(path)!, width: Number.isSafeInteger(size) && size > 0 ? size : 7, driver };
+			return { root, path, absolute: join(root, path), stages: stages.get(path)!, special: special.has(path), width: Number.isSafeInteger(size) && size > 0 ? size : 7, driver };
 		});
 		return { entries, total: stages.size };
 	}
@@ -187,8 +216,9 @@ export class GitConflicts {
 
 	/** Read strict UTF-8 text so a write never rewrites bytes the parse did not see; refuse markerless conflicts. */
 	private async text(entry: Unmerged, signal?: AbortSignal): Promise<string> {
-		const { path, absolute, stages, driver } = entry;
+		const { path, absolute, stages, special, driver } = entry;
 		if (!stages.has("2") || !stages.has("3")) throw new WholeFileConflict(`${path} is deleted or renamed on one side; resolve it as a whole file`);
+		if (special) throw new WholeFileConflict(`${path} is a submodule or symlink conflict; resolve it as a whole file`);
 		if (driver === "custom") throw new WholeFileConflict(`${path} uses a custom merge driver, so its markers are unknown; resolve it as a whole file`);
 		if (driver === "binary" || await this.binaryStage(entry, signal)) throw new WholeFileConflict(`${path} is binary or uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file`);
 		const stat = await lstat(absolute).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
@@ -209,22 +239,34 @@ export class GitConflicts {
 	private async parse(entry: Unmerged, signal?: AbortSignal): Promise<{ text: string; blocks: ConflictBlock[] }> {
 		const { root, path, stages, width } = entry;
 		const text = await this.text(entry, signal);
-		const blocks = parseConflicts(text.split("\n"), path, width);
-		const blobs = new Map<string, string>();
-		const unknown = (block: ConflictBlock) => new WholeFileConflict(`${path} conflict block ${block.block} does not match the index stages; resolve it as a whole file`);
+		const lines = text.split("\n");
+		const blocks = parseConflicts(lines, path, width);
+		const plain = lines.map(withoutCr);
+		const blobs = new Map<string, StageText>();
+		const blob = async (stage: string) => {
+			if (!blobs.has(stage)) {
+				// spawnBounded rejects stdout over the limit or not valid UTF-8.
+				const result = await this.exec("git", ["cat-file", "blob", stages.get(stage)!], { cwd: root, signal, stdoutLimitBytes: MAX_FILE_BYTES })
+					.catch(() => { signal?.throwIfAborted(); return undefined; });
+				if (!result || result.code !== 0 || result.killed) throw new WholeFileConflict(`${path} has an index stage that is not UTF-8 text of 8 MiB or less; resolve it as a whole file`);
+				blobs.set(stage, stageText(result.stdout));
+			}
+			return blobs.get(stage)!;
+		};
+		// Sides of successive blocks appear in order in each stage, so one cursor per stage keeps the pass linear.
+		const cursors = new Map<string, number>();
 		for (const block of blocks) {
-			for (const [stage, lines] of [["2", block.ours], ["3", block.theirs], ["1", block.base ?? []]] as const) {
-				if (!lines.length) continue;
-				if (!stages.has(stage)) throw unknown(block);
-				if (!blobs.has(stage)) {
-					// spawnBounded rejects stdout over the limit or not valid UTF-8.
-					const result = await this.exec("git", ["cat-file", "blob", stages.get(stage)!], { cwd: root, signal, stdoutLimitBytes: MAX_FILE_BYTES })
-						.catch(() => { signal?.throwIfAborted(); return undefined; });
-					if (!result || result.code !== 0 || result.killed) throw new WholeFileConflict(`${path} has an index stage that is not UTF-8 text of 8 MiB or less; resolve it as a whole file`);
-					blobs.set(stage, `\n${result.stdout.replaceAll("\r\n", "\n")}\n`);
-				}
-				const run = lines.map((line) => line.endsWith("\r") ? line.slice(0, -1) : line).join("\n");
-				if (!blobs.get(stage)!.includes(`\n${run}\n`)) throw unknown(block);
+			for (const [stage, side] of [["2", block.ours], ["3", block.theirs], ["1", block.base ?? []]] as const) {
+				if (!side.length) continue;
+				const run = side.map(withoutCr);
+				const at = stages.has(stage) ? findRun(await blob(stage), run, cursors.get(stage) ?? 0) : -1;
+				if (at < 0) throw new WholeFileConflict(`${path} conflict block ${block.block} does not match the index stages; resolve it as a whole file`);
+				cursors.set(stage, at + run.length);
+			}
+			// Git writes real markers; a marked span already present in a side is inherited file content.
+			const span = plain.slice(block.start, block.end + 1);
+			for (const stage of ["2", "3"]) {
+				if (findRun(await blob(stage), span, 0) >= 0) throw new WholeFileConflict(`${path} conflict block ${block.block} is marker text already in a merge side; resolve it as a whole file`);
 			}
 		}
 		return { text, blocks };
