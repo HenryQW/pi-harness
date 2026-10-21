@@ -361,7 +361,7 @@ function harness(options: {
 	};
 }
 
-test("registers sequential model-only tools with flat object roots and strict actions", async () => {
+test("registers tools with flat object roots and strict actions", async () => {
 	const app = harness({ async load() { return { kind: "inactive" }; } });
 	const expected = new Map([
 		["pi_git_commit", ["inspect", "commit"]],
@@ -370,13 +370,17 @@ test("registers sequential model-only tools with flat object roots and strict ac
 		["pi_pr_publish_work", ["inspect", "commit", "validate", "publish"]],
 		["pi_pr_sweep", ["start", "resume", "show", "record", "commit", "adopt", "validate", "publish", "refresh", "resolve", "finalize"]],
 		["pi_pr_fix_ci", ["collect", "publish"]],
+		["git_conflict", ["list", "show", "resolve"]],
 	]);
 
 	assert.deepEqual(app.tools.map(({ name }) => name), [...expected.keys(), "pi_git_pr"]);
 	for (const tool of app.tools) {
-		assert.equal(tool.executionMode, "sequential", tool.name);
-		// Codemode scripts must not batch guarded actions or filter their results; `only` mode keeps model-only tools declared.
-		assert.equal(tool.exposure, "model-only", tool.name);
+		// The conflict tool holds no workflow authority, so models and Codemode scripts may call it in parallel.
+		if (tool.name !== "git_conflict") {
+			assert.equal(tool.executionMode, "sequential", tool.name);
+			// Codemode scripts must not batch guarded actions or filter their results; `only` mode keeps model-only tools declared.
+			assert.equal(tool.exposure, "model-only", tool.name);
+		}
 		// Strict OpenAI-compatible endpoints reject a root without type "object"; Claude Code drops a root union.
 		const schema = tool.parameters as unknown as {
 			type?: string;
@@ -389,7 +393,7 @@ test("registers sequential model-only tools with flat object roots and strict ac
 		assert.equal(schema.anyOf, undefined, tool.name);
 		assert.equal(schema.additionalProperties, false, tool.name);
 		if (tool.name === "pi_git_pr") continue;
-		assert.deepEqual(schema.required, tool.name === "pi_git_commit" ? ["action"] : ["runId", "action"], tool.name);
+		assert.deepEqual(schema.required, ["pi_git_commit", "git_conflict"].includes(tool.name) ? ["action"] : ["runId", "action"], tool.name);
 		assert.deepEqual(schema.properties.action.anyOf.map(({ const: value }) => value), expected.get(tool.name), tool.name);
 	}
 	// Flat parameters cannot express action-dependent requirements; reject invalid combinations at execution.
@@ -401,6 +405,7 @@ test("registers sequential model-only tools with flat object roots and strict ac
 		["pi_pr_create", { runId: routeRunId, action: "commit", ownedPaths: [] }],
 		["pi_pr_update_branch", { runId: routeRunId, action: "rebase", extra: true }],
 		["pi_pr_fix_ci", { runId: routeRunId, action: "unknown" }],
+		["git_conflict", { action: "resolve", path: "f.txt", resolutions: [{ block: 1, id: "a".repeat(12), side: "@mine" }] }],
 	] as const) {
 		await assert.rejects(app.callTool(name, args, ctx), /do not match one action/, name);
 	}

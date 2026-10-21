@@ -72,16 +72,9 @@ git update-ref refs/update-from-main/adopted/<oid> <oid> ""
 
 The first command blocks the owner; the second unblocks other worktrees. Both keep the stash entry. Then verify or restore it with `git stash apply --index <oid>` as for `stash_restore_failed`, and complete recovery. Keep the shared `adopted` ref while the stash entry exists; delete it with `git update-ref -d refs/update-from-main/adopted/<oid> <oid>` only together with an explicitly requested drop of that entry.
 
-Start conflict triage with emitted JSON conflict path list, then inspect marker line numbers one separately quoted path at a time:
+Start conflict triage with the emitted JSON conflict path list and `git show --no-patch --oneline <emitted-main-sha>`. Call `git_conflict` with `{ "action": "list" }` for numbered blocks, ids, and line ranges, then `show` one block at a time. For `merge_conflict`, `ours` is the current branch and `theirs` is `main`. For `stash_conflict`, `ours` is the updated worktree and `theirs` is the retained local backup. Never grep for markers, edit marker lines by hand, or dump full `git diff --cc` across files. Use bounded `git show :2:path | sed -n '<start>,<end>p'` and `git show :3:path | sed -n '<start>,<end>p'` only when a block lacks context. Prefer upstream for unrelated changes; combine compatible overlapping behavior. Ask user only when intent cannot determine one required semantic winner.
 
-```bash
-git show --no-patch --oneline <emitted-main-sha>
-grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- '<one-conflict-path>'
-```
-
-Inspect bounded source regions around markers. Never dump full `git diff --cc` across files. Use bounded `git show :2:path | sed -n '<start>,<end>p'` and `git show :3:path | sed -n '<start>,<end>p'` only when hunk lacks context. Prefer upstream for unrelated changes; combine compatible overlapping behavior. Ask user only when intent cannot determine one required semantic winner.
-
-Resolve source first. Regenerate lockfiles and build artifacts instead of reading generated conflicts. For docs/index conflicts, keep entries whose paths exist, add upstream paths, remove deleted paths, and avoid full-repo scans.
+Resolve source first. Resolve the blocks of one file in one `resolve` call (at most 256 blocks; for more, continue with the returned `remaining` blocks) with each block number and id: `@ours`, `@theirs`, `@both` (ours then theirs), or `@base` (diff3 or zdiff3 markers only). For a combined edit, resolve the block to `@both`, then edit the joined lines. If `resolve` reports a changed block, nothing was written: run `list` again. A path with a `note` instead of blocks (binary, deleted, oversized, submodule, symlink, custom merge driver, changed merge attributes, or ambiguous markers) needs a whole-file decision: ask the user when intent does not select one version. The tool never stages files. Regenerate lockfiles and build artifacts instead of reading generated conflicts. For docs/index conflicts, keep entries whose paths exist, add upstream paths, remove deleted paths, and avoid full-repo scans.
 
 After recovery, verify exact source merged:
 
