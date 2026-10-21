@@ -117,6 +117,7 @@ export type RulesetBypassEvidence = {
 };
 const BYPASS_GRANTS = new Set(["always", "pull_requests_only", "exempt"]);
 const POLICY_REASONS = new Set(["required review pending", "merge policy not satisfied"]);
+const WAIT_REASONS = new Set(["mergeability pending", "CI running", "Codex review of the current head not finished"]);
 
 /**
  * Merge bar for a named pull request: any block reason blocks, then any wait reason waits.
@@ -146,9 +147,13 @@ export function deriveNamedPullRequestVerdict(
 	return wait.length ? { verdict: "wait", reasons: wait } : { verdict: "ready", reasons: [] };
 }
 
-/** Only a required review or a BLOCKED merge policy remains, so a ruleset bypass could make the PR ready. */
+/**
+ * Only a required review or a BLOCKED merge policy blocks, so a ruleset bypass could make the PR ready.
+ * Wait reasons may remain; the bypass then decides between `wait` and `block`.
+ */
 export function isRulesetBypassCandidate(verdict: NamedPullRequestVerdict, mergeStateStatus: string): boolean {
-	return verdict.verdict === "block" && verdict.reasons.every((reason) => POLICY_REASONS.has(reason)) &&
+	return verdict.verdict === "block" &&
+		verdict.reasons.every((reason) => POLICY_REASONS.has(reason) || WAIT_REASONS.has(reason)) &&
 		(!verdict.reasons.includes("merge policy not satisfied") || mergeStateStatus === "BLOCKED");
 }
 
@@ -178,7 +183,8 @@ export function applyRulesetBypass(
 		else if (outcome === "running") wait.push(`required check ${context} has not passed`);
 	}
 	if (block.length) return { verdict: "block", reasons: [...verdict.reasons, ...block, ...wait] };
-	if (wait.length) return { verdict: "wait", reasons: wait };
+	const pending = verdict.reasons.filter((reason) => WAIT_REASONS.has(reason));
+	if (pending.length || wait.length) return { verdict: "wait", reasons: [...pending, ...wait] };
 	const reason = verdict.reasons.join("; ");
 	return {
 		verdict: "ready",

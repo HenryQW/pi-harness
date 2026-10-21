@@ -2389,6 +2389,16 @@ test("a named PR blocked only by required review is ready through a bypassable r
 		if (reason) assert.ok(derived.reasons.includes(reason), name);
 	}
 
+	// A bypass-eligible PR whose Codex review is still running waits instead of blocking on the review.
+	const reviewing = { verdict: "block" as const, reasons: ["required review pending", "Codex review of the current head not finished"] };
+	assert.ok(isRulesetBypassCandidate(reviewing, "BLOCKED"));
+	assert.deepEqual(applyRulesetBypass(reviewing, {
+		rulesets: [{ id: 25064846, name: "main: require approval", currentUserCanBypass: "pull_requests_only", allowedMergeMethods: ["squash"], unverifiedRules: [] }],
+		requiredChecks: [{ context: "test", integrationId: 15368, outcome: "success" }],
+		classicProtection: false,
+		ref: "main",
+	}, "squash"), { verdict: "wait", reasons: ["Codex review of the current head not finished"] });
+
 	// The whole branch name is one path parameter; the strict mock rejects any other endpoint.
 	const slash = harness({ restResults: {
 		"repos/acme/project/rules/branches/release%2F1.x?per_page=100": [[]],
