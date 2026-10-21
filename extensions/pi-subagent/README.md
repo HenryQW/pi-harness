@@ -102,9 +102,9 @@ Run `/review` to review uncommitted changes against `HEAD`. To review other work
 | `a1b2c3d` | The commit against its first parent |
 | `#42` | The pull request head against its merge-base with the pull request base |
 
-Text after the target adds a review focus, for example `/review #42 cache invalidation`. Main changes the target to exact local commit IDs. For a pull request, Main runs `gh` and fetches the head to `refs/review/pr-<N>`, because reviewers can read only local Git. Main groups changed files by location, starts one read-only `reviewer` task for each group, and merges the findings.
+Text after the target adds a review focus, for example `/review #42 cache invalidation`. If the first word is not a target, Main reviews uncommitted changes and uses all text as the focus. Main changes the target to exact local commit IDs. Reviewers can read only local Git. So, for a pull request, Main fetches the head and base from the pull request repository to `refs/pi-review/`. Main groups changed files by location, starts one read-only `reviewer` task for each group, and merges the findings.
 
-The verdict is **Ship** only if each reviewer task succeeded and answered exactly `PASS`. Otherwise, the verdict is **Do not ship**, with the findings in priority order. Main does not fix findings. If another `/review` prompt template loads first, Pi keeps that template and reports a name collision.
+The verdict is **Ship** only if each reviewer task succeeded and answered exactly `PASS`. Otherwise, the verdict is **Do not ship**, with the findings in priority order. If the checkout changed during a review task, the verdict is also **Do not ship**, and you must run the review again. Main does not fix findings. If another `/review` prompt template loads first, Pi keeps that template and reports a name collision.
 
 ### Isolated workflow
 
