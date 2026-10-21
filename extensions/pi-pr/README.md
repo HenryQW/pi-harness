@@ -80,13 +80,15 @@ The `git_conflict` tool resolves Git conflict markers without manual marker edit
 
 | Tool call | Result |
 | --- | --- |
-| `git_conflict` `{ action: "list" }` | Returns each unmerged path with numbered blocks, `id`, and line ranges. |
+| `git_conflict` `{ action: "list", path? }` | Returns unmerged paths with numbered blocks, `id`, and line ranges. Without `path`, it returns at most 100 paths. |
 | `git_conflict` `{ action: "show", path, block }` | Returns the `ours`, `base`, and `theirs` sides of one block. |
 | `git_conflict` `{ action: "resolve", path, resolutions }` | Replaces blocks of one file. Each resolution has `block`, `id`, and `side`. Returns the remaining blocks. |
 
 A `side` is `@ours`, `@theirs`, `@both` (ours, then theirs), or `@base`. `@base` needs diff3 or zdiff3 markers (`|||||||`). To get them, set `merge.conflictStyle` to `zdiff3` or `diff3` before the merge. Without them, `@base` fails with an error.
 
 Before it writes, the tool reads the file again and compares each block `id`. The `id` changes when the block text or its start line changes. If a block changed, the tool writes nothing and returns an error. Block numbers change after each resolve, so use the returned blocks. The tool does not stage files: run `git add` yourself. The `show` action limits each side to 300 lines or 16 KiB.
+
+The tool reads the marker width from each opening marker, so the `conflict-marker-size` attribute works. It changes only UTF-8 text files. Binary, deleted, and other files without markers show a `note` and no blocks. Resolve these files as a whole.
 
 ## Flow
 

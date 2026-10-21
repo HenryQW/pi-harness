@@ -176,7 +176,7 @@ const FixCiActions = Type.Union([
 const ConflictPath = Type.String({ minLength: 1, maxLength: 4_096 });
 const ConflictBlock = Type.Integer({ minimum: 1 });
 const ConflictActions = Type.Union([
-	Type.Object({ action: Type.Literal("list") }, CLOSED),
+	Type.Object({ action: Type.Literal("list"), path: Type.Optional(ConflictPath) }, CLOSED),
 	Type.Object({ action: Type.Literal("show"), path: ConflictPath, block: ConflictBlock }, CLOSED),
 	Type.Object({ action: Type.Literal("resolve"), path: ConflictPath, resolutions: Type.Array(Type.Object({
 		block: ConflictBlock,
@@ -743,12 +743,12 @@ export default function pullRequestExtension(
 	pi.registerTool({
 		name: "git_conflict",
 		label: "Resolve Git Conflicts",
-		description: "Resolve Git conflict marker blocks without manual marker edits. list: unmerged paths with numbered blocks, ids, and line ranges. show: one block's ours, base, and theirs sides. resolve: replace blocks of one file with @ours, @theirs, @both (ours then theirs), or @base (diff3/zdiff3 markers only); pass several resolutions in one call. Each resolution needs the block number and id from the latest list or resolve result; a changed block fails without writing. Block numbers change after a resolve, so use the returned remaining blocks. Never stages files.",
+		description: "Resolve Git conflict marker blocks without manual marker edits. list: unmerged paths (at most 100, or one given path) with numbered blocks, ids, and line ranges; a path without blocks needs a whole-file decision. show: one block's ours, base, and theirs sides. resolve: replace blocks of one file with @ours, @theirs, @both (ours then theirs), or @base (diff3/zdiff3 markers only); pass several resolutions in one call. Each resolution needs the block number and id from the latest list or resolve result; a changed block fails without writing. Block numbers change after a resolve, so use the returned remaining blocks. Never stages files.",
 		parameters: flatRoot(ConflictActions),
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(ConflictActions, raw);
 			switch (params.action) {
-				case "list": return toolResult(await conflicts.list(ctx.cwd, signal));
+				case "list": return toolResult(await conflicts.list(ctx.cwd, params.path, signal));
 				case "show": return toolResult(await conflicts.show(ctx.cwd, params.path, params.block, signal));
 				case "resolve": return toolResult(await conflicts.resolve(ctx.cwd, params.path, params.resolutions, signal));
 			}

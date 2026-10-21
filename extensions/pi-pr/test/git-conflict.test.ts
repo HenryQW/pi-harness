@@ -13,13 +13,14 @@ test("parses two-way and diff3 blocks and resolves @both and @base", () => {
 	assert.equal(resolveConflicts(twoWay, "f", [{ block: 1, id: block!.id, side: "@both" }]), "a\nours\ntheirs\nb\n");
 	assert.throws(() => resolveConflicts(twoWay, "f", [{ block: 1, id: block!.id, side: "@base" }]), /no base section.*merge\.conflictStyle/);
 
-	const diff3 = "<<<<<<< HEAD\nours\n||||||| base\nbase\n=======\ntheirs\n>>>>>>> main";
+	// conflict-marker-size=9: seven-character markers inside the block stay content.
+	const diff3 = "<<<<<<<<< HEAD\nours\n=======\n||||||||| base\nbase\n=========\ntheirs\n>>>>>>>>> main";
 	const [withBase] = parseConflicts(diff3.split("\n"));
-	assert.deepEqual(withBase!.base, ["base"]);
+	assert.deepEqual([withBase!.ours, withBase!.base], [["ours", "======="], ["base"]]);
 	assert.equal(resolveConflicts(diff3, "f", [{ block: 1, id: withBase!.id, side: "@base" }]), "base");
 });
 
-test("batch-resolves unmerged blocks, rejects stale ids without writing, and never stages", async (t) => {
+test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files without writing, and never stages", async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "git-conflict-")));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -45,6 +46,11 @@ test("batch-resolves unmerged blocks, rejects stale ids without writing, and nev
 	const resolutions = [{ block: 1, id: listed!.blocks[0]!.id, side: "@ours" as const }, { block: 2, id: listed!.blocks[1]!.id, side: "@theirs" as const }];
 
 	const shifted = `new\n${await readFile(file, "utf8")}`;
+	const invalid = Buffer.concat([Buffer.from(shifted), Buffer.from([0xff])]);
+	await writeFile(file, invalid);
+	await assert.rejects(conflicts.resolve(root, "f.txt", resolutions), /binary or not UTF-8/);
+	assert.deepEqual(await readFile(file), invalid);
+
 	await writeFile(file, shifted);
 	await assert.rejects(conflicts.resolve(root, "f.txt", resolutions), /Conflict block 1 in f\.txt changed/);
 	assert.equal(await readFile(file, "utf8"), shifted);
