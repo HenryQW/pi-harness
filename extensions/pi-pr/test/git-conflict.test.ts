@@ -23,34 +23,35 @@ test("parses two-way and diff3 blocks and resolves @both and @base", () => {
 	assert.throws(() => parseConflicts("<<<<<<< HEAD\na\n=======\n>>>>>>> literal\nb\n>>>>>>> main".split("\n"), "f"), /ambiguous conflict markers at line 6/);
 });
 
-test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files without writing, and never stages", async (t) => {
+test("batch-resolves unmerged blocks, refuses whole-file conflicts and stale ids without writing, and never stages", async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "git-conflict-")));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: root, env, stdio: "pipe" });
+	const commit = async (message: string, files: Record<string, string>) => {
+		for (const [name, text] of Object.entries(files)) await writeFile(join(root, name), text);
+		git("add", "-A");
+		git("commit", "-qm", message);
+	};
+	const context = Array.from({ length: 8 }, (_, i) => `ctx${i}`);
+	const text = (first: string, last: string) => [first, ...context, last, ""].join("\n");
 	const file = join(root, "f.txt");
-	const write = (first: string, last: string) => writeFile(file, [first, ...Array.from({ length: 8 }, (_, i) => `ctx${i}`), last, ""].join("\n"));
-	const binary = (text: string) => writeFile(join(root, "b.bin"), text);
 	git("init", "-q", "-b", "main");
-	await write("base1", "base2");
-	await binary("a\nb\n");
-	git("add", "b.bin");
-	git("add", "f.txt");
-	git("commit", "-qm", "base");
+	await commit("base", { "f.txt": text("base1", "base2"), "b.bin": "a\nb\n", "c.txt": "a\n", "p.txt": "a\n", ".gitattributes": "c.txt merge=custom\n" });
 	git("checkout", "-qb", "topic");
-	await write("topic1", "topic2");
 	// Only theirs is binary: Git keeps the text ours without markers or NUL bytes.
-	await binary("a\0\nc\n");
-	git("commit", "-qam", "topic");
+	await commit("topic", { "f.txt": text("topic1", "topic2"), "b.bin": "a\0\nc\n", "c.txt": "c\n", "p.txt": "C\n" });
 	git("checkout", "-q", "main");
-	await write("main1", "main2");
-	await binary("a\nB\n");
-	git("commit", "-qam", "main");
+	// A literal base-like line in two-way ours must not become a base section.
+	await commit("main", { "f.txt": text("main1", "main2"), "b.bin": "a\nB\n", "c.txt": "b\n", "p.txt": "||||||| literal\nB\n" });
 	assert.throws(() => git("merge", "-q", "topic"));
 
 	const conflicts = new GitConflicts();
-	const [binaryFile, listed] = (await conflicts.list(root)).files;
-	assert.deepEqual(binaryFile, { path: "b.bin", blocks: [], note: "b.bin is binary or uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file" });
+	const [binaryFile, customFile, listed, literalFile] = (await conflicts.list(root)).files;
+	assert.match(binaryFile!.note!, /^b\.bin is binary/);
+	assert.match(customFile!.note!, /^c\.txt uses a custom merge driver/);
+	assert.match(literalFile!.note!, /^p\.txt conflict block 1 does not match the index stages/);
+	await assert.rejects(conflicts.resolve(root, "p.txt", [{ block: 1, id: "0".repeat(12), side: "@ours" }]), /does not match the index stages/);
 	assert.equal(listed!.path, "f.txt");
 	assert.equal(listed!.blocks.length, 2);
 	const resolutions = [{ block: 1, id: listed!.blocks[0]!.id, side: "@ours" as const }, { block: 2, id: listed!.blocks[1]!.id, side: "@theirs" as const }];
@@ -68,6 +69,6 @@ test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files with
 	const fresh = (await conflicts.list(root, "f.txt")).files[0]!.blocks;
 	const result = await conflicts.resolve(root, "f.txt", resolutions.map((resolution, index) => ({ ...resolution, id: fresh[index]!.id })));
 	assert.deepEqual(result, { path: "f.txt", resolved: [1, 2], remaining: [] });
-	assert.equal(await readFile(file, "utf8"), ["new", "main1", ...Array.from({ length: 8 }, (_, i) => `ctx${i}`), "topic2", ""].join("\n"));
-	assert.equal(git("diff", "--name-only", "--diff-filter=U").toString(), "b.bin\nf.txt\n");
+	assert.equal(await readFile(file, "utf8"), ["new", "main1", ...context, "topic2", ""].join("\n"));
+	assert.equal(git("diff", "--name-only", "--diff-filter=U").toString(), "b.bin\nc.txt\nf.txt\np.txt\n");
 });

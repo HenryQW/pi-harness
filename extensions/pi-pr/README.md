@@ -88,7 +88,9 @@ A `side` is `@ours`, `@theirs`, `@both` (ours, then theirs), or `@base`. `@base`
 
 Before it writes, the tool reads the file again and compares each block `id`. The `id` changes when the block text or its start line changes. If a block changed, the tool writes nothing and returns an error. Block numbers change after each resolve, so use the returned blocks. The tool does not stage files: run `git add` yourself. The `show` action limits each side to 300 lines or 16 KiB.
 
-The tool reads the `conflict-marker-size` attribute for the marker width. It changes only UTF-8 text files of 8 MiB or less. Binary files, files with a binary merge driver, files deleted or renamed on one side, and larger files show a `note` and no blocks. Markers out of sequence, an unclosed block, or a marker line in a side also give a `note`. The tool does not guess block limits. Resolve these files as a whole.
+The tool reads the `conflict-marker-size` attribute for the marker width. It changes only UTF-8 text files of 8 MiB or less. Each side of a block must match the related Git index stage.
+
+Some files show a `note` and no blocks. These include binary and larger files, and files deleted or renamed on one side. Files with a binary or custom merge driver also show a `note`. Markers out of sequence, an unclosed block, or a marker line in a side also give a `note`. The tool does not guess block limits. Resolve these files as a whole.
 
 ## Flow
 

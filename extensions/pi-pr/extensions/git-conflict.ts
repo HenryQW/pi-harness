@@ -114,8 +114,8 @@ function summary(block: ConflictBlock) {
 	return { block: block.block, id: block.id, lines: `${block.start + 1}-${block.end + 1}`, base: block.base !== undefined, ours: block.ours.length, theirs: block.theirs.length };
 }
 
-async function summaries(path: string, width: number, read: () => Promise<string>): Promise<{ blocks: ReturnType<typeof summary>[]; note?: string }> {
-	try { return { blocks: parseConflicts((await read()).split("\n"), path, width).map(summary) }; }
+async function summaries(read: () => Promise<ConflictBlock[]>): Promise<{ blocks: ReturnType<typeof summary>[]; note?: string }> {
+	try { return { blocks: (await read()).map(summary) }; }
 	catch (error) {
 		if (error instanceof WholeFileConflict) return { blocks: [], note: error.message };
 		throw error;
@@ -128,7 +128,7 @@ function sideText(lines: readonly string[]) {
 }
 
 /** `stages` maps each unmerged index stage (1 base, 2 ours, 3 theirs) to its blob id. */
-type Unmerged = { root: string; path: string; absolute: string; stages: Map<string, string>; width: number; binary: boolean };
+type Unmerged = { root: string; path: string; absolute: string; stages: Map<string, string>; width: number; driver: "text" | "binary" | "custom" };
 
 export class GitConflicts {
 	private readonly exec: Exec;
@@ -160,7 +160,9 @@ export class GitConflicts {
 		const entries = paths.map((path) => {
 			const size = Number(attributes.get(`${path}\0conflict-marker-size`));
 			const merge = attributes.get(`${path}\0merge`);
-			return { root, path, absolute: join(root, path), stages: stages.get(path)!, width: Number.isSafeInteger(size) && size > 0 ? size : 7, binary: merge === "unset" || merge === "binary" };
+			const driver = merge === "unset" || merge === "binary" ? "binary" as const
+				: ["unspecified", "set", "text", "union"].includes(merge!) ? "text" as const : "custom" as const;
+			return { root, path, absolute: join(root, path), stages: stages.get(path)!, width: Number.isSafeInteger(size) && size > 0 ? size : 7, driver };
 		});
 		return { entries, total: stages.size };
 	}
@@ -185,9 +187,10 @@ export class GitConflicts {
 
 	/** Read strict UTF-8 text so a write never rewrites bytes the parse did not see; refuse markerless conflicts. */
 	private async text(entry: Unmerged, signal?: AbortSignal): Promise<string> {
-		const { path, absolute, stages, binary } = entry;
+		const { path, absolute, stages, driver } = entry;
 		if (!stages.has("2") || !stages.has("3")) throw new WholeFileConflict(`${path} is deleted or renamed on one side; resolve it as a whole file`);
-		if (binary || await this.binaryStage(entry, signal)) throw new WholeFileConflict(`${path} is binary or uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file`);
+		if (driver === "custom") throw new WholeFileConflict(`${path} uses a custom merge driver, so its markers are unknown; resolve it as a whole file`);
+		if (driver === "binary" || await this.binaryStage(entry, signal)) throw new WholeFileConflict(`${path} is binary or uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file`);
 		const stat = await lstat(absolute).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
 		if (!stat) throw new WholeFileConflict(`${path} is missing from the worktree; resolve it as a whole file`);
 		if (!stat.isFile()) throw new WholeFileConflict(`${path} is not a regular file; resolve it as a whole file`);
@@ -199,10 +202,38 @@ export class GitConflicts {
 		}
 	}
 
+	/**
+	 * Parse the worktree file and require each block side to be a contiguous run of its index stage
+	 * (ours 2, theirs 3, base 1), so a literal marker line inside a side cannot move a block boundary.
+	 */
+	private async parse(entry: Unmerged, signal?: AbortSignal): Promise<{ text: string; blocks: ConflictBlock[] }> {
+		const { root, path, stages, width } = entry;
+		const text = await this.text(entry, signal);
+		const blocks = parseConflicts(text.split("\n"), path, width);
+		const blobs = new Map<string, string>();
+		const unknown = (block: ConflictBlock) => new WholeFileConflict(`${path} conflict block ${block.block} does not match the index stages; resolve it as a whole file`);
+		for (const block of blocks) {
+			for (const [stage, lines] of [["2", block.ours], ["3", block.theirs], ["1", block.base ?? []]] as const) {
+				if (!lines.length) continue;
+				if (!stages.has(stage)) throw unknown(block);
+				if (!blobs.has(stage)) {
+					// spawnBounded rejects stdout over the limit or not valid UTF-8.
+					const result = await this.exec("git", ["cat-file", "blob", stages.get(stage)!], { cwd: root, signal, stdoutLimitBytes: MAX_FILE_BYTES })
+						.catch(() => { signal?.throwIfAborted(); return undefined; });
+					if (!result || result.code !== 0 || result.killed) throw new WholeFileConflict(`${path} has an index stage that is not UTF-8 text of 8 MiB or less; resolve it as a whole file`);
+					blobs.set(stage, `\n${result.stdout.replaceAll("\r\n", "\n")}\n`);
+				}
+				const run = lines.map((line) => line.endsWith("\r") ? line.slice(0, -1) : line).join("\n");
+				if (!blobs.get(stage)!.includes(`\n${run}\n`)) throw unknown(block);
+			}
+		}
+		return { text, blocks };
+	}
+
 	async list(cwd: string, input?: string, signal?: AbortSignal) {
 		const { entries, total } = await this.unmerged(cwd, input === undefined ? undefined : validatePaths([input], "Conflict path")[0], signal);
 		const files = [];
-		for (const entry of entries) files.push({ path: entry.path, ...await summaries(entry.path, entry.width, () => this.text(entry, signal)) });
+		for (const entry of entries) files.push({ path: entry.path, ...await summaries(async () => (await this.parse(entry, signal)).blocks) });
 		return input === undefined && total > files.length
 			? { files, omitted: total - files.length, note: "Pass path to list blocks of an omitted file; git diff --name-only --diff-filter=U lists every path" }
 			: { files };
@@ -211,7 +242,7 @@ export class GitConflicts {
 	async show(cwd: string, input: string, number: number, signal?: AbortSignal) {
 		const entry = await this.target(cwd, input, signal);
 		const { path } = entry;
-		const block = parseConflicts((await this.text(entry, signal)).split("\n"), path, entry.width)[number - 1];
+		const block = (await this.parse(entry, signal)).blocks[number - 1];
 		if (!block) throw new Error(`${path} has no conflict block ${number}; run git_conflict list`);
 		const sides = { ours: sideText(block.ours), ...(block.base ? { base: sideText(block.base) } : {}), theirs: sideText(block.theirs) };
 		const truncated = Object.values(sides).some((side) => side.truncated);
@@ -226,10 +257,10 @@ export class GitConflicts {
 		const entry = await this.target(cwd, input, signal);
 		const { path, absolute } = entry;
 		return await withFileMutationQueue(absolute, async () => {
-			const text = resolveConflicts(await this.text(entry, signal), path, resolutions, entry.width);
+			const text = resolveConflicts((await this.parse(entry, signal)).text, path, resolutions, entry.width);
 			signal?.throwIfAborted();
 			await writeFile(absolute, text, "utf8");
-			const { blocks, note } = await summaries(path, entry.width, async () => text);
+			const { blocks, note } = await summaries(async () => parseConflicts(text.split("\n"), path, entry.width));
 			return { path, resolved: resolutions.map(({ block }) => block), remaining: blocks, ...(note ? { note } : {}) };
 		});
 	}
