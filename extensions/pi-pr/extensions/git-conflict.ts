@@ -154,7 +154,8 @@ function sideText(lines: readonly string[]) {
 }
 
 /** `stages` maps each unmerged index stage (1 base, 2 ours, 3 theirs) to its blob id. */
-type Unmerged = { root: string; path: string; absolute: string; stages: Map<string, string>; special: boolean; width: number; driver: "text" | "binary" | "custom" };
+/** `refusal` names why Git's index or attributes already require a whole-file decision. */
+type Unmerged = { root: string; path: string; absolute: string; stages: Map<string, string>; width: number; refusal?: string };
 
 export class GitConflicts {
 	private readonly exec: Exec;
@@ -186,12 +187,22 @@ export class GitConflicts {
 			const fields = (await runChecked(this.exec, "git", ["check-attr", "-z", "merge", "conflict-marker-size", "--", ...paths], options)).stdout.split("\0");
 			for (let index = 0; index + 2 < fields.length; index += 3) attributes.set(`${fields[index]}\0${fields[index + 1]}`, fields[index + 2]!);
 		}
+		// An unspecified `merge` attribute uses merge.default, then the text driver.
+		const fallback = (await runChecked(this.exec, "git", ["config", "--get", "merge.default"], options, [0, 1])).stdout.trim() || "text";
+		// Attributes read from a conflicted .gitattributes may differ from the ones Git merged with.
+		const attributeDirs = [...stages.keys()].filter((path) => path.split("/").at(-1) === ".gitattributes").map((path) => path.slice(0, -".gitattributes".length));
 		const entries = paths.map((path) => {
 			const size = Number(attributes.get(`${path}\0conflict-marker-size`));
-			const merge = attributes.get(`${path}\0merge`);
-			const driver = merge === "unset" || merge === "binary" ? "binary" as const
-				: ["unspecified", "set", "text", "union"].includes(merge!) ? "text" as const : "custom" as const;
-			return { root, path, absolute: join(root, path), stages: stages.get(path)!, special: special.has(path), width: Number.isSafeInteger(size) && size > 0 ? size : 7, driver };
+			const attribute = attributes.get(`${path}\0merge`);
+			const merge = attribute === "unspecified" ? fallback : attribute === "set" ? "text" : attribute;
+			const current = stages.get(path)!;
+			const refusal = !current.has("2") || !current.has("3") ? "is deleted or renamed on one side"
+				: special.has(path) ? "is a submodule or symlink conflict"
+				: attributeDirs.some((dir) => path.startsWith(dir)) ? "is governed by an unmerged .gitattributes, so its merge attributes are unknown"
+				: merge === "unset" || merge === "binary" ? "uses a binary merge driver, so Git kept one side without markers"
+				: merge !== "text" && merge !== "union" ? "uses a custom merge driver, so its markers are unknown"
+				: undefined;
+			return { root, path, absolute: join(root, path), stages: current, width: Number.isSafeInteger(size) && size > 0 ? size : 7, ...(refusal ? { refusal } : {}) };
 		});
 		return { entries, total: stages.size };
 	}
@@ -216,11 +227,9 @@ export class GitConflicts {
 
 	/** Read strict UTF-8 text so a write never rewrites bytes the parse did not see; refuse markerless conflicts. */
 	private async text(entry: Unmerged, signal?: AbortSignal): Promise<string> {
-		const { path, absolute, stages, special, driver } = entry;
-		if (!stages.has("2") || !stages.has("3")) throw new WholeFileConflict(`${path} is deleted or renamed on one side; resolve it as a whole file`);
-		if (special) throw new WholeFileConflict(`${path} is a submodule or symlink conflict; resolve it as a whole file`);
-		if (driver === "custom") throw new WholeFileConflict(`${path} uses a custom merge driver, so its markers are unknown; resolve it as a whole file`);
-		if (driver === "binary" || await this.binaryStage(entry, signal)) throw new WholeFileConflict(`${path} is binary or uses a binary merge driver, so Git kept one side without markers; resolve it as a whole file`);
+		const { path, absolute, refusal } = entry;
+		if (refusal) throw new WholeFileConflict(`${path} ${refusal}; resolve it as a whole file`);
+		if (await this.binaryStage(entry, signal)) throw new WholeFileConflict(`${path} is binary, so Git kept one side without markers; resolve it as a whole file`);
 		const stat = await lstat(absolute).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
 		if (!stat) throw new WholeFileConflict(`${path} is missing from the worktree; resolve it as a whole file`);
 		if (!stat.isFile()) throw new WholeFileConflict(`${path} is not a regular file; resolve it as a whole file`);
@@ -262,6 +271,10 @@ export class GitConflicts {
 				const at = stages.has(stage) ? findRun(await blob(stage), run, cursors.get(stage) ?? 0) : -1;
 				if (at < 0) throw new WholeFileConflict(`${path} conflict block ${block.block} does not match the index stages; resolve it as a whole file`);
 				cursors.set(stage, at + run.length);
+			}
+			// A literal base marker line inside two-way ours reads as a base section; refuse when that reading also fits.
+			if (block.base && findRun(await blob("2"), plain.slice(block.start + 1, block.start + 2 + block.ours.length + block.base.length), 0) >= 0) {
+				throw new WholeFileConflict(`${path} conflict block ${block.block} has a base marker that may be ours content; resolve it as a whole file`);
 			}
 			// Git writes real markers; a marked span already present in a side is inherited file content.
 			const span = plain.slice(block.start, block.end + 1);
