@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import idleRecapExtension, { RECAP_IDLE_MS } from "../internal/recap.ts";
+import idleRecapExtension, { RECAP_IDLE_MS, RECAP_PROMPT_BUDGET_BYTES } from "../internal/recap.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => unknown;
 const model = { provider: "openai-codex", id: "gpt-5.6-luna", input: ["text"] };
@@ -127,19 +127,37 @@ test("terminal keys and user shell commands cancel a pending recap without consu
 	});
 });
 
-test("a recap keeps compaction summaries and shows a repeated failure once", async () => {
+test("a recap keeps compaction summaries and shows each failure once", async () => {
 	await withTaskModels(async () => {
-		const app = harness({ complete: async () => ({ stopReason: "error", errorMessage: "no route", content: [] }) });
+		const errors = ["no route", "timeout", "no route"];
+		const app = harness({ complete: async () => ({ stopReason: "error", errorMessage: errors.shift(), content: [] }) });
 		app.manager.appendCompaction("Goal: ship the login fix.", null, 1_000);
 		app.manager.appendMessage({ role: "user", content: "continue", timestamp: 2 });
-		for (const text of ["one", "two"]) {
+		for (const text of ["one", "two", "three"]) {
 			app.manager.appendMessage({ role: "user", content: text, timestamp: 3 });
 			app.emit("agent_settled", { aborted: false });
 			await app.idleFor(RECAP_IDLE_MS);
 		}
 		assert.match(app.prompts[0], /Earlier summary: Goal: ship the login fix\./);
-		assert.equal(app.prompts.length, 2);
-		assert.deepEqual(app.notifications, ["no route"]);
+		assert.equal(app.prompts.length, 3);
+		assert.deepEqual(app.notifications, ["no route", "timeout"]);
+	});
+});
+
+test("a recap prompt fits one budget and keeps the newest summary and turns", async () => {
+	await withTaskModels(async () => {
+		const app = harness();
+		app.manager.appendCompaction(`Goal: old plan. ${"x".repeat(4_096)}`, null, 1_000);
+		app.manager.branchWithSummary(app.manager.getLeafId(), `Goal: ship the login fix. ${"y".repeat(64 * 1024)}`);
+		for (let turn = 0; turn < 20; turn += 1) {
+			app.manager.appendMessage({ role: "user", content: `turn ${turn} ${"z".repeat(4_096)}`, timestamp: 2 });
+		}
+		app.emit("agent_settled", { aborted: false });
+		await app.idleFor(RECAP_IDLE_MS);
+		assert.ok(Buffer.byteLength(app.prompts[0], "utf8") <= RECAP_PROMPT_BUDGET_BYTES);
+		assert.match(app.prompts[0], /^Earlier summary: Goal: ship the login fix\./);
+		assert.doesNotMatch(app.prompts[0], /old plan/);
+		assert.match(app.prompts[0], /turn 19 z+$/);
 	});
 });
 

@@ -126,7 +126,7 @@ function textOfTurn(content: unknown): string {
 }
 
 /** Keep at most maxBytes of UTF-8 from the tail of the text. */
-function tailBytes(text: string, maxBytes: number): string {
+export function tailBytes(text: string, maxBytes: number): string {
 	let sliced = text.slice(-maxBytes);
 	while (Buffer.byteLength(sliced, "utf8") > maxBytes) {
 		const excess = Buffer.byteLength(sliced, "utf8") - maxBytes;

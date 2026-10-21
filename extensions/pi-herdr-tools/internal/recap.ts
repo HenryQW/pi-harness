@@ -1,12 +1,16 @@
 import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { executeTaskRoutes, registerModelTask, registerTaskModelsConfigReporting, type ModelTask } from "@henryqw/pi-task-models";
-import { buildMergeTranscript } from "./merge.ts";
+import { buildMergeTranscript, tailBytes } from "./merge.ts";
 import { configuredTaskRoutes } from "./task-models.ts";
 
 const WIDGET_KEY = "pi-herdr-recap";
 /** Long enough that a short look away costs no model call; short enough that the recap is ready after a typical visit to other panes. */
 export const RECAP_IDLE_MS = 240_000;
 const RECAP_MAX_WORDS = 40;
+/** One budget for the whole prompt keeps it within small task-model context windows. */
+export const RECAP_PROMPT_BUDGET_BYTES = 48 * 1024;
+/** The title and newest summary use at most this share, so the newest turns always fit. */
+const RECAP_SUMMARY_BUDGET_BYTES = 16 * 1024;
 const RECAP_PROMPT = `The user stepped away from this coding conversation and is returning. Write a recap of at most ${RECAP_MAX_WORDS} words in one or two plain sentences without markdown: the overall goal, the current state, then one next action. Reply with the recap only.`;
 export const RECAP_TASK = {
 	id: "pi-herdr-tools/recap",
@@ -16,6 +20,13 @@ export const RECAP_TASK = {
 } as const satisfies ModelTask;
 
 class RecapModelError extends Error {}
+
+/** Keep at most maxBytes of UTF-8 from the head of the text. */
+function headBytes(text: string, maxBytes: number): string {
+	const bytes = Buffer.from(text);
+	// A cut inside a multibyte character decodes to a trailing U+FFFD; drop it to stay within the budget.
+	return bytes.length <= maxBytes ? text : bytes.subarray(0, maxBytes).toString("utf8").replace(/\uFFFD+$/, "");
+}
 
 async function generateRecap(prompt: string, ctx: ExtensionContext, signal: AbortSignal, reportTaskModels: (ctx: ExtensionContext) => void): Promise<string> {
 	return executeTaskRoutes(
@@ -54,7 +65,7 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 	let active: AbortController | undefined;
 	let stopTerminalInput: (() => void) | undefined;
 	let recappedLeaf: string | null | undefined;
-	let warned: string | undefined;
+	const warned = new Set<string>();
 
 	const cancelPending = () => {
 		clearTimeout(timer);
@@ -76,13 +87,18 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 		if (leaf === recappedLeaf || !idle(ctx)) return;
 		const messages = buildSessionContext(ctx.sessionManager.getEntries(), leaf).messages;
 		// buildMergeTranscript keeps only user and assistant turns; summaries carry the goal after compaction or branch navigation.
-		const summaries = messages.flatMap((message) =>
-			message.role === "compactionSummary" || message.role === "branchSummary" ? [`Earlier summary: ${message.summary}`] : [],
-		);
+		const summary = messages.flatMap((message) =>
+			message.role === "compactionSummary" || message.role === "branchSummary" ? [message.summary] : [],
+		).at(-1);
 		const transcript = buildMergeTranscript(messages);
-		if (!transcript && !summaries.length) return;
+		if (!transcript && !summary) return;
 		const title = pi.getSessionName();
-		const prompt = [title && `Conversation title: ${title}`, ...summaries, transcript].filter(Boolean).join("\n\n");
+		const head = headBytes(
+			[title && `Conversation title: ${title}`, summary && `Earlier summary: ${summary}`].filter(Boolean).join("\n\n"),
+			RECAP_SUMMARY_BUDGET_BYTES,
+		);
+		const tail = transcript && tailBytes(transcript, RECAP_PROMPT_BUDGET_BYTES - Buffer.byteLength(head, "utf8") - 2);
+		const prompt = [head, tail].filter(Boolean).join("\n\n");
 		const controller = new AbortController();
 		active = controller;
 		try {
@@ -94,8 +110,8 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 		} catch (error) {
 			// Route errors repeat on every idle cycle until /task-models changes, so show each message once.
 			const message = error instanceof Error ? error.message : "Idle recap failed.";
-			if (active === controller && message !== warned) {
-				warned = message;
+			if (active === controller && !warned.has(message)) {
+				warned.add(message);
 				ctx.ui.notify(message, "warning");
 			}
 		} finally {
