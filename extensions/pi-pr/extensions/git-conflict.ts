@@ -203,7 +203,9 @@ export class GitConflicts {
 		};
 		// Git merged with HEAD's or the merged attributes; when those views differ, its markers are unknown.
 		const attributes = await readAttributes([]);
-		const headAttributes = await readAttributes(["--source=HEAD"]);
+		// `--source` needs Git 2.40, so read HEAD's view only when a .gitattributes differs from HEAD.
+		const changed = (await runChecked(this.exec, "git", ["diff", "--name-only", "HEAD", "--", ":(glob)**/.gitattributes"], options)).stdout;
+		const headAttributes = changed ? await readAttributes(["--source=HEAD"]) : attributes;
 		// An unspecified `merge` attribute uses merge.default, then the text driver. A configured
 		// driver wins over a built-in name, and check-attr prints a driver named `set` like a bare attribute.
 		const fallback = (await runChecked(this.exec, "git", ["config", "--get", "merge.default"], options, [0, 1])).stdout.trim() || "text";

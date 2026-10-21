@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { GitConflicts, parseConflicts, resolveConflicts } from "../extensions/git-conflict.ts";
 
 test("parses two-way and diff3 blocks and resolves @both and @base", () => {
@@ -92,4 +93,29 @@ test("batch-resolves unmerged blocks, refuses whole-file conflicts and stale ids
 	assert.deepEqual(result, { path: "f.txt", resolved: [1, 2], remaining: [] });
 	assert.equal(await readFile(file, "utf8"), ["new", "main1", ...context, "topic2", ""].join("\n"));
 	assert.equal(git("diff", "--name-only", "--diff-filter=U").toString(), "b.bin\nc.txt\nd/y.txt\nf.txt\np.txt\nsub\nx.txt\n");
+});
+
+test("lists an ordinary conflict without check-attr --source, which Git before 2.40 lacks", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "git-conflict-")));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: root, env, stdio: "pipe" });
+	const commit = async (message: string, text: string) => {
+		await writeFile(join(root, "f.txt"), text);
+		git("add", "-A");
+		git("commit", "-qm", message);
+	};
+	git("init", "-q", "-b", "main");
+	await commit("base", "base\n");
+	git("checkout", "-qb", "topic");
+	await commit("topic", "topic\n");
+	git("checkout", "-q", "main");
+	await commit("main", "main\n");
+	assert.throws(() => git("merge", "-q", "topic"));
+	const exec: Exec = async (command, args, options) => args.some((arg) => arg.startsWith("--source"))
+		? { stdout: "", stderr: "error: unknown option `source'", code: 129, killed: false }
+		: await spawnBounded(command, args, options);
+	const [file] = (await new GitConflicts({ exec }).list(root)).files;
+	assert.equal(file!.blocks.length, 1);
+	assert.equal(file!.note, undefined);
 });
