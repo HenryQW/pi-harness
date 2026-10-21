@@ -39,7 +39,7 @@ import {
 } from "../dist/schema.js";
 import { FileRunStore } from "../dist/store.js";
 import { workerOutputForMain } from "./result-transport.ts";
-import type { IsolatedInventory, IsolatedRequest, PrunePlan } from "./subagent-command.ts";
+import type { CleanupReport, IsolatedInventory, IsolatedRequest, PrunePlan } from "./subagent-command.ts";
 import type { DiscardPlan } from "../dist/discard.js";
 
 const LOOKUP_ROOT_TIMEOUT_MS = 5_000;
@@ -521,8 +521,8 @@ export interface IsolatedSurface {
 	recover(cwd: string): Promise<string>;
 	prunePlan(cwd: string): Promise<PrunePlan>;
 	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
-	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<string>;
-	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<string>;
+	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<CleanupReport>;
+	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<CleanupReport>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
@@ -887,9 +887,10 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				panes: () => listHerdrPanes(cwd), current: () => current() && !sessionClosed,
 				blocked: async () => jobOwners.has(`${plan.root}\0${plan.requestId}`) ? "A local job is active for this request." : undefined,
 			});
-			return boundedReport([`Close and delete ${plan.requestId}:`,
+			const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
+			return { failed: count("failed"), skipped: count("skipped"), text: boundedReport([`Close and delete ${plan.requestId}:`,
 				...removals.map((item) => `${item.outcome}: ${item.key}: ${item.reason}`),
-			], "removal report lines omitted; reopen /subagent to inspect retained resources.");
+			], "removal report lines omitted; reopen /subagent to inspect retained resources.") };
 		},
 		async prunePlan(cwd) {
 			const root = await lookupRoot(cwd);
@@ -904,11 +905,11 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			const reconciled = removed.length
 				? await getComponents().runner.reconcilePrunedAborts(checkouts, removed.map(({ item }) => basename(item.branch))) : [];
 			const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
-			return boundedReport([
+			return { failed: count("failed"), skipped: count("skipped"), text: boundedReport([
 				`Pi Subagent prune in ${root}: ${removed.length} removed, ${count("skipped")} skipped, ${count("failed")} failed.`,
 				...removals.map(({ outcome, item, reason }) => `${outcome}: ${item.path ?? "(no checkout)"} · ${item.branch} · ${reason}`),
 				...reconciled,
-			], "prune report lines omitted.");
+			], "prune report lines omitted.") };
 		},
 		async inspect(root, requestId) {
 			const response = await getComponents().runner.status(requestId, root);

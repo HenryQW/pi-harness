@@ -139,6 +139,8 @@ The extension sends follow-ups when a candidate becomes ready, a worker needs at
 
 Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. The menu groups rows under **Direct**, **Isolated**, and **Orphaned** headers. Each isolated row shows the request ID, the status, and a short goal summary. **Refresh** or a header reloads saved status without recovery or mutation. Invalid state IDs stay preserved with a warning. Direct recovery remains available outside Git or without isolated inventory.
 
+Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. In the terminal UI, `/subagent` reports (Roles, details, reviews, and results) show as colored transcript entries. The model does not get these entries. In RPC mode, they show as notifications. Without interactive UI, they show as plain text messages.
+
 Requests whose parent checkout was removed show in the **Orphaned · parent checkout removed** group from any checkout of the same repository. Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
 
 Only shown resources can be removed; live jobs, uncertain ownership, or other Herdr panes can block removal. Agents and tools cannot trigger this action. See [Close and delete isolated worktrees](./docs/orchestration.md#close-and-delete-isolated-worktrees) for guards and partial cleanup.

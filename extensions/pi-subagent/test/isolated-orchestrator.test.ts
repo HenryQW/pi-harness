@@ -1609,6 +1609,7 @@ test("root active delegation sources smoke-load only the unified delegation tool
 			emit() {},
 		},
 		registerMessageRenderer() {},
+		registerEntryRenderer() {},
 		on() {},
 		registerTool(tool: { name: string }) { toolNames.push(tool.name); },
 		registerCommand() {},

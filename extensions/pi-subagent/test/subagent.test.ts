@@ -394,6 +394,7 @@ function harness(options: {
 		registerMessageRenderer(customType: string, renderer: typeof messageRenderer) {
 			if (customType === "subagent-direct-result") messageRenderer = renderer;
 		},
+		registerEntryRenderer() {},
 		appendEntry(customType: string, data: unknown) { sessionEntries.push({ type: "custom", customType, data }); },
 		sendMessage(message: any, deliveryOptions: any) {
 			if (options.sendMessageError) throw options.sendMessageError;
@@ -994,7 +995,7 @@ test("uncertain direct allocation retains admission and recovery intent without 
 				const create = fake.calls.find(([kind, command]) => kind === "tab" && command === "create")!;
 				assert.equal(create[create.indexOf("--label") + 1], "D1.1 Uncertain");
 				await recoverDirect(app);
-				assert.ok(app.notifications.some(({ message }) => message.startsWith("Direct workflow D1.1 · worker · Uncertain · allocation unverified")));
+				assert.ok(app.notifications.some(({ message }) => message.startsWith("**⚠ Direct workflow D1.1 · worker · Uncertain · allocation unverified")));
 				assert.ok(app.notifications.some(({ message }) => /allocation.*w-test.*process\.lease/s.test(message)), "exact allocation intent must remain inspectable");
 				assert.ok(!fake.calls.some((args) => args[0] === "agent" && ["start", "prompt"].includes(args[1]!) || args[1] === "close"));
 				if (failure === "identity") assert.ok(app.notifications.some(({ message }) => message.includes("w-test:t2") && message.includes("w-test:p2")));
@@ -1045,7 +1046,7 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 			let rows: string[] = [];
 			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices; return undefined; };
 			await app.commands.get("subagent")!.handler("", app.ctx);
-			assert.deepEqual(rows.filter((row) => row.startsWith("  ")), ["  D1.1 · worker · Search audit · observed locally"]);
+			assert.deepEqual(rows.filter((row) => row.startsWith("  ")), ["  ● D1.1 · worker · Search audit · observed locally"]);
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
 			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.2k tok · \$0\.12 · /);
@@ -1064,8 +1065,8 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 				return choices.find((choice) => choice.startsWith("  "));
 			};
 			await app.commands.get("subagent")!.handler("", app.ctx);
-			assert.match(rows.find((row) => row.startsWith("  "))!, /^  D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
-			assert.match(notices.find((notice) => notice.includes("session"))!, / · \$0\.12$/);
+			assert.match(rows.find((row) => row.startsWith("  "))!, /^  ⚠ D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
+			assert.match(notices.find((notice) => notice.includes("session"))!, /\n- \*\*cost:\*\* \\\$0\.12$/);
 			assert.match(app.widget!.render(220)[0]!, /last read 125ms recorded/);
 			for (const width of [26, 12]) {
 				const [row] = app.widget!.render(width);
@@ -1379,10 +1380,10 @@ test("display numbers continue after reload and carried workflows never reuse a 
 			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices.filter((row) => row.startsWith("  ")); return undefined; };
 			await app.commands.get("subagent")!.handler("", app.ctx);
 			assert.deepEqual(rows.map((row) => row.replace(/ \[\d+\]$/, "")).sort(), [
-				"  D1.1 · worker · Other · recorded only; not proof of running or completion",
-				"  D2 · 2 workers · recorded only; not proof of running or completion",
-				"  Legacy label · allocation unverified; admission retained · direct-alloc",
-				"  direct-legacy · recorded only; not proof of running or completion",
+				"  ⚠ D1.1 · worker · Other · recorded only; not proof of running or completion",
+				"  ⚠ D2 · 2 workers · recorded only; not proof of running or completion",
+				"  ⚠ Legacy label · allocation unverified; admission retained · direct-alloc",
+				"  ⚠ direct-legacy · recorded only; not proof of running or completion",
 			]);
 			const next = await app.tool.execute("next", { role: "worker", name: "Next", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
 			assert.match(next.content[0].text, /^Direct delegation started · D3 · /);
@@ -1462,10 +1463,10 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				assert.equal(originalBranch.length, stage === "tab" || stage === "allocation" ? 0 : 1);
 				assert.equal(fake.calls.filter(([kind, action]) => kind === "agent" && action === "prompt").length, stage === "prompt" ? 1 : 0);
 				await recoverDirect(app, "D2.1");
-				assert.ok(app.notifications.some(({ message }) => message.startsWith("Direct workflow D2.1 · worker · Check")));
+				assert.ok(app.notifications.some(({ message }) => /^\*\*. Direct workflow D2\.1 · worker · Check/.test(message)));
 				if (stage === "allocation") assert.ok(app.notifications.some(({ message }) => message.includes("allocation")));
-				else assert.ok(app.notifications.some(({ message }) => message.includes(`tab ${JSON.stringify(record.data.tabId)}`)
-					&& message.includes(`session ${JSON.stringify(record.data.sessionFile)}`)));
+				else assert.ok(app.notifications.some(({ message }) => message.includes(`- **tab:** \`${record.data.tabId}\``)
+					&& message.includes(`- **session:** \`${record.data.sessionFile}\``)));
 			}
 		});
 	});
@@ -1618,10 +1619,11 @@ test("invalid Role files are isolated and delegating to one names its file", asy
 			assert.equal(fake.calls.length, 0);
 			await app.commands.get("subagent")!.handler("roles", app.ctx);
 			const report = app.notifications.at(-1)!.message;
-			assert.match(report, /^implementer · built-in · default route → test\/text-model · thinking low/m);
-			assert.match(report, /^worker · user · default route → test\/text-model/m);
-			assert.match(report, /tools: read · extensions: none · skills: none · mcps: none/);
-			assert.match(report, new RegExp(`Invalid Role files \\(1\\):\\n- ${broken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: unknown Role frontmatter key`));
+			assert.match(report, /^### implementer · built-in\n- \*\*model class:\*\* default\n- \*\*model:\*\* `test\/text-model`\n- \*\*thinking:\*\* low$/m);
+			assert.match(report, /^### worker · user\n.*\n.*\n.*\n- \*\*tools:\*\* read\n- \*\*skills:\*\* none\n- \*\*extensions:\*\* none\n- \*\*mcps:\*\* none$/m);
+			// The Markdown report escapes the path's `_` characters.
+			const escaped = broken.replace(/[\\`*_~<>&|$]/g, "\\$&");
+			assert.match(report, new RegExp(`### ✗ Invalid Role files \\(1\\)\\n- ${escaped.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: unknown Role frontmatter key`));
 		});
 	});
 });
@@ -1767,7 +1769,7 @@ test("Stop this worker ends one read worker while siblings finish and Main gets 
 			let actions: string[] = [];
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {
 				menu++;
-				if (menu === 1) return choices.find((choice) => choice.startsWith("  D1 · 2 workers"));
+				if (menu === 1) return choices.find((choice) => choice.startsWith("  ● D1 · 2 workers"));
 				if (menu === 2) { actions = choices; return choices.find((choice) => choice.startsWith("Stop this worker: D1.2")); }
 				return undefined;
 			};
@@ -1778,7 +1780,7 @@ test("Stop this worker ends one read worker while siblings finish and Main gets 
 				"Stop this worker: D1.2 · worker · Second (other workers continue)",
 				"Back / refresh",
 			]);
-			assert.ok(app.notifications.some(({ message }) => message.startsWith("Worker stopped;")));
+			assert.ok(app.notifications.some(({ message }) => message.startsWith("**✓ Worker stopped;")));
 			const [second] = app.sessionEntries.filter(({ data }) => data.display.worker === 2).map(({ data }) => data);
 			assert.deepEqual(fake.calls.filter(([kind, action]) => (kind === "pane" && action === "close") || (kind === "agent" && action === "send-keys")),
 				[["agent", "send-keys", second.name, "ctrl+c"], ["pane", "close", second.paneId]]);
@@ -1819,7 +1821,7 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 			let actions: string[] = [];
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {
 				menu++;
-				if (menu === 1) return choices.find((choice) => choice.startsWith("  D1 · 2 workers"));
+				if (menu === 1) return choices.find((choice) => choice.startsWith("  ● D1 · 2 workers"));
 				if (menu === 2) { actions = choices; return choices.find((choice) => choice.startsWith("Stop this worker: D1.2")); }
 				return undefined;
 			};
@@ -1831,7 +1833,7 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 			menu = 0;
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {
 				menu++;
-				if (menu === 1) return choices.find((choice) => choice.startsWith("  D1 · 2 workers"));
+				if (menu === 1) return choices.find((choice) => choice.startsWith("  ● D1 · 2 workers"));
 				if (menu === 2) actions = choices;
 				return undefined;
 			};
