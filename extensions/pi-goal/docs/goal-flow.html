@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi Goal continuation flow</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&amp;family=Geist:wght@400;600&amp;family=Geist+Mono&amp;display=swap" rel="stylesheet">
+<style>
+body { margin: 0; background: #f0eee9; color: #101828; }
+.diagram-container { overflow-x: auto; }
+svg { display: block; min-width: 1280px; }
+</style>
+</head>
+<body>
+<div class="diagram-container">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="goal-flow-title goal-flow-desc">
+<title id="goal-flow-title">Pi Goal continuation flow</title>
+<desc id="goal-flow-desc">A user prompt starts an agent run with hidden goal context. When the agent stops, stop guards decide: if all pass, a hidden continuation starts the next turn in the same run; if any guard stops, Pi settles. A complete or dropped goal ends the loop.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#4c5665"/></marker>
+<marker id="arrow-blue" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L8 4 L0 8Z" fill="#1d4ed8"/></marker>
+</defs>
+<rect width="1280" height="720" fill="#f0eee9"/>
+<text x="40" y="52" font-family="Instrument Serif, serif" font-size="28" fill="#101828">One goal, continued until evidence or a stop limit</text>
+<!-- Connections precede nodes. Each path has its own attachment point. -->
+<g fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#arrow)">
+<path d="M240 168 H320"/>
+<path d="M560 168 H640"/>
+<path d="M860 168 H960"/>
+<path d="M1100 400 V480"/>
+<path d="M380 216 V480"/>
+<path d="M560 528 H960"/>
+</g>
+<g fill="none" stroke="#1d4ed8" stroke-width="1.6" marker-end="url(#arrow-blue)">
+<path d="M960 352 H860"/>
+<path d="M640 352 H508 Q500 352 500 344 V216"/>
+</g>
+<!-- Label masks stay clear of their connectors and all node rectangles. -->
+<g fill="#f0eee9">
+<rect x="880" y="332" width="60" height="12"/>
+<rect x="532" y="332" width="76" height="12"/>
+<rect x="1104" y="436" width="84" height="12"/>
+<rect x="384" y="292" width="84" height="12"/>
+<rect x="696" y="508" width="128" height="12"/>
+</g>
+<g font-family="Geist Mono, monospace" font-size="8" fill="#4c5665">
+<text x="910" y="341" text-anchor="middle" fill="#1d4ed8">ALL PASS</text>
+<text x="570" y="341" text-anchor="middle" fill="#1d4ed8">CONTINUE: TRUE</text>
+<text x="1108" y="445">ANY GUARD STOPS</text>
+<text x="388" y="301">COMPLETE OR DROP</text>
+<text x="760" y="517" text-anchor="middle">NEXT STOP: NO ACTIVE GOAL</text>
+</g>
+<rect x="40" y="120" width="200" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="320" y="120" width="240" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="640" y="120" width="220" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="960" y="96" width="280" height="304" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="640" y="304" width="220" height="96" rx="8" fill="#1d4ed8" fill-opacity="0.08" stroke="#1d4ed8"/>
+<rect x="320" y="480" width="240" height="96" rx="8" fill="#ffffff" stroke="#101828" stroke-opacity="0.2"/>
+<rect x="960" y="480" width="280" height="96" rx="8" fill="#e6e4de" stroke="#101828" stroke-opacity="0.2"/>
+<g font-family="Geist, sans-serif" font-size="12" font-weight="600" fill="#101828">
+<text x="60" y="152">User prompt</text>
+<text x="340" y="152">Agent run</text>
+<text x="660" y="152">Agent stops</text>
+<text x="984" y="128">Stop guards</text>
+<text x="660" y="336">Hidden continuation</text>
+<text x="340" y="512">Goal complete or dropped</text>
+<text x="984" y="512">Settle</text>
+</g>
+<g font-family="Geist Mono, monospace" font-size="8" fill="#4c5665">
+<text x="60" y="176">before_agent_start</text>
+<text x="60" y="196">+ hidden pi-goal-context</text>
+<text x="340" y="176">model turns and tool calls</text>
+<text x="340" y="196">goal: create / get</text>
+<text x="660" y="176">agent_before_settle</text>
+<text x="660" y="196">goal read from branch</text>
+<text x="984" y="152">another handler continues</text>
+<text x="984" y="176">no active goal</text>
+<text x="984" y="200">no UI</text>
+<text x="984" y="224">outcome: abort or error</text>
+<text x="984" y="248">compaction aborts the run</text>
+<text x="984" y="272">tokens used &#8805; token_budget</text>
+<text x="984" y="296">20 continuations since prompt</text>
+<text x="984" y="320">same tool activity twice</text>
+<text x="660" y="360">pi-goal-continuation</text>
+<text x="660" y="380">full goal context</text>
+<text x="340" y="536">complete: evidence per deliverable</text>
+<text x="340" y="556">/goal drop</text>
+<text x="984" y="536">agent_settled</text>
+<text x="984" y="556">an active goal stays active</text>
+</g>
+<text x="984" y="376" font-family="Geist, sans-serif" font-size="12" fill="#4c5665">Any match stops continuation.</text>
+<path d="M40 644 H1240" stroke="#101828" stroke-opacity="0.12"/>
+<text x="40" y="680" font-family="Geist, sans-serif" font-size="12" fill="#4c5665">Hidden messages are not shown in the transcript. Each check reads the goal from the current conversation branch.</text>
+</svg>
+</div>
+</body>
+</html>

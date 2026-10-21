@@ -15,6 +15,7 @@
   "license": "MIT",
   "files": [
     "LICENSE",
+    "docs",
     "extensions",
     "README.md"
   ],

@@ -10,8 +10,8 @@ import goalExtension, { CONTINUATION_MESSAGE, MAX_CONTINUATIONS, branchGoal, typ
 type Handler = (event: AgentBeforeSettleEvent, ctx: ExtensionContext) => unknown;
 type Session = { _lastActivityOutcome: string; _runBeforeSettleBoundary(): Promise<boolean>; abort(): Promise<void> };
 
-const usage = (input: number, output: number) => ({
-	input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
+const usage = (input: number, output: number, cacheRead: number) => ({
+	input, output, cacheRead, cacheWrite: 0, totalTokens: input + output + cacheRead,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
 
@@ -52,9 +52,9 @@ function harness(options: { hasUI?: boolean; before?: Handler; after?: (session:
 		...(options.after ? [settleExtension("/after", options.after(session))] : []),
 	];
 	let calls = 0;
-	const assistant = (content: unknown[], input = 0, output = 0) => manager.appendMessage({
+	const assistant = (content: unknown[], input = 0, output = 0, cacheRead = 0) => manager.appendMessage({
 		role: "assistant", content, stopReason: "stop", api: "openai-responses", provider: "openai", model: "probe",
-		usage: usage(input, output), timestamp: Date.now(),
+		usage: usage(input, output, cacheRead), timestamp: Date.now(),
 	} as never);
 	return {
 		manager, host, ctx, tool, notifications, status, handlers, assistant,
@@ -89,7 +89,9 @@ const piPrDraft: Handler = (event) => ({
 	continue: true,
 });
 const autoCompactDraft: Handler = (event, ctx) => {
-	// pi-auto-compact/extensions/auto-compact.ts 366-369: spread prior drafts, append a compaction, no continue.
+	// pi-auto-compact/extensions/auto-compact.ts 324-326: a prior non-context_edit draft yields no compaction.
+	if (event.entries.some((entry) => entry.type !== "context_edit")) return undefined;
+	// auto-compact.ts 366-369: spread prior drafts, append a compaction, no continue.
 	const firstKeptEntryId = ctx.sessionManager.getBranch().findLast((entry) => entry.type === "message" && entry.message.role === "user")!.id;
 	return { entries: [...event.entries, { type: "compaction", summary: "SUMMARY", firstKeptEntryId } satisfies SessionBoundaryDraft] };
 };
@@ -100,6 +102,7 @@ test("tool parameters use a flat object root and execute rejects invalid action 
 	assert.equal(root.type, "object");
 	assert.ok(root.properties);
 	assert.equal("anyOf" in root || "oneOf" in root, false);
+	assert.equal(tool.exposure, "model-only");
 	for (const [params, error] of [
 		[{ action: "stop" }, /action must be create, get, complete, or drop/],
 		[{ action: "create" }, /Invalid goal create arguments/],
@@ -116,10 +119,10 @@ test("goal create, get, and complete require evidence for every deliverable", as
 	assert.equal(goal.objective, "Ship the feature");
 	assert.match(h.status.value ?? "", /Goal: Ship the feature \(0\/1000 tokens\)/);
 	await assert.rejects(h.call({ action: "create", objective: "Other" }), /already active/);
-	h.assistant([{ type: "text", text: "Working." }], 30, 12);
+	h.assistant([{ type: "text", text: "Working." }], 30, 12, 100);
 	const fetched = await h.tool.execute("get", { action: "get" } as never, undefined, undefined, h.ctx as never);
 	assert.deepEqual(fetched.details, { goal });
-	assert.match((fetched.content[0] as { text: string }).text, /Tokens used: 42\nToken budget: 1000\nTokens remaining: 958/);
+	assert.match((fetched.content[0] as { text: string }).text, /Tokens used: 142\nToken budget: 1000\nTokens remaining: 858/);
 
 	const evidence = (items: Array<[string, string]>) => ({ action: "complete", evidence: items.map(([deliverable, text]) => ({ deliverable, evidence: text })) });
 	await assert.rejects(h.call(evidence([["tests pass", "node --test: 12 passed"]])), /Missing evidence for: "docs updated"/);
@@ -167,16 +170,17 @@ test("goal yields to an existing continuation and keeps a later handler's draft"
 	assert.deepEqual(both.manager.getBranch().slice(-2).map((entry) => entry.type === "custom_message" && entry.customType), [CONTINUATION_MESSAGE, "pi-pr-workflow"]);
 });
 
-for (const order of ["before", "after"] as const) test(`goal continuation survives an auto-compact compaction draft ${order} it`, async () => {
+for (const order of ["before", "after"] as const) test(`goal continuation coexists with pi-auto-compact ${order} it`, async () => {
 	const h = harness(order === "before" ? { before: autoCompactDraft } : { after: () => autoCompactDraft });
 	await h.call({ action: "create", objective: "Ship" });
 	assert.equal(await h.settle(), true);
-	const types = h.manager.getBranch().slice(-2).map((entry) => entry.type);
-	assert.deepEqual(types, order === "before" ? ["compaction", "custom_message"] : ["custom_message", "compaction"]);
+	const branch = h.manager.getBranch();
+	assert.equal(branch.at(-1)?.type, "custom_message");
+	assert.equal(branch.some((entry) => entry.type === "compaction"), order === "before");
 	assert.equal(h.continuations().length, 1);
 });
 
-test("settle stops without UI, after abort or error, and while compaction runs", async () => {
+test("settle stops without UI, after abort or error, and when compaction aborts the run", async () => {
 	const headless = harness({ hasUI: false });
 	await headless.call({ action: "create", objective: "Ship" });
 	assert.equal(await headless.settle(), false);
@@ -186,11 +190,7 @@ test("settle stops without UI, after abort or error, and while compaction runs",
 	await h.call({ action: "create", objective: "Ship" });
 	assert.equal(await h.settle("aborted"), false);
 	assert.equal(await h.settle("error"), false);
-	await h.emit("session_before_compact");
-	assert.equal(await h.settle(), false);
-	await h.emit("session_compact");
-	assert.equal(await h.settle(), true);
-	assert.equal(h.continuations().length, 1);
+	assert.equal(h.continuations().length, 0);
 
 	// pi-auto-compact calls ctx.compact() from a boundary handler; AgentSession.compact() starts with abort().
 	const compacting = harness({ after: (session) => () => { void session.abort(); } });
@@ -222,6 +222,18 @@ test("continuation stops at the maximum count until the next user prompt", async
 	h.work(MAX_CONTINUATIONS);
 	assert.equal(await h.settle(), true);
 	assert.equal((h.continuations().at(-1) as { details: { count: number } }).details.count, 1);
+});
+
+test("the continuation cap counts across goals completed and recreated in automatic turns", async () => {
+	const h = harness();
+	await h.call({ action: "create", objective: "Goal 0" });
+	for (let step = 0; step < MAX_CONTINUATIONS; step++) {
+		assert.equal(await h.settle(), true);
+		await h.call({ action: "complete", evidence: [{ deliverable: "objective", evidence: `check ${step}` }] });
+		await h.call({ action: "create", objective: `Goal ${step + 1}` });
+	}
+	assert.equal(await h.settle(), false);
+	assert.match(h.notifications.join("\n"), new RegExp(`after ${MAX_CONTINUATIONS} automatic turns`));
 });
 
 test("continuation stops when two consecutive segments have identical tool activity", async () => {

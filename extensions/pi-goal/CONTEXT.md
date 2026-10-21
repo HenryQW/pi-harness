@@ -21,5 +21,5 @@ A hidden message that Pi Goal adds when the agent stops while a Goal is active, 
 _Avoid_: Retry, follow-up
 
 **Budget**:
-An optional token limit for a Goal. Tokens used are the input and output tokens of assistant responses after the Goal starts. An exhausted Budget stops Continuation; it does not complete the Goal.
+An optional token limit for a Goal. Tokens used are the total tokens, including cache reads and writes, of assistant responses after the Goal starts. An exhausted Budget stops Continuation; it does not complete the Goal.
 _Avoid_: Quota, limit

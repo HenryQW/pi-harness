@@ -21,6 +21,8 @@ Ask the agent to work toward a goal, for example: "Make this a goal: all tests p
 | `goal` | tool | For agents: create, get, complete, or drop the goal. |
 | Footer status | ui | Shows the active goal objective and tokens used. |
 
+The `goal` tool is available to the model only. Other tools, such as `codemode`, cannot call it.
+
 ### Tool actions
 
 | Action | Parameters | Result |
@@ -33,6 +35,8 @@ Ask the agent to work toward a goal, for example: "Make this a goal: all tests p
 When the goal has no deliverables, `complete` needs one evidence item with deliverable `objective`. The tool rejects missing, blank, duplicate, or unknown evidence items. The agent must get evidence from current state, such as files, command output, or tests. Memory of earlier turns is not evidence.
 
 ## Flow
+
+![Pi Goal flow: a user prompt starts the agent run with hidden goal context; when the agent stops, stop guards add a hidden continuation or let Pi settle](./docs/goal-flow.svg)
 
 1. Before each user prompt, Pi Goal adds the goal, the budget numbers, and the completion rules as hidden context.
 2. When the agent stops, Pi Goal checks the stop limits. If no limit applies, it adds a hidden continuation with the same goal context.
@@ -55,8 +59,8 @@ Branch navigation, `/tree`, forks, resume, and `/undo` rewinds show the goal of 
 | Limit | Behavior | Recovery |
 | --- | --- | --- |
 | Interactive only | Continuation needs a UI. Print mode and other modes without UI do not continue. | Send each next prompt manually. |
-| Maximum continuations | Continuation stops after 20 automatic turns since the latest user prompt. | Send a prompt to continue. |
+| Maximum continuations | Continuation stops after 20 automatic turns since the latest user prompt. The count includes all goals, so a new goal does not reset it. | Send a prompt to continue. |
 | No progress | Continuation stops when two automatic turns in sequence show identical tool activity. | Send a prompt with new direction, or run `/goal drop`. |
-| Budget | Continuation stops when tokens used reach `token_budget`. The goal stays active; it is not complete. | Send a prompt to continue, or run `/goal drop`. |
-| Abort, error, compaction | Continuation stops after an abort or error, and while compaction runs. | Send a prompt to continue. |
+| Budget | Tokens used are the total tokens of assistant responses after `create`, including cache reads and writes. Continuation stops when tokens used reach `token_budget`. The goal stays active; it is not complete. | Send a prompt to continue, or run `/goal drop`. |
+| Abort, error, compaction | Continuation stops after an abort or error. A compaction aborts the run, and Pi itself then stops continuation. | Send a prompt to continue. |
 | Evidence | Evidence is model-reported text. Pi Goal checks that it is present, not that it is true. | Examine the evidence in the `complete` result before you accept the work. |

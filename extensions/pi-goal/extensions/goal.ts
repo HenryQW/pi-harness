@@ -92,7 +92,7 @@ function goalRecord(entry: SessionEntry): Goal | undefined {
 	return message.toolName === "goal" && !message.isError ? (message.details as { goal?: Goal } | undefined)?.goal : undefined;
 }
 
-/** The latest goal record on the branch wins. Tokens count assistant usage after the goal's first record. */
+/** The latest goal record on the branch wins. Tokens count assistant total usage after the goal's first record. */
 export function branchGoal(branch: SessionEntry[]): { goal: Goal; used: number } | undefined {
 	let latest: { goal: Goal; start: number } | undefined;
 	branch.forEach((entry, index) => {
@@ -102,7 +102,7 @@ export function branchGoal(branch: SessionEntry[]): { goal: Goal; used: number }
 	if (!latest) return undefined;
 	let used = 0;
 	for (const entry of branch.slice(latest.start + 1)) {
-		if (entry.type === "message" && entry.message.role === "assistant") used += entry.message.usage.input + entry.message.usage.output;
+		if (entry.type === "message" && entry.message.role === "assistant") used += entry.message.usage.totalTokens;
 	}
 	return { goal: latest.goal, used };
 }
@@ -153,8 +153,7 @@ function activity(entries: SessionEntry[]): string {
 }
 
 export default function goalExtension(pi: ExtensionAPI): void {
-	// Transient UI and compaction state only; the goal itself is always derived from the branch.
-	let compactionPending = false;
+	// Transient notice state only; the goal itself is always derived from the branch.
 	const notices = new Set<string>();
 
 	const showStatus = (ctx: ExtensionContext, state: { goal: Goal; used: number } | undefined) => {
@@ -182,6 +181,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		].join("\n"),
 		promptSnippet: "Track a persistent goal and complete it only with current-state evidence",
 		parameters: GoalParameters,
+		// Nested calls (codemode, ctx.executeTool) leave no transcript result, so the branch would lose them.
+		exposure: "model-only",
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const input = checkedInput(params);
@@ -235,15 +236,11 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		compactionPending = false;
 		notices.clear();
 		refresh(ctx);
 	});
 	pi.on("session_tree", (_event, ctx) => refresh(ctx));
 	pi.on("agent_settled", (_event, ctx) => refresh(ctx));
-	pi.on("session_before_compact", () => { compactionPending = true; });
-	pi.on("session_compact", () => { compactionPending = false; });
-	pi.on("session_compact_failed", () => { compactionPending = false; });
 
 	pi.on("before_agent_start", (_event, ctx) => {
 		const state = branchGoal(ctx.sessionManager.getBranch());
@@ -258,19 +255,17 @@ export default function goalExtension(pi: ExtensionAPI): void {
 		const branch = ctx.sessionManager.getBranch();
 		const state = branchGoal(branch);
 		if (state?.goal.status !== "active" || event.outcome !== "completed") return;
-		// ctx.compact() aborts first (AgentSession.compact -> abort()), so Pi itself skips or discards this
-		// boundary's continuation; this flag covers compaction that is still running when the boundary fires.
-		if (compactionPending) return;
 		const { goal, used } = state;
 		if (goal.tokenBudget !== undefined && used >= goal.tokenBudget) {
 			stop(ctx, `budget:${goal.id}`, `Goal token budget is exhausted (${used}/${goal.tokenBudget}). The goal stays active, not complete. Continue it with a prompt or run /goal drop.`);
 			return;
 		}
 		const userIndex = branch.findLastIndex((entry) => entry.type === "message" && entry.message.role === "user");
+		// Count across goals: completing and recreating a goal must not reset the cap within one user turn.
 		const continuations = branch.flatMap((entry, index) => index > userIndex && entry.type === "custom_message" &&
-			entry.customType === CONTINUATION_MESSAGE && (entry.details as ContinuationDetails | undefined)?.goalId === goal.id ? [index] : []);
+			entry.customType === CONTINUATION_MESSAGE ? [index] : []);
 		if (continuations.length >= MAX_CONTINUATIONS) {
-			stop(ctx, `max:${goal.id}:${branch[userIndex]?.id}`, `Goal continuation stopped after ${MAX_CONTINUATIONS} automatic turns. Send a prompt to continue.`);
+			stop(ctx, `max:${branch[userIndex]?.id}`, `Goal continuation stopped after ${MAX_CONTINUATIONS} automatic turns. Send a prompt to continue.`);
 			return;
 		}
 		const latest = continuations.at(-1);
