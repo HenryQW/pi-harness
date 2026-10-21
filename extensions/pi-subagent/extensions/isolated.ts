@@ -842,7 +842,8 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 				catch (error) { console.error("Pi Subagent workspace widget update failed.", error); }
 			}
 			const orphans = await getComponents().runner.listOrphanRequests(root);
-			return { root, requests: [...requests, ...orphans.requests], invalidIds: [...new Set([...invalidIds, ...orphans.invalidIds])] };
+			const leaseLive = await getComponents().runner.hasProductiveRunLease(root);
+			return { root, leaseLive, requests: [...requests, ...orphans.requests], invalidIds: [...new Set([...invalidIds, ...orphans.invalidIds])] };
 		},
 		async recover(cwd) {
 			const root = await lookupRoot(cwd);

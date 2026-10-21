@@ -269,7 +269,7 @@ After readiness, use `subagent_stage revise` with the exact candidate, generatio
 
 ### Inspect and revise active work
 
-To select work by label, open `/subagent` without arguments. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout. This includes requests launched in other sessions. Select an isolated request. Then select **Inspect status and recovery**.
+To select work by label, open `/subagent` without arguments. First, a **Current subagent work** report shows the work that local and saved evidence proves is running: locally owned direct workflows with a running worker, and active isolated requests while a live run holds the repository lease. The report lists active requests without a live lease as interrupted, and recorded-only direct work as unverified. A live lease does not identify its request, so several active requests in one checkout all show as working. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout. This includes requests launched in other sessions. Select an isolated request. Then select **Inspect status and recovery**.
 
 The menu also shows requests whose saved parent checkout no longer exists, in their own **Orphaned · parent checkout removed** group. You can open this view from any checkout of the same repository. The saved worker or integration path identifies the primary repository. Orphaned requests have the same **Close and delete worktrees (discard work)** action, but no inspection or follow-up actions. The extension reads their original state directories; it does not recreate the removed parent checkout. Unreadable files stay preserved and are reported.
 

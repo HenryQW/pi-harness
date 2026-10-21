@@ -10,6 +10,7 @@ initTheme("dark");
 const TAGGED = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<b>${text}</b>` };
 const plainLines = (component: Box, width: number) => component.render(width).map((line) => line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
 
+const WORKING = "Current subagent work";
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
 function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan; cleanup?: { failed: number; skipped: number } } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
@@ -35,7 +36,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 	const discardedKeys: string[] = [];
 	const pruned: { branches: string[]; allowIgnored: boolean; force?: boolean }[] = [];
 	let recoverPause: (() => Promise<void>) | undefined;
-	const inventory = options.inventory ?? { root: "/git", requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
+	const inventory = options.inventory ?? { root: "/git", leaseLive: true, requests: [{ id: "request", name: "Same", status: "working", tasks: [{ id: "task", name: "Same", kind: "changeset", status: "working" }, { id: "other", name: "Same", kind: "changeset", status: "working" }] }], invalidIds: [] };
 	const adapter: SubagentCommandAdapter = {
 		direct: () => options.direct ?? [],
 		closeDirect: async (task, current) => { assert.equal(current(), true); closed.push(task.id); return "Stopped"; },
@@ -113,8 +114,9 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 	return { run: (args = "") => handler(args, ctx), appended, responses,
 		renderEntry: (data: unknown) => renderEntry({ data }, {}, TAGGED)!,
 		renderMessage: (content: string) => renderMessage({ content }, { outputPad: 2 }, TAGGED)!,
-		/** Every appended report as the Markdown that RPC and no-UI modes receive. */
-		get reports() { return appended.map(({ customType, data }) => { assert.equal(customType, "pi-subagent-report"); return reportMarkdown(data as Report); }); }, dialogs, notices, queues, sent, messages, pick, closed, stopped, confirms, pruned, discarded, discardedKeys,
+		/** Every appended report except the working report, as the Markdown that RPC and no-UI modes receive. */
+		get reports() { return appended.flatMap(({ customType, data }) => { assert.equal(customType, "pi-subagent-report"); return (data as Report).title === WORKING ? [] : [reportMarkdown(data as Report)]; }); },
+		get working() { return appended.flatMap(({ data }) => (data as Report).title === WORKING ? [reportMarkdown(data as Report)] : []); }, dialogs, notices, queues, sent, messages, pick, closed, stopped, confirms, pruned, discarded, discardedKeys,
 		setRecoverPause: (pause: () => Promise<void>) => { recoverPause = pause; },
 		get recoverCount() { return recoverCount; },
 		setActive: (value: boolean) => { active = value; },
@@ -158,7 +160,7 @@ test("TUI reports use Pi's custom-message box: a tone-colored title over a Markd
 	const h = harness({ direct: [{ id: "direct_1", name: "Fix *now*", status: "admission retained", recovery: "inspect tab", workers: [], tabs: [] }] });
 	h.responses.push(h.pick("Fix *now* ·"), h.pick("Close"));
 	await h.run();
-	const box = h.renderEntry(h.appended[0]!.data);
+	const box = h.renderEntry(h.appended.at(-1)!.data);
 	assert.ok(box instanceof Box);
 	const [title, spacer, body] = box.children;
 	assert.ok(title instanceof Text && spacer instanceof Spacer && body instanceof Markdown);
@@ -239,9 +241,29 @@ test("direct rows use saved references; multi-worker workflows group under one r
 
 test("Refresh reloads the isolated inventory for the widget as well as the picker", async () => {
 	const h = harness();
-	h.responses.push(h.pick("Refresh"), h.pick("Close"));
+	h.responses.push(h.pick("Refresh"), h.pick("Completed / history"), h.pick("Close"));
 	await h.run();
-	assert.equal(h.inventoryCount, 2);
+	assert.equal(h.inventoryCount, 3);
+	assert.equal(h.working.length, 2, "open and Refresh show the working report; other loops do not");
+});
+
+test("the working report counts only live evidence before the menu opens", async () => {
+	const display = { workflow: 1, worker: 1, workers: 1, title: "Scan", role: "scout" };
+	const live = harness({ direct: [
+		{ id: "reads", name: "reads", status: "observed locally", stoppable: ["entry-1"], workers: [display], tabs: [] },
+		{ id: "old", name: "old", status: "recorded only; not proof of running or completion", workers: [{ ...display, workflow: 2 }], tabs: [] },
+		{ id: "done", name: "done", status: "completed", workers: [{ ...display, workflow: 3 }], tabs: [] },
+	], inventory: { root: "/git", leaseLive: true, invalidIds: [], requests: [{ id: "run", name: "Build", status: "running", tasks: [] }] } });
+	live.responses.push((dialog) => { assert.equal(live.working.length, 1, "the report precedes the menu"); return live.pick("Close")(dialog); });
+	await live.run();
+	assert.deepEqual(live.working, [["**● Current subagent work**", "",
+		"### ● Working (2)", "- D1.1 · scout · Scan · 1 running", "- run · running · Build", "",
+		"### ⚠ Unverified (1) · not proof of running or completion", "- D2.1 · scout · Scan · recorded only; not proof of running or completion"].join("\n")]);
+	const stale = harness({ inventory: { root: "/git", leaseLive: false, invalidIds: [], requests: [{ id: "run", name: "Build", status: "pending", tasks: [] }] } });
+	stale.responses.push(stale.pick("Close"));
+	await stale.run();
+	assert.deepEqual(stale.working, [["**⚠ Current subagent work**", "", "- No subagents are working.", "",
+		"### ⚠ Needs attention (1)", "- run · pending · Build · interrupted; run /subagent recover"].join("\n")]);
 });
 
 test("inspection launches a Herdr tab without queuing a Main turn or changing work", async () => {
@@ -271,7 +293,7 @@ test("failed isolated discovery preserves direct branch recovery and invalid inv
 	await failed.run();
 	assert.ok(failed.notices.some((notice) => notice.message.includes("outside Git")));
 	assert.match(failed.reports[0]!, /\*\*session:\*\* `\/recover`/);
-	const invalid = harness({ inventory: { root: "/git", requests: [{ id: "good", name: "Healthy", status: "working", tasks: [] }], invalidIds: ["broken-state-id"] } });
+	const invalid = harness({ inventory: { root: "/git", leaseLive: true, requests: [{ id: "good", name: "Healthy", status: "working", tasks: [] }], invalidIds: ["broken-state-id"] } });
 	invalid.responses.push(invalid.pick("Healthy"), invalid.pick("Inspect"), invalid.pick("Back"), invalid.pick("Close"));
 	await invalid.run();
 	assert.ok(invalid.notices.some((notice) => notice.message.includes("broken-state-id") && notice.message.includes("Preserve")));
@@ -381,7 +403,8 @@ test("recover does not deliver a stale follow-up after session replacement", asy
 test("no UI reports requests without dialogs or mutations; unknown arguments fail", async () => {
 	const h = harness({ ui: false });
 	await h.run();
-	assert.equal(h.messages[0]!, ["**● Isolated requests (report only)**", "", "- ● request · working · Same", "",
+	assert.equal(h.messages[0]!, "**● Current subagent work**\n\n- No subagents are working.");
+	assert.equal(h.messages[1]!, ["**● Isolated requests (report only)**", "", "- ● request · working · Same", "",
 		"* Unreadable state files preserved: 0.", "* Removal requires interactive confirmation."].join("\n"));
 	assert.deepEqual(h.discarded, []);
 	await assert.rejects(h.run("task-id"), /Usage/);
@@ -576,7 +599,7 @@ test("prune routes selected request-owned items to one discard of each whole own
 });
 
 test("Select multiple batches discard of isolated requests and close of direct workflows, reporting skipped rows", async () => {
-	const inventory: IsolatedInventory = { root: "/git", invalidIds: [], requests: [
+	const inventory: IsolatedInventory = { root: "/git", leaseLive: true, invalidIds: [], requests: [
 		{ id: "one", name: "First", status: "working", tasks: [] },
 		{ id: "lost", name: "Second", status: "needs_attention", orphaned: true, directory: "/state", root: "/gone", tasks: [] },
 	] };
@@ -625,7 +648,7 @@ test("isolated discard requires one explicit confirmation; cancel changes nothin
 });
 
 test("orphaned requests show the delete action without status or follow-up actions", async () => {
-	const h = harness({ inventory: { root: "/git", invalidIds: [], requests: [{
+	const h = harness({ inventory: { root: "/git", leaseLive: true, invalidIds: [], requests: [{
 		id: "orphan", name: `Lost\nparent ${"goal ".repeat(40)}`, status: "aborted", orphaned: true, directory: "/state", root: "/removed", tasks: [],
 	}] } });
 	h.confirms.push(true);

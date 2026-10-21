@@ -139,6 +139,10 @@ The extension sends follow-ups when a candidate becomes ready, a worker needs at
 
 Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. The menu groups rows under **Direct**, **Isolated**, and **Orphaned** headers. Each isolated row shows the request ID, the status, and a short goal summary. **Refresh** or a header reloads saved status without recovery or mutation. Invalid state IDs stay preserved with a warning. Direct recovery remains available outside Git or without isolated inventory.
 
+Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. The extension calculates it from local and saved evidence without a model call. Without interactive UI, `/subagent` sends this report before the request list.
+
+A direct workflow is working only when this Pi process owns it and has a running worker. Direct work with a delivered result shows its outcome under **Completed / history** and is not in the report. Other recorded-only direct work shows as unverified. An isolated request is working only when its status is active and a live run holds the repository lease. Without a live lease, an active request shows as interrupted; run `/subagent recover`.
+
 Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. In the terminal UI, `/subagent` reports (Roles, details, reviews, and results) show as colored transcript entries. The model does not get these entries. In RPC mode, they show as notifications. Without interactive UI, they show as plain text messages.
 
 Requests whose parent checkout was removed show in the **Orphaned · parent checkout removed** group from any checkout of the same repository. Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
