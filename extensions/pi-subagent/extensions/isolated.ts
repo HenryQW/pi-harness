@@ -522,7 +522,7 @@ export interface IsolatedSurface {
 	prunePlan(cwd: string): Promise<PrunePlan>;
 	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
 	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<CleanupReport>;
-	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, current: () => boolean): Promise<CleanupReport>;
+	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, force: boolean, current: () => boolean): Promise<CleanupReport>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
@@ -896,10 +896,10 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			const root = await lookupRoot(cwd);
 			return { root, items: await inspectPruneCandidates(root, cwd, pruneGuards(root)) };
 		},
-		async prune(cwd, items, allowIgnored, current) {
+		async prune(cwd, items, allowIgnored, force, current) {
 			requireCurrent(current);
 			const root = await lookupRoot(cwd);
-			const { removals, checkouts } = await removePruneCandidates(root, cwd, items, allowIgnored,
+			const { removals, checkouts } = await removePruneCandidates(root, cwd, items, allowIgnored, force,
 				{ ...pruneGuards(root), current: () => current() && !sessionClosed });
 			const removed = removals.filter(({ outcome }) => outcome === "removed");
 			const reconciled = removed.length

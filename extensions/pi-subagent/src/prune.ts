@@ -8,6 +8,15 @@ import { inspectWorktreeDirty, OWNED_BRANCH_PATTERN, WORKTREES_DIRNAME } from ".
 const HERDR_TIMEOUT_MS = 30_000;
 const IN_PROGRESS_MARKERS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply", "sequencer"];
 
+/** Blockers that a separately confirmed force removal of an unowned item may override; every other kind is hard. */
+export const FORCEABLE_PRUNE_BLOCKERS = ["unmerged", "changes", "operation", "submodules"] as const;
+export type PruneBlockerKind = typeof FORCEABLE_PRUNE_BLOCKERS[number] | "owner" | "lease" | "hard";
+export interface PruneBlocker { kind: PruneBlockerKind; text: string }
+const forceable = (kind: PruneBlockerKind) => (FORCEABLE_PRUNE_BLOCKERS as readonly string[]).includes(kind);
+
+/** Saved identity of a readable request that owns a resource name. */
+export interface PruneRequest { id: string; name: string; status: string; directory: string; root: string; orphaned: boolean }
+
 /** One reviewed pi-subagent branch, with its registered checkout when one exists. */
 export interface PruneItem {
 	branch: string;
@@ -16,13 +25,19 @@ export interface PruneItem {
 	prunable: boolean;
 	/** Why the item is prunable, or every exact blocker. */
 	reason: string;
+	blockers: readonly PruneBlocker[];
+	/** The only, readable request that owns the item. */
+	owner?: PruneRequest;
+	/** How a blocked item can still go after separate confirmation: discard of its whole owning request, or
+	 * force removal when every blocker is forceable. Absent for prunable and hard-blocked items. */
+	override?: "discard" | "force";
 	/** Ignored entries as Git collapses them; removing the checkout deletes them. */
 	ignored: readonly string[];
 }
 
 export interface PruneOwnership {
-	/** The request or state that may still own a resource name (`subagent-<hex>`), if any. */
-	owner(name: string): string | undefined;
+	/** Every request or state that may still own a resource name (`subagent-<hex>`); unreadable state has no request. */
+	owners(name: string): readonly { label: string; request?: PruneRequest }[];
 	/** The live productive lease that blocks pruning, if any. */
 	lease?: string;
 }
@@ -97,46 +112,52 @@ async function classify(snap: Snapshot, branch: string, mainCwd: string, ownersh
 	const ownedPath = join(snap.primary, WORKTREES_DIRNAME, name);
 	// A detached or switched owned checkout no longer names the branch; find it by its owned path too.
 	const checkout = snap.checkouts.find((item) => item.branch === branch) ?? snap.checkouts.find((item) => item.path === ownedPath);
-	const blockers: string[] = [];
-	if (checkout && checkout.branch !== branch) blockers.push(`owned checkout is ${checkout.branch ? `on branch ${checkout.branch}` : "detached"}; inspect it manually`);
+	const blockers: PruneBlocker[] = [];
+	const block = (kind: PruneBlockerKind, text: string) => blockers.push({ kind, text });
+	if (checkout && checkout.branch !== branch) block("hard", `owned checkout is ${checkout.branch ? `on branch ${checkout.branch}` : "detached"}; inspect it manually`);
 	let ignored: string[] = [];
-	const owner = ownership.owner(name);
-	if (owner) blockers.push(owner);
-	if (ownership.lease) blockers.push(ownership.lease);
+	const owners = ownership.owners(name);
+	for (const { label } of owners) block("owner", label);
+	if (ownership.lease) block("lease", ownership.lease);
 	let merged: string | undefined;
 	for (const target of snap.targets) {
 		const result = await run(["merge-base", "--is-ancestor", tip, target.head], root);
 		if (result.code === 0) { merged = target.label; break; }
 		if (result.code !== 1) throw new Error(`git merge-base failed (exit ${result.code}): ${result.stderr.trim().slice(0, 200)}`);
 	}
-	if (!merged) blockers.push(`branch has commits not in ${snap.targets.map(({ label }) => label).join(" or ")}`);
+	if (!merged) block("unmerged", `branch has commits not in ${snap.targets.map(({ label }) => label).join(" or ")}`);
 	if (checkout) {
 		const path = checkout.path;
-		if (path !== ownedPath) blockers.push("checkout is not at its owned .worktrees path");
-		if (checkout.locked) blockers.push("checkout is locked");
-		if (checkout.missing || !existsSync(path)) blockers.push("checkout directory is missing; inspect it, then run git worktree prune");
+		if (path !== ownedPath) block("hard", "checkout is not at its owned .worktrees path");
+		if (checkout.locked) block("hard", "checkout is locked");
+		if (checkout.missing || !existsSync(path)) block("hard", "checkout directory is missing; inspect it, then run git worktree prune");
 		else {
 			const real = realpathSync.native(path);
-			if (within(real, realpathSync.native(mainCwd))) blockers.push("Main runs inside the checkout");
+			if (within(real, realpathSync.native(mainCwd))) block("hard", "Main runs inside the checkout");
 			const gitDir = await requireGit(run, ["rev-parse", "--absolute-git-dir"], path);
 			const markers = IN_PROGRESS_MARKERS.filter((marker) => existsSync(join(gitDir, marker)));
-			if (markers.length) blockers.push(`Git operation in progress (${markers.join(", ")})`);
+			if (markers.length) block("operation", `Git operation in progress (${markers.join(", ")})`);
 			const dirty = await inspectWorktreeDirty(path, run, false);
-			if (dirty.failure) blockers.push(`checkout could not be inspected: ${dirty.failure}`);
-			else if (dirty.dirty) blockers.push("checkout has tracked or untracked changes");
-			else if (dirty.initializedSubmodules) blockers.push("checkout has initialized submodules; Git cannot remove it without force, so remove it manually");
-			if (typeof panes === "string") blockers.push(`Herdr unavailable (${panes}); cannot prove no pane uses the checkout`);
+			if (dirty.failure) block("hard", `checkout could not be inspected: ${dirty.failure}`);
+			else if (dirty.dirty) block("changes", "checkout has tracked or untracked changes");
+			else if (dirty.initializedSubmodules) block("submodules", "checkout has initialized submodules; Git cannot remove it without force");
+			if (typeof panes === "string") block("hard", `Herdr unavailable (${panes}); cannot prove no pane uses the checkout`);
 			else {
 				const used = panes.filter((pane) => pane.cwds.some((cwd) => within(path, cwd) || within(real, cwd)));
-				if (used.length) blockers.push(`Herdr pane ${used.map(({ paneId }) => paneId).join(", ")} works inside the checkout`);
+				if (used.length) block("hard", `Herdr pane ${used.map(({ paneId }) => paneId).join(", ")} works inside the checkout`);
 			}
 			ignored = (await requireGit(run, ["status", "--porcelain=v1", "-z", "--ignored=matching", "--untracked-files=normal"], path))
 				.split("\0").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
 		}
 	}
+	// The owning request's discard review owns its other blockers; a lease or any second owner keeps the item.
+	const owner = owners.length === 1 ? owners[0]!.request : undefined;
+	const override = !blockers.length ? undefined : owner && !blockers.some(({ kind }) => kind === "lease") ? "discard" as const
+		: blockers.every(({ kind }) => forceable(kind)) ? "force" as const : undefined;
 	return {
-		branch, tip, ...(checkout ? { path: checkout.path } : {}), prunable: !blockers.length, ignored,
-		reason: blockers.length ? blockers.join("; ") : `merged into ${merged}; ${checkout ? "clean checkout" : "no checkout"}`,
+		branch, tip, ...(checkout ? { path: checkout.path } : {}), prunable: !blockers.length, ignored, blockers,
+		...(owner ? { owner } : {}), ...(override ? { override } : {}),
+		reason: blockers.length ? blockers.map(({ text }) => text).join("; ") : `merged into ${merged}; ${checkout ? "clean checkout" : "no checkout"}`,
 	};
 }
 
@@ -158,21 +179,24 @@ export async function inspectPruneCandidates(root: string, mainCwd: string, guar
 	return items;
 }
 
-async function removeOne(root: string, mainCwd: string, reviewed: PruneItem, allowIgnored: boolean,
+async function removeOne(root: string, mainCwd: string, reviewed: PruneItem, allowIgnored: boolean, force: boolean,
 	guards: PruneGuards, run: GitRunner): Promise<PruneRemoval> {
 	const skip = (reason: string): PruneRemoval => ({ outcome: "skipped", item: reviewed, reason });
 	const fail = (reason: string): PruneRemoval => ({ outcome: "failed", item: reviewed, reason });
 	const { snap, ownership, panes } = await evidence(root, mainCwd, guards, run);
 	if (snap.branches.get(reviewed.branch) !== reviewed.tip) return skip("branch was deleted or moved since review");
 	const fresh = await classify(snap, reviewed.branch, mainCwd, ownership, panes, run, root);
-	if (!fresh.prunable) return skip(fresh.reason);
+	// Force applies only to an item reviewed as forceable, and only while no blocker of a new or hard kind appears.
+	const forced = force && reviewed.override === "force";
+	if (forced ? !fresh.blockers.every(({ kind }) => forceable(kind) && reviewed.blockers.some((item) => item.kind === kind))
+		: !fresh.prunable) return skip(fresh.reason);
 	if (fresh.path !== reviewed.path) return skip("checkout registration changed since review");
 	if (fresh.ignored.some((entry) => !allowIgnored || !reviewed.ignored.includes(entry))) return skip("ignored content was not approved or changed since review");
 	const stale = () => guards.current !== undefined && !guards.current();
 	if (fresh.path) {
 		if (stale()) return skip("session or branch changed before removal; reopen /subagent prune");
-		// Git removes ignored content without --force; the checks above approved it.
-		const removed = await run(["worktree", "remove", fresh.path], root);
+		// Git removes ignored content without --force; the checks above approved it. Force also deletes reviewed changes.
+		const removed = await run(["worktree", "remove", ...(forced ? ["--force"] : []), fresh.path], root);
 		if (removed.code !== 0) return fail(`git worktree remove failed: ${removed.stderr.trim().slice(0, 200)}`);
 		if (existsSync(fresh.path)) return fail("git worktree remove succeeded but the checkout remains");
 	}
@@ -185,13 +209,14 @@ async function removeOne(root: string, mainCwd: string, reviewed: PruneItem, all
 /**
  * Re-verify each reviewed prunable item immediately before removing its checkout, then delete its
  * branch only at the reviewed tip. Ignored entries are deleted only when `allowIgnored` and all of
- * them were in the review. Returns the repository checkouts that still exist.
+ * them were in the review. With `force`, a reviewed forceable item is removed with `--force` while
+ * every fresh blocker is forceable and of a reviewed kind. Returns the repository checkouts that still exist.
  */
 export async function removePruneCandidates(root: string, mainCwd: string, reviewed: readonly PruneItem[], allowIgnored: boolean,
-	guards: PruneGuards, run: GitRunner = runGit): Promise<{ removals: PruneRemoval[]; checkouts: string[] }> {
+	force: boolean, guards: PruneGuards, run: GitRunner = runGit): Promise<{ removals: PruneRemoval[]; checkouts: string[] }> {
 	const removals: PruneRemoval[] = [];
 	for (const item of reviewed) {
-		try { removals.push(await removeOne(root, mainCwd, item, allowIgnored, guards, run)); }
+		try { removals.push(await removeOne(root, mainCwd, item, allowIgnored, force, guards, run)); }
 		catch (error) { removals.push({ outcome: "failed", item, reason: (error instanceof Error ? error.message : String(error)).slice(0, 300) }); }
 	}
 	return { removals, checkouts: existing(await snapshot(root, mainCwd, run)) };

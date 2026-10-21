@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { inspectDiscard, primaryCheckout, removeDiscardResources, type DiscardGuards, type DiscardPlan, type DiscardResource } from "./discard.ts";
 import { utf8Prefix, type EphemeralSubagentExecutor } from "./ephemeral.ts";
 import { createChildWorktree, finalizeChildWorktree, inspectWorktreeDirty, type WorktreeInfo } from "./worktree.ts";
-import type { PruneOwnership } from "./prune.ts";
+import type { PruneOwnership, PruneRequest } from "./prune.ts";
 import { runGit } from "./git-process.ts";
 import { IntegrationGit, type StageReceipt } from "./integration-git.ts";
 import {
@@ -1013,18 +1013,22 @@ export class IsolatedRunner {
 	 * A non-terminal state owns every resource name its saved text mentions; an unreadable state owns every
 	 * name its raw text mentions, or every name when unreadable. */
 	async pruneOwnership(checkouts: readonly string[]): Promise<PruneOwnership> {
-		const owners: { label: string; text?: string }[] = [];
+		const owners: { label: string; text?: string; request?: PruneRequest }[] = [];
 		let lease: string | undefined;
+		const request = ({ state, path }: RunStateHandle, orphaned: boolean): PruneRequest => ({ id: state.request.id, name: state.request.goal,
+			status: inventoryStatus(state), directory: dirname(path), root: state.root, orphaned });
 		const orphans = checkouts[0] ? (await this.store.listOrphans(realpathSync.native(checkouts[0]))).states : [];
-		for (const { state } of orphans) {
-			if (!terminal(state)) owners.push({ label: `owned by orphaned ${state.status} request ${state.request.id}; close and delete it from /subagent`, text: JSON.stringify(state) });
+		for (const handle of orphans) {
+			const { state } = handle;
+			if (!terminal(state)) owners.push({ label: `owned by orphaned ${state.status} request ${state.request.id}; close and delete it from /subagent`, text: JSON.stringify(state), request: request(handle, true) });
 		}
 		for (const checkout of checkouts) {
 			const root = realpathSync.native(checkout);
 			if (!lease && await this.store.hasProductiveRunLease(root)) lease = `productive lease is held by a live run in ${root}`;
 			const { states, invalidIds } = await this.store.list(root);
-			for (const { state } of states) {
-				if (!terminal(state)) owners.push({ label: `owned by ${state.status} request ${state.request.id}`, text: JSON.stringify(state) });
+			for (const handle of states) {
+				const { state } = handle;
+				if (!terminal(state)) owners.push({ label: `owned by ${state.status} request ${state.request.id}`, text: JSON.stringify(state), request: request(handle, false) });
 			}
 			for (const id of invalidIds) {
 				let text: string | undefined;
@@ -1032,7 +1036,8 @@ export class IsolatedRunner {
 				owners.push({ label: `unreadable state ${id} in ${root} may own it`, text });
 			}
 		}
-		return { ...(lease ? { lease } : {}), owner: (name) => owners.find(({ text }) => text === undefined || text.includes(name))?.label };
+		return { ...(lease ? { lease } : {}), owners: (name) => owners.filter(({ text }) => text === undefined || text.includes(name))
+			.map(({ label, request }) => ({ label, ...(request ? { request } : {}) })) };
 	}
 
 	/** After pruning, reconcile aborted requests that recorded a removed resource through the guarded abort path. */

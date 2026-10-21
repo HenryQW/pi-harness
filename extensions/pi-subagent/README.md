@@ -29,9 +29,9 @@ Commands and UI are for you. Tools and the packaged skill are for Main, except `
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/subagent` | command | Browse direct and isolated work, including requests whose parent checkout was removed. Stop direct workers, inspect isolated work, send follow-ups, or delete owned isolated worktrees after confirmation. Without interactive UI, only reports. |
+| `/subagent` | command | Browse direct and isolated work, including requests whose parent checkout was removed. Stop direct workers, inspect isolated work, send follow-ups, or delete owned isolated worktrees after confirmation. **Select multiple…** applies one action to many rows. Without interactive UI, only reports. |
 | `/subagent roles` | command | List Role sources, resources, resolved model and thinking level, route errors, and file errors. Read-only; requires no Herdr pane. |
-| `/subagent prune` | command | Review remaining worker and integration branches and worktrees. Remove merged resources after confirmation. Requires a running Herdr server; without interactive UI, only reports. |
+| `/subagent prune` | command | Review remaining worker and integration branches and worktrees. Select the items to remove; merged items are selected first. Some blocked items can also be selected, after a separate confirmation. Requires a running Herdr server; without interactive UI, only reports. |
 | `/subagent recover` | command | Classify interrupted isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
 | `delegate_task` | tool | Start authorized shared-checkout work or a durable isolated checked graph. With `dryRun: true`, check the request and show the resolved plan without a launch. |
 | `subagent_status` | tool | Read saved isolated state, exact identities, failed review verdicts, and allowed continuation. Does not replay work. Supports structured output for `codemode`. |
@@ -143,6 +143,10 @@ Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs
 
 Requests whose parent checkout was removed show in the **Orphaned · parent checkout removed** group from any checkout of the same repository. Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
 
+Select **Select multiple…** to apply one action to many rows. Select a row to mark it `[x]` or clear it, or use **Select all** or **Clear**, then select **Continue**. The next menu shows only the actions that apply. **Close and delete worktrees (discard work)** applies to isolated requests. **Close/cancel-and-release ALL owned workers** applies to direct workflows that can close. Each request shows its review, then one confirmation covers all of them.
+
+The command reports the number of selected rows that the action skipped.
+
 Only shown resources can be removed; live jobs, uncertain ownership, or other Herdr panes can block removal. Agents and tools cannot trigger this action. See [Close and delete isolated worktrees](./docs/orchestration.md#close-and-delete-isolated-worktrees) for guards and partial cleanup.
 
 Inspection needs a Herdr pane, the configured `scout` Role, and the `fast` route. If it cannot start, the request stays unchanged; Main can use `subagent_status` to read state. See [Inspect and revise active work](./docs/orchestration.md#inspect-and-revise-active-work) for inspection and follow-up details.
@@ -234,6 +238,6 @@ Unverified tab allocations retain evidence but offer no Close action. Reconcile 
 
 After coordinator interruption, restart Pi and run `/subagent recover` in the canonical repository. Use `subagent_status` for exact evidence; never take over a live productive lease or replay uncertain prompts, merges, or promotion. See [Recover after interruption](./docs/orchestration.md#recover-after-interruption) and [Recovery and state](./docs/orchestration.md#recovery-and-state).
 
-Run `/subagent prune` for merged leftovers. Removing a checkout deletes its ignored files only after a separate confirmation naming those entries. Dirty, conflicted, changed, or uncertain resources require deliberate inspection. See [Prune leftover worktrees](./docs/orchestration.md#prune-leftover-worktrees) before removal.
+Run `/subagent prune` for leftovers; merged items are selected first. Removing a checkout deletes its ignored files only after a separate confirmation naming those entries. If you select an item that an unfinished request owns, the command closes and deletes that whole request after its review and confirmation. **If you select unowned work with unique commits or changes, a separate confirmation permits its permanent deletion.** Uncertain resources, such as locked checkouts or checkouts that other Herdr panes use, cannot be selected. See [Prune leftover worktrees](./docs/orchestration.md#prune-leftover-worktrees) before removal.
 
-For aborted requests with retained resources, inspect status, resolve blockers, and repeat `subagent_abort` to reconcile cleanup without replaying work. Release rejected candidates and superseded generations explicitly. The extension never pushes, opens pull requests, publishes, deploys, or silently falls back to Main. It force-deletes recoverable work only after the user confirms **Close and delete worktrees (discard work)** in `/subagent`.
+For aborted requests with retained resources, inspect status, resolve blockers, and repeat `subagent_abort` to reconcile cleanup without replaying work. Release rejected candidates and superseded generations explicitly. The extension never pushes, opens pull requests, publishes, deploys, or silently falls back to Main. It force-deletes recoverable work only after the user confirms **Close and delete worktrees (discard work)** in `/subagent` or a force removal in `/subagent prune`.
