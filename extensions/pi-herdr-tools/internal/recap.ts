@@ -4,7 +4,7 @@ import { buildMergeTranscript } from "./merge.ts";
 import { configuredTaskRoutes } from "./task-models.ts";
 
 const WIDGET_KEY = "pi-herdr-recap";
-/** oh-my-pi's default: a short look away costs no model call, and the recap is ready after a typical visit to other panes. */
+/** Long enough that a short look away costs no model call; short enough that the recap is ready after a typical visit to other panes. */
 export const RECAP_IDLE_MS = 240_000;
 const RECAP_MAX_WORDS = 40;
 const RECAP_PROMPT = `The user stepped away from this coding conversation and is returning. Write a recap of at most ${RECAP_MAX_WORDS} words in one or two plain sentences without markdown: the overall goal, the current state, then one next action. Reply with the recap only.`;
