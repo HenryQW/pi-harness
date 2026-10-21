@@ -15,7 +15,8 @@ type Prepared = Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>;
 
 const SLOT = Date.parse("2026-10-02T23:30:00Z"); // 07:30 Asia/Hong_Kong
 const agentDir = await mkdtemp(join(tmpdir(), "pi-cron-"));
-after(() => rm(agentDir, { recursive: true, force: true }));
+// Shutdown does not wait for a running check, which can still create the state lock during removal.
+after(() => rm(agentDir, { recursive: true, force: true, maxRetries: 10 }));
 
 const model = {
 	provider: "test", id: "text-model", name: "text-model", api: "anthropic-messages", baseUrl: "https://example.test",
@@ -121,12 +122,13 @@ test("a new job waits for its slot, then runs once in a persisted session with t
 		cwd: agentDir, env: { MINIFLUX_URL: "https://reader.example.org" }, promptFile,
 	}]);
 	const h = harness(async () => ({ outcome: "success", output: "Digest sent." }));
+	const home = join(agentDir, "config", "pi-cron");
+	// Hold the state lock so the baseline check is still running when the slot check is requested.
+	const release = await lock(home, { realpath: false, lockfilePath: join(home, "state.json.lock") });
 	await h.emit("session_start");
-	await h.settle();
-	assert.equal(h.prepared.length, 0, "first sighting only records a baseline");
-
 	h.setNow(SLOT + 60_000);
 	await h.emit("session_start");
+	await release();
 	await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job digest finished")));
 	assert.equal(h.prepared.length, 1);
 	const [run] = h.prepared;
@@ -354,7 +356,7 @@ test("an invalid state file shows one error across jobs and ticks", async () => 
 	await writeFile(statePath, "{");
 	const h = harness(async () => ({ outcome: "success", output: "" }));
 	await h.emit("session_start");
-	await h.settle();
+	await h.settle(() => h.notices.some((notice) => notice.includes("could not schedule")));
 	await h.emit("session_start");
 	await h.settle();
 	assert.equal(h.notices.filter((notice) => notice.includes("could not schedule")).length, 1, h.notices.join("\n"));

@@ -69,6 +69,8 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	let latestCtx: ExtensionContext | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let ticking = false;
+	// A check requested during a tick runs after it, so a session start is never skipped.
+	let tickAgain = false;
 	let running = false;
 	let lastStateError: string | undefined;
 	// Renewed on session start so a session switch in the same Pi process revives scheduling.
@@ -183,7 +185,11 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 
 	const tick = async (): Promise<void> => {
 		const signal = shutdown.signal;
-		if (ticking || !latestCtx || signal.aborted) return;
+		if (!latestCtx || signal.aborted) return;
+		if (ticking) {
+			tickAgain = true;
+			return;
+		}
 		ticking = true;
 		try {
 			const initial = loadConfig(latestCtx);
@@ -207,6 +213,10 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			}
 		} finally {
 			ticking = false;
+			if (tickAgain) {
+				tickAgain = false;
+				void tick();
+			}
 		}
 	};
 
