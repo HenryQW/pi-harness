@@ -76,7 +76,7 @@ The helper retains backups of tracked, untracked, and colliding ignored files. R
 
 ### Conflict blocks
 
-The `git_conflict` tool resolves Git conflict markers without manual marker edits. Use it for merge, rebase, or stash conflicts. The `update-from-main` and `pi-pr-update-branch` skills use it. A `resolve` call holds the pi-pr worktree lock.
+The `git_conflict` tool resolves Git conflict markers without manual marker edits. Use it for merge, rebase, or stash conflicts. The `update-from-main` and `pi-pr-update-branch` skills use it. A `resolve` call holds the pi-pr worktree lock and replaces the file in one atomic step.
 
 | Tool call | Result |
 | --- | --- |
@@ -90,7 +90,7 @@ Before it writes, the tool reads the file again and compares each block `id`. Th
 
 The tool reads the `conflict-marker-size` attribute for the marker width. It changes only UTF-8 text files of 8 MiB or less. Each side of a block must match the related Git index stage.
 
-Some files show a `note` and no blocks. These include binary and larger files, files deleted or renamed on one side, and files under an unmerged `.gitattributes`. Files with a binary or custom merge driver (also from `merge.default`), submodules, and symlinks also show a `note`. Markers out of sequence, an unclosed block, markers of another width, or a marker line that is also in a merge side give a `note`. The tool does not guess block limits. Resolve these files as a whole.
+Some files show a `note` and no blocks. These include binary and larger files, files deleted or renamed on one side, and files whose merge attributes are unmerged or differ from `HEAD`. Files with a binary or custom merge driver (also from `merge.default`), submodules, and symlinks also show a `note`. Markers out of sequence, an unclosed block, or a marker line that is also in a merge side give a `note`. The tool does not guess block limits. Resolve these files as a whole.
 
 ## Flow
 

@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
-import { lstat, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { truncateHead, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { canonicalWorktree, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
@@ -186,11 +186,16 @@ export class GitConflicts {
 		}
 		if (only !== undefined && !stages.has(only)) throw new Error(`${only} is not an unmerged path; use a path from git_conflict list`);
 		const paths = only !== undefined ? [only] : [...stages.keys()].slice(0, MAX_LIST_FILES);
-		const attributes = new Map<string, string>();
-		if (paths.length) {
-			const fields = (await runChecked(this.exec, "git", ["check-attr", "-z", "merge", "conflict-marker-size", "--", ...paths], options)).stdout.split("\0");
+		const readAttributes = async (source: string[]) => {
+			const attributes = new Map<string, string>();
+			if (!paths.length) return attributes;
+			const fields = (await runChecked(this.exec, "git", ["check-attr", ...source, "-z", "merge", "conflict-marker-size", "--", ...paths], options)).stdout.split("\0");
 			for (let index = 0; index + 2 < fields.length; index += 3) attributes.set(`${fields[index]}\0${fields[index + 1]}`, fields[index + 2]!);
-		}
+			return attributes;
+		};
+		// Git merged with HEAD's or the merged attributes; when those views differ, its markers are unknown.
+		const attributes = await readAttributes([]);
+		const headAttributes = await readAttributes(["--source=HEAD"]);
 		// An unspecified `merge` attribute uses merge.default, then the text driver. A configured
 		// driver wins over a built-in name, and check-attr prints a driver named `set` like a bare attribute.
 		const fallback = (await runChecked(this.exec, "git", ["config", "--get", "merge.default"], options, [0, 1])).stdout.trim() || "text";
@@ -208,6 +213,8 @@ export class GitConflicts {
 				: attributeDirs.some((dir) => path.startsWith(dir)) ? "is governed by an unmerged .gitattributes, so its merge attributes are unknown"
 				: !drivers.has(merge!) && (merge === "unset" || merge === "binary") ? "uses a binary merge driver, so Git kept one side without markers"
 				: drivers.has(merge!) || (merge !== "text" && merge !== "union") ? "uses a custom merge driver, so its markers are unknown"
+				: ["merge", "conflict-marker-size"].some((name) => attributes.get(`${path}\0${name}`) !== headAttributes.get(`${path}\0${name}`))
+					? "has merge attributes that differ from HEAD, so its markers are unknown"
 				: undefined;
 			return { root, path, absolute: join(root, path), stages: current, width: Number.isSafeInteger(size) && size > 0 ? size : 7, ...(refusal ? { refusal } : {}) };
 		});
@@ -286,9 +293,6 @@ export class GitConflicts {
 				if (markers.some((line) => at.has(line))) throw new WholeFileConflict(`${path} conflict block ${block.block} has a marker line that is also in a merge side; resolve it as a whole file`);
 			}
 		}
-		// Markers of another width outside blocks mean the attributes changed after the merge, or are file content.
-		const outside = plain.findIndex((line, index) => /^<{7,}(?: |$)/.test(line) && !blocks.some((block) => index >= block.start && index <= block.end));
-		if (outside >= 0) throw new WholeFileConflict(`${path} has a marker line of another width at line ${outside + 1}; resolve it as a whole file`);
 		return { text, blocks };
 	}
 
@@ -321,7 +325,15 @@ export class GitConflicts {
 		return await withWorktreeLock(cwd, () => withFileMutationQueue(absolute, async () => {
 			const text = resolveConflicts((await this.parse(entry, signal)).text, path, resolutions, entry.width);
 			signal?.throwIfAborted();
-			await writeFile(absolute, text, "utf8");
+			// Replace the file atomically so a failed write cannot truncate manual edits outside the blocks.
+			const temporary = join(dirname(absolute), `.${basename(absolute)}.git-conflict-${randomUUID()}`);
+			try {
+				await writeFile(temporary, text, { encoding: "utf8", mode: (await lstat(absolute)).mode });
+				await rename(temporary, absolute);
+			} catch (error) {
+				await rm(temporary, { force: true });
+				throw error;
+			}
 			const { blocks, note } = await summaries(async () => parseConflicts(text.split("\n"), path, entry.width));
 			return { path, resolved: resolutions.map(({ block }) => block), remaining: blocks, ...(note ? { note } : {}) };
 		}), { agentDir: this.agentDir, signal });

@@ -72,7 +72,7 @@ test("batch-resolves unmerged blocks, refuses whole-file conflicts and stale ids
 	// Staging a resolved .gitattributes can change the marker width after Git wrote the markers.
 	await writeFile(join(root, "d/.gitattributes"), "y.txt conflict-marker-size=12\n");
 	git("add", "d/.gitattributes");
-	assert.match((await conflicts.list(root, "d/y.txt")).files[0]!.note!, /^d\/y\.txt has a marker line of another width at line 1/);
+	assert.match((await conflicts.list(root, "d/y.txt")).files[0]!.note!, /^d\/y\.txt has merge attributes that differ from HEAD/);
 	await assert.rejects(conflicts.resolve(root, "p.txt", [{ block: 1, id: "0".repeat(12), side: "@ours" }]), /also in a merge side/);
 	assert.equal(listed!.blocks.length, 2);
 	const resolutions = [{ block: 1, id: listed!.blocks[0]!.id, side: "@ours" as const }, { block: 2, id: listed!.blocks[1]!.id, side: "@theirs" as const }];
