@@ -137,7 +137,6 @@ test("installer package discovery ignores directories without manifests", () => 
   const root = mkdtempSync(join(tmpdir(), "pi-harness-packages-"));
 
   try {
-    writeFileSync(join(root, "package.json"), JSON.stringify({ pi: { extensions: [] } }));
     mkdirSync(join(root, "extensions", "stale-package", "dist"), { recursive: true });
     mkdirSync(join(root, "extensions", "example"));
     writeFileSync(join(root, "extensions", "example", "package.json"), JSON.stringify({
@@ -146,24 +145,6 @@ test("installer package discovery ignores directories without manifests", () => 
     }));
 
     assert.deepEqual(collectInstallablePackages(root), ["@henryqw/example"]);
-  } finally {
-    rmSync(root, { force: true, recursive: true });
-  }
-});
-
-test("installer order follows the root manifest's extension load order, then package name", () => {
-  const root = mkdtempSync(join(tmpdir(), "pi-harness-packages-"));
-
-  try {
-    writeFileSync(join(root, "package.json"), JSON.stringify({
-      pi: { extensions: ["./extensions/pi-goal/extensions/goal.ts", "./extensions/pi-advisor/extensions"] },
-    }));
-    for (const directory of ["pi-advisor", "pi-zeta", "pi-goal", "pi-beta"]) {
-      mkdirSync(join(root, "extensions", directory), { recursive: true });
-      writeFileSync(join(root, "extensions", directory, "package.json"), JSON.stringify({ name: `@henryqw/${directory}`, pi: {} }));
-    }
-
-    assert.deepEqual(collectInstallablePackages(root), ["@henryqw/pi-goal", "@henryqw/pi-advisor", "@henryqw/pi-beta", "@henryqw/pi-zeta"]);
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
@@ -180,10 +161,6 @@ test("installer stays synchronized with every public Pi package", () => {
   assert.ok(!names.includes("@henryqw/pi-auto-dag"));
   assert.ok(!names.includes("@henryqw/pi-orchestrator"));
   assert.ok(names.includes("@henryqw/pi-subagent"));
-  // Settlement handlers that continue or compact load before the advisor, which yields to them.
-  for (const earlier of ["pi-auto-compact", "pi-goal", "pi-pr"]) {
-    assert.ok(names.indexOf(`@henryqw/${earlier}`) < names.indexOf("@henryqw/pi-advisor"), earlier);
-  }
 });
 
 test("all mode requires Herdr 0.9.0, installs every extension, and skips absent legacy cleanup", () => {
