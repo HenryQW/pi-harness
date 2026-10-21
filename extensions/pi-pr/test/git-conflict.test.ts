@@ -15,11 +15,12 @@ test("parses two-way and diff3 blocks and resolves @both and @base", () => {
 
 	// conflict-marker-size=9: seven-character markers inside the block stay content.
 	const diff3 = "<<<<<<<<< HEAD\nours\n=======\n||||||||| base\nbase\n=========\ntheirs\n>>>>>>>>> main";
-	const [withBase] = parseConflicts(diff3.split("\n"), "f");
+	const [withBase] = parseConflicts(diff3.split("\n"), "f", 9);
 	assert.deepEqual([withBase!.ours, withBase!.base], [["ours", "======="], ["base"]]);
-	assert.equal(resolveConflicts(diff3, "f", [{ block: 1, id: withBase!.id, side: "@base" }]), "base");
-	// A same-width opener inside a side makes block extents uncertain: refuse the file instead of guessing.
+	assert.equal(resolveConflicts(diff3, "f", [{ block: 1, id: withBase!.id, side: "@base" }], 9), "base");
+	// Literal same-width markers inside a side make block extents uncertain: refuse the file instead of guessing.
 	assert.throws(() => parseConflicts("<<<<<<< HEAD\n<<<<<<< literal\n=======\nb\n>>>>>>> main".split("\n"), "f"), /ambiguous conflict markers at line 2/);
+	assert.throws(() => parseConflicts("<<<<<<< HEAD\na\n=======\n>>>>>>> literal\nb\n>>>>>>> main".split("\n"), "f"), /ambiguous conflict markers at line 6/);
 });
 
 test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files without writing, and never stages", async (t) => {
@@ -29,20 +30,26 @@ test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files with
 	const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: root, env, stdio: "pipe" });
 	const file = join(root, "f.txt");
 	const write = (first: string, last: string) => writeFile(file, [first, ...Array.from({ length: 8 }, (_, i) => `ctx${i}`), last, ""].join("\n"));
+	const binary = (text: string) => writeFile(join(root, "b.bin"), `\0${text}\n`);
 	git("init", "-q", "-b", "main");
 	await write("base1", "base2");
+	await binary("base");
+	git("add", "b.bin");
 	git("add", "f.txt");
 	git("commit", "-qm", "base");
 	git("checkout", "-qb", "topic");
 	await write("topic1", "topic2");
+	await binary("topic");
 	git("commit", "-qam", "topic");
 	git("checkout", "-q", "main");
 	await write("main1", "main2");
+	await binary("main");
 	git("commit", "-qam", "main");
 	assert.throws(() => git("merge", "-q", "topic"));
 
 	const conflicts = new GitConflicts();
-	const [listed] = (await conflicts.list(root)).files;
+	const [binaryFile, listed] = (await conflicts.list(root)).files;
+	assert.deepEqual(binaryFile, { path: "b.bin", blocks: [], note: "b.bin is binary, so Git kept one side without markers; resolve it as a whole file" });
 	assert.equal(listed!.path, "f.txt");
 	assert.equal(listed!.blocks.length, 2);
 	const resolutions = [{ block: 1, id: listed!.blocks[0]!.id, side: "@ours" as const }, { block: 2, id: listed!.blocks[1]!.id, side: "@theirs" as const }];
@@ -57,9 +64,9 @@ test("batch-resolves unmerged blocks, rejects stale ids and non-UTF-8 files with
 	await assert.rejects(conflicts.resolve(root, "f.txt", resolutions), /Conflict block 1 in f\.txt changed/);
 	assert.equal(await readFile(file, "utf8"), shifted);
 
-	const fresh = (await conflicts.list(root)).files[0]!.blocks;
+	const fresh = (await conflicts.list(root, "f.txt")).files[0]!.blocks;
 	const result = await conflicts.resolve(root, "f.txt", resolutions.map((resolution, index) => ({ ...resolution, id: fresh[index]!.id })));
 	assert.deepEqual(result, { path: "f.txt", resolved: [1, 2], remaining: [] });
 	assert.equal(await readFile(file, "utf8"), ["new", "main1", ...Array.from({ length: 8 }, (_, i) => `ctx${i}`), "topic2", ""].join("\n"));
-	assert.equal(git("diff", "--name-only", "--diff-filter=U").toString(), "f.txt\n");
+	assert.equal(git("diff", "--name-only", "--diff-filter=U").toString(), "b.bin\nf.txt\n");
 });
