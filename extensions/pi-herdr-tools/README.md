@@ -1,6 +1,6 @@
 # `@henryqw/pi-herdr-tools`
 
-Clone conversations, hand off tasks, and ask side questions in Herdr. Name conversations and finish worktrees with explicit safety checks.
+Clone conversations, hand off tasks, and ask side questions in Herdr. Name conversations, see where idle conversations stopped, and finish worktrees with explicit safety checks.
 
 ## Install
 
@@ -19,7 +19,7 @@ Configure `fast` in `/task-models`.
 | --- | --- | --- |
 | [`@henryqw/pi-herdr`](https://pi.henry.wang/packages/pi-herdr) | Required | Herdr CLI access. |
 | [`@henryqw/pi-memory`](https://pi.henry.wang/extensions/pi-memory) | Improves | Keeps Main-only memory and dream advice out of side threads. |
-| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Model profiles for titles and side threads. |
+| [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Required | Model profiles for titles, idle recaps, and side threads. |
 
 ## Use
 
@@ -42,6 +42,8 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 | Rename progress and result widgets | ui | Show `renaming...`, then `renamed to <title>` for two seconds on success. |
 | First real user prompt | ui | Start titles in new, untitled conversations. |
 | `pi-herdr-rename/rename` | model task | Title model profile. |
+| Idle recap widget | ui | Show the goal, current state, and next action after four idle minutes. |
+| `pi-herdr-tools/recap` | model task | Idle recap model profile. |
 | `pi-herdr-btw/btw` | model task | Side-thread model profile. |
 | Dialog blocked status | ui | Show `Input required` in Herdr during interactive TUI dialogs. |
 
@@ -88,6 +90,12 @@ Automatic titles ignore extension-injected, empty, and image-only prompts. Expan
 
 Herdr updates the pane and sole-pane tab. Linked worktrees get semantic branches only for detached checkouts or generated `worktree/...` branches; other branches remain unchanged. For example, `Update task logic` gives `refactor/update-task-logic`. Generated worktree labels change automatically; manual `/rename` can replace custom workspace names.
 
+### Idle recaps
+
+When an agent run settles, a four-minute idle timer starts. Then the recap model reads the user and assistant text of the current branch, without tool payloads. It writes an idle recap of at most 40 words. The widget above the editor shows `↺ Recap: <text>`. The recap does not go into the model context.
+
+Idle recaps require an interactive UI. Pi does not start the timer when the editor has text. Input, a new agent run, tree navigation, `/reload`, session switch, and exit stop the timer, cancel a recap request, and remove the widget. Without new entries on the branch since the last recap, Pi does not make a new recap.
+
 ### Dialog status
 
 Status requires Herdr's installed Pi integration, `~/.pi/agent/extensions/herdr-agent-state.ts`. Select, confirm, input, editor, and custom dialogs from any package count; RPC, JSON, and print modes do not. No dialog title or content goes to Herdr.
@@ -124,7 +132,7 @@ File and fields are optional. Launch reports unknown keys and invalid values, us
 
 See [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) for profile defaults, assignments, and config errors.
 
-Side threads select the first authenticated viable route before launch. Titles use the primary route, then fallback, with configured thinking; they never substitute the current session model. An invalid title gets one repair request before fallback. Without a viable route, titles remain unchanged.
+Side threads select the first authenticated viable route before launch. Titles use the primary route, then fallback, with configured thinking; they never substitute the current session model. An invalid title gets one repair request before fallback. Without a viable route, titles remain unchanged. Idle recaps use the same route order and never substitute the current session model.
 
 ## State and storage
 
@@ -150,3 +158,5 @@ Timed-out prompts can still arrive. Check `herdr agent get` and `herdr agent rea
 After a failed primary update, the removed worktree stays removed. Correct primary-checkout changes or divergence, then run `git -C <primary-checkout> pull --ff-only`.
 
 `/rename` warns without user text. For Herdr or Git synchronization warnings, correct the problem and retry `/rename`. Newer renames silently cancel older requests.
+
+When an idle recap request fails, Pi shows a warning and does not retry. The next settled run starts a new idle timer.
