@@ -117,14 +117,14 @@ test("legacy direct recovery, history and duplicate labels retain exact records"
 		{ id: "direct-a", name: "Same", status: "recorded (not observed)", workers: [], tabs: [{ entryId: "entry-1", name: "worker", tabId: "tab-1", paneId: "pane-1", sessionFile: "/one" }, { entryId: "entry-2", name: "worker", tabId: "tab-2", paneId: "pane-2", sessionFile: "/two" }] },
 		{ id: "direct-b", name: "Same", status: "completed", workers: [], tabs: [{ entryId: "entry-3", name: "worker", tabId: "tab-3", paneId: "pane-3", sessionFile: "/three" }] },
 	] });
-	h.responses.push(h.pick("Direct · Same · recorded"), h.pick("Completed / history"), h.pick("direct-b"), h.pick("Isolated · Same"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
+	h.responses.push(h.pick("Same · recorded"), h.pick("Completed / history"), h.pick("direct-b"), h.pick("request ·"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
 	assert.match(h.notices[1]!.message, /tab-1/);
 	assert.match(h.notices[2]!.message, /tab-2/);
 	assert.match(h.notices[4]!.message, /tab-3/);
 	assert.equal(h.inspectCount, 1);
-	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Isolated")));
-	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Direct")));
+	assert.ok(h.dialogs[0]!.options!.some((label) => label === "── Isolated (1) ──"));
+	assert.ok(h.dialogs[0]!.options!.some((label) => label === "── Direct (1) ──"));
 });
 
 test("direct rows use saved references; multi-worker workflows group under one row with named details", async () => {
@@ -144,9 +144,9 @@ test("direct rows use saved references; multi-worker workflows group under one r
 		return h.pick("Back")(dialog);
 	}, h.pick("Close"));
 	await h.run();
-	const rows = h.dialogs[0]!.options!.filter((label) => label.startsWith("Direct"));
+	const rows = h.dialogs[0]!.options!.filter((label) => label.startsWith("  D"));
 	assert.equal(rows.length, 3);
-	for (const prefix of ["Direct · D1.1 · worker · Same · observed locally", "Direct · D2.1 · worker · Same · admission retained", "Direct · D3 · 3 workers · allocation unverified"]) {
+	for (const prefix of ["  D1.1 · worker · Same · observed locally", "  D2.1 · worker · Same · admission retained", "  D3 · 3 workers · allocation unverified"]) {
 		assert.ok(rows.some((label) => label.startsWith(prefix)), prefix);
 	}
 	assert.ok(rows.every((label) => !label.includes("direct-")), "opaque IDs stay in details");
@@ -167,7 +167,7 @@ test("Refresh reloads the isolated inventory for the widget as well as the picke
 
 test("inspection launches a Herdr tab without queuing a Main turn or changing work", async () => {
 	const h = harness();
-	h.responses.push(h.pick("Isolated"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
+	h.responses.push(h.pick("request ·"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
 	assert.ok(h.notices.some(({ message }) => message.includes("Status inspection D9.1 started in Herdr tab tab-request · agent status-scout")));
 	assert.equal(h.inspectCount, 1);
@@ -177,7 +177,7 @@ test("inspection launches a Herdr tab without queuing a Main turn or changing wo
 
 test("inspection does not launch after the session changes in the menu", async () => {
 	const h = harness();
-	h.responses.push(h.pick("Isolated"), (dialog) => {
+	h.responses.push(h.pick("request ·"), (dialog) => {
 		h.changeSession();
 		return dialog.options!.find((option) => option.includes("Inspect"));
 	});
@@ -188,7 +188,7 @@ test("inspection does not launch after the session changes in the menu", async (
 test("failed isolated discovery preserves direct branch recovery and invalid inventory does not suppress healthy requests", async () => {
 	const direct = [{ id: "direct", name: "Rescue", status: "recorded", workers: [], tabs: [{ entryId: "task", name: "worker", tabId: "tab", paneId: "pane", sessionFile: "/recover" }] }];
 	const failed = harness({ direct, isolatedError: new Error("outside Git") });
-	failed.responses.push(failed.pick("Direct"), failed.pick("Close"));
+	failed.responses.push(failed.pick("Rescue ·"), failed.pick("Close"));
 	await failed.run();
 	assert.ok(failed.notices.some((notice) => notice.message.includes("outside Git")));
 	assert.ok(failed.notices.some((notice) => notice.message.includes("/recover")));
@@ -201,7 +201,7 @@ test("failed isolated discovery preserves direct branch recovery and invalid inv
 
 test("drain all selected FIFO instructions before native RPC editor; cancel keeps withdrawal", async () => {
 	const h = harness({ mode: "rpc" });
-	h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["), (dialog) => { assert.equal(dialog.kind, "editor"); assert.equal(dialog.prefill, "first\n\nfirst\n\nthird"); assert.deepEqual(h.queues.get("task"), []); return undefined; });
+	h.responses.push(h.pick("request ·"), h.pick("Edit queued"), h.pick("task ·"), (dialog) => { assert.equal(dialog.kind, "editor"); assert.equal(dialog.prefill, "first\n\nfirst\n\nthird"); assert.deepEqual(h.queues.get("task"), []); return undefined; });
 	await h.run();
 	assert.deepEqual(h.queues.get("other"), ["untouched"]);
 	assert.deepEqual(h.sent, []);
@@ -209,7 +209,7 @@ test("drain all selected FIFO instructions before native RPC editor; cancel keep
 
 test("explicit replacement queues once, preserving newly appended work at the tail", async () => {
 	const h = harness();
-	h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["), (dialog) => { assert.equal(dialog.prefill, "first\n\nfirst\n\nthird"); h.queues.get("task")!.push("new work"); return "replacement"; }, h.pick("Back"), h.pick("Close"));
+	h.responses.push(h.pick("request ·"), h.pick("Edit queued"), h.pick("task ·"), (dialog) => { assert.equal(dialog.prefill, "first\n\nfirst\n\nthird"); h.queues.get("task")!.push("new work"); return "replacement"; }, h.pick("Back"), h.pick("Close"));
 	await h.run();
 	assert.deepEqual(h.queues.get("task"), ["new work", "replacement"]);
 	assert.deepEqual(h.sent, ["task:replacement"]);
@@ -217,16 +217,16 @@ test("explicit replacement queues once, preserving newly appended work at the ta
 
 test("empty drain and cancellation before withdrawal are harmless", async () => {
 	const h = harness(); h.queues.set("task", []);
-	h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["), h.pick("Back"), h.pick("Close"));
+	h.responses.push(h.pick("request ·"), h.pick("Edit queued"), h.pick("task ·"), h.pick("Back"), h.pick("Close"));
 	await h.run();
 	assert.equal(h.dialogs.filter((dialog) => dialog.kind === "editor").length, 0);
-	const next = harness(); next.responses.push(next.pick("Isolated"), next.pick("Edit queued"), undefined);
+	const next = harness(); next.responses.push(next.pick("request ·"), next.pick("Edit queued"), undefined);
 	await next.run(); assert.equal(next.queues.get("task")!.length, 3);
 });
 
 test("duplicate task labels select the intended task, and late admission refusal reopens text without retry", async () => {
 	const h = harness();
-	h.responses.push(h.pick("Isolated"), h.pick("Send follow-up"), h.pick("· other ["), () => { h.setActive(false); return "submitted"; }, (dialog) => { assert.equal(dialog.prefill, "submitted"); return undefined; });
+	h.responses.push(h.pick("request ·"), h.pick("Send follow-up"), h.pick("other ·"), () => { h.setActive(false); return "submitted"; }, (dialog) => { assert.equal(dialog.prefill, "submitted"); return undefined; });
 	await h.run();
 	assert.deepEqual(h.sent, []);
 	assert.ok(h.notices.some((notice) => notice.message.includes("Not queued")));
@@ -235,7 +235,7 @@ test("duplicate task labels select the intended task, and late admission refusal
 test("overlong combined text remains intact in the editor after refusal", async () => {
 	const h = harness(); const long = "x".repeat(20_000);
 	h.queues.set("task", [long, long]);
-	h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["),
+	h.responses.push(h.pick("request ·"), h.pick("Edit queued"), h.pick("task ·"),
 		(dialog) => { assert.equal(dialog.prefill, `${long}\n\n${long}`); return dialog.prefill; },
 		(dialog) => { assert.equal(dialog.prefill, `${long}\n\n${long}`); return undefined; });
 	await h.run(); assert.deepEqual(h.sent, []);
@@ -243,17 +243,17 @@ test("overlong combined text remains intact in the editor after refusal", async 
 
 test("changed branch, session, or shutdown across a dialog prevents drain and submission; appended entries do not", async () => {
 	for (const change of ["changeBranch", "navigateAncestor", "navigateDescendant", "changeSession", "changeFile", "shutdown"] as const) {
-		const h = harness(); h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), () => { h[change](); return "task"; });
+		const h = harness(); h.responses.push(h.pick("request ·"), h.pick("Edit queued"), () => { h[change](); return "task"; });
 		await h.run(); assert.equal(h.queues.get("task")!.length, 3); assert.deepEqual(h.sent, []);
 	}
-	const h = harness(); h.responses.push(h.pick("Isolated"), h.pick("Send follow-up"), h.pick("· task ["), () => { h.append(); return "hello"; }, h.pick("Back"), h.pick("Close"));
+	const h = harness(); h.responses.push(h.pick("request ·"), h.pick("Send follow-up"), h.pick("task ·"), () => { h.append(); return "hello"; }, h.pick("Back"), h.pick("Close"));
 	await h.run(); assert.deepEqual(h.sent, ["task:hello"]);
 });
 
 test("existing descendant of an empty branch cannot withdraw or enqueue from a stale dialog", async () => {
 	for (const action of ["Edit queued", "Send follow-up"]) {
 		const h = harness(); h.emptyBranch();
-		h.responses.push(h.pick("Isolated"), h.pick(action), () => { h.navigateDescendant(); return "task"; });
+		h.responses.push(h.pick("request ·"), h.pick(action), () => { h.navigateDescendant(); return "task"; });
 		await h.run();
 		assert.deepEqual(h.queues.get("task"), ["first", "first", "third"]);
 		assert.deepEqual(h.sent, []);
@@ -263,7 +263,7 @@ test("existing descendant of an empty branch cannot withdraw or enqueue from a s
 test("navigation after drain leaves withdrawn text unqueued", async () => {
 	for (const change of ["navigateAncestor", "navigateDescendant"] as const) {
 		const h = harness();
-		h.responses.push(h.pick("Isolated"), h.pick("Edit queued"), h.pick("· task ["), () => { h[change](); return "submitted"; });
+		h.responses.push(h.pick("request ·"), h.pick("Edit queued"), h.pick("task ·"), () => { h[change](); return "submitted"; });
 		await h.run();
 		assert.deepEqual(h.queues.get("task"), []);
 		assert.deepEqual(h.sent, []);
@@ -272,13 +272,13 @@ test("navigation after drain leaves withdrawn text unqueued", async () => {
 
 test("durable-only or other-owner requests cannot offer follow-up; task sealing before drain refuses without withdrawing", async () => {
 	const h = harness(); h.setActive(false);
-	h.responses.push(h.pick("Isolated"), (dialog) => {
+	h.responses.push(h.pick("request ·"), (dialog) => {
 		assert.ok(!dialog.options!.some((option) => option.includes("Send follow-up") || option.includes("Edit queued")));
 		return dialog.options!.find((option) => option.includes("Back"));
 	}, h.pick("Close"));
 	await h.run(); assert.equal(h.queues.get("task")!.length, 3);
 	const race = harness();
-	race.responses.push(race.pick("Isolated"), race.pick("Edit queued"), (dialog) => { race.setActive(false); return dialog.options!.find((option) => option.includes("· task [")); }, race.pick("Back"), race.pick("Close"));
+	race.responses.push(race.pick("request ·"), race.pick("Edit queued"), (dialog) => { race.setActive(false); return dialog.options!.find((option) => option.startsWith("task ·")); }, race.pick("Back"), race.pick("Close"));
 	await race.run(); assert.equal(race.queues.get("task")!.length, 3);
 	assert.ok(race.notices.some((notice) => notice.message.includes("Cannot withdraw")));
 });
@@ -313,7 +313,7 @@ test("no UI reports requests without dialogs or mutations; unknown arguments fai
 test("direct Close is exact and refuses stale branch/session/epoch dialogs", async () => {
 	for (const change of ["changeBranch", "navigateAncestor", "navigateDescendant", "changeSession", "changeFile", "shutdown", "append"] as const) {
 		const h = harness({ direct: [{ id: "owned", name: "Rescue", status: "admission retained", canClose: true, workers: [], tabs: [] }] });
-		h.responses.push(h.pick("Direct"), (dialog) => { h[change](); return h.pick("Close/cancel")(dialog); }, h.pick("Close"));
+		h.responses.push(h.pick("Rescue ·"), (dialog) => { h[change](); return h.pick("Close/cancel")(dialog); }, h.pick("Close"));
 		await h.run();
 		assert.deepEqual(h.closed, change === "append" ? ["owned"] : []);
 	}
@@ -434,7 +434,7 @@ test("isolated discard requires one explicit confirmation; cancel changes nothin
 	for (const confirmed of [false, true]) {
 		const h = harness();
 		h.confirms.push(confirmed);
-		h.responses.push(h.pick("Isolated"), h.pick("Close and delete"), h.pick("Close"));
+		h.responses.push(h.pick("request ·"), h.pick("Close and delete"), h.pick("Close"));
 		await h.run();
 		assert.deepEqual(h.discarded, confirmed ? ["request"] : []);
 		const dialogs = h.dialogs.filter((dialog) => dialog.kind === "confirm");
@@ -446,10 +446,13 @@ test("isolated discard requires one explicit confirmation; cancel changes nothin
 
 test("orphaned requests show the delete action without status or follow-up actions", async () => {
 	const h = harness({ inventory: { root: "/git", invalidIds: [], requests: [{
-		id: "orphan", name: "Lost parent", status: "aborted", orphaned: true, directory: "/state", root: "/removed", tasks: [],
+		id: "orphan", name: `Lost\nparent ${"goal ".repeat(40)}`, status: "aborted", orphaned: true, directory: "/state", root: "/removed", tasks: [],
 	}] } });
 	h.confirms.push(true);
-	h.responses.push(h.pick("Isolated · orphaned"), (dialog) => {
+	h.responses.push((dialog) => {
+		assert.deepEqual(dialog.options!.slice(0, 2), ["── Orphaned · parent checkout removed (1) ──", `  orphan · aborted · Lost parent ${"goal ".repeat(9)}go…`]);
+		return h.pick("orphan ·")(dialog);
+	}, (dialog) => {
 		assert.ok(!dialog.options!.some((label) => /Inspect|follow-up/.test(label)));
 		return h.pick("Close and delete")(dialog);
 	}, h.pick("Close"));
@@ -463,7 +466,7 @@ test("discard deletes only fully shown groups, including their full ignored-entr
 		item, { ...item, key: "hidden", ignored: ["x".repeat(16_001)] },
 	] } });
 	h.confirms.push(true);
-	h.responses.push(h.pick("Isolated"), h.pick("Close and delete"), h.pick("Close"));
+	h.responses.push(h.pick("request ·"), h.pick("Close and delete"), h.pick("Close"));
 	await h.run();
 	assert.deepEqual(h.discardedKeys, ["shown"]);
 	assert.ok(h.notices.some((notice) => notice.message.includes("+1 more not shown")));

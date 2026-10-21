@@ -101,6 +101,13 @@ export interface SubagentCommandAdapter {
 const clean = (text: string, max = 110, multiline = false): string => [...text.replace(multiline ? /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g : /[\u0000-\u001f\u007f-\u009f]/g, " ")].slice(0, max).join("");
 const ROLES_REPORT_CODE_POINTS = 16_000;
 const errorText = (error: unknown): string => clean(error instanceof Error ? error.message : String(error), 500);
+/** One-line summary of free text such as a goal; the ellipsis marks a cut. */
+const summary = (text: string, max = 60): string => {
+	const chars = [...clean(text, Number.MAX_SAFE_INTEGER).replace(/\s+/g, " ").trim()];
+	return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
+};
+// Identity and status first so clipping cuts only the goal summary.
+const isolatedLabel = ({ id, status, name }: IsolatedRequest): string => `${id} · ${status} · ${summary(name)}`;
 const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
 
@@ -162,8 +169,9 @@ function discardReview(plan: DiscardPlan) {
 
 type Choice<T> = { label: string; value: T };
 async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[]): Promise<T | undefined> {
-	// Numeric suffixes are UI-only. Never parse display text into an identity.
-	const labels = items.map((item, index) => `${clean(item.label, 145)} [${index + 1}]`);
+	// Numeric suffixes only tell duplicate labels apart. Never parse display text into an identity.
+	const clipped = items.map((item) => clean(item.label, 145));
+	const labels = clipped.map((label, index) => clipped.indexOf(label) === clipped.lastIndexOf(label) ? label : `${label} [${index + 1}]`);
 	const selected = await ctx.ui.select(title, labels);
 	const index = labels.indexOf(selected ?? "");
 	return index < 0 ? undefined : items[index]!.value;
@@ -244,7 +252,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			if (!ctx.hasUI) {
 				const inventory = await adapter.isolated(ctx.cwd, current);
 				const report = fitItems("Isolated requests (report only):", inventory.requests,
-					(request) => clean(`${request.orphaned ? "orphaned · " : ""}${request.name} · ${request.status} · ${request.id}`, 500), ROLES_REPORT_CODE_POINTS,
+					(request) => clean(`${request.orphaned ? "orphaned · " : ""}${isolatedLabel(request)}`, 500), ROLES_REPORT_CODE_POINTS,
 					"open /subagent with interactive UI to inspect them.");
 				pi.sendMessage({ customType: "pi-subagent-discard", content: `${report.text}\nUnreadable state files preserved: ${inventory.invalidIds.length}.\nRemoval requires interactive confirmation.`, display: true });
 				return;
@@ -262,19 +270,21 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct branch recovery remains available; check the canonical Git checkout/configuration.`, "warning");
 				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${JSON.stringify(id)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "close" };
+				// A header row selects Refresh; rows sort by status priority within their group.
+				const group = <T extends { status: string }>(title: string, items: readonly T[], choice: (item: T) => Choice<Selection>): Choice<Selection>[] =>
+					items.length ? [{ label: `── ${title} (${items.length}) ──`, value: { kind: "refresh" } },
+						...[...items].sort((a, b) => priority(a.status) - priority(b.status)).map(choice)] : [];
+				const requests = inventory?.requests ?? [];
+				const isolatedChoice = (request: IsolatedRequest): Choice<Selection> => ({ label: `  ${isolatedLabel(request)}`, value: { kind: "isolated", request, root: inventory!.root } });
 				const selections: Choice<Selection>[] = [
 					// One row per workflow; new records keep opaque IDs in details. Status is last so clipping preserves the reference.
-					...direct.filter((task) => history || !completed(task.status)).map((task) => ({ label: `Direct · ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct" as const, task } })),
-					...(inventory?.requests ?? []).filter((request) => request.orphaned || history || !completed(request.status) || /retained/i.test(request.status)).map((request) => ({ label: `Isolated · ${request.orphaned ? "orphaned · " : ""}${request.name} · ${request.status} · ${request.id}`, value: { kind: "isolated" as const, request, root: inventory!.root } })),
-					{ label: "Refresh", value: { kind: "refresh" as const } },
-					{ label: history ? "Active work" : "Completed / history (including retained work)", value: { kind: "history" as const } },
-					{ label: "Close", value: { kind: "close" as const } },
+					...group("Direct", direct.filter((task) => history || !completed(task.status)), (task) => ({ label: `  ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct", task } })),
+					...group("Isolated", requests.filter((request) => !request.orphaned && (history || !completed(request.status) || /retained/i.test(request.status))), isolatedChoice),
+					...group("Orphaned · parent checkout removed", requests.filter((request) => request.orphaned), isolatedChoice),
+					{ label: "Refresh", value: { kind: "refresh" } },
+					{ label: history ? "Active work" : "Completed / history (including retained work)", value: { kind: "history" } },
+					{ label: "Close", value: { kind: "close" } },
 				];
-				const taskChoices = selections.splice(0, selections.length - 3);
-				const rank = ({ value }: Choice<Selection>) => value.kind === "direct" ? priority(value.task.status)
-					: value.kind === "isolated" ? priority(value.request.status) : 3;
-				taskChoices.sort((a, b) => rank(a) - rank(b));
-				selections.unshift(...taskChoices);
 				if (!unavailable && !direct.length && !inventory?.requests.length && !inventory?.invalidIds.length) ctx.ui.notify("No direct tasks recorded on this session branch or isolated requests in this checkout. Ask Main to start delegation.", "info");
 				const selected = await choose(ctx, history ? "Subagent · completed / history" : "Subagent · current work", selections);
 				if (!valid() || !selected || selected.kind === "close") return;
@@ -325,7 +335,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 						...(eligible.length ? [{ label: "Send follow-up instructions", value: "send" as const }, { label: "Edit queued instructions (withdraw ALL pending; Cancel leaves withdrawn)", value: "edit" as const }] : []),
 						{ label: "Back / refresh", value: "back" },
 					];
-					const action = await choose(ctx, `Isolated · ${clean(request.name)} · ${request.id}`, actions);
+					const action = await choose(ctx, `${request.orphaned ? "Orphaned" : "Isolated"} · ${request.id} · ${summary(request.name)}`, actions);
 					if (!valid() || !action) return;
 					if (action === "back") break;
 					if (action === "discard") {
@@ -356,7 +366,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					}
 					const live = request.tasks.filter((task) => task.kind === "changeset" && adapter.canFollowup(root, request.id, task.id));
 					if (!live.length) { ctx.ui.notify("No locally active unsealed changeset remains. Refresh to see current status.", "warning"); continue; }
-					const task = await choose(ctx, `Select task for ${action === "edit" ? "withdrawal and edit" : "follow-up"}`, live.map((item) => ({ label: `${item.name} · ${item.status} · ${item.id}`, value: item })));
+					const task = await choose(ctx, `Select task for ${action === "edit" ? "withdrawal and edit" : "follow-up"}`, live.map((item) => ({ label: `${item.id} · ${item.status} · ${summary(item.name)}`, value: item })));
 					if (!valid() || !task) return;
 					let prefill = "";
 					if (action === "edit") {
