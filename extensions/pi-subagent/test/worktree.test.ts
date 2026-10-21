@@ -813,10 +813,12 @@ test("prune removes only a merged clean worktree and names each blocker", async 
 	assert.match(unavailable.find((item) => item.branch === owned.branch)!.reason, /^Herdr unavailable \(herdr pane list failed: server not running\); cannot prove no pane uses the checkout$/);
 });
 
-test("forced prune removes reviewed unowned unmerged or dirty work and keeps items with new or hard blockers", async (t) => {
+test("forced prune removes reviewed unowned unmerged, dirty, or merging work and keeps items with new or hard blockers", async (t) => {
 	const repo = await realpath(await initializedRepository(t));
 	const add = async (id: string) => (await createChildWorktree(repo, id))!;
-	const [unique, grown, paned, owned] = [await add("unique"), await add("grown"), await add("paned"), await add("owned")];
+	const [unique, grown, paned, owned, merging] = [await add("unique"), await add("grown"), await add("paned"), await add("owned"), await add("merging")];
+	git(repo, "branch", "side", git(repo, "commit-tree", "-p", "HEAD", "-m", "side", "HEAD^{tree}"));
+	git(merging.path, "merge", "-q", "--no-ff", "--no-commit", "-s", "ours", "side");
 	for (const worktree of [unique, grown]) {
 		await writeFile(join(worktree.path, "work.txt"), "unique\n");
 		git(worktree.path, "add", "work.txt");
@@ -827,10 +829,10 @@ test("forced prune removes reviewed unowned unmerged or dirty work and keeps ite
 	const guards: PruneGuards = { ...pruneGuards(), ownership: async () => ({ owners: (name) => name === basename(owned.branch) ? [{ label: "owned by r", request }] : [] }) };
 	const items = await inspectPruneCandidates(repo, repo, guards);
 	const item = (branch: string) => items.find((entry) => entry.branch === branch)!;
-	assert.deepEqual([unique, grown, paned, owned].map(({ branch }) => [item(branch).override, item(branch).blockers.map(({ kind }) => kind)]),
-		[["force", ["unmerged", "changes"]], ["force", ["unmerged"]], ["force", ["changes"]], ["discard", ["owner", "changes"]]]);
+	assert.deepEqual([unique, grown, paned, owned, merging].map(({ branch }) => [item(branch).override, item(branch).blockers.map(({ kind }) => kind)]),
+		[["force", ["unmerged", "changes"]], ["force", ["unmerged"]], ["force", ["changes"]], ["discard", ["owner", "changes"]], ["force", ["operation"]]]);
 	assert.deepEqual(item(owned.branch).owner, request);
-	const reviewed = [unique, grown, paned, owned].map(({ branch }) => item(branch));
+	const reviewed = [unique, grown, paned, owned, merging].map(({ branch }) => item(branch));
 	const unforced = await removePruneCandidates(repo, repo, reviewed, false, false, guards);
 	assert.ok(unforced.removals.every(({ outcome }) => outcome === "skipped"), "only an explicit force removes blocked work");
 	await writeFile(join(grown.path, "draft.txt"), "draft\n");
@@ -840,9 +842,12 @@ test("forced prune removes reviewed unowned unmerged or dirty work and keeps ite
 		["skipped", "branch has commits not in Main HEAD; checkout has tracked or untracked changes"],
 		["skipped", "checkout has tracked or untracked changes; Herdr pane w1:p1 works inside the checkout"],
 		["skipped", "owned by r; checkout has tracked or untracked changes"],
+		["removed", "Git operation in progress (MERGE_HEAD)"],
 	]);
-	assert.equal(existsSync(unique.path), false);
-	assert.equal(git(repo, "branch", "--list", unique.branch), "");
+	for (const removed of [unique, merging]) {
+		assert.equal(existsSync(removed.path), false);
+		assert.equal(git(repo, "branch", "--list", removed.branch), "");
+	}
 	for (const kept of [grown, paned, owned]) assert.equal(existsSync(kept.path), true);
 });
 
@@ -871,7 +876,7 @@ test("prune deletes ignored content only after approval", async (t) => {
 	assert.equal(existsSync(worktree.path), false);
 });
 
-test("prune blocks initialized submodules and stops when the session changes", async (t) => {
+test("prune blocks initialized submodules until forced and stops when the session changes", async (t) => {
 	const source = await initializedRepository(t);
 	const repo = await realpath(await initializedRepository(t));
 	git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "mod");
@@ -883,6 +888,14 @@ test("prune blocks initialized submodules and stops when the session changes", a
 	const module = items.find((item) => item.branch === withModule.branch)!;
 	assert.equal(module.prunable, false);
 	assert.match(module.reason, /initialized submodules; Git cannot remove it without force/);
+	assert.deepEqual([module.override, module.blockers.map(({ kind }) => kind)], ["force", ["submodules"]]);
+	const unforced = await removePruneCandidates(repo, repo, [module], false, false, pruneGuards());
+	assert.deepEqual(unforced.removals.map(({ outcome }) => outcome), ["skipped"]);
+	assert.equal(existsSync(withModule.path), true);
+	const forced = await removePruneCandidates(repo, repo, [module], false, true, pruneGuards());
+	assert.deepEqual(forced.removals.map(({ outcome, reason }) => [outcome, reason]), [["removed", module.reason]]);
+	assert.equal(existsSync(withModule.path), false);
+	assert.equal(git(repo, "branch", "--list", withModule.branch), "");
 	const item = items.find((entry) => entry.branch === plain.branch)!;
 	assert.equal(item.prunable, true);
 	const { removals } = await removePruneCandidates(repo, repo, [item], false, false, { ...pruneGuards(), current: () => false });
