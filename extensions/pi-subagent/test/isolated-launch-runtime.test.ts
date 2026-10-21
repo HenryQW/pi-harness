@@ -190,6 +190,7 @@ async function harness(t: test.TestContext) {
 			resolvedCwds.push(cwd);
 			return resolvedRoot ?? await realpath(root);
 		},
+		preflightHost: async () => { preflightOrder.push("host"); },
 		inspectMainBase: async ({ root: inspected }) => {
 			preflightOrder.push("main");
 			inspectedRoots.push(inspected);
@@ -214,8 +215,8 @@ async function harness(t: test.TestContext) {
 	};
 }
 
-async function preflight(fixture: Awaited<ReturnType<typeof harness>>, definition: ExecuteRequest) {
-	return await fixture.runtime.preflight({ request: definition, cwd: fixture.root }, operationContext());
+async function preflight(fixture: Awaited<ReturnType<typeof harness>>, definition: ExecuteRequest, dryRun?: boolean) {
+	return await fixture.runtime.preflight({ request: definition, cwd: fixture.root, ...(dryRun ? { dryRun } : {}) }, operationContext());
 }
 
 function transientPromptPath(args: readonly string[]): string {
@@ -255,7 +256,16 @@ test("preflight registers its Model Task and resolves each distinct explicit Rol
 	assert.equal(fixture.roleLaunchResolutions(), 4);
 	assert.deepEqual(fixture.resolvedCwds, [fixture.root]);
 	assert.deepEqual(fixture.inspectedRoots, [await realpath(fixture.root)]);
-	assert.deepEqual(fixture.preflightOrder, ["root", "main"]);
+	assert.deepEqual(fixture.preflightOrder, ["root", "host", "main"]);
+	assert.deepEqual(prepared.routes.map(({ role, modelClass, model, thinkingLevel }) => `${role}/${modelClass}=${model}:${thinkingLevel}`), [
+		"change author/fast=test-provider/fast-model:low",
+		"change author/frontier=test-provider/frontier-model:high",
+		"audit reviewer/balanced=test-provider/balanced-model:medium",
+		"audit reviewer/frontier=test-provider/frontier-model:high",
+	]);
+	// A dry run skips only the Herdr host preflight.
+	assert.deepEqual((await preflight(fixture, definition, true)).routes, prepared.routes);
+	assert.deepEqual(fixture.preflightOrder, ["root", "host", "main", "root", "main"]);
 });
 
 test("preflight rejects a non-canonical root before Main validation", async (t) => {

@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import { utf8Prefix, type EphemeralSubagentExecutor } from "../dist/ephemeral.js";
+import { capEphemeralSubagentOutput, utf8Prefix, type EphemeralSubagentExecutor } from "../dist/ephemeral.js";
 import type { EffectiveExecutionPolicy } from "./config.ts";
 import {
 	createCanonicalGitRootResolver,
@@ -16,7 +16,7 @@ import { HerdrHostRuntime } from "../dist/herdr-runtime.js";
 import { inspectPruneCandidates, listHerdrPanes, removePruneCandidates, type PruneGuards, type PruneItem } from "../dist/prune.js";
 import { runProcess as directRunProcess } from "../dist/process.js";
 import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../dist/launch-runtime.js";
-import { IsolatedRunner, nextIntegrationAction, type OperationContext, type RunResponse } from "../dist/runner.js";
+import { IsolatedRunner, nextIntegrationAction, type ExecutePlan, type OperationContext, type RunResponse } from "../dist/runner.js";
 import {
 	IdOnlySchema,
 	ResumeRequestParameters,
@@ -25,6 +25,7 @@ import {
 	parseIntegrationAction,
 	parseStageRequest,
 	parseIdOnly,
+	formatCheckCommand,
 	parseResumeRequest,
 	sameIdentity,
 	StatusOutputSchema,
@@ -208,7 +209,7 @@ function publicFailedCheck(evidence: CheckBatchEvidence | undefined) {
 		phase: evidence.phase,
 		identityChanged: !sameIdentity(evidence.candidate, evidence.identityAfter),
 		...(result ? {
-			command: boundedPublicText([result.command, ...result.args.map((arg) => JSON.stringify(arg))].join(" ")),
+			command: boundedPublicText(formatCheckCommand(result)),
 			code: result.code,
 			killed: result.killed,
 			...(result.stdout ? { stdout: boundedPublicText(result.stdout) } : {}),
@@ -334,6 +335,8 @@ function publicState(state: RunState, verdictMaxBytes: number, preferredTaskId?:
 				...(combinedTip ? { combinedTip } : {}),
 				...(correction ? { correction } : {}),
 				...(checks ? { checked: checks.passed, failedCheck: publicFailedCheck(checks) } : {}),
+				...(checks?.results.some((result) => result.reusedFrom) ? { reusedChecks: checks.results.flatMap((result) =>
+					result.reusedFrom ? [{ command: boundedPublicText(formatCheckCommand(result)), reusedFrom: result.reusedFrom }] : []) } : {}),
 				...(review ? { reviewed: review.passed, failedReview: publicFailedReview(review, verdictMaxBytes) } : {}),
 				...(promotion ? { promotion: promotion.status, ...(promotion.mainAfter ? { mainAfter: promotion.mainAfter } : {}),
 					...(promotion.failure ? { promotionFailure: boundedPublicText(promotion.failure) } : {}) } : {}),
@@ -469,7 +472,50 @@ function toolResult(response: RunResponse, ctx: ExtensionContext, rowsByRequest:
 	};
 }
 
+/** Bounded dry-run plan; a route missing from the coordinator report shows as unresolved. */
+export function formatExecutePlan({ request, root, main, routes }: ExecutePlan, hostChecked: boolean): { content: [{ type: "text"; text: string }]; details: unknown } {
+	const route = (role: string, modelClass: ModelClass) => {
+		const found = routes.find((candidate) => candidate.role === role && candidate.modelClass === modelClass);
+		return found ? { model: found.model, thinkingLevel: found.thinkingLevel } : undefined;
+	};
+	const label = (role: string, modelClass: ModelClass) => {
+		const resolved = route(role, modelClass);
+		return `${role} · ${modelClass} → ${resolved ? `${resolved.model} · thinking ${resolved.thinkingLevel}` : "route not reported"}`;
+	};
+	const changesets = request.tasks.some((task) => task.kind === "changeset");
+	const notChecked = [
+		...(changesets && !hostChecked ? ["Herdr host preflight (client and server versions, API schema, lsof, current workspace identity): it calls Herdr"] : []),
+		"request ID uniqueness and saved-state admission: they need the state lock",
+	];
+	const lines = [
+		`Dry run passed: isolated request ${request.id} in ${root} at Main ${main.head.slice(0, 12)} (${main.branch}). No state, worktree, Herdr tab, lease, or follow-up was created.`,
+		...request.tasks.map((task, index) => [
+			`${index + 1}. ${task.id} · ${task.kind} · ${label(task.role, task.modelClass)}`,
+			`   depends on: ${task.dependsOn.join(", ") || "none"} · context from: ${task.contextFrom.join(", ") || "none"}`,
+			...(task.kind === "changeset" ? [`   checks: ${task.checks.map(formatCheckCommand).join("; ")}`,
+				...(task.judgment ? [`   judgment: ${label(task.judgment.role, task.judgment.modelClass)}`] : [])] : []),
+		].join("\n")),
+		`Final checks: ${request.finalChecks.map(formatCheckCommand).join("; ") || "none"}`,
+		...(request.finalJudgment ? [`Final judgment: ${label(request.finalJudgment.role, request.finalJudgment.modelClass)}`] : []),
+		...notChecked.map((reason) => `Not checked: ${reason}.`),
+	];
+	return {
+		content: [{ type: "text", text: capEphemeralSubagentOutput(lines.join("\n")) }],
+		details: {
+			dryRun: true, mode: "isolated", id: request.id, root, main,
+			tasks: request.tasks.map((task) => ({ id: task.id, kind: task.kind, role: task.role, modelClass: task.modelClass,
+				...route(task.role, task.modelClass), dependsOn: task.dependsOn, contextFrom: task.contextFrom,
+				...(task.kind === "changeset" ? { checks: task.checks, ...(task.judgment ? { judgment: { ...task.judgment, ...route(task.judgment.role, task.judgment.modelClass) } } : {}) } : {}) })),
+			finalChecks: request.finalChecks,
+			...(request.finalJudgment ? { finalJudgment: { ...request.finalJudgment, ...route(request.finalJudgment.role, request.finalJudgment.modelClass) } } : {}),
+			notChecked,
+		},
+	};
+}
+
 export interface IsolatedSurface {
+	/** Dry run of execute: validates and resolves without durable state or Herdr calls. */
+	plan(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof formatExecutePlan>>;
 	execute(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string, current?: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
@@ -876,6 +922,13 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		drain(root, requestId, taskId, current) {
 			requireCurrent(current);
 			return getComponents().runner.drainFollowups(root, requestId, taskId);
+		},
+		async plan(request, signal, ctx) {
+			latestCtx = ctx;
+			latestContext();
+			const root = await lookupRoot(ctx.cwd, signal);
+			if (jobOwners.has(`${root}\0${request.id}`)) throw new Error(`Pi Subagent request ${request.id} is already active in this session runtime.`);
+			return formatExecutePlan(await getComponents().runner.plan(request, ctx.cwd, signal), false);
 		},
 		async execute(request, signal, ctx) {
 			latestCtx = ctx;

@@ -69,6 +69,7 @@ Each entry has:
 | `name` | yes | Short display name without terminal controls |
 | `task` | yes | Non-empty task packet |
 | `access` | yes | `read` or `write`; Main's honest classification, not enforced |
+| `paths` | no | Write tasks only: 1 to 32 repo-relative globs (`path.matchesGlob` syntax, such as `src/**`). The change report flags changed paths outside them. A report only, not enforced |
 | `continueFrom` | no | Direct reference such as `D7.1`; continues that finished worker's Pi session. `role` must equal the recorded Role |
 | `kind` | no | `text` only (default); direct `changeset` is rejected |
 | `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav` route |
@@ -77,6 +78,12 @@ Each entry has:
 An explicit model must support the route's thinking level. A launched child is never retried automatically after provider or process failure.
 
 Direct `changeset` is rejected; use isolated mode for checked integration. Resource validation and recursive-delegation exclusions apply to every task. A request becomes a write request when any task declares `access: "write"`.
+
+### Dry run
+
+Set `"dryRun": true` on a direct or isolated `delegate_task` request to check it without a launch. The dry run does the same checks as a launch: request shape, Role lookup, route and model with thinking level, Skills, tools, MCP allowlist, Role extensions, config, and `continueFrom` eligibility. For an isolated request, it also checks the task graph and that Main is clean and committed. If the request has a changeset task, it also checks the canonical root `package.json` test script and adds `pnpm test` to the final checks. A failed check gives the same error as a launch.
+
+The result is a bounded plan. It shows each task's Role, resolved `provider/model`, thinking level, access or kind, dependencies, and checks. An isolated plan also shows the final checks. The dry run makes no Herdr call, Herdr tab, session record, saved state, worktree, lease, checkout admission, or follow-up. The plan lists each check it cannot do without such an effect as `Not checked: <reason>`. Examples are the Herdr host preflight, checkout admission, and the stop of a continued agent.
 
 Read requests skip checkout admission and return plain text. Parallel `tasks` run concurrently up to `maxSubagents`; chains stay ordered. The extension does not enforce `read`. Results stay in request order.
 
@@ -134,17 +141,30 @@ The extension retrieves each final answer from its exact Pi session file, not it
 
 The tool returns a task ID and the first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues the result after the current turn. If Main is idle, the result starts a turn. The extension does not report a blocked, stalled, unknown, or truncated result as success.
 
-In the result, each launched worker has a line with its model, thinking level, measured task tokens, and elapsed time. For example: `✓ [1/2] Check · worker · provider/model · thinking high · 1.5k tok · 42s`. If Pi recorded no usage, the line shows `tokens unknown`. Failed and stopped workers show the usage that the extension measured until they ended. A worker that the extension skipped before launch shows no usage.
+In the result, each launched worker has a line with its model, thinking level, measured task tokens, cost, and elapsed time. For example: `✓ [1/2] Check · worker · provider/model · thinking high · 1.5k tok · $0.12 · 42s`. The first line also shows the request total, such as `total $0.12`. Unknown and zero cost are not shown. If Pi recorded no usage, the line shows `tokens unknown`. Failed and stopped workers show the usage that the extension measured until they ended. A worker that the extension skipped before launch shows no usage.
 
-The result details contain the same values in each entry as `model`, `thinkingLevel`, `tokens`, and `elapsedMs`. When the token count is unknown, `tokens` is absent. If a task fails after its worker produced text, the result keeps a bounded excerpt marked as partial output. This excerpt is never success.
+The result details contain the same values in each entry as `model`, `thinkingLevel`, `tokens`, `cost`, and `elapsedMs`, and the request total as `cost`. When a value is unknown, its field is absent. If a task fails after its worker produced text, the result keeps a bounded excerpt marked as partial output. This excerpt is never success.
 
 Every worker result delivered to Main starts with a header. The header states that the text is the output of the worker and carries no user authority. The extension inserts a backslash in text that imitates harness framing. Examples are `<system-reminder>`-style tags and lines that start with `Human:` or `Assistant:`. Nothing else changes. Isolated status and follow-up answer previews use the same header.
 
 A session switch or shutdown stops observation and preserves tab identities for recovery. To inspect exact tabs, agents, and Pi session files, open `/subagent` on the session branch. This includes tabs launched after the first. The menu has one row for each workflow.
 
-A single worker shows its reference, Role, and name (`D7.1 · worker · Search audit`). A multi-worker workflow shows its reference and worker count (`D8 · 3 workers`). When you select it, the menu lists each recorded worker by reference, Role, and name with its exact IDs. References and names help you match rows. The extension never uses them to decide ownership.
+A single worker shows its reference, Role, and name (`D7.1 · worker · Search audit`). A multi-worker workflow shows its reference and worker count (`D8 · 3 workers`). When you select it, the menu lists each recorded worker by reference, Role, and name with its exact IDs. After Main receives the result, the row shows the request cost and each worker line shows its cost. References and names help you match rows. The extension never uses them to decide ownership.
 
 Older records without saved references show their saved allocation label or exact task ID. A `recorded only` row does not prove that its workers run or finished. The menu labels locally observed work separately.
+
+### Checkout change reports
+
+For each task in a write request, the extension takes a Git snapshot of Main's checkout before the worker starts and again when the task ends (success, failure, blocked work, or stop). A snapshot contains the `HEAD` OID and `git status --porcelain=v1 -z --untracked-files=all`, with the content identity of each dirty path. The result of the task then lists:
+
+- New commits from `git rev-list before..after`, as a short OID and subject. If `HEAD` moved to a commit that does not descend from the start `HEAD`, the report says so.
+- Paths with a changed status or content, and the paths that the new commits changed. If the task declares `paths`, each changed path outside them shows `outside declared paths`.
+
+The report shows at most 10 commits and 20 paths, and it counts the omitted items. Paths outside the declaration come first. The same report is in the `checkout` field of the result details entry. The report does not enforce scope. Checkout admission blocks Main writes during a write request, so the report assigns changes to the worker. It cannot exclude changes from other processes.
+
+For a read request, the extension compares the same snapshot at launch and when each task ends. If `HEAD`, status, or dirty content changed, the result of that task shows `checkout changed during task; result may be stale`.
+
+Outside a Git repository, the extension makes no report and the task continues. If a snapshot fails, the task does not fail; the result shows `change report unavailable: <reason>` (or `stale-read check unavailable: <reason>` for a read request).
 
 ### Status widgets
 
@@ -154,13 +174,13 @@ Each direct row starts with a saved direct reference such as `D7.1`. `D7` is the
 
 A session switch can move a workflow into a session that already uses its number. In that case, the workflow gets a new number there. An existing Herdr tab keeps its original launch label.
 
-The direct widget shows the launched model, thinking level, elapsed time, and measured task tokens (`— tok` until usage is available). Failed rows show before working and completed rows. When rows overflow, `… N more` includes counts by status.
+The direct widget shows the launched model, thinking level, elapsed time, measured task tokens (`— tok` until usage is available), and cost next to the tokens (such as `$0.12`; not shown when unknown or zero). Failed rows show before working and completed rows. When rows overflow, `… N more` includes counts by status.
 
 The isolated widget shows the recorded task state and any retained workspace. It does not show reliable live model, thinking, or token readings from Herdr. Attention shows before ordinary work, and overflow uses `+N more · /subagent`. An aborted request with visible tasks has its own `request aborted` row. This row does not change the recorded statuses of the tasks.
 
 A committed worker without a checked candidate can show attention, not readiness. Status glyphs use the active TUI theme. The text also names the status without color.
 
-The direct widget and result summaries show measured tokens for the current task turn. This count adds input and output tokens from completed assistant usage records. It excludes cache-read and cache-write tokens. A continued worker counts only its new task turn. Missing usage stays unknown. This display count does not change token-limit accounting.
+The direct widget and result summaries show measured tokens for the current task turn. This count adds input and output tokens from completed assistant usage records. It excludes cache-read and cache-write tokens. A continued worker counts only its new task turn. Missing usage stays unknown. This display count does not change token-limit accounting. The cost is the sum of `usage.cost.total` from the same records, read in the same session read. Isolated task state records no usage, so isolated rows show no tokens or cost.
 
 A ready isolated candidate is **not promoted** to Main. To reload the menu and the isolated widget from saved state, choose **Refresh** in `/subagent`. Refresh does not recover or change a request. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
 
@@ -231,7 +251,7 @@ Admission and worker-wave dispatch pin Main's exact committed branch, HEAD, and 
 
 Main selects exact candidates through `subagent_stage` into an owned integration checkout in explicit order. Each stage is a committed merge of the candidate, not a mutation of Main. Conflicts retain the checkout for Main to resolve; `resolve` verifies the exact two-parent merge instead of replaying an uncertain merge. Main can explicitly run dependent tasks from an exact staged tip with `subagent_integrate advance` and stage their results afterward. Independent candidates may be staged without re-running workers.
 
-Once all selected work is staged, Main calls `subagent_integrate validate` on the exact clean combined tip. It acknowledges the durably saved validation intent and continues in the session-owned background, independent of later turn cancellation; session replacement/shutdown still cancels it. A follow-up reports completion; status remains authoritative if delivery is missed. This runs every final check, including `pnpm test`, and optional final judgment in the integration checkout before any Main mutation. A failed check/review can be followed by one Main-authored committed correction in that checkout, recorded with `correct`, then another `validate`.
+Once all selected work is staged, Main calls `subagent_integrate validate` on the exact clean combined tip. It acknowledges the durably saved validation intent and continues in the session-owned background, independent of later turn cancellation; session replacement/shutdown still cancels it. A follow-up reports completion; status remains authoritative if delivery is missed. This runs every final check, including `pnpm test`, unless [exact check reuse](#validate-and-promote) applies, and optional final judgment in the integration checkout before any Main mutation. A failed check/review can be followed by one Main-authored committed correction in that checkout, recorded with `correct`, then another `validate`.
 
 Staging, combined validation, and `promote` require clean Main at the recorded committed identity. Dirty edits block these actions even when the checked candidate stays retained. The extension never replays or merges dirty work automatically. `promote` requires exact passing combined evidence and unchanged Main and uses a guarded update to Main. Only proven promotion leads to selected-worker termination and verified cleanup. A changed candidate, integration tip, or Main identity invalidates prior evidence or blocks promotion; review accepts only exact `PASS`.
 
@@ -298,6 +318,15 @@ Use the generation's exact `combinedTip` as `expectedTip`. `advance` dispatches 
 Post-promotion cleanup handles each promoted stage separately. A blocked termination or cleanup step records its failure on that step, and cleanup continues with the other stages and then the promoted integration checkout. Clean Main at the promoted identity is a shared precondition; if Main changed, every pending step records the blocker. Dirty, untracked, or ignored files block worktree removal and stay preserved. Until every promoted termination and cleanup step completes, the request stays `needs_attention` with promotion proven, selected tasks `completed`, and not accepted, so `/subagent` lists it. Resolve the recorded blockers, then call `cleanup` again; the request becomes `completed` and accepted only after cleanup completes.
 
 Validation acknowledges only after saving the exact generation's validation intent. Checks and final judgment then run in the background. Later turn cancellation does not cancel acknowledged validation; session replacement or shutdown does. Acknowledgement is not passing evidence. Inspect status if the completion follow-up fails.
+
+Validation reuses a passed preliminary result for a final check, and does not run that check again, only when all of these conditions are true:
+
+- The candidate is staged in this generation.
+- The tree OID of the combined tip is equal to the tree OID of the candidate. This usually occurs when you stage one candidate onto unchanged pinned Main.
+- The saved preliminary checks of the candidate passed, and their `candidate` and `identityAfter` are equal to the candidate tip.
+- The preliminary result has the identical command and argv, exit code 0, and no timeout or signal.
+
+Any mismatch runs the check normally. Each reused result records `reusedFrom` with `taskId`, `attempt`, and `candidate`. Status text and the validation follow-up show each reused command. Promotion, reconciliation, and state loading accept a reused result only after they prove these conditions again from saved identities. Final judgment still runs. Reuse assumes that checks use only tracked content. Ignored files, for example `node_modules`, can be different between the worker and integration worktrees.
 
 #### Refresh
 

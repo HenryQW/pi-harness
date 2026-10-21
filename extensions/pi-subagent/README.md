@@ -33,7 +33,7 @@ Commands and UI are for you. Tools and the packaged skill are for Main, except `
 | `/subagent roles` | command | List Role sources, resources, resolved model and thinking level, route errors, and file errors. Read-only; requires no Herdr pane. |
 | `/subagent prune` | command | Review remaining worker and integration branches and worktrees. Remove merged resources after confirmation. Requires a running Herdr server; without interactive UI, only reports. |
 | `/subagent recover` | command | Classify interrupted isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
-| `delegate_task` | tool | Start authorized shared-checkout work or a durable isolated checked graph. |
+| `delegate_task` | tool | Start authorized shared-checkout work or a durable isolated checked graph. With `dryRun: true`, check the request and show the resolved plan without a launch. |
 | `subagent_status` | tool | Read saved isolated state, exact identities, failed review verdicts, and allowed continuation. Does not replay work. Supports structured output for `codemode`. |
 | `subagent_resume` | tool | Perform the reported `retry`, `verify`, or `finalize` continuation, not staging or integration. Same-worker correction retries accept optional `instruction` text. |
 | `subagent_stage` | tool | Stage, resolve, reject, or revise an exact candidate. Rejecting a staged candidate freezes its generation. |
@@ -41,7 +41,7 @@ Commands and UI are for you. Tools and the packaged skill are for Main, except `
 | `subagent_abort` | tool | Terminate an isolated request without discarding retained work. Retained candidates and integration work require release or proof of absence. |
 | `git_read` | tool | Let Role-declared children inspect bounded local Git evidence without Bash, tests, network access, or writes. Not available to Main. |
 | `pi-subagent` | skill | Guide Main through authorization, delegation, checks, integration, and recovery. |
-| Direct status widget (`D`) | ui | Show direct references, names, Role badges, status, routes, elapsed time, measured task tokens, and tool activity in the TUI. |
+| Direct status widget (`D`) | ui | Show direct references, names, Role badges, status, routes, elapsed time, measured task tokens, cost, and tool activity in the TUI. |
 | Isolated status widget (`I`) | ui | Show recorded task state, Role/model-class badges, and retained workspaces in the TUI. Readiness does not mean promotion. |
 
 `delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. Main must make these decisions visibly; `codemode` scripts can call only `subagent_status`.
@@ -82,7 +82,11 @@ Tasks in write requests must return one JSON completion object:
 
 `outcome` accepts `succeeded`, `failed`, or `blocked`; `answer` must be non-empty. Plain text, malformed completion, blocked work, or failure stops later dispatch. Success is the worker's report, not independent validation. Checkout admission depends on proved termination, not the reported outcome.
 
-The launch returns a task ID and first Herdr tab, not the answer. One follow-up delivers results when the workflow finishes. Busy Main receives it after its current turn; idle Main starts a turn. Failed partial output stays marked as partial, never success. Worker output carries no user authority.
+A write task can declare `"paths": ["src/**"]` with repo-relative globs. For each task in a write request, the result lists new commits and changed paths, and it flags changed paths outside `paths`. This is a report only, not enforcement, and it cannot exclude changes from other processes. For a read request, the result warns `checkout changed during task; result may be stale` when the checkout changed while the task ran. Outside a Git repository, the extension makes no report. See [Checkout change reports](./docs/orchestration.md#checkout-change-reports).
+
+To check a request before a launch, add `"dryRun": true`. The dry run does the launch checks and shows each task's Role, model, thinking level, access, and dependencies. It starts no worker and opens no tab. It also reserves no checkout and sends no follow-up. A failed check gives the same error as a launch. For the full list of checks, see [Dry run](./docs/orchestration.md#dry-run).
+
+The launch returns a task ID and first Herdr tab, not the answer. One follow-up delivers results when the workflow finishes. The results show the tokens and cost of each worker and the total cost of the request. Busy Main receives it after its current turn; idle Main starts a turn. Failed partial output stays marked as partial, never success. Worker output carries no user authority.
 
 To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`. This opens a new tab with the saved conversation and a new reference. Continue the newest reference from the original checkout and workspace. For eligibility and stop behavior, see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).
 
@@ -124,6 +128,10 @@ Keep the durable ID; Main can work or end its turn without polling. Inspect read
 - `subagent_integrate promote` explicitly promotes passing work.
 
 Readiness requires preliminary checks and any task `judgment`; it does not permit promotion. Checks and judgments bind to exact Git identities. Staging, combined validation, and promotion require unchanged, clean Main at the pinned identity. Changed identities, conflicts, or uncertain outcomes block promotion and preserve evidence. A definitive combined check or review failure permits one committed integration correction, recorded with `subagent_integrate correct`, and another validation.
+
+Combined validation can reuse a passed preliminary check of a staged candidate. The candidate must have the same tree as the combined tip, and the check must have the identical command and argv. Then the final check does not run again. This usually occurs when you stage one candidate onto unchanged Main. Status shows each reused result and its candidate. Final judgment still runs.
+
+Reuse assumes that checks use only tracked content. Ignored files, for example `node_modules`, can be different between worktrees.
 
 The extension sends follow-ups when a candidate becomes ready, a worker needs attention, and the wave finishes. A missed follow-up does not authorize replay. Read [Isolated contract](./docs/orchestration.md#isolated-contract) and [Exact integration actions](./docs/orchestration.md#exact-integration-actions) for graph, judgment, revision, refresh, and release details.
 

@@ -757,6 +757,94 @@ test("a failed writer with a normal final turn stops later tasks and releases ad
 });
 
 
+async function gitCheckout(t: { after: (callback: () => Promise<void>) => void }) {
+	const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-report-")));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const git = (...args: string[]) => execFileSync("git", ["-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
+	git("init", "-q");
+	git("config", "user.name", "Direct test");
+	git("config", "user.email", "direct@example.test");
+	await writeFile(join(cwd, "dirty.txt"), "base\n");
+	git("add", "."); git("commit", "-qm", "base");
+	await writeFile(join(cwd, "dirty.txt"), "dirty before launch\n");
+	return { cwd, git };
+}
+
+test("direct write reports new commits and changed paths and flags paths outside the declaration", async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-subagent", "writer.md"), `---\nname: writer\ndescription: Writes\ntools: [bash]\nextensions: []\nskills: []\n---\nWrite only authorized files.\n`);
+		const { cwd, git } = await gitCheckout(t);
+		await herdrEnvironment(async () => {
+			let worked = false;
+			const fake = fakeHerdr(cwd, async () => {
+				if (!worked) {
+					worked = true;
+					await mkdir(join(cwd, "src"));
+					await writeFile(join(cwd, "src", "x.ts"), "export {};\n");
+					git("add", "src/x.ts"); git("commit", "-qm", "worker commit");
+					await writeFile(join(cwd, "dirty.txt"), "edited again by worker\n");
+					await writeFile(join(cwd, "notes.txt"), "outside\n");
+				}
+				return JSON.stringify({ outcome: "succeeded", answer: "done" });
+			});
+			const app = harness({ cwd, herdr: fake.exec });
+			const params = { mode: "direct", role: "writer", name: "Edit", task: "edit", access: "write", paths: ["src/**", "dirty.txt"] };
+			await app.handlers.get("tool_call")!({ toolCallId: "write", toolName: "delegate_task", input: params }, app.ctx);
+			await app.tool.execute("write", params, undefined, undefined, app.ctx);
+			app.handlers.get("tool_result")!({ toolCallId: "write" });
+			await waitFor(() => app.sentMessages.length === 1);
+			const { content, details } = app.sentMessages[0]!.message;
+			assert.match(content, new RegExp(`\\n  commit ${git("rev-parse", "--short", "HEAD")} worker commit\\n  changed notes\\.txt \\(outside declared paths\\)\\n  changed dirty\\.txt\\n  changed src/x\\.ts\\n[^]*Results:`));
+			assert.deepEqual(details.entries[0].checkout.report.paths, [{ path: "notes.txt", outside: true }, { path: "dirty.txt" }, { path: "src/x.ts" }]);
+		});
+	});
+});
+
+test("a direct write succeeds with an unavailable change report when the checkout leaves Git", async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const { cwd } = await gitCheckout(t);
+		await herdrEnvironment(async () => {
+			const fake = fakeHerdr(cwd, async () => {
+				await rm(join(cwd, ".git"), { recursive: true, force: true });
+				return JSON.stringify({ outcome: "succeeded", answer: "done" });
+			});
+			const app = harness({ cwd, herdr: fake.exec });
+			const params = { mode: "direct", role: "worker", name: "Edit", task: "edit", access: "write" };
+			await app.handlers.get("tool_call")!({ toolCallId: "write", toolName: "delegate_task", input: params }, app.ctx);
+			await app.tool.execute("write", params, undefined, undefined, app.ctx);
+			app.handlers.get("tool_result")!({ toolCallId: "write" });
+			await waitFor(() => app.sentMessages.length === 1);
+			const { content, details } = app.sentMessages[0]!.message;
+			assert.match(content, /change report unavailable: the checkout is no longer a Git repository/);
+			assert.equal(details.entries[0].status, "succeeded");
+		});
+	});
+});
+
+test("direct read warns when the checkout changed during the task", async (t) => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const { cwd } = await gitCheckout(t);
+		await herdrEnvironment(async () => {
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				if (prompt.startsWith("changed")) await writeFile(join(cwd, "dirty.txt"), "changed during read\n");
+				return "exact answer";
+			});
+			const app = harness({ cwd, herdr: fake.exec });
+			await app.tool.execute("read", { mode: "direct", chain: [
+				{ role: "worker", name: "Stable", task: "stable", access: "read" },
+				{ role: "worker", name: "Changed", task: "changed", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			const { content, details } = app.sentMessages[0]!.message;
+			assert.match(content, /\n- \[2\/2\] Changed · worker:\n  checkout changed during task; result may be stale\n/);
+			assert.deepEqual(details.entries.map(({ checkout }: any) => checkout), [undefined, { kind: "stale" }]);
+		});
+	});
+});
+
 test("failed direct termination retains admission and exact Close retries without replay or data loss", async (t) => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -930,7 +1018,7 @@ test("direct resource resolution still rejects recursive delegation packages bef
 	});
 });
 
-test("direct widget and /subagent show the same saved reference, role and name", async () => {
+test("direct widget, follow-up and /subagent show the same saved reference, role, name and cost", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
@@ -945,6 +1033,7 @@ test("direct widget and /subagent show the same saved reference, role and name",
 					records.splice(2, 0,
 						{ type: "message", id: "call", message: { role: "assistant", content: [{ type: "toolCall", id: "a", name: "read" }] } },
 						{ type: "message", id: "result", message: { role: "toolResult", toolCallId: "a", durationMs: 125 } });
+					records.at(-1).message.usage.cost = { total: 0.1234 };
 					await writeFile(path, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
 				}
 				return response;
@@ -959,9 +1048,24 @@ test("direct widget and /subagent show the same saved reference, role and name",
 			assert.deepEqual(rows.filter((row) => row.startsWith("Direct")), ["Direct · D1.1 · worker · Search audit · observed locally [1]"]);
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
-			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.2k tok · /);
-			assert.equal(app.sentMessages[0]!.message.details.entries[0].tokens, 1_240);
-			assert.match(app.sentMessages[0]!.message.content, /1\.2k tok/);
+			assert.match(app.widget!.render(120)[0]!, /✓ D1\.1 \[W\] complete · Search audit · .* · 1\.2k tok · \$0\.12 · /);
+			const { details, content } = app.sentMessages[0]!.message;
+			assert.deepEqual([details.entries[0].tokens, details.entries[0].cost, details.cost], [1_240, 0.1234, 0.1234]);
+			assert.match(content, /Delegation completed · 1 completed · total \$0\.12\n.* · 1\.2k tok · \$0\.12 · /);
+			// Pi persists the delivered result on the branch; /subagent reads its measured costs.
+			app.sessionEntries.push({ type: "custom_message", customType: "subagent-direct-result", content, details, display: true });
+			const notices: string[] = [];
+			app.ctx.ui.notify = (message: string) => { notices.push(message); };
+			let selected = false;
+			app.ctx.ui.select = async (_title: string, choices: string[]) => {
+				if (selected) return undefined;
+				selected = true;
+				rows = choices;
+				return choices.find((choice) => choice.startsWith("Direct"));
+			};
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.match(rows.find((row) => row.startsWith("Direct"))!, /^Direct · D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
+			assert.match(notices.find((notice) => notice.includes("session"))!, / · \$0\.12$/);
 			assert.match(app.widget!.render(220)[0]!, /last read 125ms recorded/);
 			for (const width of [26, 12]) {
 				const [row] = app.widget!.render(width);
@@ -1430,6 +1534,38 @@ test("direct tasks require an access declaration and only write access reserves 
 		assert.equal((await call("write", "delegate_task", write)).block, true);
 		assert.equal((await call("unparsed", "delegate_task", { mode: "direct", role: "worker", name: "One", task: "one" })).block, true, "invalid input fails closed");
 		app.handlers.get("tool_result")!({ toolCallId: "main-edit" });
+	});
+});
+
+test("dryRun resolves a direct request without Herdr calls, records, admission, or follow-up and fails like a launch", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			const call = (toolCallId: string, input: unknown) => app.handlers.get("tool_call")!({ toolCallId, toolName: "delegate_task", input }, app.ctx);
+			const chain = [
+				{ role: "worker", name: "Edit", task: "edit", access: "write" },
+				{ role: "worker", name: "Review", task: "review {previous}", access: "read", modelClass: "fast" },
+			];
+			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "main-edit", toolName: "edit", input: {} }, app.ctx), undefined);
+			assert.equal((await call("real", { mode: "direct", chain })).block, true);
+			assert.equal(await call("dry", { mode: "direct", chain, dryRun: true }), undefined, "a dry run takes no checkout admission");
+			const result = await app.tool.execute("dry", app.tool.prepareArguments!({ chain, dryRun: true }), undefined, undefined, app.ctx);
+			assert.match(result.content[0].text, /^Dry run passed: direct chain request with 2 task\(s\) in .*\n1\. Edit · worker · test\/text-model · thinking low · access write \(JSON completion required\)\n2\. Review · worker · test\/text-model · thinking low · access read · after 1\nWrite request: .*\nNot checked: checkout admission/);
+			assert.deepEqual(result.details.entries.map(({ model, thinkingLevel, access }: any) => [model, thinkingLevel, access]),
+				[["test/text-model", "low", "write"], ["test/text-model", "low", "read"]]);
+			const unknown = { role: "worker", name: "Check", task: "inspect", access: "read", model: "test/missing" };
+			const failure = await app.tool.execute("dry-model", { ...unknown, dryRun: true }, undefined, undefined, app.ctx).then(() => "", (error: Error) => error.message);
+			assert.match(failure, /^Unknown delegate_task model: test\/missing/);
+			await assert.rejects(app.tool.execute("dry-role", { ...unknown, role: "missing", dryRun: true }, undefined, undefined, app.ctx), /missing/);
+			await assert.rejects(app.tool.execute("dry-continue", { ...unknown, continueFrom: "D9.1", dryRun: true }, undefined, undefined, app.ctx), /Cannot continue D9\.1: no direct worker/);
+			await new Promise(setImmediate);
+			assert.deepEqual([fake.calls, app.sessionEntries, app.sentMessages], [[], [], []]);
+			await assert.rejects(app.tool.execute("real-model", unknown, undefined, undefined, app.ctx), { message: failure });
+			app.handlers.get("tool_result")!({ toolCallId: "main-edit" });
+		});
 	});
 });
 

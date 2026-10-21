@@ -6,7 +6,7 @@ import { CheckedGitRuntime } from "./git-runtime.ts";
 import { createChildWorktree, inspectWorktreeDirty, OWNED_BRANCH_PATTERN, WORKTREES_DIRNAME, WorktreeSetupError, type WorktreeInfo } from "./worktree.ts";
 import {
 	checkBatchPasses, reviewEvidencePasses, sameIdentity, type CheckBatchEvidence,
-	type CheckCommand, type ReviewEvidence, type WorkspaceIdentity,
+	type CheckCommand, type IntegrationCandidate, type ReviewEvidence, type WorkspaceIdentity,
 } from "./schema.ts";
 
 // The caller persists allocation intent before add, each stage intent before merge, and
@@ -301,6 +301,8 @@ export class IntegrationGit {
 	async promote(input: {
 		root: string; integration: WorktreeInfo; base: WorkspaceIdentity; stages: readonly StageReceipt[];
 		checks: CheckBatchEvidence; commands: readonly CheckCommand[];
+		/** Staged candidates that may supply reused final results; omitted accepts no reuse. */
+		sources?: readonly IntegrationCandidate[];
 		review?: ReviewEvidence; criterion?: string;
 		correction?: { from: WorkspaceIdentity; to: WorkspaceIdentity };
 	}, signal: AbortSignal): Promise<GitOutcome<WorkspaceIdentity>> {
@@ -308,7 +310,8 @@ export class IntegrationGit {
 		if (!stages.length) return { outcome: "blocked", failure: "No worker stages to promote." };
 		const tip = input.correction ? (await this.inspectCorrection(root, integration, base, stages, input.correction.from, input.correction.to, signal), input.correction.to)
 			: await this.inspectCombined(root, integration, base, stages, signal);
-		if (input.checks.phase !== "final" || !checkBatchPasses(input.checks, input.commands, tip)
+		const sources = (input.sources ?? []).filter((source) => stages.some((stage) => sameIdentity(stage.worker, source.tip)));
+		if (input.checks.phase !== "final" || !checkBatchPasses(input.checks, input.commands, tip, sources)
 			|| (input.criterion !== undefined && !reviewEvidencePasses(input.review, "final", input.criterion, base, tip))
 			|| (input.criterion === undefined && input.review !== undefined)) {
 			return { outcome: "blocked", failure: "Exact combined-tip final checks/review evidence is missing or failed." };
