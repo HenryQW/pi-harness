@@ -200,6 +200,7 @@ function harness(options: {
 	createWorkPublisher?: ExtensionDependencies["createWorkPublisher"];
 	syncLocalHead?: ExtensionDependencies["syncLocalHead"];
 	loadNamedPullRequest?: ExtensionDependencies["loadNamedPullRequest"];
+	readRulesetBypass?: ExtensionDependencies["readRulesetBypass"];
 	policy?: Partial<PrPolicy>;
 	policyIssues?: ConfigIssue[];
 	isIdle?: () => boolean;
@@ -246,6 +247,7 @@ function harness(options: {
 		createWorkPublisher: options.createWorkPublisher,
 		syncLocalHead: options.syncLocalHead,
 		loadNamedPullRequest: options.loadNamedPullRequest,
+		readRulesetBypass: options.readRulesetBypass,
 		refreshDelayMs: 0,
 		loadPrPolicy: () => ({ status: "ok", source: "missing", value: { ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ...options.policy }, issues: options.policyIssues ?? [] }),
 		needsFeedbackAttention: async () => false,
@@ -1525,11 +1527,15 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	const head = "b".repeat(40);
 	const current = currentPullRequest();
 	let pendingReads = 1;
+	let reviewRequired = false;
 	const named = (): NamedPullRequest => ({
 		id: current.id, number: 42, url: current.url, host: "github.com", lifecycle: "open",
-		conditions: { ...current.conditions, mergeability: pendingReads-- > 0 ? "pending" : "known" },
+		conditions: { ...current.conditions, mergeability: pendingReads-- > 0 ? "pending" : "known",
+			...(reviewRequired ? { review: "pending", policy: "pending" } as const : {}) },
 		base: current.base, head: current.head,
-		mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", failingChecks: [], pendingChecks: [],
+		mergeable: "MERGEABLE", mergeStateStatus: reviewRequired ? "BLOCKED" : "CLEAN",
+		reviewDecision: reviewRequired ? "REVIEW_REQUIRED" : null,
+		checks: [{ name: "test", outcome: "success" }],
 		unresolvedThreads: { blocking: 0, other: 1 },
 	});
 	const app = harness({
@@ -1537,6 +1543,10 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 		async loadNamedPullRequest(_pi, context, number) {
 			assert.deepEqual([number, context.codexReview], [42, false]);
 			return named();
+		},
+		async readRulesetBypass() {
+			assert.ok(reviewRequired, "rulesets are read only for a bypass candidate");
+			return { rulesets: [{ id: 25064846, name: "main: require approval", currentUserCanBypass: "pull_requests_only", allowedMergeMethods: ["squash"] }], requiredChecks: ["test"] };
 		},
 		exec(command, args) {
 			if (command !== "gh" || !args.some((arg) => arg.includes("mergePullRequest("))) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
@@ -1570,6 +1580,15 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	assert.equal(app.execCalls.length, 1);
 	assert.ok(app.execCalls[0]!.args.includes(`expectedHeadOid=${head}`));
 	assert.ok(app.execCalls[0]!.args.includes("mergeMethod=SQUASH"));
+
+	// A same-author PR needs the ruleset bypass, and the confirmation names it.
+	reviewRequired = true;
+	const bypassed = await app.callTool("pi_pr_merge", { number: 42, headOid: head }, ctx);
+	assert.equal((bypassed.details as { merged: boolean }).merged, true);
+	assert.equal(confirmations.at(-1), `Merge PR #42?\n${current.url.href}\nHead ${head.slice(0, 12)} into main with squash.\n` +
+		"Uses the ruleset bypass for ruleset 25064846 (required review pending; merge policy not satisfied).");
+	assert.equal(app.execCalls.length, 2);
+	assert.ok(app.execCalls[1]!.args.includes(`expectedHeadOid=${head}`));
 });
 
 test("feedback record, commit, resolution, and finalization require no UI confirmation", async () => {

@@ -100,7 +100,7 @@ A named pull request is one pull request in the `origin` repository, addressed b
 
 | Tool call | Result |
 | --- | --- |
-| `pi_pr_status` `{ number }` | Returns `verdict` (`ready`, `wait`, or `block`), `reasons`, `number`, `url`, `lifecycle`, `baseRef`, full `headOid`, `mergeable`, `mergeStateStatus`, `failingChecks`, `pendingChecks`, `codex`, and `unresolvedThreads`. |
+| `pi_pr_status` `{ number }` | Returns `verdict` (`ready`, `wait`, or `block`), `reasons`, `number`, `url`, `lifecycle`, `baseRef`, full `headOid`, `mergeable`, `mergeStateStatus`, `reviewDecision`, `failingChecks`, `pendingChecks`, `codex`, and `unresolvedThreads`. A ruleset bypass adds `bypass`. |
 | `pi_pr_merge` `{ number, headOid }` | Returns `merged: true` with `headOid` and `mergeMethod`, or `merged: false` with `reason` and the fresh `status`. |
 
 The merge bar uses these reasons:
@@ -110,14 +110,25 @@ The merge bar uses these reasons:
 - `block`: unresolved Codex P0/P1 threads remain. `unresolvedThreads.blocking` counts them. `unresolvedThreads.other` counts the other unresolved threads, which do not block.
 - `wait`: mergeability stays unknown after three re-reads five seconds apart, CI is running, or the Codex review of the current head did not finish.
 - `block`: the merge policy is not clean and no wait reason applies.
+- `ready` through a ruleset bypass: see [Ruleset bypass](#ruleset-bypass).
 
 Any block reason gives `block`. If no block reason applies, any wait reason gives `wait`. If no reason applies, the verdict is `ready`. `codex` is `disabled` unless `codexReview` is `true`; then the [Codex review gate](#codex-review-gate) rules apply.
 
-`pi_pr_merge` checks readiness again. It refuses unless the verdict is `ready` and the live head equals `headOid`. Without an interactive UI, it refuses and the PR stays unchanged. Otherwise, it asks `Merge PR #<number>?` with the URL, the short head OID, the base ref, and `mergeMethod`. If you decline, the PR stays unchanged. After you confirm, it checks readiness, PR identity, head, and base OID again, then merges the exact head through GitHub.
+`pi_pr_merge` checks readiness again. It refuses unless the verdict is `ready` and the live head equals `headOid`. Without an interactive UI, it refuses and the PR stays unchanged. Otherwise, it asks `Merge PR #<number>?` with the URL, the short head OID, the base ref, `mergeMethod`, and any ruleset bypass. If you decline, the PR stays unchanged. After you confirm, it checks readiness, PR identity, head, base OID, and the bypass again, then merges the exact head through GitHub.
 
 `pi_pr_merge` does not do the local merge safety checks of `/pr`, because your checkout is not the PR branch. It does not delete branches or worktrees, enable automatic merging, or use a merge queue.
 
 For a manager workflow, each worker agent checks its own PR with `pi_pr_status` and reports the verdict and `headOid`. The manager session checks the PR again with `pi_pr_status`. Then it calls `pi_pr_merge` with that `headOid`, and you confirm in the manager's own pane.
+
+### Ruleset bypass
+
+A pending required review or a `BLOCKED` merge policy can block the PR when no other reason applies. Then the tools read the rulesets that apply to the base branch. They give `ready` with `bypass` only when all of these conditions are true:
+
+- Every ruleset that applies to the base branch lets the current user bypass it.
+- Each check that these rulesets require passed on the exact head. A missing or running check gives `wait`, and a failed check gives `block`.
+- Every ruleset allows the configured `mergeMethod`. Required linear history does not allow `merge`.
+
+Checks match the required context by check name only. The tools do not read classic branch protection, so this check does not bypass it. The confirmation names the bypassed ruleset IDs. GitHub enforces the bypass when the merge occurs.
 
 ## Flow
 

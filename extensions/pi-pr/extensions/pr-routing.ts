@@ -96,7 +96,21 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 	return "merge";
 }
 
-export type NamedPullRequestVerdict = { verdict: "ready" | "wait" | "block"; reasons: string[] };
+export type NamedPullRequestVerdict = {
+	verdict: "ready" | "wait" | "block";
+	reasons: string[];
+	/** Set when `ready` depends on the current user's bypass of these rulesets. */
+	bypass?: { rulesets: Array<{ id: number; name: string | null }>; reason: string };
+};
+export type CheckOutcome = "success" | "failure" | "running";
+/** Rulesets that apply to the base branch and the check contexts they require. */
+export type RulesetBypassEvidence = {
+	/** `currentUserCanBypass` is null when unknown; `allowedMergeMethods` is null without a merge method limit. */
+	rulesets: Array<{ id: number; name: string | null; currentUserCanBypass: string | null; allowedMergeMethods: string[] | null }>;
+	requiredChecks: string[];
+};
+const BYPASS_GRANTS = new Set(["always", "pull_requests_only", "exempt"]);
+const POLICY_REASONS = new Set(["required review pending", "merge policy not satisfied"]);
 
 /**
  * Merge bar for a named pull request: any block reason blocks, then any wait reason waits.
@@ -124,6 +138,46 @@ export function deriveNamedPullRequestVerdict(
 	if (conditions.policy === "pending" && !wait.length) block.push("merge policy not satisfied");
 	if (block.length) return { verdict: "block", reasons: [...block, ...wait] };
 	return wait.length ? { verdict: "wait", reasons: wait } : { verdict: "ready", reasons: [] };
+}
+
+/** Only a required review or a BLOCKED merge policy remains, so a ruleset bypass could make the PR ready. */
+export function isRulesetBypassCandidate(verdict: NamedPullRequestVerdict, mergeStateStatus: string): boolean {
+	return verdict.verdict === "block" && verdict.reasons.every((reason) => POLICY_REASONS.has(reason)) &&
+		(!verdict.reasons.includes("merge policy not satisfied") || mergeStateStatus === "BLOCKED");
+}
+
+/**
+ * Re-derive a bypass candidate's verdict. A bypass needs every applicable ruleset to be bypassable and to
+ * allow `mergeMethod`. It also skips the rulesets' required checks, so each must pass on the exact head.
+ */
+export function applyRulesetBypass(
+	verdict: NamedPullRequestVerdict,
+	evidence: RulesetBypassEvidence,
+	checks: Array<{ name: string; outcome: CheckOutcome }>,
+	mergeMethod: string,
+): NamedPullRequestVerdict {
+	const block: string[] = [];
+	const wait: string[] = [];
+	if (!evidence.rulesets.length) block.push("no ruleset applies to the base branch, so no bypass is available");
+	for (const ruleset of evidence.rulesets) {
+		if (!BYPASS_GRANTS.has(ruleset.currentUserCanBypass ?? "")) block.push(`ruleset ${ruleset.id} cannot be bypassed by the current user`);
+		if (ruleset.allowedMergeMethods && !ruleset.allowedMergeMethods.includes(mergeMethod)) {
+			block.push(`ruleset ${ruleset.id} does not allow merge method ${mergeMethod}`);
+		}
+	}
+	for (const context of evidence.requiredChecks) {
+		const outcomes = checks.filter(({ name }) => name === context).map(({ outcome }) => outcome);
+		if (outcomes.includes("failure")) block.push(`required check ${context} failed`);
+		else if (!outcomes.length || outcomes.includes("running")) wait.push(`required check ${context} has not passed`);
+	}
+	if (block.length) return { verdict: "block", reasons: [...verdict.reasons, ...block, ...wait] };
+	if (wait.length) return { verdict: "wait", reasons: wait };
+	const reason = verdict.reasons.join("; ");
+	return {
+		verdict: "ready",
+		reasons: [`merge uses ruleset bypass: ${reason}`],
+		bypass: { rulesets: evidence.rulesets.map(({ id, name }) => ({ id, name })), reason },
+	};
 }
 
 export function isPullRequestCreationEligible(branch: BranchCreationState): boolean {

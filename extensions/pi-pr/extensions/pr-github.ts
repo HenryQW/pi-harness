@@ -12,6 +12,7 @@ import {
 	type GitWorktreeState,
 } from "./pr-execution.ts";
 import type {
+	CheckOutcome,
 	CiStatus,
 	CodexReview,
 	LocalMergeSafety,
@@ -21,6 +22,7 @@ import type {
 	PullRequestLifecycle,
 	PullRequestTarget,
 	ReviewReadiness,
+	RulesetBypassEvidence,
 } from "./pr-routing.ts";
 
 const EXEC_TIMEOUT_MS = 10_000;
@@ -41,6 +43,8 @@ const CODEX_SUMMARY_MARKER = "<!-- codex-pull-request-review-summary -->";
 const CODEX_SUMMARY_ROW = /^\|[^|\n]*\*\*Code Review\*\*[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,64})`\s*\|/gim;
 const BASE_REF_QUERY = "query($owner:String!,$name:String!,$qualifiedName:String!){repository(owner:$owner,name:$name){nameWithOwner ref(qualifiedName:$qualifiedName){name target{oid}}}}";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+/** The repository ruleset endpoint reports `current_user_can_bypass` only for these sources. */
+const BYPASS_RULESET_SOURCES = new Set(["Repository", "Organization"]);
 const FAILED_CHECK_STATES = new Set([
 	"ACTION_REQUIRED",
 	"CANCELLED",
@@ -111,8 +115,8 @@ export type CurrentPullRequestDiscovery = PullRequestDiscovery<CurrentPullReques
 export type NamedPullRequest = Pick<CurrentPullRequest, "id" | "number" | "url" | "host" | "lifecycle" | "conditions" | "base" | "head"> & {
 	mergeable: ListedPullRequest["mergeable"];
 	mergeStateStatus: ListedPullRequest["mergeStateStatus"];
-	failingChecks: string[];
-	pendingChecks: string[];
+	reviewDecision: ListedPullRequest["reviewDecision"];
+	checks: Array<{ name: string; outcome: CheckOutcome }>;
 	/** `blocking` counts unresolved Codex P0/P1 threads; `other` counts the remaining unresolved threads. */
 	unresolvedThreads: { blocking: number; other: number };
 };
@@ -1672,8 +1676,6 @@ export async function loadNamedPullRequest(
 		normalizeRepository(candidate.base.repository) !== normalizeRepository(authority.repository)
 	) fail("Load named pull request", "response does not match the origin repository");
 	const read = await readPullRequestConditions(pi, context, candidate, true);
-	const failing = candidate.checkStates.filter(({ state }) => FAILED_CHECK_STATES.has(state));
-	const pending = candidate.checkStates.filter(({ state }) => !FAILED_CHECK_STATES.has(state) && !SUCCESSFUL_CHECK_STATES.has(state));
 	return {
 		id: candidate.id,
 		number: candidate.number,
@@ -1685,13 +1687,69 @@ export async function loadNamedPullRequest(
 		head: candidate.head,
 		mergeable: candidate.mergeable,
 		mergeStateStatus: candidate.mergeStateStatus,
-		failingChecks: failing.map(({ name }) => name),
-		pendingChecks: pending.map(({ name }) => name),
+		reviewDecision: candidate.reviewDecision,
+		checks: candidate.checkStates.map(({ name, state }) => ({ name, outcome: checkOutcome(state) })),
 		unresolvedThreads: {
 			blocking: read.codexFindings,
 			other: read.conditions.unresolvedThreads - read.codexFindings,
 		},
 	};
+}
+
+/**
+ * Read the rulesets that apply to the named PR's base branch, for a bypass candidate only. Classic branch
+ * protection is not read, so a block it causes stays a block. `gh pr merge --admin` sends the same
+ * `mergePullRequest` mutation; GitHub enforces the bypass on the server.
+ */
+export async function readRulesetBypass(
+	pi: Pick<ExtensionAPI, "exec">,
+	context: PullRequestLoadContext,
+	pullRequest: Pick<NamedPullRequest, "host" | "base">,
+): Promise<RulesetBypassEvidence> {
+	const action = "Read base branch rules";
+	const { host, base: { repository, ref } } = pullRequest;
+	const branch = ref.split("/").map(encodeURIComponent).join("/");
+	const pages = parseJson((await execute(pi, context, action, "gh", [
+		"api", "--hostname", host, "--paginate", "--slurp", `repos/${repository}/rules/branches/${branch}?per_page=100`,
+	])).stdout, action);
+	if (!Array.isArray(pages) || !pages.every(Array.isArray)) fail(action, "invalid GitHub CLI output");
+	const rulesets = new Map<number, { source: string; allowed: string[] | null }>();
+	const requiredChecks = new Set<string>();
+	for (const rule of pages.flat() as unknown[]) {
+		if (
+			!isRecord(rule) || typeof rule.type !== "string" || typeof rule.ruleset_source_type !== "string" ||
+			typeof rule.ruleset_id !== "number" || !Number.isSafeInteger(rule.ruleset_id) || rule.ruleset_id <= 0 ||
+			(rule.parameters !== undefined && !isRecord(rule.parameters))
+		) fail(action, "invalid GitHub CLI output");
+		const parameters = isRecord(rule.parameters) ? rule.parameters : {};
+		const ruleset = rulesets.get(rule.ruleset_id) ?? { source: rule.ruleset_source_type, allowed: null };
+		rulesets.set(rule.ruleset_id, ruleset);
+		// A bypass also skips required linear history, so a merge commit must not use it.
+		const methods = rule.type === "pull_request" ? parameters.allowed_merge_methods
+			: rule.type === "required_linear_history" ? ["squash", "rebase"] : undefined;
+		if (methods !== undefined) {
+			if (!Array.isArray(methods) || !methods.every((method) => typeof method === "string")) fail(action, "invalid allowed_merge_methods");
+			ruleset.allowed = (ruleset.allowed ?? methods).filter((method) => methods.includes(method));
+		}
+		if (rule.type === "required_status_checks") {
+			const checks = parameters.required_status_checks;
+			if (!Array.isArray(checks)) fail(action, "invalid required_status_checks");
+			for (const check of checks) {
+				requiredChecks.add(text(isRecord(check) ? check.context : undefined, action, "required status check context"));
+			}
+		}
+	}
+	const read = [...rulesets].map(async ([id, { source, allowed }]) => {
+		const unknown = { id, name: null, currentUserCanBypass: null, allowedMergeMethods: allowed };
+		if (!BYPASS_RULESET_SOURCES.has(source)) return unknown;
+		const value = parseJson((await execute(pi, context, "Read ruleset", "gh", [
+			"api", "--hostname", host, `repos/${repository}/rulesets/${id}`,
+		])).stdout, "Read ruleset");
+		if (!isRecord(value) || value.id !== id || typeof value.name !== "string") fail("Read ruleset", "invalid GitHub CLI output");
+		const bypass = value.current_user_can_bypass;
+		return { ...unknown, name: value.name, currentUserCanBypass: typeof bypass === "string" ? bypass : null };
+	});
+	return { rulesets: await Promise.all(read), requiredChecks: [...requiredChecks] };
 }
 
 async function loadObservedPullRequest(

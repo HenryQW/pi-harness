@@ -12,6 +12,7 @@ import {
 	preflightPullRequestCreation,
 	PullRequestLoadError,
 	readPullRequestBaseRefOid,
+	readRulesetBypass,
 } from "../extensions/pr-github.ts";
 
 async function loadCurrentPullRequest(
@@ -22,7 +23,13 @@ async function loadCurrentPullRequest(
 	if (discovery.kind === "none" || discovery.kind === "inactive") return null;
 	throw new PullRequestLoadError(`Discovery blocked: ${discovery.issue.kind}`);
 }
-import { deriveNamedPullRequestVerdict, derivePullRequestNextStep, type PullRequestTarget } from "../extensions/pr-routing.ts";
+import {
+	applyRulesetBypass,
+	deriveNamedPullRequestVerdict,
+	derivePullRequestNextStep,
+	isRulesetBypassCandidate,
+	type PullRequestTarget,
+} from "../extensions/pr-routing.ts";
 
 const LOCAL_HEAD = "a".repeat(40);
 const REMOTE_HEAD = "b".repeat(40);
@@ -82,6 +89,8 @@ type HarnessOptions = {
 	repositoryApiResults?: Record<string, ReturnType<typeof result>>;
 	codexReactions?: unknown[];
 	codexComments?: unknown[];
+	branchRules?: unknown[];
+	rulesets?: Record<string, unknown>;
 };
 
 const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed });
@@ -374,6 +383,11 @@ function harness(options: HarnessOptions = {}) {
 				if (options.codexComments && endpoint === "repos/acme/project/issues/42/comments?per_page=100") {
 					return result(JSON.stringify([options.codexComments]));
 				}
+				if (options.branchRules && endpoint === "repos/acme/project/rules/branches/main?per_page=100") {
+					return result(JSON.stringify([options.branchRules]));
+				}
+				const ruleset = options.rulesets?.[endpoint];
+				if (ruleset) return result(JSON.stringify(ruleset));
 				if (/^repos\/[^/]+\/[^/]+$/.test(endpoint)) {
 					const configuredResult = options.repositoryApiResults?.[endpoint];
 					if (configuredResult) return configuredResult;
@@ -2317,6 +2331,39 @@ test("derives the opt-in Codex review gate from reactions, the current-head summ
 	await assert.rejects(loadCurrentPullRequest(invalid.pi, invalid.context), /Read Codex review reactions failed: invalid GitHub CLI output/);
 });
 
+test("a named PR blocked only by required review is ready through a bypassable ruleset with passed required checks", async () => {
+	const rules = [
+		{ type: "pull_request", ruleset_id: 25064846, ruleset_source_type: "Repository", parameters: { required_approving_review_count: 1, allowed_merge_methods: ["squash"] } },
+		{ type: "required_status_checks", ruleset_id: 25064846, ruleset_source_type: "Repository", parameters: { required_status_checks: [{ context: "test", integration_id: 15368 }], strict_required_status_checks_policy: false } },
+		{ type: "required_linear_history", ruleset_id: 25064846, ruleset_source_type: "Repository" },
+	];
+	const ruleset = (bypass: string) => ({ "repos/acme/project/rulesets/25064846": { id: 25064846, name: "main: require approval", current_user_can_bypass: bypass } });
+	const cases = [
+		{ name: "bypassable ruleset with passed check", bypass: "pull_requests_only", checks: [actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "ready" },
+		{ name: "required check that never started", bypass: "pull_requests_only", checks: [actionsCheck({ name: "lint", conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "wait" },
+		{ name: "ruleset without bypass", bypass: "never", checks: [actionsCheck({ conclusion: "SUCCESS", status: "COMPLETED" })], verdict: "block" },
+	];
+	for (const { name, bypass, checks, verdict } of cases) {
+		const { pi, context } = harness({
+			pushUrls: { origin: "git@github.com:acme/project.git" },
+			candidates: [pullRequest({ reviewDecision: "REVIEW_REQUIRED", mergeStateStatus: "BLOCKED", statusCheckRollup: checks })],
+			branchRules: rules,
+			rulesets: ruleset(bypass),
+		});
+		const loaded = await loadNamedPullRequest(pi, context, 42);
+		const initial = deriveNamedPullRequestVerdict(loaded.lifecycle, loaded.conditions, loaded.unresolvedThreads.blocking);
+		assert.deepEqual(initial.reasons, ["required review pending", "merge policy not satisfied"], name);
+		assert.ok(isRulesetBypassCandidate(initial, loaded.mergeStateStatus), name);
+		const evidence = await readRulesetBypass(pi, context, loaded);
+		assert.deepEqual(evidence.rulesets[0]?.allowedMergeMethods, ["squash"], name);
+		const derived = applyRulesetBypass(initial, evidence, loaded.checks, "squash");
+		assert.equal(derived.verdict, verdict, name);
+		if (verdict === "ready") assert.deepEqual(derived.bypass, { rulesets: [{ id: 25064846, name: "main: require approval" }], reason: "required review pending; merge policy not satisfied" });
+		if (verdict === "wait") assert.deepEqual(derived.reasons, ["required check test has not passed"]);
+		if (verdict === "block") assert.ok(derived.reasons.includes("ruleset 25064846 cannot be bypassed by the current user"));
+	}
+});
+
 test("loads a named origin pull request read-only and applies the P0/P1 merge bar", async () => {
 	const codex = { login: "chatgpt-codex-connector[bot]" };
 	const summary = (sha: string) => ({
@@ -2347,7 +2394,7 @@ test("loads a named origin pull request read-only and applies the P0/P1 merge ba
 		assert.deepEqual(deriveNamedPullRequestVerdict(loaded.lifecycle, loaded.conditions, loaded.unresolvedThreads.blocking), { verdict, reasons }, name);
 		assert.deepEqual(loaded.unresolvedThreads, unresolved, name);
 		assert.equal(loaded.head.oid, REMOTE_HEAD, name);
-		assert.deepEqual(loaded.pendingChecks, verdict === "wait" && reasons[0] === "CI running" ? ["build"] : [], name);
+		assert.deepEqual(loaded.checks, checks === passed ? [{ name: "test", outcome: "success" }] : [{ name: "build", outcome: "running" }], name);
 		assert.ok(calls.some(({ args }) => args.join(" ").startsWith("pr view 42 -R github.com/acme/project --json")), name);
 		// The caller's checkout is not the PR branch: only remote configuration and ref-name validation touch Git.
 		assert.ok(calls.every(({ command, args }) => command !== "git" || ["remote", "check-ref-format"].includes(args[0]!)), name);

@@ -4,6 +4,7 @@ import { GitConflicts } from "./git-conflict.ts";
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import {
 	isBashToolResult,
 	stripFrontmatter,
@@ -32,12 +33,13 @@ import {
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
 import { mergeGitHubPullRequest } from "./pr-merge.ts";
 import { PullRequestWorkPublisher } from "./pr-publish-work.ts";
-import { deriveNamedPullRequestVerdict } from "./pr-routing.ts";
+import { applyRulesetBypass, deriveNamedPullRequestVerdict, isRulesetBypassCandidate, type NamedPullRequestVerdict } from "./pr-routing.ts";
 import { createPrPolicyStore, DEFAULT_PR_POLICY, PrRun, type PrPolicy } from "./pr-run.ts";
 import {
 	GitHubRateLimitError,
 	loadCurrentPullRequest,
 	loadNamedPullRequest,
+	readRulesetBypass,
 	type NamedPullRequest,
 	parsePullRequestObservation,
 	pullRequestObservation,
@@ -238,6 +240,7 @@ type PullRequestExtensionDependencies = {
 	syncLocalHead?: PrCommandDependencies["syncLocalHead"];
 	loadPrPolicy?: () => ConfigLoad<PrPolicy>;
 	loadNamedPullRequest?: typeof loadNamedPullRequest;
+	readRulesetBypass?: typeof readRulesetBypass;
 	/** Test override for the named PR mergeability re-read delay. */
 	refreshDelayMs?: number;
 	canonicalWorktree?: (cwd: string, signal?: AbortSignal) => Promise<string>;
@@ -252,7 +255,7 @@ function toolResult(value: unknown) {
 	};
 }
 
-function namedStatus(pullRequest: NamedPullRequest, verdict: ReturnType<typeof deriveNamedPullRequestVerdict>) {
+function namedStatus(pullRequest: NamedPullRequest, verdict: NamedPullRequestVerdict) {
 	return {
 		...verdict,
 		number: pullRequest.number,
@@ -262,8 +265,9 @@ function namedStatus(pullRequest: NamedPullRequest, verdict: ReturnType<typeof d
 		headOid: pullRequest.head.oid,
 		mergeable: pullRequest.mergeable,
 		mergeStateStatus: pullRequest.mergeStateStatus,
-		failingChecks: pullRequest.failingChecks,
-		pendingChecks: pullRequest.pendingChecks,
+		reviewDecision: pullRequest.reviewDecision,
+		failingChecks: pullRequest.checks.filter(({ outcome }) => outcome === "failure").map(({ name }) => name),
+		pendingChecks: pullRequest.checks.filter(({ outcome }) => outcome === "running").map(({ name }) => name),
 		codex: pullRequest.conditions.codex?.status ?? "disabled",
 		unresolvedThreads: pullRequest.unresolvedThreads,
 	};
@@ -1248,12 +1252,17 @@ export default function pullRequestExtension(
 	});
 
 	const loadNamed = dependencies.loadNamedPullRequest ?? loadNamedPullRequest;
+	const readBypass = dependencies.readRulesetBypass ?? readRulesetBypass;
 	// Like /pr, re-read while GitHub computes mergeability; a result still pending after that waits.
 	const evaluateNamed = async (number: number, cwd: string, signal: AbortSignal | undefined, policy: PrPolicy) => {
 		for (let refreshes = 0; ; refreshes += 1) {
 			const pullRequest = await loadNamed(pi, { cwd, signal, codexReview: policy.codexReview }, number);
 			if (pullRequest.conditions.mergeability !== "pending" || refreshes >= REFRESH_ATTEMPTS) {
-				const verdict = deriveNamedPullRequestVerdict(pullRequest.lifecycle, pullRequest.conditions, pullRequest.unresolvedThreads.blocking);
+				let verdict = deriveNamedPullRequestVerdict(pullRequest.lifecycle, pullRequest.conditions, pullRequest.unresolvedThreads.blocking);
+				// Rulesets are read only when a bypass could make the PR ready.
+				if (isRulesetBypassCandidate(verdict, pullRequest.mergeStateStatus)) {
+					verdict = applyRulesetBypass(verdict, await readBypass(pi, { cwd, signal }, pullRequest), pullRequest.checks, policy.mergeMethod);
+				}
 				return { pullRequest, status: namedStatus(pullRequest, verdict) };
 			}
 			await delay(dependencies.refreshDelayMs ?? REFRESH_DELAY_MS, undefined, { signal });
@@ -1275,7 +1284,7 @@ export default function pullRequestExtension(
 	pi.registerTool({
 		name: "pi_pr_merge",
 		label: "Merge Named PR",
-		description: "Merge one ready pull request in this repository's origin by number at headOid from pi_pr_status, after the user confirms in this session. Refuses when the PR is not ready, its head changed, or no interactive UI is available. Never runs local checkout checks.",
+		description: "Merge one ready pull request in this repository's origin by number at headOid from pi_pr_status, after the user confirms in this session. Refuses when the PR is not ready, its head changed, or no interactive UI is available. The confirmation names any ruleset bypass that the merge uses. Never runs local checkout checks.",
 		parameters: NamedMergeParameters,
 		executionMode: "sequential",
 		exposure: "model-only",
@@ -1290,12 +1299,13 @@ export default function pullRequestExtension(
 			if (!ctx.hasUI) return refused(`PR #${current.number} merge needs confirmation in an interactive session`);
 			const confirmed = await ctx.ui.confirm(
 				`Merge PR #${current.number}?`,
-				`${current.url.href}\nHead ${current.head.oid.slice(0, 12)} into ${current.base.ref} with ${policy.mergeMethod}.`,
+				`${current.url.href}\nHead ${current.head.oid.slice(0, 12)} into ${current.base.ref} with ${policy.mergeMethod}.` +
+					(status.bypass ? `\nUses the ruleset bypass for ruleset ${status.bypass.rulesets.map(({ id }) => id).join(", ")} (${status.bypass.reason}).` : ""),
 				{ signal: operationSignal },
 			);
 			if (!confirmed) return refused(`PR #${current.number} merge declined`);
 			const fresh = await evaluateNamed(raw.number, ctx.cwd, operationSignal, policy);
-			if (fresh.status.verdict !== "ready" || !isSameConfirmedMerge(current, fresh.pullRequest)) {
+			if (fresh.status.verdict !== "ready" || !isSameConfirmedMerge(current, fresh.pullRequest) || !isDeepStrictEqual(fresh.status.bypass, status.bypass)) {
 				return toolResult({ merged: false, reason: `PR #${current.number} changed after confirmation`, status: fresh.status });
 			}
 			await mergeGitHubPullRequest({
