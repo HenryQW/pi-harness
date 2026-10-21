@@ -296,4 +296,9 @@ test("review input keeps the newest material within the caps", () => {
 	assert.match(input, /Tool result bash: 29:x+ \[truncated/);
 	assert.doesNotMatch(input, /Tool result bash: 0:/);
 	assert.match(input, /Assistant: Done\.$/);
+
+	// A custom message that triggers the run after the prompt is part of the run record.
+	h.manager.appendCustomMessageEntry("pi-cron-run", [{ type: "text", text: "Run the nightly report." }], false);
+	h.work();
+	assert.match(reviewInput(h.manager.getBranch())!, /Message pi-cron-run: Run the nightly report\.\n\nTool call bash/);
 });

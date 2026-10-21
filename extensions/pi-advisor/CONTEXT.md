@@ -13,7 +13,7 @@ One tool-free model request that the Advisor answers when a run with tool calls 
 _Avoid_: audit, check
 
 **Run record**:
-The assistant text, tool calls, and tool results after the latest user prompt. Long items are truncated, and the Review keeps the newest items when the record is too long.
+The custom messages, assistant text, tool calls, and tool results after the latest user prompt. Long items are truncated, and the Review keeps the newest items when the record is too long.
 _Avoid_: transcript, log
 
 **Note**:

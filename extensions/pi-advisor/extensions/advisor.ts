@@ -59,6 +59,8 @@ export function reviewInput(branch: SessionEntry[]): string | undefined {
 	const items: string[] = [];
 	let toolCalls = false;
 	for (const entry of branch.slice(userIndex + 1)) {
+		// A custom message can start or steer the run, for example a scheduled follow-up; it carries the actual task.
+		if (entry.type === "custom_message") items.push(`Message ${entry.customType}: ${clip(plain(entry.content), ITEM_CAP)}`);
 		if (entry.type !== "message") continue;
 		const message = entry.message;
 		if (message.role === "assistant") {

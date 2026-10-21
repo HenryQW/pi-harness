@@ -44,7 +44,7 @@ The advisor is off by default.
 
 1. The agent completes a run.
 2. Pi Advisor does no review when another extension already continues the run. It also does no review for a run without tool calls, an incomplete run, or a session without UI.
-3. Pi Advisor sends one tool-free request to the advisor model. The request contains the latest user prompt and the run record: assistant text, tool calls, and tool results.
+3. Pi Advisor sends one tool-free request to the advisor model. The request contains the latest user prompt and the run record: custom messages, assistant text, tool calls, and tool results.
 4. Pi shows the notes. For a `blocker` note, Pi Advisor adds a visible `pi-advisor-blocker` message. The agent then continues in the same run.
 5. After the next stop, the advisor examines the run again. It shows the notes, but it does not continue again until the next user prompt.
 
