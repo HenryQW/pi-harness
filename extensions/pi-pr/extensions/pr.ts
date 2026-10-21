@@ -52,6 +52,7 @@ const MAX_STALE_REDISCOVERIES = 2;
 const STALE_PR_REFRESH_MS = 2 * 60_000;
 const POLL_MIN_MS = 30_000;
 const POLL_MAX_MS = 5 * 60_000;
+const TRANSIENT_FOOTERS = new Set(["CI running", "Codex review pending", "mergeability pending"]);
 const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
@@ -312,6 +313,10 @@ export default function pullRequestExtension(
 				}
 			}
 			return discovery;
+		} catch (error) {
+			// Never retry exhausted quota from any discovery path.
+			if (error instanceof GitHubRateLimitError && generation === sessionGeneration) stopPolling();
+			throw error;
 		} finally {
 			// Failed checks also delay the next stale refresh.
 			if (generation === sessionGeneration && context?.cwd === loadContext.cwd && !loadContext.signal?.aborted) {
@@ -372,15 +377,14 @@ export default function pullRequestExtension(
 		pollTimer.unref();
 	};
 
-	const updatePolling = (discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>): void => {
-		const pullRequest = discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" ? discovery.pullRequest : undefined;
-		const conditions = pullRequest?.conditions;
-		if (!pullRequest || !conditions || conditions.ci !== "running" && conditions.codex?.status !== "running" &&
-			conditions.mergeability !== "pending") {
+	// Poll only a transient status that the footer actually shows, not one hidden behind a higher-priority status.
+	const updatePolling = (discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>, display: PrDisplay): void => {
+		const text = display.footer?.text;
+		if (discovery.kind !== "current" || text === undefined || !TRANSIENT_FOOTERS.has(text)) {
 			stopPolling();
 			return;
 		}
-		const key = JSON.stringify([pullRequest.number, pullRequest.head.oid, conditions.ci, conditions.codex?.status, conditions.mergeability]);
+		const key = JSON.stringify([discovery.pullRequest.number, discovery.pullRequest.head.oid, text]);
 		if (key !== pollKey) pollDelay = POLL_MIN_MS;
 		pollKey = key;
 		schedulePoll();
@@ -782,8 +786,8 @@ export default function pullRequestExtension(
 		ctx: ExtensionContext,
 		discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>,
 	): void => {
-		updatePolling(discovery);
 		if (discovery.kind === "inactive") {
+			stopPolling();
 			displayEstablished = true;
 			lastDiscovery = "inactive";
 			displayedWidget = undefined;
@@ -792,6 +796,7 @@ export default function pullRequestExtension(
 			return;
 		}
 		const display = projectPrDisplay(discovery);
+		updatePolling(discovery, display);
 		const footer = formatPrFooter(display, ctx.ui.theme);
 		displayedWidget = display.widget === undefined ? undefined : display;
 		ctx.ui.setStatus(UI_KEY, footer);
@@ -843,6 +848,7 @@ export default function pullRequestExtension(
 	const reportRefreshFailure = (error: unknown): void => {
 		const ctx = context;
 		const category = error instanceof GitHubRateLimitError ? "quota" : "generic";
+		if (category === "quota") stopPolling();
 		if (!ctx || reportedRefreshFailure === category || reportedRefreshFailure === "quota") return;
 		reportedRefreshFailure = category;
 		ctx.ui.notify(
@@ -883,9 +889,8 @@ export default function pullRequestExtension(
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
 						displayEstablished = true;
 					}
-					// Back off on a stale transient footer, but never retry exhausted quota.
-					if (error instanceof GitHubRateLimitError) stopPolling();
-					else if (pollKey !== undefined) schedulePoll();
+					// Back off on a stale transient footer; quota failures already stopped polling.
+					if (pollKey !== undefined) schedulePoll();
 					reportRefreshFailure(error);
 				}
 				return;

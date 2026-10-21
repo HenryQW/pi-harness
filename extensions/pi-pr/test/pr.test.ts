@@ -2388,6 +2388,41 @@ test("defers polling while busy and stops polling at shutdown", async (t) => {
 	assert.equal(loads, 2);
 });
 
+test("does not poll a transient condition hidden behind a higher-priority footer status", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let loads = 0;
+	const app = harness({ async load() { loads += 1; return currentPullRequest({ conditions: { draft: true, ci: "running" } }); } });
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		assert.match(plain(String(app.statuses.at(-1))), /PR #42.*draft/);
+		t.mock.timers.tick(3_600_000);
+		await flush();
+		assert.equal(loads, 1);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("a /pr quota failure stops polling", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let loads = 0;
+	const app = harness({
+		useDefaultCommandHandler: true,
+		async load() {
+			if (++loads === 1) return currentPullRequest({ conditions: { ci: "running" } });
+			throw new GitHubRateLimitError();
+		},
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), GitHubRateLimitError);
+		assert.equal(loads, 2);
+		t.mock.timers.tick(3_600_000);
+		await flush();
+		assert.equal(loads, 2);
+	} finally { await app.shutdown(ctx); }
+});
+
 for (const state of ["inactive", "absent", "blocked", "merged", "closed"] as const) {
 	test(`does not stale-refresh ${state} discovery`, async () => {
 		let now = 0;
