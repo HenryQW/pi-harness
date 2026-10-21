@@ -2,8 +2,6 @@
 
 Give the agent one goal, and Pi continues the work after each stop. The loop ends when the agent gives evidence for each deliverable, or when a stop limit applies.
 
-Inspired by the goal mode in [oh-my-pi](https://github.com/can1357/oh-my-pi).
-
 ## Install
 
 ```bash
