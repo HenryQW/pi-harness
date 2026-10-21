@@ -1009,11 +1009,16 @@ export class IsolatedRunner {
 		return { requests, invalidIds: inventory.invalidIds, leaseBusy };
 	}
 
-	/** Prune evidence across checkouts. A non-terminal state owns every resource name its saved text
-	 * mentions; an unreadable state owns every name its raw text mentions, or every name when unreadable. */
+	/** Prune evidence across checkouts, primary first, and orphaned requests whose parent checkout was removed.
+	 * A non-terminal state owns every resource name its saved text mentions; an unreadable state owns every
+	 * name its raw text mentions, or every name when unreadable. */
 	async pruneOwnership(checkouts: readonly string[]): Promise<PruneOwnership> {
 		const owners: { label: string; text?: string }[] = [];
 		let lease: string | undefined;
+		const orphans = checkouts[0] ? (await this.store.listOrphans(realpathSync.native(checkouts[0]))).states : [];
+		for (const { state } of orphans) {
+			if (!terminal(state)) owners.push({ label: `owned by orphaned ${state.status} request ${state.request.id}; close and delete it from /subagent`, text: JSON.stringify(state) });
+		}
 		for (const checkout of checkouts) {
 			const root = realpathSync.native(checkout);
 			if (!lease && await this.store.hasProductiveRunLease(root)) lease = `productive lease is held by a live run in ${root}`;

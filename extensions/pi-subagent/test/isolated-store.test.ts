@@ -216,6 +216,17 @@ test("prune ownership treats non-terminal and unreadable states as owners and re
 		await store.withProductiveRunLease(root, async () => {
 			assert.equal((await runner.pruneOwnership([root])).lease, `productive lease is held by a live run in ${root}`);
 		});
+		// An unfinished request whose parent checkout was removed still owns its recorded resources.
+		await mkdir(join(sandbox, "parent"));
+		const orphan = state(await realpath(join(sandbox, "parent")));
+		orphan.request.id = "orphan";
+		orphan.tasks[0]!.attempts[0]!.cleanup = { outcome: "retained", path: join(root, ".worktrees", other), branch: `pi-subagent/${other}`, commits: 1, dirty: false };
+		const orphaned = await store.create(orphan);
+		await rm(orphan.root, { recursive: true });
+		assert.equal((await runner.pruneOwnership([root])).owner(other), "owned by orphaned pending request orphan; close and delete it from /subagent");
+		orphaned.state.status = "aborted";
+		await orphaned.save();
+		assert.equal((await runner.pruneOwnership([root])).owner(other), undefined, "terminal orphans own nothing");
 	} finally {
 		await rm(sandbox, { recursive: true, force: true });
 	}
