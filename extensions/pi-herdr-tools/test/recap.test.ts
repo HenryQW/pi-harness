@@ -10,10 +10,13 @@ type Handler = (event: any, ctx: ExtensionContext) => unknown;
 const model = { provider: "openai-codex", id: "gpt-5.6-luna", input: ["text"] };
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness(options: { hasUI?: boolean; editorText?: string; complete?: () => Promise<any> } = {}) {
+function harness(options: { hasUI?: boolean; mode?: string; editorText?: string; complete?: () => Promise<any> } = {}) {
 	const handlers = new Map<string, Handler>();
 	const signals: AbortSignal[] = [];
+	const prompts: string[] = [];
 	const widgets: unknown[] = [];
+	const notifications: string[] = [];
+	const terminalInput = new Set<(data: string) => unknown>();
 	const manager = SessionManager.inMemory();
 	manager.appendMessage({ role: "user", content: "fix the login crash", timestamp: 1 });
 	const api = {
@@ -23,15 +26,16 @@ function harness(options: { hasUI?: boolean; editorText?: string; complete?: () 
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		hasUI: options.hasUI ?? true,
-		mode: "rpc",
+		mode: options.mode ?? "rpc",
 		isIdle: () => true,
 		scopedModels: [],
 		sessionManager: manager,
 		modelRegistry: {
 			getAvailable: () => [model],
-			streamSimple: (_model: unknown, _context: unknown, completionOptions: { signal: AbortSignal }) => ({
+			streamSimple: (_model: unknown, context: { messages: Array<{ content: string }> }, completionOptions: { signal: AbortSignal }) => ({
 				result: async () => {
 					signals.push(completionOptions.signal);
+					prompts.push(context.messages[0].content);
 					return options.complete ? options.complete() : { stopReason: "stop", content: [{ type: "text", text: "Goal: fix login. Next: run tests." }] };
 				},
 			}),
@@ -39,7 +43,11 @@ function harness(options: { hasUI?: boolean; editorText?: string; complete?: () 
 		ui: {
 			getEditorText: () => options.editorText ?? "",
 			setWidget: (_key: string, content: unknown) => widgets.push(content),
-			notify: (message: string) => assert.fail(message),
+			notify: (message: string) => notifications.push(message),
+			onTerminalInput: (handler: (data: string) => unknown) => {
+				terminalInput.add(handler);
+				return () => terminalInput.delete(handler);
+			},
 		},
 	} as unknown as ExtensionContext;
 	idleRecapExtension(api);
@@ -48,7 +56,8 @@ function harness(options: { hasUI?: boolean; editorText?: string; complete?: () 
 		mock.timers.tick(ms);
 		await flush();
 	};
-	return { emit, idleFor, manager, signals, shown: () => widgets.filter(Boolean) };
+	const press = (data: string) => [...terminalInput].map((handler) => handler(data));
+	return { emit, idleFor, press, manager, signals, prompts, notifications, shown: () => widgets.filter(Boolean) };
 }
 
 async function withTaskModels(run: () => Promise<void>): Promise<void> {
@@ -99,6 +108,38 @@ test("user input cancels the idle timer and aborts an in-flight recap", async ()
 		resolve({ stopReason: "stop", content: [{ type: "text", text: "late" }] });
 		await flush();
 		assert.deepEqual(app.shown(), []);
+	});
+});
+
+test("terminal keys and user shell commands cancel a pending recap without consuming keys", async () => {
+	await withTaskModels(async () => {
+		const app = harness({ mode: "tui" });
+		app.emit("agent_settled", { aborted: false });
+		assert.deepEqual(app.press("/"), [undefined]);
+		await app.idleFor(RECAP_IDLE_MS);
+		assert.equal(app.signals.length, 0);
+		assert.deepEqual(app.press("x"), []);
+
+		app.emit("agent_settled", { aborted: false });
+		app.emit("user_bash", { command: "ls", excludeFromContext: false, cwd: "/" });
+		await app.idleFor(RECAP_IDLE_MS);
+		assert.equal(app.signals.length, 0);
+	});
+});
+
+test("a recap keeps compaction summaries and shows a repeated failure once", async () => {
+	await withTaskModels(async () => {
+		const app = harness({ complete: async () => ({ stopReason: "error", errorMessage: "no route", content: [] }) });
+		app.manager.appendCompaction("Goal: ship the login fix.", null, 1_000);
+		app.manager.appendMessage({ role: "user", content: "continue", timestamp: 2 });
+		for (const text of ["one", "two"]) {
+			app.manager.appendMessage({ role: "user", content: text, timestamp: 3 });
+			app.emit("agent_settled", { aborted: false });
+			await app.idleFor(RECAP_IDLE_MS);
+		}
+		assert.match(app.prompts[0], /Earlier summary: Goal: ship the login fix\./);
+		assert.equal(app.prompts.length, 2);
+		assert.deepEqual(app.notifications, ["no route"]);
 	});
 });
 
