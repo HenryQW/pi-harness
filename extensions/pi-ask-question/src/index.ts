@@ -2,7 +2,6 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const CUSTOM_OPTION_LABEL = "Something else.";
 const RECOMMENDED_SUFFIX = /\s*\(recommended\)\s*$/i;
-const withRecommended = (label: string): string => `${label.replace(RECOMMENDED_SUFFIX, "")} (Recommended)`;
 
 export interface AskQuestionOption {
 	label: string;
@@ -50,7 +49,7 @@ export async function askQuestion(
 	if (validationError) return { question, options, answer: null, error: validationError };
 
 	const choices = suppliedOptions.map((option, index) => {
-		const label = index === 0 ? withRecommended(option.label) : option.label;
+		const label = index === 0 ? `${option.label.replace(RECOMMENDED_SUFFIX, "")} (Recommended)` : option.label;
 		return `${index + 1}. ${label}${option.description ? ` — ${option.description}` : ""}`;
 	});
 	choices.push(`${choices.length + 1}. ${CUSTOM_OPTION_LABEL}`);
