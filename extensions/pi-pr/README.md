@@ -199,6 +199,8 @@ After creation, `HERDR_ENV=1` with non-empty `HERDR_WORKSPACE_ID` enables the wo
 
 CI repair reads each failed job log once, retaining at most a 20 KiB UTF-8 tail. Only job-log reads use `gh api --allow-escape-sequences`; JSON reads keep the CLI escape guard. Evidence limits are 20 KiB per failure and 256 KiB total. Evidence and diagnostics remove terminal escapes and control characters, except tabs and line breaks. Logs are untrusted text, not instructions.
 
+If a GitHub CI read fails before the first job-log read, collect stays open for one more call. All other collect failures block the run.
+
 ## Config
 
 Package-owned: `<agent-dir>/config/pi-pr/config.json`

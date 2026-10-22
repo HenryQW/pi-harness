@@ -309,6 +309,7 @@ export class PullRequestCiFixer {
 	private readonly exec: Exec;
 	private readonly load: Load;
 	private collectedFingerprint?: string;
+	private collectRetryable = false;
 
 	constructor(options: PullRequestCiFixOptions) {
 		if (options.authority.target.provenance !== "configured") {
@@ -479,22 +480,26 @@ export class PullRequestCiFixer {
 		};
 	}
 
-	private async readRunIdForSuite(suiteId: number, budget: { pages: number; records: number }): Promise<number> {
-		const label = `List workflow runs for check suite ${suiteId}`;
-		this.consumePage(budget);
-		const endpoint = `repos/${this.authority.base.repository}/actions/runs?check_suite_id=${suiteId}&head_sha=${this.authority.head.oid}&per_page=2&page=1`;
-		const parsed = record(parseJson(await this.api(endpoint, label), label), label);
-		const runs = array(parsed.workflow_runs, label);
-		if (integer(parsed.total_count, `${label} total`, true) !== 1 || runs.length !== 1) {
-			throw new Error(`Check suite ${suiteId} did not resolve to exactly one workflow run`);
+	// Filtered workflow-run lists can omit existing runs, so resolve each check run as its Actions job.
+	private async readRunIdForSuite(suiteId: number, checks: CheckIdentity[], budget: { pages: number; records: number }): Promise<number> {
+		const runIds = new Set<number>();
+		for (const check of checks) {
+			const label = `Read workflow job for check run ${check.id}`;
+			this.consumePage(budget);
+			const item = record(parseJson(await this.api(
+				`repos/${this.authority.base.repository}/actions/jobs/${check.id}`,
+				label,
+			), label), label);
+			this.consumeRecords(budget, 1);
+			if (!text(item.check_run_url, `${label} check-run URL`).toLowerCase()
+				.endsWith(`/repos/${this.authority.base.repository.toLowerCase()}/check-runs/${check.id}`) ||
+				requiredOid(item.head_sha, `${label} head OID`) !== this.authority.head.oid) {
+				throw new Error(`${label} returned a stale or unrelated job`);
+			}
+			runIds.add(integer(item.run_id, `${label} run ID`));
 		}
-		this.consumeRecords(budget, 1);
-		const item = record(runs[0], label);
-		if (integer(item.check_suite_id, `${label} suite ID`) !== suiteId ||
-			requiredOid(item.head_sha, `${label} head OID`) !== this.authority.head.oid) {
-			throw new Error(`${label} returned a stale or unrelated run`);
-		}
-		return integer(item.id, `${label} run ID`);
+		if (runIds.size !== 1) throw new Error(`Check suite ${suiteId} did not resolve to exactly one workflow run`);
+		return [...runIds][0]!;
 	}
 
 	private async readRun(runId: number, suiteId: number, budget: { pages: number; records: number }): Promise<RunIdentity> {
@@ -572,6 +577,8 @@ export class PullRequestCiFixer {
 				? "Local HEAD is ahead of the frozen PR head; cancelled before CI evidence or publication"
 				: "Base tip changed on the same ref; cancelled before CI evidence or publication");
 		}
+		// Preflight passed; collect may reopen until a job log read starts.
+		if (initial) this.collectRetryable = true;
 		const pageBudget = { pages: 0, records: 0 };
 		const checks = await this.readCheckRuns(pageBudget);
 		const failed = checks.filter(({ conclusion: value }) => value !== null && FAILED_CONCLUSIONS.has(value));
@@ -588,7 +595,7 @@ export class PullRequestCiFixer {
 
 		const runs: RunIdentity[] = [];
 		for (const suiteId of [...checksBySuite.keys()].sort((left, right) => left - right)) {
-			const runId = await this.readRunIdForSuite(suiteId, pageBudget);
+			const runId = await this.readRunIdForSuite(suiteId, checksBySuite.get(suiteId)!, pageBudget);
 			this.consumeRecords(pageBudget, 1);
 			runs.push(await this.readRun(runId, suiteId, pageBudget));
 		}
@@ -646,8 +653,10 @@ export class PullRequestCiFixer {
 	async collect(): Promise<CiEvidence> {
 		if (this.state.phase !== "ready") throw new Error("CI evidence collect action was already consumed");
 		this.state.phase = "collecting";
+		this.collectRetryable = false;
 		try {
 			const before = await this.readSnapshot(true, true);
+			this.collectRetryable = false;
 			const metadata = before.failures.map((failure) => failureEvidence(this.authority, failure, { text: "", truncated: false }));
 			const metadataBytes = metadata.map(jsonBytes);
 			const metadataTotal = jsonBytes(metadata);
@@ -684,7 +693,7 @@ export class PullRequestCiFixer {
 				failures,
 			};
 		} catch (error) {
-			this.state.phase = "blocked";
+			this.state.phase = this.collectRetryable ? "ready" : "blocked";
 			throw error;
 		}
 	}
