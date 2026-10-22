@@ -30,7 +30,7 @@ import { sessionFilePath, sessionLaunchArgs, summarize } from "../internal/launc
 import { formatInstant, nextRunAt } from "../internal/schedule.ts";
 import { StateStore, type Claim, type Outcome } from "../internal/state.ts";
 
-export const CRON_JOB_TASK = {
+const CRON_JOB_TASK = {
 	id: "pi-cron/job",
 	label: "Scheduled job",
 	purpose: "Run one scheduled job prompt in a new Pi session.",
@@ -92,7 +92,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 			return finalizeRoleLaunch(prepareRoleLaunch(pi, ctx, { role, route }));
 		}
 		return finalizeRoleLaunch(prepareRoleLaunch(pi, ctx, {
-			role, task: CRON_JOB_TASK, agentDir, ...(job.modelClass === undefined ? {} : { modelClass: job.modelClass }),
+			role, task: CRON_JOB_TASK, agentDir, modelClass: job.modelClass,
 		}));
 	};
 
@@ -224,7 +224,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 		latestCtx = ctx;
 		if (shutdown.signal.aborted) shutdown = new AbortController();
 		timer ??= setInterval(() => void tick(), options.tickMs ?? DEFAULT_TICK_MS);
-		timer.unref?.();
+		timer.unref();
 		void tick();
 	});
 

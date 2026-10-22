@@ -17,7 +17,7 @@ interface JobState {
 	lastOutcome?: Outcome;
 	lastSummary?: string;
 	lastSession?: string;
-	running?: { startedAt: number; owner: string; expiresAt: number };
+	running?: Claim;
 }
 
 interface CronState {
@@ -112,7 +112,7 @@ export class StateStore {
 			if (due === undefined) return { value: undefined, changed: newJob };
 			job.running = { startedAt: now, owner: options.owner, expiresAt: now + Math.ceil(options.staleMs) };
 			job.lastStartedAt = now;
-			return { value: { ...job.running }, changed: true };
+			return { value: job.running, changed: true };
 		});
 	}
 
