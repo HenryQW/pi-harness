@@ -29,12 +29,6 @@ import {
 } from "@henryqw/pi-task-models";
 
 type AgentMessage = Parameters<typeof estimateTokens>[0];
-type StreamFn = NonNullable<Parameters<typeof compact>[7]>;
-
-/** Task routes and the session model may be virtual; the registry routes them to a physical model. */
-function registryStream(ctx: ExtensionContext): StreamFn {
-	return (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options);
-}
 
 /** Native boundaries maintain completed turns; the pre-request guard handles fresh oversized input. */
 const DEFAULT_COMPACT_THRESHOLD_PERCENT = 70;
@@ -218,7 +212,8 @@ async function summarize(
 	if (!auth.ok) throw new Error("Compaction model authentication failed.");
 	return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
 		auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
-		signal, thinking, registryStream(ctx), auth.env);
+		// Task routes and the session model may be virtual; the registry routes them to a physical model.
+		signal, thinking, (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options), auth.env);
 }
 
 /** Index unchanged, successful read results with their first matching earlier assistant call. */
@@ -403,16 +398,6 @@ export default function (pi: ExtensionAPI) {
 		});
 	};
 
-	const compactIfNeeded = (ctx: ExtensionContext) => {
-		if (!active || compactionPending) return;
-
-		const usage = ctx.getContextUsage();
-		if (usage?.percent == null || usage.percent <= autoCompactThreshold) return;
-
-		compactionPending = true;
-		runCompaction(ctx);
-	};
-
 	// Hide only empty abort produced when ctx.compact() cancels active run.
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message;
@@ -511,7 +496,11 @@ export default function (pi: ExtensionAPI) {
 		if (!active) throw new Error(ACTIVATION_ERROR);
 
 		// Resume/fork can load an already-large session before first turn.
-		if (event.reason === "resume" || event.reason === "fork") compactIfNeeded(ctx);
+		if ((event.reason !== "resume" && event.reason !== "fork") || compactionPending) return;
+		const usage = ctx.getContextUsage();
+		if (usage?.percent == null || usage.percent <= autoCompactThreshold) return;
+		compactionPending = true;
+		runCompaction(ctx);
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -539,11 +528,7 @@ export default function (pi: ExtensionAPI) {
 				{ signal: event.signal, shouldFallback: () => true },
 			);
 		} catch {
-			if (event.signal.aborted) return;
-		}
-
-		if (!event.signal.aborted) {
-			ctx.ui.notify("Configured task model routes failed; using current session model.", "error");
+			if (!event.signal.aborted) ctx.ui.notify("Configured task model routes failed; using current session model.", "error");
 		}
 	});
 }
