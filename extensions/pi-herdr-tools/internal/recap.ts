@@ -1,4 +1,5 @@
-import { buildSessionContext, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { executeTaskRoutes, registerModelTask, registerTaskModelsConfigReporting, type ModelTask } from "@henryqw/pi-task-models";
 import { buildMergeTranscript, tailBytes } from "./merge.ts";
 import { configuredTaskRoutes } from "./task-models.ts";
@@ -20,6 +21,13 @@ export const RECAP_TASK = {
 } as const satisfies ModelTask;
 
 class RecapModelError extends Error {}
+
+/** Put the accent icon at column 0 and indent continuation lines under the dim recap text. */
+export function renderRecapWidget(text: string, theme: Theme, width: number): string[] {
+	return wrapTextWithAnsi(`Recap: ${text}`, Math.max(1, width - 2)).map((line, index) =>
+		truncateToWidth(`${index ? "  " : `${theme.fg("accent", "↺")} `}${theme.fg("dim", line)}`, Math.max(1, width), ""),
+	);
+}
 
 /** Keep at most maxBytes of UTF-8 from the head of the text. */
 function headBytes(text: string, maxBytes: number): string {
@@ -105,8 +113,14 @@ export default function idleRecapExtension(pi: ExtensionAPI): void {
 			const text = await generateRecap(prompt, ctx, controller.signal, reportTaskModels);
 			if (active !== controller || !idle(ctx) || ctx.sessionManager.getLeafId() !== leaf) return;
 			recappedLeaf = leaf;
-			const icon = ctx.mode === "tui" ? ctx.ui.theme.fg("accent", "↺") : "↺";
-			ctx.ui.setWidget(WIDGET_KEY, [`${icon} Recap: ${text}`]);
+			if (ctx.mode === "tui") {
+				ctx.ui.setWidget(WIDGET_KEY, (_tui, theme) => ({
+					invalidate() {},
+					render: (width) => renderRecapWidget(text, theme, width),
+				}));
+			} else {
+				ctx.ui.setWidget(WIDGET_KEY, [`↺ Recap: ${text}`]);
+			}
 		} catch (error) {
 			// Route errors repeat on every idle cycle until /task-models changes, so show each message once.
 			const message = error instanceof Error ? error.message : "Idle recap failed.";

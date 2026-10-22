@@ -91,6 +91,23 @@ test("a settled run shows a recap only after the idle delay", async () => {
 	});
 });
 
+test("a TUI recap aligns its accent icon at column 0 and wraps dim text under itself", async () => {
+	await withTaskModels(async () => {
+		const app = harness({ mode: "tui" });
+		app.emit("agent_settled", { aborted: false });
+		await app.idleFor(RECAP_IDLE_MS);
+		const factory = app.shown()[0] as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+		const theme = { fg: (color: string, text: string) => `\x1b[${color === "accent" ? 31 : 2}m${text}\x1b[0m` };
+		const widget = factory(undefined, theme);
+		assert.deepEqual(widget.render(20), [
+			"\x1b[31m↺\x1b[0m \x1b[2mRecap: Goal: fix\x1b[0m",
+			"  \x1b[2mlogin. Next: run\x1b[0m",
+			"  \x1b[2mtests.\x1b[0m",
+		]);
+		assert.ok(widget.render(1).length > 0);
+	});
+});
+
 test("user input cancels the idle timer and aborts an in-flight recap", async () => {
 	await withTaskModels(async () => {
 		let resolve!: (value: unknown) => void;
