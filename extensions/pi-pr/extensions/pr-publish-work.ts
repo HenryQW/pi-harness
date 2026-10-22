@@ -2,7 +2,7 @@ import { validateCommitMessage, commitStagedPaths, inspectPendingCommit, require
 import { checkTimeoutMs, type PrCheck, type PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, pushWithLease, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
+import { extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, pushWithLease, readHead, readRemoteOid, recordRemoteTrackingRef, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 type Options = { run: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
 
@@ -141,7 +141,11 @@ export class PullRequestWorkPublisher {
 			let remote: string | null;
 			try { remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref); }
 			catch { throw new Error("Local publication outcome unknown; do not retry"); }
-			if (remote === head) { this.options.run.observeRemote(head); return { kind: "published", head }; }
+			if (remote === head) {
+				this.options.run.observeRemote(head);
+				await recordRemoteTrackingRef(this.exec, this.execOptions(), this.authority.target.remote, this.authority.target.ref, head);
+				return { kind: "published", head };
+			}
 			if (remote === original) throw new Error(`Local publication not applied${error ? `: ${String(error)}` : ""}`);
 			throw new Error("Local publication outcome unknown; do not retry");
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });

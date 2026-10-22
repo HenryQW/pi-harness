@@ -45,6 +45,7 @@ import {
 	pushWithLease,
 	readHead,
 	readRemoteOid,
+	recordRemoteTrackingRef,
 	requiredOid,
 	requiredText,
 	runChecked,
@@ -1245,6 +1246,7 @@ export class PullRequestCommentSweep {
 				if (await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref) !== head) {
 					throw new Error("Published remote ref did not match captured HEAD");
 				}
+				await recordRemoteTrackingRef(this.exec, this.options(), state.authority.target.remote, state.authority.target.ref, head);
 				await this.currentAuthority(state.authority, head, true);
 				state.attempts.push.state = "applied";
 				state.phase = "published";

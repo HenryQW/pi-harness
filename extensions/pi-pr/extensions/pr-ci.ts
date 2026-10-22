@@ -18,6 +18,7 @@ import {
 	pushWithLease,
 	readHead,
 	readRemoteOid,
+	recordRemoteTrackingRef,
 	requiredOid,
 	requiredText,
 	runChecked,
@@ -774,6 +775,7 @@ export class PullRequestCiFixer {
 				}
 				if (postcondition === repairHead) {
 					this.run.observeRemote(repairHead);
+					await recordRemoteTrackingRef(this.exec, this.options(), this.authority.target.remote, this.authority.target.ref, repairHead);
 					this.state.phase = "published";
 					return { kind: "published", head: repairHead, attempt: "applied" };
 				}

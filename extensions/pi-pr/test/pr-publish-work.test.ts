@@ -28,6 +28,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	const oldHead = git("rev-parse", "HEAD");
 	git("remote", "add", "origin", "git@github.com:acme/project.git");
 	git("push", bare, `${oldHead}:refs/heads/feature`);
+	git("update-ref", "refs/remotes/origin/feature", oldHead);
 	writeFileSync(join(root, "file.txt"), "updated\n");
 	writeFileSync(join(root, "*.txt"), "updated literal path\n");
 	let authority: CurrentPullRequest = {
@@ -87,6 +88,8 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	assert.equal(pushes, 1);
 	assert.equal(git("ls-remote", bare, "refs/heads/feature").split("\t")[0], committed.head);
 	assert.equal(git("ls-remote", bare, "refs/tags/unpublished-release"), "");
+	// A URL push leaves the tracking ref stale, which shows already-published commits as ahead.
+	assert.equal(git("rev-parse", "refs/remotes/origin/feature"), committed.head);
 	await assert.rejects(workflow.publish(), /not validated/);
 
 	// The exact remote postcondition proves publication even when Git loses its response.
@@ -101,6 +104,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	losePushResponse = true;
 	assert.deepEqual(await resumed.publish(), { kind: "published", head: second.head });
 	assert.equal(pushes, 2);
+	assert.equal(git("rev-parse", "refs/remotes/origin/feature"), second.head);
 	await assert.rejects(resumed.publish(), /not validated/);
 	await assert.rejects(resumed.inspect(), /consumed/);
 	await assert.rejects(resumed.validate([]), /unavailable/);

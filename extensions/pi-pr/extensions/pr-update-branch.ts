@@ -24,6 +24,7 @@ import {
 	pushWithLease,
 	readHead,
 	readRemoteOid,
+	recordRemoteTrackingRef,
 	requiredOid,
 	resolveRepositoryFetchSource,
 	runChecked,
@@ -429,6 +430,7 @@ export class PullRequestBranchUpdater {
 			}
 			if (remote === head) {
 				this.run.observeRemote(head);
+				await recordRemoteTrackingRef(this.exec, this.execOptions(), this.authority.target.remote, this.authority.target.ref, head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };
