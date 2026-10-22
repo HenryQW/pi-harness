@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { check, lock } from "proper-lockfile";
 import { parseRunState, RUN_STATE_VERSION, type RunState } from "./schema.ts";
 import { discardResources } from "./discard.ts";
+import { isMissing, isWithin } from "./worktree.ts";
 
 const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
 /*
@@ -47,21 +48,12 @@ export interface LifecycleLock {
 	readonly productiveRunLeaseActive: boolean;
 }
 
-function isMissing(error: unknown): boolean {
-	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
-}
-
 function isAlreadyPresent(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EEXIST");
 }
 
 function isLocked(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ELOCKED");
-}
-
-function isWithin(root: string, candidate: string): boolean {
-	const fromRoot = relative(root, candidate);
-	return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
 }
 
 async function canonicalPlannedPath(path: string): Promise<string> {

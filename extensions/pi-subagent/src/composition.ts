@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, normalize, relative, sep } from "node:path";
+import { isAbsolute, normalize } from "node:path";
 import type { EphemeralSubagentExecutor } from "./ephemeral.ts";
 import type {
 	DirectProcessRunner,
@@ -8,14 +8,10 @@ import type {
 } from "./git-runtime.ts";
 import type { LaunchRuntimeOptions } from "./launch-runtime.ts";
 import { runProcess as defaultRunProcess } from "./process.ts";
+import { isWithin } from "./worktree.ts";
 
 const GIT_ROOT_TIMEOUT_CAP_MS = 30_000;
 const REVIEW_PROMPT_MAX_BYTES = 64 * 1024;
-
-function within(root: string, candidate: string): boolean {
-	const fromRoot = relative(root, candidate);
-	return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
-}
 
 function processFailure(result: { code: number; killed: boolean; stdout: string; stderr: string }): Error {
 	const detail = (result.stderr || result.stdout).trim().slice(0, 1_000);
@@ -63,7 +59,7 @@ export function createCanonicalGitRootResolver(
 		if (canonicalRoot !== root || !rootInfo.isDirectory()) {
 			throw new Error("Git returned a non-canonical repository root.");
 		}
-		if (!within(root, canonicalCwd)) {
+		if (!isWithin(root, canonicalCwd)) {
 			throw new Error("Git repository root does not identify the requested working directory.");
 		}
 		return root;

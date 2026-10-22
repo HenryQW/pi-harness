@@ -3,6 +3,7 @@ import {
 	createChildWorktree,
 	inspectIndexFlags,
 	inspectWorktreeDirty,
+	isMissing,
 	WorktreeSetupError,
 	type WorktreeInfo,
 } from "./worktree.ts";
@@ -118,16 +119,12 @@ function cloneWorktree(info: WorktreeInfo): WorktreeAllocationPlan {
 	};
 }
 
-function pathMissing(error: unknown): boolean {
-	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
-}
-
 async function pathExists(path: string): Promise<boolean> {
 	try {
 		await lstat(path);
 		return true;
 	} catch (error) {
-		if (pathMissing(error)) return false;
+		if (isMissing(error)) return false;
 		throw error;
 	}
 }
@@ -603,7 +600,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 			try {
 				return await realpath(path);
 			} catch (error) {
-				if (pathMissing(error)) return path;
+				if (isMissing(error)) return path;
 				throw error;
 			}
 		}));

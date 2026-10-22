@@ -2,10 +2,8 @@ import { formatConfigIssues, type ConfigLoad } from "@henryqw/pi-config-store";
 import type { ExecutionPolicySnapshot } from "../dist/schema.js";
 import type { SubagentConfig } from "@henryqw/pi-subagent";
 
-export type EffectiveExecutionPolicy = ExecutionPolicySnapshot;
-
 /** Resolve one immutable policy. A disabled config blocks delegation. */
-export function resolveExecutionPolicy(path: string, loaded: ConfigLoad<SubagentConfig>): EffectiveExecutionPolicy {
+export function resolveExecutionPolicy(path: string, loaded: ConfigLoad<SubagentConfig>): ExecutionPolicySnapshot {
 	if (loaded.status === "disabled") {
 		throw new Error(`${path}: ${formatConfigIssues(loaded.issues)}; delegation is blocked until this file is corrected.`);
 	}

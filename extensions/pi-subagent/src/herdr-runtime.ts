@@ -49,7 +49,7 @@ import {
 } from "./runner.ts";
 import { runProcess as defaultRunProcess } from "./process.ts";
 import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
-import { assertPrivateLease, scanProcessLease } from "./process-lease.ts";
+import { assertPrivateLease, PI_SUBAGENT_PROCESS_LEASE, scanProcessLease } from "./process-lease.ts";
 import { exactDirectTerminalTurn } from "./direct-herdr.ts";
 import { READABLE_BRANCH_PATTERN } from "./worktree.ts";
 
@@ -66,7 +66,6 @@ const DIAGNOSTIC_LIMIT = 8 * 1024;
 const SESSION_LIMIT = 16 * 1024 * 1024;
 const LEASE_MODE = 0o600;
 const DIRECTORY_MODE = 0o700;
-const PROCESS_LEASE_ENV = "PI_SUBAGENT_PROCESS_LEASE";
 const CORRELATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const HERDR_AGENT_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,31}$/;
 const SETTLED_AGENT_STATES = new Set(["idle", "done"]);
@@ -928,7 +927,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		const budget = this.executionBudget?.();
 		const args = [
 			"tab", "create", "--workspace", allocation.workspaceId, "--cwd", allocation.worktreeCwd,
-			"--label", allocation.label, "--env", `${PROCESS_LEASE_ENV}=${allocation.leasePath}`,
+			"--label", allocation.label, "--env", `${PI_SUBAGENT_PROCESS_LEASE}=${allocation.leasePath}`,
 			...(budget ? ["--env", `${EXECUTION_BUDGET_ENV}=${JSON.stringify({ ...budget, startedAt: this.now() })}`] : []),
 			"--no-focus",
 		];

@@ -3,7 +3,6 @@ import type { JsonValue } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { capEphemeralSubagentOutput, utf8Prefix, type EphemeralSubagentExecutor } from "../dist/ephemeral.js";
-import type { EffectiveExecutionPolicy } from "./config.ts";
 import {
 	createCanonicalGitRootResolver,
 	createExactJudgmentExecutor,
@@ -31,6 +30,7 @@ import {
 	StatusOutputSchema,
 	type CheckBatchEvidence,
 	type ExecuteRequest,
+	type ExecutionPolicySnapshot,
 	type ModelClass,
 	type ReviewEvidence,
 	type RunState,
@@ -59,8 +59,8 @@ export type CreateIsolatedComponents = (options: {
 	pi: ExtensionAPI;
 	context(): ExtensionContext;
 	executor: EphemeralSubagentExecutor;
-	policy: EffectiveExecutionPolicy;
-	currentPolicy(): EffectiveExecutionPolicy;
+	policy: ExecutionPolicySnapshot;
+	currentPolicy(): ExecutionPolicySnapshot;
 	onStateSaved(state: RunState): void;
 }) => IsolatedExtensionComponents;
 
@@ -531,8 +531,8 @@ export interface IsolatedSurface {
 
 export interface RegisterIsolatedOptions {
 	executor: EphemeralSubagentExecutor;
-	policy: EffectiveExecutionPolicy;
-	currentPolicy(): EffectiveExecutionPolicy;
+	policy: ExecutionPolicySnapshot;
+	currentPolicy(): ExecutionPolicySnapshot;
 	/** Report new config issues, and throw when the config now blocks delegation, before each deferred Role launch. */
 	beforeRoleLaunch?(ctx: ExtensionContext): void;
 	componentsFactory?: CreateIsolatedComponents;

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdtemp, open, realpath, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, normalize, relative, sep } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -21,6 +21,7 @@ import {
 	type ModelClass,
 	type WorkspaceIdentity,
 } from "./schema.ts";
+import { isMissing, isWithin } from "./worktree.ts";
 
 const PROMPT_FLAG = "--append-system-prompt";
 const DIRECTORY_MODE = 0o700;
@@ -49,15 +50,6 @@ export interface LaunchRuntimeOptions {
 	inspectMainBase(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	now?: () => number;
 	randomToken?: () => string;
-}
-
-function isMissing(error: unknown): boolean {
-	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
-}
-
-function isWithin(root: string, candidate: string): boolean {
-	const fromRoot = relative(root, candidate);
-	return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
 }
 
 async function removeTransientLaunch(
