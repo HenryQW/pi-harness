@@ -963,7 +963,7 @@ test("matching verified rebase recovery outranks a diverged local head and sweep
 		createBranchUpdater() { return {
 			state: { phase: "verified" },
 			async recoveryLaunchAction() { return "rebase" as const; },
-			async rebase() { return { kind: "verified", head: pr.head.oid, fastForward: false }; },
+			async rebase() { return { kind: "verified", head: pr.head.oid }; },
 		} as never; },
 	});
 	const ctx = app.context();
@@ -972,7 +972,7 @@ test("matching verified rebase recovery outranks a diverged local head and sweep
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		assert.deepEqual(app.messages, [`/skill:pi-pr-update-branch runId=${routeRunId} action=rebase`]);
 		assert.deepEqual((await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx)).details,
-			{ kind: "verified", head: pr.head.oid, fastForward: false });
+			{ kind: "verified", head: pr.head.oid });
 	} finally { await app.shutdown(ctx); }
 });
 
@@ -994,8 +994,8 @@ test("binds one update run to its session, worktree, route, and fresh authority"
 			return {
 				state,
 				async recoveryLaunchAction() { return "rebase" as const; },
-				async rebase() { calls.push("rebase"); state.phase = "verified"; return { kind: "verified", head: authority.head.oid, fastForward: false }; },
-				async continue() { calls.push("continue"); return { kind: "verified", head: authority.head.oid, fastForward: false }; },
+				async rebase() { calls.push("rebase"); state.phase = "verified"; return { kind: "verified", head: authority.head.oid }; },
+				async continue() { calls.push("continue"); return { kind: "verified", head: authority.head.oid }; },
 				async publish() { calls.push("publish"); return { kind: "published", head: authority.head.oid }; },
 			} as never;
 		},
@@ -1238,7 +1238,7 @@ test("tool cancellation reaches only its active workflow action", async () => {
 				state,
 				async recoveryLaunchAction() { return "rebase" as const; },
 				async rebase() {
-					return { kind: "verified", head: authority.head.oid, fastForward: false };
+					return { kind: "verified", head: authority.head.oid };
 				},
 				async publish() {
 					publishStarted.resolve();
@@ -1362,7 +1362,7 @@ test("keeps an exact conflict context for continuation, then clears it on settle
 				async continue(paths: string[]) {
 					calls.push(`continue:${paths.join(",")}`);
 					state.phase = "verified";
-					return { kind: "verified", head: authority.head.oid, fastForward: false };
+					return { kind: "verified", head: authority.head.oid };
 				},
 				async publish() { calls.push("publish"); return { kind: "published", head: authority.head.oid }; },
 			} as never;

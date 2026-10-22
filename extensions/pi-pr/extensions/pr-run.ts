@@ -3,7 +3,7 @@ import { createConfigStore, field, parsers } from "@henryqw/pi-config-store";
 
 export type PrCheck = { command: string; args: string[] };
 export type MergeMethod = "squash" | "merge" | "rebase";
-export const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
+const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
 export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; checkTimeoutMinutes: number; mergeMethod: MergeMethod; codexReview: boolean };
 export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, checkTimeoutMinutes: 10, mergeMethod: "squash", codexReview: false };
 /** Node replaces a timer delay above 2^31-1 ms with 1 ms, which would turn a long poll into a tight loop. */

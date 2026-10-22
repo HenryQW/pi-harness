@@ -82,7 +82,7 @@ test("fetches only the frozen base OID and skips merge when it is already an anc
 	};
 	const app = updater(exec);
 	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
-	assert.deepEqual(await app.workflow.rebase(), { kind: "verified", head: oldHead, fastForward: false });
+	assert.deepEqual(await app.workflow.rebase(), { kind: "verified", head: oldHead });
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "fetch"), [
 		"git", ["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "git@github.com:acme/project.git", base],
 	]);
@@ -109,7 +109,7 @@ test("a base reported BEHIND without a conflict is updated like a conflict", asy
 		const workflow = new PullRequestBranchUpdater({ cwd, authority: behind, exec, agentDir,
 			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: fresh }) });
 		if (expectVerified) {
-			assert.deepEqual(await workflow.rebase(), { kind: "verified", head: oldHead, fastForward: false });
+			assert.deepEqual(await workflow.rebase(), { kind: "verified", head: oldHead });
 			assert.deepEqual(await workflow.publish(), { kind: "published", head: oldHead });
 		} else {
 			assert.deepEqual(await workflow.rebase(), { kind: "stale", reason: "Required base update cleared; cancelled before rebase or publication", authority: settled });

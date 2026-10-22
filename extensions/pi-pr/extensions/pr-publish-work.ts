@@ -1,10 +1,9 @@
 import { validateCommitMessage, commitStagedPaths, inspectPendingCommit, requirePendingCommit, stageCommitPaths, type PendingCommit } from "./git-commit.ts";
-import { checkTimeoutMs, type PrRun } from "./pr-run.ts";
+import { checkTimeoutMs, type PrCheck, type PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
 import { extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
-type Check = { command: string; args: string[] };
 type Options = { run?: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
 
 /**
@@ -96,7 +95,7 @@ export class PullRequestWorkPublisher {
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });
 	}
 
-	async validate(checks: Check[]): Promise<{ head: string; checks: number }> {
+	async validate(checks: PrCheck[]): Promise<{ head: string; checks: number }> {
 		if (!this.initialHead || this.validatedHead || this.consumed) throw new Error("Local publication validation is unavailable");
 		return await withWorktreeLock(this.options.cwd, async () => {
 			await this.authorityCheck();

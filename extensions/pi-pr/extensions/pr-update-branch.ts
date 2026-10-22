@@ -38,7 +38,7 @@ type UpdateBranchState = {
 };
 
 type UpdateBranchResult =
-	| { kind: "verified"; head: string; fastForward: boolean }
+	| { kind: "verified"; head: string }
 	| { kind: "conflict"; paths: string[] }
 	| { kind: "published"; head: string }
 	| { kind: "stale"; reason: string; authority: CurrentPullRequest };
@@ -288,7 +288,7 @@ export class PullRequestBranchUpdater {
 		this.state.phase = "verified";
 		this.state.verifiedHead = head;
 		delete this.state.conflict;
-		return { kind: "verified", head, fastForward: false };
+		return { kind: "verified", head };
 	}
 
 	private async captureConflict(): Promise<UpdateBranchResult> {
@@ -306,7 +306,7 @@ export class PullRequestBranchUpdater {
 	async rebase(): Promise<UpdateBranchResult> {
 		if (this.recovered && this.state.phase === "verified" && this.state.verifiedHead) {
 			this.recovered = false;
-			return { kind: "verified", head: this.state.verifiedHead, fastForward: false };
+			return { kind: "verified", head: this.state.verifiedHead };
 		}
 		if (this.state.phase !== "ready") throw new Error("Branch conflict rebase action was already consumed");
 		return await withWorktreeLock(this.cwd, async () => {

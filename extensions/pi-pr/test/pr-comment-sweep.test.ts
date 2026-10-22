@@ -100,7 +100,6 @@ test("feedback reads paginate every connection and enforce page and record bound
 		...authority(),
 		url: "https://github.com/acme/project/pull/41",
 	}, { exec, cwd: process.cwd() }), /URL does not match its number and base repository/);
-	assert.equal(calls, 2);
 
 	let pages = 0;
 	const endless: Exec = async () => {

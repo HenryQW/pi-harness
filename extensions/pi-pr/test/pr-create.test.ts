@@ -814,7 +814,7 @@ test("creation verifies a divergent committed branch without merging or rebasing
 	workflow.state.phase = "prepared";
 	workflow.state.base = { host: "github.com", repository: "acme/project", ref: "main", oid: base,
 		fetchSource: "git@github.com:acme/project.git" };
-	assert.deepEqual(await workflow.verify(), { kind: "verified", head, fastForward: false });
+	assert.deepEqual(await workflow.verify(), { kind: "verified", head });
 	assert.equal(calls.some((call) => /git (merge|rebase|merge-base)/.test(call)), false);
 });
 
@@ -848,7 +848,7 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	const committed = await workflow.commit(["file.txt"], "fix: pending work");
 	assert.equal(committed.head, git("rev-parse", "HEAD"));
 	assert.equal(git("status", "--porcelain"), "");
-	assert.deepEqual(await workflow.verify(), { kind: "verified", head: committed.head, fastForward: false });
+	assert.deepEqual(await workflow.verify(), { kind: "verified", head: committed.head });
 	git("commit", "--allow-empty", "-m", "unrelated change");
 	await assert.rejects(workflow.push(), /verified HEAD changed/);
 	git("mv", "file.txt", "renamed.txt");

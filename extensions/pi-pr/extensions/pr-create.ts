@@ -71,7 +71,7 @@ type CreatePullRequestState = {
 
 type CreatePullRequestResult =
 	| { kind: "prepared"; base: CreateBaseAuthority; mergeBase: string }
-	| { kind: "verified"; head: string; fastForward: boolean }
+	| { kind: "verified"; head: string }
 	| { kind: "pushed"; head: string }
 	| { kind: "published"; url: string };
 
@@ -312,7 +312,7 @@ export class PullRequestCreator {
 			}
 			this.state.verifiedHead = head;
 			this.state.phase = "verified";
-			return { kind: "verified", head, fastForward: false };
+			return { kind: "verified", head };
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 

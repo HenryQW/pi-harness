@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import { markFeedbackHandled } from "./pr-feedback-attention.ts";
-import { checkTimeoutMs, PrRun } from "./pr-run.ts";
+import { checkTimeoutMs, type PrCheck, PrRun } from "./pr-run.ts";
 import {
 	extensionConfigDir,
 	readTextFileBounded,
@@ -77,9 +77,8 @@ type SweepRunGuard = {
 	generation: number;
 	fingerprint: string;
 };
-type SweepCheck = { command: string; args: string[] };
 type PendingScope = { head: string; exactOutsidePaths: string[] };
-type SweepValidation = { head: string; checks: SweepCheck[] };
+type SweepValidation = { head: string; checks: PrCheck[] };
 type SweepFinalProjection = {
 	generation: number;
 	contentFingerprint: string;
@@ -103,7 +102,7 @@ export type SweepStatus = {
 	legacyRecovery: boolean;
 	pendingScope: PendingScope | null;
 	validation: SweepValidation | null;
-	legacyChecks: SweepCheck[] | null;
+	legacyChecks: PrCheck[] | null;
 	projection: SweepFinalProjection | null;
 	attempts: {
 		commit: AttemptState;
@@ -158,7 +157,7 @@ type SweepState = {
 		commit: CommitAttempt | null;
 		push: { state: AttemptState; head: string | null };
 		resolutions: ResolutionAttempt[];
-		finalize: { state: AttemptState; checks: SweepCheck[] };
+		finalize: { state: AttemptState; checks: PrCheck[] };
 	};
 };
 
@@ -173,7 +172,7 @@ export type PullRequestCommentSweepOptions = {
 	newRunId?: () => string;
 	pause?: (milliseconds: number) => Promise<void>;
 	run?: PrRun;
-	confirmLegacyChecks?: (head: string, checks: SweepCheck[]) => Promise<boolean>;
+	confirmLegacyChecks?: (head: string, checks: PrCheck[]) => Promise<boolean>;
 };
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
 	const actual = Object.keys(value).sort();
@@ -317,7 +316,7 @@ function exactLedger(value: unknown, snapshot: FeedbackSnapshot): SweepLedgerEnt
 	});
 }
 
-function parseCheck(value: unknown, label: string): SweepCheck {
+function parseCheck(value: unknown, label: string): PrCheck {
 	if (!isRecord(value)) throw new Error(`${label} is invalid`);
 	exactKeys(value, ["command", "args"], label);
 	const command = requiredText(value.command, `${label} command`);
@@ -327,7 +326,7 @@ function parseCheck(value: unknown, label: string): SweepCheck {
 	return { command, args: [...value.args] as string[] };
 }
 
-function parseChecks(value: unknown): SweepCheck[] {
+function parseChecks(value: unknown): PrCheck[] {
 	if (!Array.isArray(value) || value.length > CHECK_MAX_COUNT) throw new Error(`checks must contain at most ${CHECK_MAX_COUNT} commands`);
 	const checks = value.map((check, index) => parseCheck(check, `check ${index + 1}`));
 	if (Buffer.byteLength(JSON.stringify(checks), "utf8") > CHECK_ARGUMENTS_MAX_BYTES) {
@@ -869,7 +868,7 @@ export class PullRequestCommentSweep {
 		}, { agentDir: this.agentDir, signal: this.signal });
 	}
 
-	async validate(guard: SweepRunGuard, checksInput: SweepCheck[]): Promise<SweepStatus> {
+	async validate(guard: SweepRunGuard, checksInput: PrCheck[]): Promise<SweepStatus> {
 		const checks = parseChecks(checksInput);
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
@@ -1462,7 +1461,7 @@ export class PullRequestCommentSweep {
 
 	async finalize(
 		guard: SweepRunGuard,
-		checksInput: SweepCheck[],
+		checksInput: PrCheck[],
 	): Promise<{ kind: "finalized"; pullRequestUrl: string; head: string; checks: number }> {
 		return await withWorktreeLock(this.cwd, async () => {
 			const location = await this.location();
