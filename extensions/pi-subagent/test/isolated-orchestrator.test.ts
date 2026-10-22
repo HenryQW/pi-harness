@@ -257,6 +257,7 @@ function createHarness(options: {
 			return "follow-up queued";
 		},
 		listOrphanRequests() { return { requests: [], invalidIds: [] }; },
+		hasProductiveRunLease() { return false; },
 		listRequests(...args: unknown[]) {
 			runnerCalls.push({ method: "listRequests", args });
 			return { requests: [{ id: "request-one", name: "Goal", status: "working", tasks: [{ id: "unit-one", name: "Task", kind: "changeset", status: "working" }] }], invalidIds: ["damaged"], states: options.inventoryStates ?? [] };

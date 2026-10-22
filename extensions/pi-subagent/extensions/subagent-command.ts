@@ -56,6 +56,8 @@ export interface IsolatedRequest {
 }
 export interface IsolatedInventory {
 	root: string;
+	/** A live productive run holds this root's lease; the lease does not name its request. */
+	leaseLive: boolean;
 	requests: readonly IsolatedRequest[];
 	invalidIds: readonly string[];
 }
@@ -291,6 +293,41 @@ function directReport(task: DirectTask): Report {
 	] };
 }
 
+const WORKING_REPORT_CODE_POINTS = 4_000;
+/** Current work from local and saved evidence only. Recorded-only direct work and isolated work without a live lease never count as working. */
+export function workingReport(direct: readonly DirectTask[], inventory: IsolatedInventory | undefined): Report {
+	const working: Row[] = [];
+	const attention: Row[] = [];
+	const unverified: Row[] = [];
+	for (const task of direct) {
+		const text = `${directLabel(task)} · ${task.status}`;
+		// Read workflows list their running workers; write workflows stay observed locally until their workers are proved stopped.
+		if (task.status === "observed locally" && task.stoppable?.length !== 0) working.push({ text: task.stoppable ? `${directLabel(task)} · ${task.stoppable.length} running` : text });
+		else if (/retained|attention/.test(task.status)) attention.push({ text });
+		else if (completed(task.status)) continue;
+		else unverified.push({ text: task.status === "observed locally" ? `${text}; no running worker` : text });
+	}
+	for (const request of inventory?.requests ?? []) {
+		const active = !request.orphaned && ["pending", "running"].includes(request.status);
+		if (active && inventory!.leaseLive) working.push({ text: isolatedLabel(request) });
+		else if (active) attention.push({ text: `${isolatedLabel(request)} · interrupted; run /subagent recover` });
+		else if (!request.orphaned && (request.status === "needs_attention" || /retained/.test(request.status))) attention.push({ text: isolatedLabel(request) });
+	}
+	const sections: Section[] = [
+		working.length ? { heading: `Working (${working.length})`, tone: "info", rows: working } : { rows: [{ text: inventory ? "No subagents are working." : "No direct subagents are working. Isolated status is unavailable." }] },
+		{ heading: `Needs attention (${attention.length})`, tone: "warning", rows: attention },
+		{ heading: `Unverified (${unverified.length})`, note: "not proof of running or completion", tone: "warning", rows: unverified },
+	];
+	const head: Report = { tone: attention.length ? "warning" : "info", title: "Current subagent work", sections: [] };
+	const items = sections.flatMap((section) => section.rows.map((row, index) => ({ section, index, row })));
+	const fitted = fitItems(reportMarkdown(head), items, ({ section, index, row }) => index ? sectionMarkdown({ rows: [row] }) : `\n${sectionMarkdown({ ...section, rows: [row] })}`,
+		WORKING_REPORT_CODE_POINTS, "open /subagent with interactive UI to see them.");
+	return { ...head, sections: [...sections.flatMap((section) => {
+		const rows = fitted.shown.filter((item) => item.section === section).map(({ row }) => row);
+		return rows.length ? [{ ...section, rows }] : [];
+	}), ...moreSection(fitted.more)] };
+}
+
 type Choice<T> = { label: string; value: T };
 async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[]): Promise<T | undefined> {
 	// Numeric suffixes only tell duplicate labels apart. Never parse display text into an identity.
@@ -462,6 +499,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			}
 			if (!ctx.hasUI) {
 				const inventory = await adapter.isolated(ctx.cwd, current);
+				deliver(ctx, workingReport(adapter.direct(ctx), inventory));
 				const head: Report = { tone: "info", title: "Isolated requests (report only)", sections: [] };
 				const row = (request: IsolatedRequest): Row => ({ text: `${glyph(request.status)} ${request.orphaned ? "orphaned · " : ""}${isolatedLabel(request)}` });
 				const listed = fitItems(`${reportMarkdown(head)}\n`, inventory.requests, (request) => sectionMarkdown({ rows: [row(request)] }), ROLES_REPORT_CODE_POINTS,
@@ -473,6 +511,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				return;
 			}
 			let history = false;
+			// The working report shows on open and on each Refresh, not after other menu actions.
+			let report = true;
 			for (;;) {
 				if (!valid()) return;
 				// Direct recovery is independent of Git and isolated config/inventory failures.
@@ -482,6 +522,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				try { inventory = await adapter.isolated(ctx.cwd, current); }
 				catch (error) { unavailable = errorText(error); }
 				if (!valid()) return;
+				if (report) deliver(ctx, workingReport(direct, inventory));
+				report = false;
 				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct branch recovery remains available; check the canonical Git checkout/configuration.`, "warning");
 				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${JSON.stringify(id)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "many" } | { kind: "close" };
@@ -509,7 +551,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (!unavailable && !direct.length && !inventory?.requests.length && !inventory?.invalidIds.length) ctx.ui.notify("No direct tasks recorded on this session branch or isolated requests in this checkout. Ask Main to start delegation.", "info");
 				const selected = await choose(ctx, history ? "Subagent · completed / history" : "Subagent · current work", selections);
 				if (!valid() || !selected || selected.kind === "close") return;
-				if (selected.kind === "refresh") continue;
+				if (selected.kind === "refresh") { report = true; continue; }
 				if (selected.kind === "history") { history = !history; continue; }
 				if (selected.kind === "many") {
 					const picked = await chooseMany(ctx, "Subagent · select work", rows.map(({ label, value }) => ({ label: label.trim(), value })), [], valid);

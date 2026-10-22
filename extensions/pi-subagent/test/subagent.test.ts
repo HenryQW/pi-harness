@@ -1057,15 +1057,17 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 			app.sessionEntries.push({ type: "custom_message", customType: "subagent-direct-result", content, details, display: true });
 			const notices: string[] = [];
 			app.ctx.ui.notify = (message: string) => { notices.push(message); };
-			let selected = false;
+			let calls = 0;
+			// A delivered workflow is completed, so it is listed under history.
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {
-				if (selected) return undefined;
-				selected = true;
+				calls += 1;
+				if (calls === 1) return choices.find((choice) => choice.startsWith("Completed / history"));
+				if (calls > 2) return undefined;
 				rows = choices;
 				return choices.find((choice) => choice.startsWith("  "));
 			};
 			await app.commands.get("subagent")!.handler("", app.ctx);
-			assert.match(rows.find((row) => row.startsWith("  "))!, /^  ⚠ D1\.1 · worker · Search audit · recorded only; not proof of running or completion · \$0\.12/);
+			assert.match(rows.find((row) => row.startsWith("  "))!, /^  ✓ D1\.1 · worker · Search audit · completed · \$0\.12/);
 			assert.match(notices.find((notice) => notice.includes("session"))!, /\n- \*\*cost:\*\* \\\$0\.12$/);
 			assert.match(app.widget!.render(220)[0]!, /last read 125ms recorded/);
 			for (const width of [26, 12]) {
@@ -1073,6 +1075,11 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 				assert.ok(visibleWidth(row!) <= width);
 				assert.match(row!, width === 26 ? /^✓ D1\.1 \[W\] complete · / : /^✓ D1\.1/, "reference precedes optional metrics");
 			}
+			// A recovery result did not prove termination, so the workflow stays in the active view.
+			app.sessionEntries.push({ type: "custom_message", customType: "subagent-direct-result", content, details: { ...details, recovery: true }, display: true });
+			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices; return undefined; };
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.match(rows.find((row) => row.startsWith("  "))!, /^  ⚠ D1\.1 · worker · Search audit · needs attention: worker termination unproved/);
 		});
 	});
 });

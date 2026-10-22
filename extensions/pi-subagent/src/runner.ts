@@ -979,6 +979,11 @@ export class IsolatedRunner {
 		})) };
 	}
 
+	/** True while a live productive run holds this root's lease; the lease does not name its request. */
+	async hasProductiveRunLease(root: string): Promise<boolean> {
+		return await this.store.hasProductiveRunLease(root);
+	}
+
 	/** Classify orphaned work under the same repository lease as productive execution.
 	 * Status remains read-only; Main alone chooses any subsequent action. */
 	async recoverRepository(root: string): Promise<{ requests: RunResponse[]; invalidIds: string[]; leaseBusy: boolean }> {

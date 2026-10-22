@@ -300,7 +300,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				const local = directTasks.get(record.taskId);
 				let task = grouped.get(record.taskId);
 				if (!task) grouped.set(record.taskId, task = { id: record.taskId, name: record.taskId,
-					status: local?.recovery ? "admission retained" : local ? "observed locally" : "recorded only; not proof of running or completion",
+					status: local?.recovery ? "admission retained" : local ? "observed locally"
+						// A recovery result did not prove worker termination, so it stays visible for recovery.
+						: results.get(record.taskId)?.recovery ? "needs attention: worker termination unproved"
+						: results.get(record.taskId)?.outcome ?? "recorded only; not proof of running or completion",
 					...(results.get(record.taskId)?.cost === undefined ? {} : { cost: results.get(record.taskId)!.cost }),
 					...(local?.recovery ? { recovery: local.recovery } : {}), canClose: Boolean(local?.close),
 					...(local?.stopWorker ? { stoppable: local.stopWorker.running() } : {}), workers: [], tabs: [] });
