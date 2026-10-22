@@ -118,4 +118,8 @@ test("lists an ordinary conflict without check-attr --source, which Git before 2
 	const [file] = (await new GitConflicts({ exec }).list(root)).files;
 	assert.equal(file!.blocks.length, 1);
 	assert.equal(file!.note, undefined);
+	// An untracked .gitattributes can change the attributes Git merged with, so HEAD's view is read.
+	await mkdir(join(root, "d"));
+	await writeFile(join(root, "d/.gitattributes"), "");
+	await assert.rejects(new GitConflicts({ exec }).list(root), /unknown option `source'/);
 });
