@@ -106,6 +106,7 @@ test("lists an ordinary conflict without check-attr --source, which Git before 2
 		git("commit", "-qm", message);
 	};
 	git("init", "-q", "-b", "main");
+	await writeFile(join(root, ".gitattributes"), "");
 	await commit("base", "base\n");
 	git("checkout", "-qb", "topic");
 	await commit("topic", "topic\n");
@@ -118,8 +119,13 @@ test("lists an ordinary conflict without check-attr --source, which Git before 2
 	const [file] = (await new GitConflicts({ exec }).list(root)).files;
 	assert.equal(file!.blocks.length, 1);
 	assert.equal(file!.note, undefined);
-	// An untracked .gitattributes can change the attributes Git merged with, so HEAD's view is read.
+	// An untracked or hidden .gitattributes can change the attributes Git merged with, so HEAD's view is read.
 	await mkdir(join(root, "d"));
 	await writeFile(join(root, "d/.gitattributes"), "");
+	await assert.rejects(new GitConflicts({ exec }).list(root), /unknown option `source'/);
+	await rm(join(root, "d"), { recursive: true });
+	execFileSync("git", ["update-index", "--assume-unchanged", ".gitattributes"], { cwd: root, env });
+	await writeFile(join(root, ".gitattributes"), "f.txt conflict-marker-size=9\n");
+	assert.equal(git("diff", "--name-only", "HEAD").toString(), "f.txt\n");
 	await assert.rejects(new GitConflicts({ exec }).list(root), /unknown option `source'/);
 });

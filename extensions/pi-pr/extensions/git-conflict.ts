@@ -204,10 +204,12 @@ export class GitConflicts {
 		// Git merged with HEAD's or the merged attributes; when those views differ, its markers are unknown.
 		const attributes = await readAttributes([]);
 		// `--source` needs Git 2.40, so read HEAD's view only when a tracked, untracked, or ignored
-		// .gitattributes differs from HEAD; check-attr reads all of them from the worktree.
+		// .gitattributes differs from HEAD; check-attr reads all of them from the worktree. Git diff
+		// skips files marked assume-unchanged (lowercase tag) or skip-worktree (S), so count those too.
 		const pathspec = ["--", ":(glob)**/.gitattributes"];
 		const changed = (await runChecked(this.exec, "git", ["diff", "--name-only", "HEAD", ...pathspec], options)).stdout
-			|| (await runChecked(this.exec, "git", ["ls-files", "--others", ...pathspec], options)).stdout;
+			|| (await runChecked(this.exec, "git", ["ls-files", "--others", ...pathspec], options)).stdout
+			|| (await runChecked(this.exec, "git", ["ls-files", "-v", ...pathspec], options)).stdout.split("\n").some((line) => /^(?:[a-z]|S) /.test(line));
 		const headAttributes = changed ? await readAttributes(["--source=HEAD"]) : attributes;
 		// An unspecified `merge` attribute uses merge.default, then the text driver. A configured
 		// driver wins over a built-in name, and check-attr prints a driver named `set` like a bare attribute.
