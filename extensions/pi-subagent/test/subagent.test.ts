@@ -1315,19 +1315,32 @@ test("an oversized exact answer in an 8-task request succeeds with a bounded, re
 			assert.deepEqual(message.details.entries.map(({ status }: any) => status), Array(8).fill("succeeded"));
 			const [, file] = message.content.match(/é\n\n\[Answer truncated to 5120 of 8000 bytes; read the full answer at (\S+answer-[0-9a-f]{32}\.md)\]/)!;
 			assert.equal(await readFile(file!, "utf8"), large);
+			assert.equal(message.details.entries[0].answerFile, file);
+			assert.match(message.content, /Answer recovery \(full files\):\n- parallel:parallel:0 · full answer:/);
 			assert.equal(message.details.tabs.find(({ entryId }: any) => entryId === "parallel:parallel:0").sessionFile, join(dirname(file!), "session.jsonl"));
 			assert.ok(fake.calls.some((args) => args[1] === "prompt" && args[3]!.includes("Final answer budget: 5120 bytes, conclusions first.")));
 		});
 	});
 });
 
-test("a chain passes an oversized exact answer in full to {previous}", async () => {
+for (const reader of ["read", "bash"]) test(`a chain passes an answer above the per-argument limit through a private task file with ${reader}`, async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
+		const roleFile = join(agentDir, "config", "pi-subagent", "worker.md");
+		await writeFile(roleFile, (await readFile(roleFile, "utf8")).replace("tools: [read]", `tools: [${reader}]`));
 		await herdrEnvironment(async (cwd) => {
-			const large = "é".repeat(12_000);
-			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("first") ? large : "final exact");
-			const app = harness({ cwd, herdr: fake.exec });
+			const large = "é".repeat(80_000);
+			const fake = fakeHerdr(cwd, async (prompt) => {
+				if (prompt.startsWith("first")) return large;
+				const taskFile = JSON.parse(prompt.match(/complete task packet at ("[^"]+")/)![1]!);
+				assert.ok((await readFile(taskFile, "utf8")).startsWith(`next: ${large}\n\n`));
+				assert.equal((await stat(taskFile)).mode & 0o777, 0o600);
+				return "final exact";
+			});
+			const app = harness({ cwd, herdr: async (args) => {
+				assert.ok(args.every((arg) => Buffer.byteLength(arg) < 128 * 1024), "Herdr arguments must fit Linux's per-argument limit");
+				return fake.exec(args);
+			} });
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("chain", { chain: [
 				{ role: "worker", name: "First", task: "first", access: "read" },
@@ -1335,8 +1348,25 @@ test("a chain passes an oversized exact answer in full to {previous}", async () 
 			] }, undefined, undefined, app.ctx);
 			await waitFor(() => app.sentMessages.length === 1);
 			const prompts = fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt");
-			assert.ok(prompts[1]![3]!.startsWith(`next: ${large}\n\n`));
-			assert.match(app.sentMessages[0]!.message.content, /Answer truncated to 20480 of 24000 bytes/);
+			assert.ok(prompts[1]![3]!.startsWith(`Use ${reader} to read the complete task packet`));
+			assert.deepEqual(app.sentMessages[0]!.message.details.entries.map(({ status }: any) => status), ["succeeded", "succeeded"]);
+			assert.match(app.sentMessages[0]!.message.content, /Answer truncated to 20480 of 160000 bytes/);
+		});
+	});
+});
+
+test("a large task with no Role file reader fails before tab creation", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		const roleFile = join(agentDir, "config", "pi-subagent", "worker.md");
+		await writeFile(roleFile, (await readFile(roleFile, "utf8")).replace("tools: [read]", "tools: []"));
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			const app = harness({ cwd, herdr: fake.exec });
+			await assert.rejects(app.tool.execute("large", {
+				role: "worker", name: "Large", task: "x".repeat(128 * 1024), access: "read",
+			}, undefined, undefined, app.ctx), /require read or bash in the Role/);
+			assert.equal(fake.calls.length, 0);
 		});
 	});
 });
