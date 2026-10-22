@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { Check, Errors } from "typebox/value";
+import { Errors } from "typebox/value";
 
 export const GOAL_ENTRY = "pi-goal";
 export const CONTEXT_MESSAGE = "pi-goal-context";
@@ -63,11 +63,11 @@ function checkedInput(params: unknown): GoalInput {
 	const action = (params as { action?: unknown }).action;
 	if (typeof action !== "string" || !Object.hasOwn(Actions, action)) throw new Error("action must be create, get, complete, or drop.");
 	const schema = Actions[action as keyof typeof Actions];
-	if (Check(schema, params)) return params as GoalInput;
-	const issue = [...Errors(schema, params)][0];
+	const issue = Errors(schema, params)[0];
+	if (!issue) return params as GoalInput;
 	// TypeBox reports an unexpected property as a false subschema at that property's path.
-	const message = !issue ? "is invalid" : issue.keyword === "boolean" ? "is not allowed" : issue.message;
-	throw new Error(`Invalid goal ${action} arguments: ${issue?.instancePath || "/"} ${message}.`);
+	const message = issue.keyword === "boolean" ? "is not allowed" : issue.message;
+	throw new Error(`Invalid goal ${action} arguments: ${issue.instancePath || "/"} ${message}.`);
 }
 
 function checkedEvidence(goal: Goal, items: Evidence[]): Evidence[] {
@@ -97,17 +97,18 @@ function goalRecord(entry: SessionEntry): Goal | undefined {
  * goal's first record. Cache reads are excluded: each turn rereads the cached prefix, which measures context size.
  */
 export function branchGoal(branch: SessionEntry[]): { goal: Goal; used: number } | undefined {
-	let latest: { goal: Goal; start: number } | undefined;
-	branch.forEach((entry, index) => {
-		const goal = goalRecord(entry);
-		if (goal) latest = { goal, start: latest?.goal.id === goal.id ? latest.start : index };
-	});
-	if (!latest) return undefined;
+	let goal: Goal | undefined;
 	let used = 0;
-	for (const entry of branch.slice(latest.start + 1)) {
-		if (entry.type === "message" && entry.message.role === "assistant") used += entry.message.usage.input + entry.message.usage.cacheWrite + entry.message.usage.output;
+	for (const entry of branch) {
+		const record = goalRecord(entry);
+		if (record) {
+			if (record.id !== goal?.id) used = 0;
+			goal = record;
+		} else if (goal && entry.type === "message" && entry.message.role === "assistant") {
+			used += entry.message.usage.input + entry.message.usage.cacheWrite + entry.message.usage.output;
+		}
 	}
-	return { goal: latest.goal, used };
+	return goal ? { goal, used } : undefined;
 }
 
 function budgetLines(goal: Goal, used: number): string[] {
