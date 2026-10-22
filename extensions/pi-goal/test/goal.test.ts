@@ -139,9 +139,22 @@ test("goal create, get, and complete require evidence for every deliverable", as
 	assert.equal((await h.call(evidence([["objective", "git status is clean"]]))).status, "complete");
 });
 
-test("settle appends a hidden continuation after the assistant's final message and keeps prior drafts", async () => {
-	const prior: Handler = (event) => ({ entries: [...event.entries, { type: "custom", customType: "other", data: 1 }] });
-	const h = harness({ before: prior });
+test("persisted get and terminal records retain usage, and a replacement goal resets it", async () => {
+	const h = harness();
+	h.assistant([{ type: "text", text: "Before the goal." }], 100);
+	await h.call({ action: "create", objective: "Ship" });
+	h.assistant([{ type: "text", text: "Working." }], 30, 12, 100, 8);
+	const fetched = await h.call({ action: "get" });
+	assert.deepEqual(branchGoal(h.manager.getBranch()), { goal: fetched, used: 50 });
+	const done = await h.call({ action: "complete", evidence: [{ deliverable: "objective", evidence: "Tests pass." }] });
+	h.assistant([{ type: "text", text: "After completion." }], 2, 3, 100, 5);
+	assert.deepEqual(branchGoal(h.manager.getBranch()), { goal: done, used: 60 });
+	const replacement = await h.call({ action: "create", objective: "Next goal" });
+	assert.deepEqual(branchGoal(h.manager.getBranch()), { goal: replacement, used: 0 });
+});
+
+test("settle appends a hidden continuation after the assistant's final message and keeps prior compaction drafts", async () => {
+	const h = harness({ before: autoCompactDraft });
 	await h.call({ action: "create", objective: "Ship", deliverables: ["tests pass"], token_budget: 500 });
 	h.assistant([{ type: "text", text: "Started." }], 10, 5);
 	const injected = await h.handlers.get("before_agent_start")![0]!({}, h.ctx);
@@ -149,8 +162,9 @@ test("settle appends a hidden continuation after the assistant's final message a
 	assert.match(injected.message.content, /<objective>\nShip\n<\/objective>[\s\S]*- tests pass[\s\S]*Tokens remaining: 485/);
 
 	assert.equal(await h.settle(), true);
-	const [other, draft] = h.manager.getBranch().slice(-2);
-	assert.equal(other?.type === "custom" && other.customType, "other");
+	const [prior, draft] = h.manager.getBranch().slice(-2);
+	assert.equal(prior?.type === "compaction" && prior.summary, "SUMMARY");
+	assert.equal(h.continuations().length, 1);
 	assert.ok(draft?.type === "custom_message");
 	assert.equal(draft.display, false);
 	assert.match(String(draft.content), /^Continue the active goal[\s\S]*<objective>\nShip[\s\S]*not from memory/);
@@ -171,13 +185,13 @@ test("goal yields to an existing continuation and keeps a later handler's draft"
 	assert.deepEqual(both.manager.getBranch().slice(-2).map((entry) => entry.type === "custom_message" && entry.customType), [CONTINUATION_MESSAGE, "pi-pr-workflow"]);
 });
 
-for (const order of ["before", "after"] as const) test(`goal continuation coexists with pi-auto-compact ${order} it`, async () => {
-	const h = harness(order === "before" ? { before: autoCompactDraft } : { after: () => autoCompactDraft });
+test("goal continuation coexists with pi-auto-compact after it", async () => {
+	const h = harness({ after: () => autoCompactDraft });
 	await h.call({ action: "create", objective: "Ship" });
 	assert.equal(await h.settle(), true);
 	const branch = h.manager.getBranch();
 	assert.equal(branch.at(-1)?.type, "custom_message");
-	assert.equal(branch.some((entry) => entry.type === "compaction"), order === "before");
+	assert.equal(branch.some((entry) => entry.type === "compaction"), false);
 	assert.equal(h.continuations().length, 1);
 });
 
