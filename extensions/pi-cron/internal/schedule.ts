@@ -83,7 +83,7 @@ export function nextRunAt(schedule: Schedule, now: number, anchor: number): numb
 
 export function formatInstant(instant: number, timeZone?: string): string {
 	return new Intl.DateTimeFormat("en-GB", {
-		...(timeZone ? { timeZone } : {}), hourCycle: "h23",
+		timeZone, hourCycle: "h23",
 		year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
 	}).format(new Date(instant));
 }

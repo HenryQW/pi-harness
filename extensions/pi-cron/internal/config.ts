@@ -123,7 +123,6 @@ function parseJob(value: unknown): Job {
 			if (!ENV_NAME.test(name)) throw new Error(`${label} env has an invalid variable name: ${name}`);
 			if (typeof entry !== "string" || entry.includes("\0")) throw new Error(`${label} env.${name} must be a string`);
 		}
-		return Object.fromEntries(entries) as Record<string, string>;
 	});
 	if ((raw.prompt === undefined) === (raw.promptFile === undefined)) throw new Error(`${label} needs exactly one of prompt or promptFile`);
 	optional(raw.prompt, (candidate) => text(candidate, `${label} prompt`));
