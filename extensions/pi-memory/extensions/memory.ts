@@ -713,14 +713,13 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	const state: {
 		config?: MemoryConfig;
 		stores?: Record<Target, MemoryStore>;
-		snapshotBlocks?: string[];
-		conflictWarnings: string[];
+		promptSection: string;
 		initError?: string;
 		observedReviewSystem: boolean;
 		rememberQueue: string[];
 		conflictQueue: { mutation: MemoryMutation; signal?: AbortSignal }[];
 		sessionGeneration: number;
-	} = { conflictWarnings: [], observedReviewSystem: false, rememberQueue: [], conflictQueue: [], sessionGeneration: 0 };
+	} = { promptSection: "", observedReviewSystem: false, rememberQueue: [], conflictQueue: [], sessionGeneration: 0 };
 	let clearDreamActivity: (() => void) | undefined;
 
 	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<boolean> => {
@@ -945,8 +944,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.conflictQueue = [];
 		state.config = undefined;
 		state.stores = undefined;
-		state.snapshotBlocks = undefined;
-		state.conflictWarnings = [];
+		state.promptSection = "";
 		state.initError = undefined;
 		state.observedReviewSystem = false;
 		try {
@@ -1019,10 +1017,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 
 			const snapshotBlocks = [renderBlock("memory", memory.entries, config, conflictWarnings), renderBlock("user", user.entries, config, conflictWarnings)];
+			const blocks = [...snapshotBlocks, ...conflictWarnings].filter(Boolean).join("\n\n");
 			state.config = config;
 			state.stores = stores;
-			state.snapshotBlocks = snapshotBlocks;
-			state.conflictWarnings = conflictWarnings;
+			state.promptSection = `${blocks ? `${blocks}\n\n` : ""}${MEMORY_CHECK}`;
 
 			const memoryChars = memory.entries.join(ENTRY_DELIMITER).length;
 			const userChars = user.entries.join(ENTRY_DELIMITER).length;
@@ -1226,8 +1224,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			event.systemPromptOptions.sections[PROMPT_SECTION] = `WARNING: persistent memory is DISABLED this session — initialization failed: ${sanitizeName(state.initError)} Fix ${configStore.path} and restart.`;
 			return;
 		}
-		if (!state.snapshotBlocks) return;
-		const blocks = [...state.snapshotBlocks, ...state.conflictWarnings].filter(Boolean).join("\n\n");
-		event.systemPromptOptions.sections[PROMPT_SECTION] = `${blocks ? `${blocks}\n\n` : ""}${MEMORY_CHECK}`;
+		if (!state.promptSection) return;
+		event.systemPromptOptions.sections[PROMPT_SECTION] = state.promptSection;
 	});
 }
