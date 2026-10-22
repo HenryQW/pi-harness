@@ -38,7 +38,6 @@ async function worktreeGeneration(gitDir: string): Promise<string> {
 /** Notes files are untrusted user data. Invalid records throw so callers preserve them. */
 export function parseNotes(raw: string): NotesRecord {
 	const data: unknown = JSON.parse(raw);
-	if (!data || typeof data !== "object" || Array.isArray(data)) throw new TypeError("notes config must be an object");
 	const input = data as Record<string, unknown>;
 	if (Object.keys(input).sort().join(",") !== "generation,gitDir,notes,repository,worktree"
 		|| typeof input.repository !== "string" || !isAbsolute(input.repository)
