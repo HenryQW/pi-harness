@@ -68,6 +68,10 @@ Local commits require an existing commit and an attached branch. They never fetc
 
 `pi_git_pr` permits creation, local publication, and sync onto the PR head, not the base. It stops before feedback, CI repair, base rebase, waiting, or merging. Existing PR bases, titles, and bodies do not change.
 
+To delegate publication, delegate before a workflow starts. Pass the authorized work scope, base intent, and repository-local upstream consent, not a parent `runId`. The child calls `pi_git_pr` and follows its own same-session skill handoff.
+
+Run IDs are session-local. An active parent workflow stays parent-owned; parent and child must not publish concurrently. A foreign or stale run ID stops the call; it does not start a new workflow. Direct workers must keep their required JSON completion object, with the PR URL in `answer`, instead of a plain URL.
+
 An explicit `base` must match the existing PR base or configured/default creation base. Another creation base needs permission for repository-local `gh-merge-base`. Inferred targets need specific upstream consent through `allowUpstream: true` for one invocation, never global configuration permission.
 
 ### Standalone merge from main

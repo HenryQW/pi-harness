@@ -9,6 +9,7 @@ import {
 import pullRequestExtension from "../extensions/pr.ts";
 import { StaleCiCollect } from "../extensions/pr-ci.ts";
 import { StaleSweepStart } from "../extensions/pr-comment-sweep.ts";
+import { exactDirectAnswer } from "../../pi-subagent/src/direct-herdr.ts";
 
 const herdrEnv = process.env.HERDR_ENV;
 before(() => { delete process.env.HERDR_ENV; });
@@ -40,7 +41,15 @@ for (const [route, bounded] of [["create", false], ["publish-work", false], ["sw
 		return { name, filePath, baseDir: dirname(filePath), sourceInfo: { origin: "package", path: filePath } };
 	});
 	const manager = SessionManager.inMemory("/repo");
-	manager.appendMessage({ role: "user", content: [{ type: "text", text: "/pr" }], timestamp: Date.now() });
+	const prompt = bounded ? "Publish the authorized work. Return a JSON completion object.\n\nTurn identity: delegated-pr:1" : "/pr";
+	manager.appendMessage({ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() });
+	const appendAnswer = (text: string) => manager.appendMessage({
+		role: "assistant", content: [{ type: "text", text }], stopReason: "stop",
+		api: "openai-responses", provider: "openai", model: "probe", timestamp: Date.now(),
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	});
+	const directAnswer = () => exactDirectAnswer(manager.getBranch().map((entry) => JSON.stringify(entry)).join("\n"), prompt, undefined, true);
 	const ctx = {
 		cwd: "/repo", hasUI: !bounded, mode: "rpc", signal: new AbortController().signal,
 		isIdle: () => !busy, sessionManager: manager,
@@ -117,8 +126,14 @@ for (const [route, bounded] of [["create", false], ["publish-work", false], ["sw
 		if (bounded) {
 			busy = true;
 			await tools.get("pi_git_pr")!.execute("start", { base: "main", allowUpstream: true }, ctx.signal, undefined, ctx as never);
-			assert.equal(await session._runBeforeSettleBoundary(), true);
-			assert.match(String((manager.getBranch().at(-1) as { content: unknown }).content), new RegExp(`pi-pr-${route}`));
+			appendAnswer("The reserved skill will continue publication.");
+			assert.throws(directAnswer, /must be a JSON completion object/);
+			assert.equal(await session._runBeforeSettleBoundary(), true, "the handoff answer must continue, not settle the task");
+			const handoff = manager.getBranch().at(-1)!;
+			assert.equal(handoff.type, "custom_message");
+			if (handoff.type !== "custom_message") throw new Error("Missing hidden workflow entry");
+			assert.equal(handoff.display, false);
+			assert.match(String(handoff.content), new RegExp(`pi-pr-${route}`));
 			assert.equal(await session._runBeforeSettleBoundary(), false, "launch is consumed exactly once");
 		} else await command.handler("", ctx as ExtensionCommandContext);
 		if (staleRoute) {
@@ -136,12 +151,7 @@ for (const [route, bounded] of [["create", false], ["publish-work", false], ["sw
 			...(route === "create" ? { title: "Create PR", body: "" } : {}),
 		}, ctx.signal, undefined, ctx as never);
 		busy = true;
-		manager.appendMessage({
-			role: "assistant", content: [{ type: "text", text: "Published." }], stopReason: "stop",
-			api: "openai-responses", provider: "openai", model: "probe", timestamp: Date.now(),
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-		});
+		appendAnswer(bounded ? JSON.stringify({ outcome: "succeeded", answer: "https://github.com/acme/project/pull/42" }) : "Published.");
 		const loadsBeforeContinuation = loads;
 		if (bounded) {
 			assert.equal(await session._runBeforeSettleBoundary(), false, "publication must not authorize feedback or merge");
@@ -149,6 +159,7 @@ for (const [route, bounded] of [["create", false], ["publish-work", false], ["sw
 			assert.match(notifications.join("\n"), /authorization stops before sweep/);
 			busy = false;
 			await runner.emit({ type: "agent_settled" });
+			assert.equal(directAnswer(), "https://github.com/acme/project/pull/42", "completion must cross hidden entries back to the original prompt");
 			await assert.rejects(tools.get(route === "create" ? "pi_pr_create" : "pi_pr_publish_work")!.execute("expired", {
 				runId: "11111111-1111-4111-8111-111111111111", action: "publish",
 				...(route === "create" ? { title: "Create PR", body: "" } : {}),

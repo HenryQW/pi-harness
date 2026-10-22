@@ -194,7 +194,13 @@ Activity uses the existing session sample and file-size cache. The extension ign
 
 ## Isolated contract
 
-An isolated request has one durable ID, one goal, and 1 to 8 typed tasks:
+An isolated request has one durable ID, one goal, and 1 to 8 typed tasks.
+
+New worktrees use `.worktrees/subagent-<name>-<24hex>` and branch `pi-subagent/subagent-<name>-<24hex>`. The name uses the request and task IDs. Text tasks also include `text-<attempt>`. Integration checkouts use the request ID and `integration-<generation>`. Each name component has at most 24 characters; the full readable part has at most 72. Names use lowercase ASCII letters, digits, and hyphens. The 24-hex identity suffix keeps names distinct when readable parts are shortened or normalized.
+
+Herdr workspace labels use the worker worktree name. Worker tab labels add the model class. Names never use goals, requirements, or other free-form task text. Saved opaque worktree names and their Herdr labels stay unchanged. Resume and cleanup use the exact saved allocations; the extension does not rename existing resources.
+
+For example:
 
 ```json
 {
@@ -271,13 +277,13 @@ After readiness, use `subagent_stage revise` with the exact candidate, generatio
 
 To select work by label, open `/subagent` without arguments. First, a **Current subagent work** report shows the work that local and saved evidence proves is running: locally owned direct workflows with a running worker, and active isolated requests while a live run holds the repository lease. The report lists active requests without a live lease as interrupted, and recorded-only direct work as unverified. A live lease does not identify its request, so several active requests in one checkout all show as working. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout. This includes requests launched in other sessions. Select an isolated request. Then select **Inspect status and recovery**.
 
-The menu also shows requests whose saved parent checkout no longer exists, in their own **Orphaned · parent checkout removed** group. You can open this view from any checkout of the same repository. The saved worker or integration path identifies the primary repository. Orphaned requests have the same **Close and delete worktrees (discard work)** action, but no inspection or follow-up actions. The extension reads their original state directories; it does not recreate the removed parent checkout. Unreadable files stay preserved and are reported.
+The menu also shows requests whose saved parent checkout no longer exists, in their own **Orphaned · parent checkout removed** group. Saved `running` and `pending` states have a `saved` prefix and an `unverified` suffix. The report lists them under **Unverified**, never **Working**, even if the current checkout has a live lease. These labels do not change saved state or prove completion. Orphaned requests with retained resources or `needs_attention` show under **Needs attention**. You can open this view from any checkout of the same repository. The saved worker or integration path identifies the primary repository. Orphaned requests have the same **Close and delete worktrees (discard work)** action, but no inspection or follow-up actions. The extension reads their original state directories; it does not recreate the removed parent checkout. Unreadable files stay preserved and are reported.
 
 This launches a Herdr tab without focus, with the configured `scout` Role on the configured `fast` route. The tab runs a read-access task with the resources of the Role. Its prompt contains bounded saved status, including retained paths, but not the raw launch environment or session transcripts. The analysis stays in that tab and does not queue a Main turn. The tab shows in the direct list with its own reference and name, such as `D9.1 · scout · Inspect <request ID>`. The extension records the tab and session file for recovery, even if the launch becomes uncertain.
 
 Before any stage or recovery action, the read-only `subagent_status` tool stays Main's authority for exact identities. If Herdr, the `scout` Role, or the fast route is not available, inspection fails and does not change the request. Main can then use `subagent_status`.
 
-For older work, choose Refresh or completed/history. The extension shows a warning for invalid state IDs and preserves them. Direct recovery still works outside Git or when isolated inventory is not available. The browse action does not resume work or change resources. Direct **Close/cancel-and-release** is an explicit termination action.
+Both isolated groups hide terminal requests by default: `completed`, `aborted`, `final_failed`, and `superseded`. Requests with retained resources or unresolved recovery stay visible. Select **Completed / history** to see all saved requests; **Refresh** reloads the current view. The filter does not delete records. Without interactive UI, the request list includes history. The extension shows a warning for invalid state IDs and preserves them. Direct recovery still works outside Git or when isolated inventory is not available. The browse action does not resume work or change resources. Direct **Close/cancel-and-release** is an explicit termination action.
 
 For a locally active unsealed isolated changeset, choose **Send follow-up instructions** to open a native multiline editor. A submission queues the instruction, not a completed revision. Choose **Edit queued instructions** to withdraw *all still-pending* instructions for that selected task before the editor opens. Their full text shows in FIFO order, with blank lines between them. An explicit submission queues **one replacement** at the end. If you cancel, the withdrawn instructions stay removed.
 
@@ -400,7 +406,7 @@ One confirmation permits permanent deletion of committed, uncommitted, and ignor
 
 Each resource is checked again before removal. A live productive lease or local job blocks the action. Uncertain allocations, changed branch tips, locked or redirected checkouts, and other Herdr panes inside a checkout block that resource. Initialized submodules and index flags that hide clean-state evidence also require separate inspection. If Herdr cannot be inspected, checkouts stay in place.
 
-Main cannot run inside a checkout selected for deletion. A session change stops further removal. Only this request's recorded `pi-subagent/subagent-<24hex>` branches and their exact primary `.worktrees/` paths can be removed. The primary checkout is never removed.
+Main cannot run inside a checkout selected for deletion. A session change stops further removal. Only this request's recorded `pi-subagent/subagent-<name>-<24hex>` branches, saved legacy `pi-subagent/subagent-<24hex>` branches, and their exact primary `.worktrees/` paths can be removed. The primary checkout is never removed.
 
 To close and delete many requests, select **Select multiple…** in `/subagent`, select the requests, then select **Continue** and **Close and delete worktrees (discard work)**. The command shows the review of each request. Then one confirmation covers the unblocked resource groups of all of them. The same menu can close all owned workers of each selected direct workflow that can close. The command reports the number of selected rows that the action skipped.
 
@@ -408,7 +414,7 @@ The report lists removed, skipped, and failed resources. After complete cleanup,
 
 ### Prune leftover worktrees
 
-Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-` plus 24 hex characters. The command also cleans up such branches that have no checkout. The review starts with the number of removable and blocked items. It groups the items by the exact reason that the command can remove them, or by their exact blockers, and shows each reason once. Under each reason, it identifies each item by the first 8 of its 24 hex characters. The command can remove an item only when all of these conditions are true:
+Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-<name>-<24hex>`, or the saved legacy name `pi-subagent/subagent-<24hex>`. The command also cleans up such branches that have no checkout. The review starts with the number of removable and blocked items. It groups the items by the exact reason that the command can remove them, or by their exact blockers, and shows each reason once. Under each reason, it shows the readable name, if present, and the first 8 characters of the identity suffix. The command can remove an item only when all of these conditions are true:
 
 - Its branch tip is already in Main's HEAD or in the local `origin` default-branch ref. The command does not fetch.
 - Its checkout has no tracked or untracked changes. No merge, rebase, cherry-pick, revert, or bisect is in progress.

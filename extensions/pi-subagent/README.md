@@ -136,6 +136,8 @@ Use isolated mode for checked implementation. An isolated request has one durabl
 
 Workers use Main's pinned committed branch, HEAD, and tree, not staged, unstaged, or untracked edits. Branch or HEAD changes block new waves. Candidates must be committed with no tracked or untracked changes. Ignored generated files permit candidacy but prevent automatic cleanup.
 
+New isolated worktree names use the request and task IDs, plus an identity suffix. Integration names use the request ID and `integration-<generation>`. Herdr workspace and tab labels show the worker worktree name. Names do not use goals or requirements. Saved worktrees and labels keep their exact names for recovery and cleanup.
+
 Keep the durable ID; Main can work or end its turn without polling. Inspect ready candidates with `subagent_status`.
 
 - `subagent_stage` stages exact candidates while siblings run; resolve conflicts in the integration checkout.
@@ -161,7 +163,11 @@ A direct workflow is working only when this Pi process owns it and has a running
 
 Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. In the terminal UI, `/subagent` reports (Roles, details, reviews, and results) show as colored transcript entries. The model does not get these entries. In RPC mode, they show as notifications. Without interactive UI, they show as plain text messages.
 
-Requests whose parent checkout was removed show in the **Orphaned · parent checkout removed** group from any checkout of the same repository. Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
+Requests whose parent checkout was removed show in the **Orphaned · parent checkout removed** group from any checkout of the same repository. Saved `running` or `pending` states show as `saved running · unverified` or `saved pending · unverified`, not as live work. The report lists them under **Unverified**. This does not prove completion.
+
+Both isolated groups hide terminal requests by default: `completed`, `aborted`, `final_failed`, and `superseded`. Select **Completed / history** to see them. Requests with retained resources or unresolved recovery stay visible. This filter does not delete saved records. Without interactive UI, the request list includes history.
+
+Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
 
 Select **Select multiple…** to apply one action to many rows. Select a row to mark it `[x]` or clear it, or use **Select all** or **Clear**, then select **Continue**. The next menu shows only the actions that apply. **Close and delete worktrees (discard work)** applies to isolated requests. **Close/cancel-and-release ALL owned workers** applies to direct workflows that can close. Each request shows its review, then one confirmation covers all of them.
 

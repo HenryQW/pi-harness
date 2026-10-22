@@ -97,12 +97,14 @@ async function allocate(
 		cleanup: ["worker_tab", "workspace", "worktree", "branch"].map((kind) => ({ kind: kind as any, status: "pending" })),
 	};
 	const result = await runtime.allocateWorktree({
+		requestId: "deliver-request",
 		root,
 		intent,
 		task: definition,
 		attempt,
 		onPrepared: async (worktree) => {
 			assert.equal(git(root, "branch", "--list", worktree.branch), "");
+			assert.ok(worktree.branch.startsWith(`pi-subagent/subagent-deliver-request-${definition.id}-`));
 			intent.worktree = { ...worktree };
 			},
 	}, operationContext);

@@ -457,8 +457,11 @@ const prunePlan: PrunePlan = { root: "/git", items: [
 	{ branch: "pi-subagent/subagent-d", tip: "d".repeat(40), path: "/git/.worktrees/subagent-d", ...blocked("hard", "checkout has tracked or untracked changes"), ignored: [] },
 ] };
 
-test("prune without UI only reports the review list", async () => {
-	const h = harness({ ui: false, prune: prunePlan });
+test("prune without UI reports readable names and legacy identity suffixes", async () => {
+	const h = harness({ ui: false, prune: { ...prunePlan, items: prunePlan.items.map((item, index) => ({ ...item,
+		branch: index === 0 ? `pi-subagent/subagent-${"e".repeat(24)}`
+			: index === 1 ? `pi-subagent/subagent-request-task-${"a".repeat(24)}` : item.branch,
+	})) } });
 	await h.run("prune");
 	assert.equal(h.messages.length, 1);
 	// Prunable groups come first; each group names its exact reason once.
@@ -467,13 +470,13 @@ test("prune without UI only reports the review list", async () => {
 		"- **root:** `/git`",
 		"- **prunable:** 2",
 		"- **blocked:** 3",
-		"- **IDs:** first 8 characters after pi-subagent/subagent-", "",
+		"- **IDs:** readable name, if present, and first 8 suffix characters", "",
 		"### ✓ Prunable: merged into Main HEAD; clean checkout (1)",
-		"- `a`", "",
+		"- `request-task-aaaaaaaa`", "",
 		"### ✓ Prunable: merged into origin/main; clean checkout (1)",
 		"- `b`", "",
 		"### ✗ Blocked: branch has commits not in Main HEAD; no checkout (1)",
-		"- `e`", "",
+		"- `eeeeeeee`", "",
 		"### ✗ Blocked: checkout has tracked or untracked changes (2)",
 		"- `c, d`", "",
 		"* Report only: removal requires interactive confirmation.",
@@ -652,12 +655,31 @@ test("isolated discard requires one explicit confirmation; cancel changes nothin
 	}
 });
 
+test("isolated history filtering keeps unresolved and retained requests in both groups", async () => {
+	const statuses = ["completed", "aborted", "final_failed", "superseded", "needs_attention", "completed · retained", "aborted · retained", "final_failed · retained", "superseded · retained", "saved running · unverified", "saved pending · unverified"];
+	const requests = [false, true].flatMap((orphaned) => statuses.map((status, index) => ({
+		id: `${orphaned ? "orphan" : "local"}-${index}`, name: "Goal", status: orphaned ? status : status.replace(/^saved (running|pending) · unverified$/, "$1"), orphaned, tasks: [],
+	})));
+	const h = harness({ inventory: { root: "/git", leaseLive: true, invalidIds: [], requests } });
+	h.responses.push(h.pick("Completed / history"), h.pick("Active work"), h.pick("Close"));
+	await h.run();
+	const ids = (index: number) => h.dialogs[index]!.options!.filter((label) => label.startsWith("  ")).map((label) => label.split(" · ")[0]!.trim().slice(2)).sort();
+	const visible = requests.filter((request) => !statuses.slice(0, 4).includes(request.status)).map(({ id }) => id).sort();
+	assert.deepEqual(ids(0), visible);
+	assert.deepEqual(ids(1), requests.map(({ id }) => id).sort());
+	assert.deepEqual(ids(2), visible);
+	assert.match(h.working[0]!, /orphan-9 · saved running · unverified/);
+	assert.match(h.working[0]!, /orphan-10 · saved pending · unverified/);
+	assert.match(h.working[0]!, /orphan-7 · final\\_failed · retained/);
+	assert.deepEqual(h.discarded, []);
+});
+
 test("orphaned requests show the delete action without status or follow-up actions", async () => {
 	const h = harness({ inventory: { root: "/git", leaseLive: true, invalidIds: [], requests: [{
 		id: "orphan", name: `Lost\nparent ${"goal ".repeat(40)}`, status: "aborted", orphaned: true, directory: "/state", root: "/removed", tasks: [],
 	}] } });
 	h.confirms.push(true);
-	h.responses.push((dialog) => {
+	h.responses.push(h.pick("Completed / history"), (dialog) => {
 		assert.deepEqual(dialog.options!.slice(0, 2), ["── Orphaned · parent checkout removed (1) ──", `  ✗ orphan · aborted · Lost parent ${"goal ".repeat(9)}go…`]);
 		return h.pick("orphan ·")(dialog);
 	}, (dialog) => {

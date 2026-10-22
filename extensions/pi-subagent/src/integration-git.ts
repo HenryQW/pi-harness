@@ -165,7 +165,7 @@ export class IntegrationGit {
 	}
 
 	/** Persist the prepared path/branch/base before Git is allowed to create anything. */
-	async allocate(root: string, childId: string, base: WorkspaceIdentity, onPrepared: (info: WorktreeInfo) => Promise<void>, signal: AbortSignal): Promise<GitOutcome<WorktreeInfo>> {
+	async allocate(root: string, childId: string, base: WorkspaceIdentity, onPrepared: (info: WorktreeInfo) => Promise<void>, signal: AbortSignal, nameParts?: readonly string[]): Promise<GitOutcome<WorktreeInfo>> {
 		if (!sameIdentity(await inspect(root, signal), base)) return { outcome: "drift", failure: "Main drifted before integration allocation." };
 		let prepared: WorktreeInfo | undefined;
 		try {
@@ -174,7 +174,7 @@ export class IntegrationGit {
 				if (info.baseCommit !== base.head) throw new Error("Integration base differs from recorded Main.");
 				await onPrepared(info);
 				if (!sameIdentity(await inspect(root, signal), base)) throw new Error("Main drifted before worktree add.");
-			});
+			}, nameParts);
 			if (!added) return { outcome: "blocked", failure: "Integration requires committed Git Main." };
 			if (!sameIdentity(await inspect(root, signal), base)) return unknown("Main drifted during worktree allocation; retain the worktree.", added);
 			await current(root, added, signal);

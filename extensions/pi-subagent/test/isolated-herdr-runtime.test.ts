@@ -40,7 +40,9 @@ const ROOT_PANE_ID = "pane-root";
 const WORKER_TAB_ID = "tab-worker";
 const WORKER_PANE_ID = "pane-worker";
 const AGENT_NAME = `o-${TOKEN}-agent`;
-const WORKSPACE_LABEL = workspaceLabel({ correlationToken: TOKEN });
+const LEGACY_BRANCH = `pi-subagent/subagent-${"a".repeat(24)}`;
+const READABLE_BRANCH = `pi-subagent/subagent-deliver-request-task-a-${"a".repeat(24)}`;
+const WORKSPACE_LABEL = "234567";
 const WORKER_LABEL = "implementer/fast";
 const GOAL = "Deliver the complete checked request.";
 const oid = (character: string): string => character.repeat(40);
@@ -239,8 +241,9 @@ function addOwnedTab(attempt: TaskAttempt, plan: WorkerTabAllocationPlan): Worke
 	return intent;
 }
 
-async function fullAttempt(paths: Paths, host: HerdrHostRuntime, script: ScriptedProcess): Promise<{ attempt: TaskAttempt; leasePath: string }> {
+async function fullAttempt(paths: Paths, host: HerdrHostRuntime, script: ScriptedProcess, branch = "task-a"): Promise<{ attempt: TaskAttempt; leasePath: string }> {
 	const attempt = baseAttempt(paths);
+	(attempt.allocations[0] as WorktreeAllocationIntent).worktree!.branch = branch;
 	script.push(repositoryIdentityStep(paths));
 	const workspacePlan = await host.planHostAllocation({ requestId: REQUEST_ID, goal: GOAL, kind: "workspace", task, attempt }, context()) as WorkspaceAllocationPlan;
 	addOwnedWorkspace(attempt, workspacePlan);
@@ -479,7 +482,7 @@ function preflightSteps(paths: Paths, schemaValue = schema(), status = "status: 
 	];
 }
 
-test("workspace labels stay short and opaque while worker tabs expose Role and model context", async (t) => {
+test("new workspace and tab labels use the exact readable worktree name, not task text", async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
@@ -490,12 +493,13 @@ test("workspace labels stay short and opaque while worker tabs expose Role and m
 		role: `implementation-${"w".repeat(40)}`,
 	};
 	const attempt = baseAttempt(fixture);
+	(attempt.allocations[0] as WorktreeAllocationIntent).worktree!.branch = READABLE_BRANCH;
 	script.push(repositoryIdentityStep(fixture));
 	const workspace = await host.planHostAllocation({ requestId, goal: GOAL, kind: "workspace", task: labelledTask, attempt }, context()) as WorkspaceAllocationPlan;
-	assert.equal(workspace.label, "234567");
+	assert.equal(workspace.label, READABLE_BRANCH.slice("pi-subagent/".length));
 	addOwnedWorkspace(attempt, workspace);
 	const worker = await host.planHostAllocation({ requestId, goal: GOAL, kind: "worker_tab", task: labelledTask, attempt }, context()) as WorkerTabAllocationPlan;
-	assert.equal(worker.label, `${labelledTask.role}/fast`);
+	assert.equal(worker.label, `${workspace.label}/fast`);
 	script.done();
 });
 
@@ -2463,11 +2467,13 @@ test("workspace cleanup rejects mismatched checkout and repository evidence befo
 	}
 });
 
-test("cleanup closes only exact saved tab then workspace IDs and reports absent or blocked accurately", async (t) => {
+for (const branch of [LEGACY_BRANCH, READABLE_BRANCH]) test(`cleanup keeps saved labels and closes only exact tab and workspace IDs: ${branch}`, async (t) => {
 	const fixture = await paths(t);
 	const script = new ScriptedProcess();
 	const host = runtime(fixture, script);
-	const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+	const { attempt, leasePath } = await fullAttempt(fixture, host, script, branch);
+	const workspaceLabel = (attempt.allocations.find(({ kind }) => kind === "workspace") as WorkspaceAllocationIntent).label;
+	const workerLabel = (attempt.allocations.find(({ kind }) => kind === "worker_tab") as WorkerTabAllocationIntent).label;
 	attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity(), at: 1_000 };
 	await privateLease(leasePath);
 	await writeFile(`${leasePath}.session.jsonl`, "private session\n", { mode: 0o600 });
@@ -2475,8 +2481,8 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 	script.push(
 		repositoryIdentityStep(fixture),
 		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
-		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
-		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: success({ type: "tab_info", tab: tabInfo() }) },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture, { label: workspaceLabel }) }) },
+		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: success({ type: "tab_info", tab: tabInfo({ label: workerLabel }) }) },
 		{ command: "herdr", args: ["tab", "close", WORKER_TAB_ID], result: success({ type: "ok" }) },
 		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: failure("tab_not_found") },
 		lsof(leasePath),
@@ -2492,8 +2498,8 @@ test("cleanup closes only exact saved tab then workspace IDs and reports absent 
 
 	script.push(
 		repositoryIdentityStep(fixture),
-		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
-		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture, { label: workspaceLabel }) }) },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture, { label: workspaceLabel }) }) },
 		{ command: "herdr", args: ["workspace", "close", WORKSPACE_ID], result: success({ type: "ok" }) },
 		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: failure("workspace_not_found") },
 	);

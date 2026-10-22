@@ -210,7 +210,7 @@ test("createChildWorktree sanitizes child ids and records the base commit", asyn
 	const info = await createChildWorktree(repo, "tool-1/abc def", run);
 
 	assert.ok(info);
-	assert.match(info.branch, /^pi-subagent\/subagent-[0-9a-f]{24}$/);
+	assert.match(info.branch, /^pi-subagent\/subagent-tool-1-abc-def-[0-9a-f]{24}$/);
 	assert.equal(info.path, join(repo, ".worktrees", info.branch.slice("pi-subagent/".length)));
 	assert.equal(info.cwd, info.path);
 	assert.equal(info.repoRoot, repo);
@@ -547,15 +547,24 @@ test("createChildWorktree preserves a dirty existing worktree on ID collision", 
 	assert.equal(git(repo, "branch", "--list", first.branch).includes(first.branch), true);
 });
 
-test("createChildWorktree hashes opaque IDs into valid bounded refs", async (t) => {
+test("createChildWorktree keeps readable bounded refs distinct after slug normalization or truncation", async (t) => {
 	const repo = await initializedRepository(t);
-	for (const id of ["a..b", "x.lock", "z".repeat(1_000)]) {
+	const names = new Set<string>();
+	for (const id of ["a..b", "a/b", "x.lock", "///", "z".repeat(1_000), `${"z".repeat(1_000)}x`]) {
 		const info = await createChildWorktree(repo, id);
 		assert.ok(info);
-		assert.match(info.branch, /^pi-subagent\/subagent-[0-9a-f]{24}$/);
+		assert.match(info.branch, /^pi-subagent\/subagent-[a-z0-9-]+-[0-9a-f]{24}$/);
+		assert.ok(basename(info.path).length <= 106);
+		assert.equal(names.has(info.branch), false);
+		names.add(info.branch);
 		git(repo, "check-ref-format", "--branch", info.branch);
 		assert.equal((await finalizeChildWorktree(info)).outcome, "pruned");
 	}
+	const info = await createChildWorktree(repo, "request-task-integration-2", undefined, undefined, undefined,
+		[`request-${"r".repeat(72)}`, `task-${"t".repeat(75)}`, "integration-2"]);
+	assert.ok(info);
+	assert.match(basename(info.path), /^subagent-request-r{16}-task-t{19}-integration-2-[0-9a-f]{24}$/);
+	git(repo, "check-ref-format", "--branch", info.branch);
 });
 
 test("finalizeChildWorktree preserves a clean detached-HEAD commit", async (t) => {
@@ -791,11 +800,15 @@ test("prune removes only a merged clean worktree and names each blocker", async 
 	git(unique.path, "commit", "-qm", "unique");
 	await writeFile(join(dirty.path, "draft.txt"), "draft\n");
 	git(repo, "branch", `pi-subagent/subagent-${"a".repeat(32)}`);
+	git(repo, "branch", `pi-subagent/subagent-unrelated-${"a".repeat(23)}`);
+	const legacyBranch = `pi-subagent/subagent-${"b".repeat(24)}`;
+	const legacyPath = join(repo, ".worktrees", basename(legacyBranch));
+	git(repo, "worktree", "add", "-qb", legacyBranch, legacyPath);
 	const guards = pruneGuards({ owner: basename(owned.branch), panes: [{ paneId: "w1:p2", cwds: ["/elsewhere", join(paned.path, "src")] }] });
 	const items = await inspectPruneCandidates(repo, repo, guards);
 	const reason = (branch: string) => items.find((item) => item.branch === branch)?.reason;
-	assert.equal(items.length, 5, "only helper-shaped branches are candidates");
-	assert.deepEqual(items.filter((item) => item.prunable).map(({ branch, path }) => ({ branch, path })), [{ branch: merged.branch, path: merged.path }]);
+	assert.equal(items.length, 6, "only old and new helper-shaped branches are candidates");
+	assert.deepEqual(items.filter((item) => item.prunable).map(({ branch }) => branch).sort(), [merged.branch, legacyBranch].sort());
 	assert.equal(reason(merged.branch), "merged into Main HEAD; clean checkout");
 	assert.equal(reason(unique.branch), "branch has commits not in Main HEAD");
 	assert.equal(reason(dirty.branch), "checkout has tracked or untracked changes");
@@ -803,7 +816,9 @@ test("prune removes only a merged clean worktree and names each blocker", async 
 	assert.equal(reason(paned.branch), "Herdr pane w1:p2 works inside the checkout");
 
 	const { removals, checkouts } = await removePruneCandidates(repo, repo, items.filter((item) => item.prunable), false, false, guards);
-	assert.deepEqual(removals.map(({ outcome, item }) => [outcome, item.branch]), [["removed", merged.branch]]);
+	assert.deepEqual(removals.map(({ outcome, item }) => [outcome, item.branch]).sort(), [["removed", merged.branch], ["removed", legacyBranch]].sort());
+	assert.equal(existsSync(legacyPath), false);
+	assert.equal(git(repo, "branch", "--list", legacyBranch), "");
 	assert.equal(existsSync(merged.path), false);
 	assert.equal(git(repo, "branch", "--list", merged.branch), "");
 	assert.deepEqual([...checkouts].sort(), [repo, unique.path, dirty.path, owned.path, paned.path].sort());

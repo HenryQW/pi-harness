@@ -679,6 +679,24 @@ test("inventory lists healthy requests beside preserved invalid state without re
 	await execution;
 });
 
+test("terminal inventory keeps unresolved cleanup visible without changing saved state", async (t) => {
+	const { root, runner, store } = await harness(t);
+	await runner.execute(request("terminal-inventory", [changesetTask("change")]), root);
+	const handle = await store.load(root, "terminal-inventory");
+	for (const status of ["final_failed", "superseded"] as const) {
+		handle.state.status = status;
+		handle.state.final.status = status;
+		for (const retained of [true, false]) {
+			for (const step of changesetState(handle.state, "change").attempts[0]!.cleanup) step.status = retained ? "pending" : "completed";
+			await handle.save();
+			const before = await readFile(handle.path);
+			assert.equal((await runner.listRequests(root)).requests[0]!.status, retained ? `${status} · retained` : status);
+			assert.equal((await runner.recoverRepository(root)).requests.length, retained ? 1 : 0);
+			assert.deepEqual(await readFile(handle.path), before);
+		}
+	}
+});
+
 test("queued follow-ups reuse the same worker before automatic readiness seals the candidate", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	let releaseInitial!: () => void;
@@ -3206,9 +3224,14 @@ async function discardFixture(t: test.TestContext, orphan = false, taskIds = ["c
 	return { ...fixture, worker, directory, launchRoot };
 }
 
-test("confirmed discard removes committed, dirty, ignored work and saves released aborted state", async (t) => {
+test("confirmed discard removes old and readable owned checkouts with committed, dirty, ignored work", async (t) => {
 	const { root, worker, runner, runtime, store } = await discardFixture(t);
-	const integration = (await createChildWorktree(root, "discard-integration"))!;
+	const branch = `pi-subagent/subagent-${"a".repeat(24)}`;
+	const repoRoot = await realpath(root);
+	const path = join(repoRoot, ".worktrees", branch.slice("pi-subagent/".length));
+	const integration: WorktreeInfo = { path, cwd: path, branch, repoRoot,
+		baseCommit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim() };
+	execFileSync("git", ["worktree", "add", "-qb", branch, path], { cwd: root });
 	const saved = await store.load(root, "discard-request");
 	const integrationBase = { ...saved.state.main, branch: `refs/heads/${integration.branch}` };
 	execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.com", "merge", "--no-ff", "-m", "integration", worker.branch], { cwd: integration.path, stdio: "pipe" });
@@ -3222,7 +3245,7 @@ test("confirmed discard removes committed, dirty, ignored work and saves release
 	assert.equal(plan.items[0]!.commits, 1);
 	assert.equal(plan.items[0]!.dirty, true);
 	assert.deepEqual(plan.items[0]!.ignored, ["cache/"]);
-	assert.deepEqual(plan.items[0]!.blockers, []);
+	assert.deepEqual(plan.items.map(({ blockers }) => blockers), [[], []]);
 	const results = await runner.discard(root, plan, discardGuards);
 	assert.equal(results[0]!.outcome, "removed", JSON.stringify(results));
 	await assert.rejects(readFile(join(worker.path, "worker.txt")), /ENOENT/);
@@ -3266,6 +3289,22 @@ test("a foreign Herdr pane, unavailable Herdr, a lease, or a stale session block
 	await assert.rejects(runner.discard(root, plan, { ...discardGuards, current: () => false }), /Session changed/);
 	assert.deepEqual(runtime.cleanupCalls, []);
 	assert.equal(await readFile(join(worker.path, "worker.txt"), "utf8"), "uncommitted work\n");
+});
+
+test("orphan inventory labels saved activity as unverified without changing recovery data", async (t) => {
+	const { root, directory, runner, store, runtime } = await discardFixture(t, true);
+	const handle = await store.loadFromDirectory(directory, "discard-request");
+	const beforeCalls = runtimeCallCounts(runtime);
+	for (const status of ["pending", "running"] as const) {
+		handle.state.status = status;
+		await handle.save();
+		const before = await readFile(handle.path);
+		const listed = (await runner.listOrphanRequests(root)).requests[0]!;
+		assert.equal(listed.status, `saved ${status} · unverified`);
+		assert.equal(listed.directory, directory);
+		assert.deepEqual(await readFile(handle.path), before);
+	}
+	assert.deepEqual(runtimeCallCounts(runtime), beforeCalls);
 });
 
 test("removed-parent requests are listed from another checkout and can be discarded; other repositories stay out", async (t) => {
@@ -3326,6 +3365,7 @@ test("discard refuses symbolic branch references and preserves their target", as
 test("discard includes a text attempt's retained checkout without inventing a recorded base", async (t) => {
 	const fixture = await harness(t, { executor: { run: async ({ prepare }) => {
 		const launch = await prepare();
+		assert.match(basename(launch.cwd), /^subagent-text-discard-research-text-1-[0-9a-f]{24}$/);
 		await writeFile(join(launch.cwd, "untracked.txt"), "text worker output\n");
 		return { outcome: "success", exitCode: 0, output: "answer", outputTruncated: false, stderr: "" };
 	} } });
