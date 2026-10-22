@@ -49,7 +49,7 @@ for (const [route, bounded] of [["create", false], ["publish-work", false], ["sw
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 	});
-	const directAnswer = () => exactDirectAnswer(manager.getBranch().map((entry) => JSON.stringify(entry)).join("\n"), prompt, undefined, true);
+	const directAnswer = () => exactDirectAnswer(manager.getBranch().map((entry) => JSON.stringify(entry)).join("\n"), prompt, true);
 	const ctx = {
 		cwd: "/repo", hasUI: !bounded, mode: "rpc", signal: new AbortController().signal,
 		isIdle: () => !busy, sessionManager: manager,
