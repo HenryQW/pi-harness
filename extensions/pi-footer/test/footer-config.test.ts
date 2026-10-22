@@ -6,7 +6,6 @@ import test from "node:test";
 import {
 	createFooterConfigStore,
 	FOOTER_COLOR_ROLES,
-	type FooterColorConfig,
 	paintFooter,
 	parseFooterColor,
 } from "../extensions/footer-config.ts";
@@ -124,11 +123,10 @@ test("paintFooter: token uses theme.fg, concrete color uses theme.style, missing
 	const theme = fakeTheme();
 	const tokenValue = parseFooterColor("success", noReport);
 	const colorValue = parseFooterColor("#4ec9b0", noReport);
-	const fallbackValue: FooterColorConfig["input"] = undefined;
 
 	assert.equal(paintFooter(theme as never, tokenValue, "dim", "x"), "<success>x</>");
 	assert.equal(paintFooter(theme as never, colorValue, "dim", "x"), "<color>x</>");
-	assert.equal(paintFooter(theme as never, fallbackValue, "dim", "x"), "<dim>x</>");
+	assert.equal(paintFooter(theme as never, undefined, "dim", "x"), "<dim>x</>");
 
 	assert.deepEqual(theme.fgCalls, [
 		["success", "x"],

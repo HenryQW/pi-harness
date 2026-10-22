@@ -292,7 +292,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 		});
 		pi.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
-			const output = event.message.usage?.output ?? 0;
+			const output = event.message.usage.output;
 			const milliseconds = assistantStartedAt === undefined ? 0 : assistantLastUpdateAt! - assistantStartedAt;
 			assistantStartedAt = assistantLastUpdateAt = undefined;
 			tps = milliseconds >= MIN_TPS_WINDOW_MS ? output / (milliseconds / 1000) : undefined;
