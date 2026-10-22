@@ -510,11 +510,9 @@ class CodexQuotaStatus {
 	}
 
 	private launch(slot: number, identity: SlotIdentity, refresh: QuotaRefresh): void {
-		if (this.active.has(slot)) return;
 		const task = this.refreshSlot(slot, identity, refresh);
 		this.active.set(slot, task);
 		const cleanup = () => {
-			if (this.active.get(slot) !== task) return;
 			this.active.delete(slot);
 			if (this.refreshContext === refresh) this.scheduleRefresh();
 			else this.requestRefresh();
@@ -580,8 +578,8 @@ class CodexQuotaStatus {
 		identity: SlotIdentity,
 		outcome: ParsedUsage | undefined,
 		refresh: QuotaRefresh,
-	): Promise<boolean> {
-		if (this.refreshContext !== refresh) return false;
+	): Promise<void> {
+		if (this.refreshContext !== refresh) return;
 		const finished = await this.change((state) => {
 			if (this.refreshContext !== refresh || !this.identityStillCurrent(slot, identity.accountHash)) {
 				return { value: false, write: false };
@@ -611,7 +609,6 @@ class CodexQuotaStatus {
 			return { value: true, write: true };
 		}, refresh.session.signal);
 		if (finished) this.onChange();
-		return finished ?? false;
 	}
 
 	private async release(slot: number, owner: string, signal: AbortSignal): Promise<void> {
@@ -817,11 +814,10 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		fields: { autoSwitchOn429: field(parsers.boolean(), true) },
 	});
 	registerConfigReporting(pi, [configStore]);
-	const registered = new Map<number, CodexProvider>();
+	const registered = new Set<number>();
 	const triedSlots = new Set<number>();
 	let sessionContext: ExtensionContext | undefined;
 	let automaticOpen = false;
-	let automaticCandidate: Model<any> | undefined;
 	let preserveModelChoice = false;
 	let selectingAutomatically = false;
 	let autoSwitchOn429 = true;
@@ -829,9 +825,8 @@ export default function multiCodex(pi: ExtensionAPI): void {
 
 	const registerSlot = (slot: number): void => {
 		if (slot === 1 || registered.has(slot)) return;
-		const provider = createCodexAliasProvider(native, slot);
-		pi.registerProvider(provider);
-		registered.set(slot, provider);
+		pi.registerProvider(createCodexAliasProvider(native, slot));
+		registered.add(slot);
 	};
 
 	const syncSlots = (): Set<number> => {
@@ -919,16 +914,9 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		}
 	};
 
-	const updatePendingCandidate = (ctx: ExtensionContext): void => {
-		if (!isManagedModel(ctx.model)) return;
-		const slot = selectFreshSlot(ctx, ctx.model);
-		automaticCandidate = slot ? { ...ctx.model, provider: providerForSlot(slot) } : ctx.model;
-	};
-
 	quota.setOnChange(() => {
 		if (!sessionContext) return;
 		syncSlots();
-		updatePendingCandidate(sessionContext);
 		updateFooter();
 	});
 
@@ -946,9 +934,6 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		autoSwitchOn429 = config.status === "ok" && config.value.autoSwitchOn429
 			&& !config.issues.some(({ key }) => key === "" || key === "autoSwitchOn429");
 		automaticOpen = isManagedModel(ctx.model) && !sessionHasAgentWork(ctx);
-		automaticCandidate = ctx.model;
-		// Cache-only ranking happens before background refresh starts.
-		updatePendingCandidate(ctx);
 		updateFooter(ctx);
 		quota.start(async (slot) => (await ctx.modelRegistry.getProviderAuth(providerForSlot(slot)))?.auth.apiKey);
 		if (slots.size === 0) ctx.ui.notify(NO_ACCOUNTS_MESSAGE, "warning");
@@ -962,12 +947,12 @@ export default function multiCodex(pi: ExtensionAPI): void {
 		const identity = slot ? currentIdentity(slot) : undefined;
 		const snapshot = slot ? quota.snapshot(slot) : undefined;
 		if (!automaticOpen && (preserveModelChoice || !identity || snapshot?.accountHash !== identity.accountHash || !isFiveHourLimited(snapshot, Date.now()))) return;
-		updatePendingCandidate(ctx);
 		// Close before await: no timer, refresh, queued turn, or provider event can route later.
 		automaticOpen = false;
-		const candidate = automaticCandidate;
-		if (!isManagedModel(model) || !candidate || candidate.id !== model.id || candidate.provider === model.provider) return;
-		await setModelAutomatically(candidate);
+		if (!isManagedModel(model)) return;
+		const freshSlot = selectFreshSlot(ctx, model);
+		if (!freshSlot || providerForSlot(freshSlot) === model.provider) return;
+		await setModelAutomatically({ ...model, provider: providerForSlot(freshSlot) });
 		updateFooter(ctx);
 	});
 
