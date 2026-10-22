@@ -7,6 +7,7 @@ Each context defines package-specific language and its boundary. Contexts are ad
 | Context | Domain glossary | Scope |
 | --- | --- | --- |
 | `pi-add-dir` | [Pi Add Dir](extensions/pi-add-dir/CONTEXT.md) | External instructions, Skills, file search, and directory scope |
+| `pi-advisor` | [Pi Advisor](extensions/pi-advisor/CONTEXT.md) | Opt-in second-model Review of a settled Run, graded Notes, and one Blocker Follow-up |
 | `pi-ask-question` | [Pi Ask Question](extensions/pi-ask-question/CONTEXT.md) | Explicit predefined or custom user answers |
 | `pi-auto-compact` | [Pi Auto Compact](extensions/pi-auto-compact/CONTEXT.md) | Read trim, summary compaction, and emergency task resumption |
 | `pi-bark` | [Pi Bark](extensions/pi-bark/CONTEXT.md) | Bark delivery, notification preferences, and push encryption |
@@ -36,7 +37,7 @@ Arrows mean that the first context uses a capability owned by the second, unless
 
 | Contexts | Boundary and evidence |
 | --- | --- |
-| `pi-auto-compact`, `pi-cron`, `pi-herdr-tools`, `pi-memory`, `pi-prompt-creator`, `pi-subagent` → `pi-task-models` | Consumers declare their own Model Tasks and use shared Task Profiles. Pi remains the model authority; see [ADR 017](docs/adr/017-consumer-owned-task-model-routing.md). |
+| `pi-advisor`, `pi-auto-compact`, `pi-cron`, `pi-herdr-tools`, `pi-memory`, `pi-prompt-creator`, `pi-subagent` → `pi-task-models` | Consumers declare their own Model Tasks and use shared Task Profiles. Pi remains the model authority; see [ADR 017](docs/adr/017-consumer-owned-task-model-routing.md). |
 | `pi-cron` → `pi-subagent` | Scheduled jobs use Role launch policy and the bounded executor, not direct shared-checkout delegation or checked integration; see [ADR 020](docs/adr/020-pi-cron-in-session-scheduler.md). |
 | `pi-prompt-creator` → `pi-subagent` | Prompt analysis uses the bounded executor for a tool-free child, not a Role changeset; see [prompt analysis](extensions/pi-prompt-creator/README.md#analysis). |
 | `pi-herdr-tools`, `pi-subagent`, `pi-pr` → `pi-herdr` | The shared package supplies Herdr access. Consumers retain conversation, worker, and PR workflow ownership; see [ADR 002](docs/adr/002-shared-herdr-cli-client.md). |
@@ -44,6 +45,7 @@ Arrows mean that the first context uses a capability owned by the second, unless
 | `pi-footer` ← `pi-pr`, `pi-multi-codex`, `pi-codegraph`, `pi-subagent` | The footer displays PR, quota, and index status and counts completed subagent usage. It does not own those workflows; see [footer display](extensions/pi-footer/README.md#use). |
 | `pi-bark`, `pi-memory` ← `pi-herdr-tools` | Bark uses the Pi session name also shown by Herdr, without reading Herdr state. Memory recognizes side-thread children to omit parent-only injection; see their [Bark](extensions/pi-bark/README.md#automatic-status-notifications) and [Memory](extensions/pi-memory/README.md#works-with) guidance. |
 | `pi-goal`, `pi-auto-compact`, `pi-pr` | All three handle Pi's final-settlement boundary. Each keeps earlier boundary entries; Pi Goal yields when another handler already continues. See [Pi Goal flow](extensions/pi-goal/README.md#flow). |
+| `pi-advisor` ← `pi-goal`, `pi-auto-compact`, `pi-pr` | Pi Advisor reviews a Run only after Pi settles it, so boundary continuations by these extensions stay in the reviewed Run. It starts at most one follow-up Run for each user prompt. See [Pi Advisor flow](extensions/pi-advisor/README.md#flow). |
 | Config-owning extensions → `pi-config-store` | Shared loading and reporting enforce safe config rules; each extension owns its schema, generated state, and home. Consumers use owner APIs or events, not direct cross-owner file access; see [ADR 004](docs/adr/004-extension-config-safety.md) and [ADR 018](docs/adr/018-extension-config-homes.md). |
 
 Scope boundaries also matter:

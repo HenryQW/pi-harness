@@ -31,6 +31,16 @@ importers:
         specifier: 1.3.0
         version: 1.3.0
 
+  extensions/pi-advisor:
+    dependencies:
+      '@henryqw/pi-task-models':
+        specifier: ^9.0.0
+        version: link:../pi-task-models
+    devDependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: 1.3.0
+        version: 1.3.0
+
   extensions/pi-ask-question:
     dependencies:
       typebox:

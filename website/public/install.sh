@@ -18,6 +18,7 @@ RETIRED_PACKAGE_SOURCES="npm:@henryqw/pi-auto-dag npm:@henryqw/pi-orchestrator"
 # BEGIN GENERATED EXTENSIONS
 EXTENSIONS='
 @henryqw/pi-add-dir
+@henryqw/pi-advisor
 @henryqw/pi-ask-question
 @henryqw/pi-auto-compact
 @henryqw/pi-bark
