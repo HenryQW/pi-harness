@@ -45,7 +45,6 @@ export interface SearchHit {
 
 export interface SyncResult {
 	filesProcessed: number;
-	messagesIndexed: number;
 	/** Changed files still unindexed after this pass, including failures. */
 	backlogRemaining: number;
 	/** False when the filesystem walk could not fully enumerate the tree —
