@@ -16,6 +16,7 @@ import {
 	collectSkillPaths,
 	dirExists,
 	findFiles,
+	isMissingPathError,
 	resolveDir,
 	scanDirContext,
 	type AddedDir,
@@ -129,9 +130,7 @@ function hasGitMarker(cwd: string): boolean {
 			lstatSync(join(directory, ".git"));
 			return true;
 		} catch (error) {
-			if (!error || typeof error !== "object" || !("code" in error) || (error.code !== "ENOENT" && error.code !== "ENOTDIR")) {
-				throw error;
-			}
+			if (!isMissingPathError(error)) throw error;
 		}
 		const parent = dirname(directory);
 		if (parent === directory) return false;

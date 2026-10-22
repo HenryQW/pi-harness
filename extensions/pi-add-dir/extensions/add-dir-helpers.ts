@@ -18,7 +18,7 @@ const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 const SKILL_DIRS = [".pi/skills", ".agents/skills", ".claude/skills"] as const;
 const SKIPPED_SEARCH_DIRS = new Set([".git", "node_modules"]);
 
-function isMissingPathError(error: unknown): boolean {
+export function isMissingPathError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) return false;
 	return error.code === "ENOENT" || error.code === "ENOTDIR";
 }
