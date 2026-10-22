@@ -81,7 +81,6 @@ function hasRequiredKeys(value: Record<string, unknown>, keys: readonly string[]
 
 function isModelReference(value: unknown): value is string {
 	return typeof value === "string"
-		&& value === value.trim()
 		&& !value.includes("\0")
 		&& /^[^\s/]+\/\S+$/.test(value);
 }
@@ -102,7 +101,7 @@ function parseModelTask(value: unknown): ModelTask | undefined {
 	const task = value as Record<string, unknown>;
 	if (
 		!hasRequiredKeys(task, ["id", "label", "purpose", "defaultProfile"])
-		|| !isNonEmptyText(task.id)
+		|| typeof task.id !== "string"
 		|| !isTaskId(task.id)
 		|| !isNonEmptyText(task.label)
 		|| !isNonEmptyText(task.purpose)
@@ -139,14 +138,13 @@ const parseProfile: FieldParser<TaskModelProfile> = (raw) => {
 		throw new Error("must be an object with only primary and optional fallback");
 	}
 	const { primary, fallback } = raw as Record<string, unknown>;
-	for (const [name, route] of [["primary", primary], ["fallback", fallback]] as const) {
-		if ((name === "primary" || route !== undefined) && !isTaskRoute(route)) {
-			throw new Error(`${name} must contain only a provider/model reference and a thinking level`);
-		}
+	if (!isTaskRoute(primary)) throw new Error("primary must contain only a provider/model reference and a thinking level");
+	if (fallback !== undefined && !isTaskRoute(fallback)) {
+		throw new Error("fallback must contain only a provider/model reference and a thinking level");
 	}
 	return {
-		primary: normalizeRoute(primary as TaskModelRoute),
-		...(fallback ? { fallback: normalizeRoute(fallback as TaskModelRoute) } : {}),
+		primary: normalizeRoute(primary),
+		...(fallback ? { fallback: normalizeRoute(fallback) } : {}),
 	};
 };
 
@@ -169,7 +167,7 @@ const parseTaskId: FieldParser<string> = (raw) => {
 };
 
 /** `repair` reads the same file without the disable rule, so `/task-models` keeps the settings that loaded. */
-function taskModelsConfigStore(agentDir = getAgentDir(), repair = false) {
+function taskModelsConfigStore(agentDir: string, repair = false) {
 	return createConfigStore({
 		extensionId: "pi-task-models",
 		agentDir,
@@ -186,7 +184,7 @@ const parsePresetName: FieldParser<string> = (raw) => {
 	return raw;
 };
 
-function taskModelPresetsStore(agentDir = getAgentDir()) {
+function taskModelPresetsStore(agentDir: string) {
 	return createConfigStore({
 		extensionId: "pi-task-models",
 		agentDir,
@@ -612,7 +610,9 @@ export function createTaskModelsExtension(
 				ctx.ui.notify("No text models are available.", "error");
 				return;
 			}
-			const primary = await selectRoute(ctx, `Profile ${profile} primary`, models);
+			const primaryModel = await ctx.ui.select(`Profile ${profile} primary`, models.map((model) => modelReference(model)));
+			if (!primaryModel) return;
+			const primary = await selectThinkingLevel(ctx, `Profile ${profile} primary`, models, primaryModel);
 			if (!primary) return;
 			let route: TaskModelProfile = { primary };
 			if (profile !== "fav") {
@@ -622,12 +622,11 @@ export function createTaskModelsExtension(
 					...fallbackModels.map((model) => modelReference(model)),
 				]);
 				if (!fallbackModel) return;
-				const fallback = fallbackModel === "None"
-					? undefined
-					: await selectThinkingLevel(ctx, `Profile ${profile} fallback`, fallbackModels, fallbackModel);
-				if (fallbackModel !== "None" && !fallback) return;
-
-				if (fallback) route = { primary, fallback };
+				if (fallbackModel !== "None") {
+					const fallback = await selectThinkingLevel(ctx, `Profile ${profile} fallback`, fallbackModels, fallbackModel);
+					if (!fallback) return;
+					route = { primary, fallback };
+				}
 			}
 			if (!await save((current) => ({ ...current, profiles: { ...current.profiles, [profile]: route } }))) return;
 			ctx.ui.notify(`${profile} profile saved.`, "info");
@@ -666,15 +665,6 @@ async function saveTaskModelsConfig(
 
 function routeLabel(route: TaskModelRoute): string {
 	return `${route.model} (${route.thinkingLevel})`;
-}
-
-async function selectRoute(
-	ctx: ExtensionContext,
-	title: string,
-	models: AvailableModel[],
-): Promise<TaskModelRoute | undefined> {
-	const selectedModel = await ctx.ui.select(title, models.map((model) => modelReference(model)));
-	return selectedModel ? selectThinkingLevel(ctx, title, models, selectedModel) : undefined;
 }
 
 async function selectThinkingLevel(
