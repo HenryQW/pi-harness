@@ -12,9 +12,6 @@ import { MAX_SESSION_FILE_BYTES, readTranscriptEntries } from "./transcript.ts";
 import type { PreparationSessionRow, SearchHit, SessionRow, SyncResult } from "./types.ts";
 export const DEFAULT_SYNC_CAP = 50;
 const MAX_TEXT_CHARS = 20000;
-const SCAN_LIMIT = 300;
-/** Best-ranked candidate retained per session after SQL prefiltering. */
-const ROWS_PER_FILE = 1;
 
 const SCHEMA_SQL = `
 -- ctime_ms is raw stat.ctimeMs stored as REAL (SQLite REALs are IEEE doubles,
@@ -432,17 +429,14 @@ export function syncSessions(
 
 	const maxFileBytes = opts?.maxFileBytes ?? MAX_SESSION_FILE_BYTES;
 
-	// Returns messages indexed for this file.
-	const tx = (filePath: string, stat: fs.Stats): number => {
+	const tx = (filePath: string, stat: fs.Stats): void => {
 		db.exec("BEGIN");
 		try {
 			const parsed = parseSessionFile(filePath, maxFileBytes);
 			delStmt.run(filePath);
 			upsertSession.run(filePath, parsed.cwd, parsed.name, parsed.startedAt, parsed.preview, parsed.parentSession);
-			let count = 0;
 			for (const msg of parsed.messages) {
 				insertMsg.run(filePath, msg.entryId, msg.role, msg.timestamp, msg.head, msg.tail);
-				count++;
 			}
 			{
 				const fp = fileFingerprint(stat);
@@ -450,7 +444,6 @@ export function syncSessions(
 			}
 			delFailure.run(filePath);
 			db.exec("COMMIT");
-			return count;
 		} catch (err) {
 			db.exec("ROLLBACK");
 			throw err;
@@ -458,7 +451,6 @@ export function syncSessions(
 	};
 
 	let filesProcessed = 0;
-	let messagesIndexed = 0;
 
 	// The cap bounds total indexing attempts per pass, not successes.
 	const batch = changed.slice(0, cap);
@@ -469,7 +461,7 @@ export function syncSessions(
 			// parser if real sessions ever hit it. Optimization only: readBoundedSnapshot
 			// re-validates size/type on its own descriptor at the parse boundary.
 			if (stat.size > maxFileBytes) throw new Error("session file exceeds indexing size cap");
-			messagesIndexed += tx(p, stat);
+			tx(p, stat);
 			filesProcessed++;
 		} catch {
 			// Keep the file retryable, but put this unchanged fingerprint behind
@@ -494,7 +486,7 @@ export function syncSessions(
 	const backlog = changed.length - filesProcessed + deletedRemaining;
 	db.prepare("INSERT INTO meta(key, value) VALUES ('backlog', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(backlog));
 
-	return { filesProcessed, messagesIndexed, backlogRemaining: backlog, walkComplete: walk.complete };
+	return { filesProcessed, backlogRemaining: backlog, walkComplete: walk.complete };
 	} finally {
 		db.close();
 	}
@@ -520,7 +512,7 @@ const LINEAGE_FILTER_SQL = `NOT EXISTS (
   SELECT 1 FROM ranked parent
   WHERE parent.path = r.parent_session
     AND parent.path <> r.path
-    AND parent.rn <= ${ROWS_PER_FILE}
+    AND parent.rn <= 1
     -- Direct mutual cycle (A<->B) would suppress both sides; keep the
     -- lexicographically smaller path deterministically.
     AND NOT (parent.parent_session IS r.path AND r.path < parent.path)
@@ -540,10 +532,10 @@ WITH matches AS (
 )
 SELECT path, entry_id, role, timestamp, snip, cwd, name, started_at
 FROM ranked r
-WHERE rn <= ${ROWS_PER_FILE}
+WHERE rn <= 1
   AND ${LINEAGE_FILTER_SQL}
 ORDER BY score, rid
-LIMIT ${SCAN_LIMIT}`;
+LIMIT ?`;
 
 /** Bounded excerpt around the first matched term for the LIKE fallback,
  *  searching head then tail. */
@@ -597,7 +589,7 @@ export function searchIndex(
 			let parseFailed = false;
 			for (const cand of plan.ftsCandidates) {
 				try {
-					rows = db.prepare(BASE_SELECT).all(cand, currentSessionPath, currentSessionPath) as any;
+					rows = db.prepare(BASE_SELECT).all(cand, currentSessionPath, currentSessionPath, limit) as any;
 					// First/raw success defines the result even with zero rows. After a
 					// parse error, an empty recovery candidate keeps trying later ones.
 					if (!parseFailed || rows.length > 0) {
@@ -625,36 +617,28 @@ export function searchIndex(
 			            )
 			            SELECT path, entry_id, role, timestamp, head, tail, cwd, name, started_at
 			            FROM ranked r
-			            WHERE rn <= ${ROWS_PER_FILE}
+			            WHERE rn <= 1
 			              AND ${LINEAGE_FILTER_SQL}
 			            ORDER BY matches DESC, started_at DESC, path
-			            LIMIT ${SCAN_LIMIT}`).all(...likePlan.params, currentSessionPath, currentSessionPath) as any;
+			            LIMIT ?`).all(...likePlan.params, currentSessionPath, currentSessionPath, limit) as any;
 			// Snippets anchor on operand terms only — operator words like OR would
 			// otherwise match common substrings and hide the real match.
 			for (const r of rows as any[]) r.snip = likeSnippet(r.head, r.tail, likePlan.terms);
 		}
 
 		// Current-file and one-hop lineage suppression already happened in SQL,
-		// before the scan limit, so excluded or fork rows cannot starve matches.
-		const seenFiles = new Set<string>();
-		const hits: SearchHit[] = [];
-		let rankCounter = 0;
-		for (const r of rows as RawRow[]) {
-			if (seenFiles.has(r.path)) continue;
-			seenFiles.add(r.path);
-			hits.push({
-				path: r.path,
-				entryId: r.entry_id,
-				role: r.role,
-				timestamp: r.timestamp ?? "",
-				snippet: r.snip ?? "",
-				rank: rankCounter++,
-				cwd: r.cwd ?? undefined,
-				name: r.name ?? undefined,
-				startedAt: r.started_at ?? undefined,
-			});
-			if (hits.length >= limit) break;
-		}
+		// before the LIMIT, so excluded or fork rows cannot starve matches.
+		const hits: SearchHit[] = (rows as RawRow[]).map((r, rank) => ({
+			path: r.path,
+			entryId: r.entry_id,
+			role: r.role,
+			timestamp: r.timestamp ?? "",
+			snippet: r.snip ?? "",
+			rank,
+			cwd: r.cwd ?? undefined,
+			name: r.name ?? undefined,
+			startedAt: r.started_at ?? undefined,
+		}));
 		return { hits, backlogRemaining: getBacklog(db) };
 	} finally {
 		db.close();

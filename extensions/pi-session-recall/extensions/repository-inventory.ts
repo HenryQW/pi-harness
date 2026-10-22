@@ -114,7 +114,7 @@ function runGit(
 	args: string[],
 	signal: AbortSignal | undefined,
 	stdoutCap: number,
-	options: { allowNonzero?: boolean; allowStderrOnNonzero?: boolean; stdin?: Buffer } = {},
+	options: { allowNonzero?: boolean; stdin?: Buffer } = {},
 ): Promise<GitResult> {
 	throwIfAborted(signal);
 	return new Promise((resolve, reject) => {
@@ -166,7 +166,7 @@ function runGit(
 			stderrBytes += chunk.length;
 			if (stderrBytes > GIT_STDERR_BYTES) {
 				fail(new Error("Repository inventory Git stderr exceeded its limit."));
-			} else if (!options.allowStderrOnNonzero) {
+			} else if (!options.allowNonzero) {
 				fail(new Error("Repository inventory Git wrote unexpected stderr."));
 			}
 		});
@@ -185,7 +185,7 @@ function runGit(
 				finish(new Error("Repository inventory Git command failed."));
 				return;
 			}
-			if (stderrBytes > 0 && !(code !== 0 && options.allowStderrOnNonzero)) {
+			if (stderrBytes > 0 && !(code !== 0 && options.allowNonzero)) {
 				finish(new Error("Repository inventory Git wrote unexpected stderr."));
 				return;
 			}
@@ -239,7 +239,6 @@ async function resolveGitRoot(ctx: InventoryContext): Promise<string | undefined
 	const cwd = canonicalDirectory(ctx.cwd);
 	const result = await runGit(cwd, ["rev-parse", "--show-toplevel"], ctx.signal, ROOT_STDOUT_BYTES, {
 		allowNonzero: true,
-		allowStderrOnNonzero: true,
 	});
 	return result.code === 0 ? gitRootFromOutput(result.stdout) : undefined;
 }

@@ -129,7 +129,6 @@ describe("sync + BM25 search", () => {
 
 		const resNoop = syncSessions(sessionsDir, dbPath);
 		assert.equal(resNoop.filesProcessed, 0);
-		assert.equal(resNoop.messagesIndexed, 0);
 
 		fs.appendFileSync(file, msg("u2", "user", "unique-zebra-query about kubernetes ingress\n") );
 		const t = new Date();
