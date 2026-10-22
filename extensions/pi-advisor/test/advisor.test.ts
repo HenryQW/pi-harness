@@ -42,10 +42,10 @@ function harness(options: { hasUI?: boolean; available?: unknown[]; other?: { or
 	const requests: Array<{ context: { systemPrompt: string; messages: Array<{ content: string }>; tools?: unknown } }> = [];
 	const replies: Reply[] = [];
 	const sent: Array<{ message: { customType: string; content: string; display: boolean; details?: unknown }; options: unknown }> = [];
-	const state = { idle: true, status: undefined as string | undefined };
+	const state = { idle: true, status: undefined as string | undefined, editor: "" };
 	const host = {
 		cwd: "/repo", hasUI: options.hasUI ?? true, sessionManager: manager, model, scopedModels: [], isIdle: () => state.idle,
-		ui: { notify: (message: string, level: string) => notifications.push([message, level]), setStatus: (_key: string, value?: string) => { state.status = value; } },
+		ui: { notify: (message: string, level: string) => notifications.push([message, level]), setStatus: (_key: string, value?: string) => { state.status = value; }, getEditorText: () => state.editor },
 		modelRegistry: {
 			getAvailable: () => options.available ?? [model],
 			streamSimple: (_model: unknown, context: never, streamOptions: { signal: AbortSignal }) => ({
@@ -241,6 +241,15 @@ test("a blocker sends one follow-up that starts a turn, once for each user promp
 	h.work();
 	await h.settle();
 	assert.equal(h.sent.length, 2);
+});
+
+test("a blocker shows notes but sends no follow-up while the editor holds a draft", async () => {
+	const h = await enabled();
+	h.replies.push(BLOCKER);
+	h.state.editor = "next prompt";
+	await h.settle();
+	assert.equal(h.sent.length, 0);
+	assert.deepEqual(h.notifications, [[`Advisor:\n${BLOCKER}\nSend a prompt to address the blockers.`, "warning"]]);
 });
 
 for (const order of ["before", "after"] as const) test(`a continuation by another extension ${order} the advisor gives one review of the whole run`, async () => {
