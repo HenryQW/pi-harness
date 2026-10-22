@@ -222,12 +222,12 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 		ctx.ui.setStatus(ADVISOR_ENTRY, "Advisor reviewing…");
 		// Not awaited: Pi waits for agent_settled handlers before the session counts as idle.
 		void review(ctx, resolved, input, AbortSignal.any([controller.signal, timeout])).then((reply) => {
-			if (active !== controller || controller.signal.aborted || !ctx.isIdle() || ctx.sessionManager.getLeafId() !== leaf) return;
+			if (active !== controller || !ctx.isIdle() || ctx.sessionManager.getLeafId() !== leaf) return;
 			active = undefined;
 			ctx.ui.setStatus(ADVISOR_ENTRY, undefined);
 			deliver(ctx, reply, branch);
 		}, (error) => {
-			if (active !== controller || controller.signal.aborted) return;
+			if (active !== controller) return;
 			ctx.ui.notify(timeout.aborted
 				? `Advisor review timed out after ${REVIEW_TIMEOUT_MS / 1000} seconds.`
 				: `Advisor review failed: ${(error as Error).message}`, "warning");
