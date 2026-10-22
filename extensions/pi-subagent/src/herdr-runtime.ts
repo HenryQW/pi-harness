@@ -51,6 +51,7 @@ import { runProcess as defaultRunProcess } from "./process.ts";
 import { EXECUTION_BUDGET_ENV, type EphemeralSubagentExecutionBudget } from "./ephemeral.ts";
 import { assertPrivateLease, scanProcessLease } from "./process-lease.ts";
 import { exactDirectTerminalTurn } from "./direct-herdr.ts";
+import { READABLE_BRANCH_PATTERN } from "./worktree.ts";
 
 const MIN_HERDR_VERSION = [0, 9, 3] as const;
 const MIN_HERDR_PROTOCOL = 22;
@@ -228,12 +229,16 @@ function worktreeIntent(attempt: TaskAttempt): WorktreeAllocationPlan {
 	return intent.worktree;
 }
 
-export function workspaceLabel(attempt: Pick<TaskAttempt, "correlationToken">): string {
-	return attempt.correlationToken.slice(-6);
+export function workspaceLabel(attempt: TaskAttempt): string {
+	const { branch } = worktreeIntent(attempt);
+	return READABLE_BRANCH_PATTERN.test(branch) ? basename(branch) : attempt.correlationToken.slice(-6);
 }
 
-function expectedWorkerLabel(task: TaskRequest): string {
-	return `${task.role}/${task.modelClass}`;
+function expectedWorkerLabel(task: TaskRequest, attempt: TaskAttempt): string {
+	const { branch } = worktreeIntent(attempt);
+	return READABLE_BRANCH_PATTERN.test(branch)
+		? `${workspaceLabel(attempt)}/${task.modelClass}`
+		: `${task.role}/${task.modelClass}`;
 }
 
 function expectedAgentName(token: string): string {
@@ -266,7 +271,7 @@ function assertWorkspaceIntent(intent: WorkspaceAllocationIntent, attempt: TaskA
 function assertWorkerTabIntent(intent: WorkerTabAllocationIntent, task: TaskRequest, attempt: TaskAttempt): void {
 	const worktree = worktreeIntent(attempt);
 	const workspace = ownedIntent(attempt, "workspace");
-	if (exactString(intent.label, "worker-tab label") !== expectedWorkerLabel(task)
+	if (exactString(intent.label, "worker-tab label") !== expectedWorkerLabel(task, attempt)
 		|| exactString(intent.workspaceId, "worker-tab workspace ID") !== workspace.workspaceId
 		|| exactString(intent.workspaceRootTabId, "workspace root tab ID") !== workspace.rootTabId
 		|| exactString(intent.workspaceRootPaneId, "workspace root pane ID") !== workspace.rootPaneId
@@ -429,7 +434,7 @@ export class HerdrHostRuntime implements HostRuntime {
 			this.assertLeasePath(leasePath, input.attempt.correlationToken);
 			return {
 				kind: "worker_tab",
-				label: expectedWorkerLabel(input.task),
+				label: expectedWorkerLabel(input.task, input.attempt),
 				workspaceId,
 				workspaceRootTabId: exactString(workspace.rootTabId, "owned workspace root tab ID"),
 				workspaceRootPaneId: exactString(workspace.rootPaneId, "owned workspace root pane ID"),

@@ -19,8 +19,11 @@ export type WorktreePayload =
 
 export const WORKTREES_DIRNAME = ".worktrees";
 const BRANCH_NAMESPACE = "pi-subagent";
-/** Branches `createChildWorktree` creates for workers and integration checkouts, at `<primary>/.worktrees/<branch basename>`. */
-export const OWNED_BRANCH_PATTERN = new RegExp(`^${BRANCH_NAMESPACE}/subagent-[0-9a-f]{24}$`);
+const NAME_COMPONENT_LIMIT = 24;
+const NAME_LIMIT = 72;
+export const READABLE_BRANCH_PATTERN = new RegExp(`^${BRANCH_NAMESPACE}/subagent-[a-z0-9](?:[a-z0-9-]{0,${NAME_LIMIT - 2}}[a-z0-9])?-[0-9a-f]{24}$`);
+/** Keep saved opaque names eligible for exact recovery and cleanup. */
+export const OWNED_BRANCH_PATTERN = new RegExp(`${READABLE_BRANCH_PATTERN.source}|^${BRANCH_NAMESPACE}/subagent-[0-9a-f]{24}$`);
 
 export class WorktreeSetupError extends Error {
 	override name = "WorktreeSetupError";
@@ -34,6 +37,12 @@ export class WorktreeSetupError extends Error {
 
 const sanitizeShortId = (childId: string): string =>
 	createHash("sha256").update(childId).digest("hex").slice(0, 24);
+
+function nameSlug(parts: readonly string[]): string {
+	return parts.map((part) => part.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+		.slice(0, NAME_COMPONENT_LIMIT).replace(/^-+|-+$/g, "") || "task")
+		.join("-").slice(0, NAME_LIMIT).replace(/-+$/, "") || "task";
+}
 
 const stripGitLineEnd = (value: string): string => value.replace(/\r?\n$/, "");
 
@@ -81,6 +90,7 @@ export async function createChildWorktree(
 	run: GitRunner = runGit,
 	signal?: AbortSignal,
 	onPrepared?: (worktree: WorktreeInfo) => Promise<void>,
+	nameParts: readonly string[] = [childId],
 ): Promise<WorktreeInfo | undefined> {
 	const root = await run(["rev-parse", "--show-toplevel"], cwd, signal);
 	signal?.throwIfAborted();
@@ -144,7 +154,7 @@ export async function createChildWorktree(
 	}
 	signal?.throwIfAborted();
 	const worktreesRoot = join(stableRepoRoot, WORKTREES_DIRNAME);
-	const name = `subagent-${sanitizeShortId(childId)}`;
+	const name = `subagent-${nameSlug(nameParts)}-${sanitizeShortId(childId)}`;
 	const branch = `${BRANCH_NAMESPACE}/${name}`;
 	const path = join(worktreesRoot, name);
 	const worktree = { path, cwd: join(path, relativeCwd), branch, repoRoot: stableRepoRoot, baseCommit };

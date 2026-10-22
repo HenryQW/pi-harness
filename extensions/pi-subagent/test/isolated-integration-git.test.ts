@@ -27,12 +27,12 @@ async function commit(root: string, text: string): Promise<void> {
 	git(root, "add", "shared.txt");
 	git(root, "commit", "-qm", text);
 }
-async function allocate(runtime: IntegrationGit, root: string, base: WorkspaceIdentity, id: string): Promise<WorktreeInfo> {
+async function allocate(runtime: IntegrationGit, root: string, base: WorkspaceIdentity, id: string, nameParts?: readonly string[]): Promise<WorktreeInfo> {
 	let recorded: WorktreeInfo | undefined;
 	const result = await runtime.allocate(root, id, base, async (info) => {
 		assert.equal(git(root, "branch", "--list", info.branch), "", "intent precedes allocation");
 		recorded = info;
-	}, signal);
+	}, signal, nameParts);
 	assert.equal(result.outcome, "ready", JSON.stringify(result));
 	assert.deepEqual(result.outcome === "ready" && result.value, recorded);
 	return recorded!;
@@ -49,7 +49,9 @@ test("integration worktrees are owned by the primary repository when Main is a l
 	t.after(async () => await rm(linked, { recursive: true, force: true }));
 	const runtime = new IntegrationGit();
 	const base = await new CheckedGitRuntime().inspectMain({ root: linked }, { signal, deadline: Date.now() + 30_000, timeoutMs: 30_000 });
-	const integration = await allocate(runtime, linked, base, "linked-integration");
+	const requestId = `request-${"r".repeat(72)}`;
+	const integration = await allocate(runtime, linked, base, `${requestId}-integration-2`, [requestId, "integration-2"]);
+	assert.match(integration.branch, /^pi-subagent\/subagent-request-r{16}-integration-2-[0-9a-f]{24}$/);
 	const worker = await allocate(runtime, linked, base, "linked-worker");
 	await commit(worker.path, "worker");
 	const candidate = await new CheckedGitRuntime().inspectMain({ root: worker.path }, { signal, deadline: Date.now() + 30_000, timeoutMs: 30_000 });
@@ -215,7 +217,7 @@ test("text and changeset dependents read and edit an exact staged predecessor wi
 	const attempt = { waveBase: snapshot } as Parameters<typeof checked.allocateWorktree>[0]["attempt"];
 	const intent = { kind: "worktree", token: "token-1234567890123456" } as Parameters<typeof checked.allocateWorktree>[0]["intent"];
 	const task = { id: "dependent" } as Parameters<typeof checked.allocateWorktree>[0]["task"];
-	const allocated = await checked.allocateWorktree({ root, baseRoot: integration.path, intent, task, attempt,
+	const allocated = await checked.allocateWorktree({ requestId: "deliver-request", root, baseRoot: integration.path, intent, task, attempt,
 		onPrepared: async (prepared) => { worker = prepared; assert.equal(prepared.baseCommit, snapshot.head); } }, context);
 	assert.deepEqual(allocated, { kind: "worktree", outcome: "owned" });
 	assert.ok(worker);

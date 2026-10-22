@@ -194,7 +194,13 @@ Activity uses the existing session sample and file-size cache. The extension ign
 
 ## Isolated contract
 
-An isolated request has one durable ID, one goal, and 1 to 8 typed tasks:
+An isolated request has one durable ID, one goal, and 1 to 8 typed tasks.
+
+New worktrees use `.worktrees/subagent-<name>-<24hex>` and branch `pi-subagent/subagent-<name>-<24hex>`. The name uses the request and task IDs. Text tasks also include `text-<attempt>`. Integration checkouts use the request ID and `integration-<generation>`. Each name component has at most 24 characters; the full readable part has at most 72. Names use lowercase ASCII letters, digits, and hyphens. The 24-hex identity suffix keeps names distinct when readable parts are shortened or normalized.
+
+Herdr workspace labels use the worker worktree name. Worker tab labels add the model class. Names never use goals, requirements, or other free-form task text. Saved opaque worktree names and their Herdr labels stay unchanged. Resume and cleanup use the exact saved allocations; the extension does not rename existing resources.
+
+For example:
 
 ```json
 {
@@ -400,7 +406,7 @@ One confirmation permits permanent deletion of committed, uncommitted, and ignor
 
 Each resource is checked again before removal. A live productive lease or local job blocks the action. Uncertain allocations, changed branch tips, locked or redirected checkouts, and other Herdr panes inside a checkout block that resource. Initialized submodules and index flags that hide clean-state evidence also require separate inspection. If Herdr cannot be inspected, checkouts stay in place.
 
-Main cannot run inside a checkout selected for deletion. A session change stops further removal. Only this request's recorded `pi-subagent/subagent-<24hex>` branches and their exact primary `.worktrees/` paths can be removed. The primary checkout is never removed.
+Main cannot run inside a checkout selected for deletion. A session change stops further removal. Only this request's recorded `pi-subagent/subagent-<name>-<24hex>` branches, saved legacy `pi-subagent/subagent-<24hex>` branches, and their exact primary `.worktrees/` paths can be removed. The primary checkout is never removed.
 
 To close and delete many requests, select **Select multiple…** in `/subagent`, select the requests, then select **Continue** and **Close and delete worktrees (discard work)**. The command shows the review of each request. Then one confirmation covers the unblocked resource groups of all of them. The same menu can close all owned workers of each selected direct workflow that can close. The command reports the number of selected rows that the action skipped.
 
@@ -408,7 +414,7 @@ The report lists removed, skipped, and failed resources. After complete cleanup,
 
 ### Prune leftover worktrees
 
-Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-` plus 24 hex characters. The command also cleans up such branches that have no checkout. The review starts with the number of removable and blocked items. It groups the items by the exact reason that the command can remove them, or by their exact blockers, and shows each reason once. Under each reason, it identifies each item by the first 8 of its 24 hex characters. The command can remove an item only when all of these conditions are true:
+Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-<name>-<24hex>`, or the saved legacy name `pi-subagent/subagent-<24hex>`. The command also cleans up such branches that have no checkout. The review starts with the number of removable and blocked items. It groups the items by the exact reason that the command can remove them, or by their exact blockers, and shows each reason once. Under each reason, it shows the readable name, if present, and the first 8 characters of the identity suffix. The command can remove an item only when all of these conditions are true:
 
 - Its branch tip is already in Main's HEAD or in the local `origin` default-branch ref. The command does not fetch.
 - Its checkout has no tracked or untracked changes. No merge, rebase, cherry-pick, revert, or bisect is in progress.
