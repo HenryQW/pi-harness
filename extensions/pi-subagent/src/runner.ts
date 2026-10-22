@@ -280,6 +280,7 @@ export interface GitRuntime {
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	inspectMainBase(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {
+		requestId: string;
 		root: string;
 		baseRoot?: string;
 		intent: WorktreeAllocationIntent;
@@ -1498,7 +1499,7 @@ export class IsolatedRunner {
 						};
 						generations.push(generation);
 						await this.saveProductive(handle); // Before worktree add.
-					}, context.signal));
+					}, context.signal, [action.id, `integration-${action.generation}`]));
 				if (result.outcome !== "ready") {
 					if (!generations.at(-1)) throw new Error("Integration allocation did not persist an owned worktree plan.");
 					return this.response(state);
@@ -1690,7 +1691,7 @@ export class IsolatedRunner {
 							state.integration.refresh = { from: action.expectedMain, to: action.newMain, generation: action.generation,
 								status: "unknown", failure: "Integration allocation has not been proved; retain the recorded checkout." };
 							await this.saveProductive(handle);
-						}, context.signal));
+						}, context.signal, [action.id, `integration-${action.generation}`]));
 				} catch (error) {
 					// A prepared checkout remains recorded; no repeated allocation from this intent.
 					state.integration.refresh!.failure = bounded(`Integration allocation uncertain: ${errorText(error)}`);
@@ -2542,6 +2543,7 @@ export class IsolatedRunner {
 				try {
 					if (intent.kind === "worktree") {
 						result = await this.callProductive(handle, scope, async (context) => await this.gitRuntime.allocateWorktree({
+							requestId: state.request.id,
 							root: state.root,
 							...(attempt.waveBase.head !== state.main.head ? { baseRoot: state.integration.generations.at(-1)?.worktree?.path } : {}),
 							intent,
@@ -2669,6 +2671,7 @@ export class IsolatedRunner {
 						throw new Error("Staged dependency snapshot drifted before text worktree creation.");
 					}
 				},
+				[state.request.id, task.taskId, `text-${attempt.number}`],
 			);
 			if (!isolated) throw new Error("Explicit isolated text work requires a Git checkout with a committed HEAD; it never falls back to Main.");
 			let result;

@@ -136,6 +136,8 @@ Use isolated mode for checked implementation. An isolated request has one durabl
 
 Workers use Main's pinned committed branch, HEAD, and tree, not staged, unstaged, or untracked edits. Branch or HEAD changes block new waves. Candidates must be committed with no tracked or untracked changes. Ignored generated files permit candidacy but prevent automatic cleanup.
 
+New isolated worktree names use the request and task IDs, plus an identity suffix. Integration names use the request ID and `integration-<generation>`. Herdr workspace and tab labels show the worker worktree name. Names do not use goals or requirements. Saved worktrees and labels keep their exact names for recovery and cleanup.
+
 Keep the durable ID; Main can work or end its turn without polling. Inspect ready candidates with `subagent_status`.
 
 - `subagent_stage` stages exact candidates while siblings run; resolve conflicts in the integration checkout.

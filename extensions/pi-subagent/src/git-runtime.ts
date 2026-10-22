@@ -166,6 +166,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 	}
 
 	async allocateWorktree(input: {
+		requestId: string;
 		root: string;
 		baseRoot?: string;
 		intent: WorktreeAllocationIntent;
@@ -209,6 +210,7 @@ export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, In
 						throw new Error("Recorded wave snapshot drifted after worktree preparation and before git worktree add.");
 					}
 				},
+				[input.requestId, input.task.id],
 			);
 			if (!created) return { kind: "worktree", outcome: "absent", failure: "Git worktree allocation requires a committed repository." };
 			const worktree = cloneWorktree(created);

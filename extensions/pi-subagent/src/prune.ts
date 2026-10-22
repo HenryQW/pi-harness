@@ -36,7 +36,7 @@ export interface PruneItem {
 }
 
 export interface PruneOwnership {
-	/** Every request or state that may still own a resource name (`subagent-<hex>`); unreadable state has no request. */
+	/** Every request or state that may still own an exact resource name; unreadable state has no request. */
 	owners(name: string): readonly { label: string; request?: PruneRequest }[];
 	/** The live productive lease that blocks pruning, if any. */
 	lease?: string;

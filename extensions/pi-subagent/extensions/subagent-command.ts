@@ -203,7 +203,7 @@ const glyph = (status: string) => TONES[statusTone(status)].glyph;
 const cleanupReport = ({ text, failed, skipped }: CleanupReport): Report => textReport(failed ? "error" : skipped ? "warning" : "success", text);
 
 const PRUNE_IGNORED_CONFIRM_CODE_POINTS = 4_000;
-const shortId = ({ branch }: PruneItem) => branch.replace(/^pi-subagent\/subagent-/, "").slice(0, 8);
+const shortId = ({ branch }: PruneItem) => branch.replace(/^pi-subagent\/subagent-/, "").replace(/([0-9a-f]{8})[0-9a-f]{16}$/, "$1");
 const NOT_SHOWN = "they are not removed in this run; run /subagent prune again after this run.";
 
 /** Fit whole item lines within `max` code points; never cut silently, and report exactly which items were shown. */
@@ -247,7 +247,7 @@ function pruneReview({ root, items }: PrunePlan): { report: Report; shown: Prune
 	const prunable = items.filter((item) => item.prunable).length;
 	const head: Report = { tone: "info", title: "Subagent prune review", sections: [{ rows: [
 		{ label: "root", value: root, code: true }, { label: "prunable", value: String(prunable) }, { label: "blocked", value: String(items.length - prunable) },
-		{ label: "IDs", value: "first 8 characters after pi-subagent/subagent-" },
+		{ label: "IDs", value: "readable name, if present, and first 8 suffix characters" },
 	] }] };
 	// Each line measures its exact Markdown, so the cap never cuts a shown item.
 	const reviewed = fitItems(reportMarkdown(head), rows, ({ section, index, row }) => index ? sectionMarkdown({ rows: [row] }) : `\n${sectionMarkdown({ ...section, rows: [row] })}`,

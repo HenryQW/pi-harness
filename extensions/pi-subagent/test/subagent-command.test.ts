@@ -457,8 +457,11 @@ const prunePlan: PrunePlan = { root: "/git", items: [
 	{ branch: "pi-subagent/subagent-d", tip: "d".repeat(40), path: "/git/.worktrees/subagent-d", ...blocked("hard", "checkout has tracked or untracked changes"), ignored: [] },
 ] };
 
-test("prune without UI only reports the review list", async () => {
-	const h = harness({ ui: false, prune: prunePlan });
+test("prune without UI reports readable names and legacy identity suffixes", async () => {
+	const h = harness({ ui: false, prune: { ...prunePlan, items: prunePlan.items.map((item, index) => ({ ...item,
+		branch: index === 0 ? `pi-subagent/subagent-${"e".repeat(24)}`
+			: index === 1 ? `pi-subagent/subagent-request-task-${"a".repeat(24)}` : item.branch,
+	})) } });
 	await h.run("prune");
 	assert.equal(h.messages.length, 1);
 	// Prunable groups come first; each group names its exact reason once.
@@ -467,13 +470,13 @@ test("prune without UI only reports the review list", async () => {
 		"- **root:** `/git`",
 		"- **prunable:** 2",
 		"- **blocked:** 3",
-		"- **IDs:** first 8 characters after pi-subagent/subagent-", "",
+		"- **IDs:** readable name, if present, and first 8 suffix characters", "",
 		"### ✓ Prunable: merged into Main HEAD; clean checkout (1)",
-		"- `a`", "",
+		"- `request-task-aaaaaaaa`", "",
 		"### ✓ Prunable: merged into origin/main; clean checkout (1)",
 		"- `b`", "",
 		"### ✗ Blocked: branch has commits not in Main HEAD; no checkout (1)",
-		"- `e`", "",
+		"- `eeeeeeee`", "",
 		"### ✗ Blocked: checkout has tracked or untracked changes (2)",
 		"- `c, d`", "",
 		"* Report only: removal requires interactive confirmation.",
