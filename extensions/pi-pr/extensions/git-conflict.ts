@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { truncateHead, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { spawnBounded, type Exec } from "@henryqw/pi-process";
+import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import { canonicalWorktree, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
 export type ConflictSide = "@ours" | "@theirs" | "@both" | "@base";
@@ -203,7 +203,13 @@ export class GitConflicts {
 		};
 		// Git merged with HEAD's or the merged attributes; when those views differ, its markers are unknown.
 		const attributes = await readAttributes([]);
-		const headAttributes = await readAttributes(["--source=HEAD"]);
+		// `--source` needs Git 2.40, so read HEAD's view only when a tracked, untracked, or ignored
+		// .gitattributes differs from HEAD; check-attr reads all of them from the worktree.
+		const pathspec = ["--", ":(glob)**/.gitattributes"];
+		const changed = (await runChecked(this.exec, "git", ["diff", "--name-only", "HEAD", ...pathspec], options)).stdout
+			|| (await runChecked(this.exec, "git", ["ls-files", "--others", ...pathspec], options)).stdout
+			|| await this.hiddenChange(root, pathspec, options);
+		const headAttributes = changed ? await readAttributes(["--source=HEAD"]) : attributes;
 		// An unspecified `merge` attribute uses merge.default, then the text driver. A configured
 		// driver wins over a built-in name, and check-attr prints a driver named `set` like a bare attribute.
 		const fallback = (await runChecked(this.exec, "git", ["config", "--get", "merge.default"], options, [0, 1])).stdout.trim() || "text";
@@ -227,6 +233,24 @@ export class GitConflicts {
 			return { root, path, absolute: join(root, path), stages: current, width: Number.isSafeInteger(size) && size > 0 ? size : 7, ...(refusal ? { refusal } : {}) };
 		});
 		return { entries, total: stages.size };
+	}
+
+	/**
+	 * Git diff skips files marked assume-unchanged (lowercase `ls-files -v` tag) or skip-worktree (`S`),
+	 * so compare those with HEAD directly: the worktree file when present, otherwise the index entry.
+	 */
+	private async hiddenChange(root: string, pathspec: string[], options: ExecOptions): Promise<boolean> {
+		const records = (await runChecked(this.exec, "git", ["ls-files", "-v", "-s", "-z", ...pathspec], options)).stdout.split("\0").filter(Boolean);
+		for (const record of records) {
+			const match = /^(?:[a-z]|S) \d{6} ([0-9a-f]+) 0\t([^]+)$/.exec(record);
+			if (!match) continue;
+			const [, indexOid, path] = match;
+			const head = (await runChecked(this.exec, "git", ["rev-parse", "-q", "--verify", `HEAD:${path}`], options, [0, 1])).stdout.trim();
+			const exists = await lstat(join(root, path!)).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error; });
+			const current = exists ? (await runChecked(this.exec, "git", ["hash-object", "--", path!], options)).stdout.trim() : indexOid;
+			if (current !== head) return true;
+		}
+		return false;
 	}
 
 	private async target(cwd: string, input: string, signal?: AbortSignal): Promise<Unmerged> {

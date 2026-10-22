@@ -78,7 +78,7 @@ The helper retains backups of tracked, untracked, and colliding ignored files. R
 
 ### Conflict blocks
 
-The `git_conflict` tool resolves Git conflict markers without manual marker edits. Use it for merge, rebase, or stash conflicts. The `update-from-main` and `pi-pr-update-branch` skills use it. A `resolve` call holds the pi-pr worktree lock and replaces the file in one atomic step. The tool requires Git 2.40 or newer.
+The `git_conflict` tool resolves Git conflict markers without manual marker edits. Use it for merge, rebase, or stash conflicts. The `update-from-main` and `pi-pr-update-branch` skills use it. A `resolve` call holds the pi-pr worktree lock and replaces the file in one atomic step. When a `.gitattributes` file differs from `HEAD` or is untracked, the tool requires Git 2.40 or newer.
 
 | Tool call | Result |
 | --- | --- |
