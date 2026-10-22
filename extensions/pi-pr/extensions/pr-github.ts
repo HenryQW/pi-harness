@@ -1825,7 +1825,8 @@ async function readRequiredCheckOutcomes(
 			}
 		}
 		if (check.integrationId === null && statuses.has(check.context)) outcomes.push(statuses.get(check.context)!);
-		const outcome = outcomes.includes("success") ? "success" : outcomes.includes("failure") ? "failure" : "running";
+		// `filter=latest` drops superseded re-runs; GitHub requires every remaining same-named check and status to pass.
+		const outcome = outcomes.includes("failure") ? "failure" : outcomes.length && outcomes.every((value) => value === "success") ? "success" : "running";
 		results.push({ ...check, outcome });
 	}
 	return results;
