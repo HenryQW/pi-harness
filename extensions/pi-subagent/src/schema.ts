@@ -509,6 +509,11 @@ export type IntegrationStage = Static<typeof IntegrationStageSchema>;
 export type IntegrationGeneration = Static<typeof IntegrationGenerationSchema>;
 export type IntegrationState = Static<typeof IntegrationStateSchema>;
 
+const TerminalRunStatusSchema = Type.Union([
+	Type.Literal("completed"), Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
+]);
+export const TERMINAL_RUN_STATUSES: readonly Static<typeof TerminalRunStatusSchema>[] = TerminalRunStatusSchema.anyOf.map((status) => status.const);
+
 const RunStateSchema = Type.Object({
 	version: Type.Literal(RUN_STATE_VERSION),
 	request: ExecuteRequestSchema,
@@ -518,8 +523,8 @@ const RunStateSchema = Type.Object({
 	requestStartMain: WorkspaceSchema,
 	main: WorkspaceSchema,
 	status: Type.Union([
-		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"), Type.Literal("completed"),
-		Type.Literal("final_failed"), Type.Literal("superseded"), Type.Literal("aborted"),
+		Type.Literal("pending"), Type.Literal("running"), Type.Literal("needs_attention"),
+		...TerminalRunStatusSchema.anyOf,
 	]),
 	tasks: Type.Array(TaskStateSchema, { minItems: 1, maxItems: MAX_TASKS }),
 	waves: Type.Array(WaveStateSchema, { maxItems: MAX_TASKS }),

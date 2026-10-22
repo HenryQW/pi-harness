@@ -2,6 +2,7 @@ import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext, type Theme 
 import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../dist/discard.js";
 import type { PruneItem } from "../dist/prune.js";
+import { TERMINAL_RUN_STATUSES } from "../dist/schema.js";
 import { compactCost } from "./result-transport.ts";
 
 /** Saved before launch for user matching only; never ownership or mutation authority. */
@@ -192,7 +193,7 @@ const summary = (text: string, max = 60): string => {
 };
 // Identity and status first so clipping cuts only the goal summary.
 const isolatedLabel = ({ id, status, name }: IsolatedRequest): string => `${id} · ${status} · ${summary(name)}`;
-const completed = (status: string) => ["completed", "success", "failed", "failure", "aborted", "integrated"].includes(status);
+const completed = (status: string) => [...TERMINAL_RUN_STATUSES, "success", "failed", "failure", "integrated"].includes(status);
 const priority = (status: string) => /attention|blocked|retained|failed/i.test(status) ? 0 : completed(status) ? 2 : 1;
 // Recorded-only and unverified work is uncertain, not active.
 const statusTone = (status: string): Tone => /attention|blocked|retained|recorded only|unverified/i.test(status) ? "warning"
@@ -311,7 +312,8 @@ export function workingReport(direct: readonly DirectTask[], inventory: Isolated
 		const active = !request.orphaned && ["pending", "running"].includes(request.status);
 		if (active && inventory!.leaseLive) working.push({ text: isolatedLabel(request) });
 		else if (active) attention.push({ text: `${isolatedLabel(request)} · interrupted; run /subagent recover` });
-		else if (!request.orphaned && (request.status === "needs_attention" || /retained/.test(request.status))) attention.push({ text: isolatedLabel(request) });
+		else if (request.status === "needs_attention" || /retained/.test(request.status)) attention.push({ text: isolatedLabel(request) });
+		else if (request.orphaned && /unverified/.test(request.status)) unverified.push({ text: isolatedLabel(request) });
 	}
 	const sections: Section[] = [
 		working.length ? { heading: `Working (${working.length})`, tone: "info", rows: working } : { rows: [{ text: inventory ? "No subagents are working." : "No direct subagents are working. Isolated status is unavailable." }] },
@@ -531,13 +533,13 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				const group = <T extends { status: string }>(title: string, items: readonly T[], choice: (item: T) => Choice<Selection>): Choice<Selection>[] =>
 					items.length ? [{ label: `── ${title} (${items.length}) ──`, value: { kind: "refresh" } },
 						...[...items].sort((a, b) => priority(a.status) - priority(b.status)).map(choice)] : [];
-				const requests = inventory?.requests ?? [];
+				const requests = (inventory?.requests ?? []).filter((request) => history || !completed(request.status) || /retained/i.test(request.status));
 				const isolatedChoice = (request: IsolatedRequest): Choice<Selection> => ({ label: `  ${glyph(request.status)} ${isolatedLabel(request)}`, value: { kind: "isolated", request, root: inventory!.root } });
 				// One row per workflow; new records keep opaque IDs in details. Status is last so clipping preserves the reference.
 				const directChoice = (task: DirectTask): Choice<Selection> => ({ label: `  ${glyph(task.status)} ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct", task } });
 				const groups = [
 					group("Direct", direct.filter((task) => history || !completed(task.status)), directChoice),
-					group("Isolated", requests.filter((request) => !request.orphaned && (history || !completed(request.status) || /retained/i.test(request.status))), isolatedChoice),
+					group("Isolated", requests.filter((request) => !request.orphaned), isolatedChoice),
 					group("Orphaned · parent checkout removed", requests.filter((request) => request.orphaned), isolatedChoice),
 				].flat();
 				const rows = groups.filter(({ value }) => value.kind === "direct" || value.kind === "isolated");
