@@ -49,20 +49,8 @@ export type BtwPayload = {
 	config: BtwConfig;
 };
 
-export type CreatePayloadOptions = {
-	createdAt: string;
-	parentSessionId: string;
-	parentPaneId: string | null;
-	metadata: ParentContextMetadata;
-	parentSystemPrompt: string | null;
-	parentActiveTools: string[];
-	parentThinkingLevel: string;
-	messages: AgentMessage[];
-	draftQuestion: string;
-	config: BtwConfig;
-};
-
-export type ParentContextMetadata = {
+export type CreatePayloadOptions = Omit<BtwPayload, "version" | "launchId" | "capability">;
+type ParentContextMetadata = {
 	generatedAt: string;
 	cwd: string;
 	session: string;
@@ -72,8 +60,8 @@ export type ParentContextMetadata = {
 export type HerdrLaunchOptions = {
 	paneName: string;
 	cwd: string;
-	/** Herdr pane ID of the parent; the side pane splits from it. Falls back to the focused pane. */
-	parentPaneId?: string;
+	/** Herdr pane ID of the parent; the side pane splits from it. */
+	parentPaneId: string;
 	payloadPath: string;
 	model: string;
 	thinkingLevel: string;
@@ -283,7 +271,7 @@ export function buildNativeBridgeMessage(instructions: string): AgentMessage {
 }
 
 /**
- * Step 1 of the launch: split a new pane off the parent (or focused) pane.
+ * Step 1 of the launch: split a new pane off the parent pane.
  * Herdr >= 0.7 removed pane creation from `agent start`, so /btw first
  * creates the pane (`pane split`) and then adopts pi into it (`agent start`).
  */
@@ -291,7 +279,8 @@ export function buildPaneSplitArgs(options: HerdrLaunchOptions): string[] {
 	return [
 		"pane",
 		"split",
-		...(options.parentPaneId ? ["--pane", options.parentPaneId] : ["--current"]),
+		"--pane",
+		options.parentPaneId,
 		"--direction",
 		options.split,
 		"--cwd",

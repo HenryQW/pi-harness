@@ -1,4 +1,4 @@
-export type BtwRoute =
+type BtwRoute =
 	| { kind: "open" }
 	| { kind: "ask"; question: string }
 	| { kind: "config"; args: string }

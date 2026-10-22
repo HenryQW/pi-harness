@@ -151,7 +151,6 @@ function recentUserMessages(ctx: ExtensionContext, fallback?: string): string | 
 }
 
 async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortSignal, reportTaskModels: (ctx: ExtensionContext) => void): Promise<GeneratedTitle> {
-	const prompt = text.slice(0, MAX_CONTEXT_CHARS);
 	const complete = async (route: ResolvedTaskRoute, messages: Array<{ role: "user"; content: string; timestamp: number }>) => {
 		let response;
 		try {
@@ -172,7 +171,7 @@ async function generateTitle(text: string, ctx: ExtensionContext, signal: AbortS
 	return executeTaskRoutes(
 		configuredTaskRoutes(ctx, RENAME_TASK, "Rename", reportTaskModels),
 		async (route) => {
-			const firstMessages = [{ role: "user" as const, content: prompt, timestamp: Date.now() }];
+			const firstMessages = [{ role: "user" as const, content: text, timestamp: Date.now() }];
 			const response = await complete(route, firstMessages);
 			const title = response.content
 				.filter((part) => part.type === "text")

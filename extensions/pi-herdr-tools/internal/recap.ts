@@ -23,7 +23,7 @@ export const RECAP_TASK = {
 class RecapModelError extends Error {}
 
 /** Put the accent icon at column 0 and indent continuation lines under the dim recap text. */
-export function renderRecapWidget(text: string, theme: Theme, width: number): string[] {
+function renderRecapWidget(text: string, theme: Theme, width: number): string[] {
 	return wrapTextWithAnsi(`Recap: ${text}`, Math.max(1, width - 2)).map((line, index) =>
 		truncateToWidth(`${index ? "  " : `${theme.fg("accent", "↺")} `}${theme.fg("dim", line)}`, Math.max(1, width), ""),
 	);
