@@ -1199,7 +1199,7 @@ test("direct chain waits for exact prior result and admits declared writer Roles
 		await herdrEnvironment(async (cwd) => {
 			const fake = fakeHerdr(cwd, (prompt) => prompt.includes("Write-access completion:")
 				? JSON.stringify({ outcome: "succeeded", answer: "final exact" })
-				: prompt.includes("first") ? "prior exact" : "final exact");
+				: prompt.startsWith("first") ? "prior exact" : "final exact");
 			const app = harness({ cwd, herdr: fake.exec });
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("chain", { chain: [
@@ -1296,6 +1296,27 @@ test("parallel direct delegation returns after first verified tab and delivers o
 			assert.match(message.content, /empty final answer/);
 			assert.match(message.content, /recover from Herdr tab/);
 			assert.deepEqual(app.sentMessages[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+		});
+	});
+});
+
+test("an oversized exact answer in an 8-task request succeeds with a bounded, recoverable result", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const large = "é".repeat(4_000);
+			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("task 0") ? large : "exact answer");
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("parallel", { tasks: Array.from({ length: 8 }, (_, index) =>
+				({ role: "worker", name: `Task ${index}`, task: `task ${index}`, access: "read" })) }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			const message = app.sentMessages[0]!.message;
+			assert.deepEqual(message.details.entries.map(({ status }: any) => status), Array(8).fill("succeeded"));
+			const [, file] = message.content.match(/é\n\n\[Answer truncated to 5120 of 8000 bytes; read the full answer at (\S+answer-[0-9a-f]{32}\.md)\]/)!;
+			assert.equal(await readFile(file!, "utf8"), large);
+			assert.equal(message.details.tabs.find(({ entryId }: any) => entryId === "parallel:parallel:0").sessionFile, join(dirname(file!), "session.jsonl"));
+			assert.ok(fake.calls.some((args) => args[1] === "prompt" && args[3]!.includes("Final answer budget: 5120 bytes, conclusions first.")));
 		});
 	});
 });

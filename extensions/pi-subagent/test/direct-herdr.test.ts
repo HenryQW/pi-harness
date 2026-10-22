@@ -20,7 +20,6 @@ test("native Pi session records exact bounded final assistant text, not interim 
 	]);
 	assert.equal(exactDirectAnswer(session, prompt), "exact answer");
 	assert.throws(() => exactDirectAnswer(session, "other prompt"), /exact successful final answer/);
-	assert.throws(() => exactDirectAnswer(session, prompt, 5), /exceeds the 5-byte workflow limit/);
 });
 
 test("direct completion follows exact ancestry through non-message session entries", () => {
@@ -33,24 +32,24 @@ test("direct completion follows exact ancestry through non-message session entri
 		role: "assistant", stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ outcome: "succeeded", answer: "Done." }) }],
 	} };
 	const session = lines([...entries, final]);
-	assert.equal(exactDirectAnswer(session, prompt, 1024, true), "Done.");
+	assert.equal(exactDirectAnswer(session, prompt, true), "Done.");
 	assert.equal(exactDirectTerminalTurn(session, prompt), true);
-	assert.throws(() => exactDirectAnswer(session, `${prompt}\n`, 1024, true), /exact successful final answer/);
+	assert.throws(() => exactDirectAnswer(session, `${prompt}\n`, true), /exact successful final answer/);
 	for (const parentId of ["missing", "custom", "session"]) {
 		const unrelated = lines([...entries.slice(0, -1), { ...entries[2], parentId }, final]);
-		assert.throws(() => exactDirectAnswer(unrelated, prompt, 1024, true), /exact successful final answer/);
+		assert.throws(() => exactDirectAnswer(unrelated, prompt, true), /exact successful final answer/);
 		assert.equal(exactDirectTerminalTurn(unrelated, prompt), false);
 	}
 });
 
 test("write-access final turns require an explicit successful completion", () => {
 	const session = (text: string) => lines([{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] } }]);
-	assert.equal(exactDirectAnswer(session(JSON.stringify({ outcome: "succeeded", answer: "Scoped commit completed." })), prompt, 1024, true), "Scoped commit completed.");
+	assert.equal(exactDirectAnswer(session(JSON.stringify({ outcome: "succeeded", answer: "Scoped commit completed." })), prompt, true), "Scoped commit completed.");
 	for (const outcome of ["failed", "blocked"]) {
-		assert.throws(() => exactDirectAnswer(session(JSON.stringify({ outcome, answer: "Partial changes remain." })), prompt, 1024, true), /Direct task reported .*Partial changes remain/);
+		assert.throws(() => exactDirectAnswer(session(JSON.stringify({ outcome, answer: "Partial changes remain." })), prompt, true), /Direct task reported .*Partial changes remain/);
 	}
 	for (const text of ["Commit failed; partial changes remain.", "null", JSON.stringify({ answer: "Turn finished." }), JSON.stringify({ outcome: "succeeded", answer: "" })]) {
-		assert.throws(() => exactDirectAnswer(session(text), prompt, 1024, true), /Pi write-access/);
+		assert.throws(() => exactDirectAnswer(session(text), prompt, true), /Pi write-access/);
 	}
 });
 

@@ -2,16 +2,16 @@ import { randomBytes } from "node:crypto";
 import { realpathSync, type Stats } from "node:fs";
 import { open, readFile, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode, herdrCommandFailure, startPiAgent } from "@henryqw/pi-herdr";
+import { utf8Prefix } from "./ephemeral.ts";
 import type { ResolvedRoleLaunch } from "./index.ts";
 import { assertPrivateLease, PI_SUBAGENT_PROCESS_LEASE, scanProcessLease } from "./process-lease.ts";
 
 const OPERATION_MS = 30_000;
 const SESSION_LIMIT = 16 * 1024 * 1024;
-const ANSWER_LIMIT = 50 * 1024;
 const DIRECT_OUTCOMES = ["succeeded", "failed", "blocked"] as const;
 
 type Json = Record<string, unknown>;
@@ -107,7 +107,7 @@ export async function assertSettledDirectSession(sessionFile: string, turn: stri
 	}
 }
 
-export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSWER_LIMIT, requireSuccess = false): string {
+export function exactDirectAnswer(jsonl: string, prompt: string, requireSuccess = false): string {
 	const final = exactFinalTurn(jsonl, prompt);
 	if (!final || final.stopReason !== "stop" || !Array.isArray(final.content)) {
 		throw new Error("Pi did not persist an exact successful final answer for this prompt.");
@@ -117,7 +117,6 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 		return content.type === "text" && typeof content.text === "string" ? [content.text] : [];
 	}).join("\n");
 	if (!text.trim()) throw new Error("Pi persisted an empty final answer.");
-	if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`Pi final answer exceeds the ${maxBytes}-byte workflow limit; read the private session file for recovery.`);
 	if (!requireSuccess) return text;
 	let completion: Json;
 	try { completion = JSON.parse(text) as Json; }
@@ -426,7 +425,13 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 					const readAnswer = async () => {
 						const info = await stat(sessionFile);
 						if (info.size > SESSION_LIMIT) throw new Error(`Pi session in tab ${tabId} exceeds 16 MiB; inspect ${sessionFile} for recovery.`);
-						return exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, maxBytes, requireSuccess);
+						const text = exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, requireSuccess);
+						const bytes = Buffer.byteLength(text, "utf8");
+						if (bytes <= maxBytes) return text;
+						// An oversized exact answer still succeeds: Main gets a bounded prefix and a private full copy.
+						const file = join(dirname(sessionFile), `answer-${turn}.md`);
+						await writeFile(file, text, { mode: 0o600 });
+						return `${utf8Prefix(text, maxBytes)}\n\n[Answer truncated to ${maxBytes} of ${bytes} bytes; read the full answer at ${file}]`;
 					};
 					const maybeAnswer = async () => {
 						try { return await readAnswer(); } catch (error) {

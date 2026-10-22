@@ -137,9 +137,11 @@ If the extension cannot prove termination of the stopped worker, the workflow ke
 
 ### Direct results and records
 
-The extension retrieves each final answer from its exact Pi session file, not its possibly truncated screen. Idle, blocked, unknown, malformed, or oversized answers fail with recoverable tab and session identities. No whole-run deadline applies.
+The extension retrieves each final answer from its exact Pi session file, not its possibly truncated screen. Idle, blocked, unknown, or malformed answers fail with recoverable tab and session identities. No whole-run deadline applies.
 
-The tool returns a task ID and the first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues the result after the current turn. If Main is idle, the result starts a turn. The extension does not report a blocked, stalled, unknown, or truncated result as success.
+The tasks in a request share a 40 KiB inline answer budget. Each worker prompt states its share. A longer exact answer is still a success. The result shows a UTF-8-safe prefix and a truncation marker. The marker gives the path of a private `answer-<turn>.md` file beside the session file, which holds the full answer. For a write task, the budget applies to the `answer` field of the completion object.
+
+The tool returns a task ID and the first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues the result after the current turn. If Main is idle, the result starts a turn. The extension does not report a blocked, stalled, or unknown result as success.
 
 In the result, each launched worker has a line with its model, thinking level, measured task tokens, cost, and elapsed time. For example: `✓ [1/2] Check · worker · provider/model · thinking high · 1.5k tok · $0.12 · 42s`. The first line also shows the request total, such as `total $0.12`. Unknown and zero cost are not shown. If Pi recorded no usage, the line shows `tokens unknown`. Failed and stopped workers show the usage that the extension measured until they ended. A worker that the extension skipped before launch shows no usage.
 

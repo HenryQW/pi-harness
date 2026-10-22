@@ -812,6 +812,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				}
 			};
 			directTasks.set(taskId, local);
+			// Tasks share one inline budget so the combined follow-up stays bounded for Main.
+			const answerBytes = Math.floor(40 * 1024 / entries.length);
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
 				// A later worker launches after earlier ones finish; report and revalidate config edits made meanwhile.
@@ -831,7 +833,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				try {
 					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
 						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, `${directRef(display)} ${display.title}`,
-						entry.delegation.access === "read" ? `${entry.delegation.task}\n\n${READ_ACCESS_NOTICE}` : entry.delegation.task, activeSignal, (tab) => {
+						`${entry.delegation.access === "read" ? `${entry.delegation.task}\n\n${READ_ACCESS_NOTICE}` : entry.delegation.task}\n\nFinal answer budget: ${answerBytes} bytes, conclusions first. Main sees only that much inline; a longer answer is saved to a file.`, activeSignal, (tab) => {
 							const record = { taskId, entryId: entry.id, display, ...tab };
 							// Persist before agent start, or let the new session carry the exact identity after settlement.
 							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
@@ -900,7 +902,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							controller.signal.throwIfAborted();
 							if (writerFailed) throw new Error("Previous direct task did not complete exactly; inspect recorded tabs before new shared-checkout work.");
 							handle = entry.index === 0 ? first : await launch(entry, entrySignal(entry));
-							const answer = await handle.answer(Math.floor(40 * 1024 / entries.length));
+							const answer = await handle.answer(answerBytes);
 							let usage: DirectUsage | undefined;
 							try {
 								usage = await handle.usage();
