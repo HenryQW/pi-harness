@@ -1,7 +1,8 @@
 #!/bin/sh
 # Usage: finish-worktree.sh <Herdr workspace id> <merged PR number>
 # Finish a worker worktree after its PR merges, like /done in that pane: refuse unless the PR is merged,
-# the checkout is on the PR branch at the merged head and clean, and no agent in the workspace is working.
+# the checkout is on the PR branch at the merged head and clean, no agent in the workspace is working,
+# and no pane in another workspace uses the checkout.
 # Then remove the checkout, close the workspace, and fast-forward the primary checkout.
 set -eu
 ws=$1; n=$2
@@ -13,8 +14,10 @@ path=$(herdr worktree list | jq -r --arg ws "$ws" '.result.worktrees[] | select(
 [ "$(git -C "$path" rev-parse --abbrev-ref HEAD)" = "$(printf '%s' "$pr" | jq -r .headRefName)" ] || { echo "$path is not on the PR branch" >&2; exit 1; }
 [ "$(git -C "$path" rev-parse HEAD)" = "$(printf '%s' "$pr" | jq -r .headRefOid)" ] || { echo "$path HEAD differs from the merged PR head" >&2; exit 1; }
 [ -z "$(git -C "$path" status --porcelain)" ] || { echo "$path has uncommitted changes" >&2; exit 1; }
-busy=$(herdr agent list | jq -r --arg ws "$ws" '[.result.agents[] | select(.pane_id | startswith($ws + ":")) | select(.agent_status == "working")] | length')
+busy=$(herdr agent list | jq -r --arg ws "$ws" '[.result.agents[] | select(.workspace_id == $ws and .agent_status == "working")] | length')
 [ "$busy" = 0 ] || { echo "An agent in $ws is still working" >&2; exit 1; }
+users=$(herdr api snapshot | jq -r --arg ws "$ws" --arg path "$path" '[.result.snapshot.panes[] | select(.workspace_id != $ws and (.cwd == $path or (.cwd | startswith($path + "/")))) | .pane_id] | join(", ")')
+[ -z "$users" ] || { echo "Panes in other workspaces use $path: $users" >&2; exit 1; }
 git -C "$main" worktree remove "$path"
 herdr workspace close "$ws" >/dev/null
 git -C "$main" pull --ff-only -q

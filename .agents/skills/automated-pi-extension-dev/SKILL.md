@@ -7,14 +7,14 @@ description: Use when Main leads a batch of extension changes in this repository
 
 Main is the manager. Main owns scope, decisions, review, merge, and cleanup. Workers own implementation, their pull request, and its feedback. The user answers only in Main's pane.
 
-Requirements: Herdr, `gh` with access to the repository, and `@henryqw/pi-pr` 10.5.0 or later for `pi_pr_status` and `pi_pr_merge`.
+Requirements: Herdr, `gh` with access to the repository, `jq`, and `@henryqw/pi-pr` 10.5.0 or later for `pi_pr_status` and `pi_pr_merge`.
 
 ## 1. Plan
 
 1. Delegate broad discovery to read-only scouts in parallel, one for each area. Verify their main claims in code before you report them.
 2. Get the user's decisions: which units to build, and the home package of each unit. Use the package `CONTEXT.md` files and `CONTEXT-MAP.md` to choose homes. A home must own the responsibility; do not stretch a definition (for example, a worktree handoff is not delegation).
 3. Save the plan in `.context/plan.md`. Before launch, delegate one frontier reviewer to review the plan from first principles: real problem, existing coverage, Pi API mechanism (verify in the installed Pi `dist/` and `.d.ts`), home, smallest version, failure modes, and release cost.
-4. Order units by dependency. A unit that proves a shared mechanism (for example a boundary rule) goes before units that copy it.
+4. Order units in dependency layers. A unit that proves a shared mechanism (for example a boundary rule) goes in an earlier layer than units that copy it. Every handoff starts from local `main`, so launch a layer only after its prerequisites merge and local `main` is updated.
 
 ## 2. Launch
 
@@ -30,7 +30,7 @@ Requirements: Herdr, `gh` with access to the repository, and `@henryqw/pi-pr` 10
 
 Copy this into each handoff prompt, with Main's pane ID:
 
-> After each push, call `pi_pr_status` with your PR number every 2 to 3 minutes. Address every Codex comment, P2 included: fix it and reply with the full commit hash, or reply with a one-sentence rebuttal, then resolve the thread. On `block`, fix the cause and push. On `wait`, keep waiting. When the verdict is `ready` with no unresolved threads, send one message: `herdr agent prompt <Main pane> "READY #<PR> <full head oid> checks: <what you ran>"`. Then stop and wait for Main.
+> After each push, call `pi_pr_status` with your PR number every 2 to 3 minutes. Address every Codex comment, P2 included: fix it and reply with the full commit hash, or reply with a one-sentence rebuttal, then resolve the thread. On `block` from failed checks, unresolved threads, or a conflict, fix the cause and push. On `block` that code cannot fix (closed, draft, required human review, or repository policy), report the reasons to Main and stop. On `wait`, keep waiting. When the verdict is `ready` with no unresolved threads, send one message: `herdr agent prompt <Main pane> "READY #<PR> <full head oid> checks: <what you ran>"`. Then stop and wait for Main.
 
 ## 4. Main on READY
 
@@ -38,9 +38,9 @@ Copy this into each handoff prompt, with Main's pane ID:
 2. Review the change since the last head that you reviewed. Review a small delta yourself. For a new package, a large delta, or many Codex-driven changes, delegate one frontier `reviewer` with criteria and exact refs. Verify each finding in code before you send it.
 3. Send findings with `herdr agent prompt <worker pane> "..."`: priority, evidence, and the smallest fix. Make design decisions yourself when they stay inside the user's decisions; ask the user only for scope or policy changes.
 4. When the review passes, call `pi_pr_status`. Then call `pi_pr_merge` with the exact `headOid`. The user confirms in Main's pane.
-   - Merge bar: no unresolved P0 or P1 finding, and Codex finished the current head.
-   - If Codex shows `running` for a long time and the change since the last Codex-reviewed head is trivial, ask the user whether to merge without that review.
-5. After the merge, tell the worker that its work is complete. Then finish its worktree yourself: `scripts/finish-worktree.sh <workspace> <PR>`. The script refuses unless the PR is merged, the checkout is clean, and its HEAD is the merged head.
+   - Merge bar: Codex finished the current head, and no thread of any priority is unresolved. If `unresolvedThreads.other` is not zero, send the PR back to the worker.
+   - If Codex shows `running` for a long time and the change since the last Codex-reviewed head is trivial, ask the user whether to merge without that review. `pi_pr_merge` refuses a `wait` verdict. If the user agrees and the required checks passed, merge with `gh pr merge <N> --admin --squash --match-head-commit <oid>`.
+5. After the merge, tell the worker that its work is complete. Then finish its worktree yourself: `.agents/skills/automated-pi-extension-dev/scripts/finish-worktree.sh <workspace> <PR>`. The script refuses unless the PR is merged, the checkout is clean and at the merged head, no agent in the workspace is working, and no pane in another workspace uses the checkout.
 
 ## 5. Conflicts and follow-ups
 
