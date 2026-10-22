@@ -69,7 +69,7 @@ const MULTI_CODEX_EXTENSION = fileURLToPath(import.meta.resolve("@henryqw/pi-mul
 const ROLE_MCP_EXTENSION = fileURLToPath(new URL("../extensions/role-mcp.ts", import.meta.url));
 const ROLE_TOOLS_EXTENSION = fileURLToPath(new URL("../extensions/role-tools.ts", import.meta.url));
 const GIT_READ_EXTENSION = fileURLToPath(new URL("../extensions/git-read.ts", import.meta.url));
-export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
+export { PI_SUBAGENT_PROCESS_LEASE } from "./process-lease.ts";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";

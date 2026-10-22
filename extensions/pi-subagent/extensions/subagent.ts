@@ -3,8 +3,8 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { type Component, Text, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { availableTaskModels, loadTaskModelsConfig, modelReference, type ProfileName, registerModelTask, registerTaskModelsConfigReporting, resolveAvailableModel, resolveConfiguredTaskRoute, type ResolvedTaskRoute, taskThinkingLevels } from "@henryqw/pi-task-models";
 import { registerConfigReporting } from "@henryqw/pi-config-store";
-import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type Role } from "@henryqw/pi-subagent";
-import { resolveExecutionPolicy, type EffectiveExecutionPolicy } from "./config.ts";
+import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type ExecutionPolicySnapshot, type Role } from "@henryqw/pi-subagent";
+import { resolveExecutionPolicy } from "./config.ts";
 import { registerCheckoutAdmission } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
@@ -204,7 +204,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	});
 	// The isolated runner reads the policy lazily without a context, so each read reports through the session's.
 	let latestCtx: ExtensionContext | undefined;
-	const currentPolicy = (): EffectiveExecutionPolicy => {
+	const currentPolicy = (): ExecutionPolicySnapshot => {
 		const loaded = configStore.loadSync();
 		if (latestCtx) configReporter.report(latestCtx, configStore, loaded);
 		const policy = resolveExecutionPolicy(configStore.path, loaded);
@@ -407,8 +407,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					const resolved = role.modelClass === undefined ? resolveConfiguredTaskRoute(ctx, DELEGATE_TASK) : resolveTaskRoute(ctx, role.modelClass);
 					route = { model: modelReference(resolved.model), thinking: resolved.thinkingLevel };
 				} catch (error) { route = { error: message(error) }; }
-				return { name: role.name, source: catalog.sources.get(role.name) ?? "unknown", modelClass: role.modelClass, route,
-					tools: role.tools ?? [], extensions: role.extensions ?? [], skills: role.skills ?? [], mcps: role.mcps ?? [] };
+				return { name: role.name, source: catalog.sources.get(role.name)!, modelClass: role.modelClass, route,
+					tools: role.tools, extensions: role.extensions, skills: role.skills, mcps: role.mcps ?? [] };
 			});
 			return { roles, errors: catalog.errors.map((error) => error.message) };
 		},

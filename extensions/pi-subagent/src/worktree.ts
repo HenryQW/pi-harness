@@ -1,8 +1,17 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { runGit, type GitRunner } from "./git-process.ts";
+
+export function isMissing(error: unknown): boolean {
+	return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT");
+}
+
+export function isWithin(root: string, candidate: string): boolean {
+	const fromRoot = relative(root, candidate);
+	return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
+}
 
 export interface WorktreeInfo {
 	path: string;

@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode, herdrCommandFailure, startPiAgent } from "@henryqw/pi-herdr";
 import type { ResolvedRoleLaunch } from "./index.ts";
-import { assertPrivateLease, scanProcessLease } from "./process-lease.ts";
+import { assertPrivateLease, PI_SUBAGENT_PROCESS_LEASE, scanProcessLease } from "./process-lease.ts";
 
 const OPERATION_MS = 30_000;
 const SESSION_LIMIT = 16 * 1024 * 1024;
@@ -380,7 +380,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			let tabId: string;
 			let paneId: string;
 			try {
-				const response = await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--env", `PI_SUBAGENT_PROCESS_LEASE=${leasePath}`, "--no-focus"], options());
+				const response = await herdr.json(["tab", "create", "--workspace", workspaceId, "--cwd", workingDir, "--label", label, "--env", `${PI_SUBAGENT_PROCESS_LEASE}=${leasePath}`, "--no-focus"], options());
 				const created = object(response.result, "tab allocation result");
 				// Capture every returned ID before validation can fail. These are evidence,
 				// not owned tabs; the caller retains this intent even without either ID.

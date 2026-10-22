@@ -198,7 +198,6 @@ export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
 export type CheckBatchEvidence = Static<typeof CheckBatchEvidenceSchema>;
 export type ReusedCheckSource = NonNullable<CommandEvidence["reusedFrom"]>;
 export type ReviewEvidence = Static<typeof ReviewEvidenceSchema>;
-export type WorkerTermination = Static<typeof WorkerTerminationSchema>;
 
 export const CLEANUP_KINDS = ["worker_tab", "workspace", "worktree", "branch"] as const;
 export type CleanupStep = Static<typeof CleanupStepSchema>;
@@ -505,7 +504,6 @@ export const IntegrationStateSchema = Type.Object({
 }, { additionalProperties: false });
 
 export type IntegrationCandidate = Static<typeof IntegrationCandidateSchema>;
-export type IntegrationStage = Static<typeof IntegrationStageSchema>;
 export type IntegrationGeneration = Static<typeof IntegrationGenerationSchema>;
 export type IntegrationState = Static<typeof IntegrationStateSchema>;
 

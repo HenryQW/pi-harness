@@ -1,6 +1,8 @@
 import { lstat } from "node:fs/promises";
 import type { HerdrExecResult } from "@henryqw/pi-herdr";
 
+export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
+
 export async function assertPrivateLease(path: string, allowMissing: boolean): Promise<boolean> {
 	let info;
 	try {

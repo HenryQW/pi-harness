@@ -149,12 +149,12 @@ function sourceFor(entry: WorkflowTransportEntry): string | undefined {
 	if (entry.status === "rejected") {
 		return entry.partialOutput ? `${entry.failure}\nPartial output before failure (incomplete; not a success):\n${entry.partialOutput}` : entry.failure;
 	}
-	if (entry.status === "running" || entry.status === "succeeded") return entry.assistantOutput;
+	if (entry.status === "succeeded") return entry.assistantOutput;
 }
 
 function evidenceFor(entry: WorkflowTransportEntry, position: number, total: number): Evidence | undefined {
 	const source = sourceFor(entry);
-	if (source === undefined || !source) return;
+	if (!source) return;
 	const [preview, remainder] = splitEvidence(source);
 	return {
 		heading: `- [${position}/${total}] ${entry.name} · ${entry.role} · ${entry.status === "rejected" ? "failure" : "result"}:`,
