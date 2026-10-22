@@ -3340,6 +3340,48 @@ test("requires a newly ahead commit before offering creation after a merge", asy
 	}
 });
 
+test("delegated PR entry rejects a parent's run ID and reserves only child-local authority", async () => {
+	const childRunId = "22222222-2222-4222-8222-222222222222";
+	const calls: string[] = [];
+	const createApp = (owner: "parent" | "child", runId: string) => harness({
+		load: async () => noPullRequest(1), useDefaultCommandHandler: true,
+		isIdle: () => false, canonicalWorktree: async () => "/repo", newRunId: () => runId,
+		createPullRequestCreator(options) {
+			calls.push(`${owner}:reserve`);
+			assert.equal(options.expectedBase, "main");
+			return { async prepare() { calls.push(`${owner}:prepare`); return { kind: "prepared" }; } } as never;
+		},
+	});
+	const parent = createApp("parent", routeRunId);
+	const child = createApp("child", childRunId);
+	const parentCtx = { ...parent.context(), hasUI: false };
+	const childCtx = { ...child.context(), hasUI: false };
+	try {
+		await parent.start(parentCtx);
+		await child.start(childCtx);
+		await parent.callTool("pi_git_pr", { base: "main", allowUpstream: true }, parentCtx);
+		await assert.rejects(child.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, childCtx),
+			/No PR workflow is active.*run IDs are session-local.*pi_git_pr.*authorized/);
+		assert.deepEqual(calls, ["parent:reserve"], "foreign IDs must not reserve or mutate a child workflow");
+		assert.equal(child.execCalls.length, 0);
+		await parent.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, parentCtx);
+		assert.deepEqual(calls, ["parent:reserve", "parent:prepare"], "the active run stays parent-owned");
+		// End the parent workflow before separately authorizing a child-owned invocation.
+		await parent.shutdown(parentCtx);
+		const started = await child.callTool("pi_git_pr", { base: "main", allowUpstream: true }, childCtx);
+		assert.match(JSON.stringify(started.details), /handoff/);
+		const continuation = await child.beforeSettle(childCtx);
+		assert.equal(continuation?.continue, true);
+		assert.match(JSON.stringify(continuation?.entries), new RegExp(`runId=${childRunId} action=prepare`));
+		await assert.rejects(child.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, childCtx), /wrong or stale/);
+		await child.callTool("pi_pr_create", { runId: childRunId, action: "prepare" }, childCtx);
+		assert.deepEqual(calls, ["parent:reserve", "parent:prepare", "child:reserve", "child:prepare"]);
+	} finally {
+		await parent.shutdown(parentCtx);
+		await child.shutdown(childCtx);
+	}
+});
+
 test("agent PR entry checks base and upstream consent before reservation", async () => {
 	for (const scenario of ["base", "link", "create"] as const) {
 		let reserved = false;
