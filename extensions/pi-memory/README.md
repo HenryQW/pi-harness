@@ -71,7 +71,11 @@ Pi recommends `/dream` for non-empty memory with no recorded dream, or one at le
 
 `/dream` requires an interactive UI, a configured `balanced` route, and existing, readable, non-symlink `~/.pi/agent/SYSTEM.md`. Create that file deliberately and completely: a partial SYSTEM replaces Pi's default prompt. SYSTEM edits take effect in a new session.
 
-`pi-memory/promoteEntries` proposes one exact SYSTEM edit and the whole memory entries it represents. The UI shows the reason, a colored SYSTEM diff with line numbers, and entries to remove from each store. Select `Approve` to proceed; `Reject` or Esc changes nothing.
+`/dream` shows `Dream running…` in Pi's bordered loading widget, as `/rename` does, before it reads files or requests a model proposal. The status clears when the command ends, is cancelled, or the session or model changes.
+
+`pi-memory/promoteEntries` proposes one exact SYSTEM edit and the whole memory entries it represents. The approval screen fits the current terminal size. It shows the reason, a colored SYSTEM diff with line numbers, and all entries to remove from each store. Use Page Up and Page Down to scroll; Home and End go to the start and end. The approval controls stay visible. If the terminal is too small, enlarge it or press Esc to reject.
+
+Use Up and Down to select a control, then Enter to confirm. `Reject` is selected by default. Select `Approve` to proceed; `Reject` or Esc changes nothing.
 
 After approval, pi-memory checks that SYSTEM and both stores remain unchanged. It writes SYSTEM first, then removes entries. A failed SYSTEM write removes nothing. If removal fails, run `/dream` again to reconcile; the timestamp does not advance. Successful runs record time in `~/.pi/agent/config/pi-memory/dream.json`.
 

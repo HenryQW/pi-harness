@@ -1,7 +1,7 @@
 import { lstat, mkdir, opendir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { DynamicBorder, generateDiffString, getAgentDir, getSelectListTheme, renderDiff, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, DynamicBorder, generateDiffString, getAgentDir, getSelectListTheme, renderDiff, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { askQuestion } from "@henryqw/pi-ask-question";
 import {
 	extensionConfigDir,
@@ -20,7 +20,7 @@ import {
 	type ResolvedTaskRoute,
 	type TaskRouteError,
 } from "@henryqw/pi-task-models";
-import { Container, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, matchesKey, ScrollView, SelectList, Spacer, Text } from "@earendil-works/pi-tui";
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
 import { memoryConfigStore, type MemoryConfig } from "../src/config.ts";
@@ -431,40 +431,65 @@ function dreamSystemText(snapshot: ReviewSnapshot, proposal: DreamProposal): str
 }
 
 async function confirmDream(ctx: ExtensionContext, systemPath: string, old: string, updated: string, proposal: DreamProposal, signal?: AbortSignal): Promise<boolean> {
-	return ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {
-		signal?.addEventListener("abort", () => done(false), { once: true });
-		const container = new Container();
-		const border = () => new DynamicBorder((text: string) => theme.fg("accent", text));
-		container.addChild(border());
-		container.addChild(new Text(`${theme.fg("accent", theme.bold("Promote memory to SYSTEM.md"))} ${theme.fg("dim", escapeDisplayControls(systemPath))}`, 1, 0));
-		container.addChild(new Text(theme.fg("muted", `Why: ${escapeDisplayControls(proposal.reason)}`), 1, 1));
-		if (updated !== old) container.addChild(new Text(renderDiff(generateDiffString(escapeDisplayControls(old), escapeDisplayControls(updated)).diff), 1, 0));
-		for (const [target, file] of [["memory", "MEMORY.md"], ["user", "USER.md"]] as const) {
-			if (!proposal.remove[target].length) continue;
-			container.addChild(new Spacer(1));
-			container.addChild(new Text(theme.bold(`Remove from ${file} (now covered by SYSTEM.md):`), 1, 0));
-			for (const entry of proposal.remove[target]) container.addChild(new Text(theme.fg("toolDiffRemoved", `- ${escapeDisplayControls(entry)}`), 1, 0));
-		}
-		const changes = [updated !== old && "update SYSTEM.md", ...(["memory", "user"] as const).map((target) => {
-			const count = proposal.remove[target].length;
-			return count && `delete ${count} ${count === 1 ? "entry" : "entries"} from ${target === "memory" ? "MEMORY.md" : "USER.md"}`;
-		})].filter(Boolean).join(", ");
-		const list = new SelectList([
-			{ value: "reject", label: "Reject", description: "Change no files" },
-			{ value: "approve", label: "Approve", description: changes.charAt(0).toUpperCase() + changes.slice(1) },
-		], 2, getSelectListTheme());
-		list.onSelect = (item) => done(item.value === "approve");
-		list.onCancel = () => done(false);
-		container.addChild(new Spacer(1));
-		container.addChild(list);
-		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc reject"), 1, 0));
-		container.addChild(border());
-		return {
-			render: (width: number) => container.render(width),
-			invalidate: () => container.invalidate(),
-			handleInput: (data: string) => { list.handleInput(data); tui.requestRender(); },
-		};
-	});
+	let onAbort: (() => void) | undefined;
+	try {
+		return await ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {
+			onAbort = () => done(false);
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted) onAbort();
+			const container = new Container();
+			const border = () => new DynamicBorder((text: string) => theme.fg("accent", text));
+			container.addChild(border());
+			container.addChild(new Text(`${theme.fg("accent", theme.bold("Promote memory to SYSTEM.md"))} ${theme.fg("dim", escapeDisplayControls(systemPath))}`, 1, 0));
+			container.addChild(new Text(theme.fg("muted", `Why: ${escapeDisplayControls(proposal.reason)}`), 1, 1));
+			if (updated !== old) container.addChild(new Text(renderDiff(generateDiffString(escapeDisplayControls(old), escapeDisplayControls(updated)).diff), 1, 0));
+			for (const [target, file] of [["memory", "MEMORY.md"], ["user", "USER.md"]] as const) {
+				if (!proposal.remove[target].length) continue;
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(theme.bold(`Remove from ${file} (now covered by SYSTEM.md):`), 1, 0));
+				for (const entry of proposal.remove[target]) container.addChild(new Text(theme.fg("toolDiffRemoved", `- ${escapeDisplayControls(entry)}`), 1, 0));
+			}
+			const changes = [updated !== old && "update SYSTEM.md", ...(["memory", "user"] as const).map((target) => {
+				const count = proposal.remove[target].length;
+				return count && `delete ${count} ${count === 1 ? "entry" : "entries"} from ${target === "memory" ? "MEMORY.md" : "USER.md"}`;
+			})].filter(Boolean).join(", ");
+			const list = new SelectList([
+				{ value: "reject", label: "Reject", description: "Change no files" },
+				{ value: "approve", label: "Approve", description: changes.charAt(0).toUpperCase() + changes.slice(1) },
+			], 2, getSelectListTheme());
+			list.onSelect = (item) => done(item.value === "approve");
+			list.onCancel = () => done(false);
+			const scroll = new ScrollView(container);
+			const footer = new Container();
+			footer.addChild(list);
+			footer.addChild(new Text(theme.fg("dim", "PgUp/PgDn scroll • Home/End • ↑↓ navigate • enter select • esc reject"), 1, 0));
+			footer.addChild(border());
+			let canReview = true;
+			return {
+				render: (width: number) => {
+					const controls = footer.render(width);
+					const height = tui.terminal.rows - controls.length;
+					canReview = height > 0;
+					if (!canReview) return new Text("Enlarge terminal to review; Esc rejects.", 0, 0).render(width).slice(0, tui.terminal.rows);
+					const lines = scroll.render(width);
+					scroll.updateLayout(lines.length, height, () => tui.requestRender());
+					return [...lines.slice(scroll.scrollTop, scroll.scrollTop + height), ...controls];
+				},
+				invalidate: () => { scroll.invalidate(); footer.invalidate(); },
+				handleInput: (data: string) => {
+					if (!canReview) { if (matchesKey(data, "escape")) done(false); return; }
+					if (matchesKey(data, "pageUp")) scroll.scrollBy(-scroll.viewportHeight);
+					else if (matchesKey(data, "pageDown")) scroll.scrollBy(scroll.viewportHeight);
+					else if (matchesKey(data, "home")) scroll.scrollToStart();
+					else if (matchesKey(data, "end")) scroll.scrollToEnd();
+					else list.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
+	} finally {
+		if (onAbort) signal?.removeEventListener("abort", onAbort);
+	}
 }
 
 function validateEntryContent(content: string): string | undefined {
@@ -696,6 +721,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		conflictQueue: { mutation: MemoryMutation; signal?: AbortSignal }[];
 		sessionGeneration: number;
 	} = { conflictWarnings: [], observedReviewSystem: false, rememberQueue: [], conflictQueue: [], sessionGeneration: 0 };
+	let clearDreamActivity: (() => void) | undefined;
 
 	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<boolean> => {
 		if (state.initError) {
@@ -782,29 +808,41 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Cannot run /dream while the agent is busy.", "warning");
 				return;
 			}
-			if (!(await loadLiveEntries("dream", ctx.isIdle, (message) => ctx.ui.notify(message, "warning")))) return;
-			const systemPath = join(getAgentDir(), "SYSTEM.md");
-			const system = (await readSystemSource(systemPath)).state;
-			if (!ctx.isIdle()) {
-				ctx.ui.notify("Cannot run /dream while the agent is busy.", "warning");
-				return;
-			}
-			if (system === "absent") {
-				ctx.ui.notify(`Cannot run /dream: agent-global SYSTEM.md is absent (${JSON.stringify(systemPath)}). Deliberately establish a complete global SYSTEM first; a partial SYSTEM replaces Pi's default prompt.`, "warning");
-				return;
-			}
-			if (system === "unreadable" || system === "oversized") {
-				ctx.ui.notify(`Cannot run /dream: agent-global SYSTEM.md is ${system} (${JSON.stringify(systemPath)}).`, "warning");
-				return;
-			}
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("Cannot run /dream without an interactive TUI for approval.", "warning");
 				return;
 			}
+			if (clearDreamActivity) {
+				ctx.ui.notify("Cannot run /dream: a dream is already running.", "warning");
+				return;
+			}
+			const signal = ctx.signal;
+			const clearActivity = () => {
+				if (clearDreamActivity !== clearActivity) return;
+				ctx.ui.setWidget("pi-memory-dream", undefined);
+				clearDreamActivity = undefined;
+			};
+			clearDreamActivity = clearActivity;
+			ctx.ui.setWidget("pi-memory-dream", (tui, theme) => new BorderedLoader(tui, theme, "Dream running…", { cancellable: false }));
+			signal?.addEventListener("abort", clearActivity, { once: true });
 			try {
-				const signal = ctx.signal;
 				signal?.throwIfAborted();
 				const generation = state.sessionGeneration;
+				if (!(await loadLiveEntries("dream", ctx.isIdle, (message) => ctx.ui.notify(message, "warning")))) return;
+				const systemPath = join(getAgentDir(), "SYSTEM.md");
+				const system = (await readSystemSource(systemPath)).state;
+				if (!ctx.isIdle()) {
+					ctx.ui.notify("Cannot run /dream while the agent is busy.", "warning");
+					return;
+				}
+				if (system === "absent") {
+					ctx.ui.notify(`Cannot run /dream: agent-global SYSTEM.md is absent (${JSON.stringify(systemPath)}). Deliberately establish a complete global SYSTEM first; a partial SYSTEM replaces Pi's default prompt.`, "warning");
+					return;
+				}
+				if (system === "unreadable" || system === "oversized") {
+					ctx.ui.notify(`Cannot run /dream: agent-global SYSTEM.md is ${system} (${JSON.stringify(systemPath)}).`, "warning");
+					return;
+				}
 				if ((await lstat(systemPath)).isSymbolicLink()) throw new MemoryReviewError("Agent-global SYSTEM.md must not be a symlink.");
 				const snapshot = await loadReviewSnapshot(state.config!, state.stores!, state);
 				const proposal = await proposeDream(snapshot, ctx, signal);
@@ -844,6 +882,9 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("Dream completed; approved promotion saved.", "info");
 			} catch (error) {
 				ctx.ui.notify(`Cannot run /dream: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			} finally {
+				signal?.removeEventListener("abort", clearActivity);
+				clearActivity();
 			}
 		},
 	});
@@ -886,16 +927,19 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("model_select", () => {
+		clearDreamActivity?.();
 		state.sessionGeneration++;
 	});
 
 	pi.on("session_shutdown", () => {
+		clearDreamActivity?.();
 		state.sessionGeneration++;
 		state.rememberQueue = [];
 		state.conflictQueue = [];
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		clearDreamActivity?.();
 		state.sessionGeneration++;
 		state.rememberQueue = [];
 		state.conflictQueue = [];

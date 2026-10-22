@@ -22,10 +22,11 @@ const MEMORY_PROMPT_SECTION = "pi_memory";
 
 initTheme();
 const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-type CustomFactory = (tui: { requestRender(): void }, theme: typeof plainTheme, keybindings: undefined, done: (value: unknown) => void) => {
-	render(width: number): string[];
-	handleInput(data: string): void;
-};
+type CustomComponent = { render(width: number): string[]; handleInput(data: string): void };
+type CustomTui = { terminal: { rows: number }; requestRender(): void };
+type WidgetComponent = { render(width: number): string[]; dispose?(): void };
+type WidgetFactory = (tui: CustomTui, theme: typeof plainTheme) => WidgetComponent;
+type CustomFactory = (tui: CustomTui, theme: typeof plainTheme, keybindings: undefined, done: (value: unknown) => void) => CustomComponent;
 
 type PromptEvent = {
 	systemPrompt: string;
@@ -97,6 +98,7 @@ type ReviewFixture = {
 	handlers: Map<string, Handler>;
 	questions: string[];
 	selections: string[][];
+	widgets: Array<string[] | undefined>;
 };
 
 async function configureReview(agentDir: string): Promise<void> {
@@ -137,10 +139,12 @@ async function withReviewFixture(
 		mode?: "tui" | "print";
 		primaryContextWindow?: number;
 		fallbackContextWindow?: number;
+		custom?: (component: CustomComponent, tui: CustomTui) => void | Promise<void>;
 	},
 	run: (fixture: ReviewFixture) => Promise<void>,
 ): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-review-"));
+	let widget: WidgetComponent | undefined;
 	const agentDir = join(root, "agent");
 	const memoryDir = join(root, "memory");
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -177,6 +181,8 @@ async function withReviewFixture(
 		const notifications: string[] = [];
 		const questions: string[] = [];
 		const selections: string[][] = [];
+		const widgets: Array<string[] | undefined> = [];
+		const tui: CustomTui = { terminal: { rows: 50 }, requestRender() {} };
 		const primaryReviewModel = { ...PRIMARY_REVIEW_MODEL, contextWindow: options.primaryContextWindow ?? PRIMARY_REVIEW_MODEL.contextWindow };
 		const fallbackReviewModel = { ...FALLBACK_REVIEW_MODEL, contextWindow: options.fallbackContextWindow ?? FALLBACK_REVIEW_MODEL.contextWindow };
 		let nextReply = 0;
@@ -200,6 +206,12 @@ async function withReviewFixture(
 				}),
 			},
 			ui: {
+				theme: plainTheme,
+				setWidget: (_key: string, content: string[] | WidgetFactory | undefined) => {
+					widget?.dispose?.();
+					widget = typeof content === "function" ? content(tui, plainTheme) : undefined;
+					widgets.push(widget ? widget.render(160).map(stripVTControlCharacters) : content as string[] | undefined);
+				},
 				notify: (message: string) => notifications.push(message),
 				select: async (question: string, choices: string[]) => {
 					questions.push(question);
@@ -207,20 +219,22 @@ async function withReviewFixture(
 					return options.select?.(choices);
 				},
 				input: async () => options.input,
-				custom: (factory: CustomFactory) => new Promise((resolve) => {
-					const component = factory({ requestRender() {} }, plainTheme, undefined, resolve);
+				custom: (factory: CustomFactory) => new Promise((resolve, reject) => {
+					const component = factory(tui, plainTheme, undefined, resolve);
 					const lines = () => component.render(160).map((line) => stripVTControlCharacters(line).trimEnd());
 					questions.push(lines().join("\n"));
 					void (async () => {
+						if (options.custom) return options.custom(component, tui);
 						const choice = (await options.select?.(lines()))?.replace(/^\s*→?\s*/, "");
 						for (let step = 0; choice && step < 2 && !lines().find((line) => line.includes("→"))?.includes(choice); step++) component.handleInput("\x1b[B");
 						component.handleInput(choice ? "\r" : "\x1b");
-					})();
+					})().catch(reject);
 				}),
 			},
 		} as unknown as ExtensionContext;
-		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, handlers, questions, selections });
+		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, handlers, questions, selections, widgets });
 	} finally {
+		widget?.dispose?.();
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(root, { recursive: true, force: true });
@@ -509,8 +523,9 @@ test("/dream stops when the agent becomes busy after reading SYSTEM.md", async (
 		const notifications: string[] = [];
 		const idle = [true, true, false];
 		await commands.get("dream")!.handler("", {
+			mode: "tui",
 			isIdle: () => idle.shift() ?? false,
-			ui: { notify: (message: string) => notifications.push(message) },
+			ui: { theme: plainTheme, setWidget() {}, notify: (message: string) => notifications.push(message) },
 		});
 
 		assert.deepEqual(notifications, ["Cannot run /dream while the agent is busy."]);
@@ -519,6 +534,92 @@ test("/dream stops when the agent becomes busy after reading SYSTEM.md", async (
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("/dream bounds long approval content, scrolls all changes, and keeps Reject selected on resize", async () => {
+	const rules = Array.from({ length: 45 }, (_, index) => `Promoted rule ${index}.`);
+	const entries = Array.from({ length: 30 }, (_, index) => `Represented memory ${index}.`);
+	await withReviewFixture({
+		system: "Original global rules.", memory: entries.join(ENTRY_DELIMITER), user: "Represented preference.",
+		responses: [JSON.stringify({ reason: "General rules.", system: { find: "", replace: `\n${rules.join("\n")}` }, remove: { memory: entries, user: ["Represented preference."] } })],
+		custom: (component, tui) => {
+			tui.terminal.rows = 18;
+			const render = (width = 80) => component.render(width).map(stripVTControlCharacters);
+			const first = render();
+			assert.ok(first.length <= tui.terminal.rows, `Approval uses ${first.length} rows in an 18-row terminal`);
+			assert.match(first.join("\n"), /→ Reject/);
+			assert.match(first.join("\n"), /Approve/);
+			component.handleInput("\x1b[6~");
+			assert.notDeepEqual(render(), first, "Page Down must scroll the proposal");
+			const seen = [...first];
+			for (let page = 0; page < 100; page++) {
+				const lines = render();
+				assert.ok(lines.length <= tui.terminal.rows);
+				assert.match(lines.join("\n"), /→ Reject/);
+				assert.match(lines.join("\n"), /Approve/);
+				seen.push(...lines);
+				component.handleInput("\x1b[6~");
+				if (render().join("\n") === lines.join("\n")) break;
+			}
+			for (const text of [...rules, ...entries, "Represented preference."]) assert.ok(seen.join("\n").includes(text), text);
+			component.handleInput("\x1b[H");
+			assert.deepEqual(render(), first);
+			component.handleInput("\x1b[F");
+			assert.match(render().join("\n"), /Represented preference\./);
+			tui.terminal.rows = 10;
+			assert.ok(render(45).length <= 10);
+			assert.match(render(45).join("\n"), /→ Reject/);
+			component.handleInput("\x1b[5~");
+			assert.doesNotMatch(render(45).join("\n"), /Represented preference\./);
+			tui.terminal.rows = 2;
+			assert.ok(render(25).length <= 2);
+			assert.match(render(25).join("\n"), /[Rr]esize|[Ee]nlarge/);
+			component.handleInput("\x1b");
+		},
+	}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
+		await commands.get("dream")!.handler("", ctx);
+		assert.match(notifications.at(-1)!, /Dream cancelled/);
+		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "Original global rules.");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), entries.join(ENTRY_DELIMITER));
+	});
+});
+
+test("/dream shows activity before file reads and clears it on every exit", async () => {
+	const promotion = JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } });
+	for (const exit of ["approve", "reject", "skip", "error", "abort", "shutdown"] as const) {
+		const controller = new AbortController();
+		let fixture: ReviewFixture;
+		await withReviewFixture({
+			system: "original", memory: "entry",
+			responses: [async () => {
+				assert.match(fixture.widgets.at(-1)?.join(" ") ?? "", /[Dd]ream.*running/);
+				if (exit === "abort") controller.abort(new Error("dream cancelled"));
+				if (exit === "shutdown") {
+					await fixture.handlers.get("session_shutdown")!({}, fixture.ctx);
+					assert.equal(fixture.widgets.at(-1), undefined);
+				}
+				return exit === "skip" ? JSON.stringify({ skip: "No general rule." }) : exit === "error" ? "invalid" : promotion;
+			}, "invalid"],
+			select: () => exit === "approve" ? "Approve" : "Reject",
+		}, async (value) => {
+			fixture = value;
+			const original = MemoryStore.prototype.load;
+			MemoryStore.prototype.load = async function () {
+				assert.match(fixture.widgets.at(-1)?.join(" ") ?? "", /[Dd]ream.*running/);
+				return original.call(this);
+			};
+			try {
+				const pending = fixture.commands.get("dream")!.handler("", { ...fixture.ctx, signal: controller.signal });
+				assert.match(fixture.widgets.at(-1)?.join(" ") ?? "", /[Dd]ream.*running/);
+				await pending;
+			} finally {
+				MemoryStore.prototype.load = original;
+			}
+			assert.equal(fixture.widgets.at(-1), undefined, exit);
+			if (exit === "approve") assert.match(fixture.notifications.at(-1)!, /Dream completed/);
+			else assert.equal(await readFile(join(fixture.agentDir, "SYSTEM.md"), "utf8"), "original");
+		});
 	}
 });
 
@@ -1676,7 +1777,7 @@ test("invalid config disables memory with a launch error; oversized and capped s
 		assert.equal(await before(failed), undefined);
 		assert.match(memoryPrompt(failed), /persistent memory is DISABLED this session/);
 		const notifications: string[] = [];
-		await dream!.handler("", { isIdle: () => true, ui: { notify: (message: string) => notifications.push(message) } });
+		await dream!.handler("", { mode: "tui", isIdle: () => true, ui: { theme: plainTheme, setWidget() {}, notify: (message: string) => notifications.push(message) } });
 		assert.match(notifications[0]!, /Cannot run \/dream: persistent memory is disabled/);
 		await assert.rejects(memoryTool.execute("x", { action: "add", content: "x" }), /failed to initialize/);
 
