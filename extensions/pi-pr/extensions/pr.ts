@@ -572,7 +572,7 @@ export default function pullRequestExtension(
 	) => {
 		signal?.throwIfAborted();
 		const selected = workflowContext;
-		if (!selected) throw new Error("No PR workflow is active; run /pr to discover and reserve the current route");
+		if (!selected) throw new Error("No PR workflow is active in this session; run IDs are session-local. Call pi_git_pr only for an authorized new publication workflow, or ask the user to run /pr for the full lifecycle. Do not restart a foreign or stale run automatically; an active parent workflow stays parent-owned.");
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);
