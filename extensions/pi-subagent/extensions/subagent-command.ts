@@ -303,7 +303,7 @@ export function workingReport(direct: readonly DirectTask[], inventory: Isolated
 		const text = `${directLabel(task)} · ${task.status}`;
 		// Read workflows list their running workers; write workflows stay observed locally until their workers are proved stopped.
 		if (task.status === "observed locally" && task.stoppable?.length !== 0) working.push({ text: task.stoppable ? `${directLabel(task)} · ${task.stoppable.length} running` : text });
-		else if (/retained/.test(task.status)) attention.push({ text });
+		else if (/retained|attention/.test(task.status)) attention.push({ text });
 		else if (completed(task.status)) continue;
 		else unverified.push({ text: task.status === "observed locally" ? `${text}; no running worker` : text });
 	}
@@ -311,10 +311,10 @@ export function workingReport(direct: readonly DirectTask[], inventory: Isolated
 		const active = !request.orphaned && ["pending", "running"].includes(request.status);
 		if (active && inventory!.leaseLive) working.push({ text: isolatedLabel(request) });
 		else if (active) attention.push({ text: `${isolatedLabel(request)} · interrupted; run /subagent recover` });
-		else if (!request.orphaned && request.status === "needs_attention") attention.push({ text: isolatedLabel(request) });
+		else if (!request.orphaned && (request.status === "needs_attention" || /retained/.test(request.status))) attention.push({ text: isolatedLabel(request) });
 	}
 	const sections: Section[] = [
-		working.length ? { heading: `Working (${working.length})`, tone: "info", rows: working } : { rows: [{ text: "No subagents are working." }] },
+		working.length ? { heading: `Working (${working.length})`, tone: "info", rows: working } : { rows: [{ text: inventory ? "No subagents are working." : "No direct subagents are working. Isolated status is unavailable." }] },
 		{ heading: `Needs attention (${attention.length})`, tone: "warning", rows: attention },
 		{ heading: `Unverified (${unverified.length})`, note: "not proof of running or completion", tone: "warning", rows: unverified },
 	];

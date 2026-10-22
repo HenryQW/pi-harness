@@ -1075,6 +1075,11 @@ test("direct widget, follow-up and /subagent show the same saved reference, role
 				assert.ok(visibleWidth(row!) <= width);
 				assert.match(row!, width === 26 ? /^✓ D1\.1 \[W\] complete · / : /^✓ D1\.1/, "reference precedes optional metrics");
 			}
+			// A recovery result did not prove termination, so the workflow stays in the active view.
+			app.sessionEntries.push({ type: "custom_message", customType: "subagent-direct-result", content, details: { ...details, recovery: true }, display: true });
+			app.ctx.ui.select = async (_title: string, choices: string[]) => { rows = choices; return undefined; };
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.match(rows.find((row) => row.startsWith("  "))!, /^  ⚠ D1\.1 · worker · Search audit · needs attention: worker termination unproved/);
 		});
 	});
 });

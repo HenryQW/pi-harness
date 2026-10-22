@@ -259,11 +259,16 @@ test("the working report counts only live evidence before the menu opens", async
 	assert.deepEqual(live.working, [["**● Current subagent work**", "",
 		"### ● Working (2)", "- D1.1 · scout · Scan · 1 running", "- run · running · Build", "",
 		"### ⚠ Unverified (1) · not proof of running or completion", "- D2.1 · scout · Scan · recorded only; not proof of running or completion"].join("\n")]);
-	const stale = harness({ inventory: { root: "/git", leaseLive: false, invalidIds: [], requests: [{ id: "run", name: "Build", status: "pending", tasks: [] }] } });
+	const stale = harness({ inventory: { root: "/git", leaseLive: false, invalidIds: [], requests: [{ id: "run", name: "Build", status: "pending", tasks: [] },
+		{ id: "kept", name: "Fix", status: "completed · retained", tasks: [] }] } });
 	stale.responses.push(stale.pick("Close"));
 	await stale.run();
 	assert.deepEqual(stale.working, [["**⚠ Current subagent work**", "", "- No subagents are working.", "",
-		"### ⚠ Needs attention (1)", "- run · pending · Build · interrupted; run /subagent recover"].join("\n")]);
+		"### ⚠ Needs attention (2)", "- run · pending · Build · interrupted; run /subagent recover", "- kept · completed · retained · Fix"].join("\n")]);
+	const unknown = harness({ isolatedError: new Error("outside Git") });
+	unknown.responses.push(unknown.pick("Close"));
+	await unknown.run();
+	assert.match(unknown.working[0]!, /- No direct subagents are working\. Isolated status is unavailable\./);
 });
 
 test("inspection launches a Herdr tab without queuing a Main turn or changing work", async () => {
