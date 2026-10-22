@@ -1528,15 +1528,20 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	const current = currentPullRequest();
 	let pendingReads = 1;
 	let reviewRequired = false;
+	let codexRunning = false;
+	let changed: Partial<NamedPullRequest> = {};
+	let afterConfirm: Partial<NamedPullRequest> = {};
 	const named = (): NamedPullRequest => ({
 		id: current.id, number: 42, url: current.url, host: "github.com", lifecycle: "open",
 		conditions: { ...current.conditions, mergeability: pendingReads-- > 0 ? "pending" : "known",
-			...(reviewRequired ? { review: "pending", policy: "pending" } as const : {}) },
+			...(reviewRequired ? { review: "pending", policy: "pending" } as const : {}),
+			...(codexRunning ? { codex: { status: "running", findings: 0 } } as const : {}) },
 		base: current.base, head: current.head,
 		mergeable: "MERGEABLE", mergeStateStatus: reviewRequired ? "BLOCKED" : "CLEAN",
 		reviewDecision: reviewRequired ? "REVIEW_REQUIRED" : null,
 		checks: [{ name: "test", outcome: "success" }],
 		unresolvedThreads: { blocking: 0, other: 1 },
+		...changed,
 	});
 	const app = harness({
 		async load() { return { kind: "inactive" }; },
@@ -1559,7 +1564,7 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	const confirmations: string[] = [];
 	let answer = false;
 	const base = app.context();
-	const ctx = { ...base, ui: { ...base.ui, async confirm(title: string, message: string) { confirmations.push(`${title}\n${message}`); return answer; } } } as ExtensionContext;
+	const ctx = { ...base, ui: { ...base.ui, async confirm(title: string, message: string) { confirmations.push(`${title}\n${message}`); changed = afterConfirm; return answer; } } } as ExtensionContext;
 
 	// A pending mergeability read is re-read before the verdict.
 	const status = (await app.callTool("pi_pr_status", { number: 42 }, ctx)).details as Record<string, unknown>;
@@ -1576,7 +1581,24 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	assert.match(await refusal({ number: 42, headOid: head }, ctx), /merge declined/);
 	assert.equal(app.execCalls.length, 0);
 
+	// A not-ready read refuses before confirmation.
+	codexRunning = true;
+	const waiting = (await app.callTool("pi_pr_merge", { number: 42, headOid: head }, ctx)).details as { merged: boolean; reason: string; status: { verdict: string } };
+	assert.deepEqual([waiting.merged, waiting.reason, waiting.status.verdict], [false, "PR #42 is not ready", "wait"]);
+	assert.equal(confirmations.length, 1);
+	codexRunning = false;
+
+	// A P1 thread or a base move after confirmation refuses the merge.
 	answer = true;
+	for (const change of [{ unresolvedThreads: { blocking: 1, other: 1 } }, { base: { ...current.base, oid: "d".repeat(40) } }]) {
+		afterConfirm = change;
+		assert.match(await refusal({ number: 42, headOid: head }, ctx), /changed after confirmation/);
+		changed = {};
+	}
+	afterConfirm = {};
+	assert.equal(confirmations.length, 3);
+	assert.equal(app.execCalls.length, 0);
+
 	const merged = await app.callTool("pi_pr_merge", { number: 42, headOid: head }, ctx);
 	assert.deepEqual(merged.details, { merged: true, number: 42, url: current.url.href, headOid: head, mergeMethod: "squash" });
 	assert.equal(confirmations.at(-1), `Merge PR #42?\n${current.url.href}\nHead ${head.slice(0, 12)} into main with squash.`);
