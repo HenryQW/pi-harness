@@ -3,6 +3,8 @@ import { GitCommitter } from "./git-commit.ts";
 import { GitConflicts } from "./git-conflict.ts";
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import {
 	isBashToolResult,
 	stripFrontmatter,
@@ -19,6 +21,9 @@ import { PullRequestCommentSweep, StaleSweepStart, type PullRequestCommentSweepO
 import { needsFeedbackAttention } from "./pr-feedback-attention.ts";
 import {
 	createPrCommandHandler,
+	isSameConfirmedMerge,
+	REFRESH_ATTEMPTS,
+	REFRESH_DELAY_MS,
 	WORKFLOW_ROUTES,
 	type PrCommandDependencies,
 	type PrCommandInvocation,
@@ -26,11 +31,16 @@ import {
 	type WorkflowPromptIdentity,
 } from "./pr-command.ts";
 import { PullRequestCreator, type CreatePullRequestOptions } from "./pr-create.ts";
+import { mergeGitHubPullRequest } from "./pr-merge.ts";
 import { PullRequestWorkPublisher } from "./pr-publish-work.ts";
+import { applyRulesetBypass, deriveNamedPullRequestVerdict, isRulesetBypassCandidate, type NamedPullRequestVerdict } from "./pr-routing.ts";
 import { createPrPolicyStore, DEFAULT_PR_POLICY, PrRun, type PrPolicy } from "./pr-run.ts";
 import {
 	GitHubRateLimitError,
 	loadCurrentPullRequest,
+	loadNamedPullRequest,
+	readRulesetBypass,
+	type NamedPullRequest,
 	parsePullRequestObservation,
 	pullRequestObservation,
 	cloneCurrentPullRequest,
@@ -168,6 +178,11 @@ const PublicationParameters = Type.Object({
 	base: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, pattern: "^[^\\s\\x00]+$" })),
 	allowUpstream: Type.Optional(Type.Boolean()),
 }, CLOSED);
+const NamedStatusParameters = Type.Object({ number: Type.Integer({ minimum: 1 }) }, CLOSED);
+const NamedMergeParameters = Type.Object({
+	number: Type.Integer({ minimum: 1 }),
+	headOid: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }),
+}, CLOSED);
 const FixCiActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("collect") }, CLOSED),
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
@@ -224,6 +239,10 @@ type PullRequestExtensionDependencies = {
 	createWorkPublisher?: (options: ConstructorParameters<typeof PullRequestWorkPublisher>[0]) => PullRequestWorkPublisher;
 	syncLocalHead?: PrCommandDependencies["syncLocalHead"];
 	loadPrPolicy?: () => ConfigLoad<PrPolicy>;
+	loadNamedPullRequest?: typeof loadNamedPullRequest;
+	readRulesetBypass?: typeof readRulesetBypass;
+	/** Test override for the named PR mergeability re-read delay. */
+	refreshDelayMs?: number;
 	canonicalWorktree?: (cwd: string, signal?: AbortSignal) => Promise<string>;
 	newRunId?: () => string;
 	now?: () => number;
@@ -233,6 +252,24 @@ function toolResult(value: unknown) {
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(value) }],
 		details: value,
+	};
+}
+
+function namedStatus(pullRequest: NamedPullRequest, verdict: NamedPullRequestVerdict) {
+	return {
+		...verdict,
+		number: pullRequest.number,
+		url: pullRequest.url.href,
+		lifecycle: pullRequest.lifecycle,
+		baseRef: pullRequest.base.ref,
+		headOid: pullRequest.head.oid,
+		mergeable: pullRequest.mergeable,
+		mergeStateStatus: pullRequest.mergeStateStatus,
+		reviewDecision: pullRequest.reviewDecision,
+		failingChecks: pullRequest.checks.filter(({ outcome }) => outcome === "failure").map(({ name }) => name),
+		pendingChecks: pullRequest.checks.filter(({ outcome }) => outcome === "running").map(({ name }) => name),
+		codex: pullRequest.conditions.codex?.status ?? "disabled",
+		unresolvedThreads: pullRequest.unresolvedThreads,
 	};
 }
 
@@ -1129,13 +1166,16 @@ export default function pullRequestExtension(
 		markWorkflowPromptQueued,
 		releaseWorkflow,
 	});
+	const loadPolicy = (ctx: ExtensionContext): PrPolicy => {
+		const policy = (dependencies.loadPrPolicy ?? (() => policyStore.loadSync()))();
+		policyReporter.report(ctx, policyStore, policy);
+		return policy.status === "ok" ? policy.value : DEFAULT_PR_POLICY;
+	};
 	const launch = async (args: string, ctx: ExtensionContext, publication?: PublicationRequest) => {
 			ctx.signal?.throwIfAborted();
 			if (publication && (workflowContext || activeInvocations.size)) throw new Error("A PR invocation is still active");
 			cancelRefresh();
-			const policy = (dependencies.loadPrPolicy ?? (() => policyStore.loadSync()))();
-			policyReporter.report(ctx, policyStore, policy);
-			prRun = new PrRun(policy.status === "ok" ? policy.value : DEFAULT_PR_POLICY);
+			prRun = new PrRun(loadPolicy(ctx));
 			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");
@@ -1208,6 +1248,75 @@ export default function pullRequestExtension(
 			if (!Check(PublicationParameters, raw)) throw new Error("Invalid PR publication request");
 			return toolResult(await launch("", { ...ctx, signal: signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal },
 				{ base: raw.base, allowUpstream: raw.allowUpstream === true }));
+		},
+	});
+
+	const loadNamed = dependencies.loadNamedPullRequest ?? loadNamedPullRequest;
+	const readBypass = dependencies.readRulesetBypass ?? readRulesetBypass;
+	// Like /pr, re-read while GitHub computes mergeability; a result still pending after that waits.
+	const evaluateNamed = async (number: number, cwd: string, signal: AbortSignal | undefined, policy: PrPolicy) => {
+		for (let refreshes = 0; ; refreshes += 1) {
+			const pullRequest = await loadNamed(pi, { cwd, signal, codexReview: policy.codexReview }, number);
+			if (pullRequest.conditions.mergeability !== "pending" || refreshes >= REFRESH_ATTEMPTS) {
+				let verdict = deriveNamedPullRequestVerdict(pullRequest.lifecycle, pullRequest.conditions, pullRequest.unresolvedThreads.blocking);
+				// Rulesets are read only when a bypass could make the PR ready.
+				if (isRulesetBypassCandidate(verdict, pullRequest.mergeStateStatus)) {
+					verdict = applyRulesetBypass(verdict, await readBypass(pi, { cwd, signal }, pullRequest), policy.mergeMethod);
+				}
+				return { pullRequest, status: namedStatus(pullRequest, verdict) };
+			}
+			await delay(dependencies.refreshDelayMs ?? REFRESH_DELAY_MS, undefined, { signal });
+		}
+	};
+	pi.registerTool({
+		name: "pi_pr_status",
+		label: "Check Named PR",
+		description: "Read the readiness of one pull request in this repository's origin by number: verdict ready, wait, or block with reasons, head OID, checks, Codex review gate, and unresolved P0/P1 and other threads. Read-only; never changes the local checkout.",
+		parameters: NamedStatusParameters,
+		executionMode: "sequential",
+		exposure: "model-only",
+		async execute(_id, raw, signal, _update, ctx) {
+			if (!Check(NamedStatusParameters, raw)) throw new Error("Invalid named PR status request");
+			const operationSignal = signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal;
+			return toolResult((await evaluateNamed(raw.number, ctx.cwd, operationSignal, loadPolicy(ctx))).status);
+		},
+	});
+	pi.registerTool({
+		name: "pi_pr_merge",
+		label: "Merge Named PR",
+		description: "Merge one ready pull request in this repository's origin by number at headOid from pi_pr_status, after the user confirms in this session. Refuses when the PR is not ready, its head changed, or no interactive UI is available. The confirmation names any ruleset bypass that the merge uses. Never runs local checkout checks.",
+		parameters: NamedMergeParameters,
+		executionMode: "sequential",
+		exposure: "model-only",
+		async execute(_id, raw, signal, _update, ctx) {
+			if (!Check(NamedMergeParameters, raw)) throw new Error("Invalid named PR merge request");
+			const operationSignal = signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal;
+			const policy = loadPolicy(ctx);
+			const { pullRequest: current, status } = await evaluateNamed(raw.number, ctx.cwd, operationSignal, policy);
+			const refused = (reason: string) => toolResult({ merged: false, reason, status });
+			if (status.verdict !== "ready") return refused(`PR #${current.number} is not ready`);
+			if (current.head.oid !== raw.headOid) return refused(`PR #${current.number} head is ${current.head.oid}, not the requested ${raw.headOid}`);
+			if (!ctx.hasUI) return refused(`PR #${current.number} merge needs confirmation in an interactive session`);
+			const confirmed = await ctx.ui.confirm(
+				`Merge PR #${current.number}?`,
+				`${current.url.href}\nHead ${current.head.oid.slice(0, 12)} into ${current.base.ref} with ${policy.mergeMethod}.` +
+					(status.bypass ? `\nUses the ruleset bypass for ruleset ${status.bypass.rulesets.map(({ id }) => id).join(", ")} (${status.bypass.reason}).` : ""),
+				{ signal: operationSignal },
+			);
+			if (!confirmed) return refused(`PR #${current.number} merge declined`);
+			const fresh = await evaluateNamed(raw.number, ctx.cwd, operationSignal, policy);
+			if (fresh.status.verdict !== "ready" || !isSameConfirmedMerge(current, fresh.pullRequest) || !isDeepStrictEqual(fresh.status.bypass, status.bypass)) {
+				return toolResult({ merged: false, reason: `PR #${current.number} changed after confirmation`, status: fresh.status });
+			}
+			await mergeGitHubPullRequest({
+				exec: (command, args, options) => pi.exec(command, args, { ...options, signal: operationSignal, timeout: 10_000 }),
+				cwd: ctx.cwd,
+				pullRequestId: current.id,
+				hostname: current.host,
+				mergeMethod: policy.mergeMethod,
+				expectedHead: current.head.oid,
+			});
+			return toolResult({ merged: true, number: current.number, url: current.url.href, headOid: current.head.oid, mergeMethod: policy.mergeMethod });
 		},
 	});
 }

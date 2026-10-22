@@ -100,6 +100,7 @@ const result = (stdout = "", code = 0, stderr = "") => ({ stdout, stderr, code, 
 function actionsCheck(overrides: Record<string, unknown>) {
 	return {
 		__typename: "CheckRun",
+		name: "test",
 		workflowName: "CI",
 		detailsUrl: "https://github.com/acme/project/actions/runs/71/job/101",
 		status: "COMPLETED",

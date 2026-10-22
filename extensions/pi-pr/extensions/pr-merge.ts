@@ -71,19 +71,10 @@ function parseMergeResponse(output: string, expectedId: string): void {
 	if (state !== "MERGED") throw new Error(`GitHub merge returned pull request ${id} in state ${state}`);
 }
 
-export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promise<void> {
-	const local = await inspectLocalMergeSafety(input);
-	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
-		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
-	}
-	await input.revalidateReadiness(local);
-	if (await inspectWorktreeState(input.exec, { cwd: input.cwd }) !== "clean") {
-		throw new Error("Final local merge safety check failed: worktree is dirty");
-	}
-	const finalHead = await readHead(input.exec, { cwd: input.cwd });
-	if (finalHead !== local.headOid) {
-		throw new Error(`Final local merge safety check failed: HEAD changed from ${local.headOid} to ${finalHead}`);
-	}
+/** Merge the exact head on GitHub; callers own readiness and confirmation. */
+export async function mergeGitHubPullRequest(
+	input: Pick<ExecuteGitHubMergeInput, "exec" | "cwd" | "pullRequestId" | "hostname" | "mergeMethod" | "expectedHead">,
+): Promise<void> {
 	const merged = await runChecked(input.exec, "gh", [
 		"api",
 		"graphql",
@@ -101,4 +92,20 @@ export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promis
 	const output = merged.stdout.trim();
 	if (!output) throw new Error("GitHub merge returned no output");
 	parseMergeResponse(output, input.pullRequestId);
+}
+
+export async function executeGitHubMerge(input: ExecuteGitHubMergeInput): Promise<void> {
+	const local = await inspectLocalMergeSafety(input);
+	if (local.worktree !== "clean" || (local.head !== "equal" && local.head !== "behind")) {
+		throw new Error(`Local merge safety check failed: worktree is ${local.worktree}, HEAD is ${local.head}`);
+	}
+	await input.revalidateReadiness(local);
+	if (await inspectWorktreeState(input.exec, { cwd: input.cwd }) !== "clean") {
+		throw new Error("Final local merge safety check failed: worktree is dirty");
+	}
+	const finalHead = await readHead(input.exec, { cwd: input.cwd });
+	if (finalHead !== local.headOid) {
+		throw new Error(`Final local merge safety check failed: HEAD changed from ${local.headOid} to ${finalHead}`);
+	}
+	await mergeGitHubPullRequest(input);
 }

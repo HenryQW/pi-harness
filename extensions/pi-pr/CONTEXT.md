@@ -10,6 +10,10 @@ Pi PR identifies the current-branch pull request and selects its highest-priorit
 The one GitHub pull request proven to match the current branch through a validated configured or uniquely inferred target.
 _Avoid_: Repository PR list, PR dashboard
 
+**Named pull request**:
+One pull request in the current repository's `origin`, addressed by number. It permits only a readiness check and a confirmed merge. It does not change the current-branch workflow.
+_Avoid_: PR list, PR dashboard
+
 **Configured PR target**:
 The current branch's Git push destination, with a validated remote, repository, host, ref, and remote commit identity.
 _Avoid_: Upstream guess, default remote

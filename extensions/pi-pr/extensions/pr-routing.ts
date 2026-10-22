@@ -96,6 +96,103 @@ export function derivePullRequestNextStep(pullRequest: PullRequest): Exclude<Nex
 	return "merge";
 }
 
+export type NamedPullRequestVerdict = {
+	verdict: "ready" | "wait" | "block";
+	reasons: string[];
+	/** Set when `ready` depends on the current user's bypass of these rulesets. */
+	bypass?: { rulesets: Array<{ id: number; name: string | null }>; reason: string };
+};
+export type CheckOutcome = "success" | "failure" | "running";
+/** Rulesets that apply to the base branch and the check contexts they require. */
+export type RulesetBypassEvidence = {
+	/**
+	 * Rulesets with a rule that a merge must satisfy. `currentUserCanBypass` is null when unknown;
+	 * `allowedMergeMethods` is null without a merge method limit; `unverifiedRules` lists rule types pi-pr cannot check.
+	 */
+	rulesets: Array<{ id: number; name: string | null; currentUserCanBypass: string | null; allowedMergeMethods: string[] | null; unverifiedRules: string[] }>;
+	requiredChecks: Array<{ context: string; integrationId: number | null; outcome: CheckOutcome }>;
+	/** True unless GitHub reports classic branch protection disabled for the base branch. */
+	classicProtection: boolean;
+	ref: string;
+};
+const BYPASS_GRANTS = new Set(["always", "pull_requests_only", "exempt"]);
+const POLICY_REASONS = new Set(["required review pending", "merge policy not satisfied"]);
+const WAIT_REASONS = new Set(["mergeability pending", "CI running", "Codex review of the current head not finished"]);
+
+/**
+ * Merge bar for a named pull request: any block reason blocks, then any wait reason waits.
+ * `blockingThreads` counts unresolved P0/P1 threads; other unresolved threads never block.
+ */
+export function deriveNamedPullRequestVerdict(
+	lifecycle: PullRequestLifecycle,
+	conditions: PullRequestConditions,
+	blockingThreads: number,
+): NamedPullRequestVerdict {
+	if (lifecycle !== "open") return { verdict: "block", reasons: [`pull request is ${lifecycle}`] };
+	const block: string[] = [];
+	const wait: string[] = [];
+	if (conditions.draft) block.push("draft");
+	if (conditions.conflict) block.push("merge conflict");
+	if (conditions.baseUpdateRequired) block.push("base update required");
+	if (conditions.ci === "failure" || conditions.ci === "failure-blocked") block.push("CI failed");
+	if (conditions.changesRequested) block.push("changes requested");
+	else if (conditions.review === "pending") block.push("required review pending");
+	if (blockingThreads > 0) block.push(`${blockingThreads} unresolved P0/P1 threads`);
+	if (conditions.mergeability === "pending") wait.push("mergeability pending");
+	if (conditions.ci === "running") wait.push("CI running");
+	if (conditions.codex?.status === "running") wait.push("Codex review of the current head not finished");
+	// Running checks usually leave merge policy BLOCKED, so the policy gate applies only without a wait reason.
+	if (conditions.policy === "pending" && !wait.length) block.push("merge policy not satisfied");
+	if (block.length) return { verdict: "block", reasons: [...block, ...wait] };
+	return wait.length ? { verdict: "wait", reasons: wait } : { verdict: "ready", reasons: [] };
+}
+
+/**
+ * Only a required review or a BLOCKED merge policy blocks, so a ruleset bypass could make the PR ready.
+ * Wait reasons may remain; the bypass then decides between `wait` and `block`.
+ */
+export function isRulesetBypassCandidate(verdict: NamedPullRequestVerdict, mergeStateStatus: string): boolean {
+	return verdict.verdict === "block" &&
+		verdict.reasons.every((reason) => POLICY_REASONS.has(reason) || WAIT_REASONS.has(reason)) &&
+		(!verdict.reasons.includes("merge policy not satisfied") || mergeStateStatus === "BLOCKED");
+}
+
+/**
+ * Re-derive a bypass candidate's verdict. A bypass needs every applicable ruleset to be bypassable and to
+ * allow `mergeMethod`. It also skips the rulesets' required checks, so each must pass on the exact head.
+ */
+export function applyRulesetBypass(
+	verdict: NamedPullRequestVerdict,
+	evidence: RulesetBypassEvidence,
+	mergeMethod: string,
+): NamedPullRequestVerdict {
+	const block: string[] = [];
+	const wait: string[] = [];
+	if (evidence.classicProtection) block.push(`classic branch protection applies to ${evidence.ref}`);
+	if (!evidence.rulesets.length) block.push("no ruleset applies to the base branch, so no bypass is available");
+	for (const ruleset of evidence.rulesets) {
+		if (!BYPASS_GRANTS.has(ruleset.currentUserCanBypass ?? "")) block.push(`ruleset ${ruleset.id} cannot be bypassed by the current user`);
+		// A bypass skips every rule of the ruleset, so a rule that pi-pr cannot check fails closed.
+		for (const type of ruleset.unverifiedRules) block.push(`ruleset ${ruleset.id} rule ${type} is not verified for a bypass merge`);
+		if (ruleset.allowedMergeMethods && !ruleset.allowedMergeMethods.includes(mergeMethod)) {
+			block.push(`ruleset ${ruleset.id} does not allow merge method ${mergeMethod}`);
+		}
+	}
+	for (const { context, outcome } of evidence.requiredChecks) {
+		if (outcome === "failure") block.push(`required check ${context} failed`);
+		else if (outcome === "running") wait.push(`required check ${context} has not passed`);
+	}
+	if (block.length) return { verdict: "block", reasons: [...verdict.reasons, ...block, ...wait] };
+	const pending = verdict.reasons.filter((reason) => WAIT_REASONS.has(reason));
+	if (pending.length || wait.length) return { verdict: "wait", reasons: [...pending, ...wait] };
+	const reason = verdict.reasons.join("; ");
+	return {
+		verdict: "ready",
+		reasons: [`merge uses ruleset bypass: ${reason}`],
+		bypass: { rulesets: evidence.rulesets.map(({ id, name }) => ({ id, name })), reason },
+	};
+}
+
 export function isPullRequestCreationEligible(branch: BranchCreationState): boolean {
 	return branch.relation === "distinct-ref" && branch.worktree !== "operation" &&
 		(branch.ahead > 0 || branch.worktree === "dirty");
