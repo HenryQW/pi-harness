@@ -56,9 +56,6 @@ const serverUrl: FieldParser<string> = (raw) => {
 const encryption: FieldParser<BarkEncryption> = (raw) => {
 	const value = raw as Record<string, unknown>;
 	if (
-		!value ||
-		typeof value !== "object" ||
-		Array.isArray(value) ||
 		Object.keys(value).length !== 4 ||
 		value.algorithm !== ENCRYPTION_ALGORITHM ||
 		value.mode !== ENCRYPTION_MODE ||
