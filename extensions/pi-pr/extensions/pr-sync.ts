@@ -11,7 +11,7 @@ import {
 	withWorktreeLock,
 } from "./pr-execution.ts";
 
-export type SyncLocalHeadOptions = {
+type SyncLocalHeadOptions = {
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -20,7 +20,7 @@ export type SyncLocalHeadOptions = {
 	loadCurrentPullRequest?: typeof loadCurrentPullRequest;
 };
 
-export type SyncLocalHeadResult = { kind: "fast-forwarded" | "rebased" | "unchanged"; head: string };
+type SyncLocalHeadResult = { kind: "fast-forwarded" | "rebased" | "unchanged"; head: string };
 
 /**
  * Bring the local branch up to the published PR head without pushing.

@@ -98,7 +98,6 @@ test("projects normal runnable, merge, and no-action states", () => {
 		name: string;
 		input: PrDisplayInput | null;
 		ahead?: number;
-		nextStep: string;
 		footer?: string;
 		color?: PrStatusColor;
 		widget?: string;
@@ -106,19 +105,16 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "no pull request with zero ahead commits",
 			input: null,
-			nextStep: "none",
 		},
 		{
 			name: "no pull request with positive ahead commits",
 			input: null,
 			ahead: 1,
-			nextStep: "create",
 			widget: "Run /pr to create pull request",
 		},
 		{
 			name: "required base update",
 			input: pullRequest({ conditions: { baseUpdateRequired: true, policy: "pending", mergeability: "known" } }),
-			nextStep: "update-branch",
 			footer: "base update required",
 			color: "warning",
 			widget: "Run /pr to update the branch",
@@ -126,7 +122,6 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "merge conflict",
 			input: pullRequest({ conditions: { conflict: true } }),
-			nextStep: "update-branch",
 			footer: "merge conflict",
 			color: "error",
 			widget: "Run /pr to update the branch",
@@ -134,7 +129,6 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "local HEAD behind the PR head",
 			input: pullRequest({ conditions: { ci: "success" }, local: { worktree: "dirty", head: "behind" } }),
-			nextStep: "sync-local",
 			footer: "local behind",
 			color: "warning",
 			widget: "Run /pr to sync the local branch with the PR head",
@@ -142,7 +136,6 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "mergeability still computing",
 			input: pullRequest({ conditions: { policy: "pending", mergeability: "pending" } }),
-			nextStep: "refresh",
 			footer: "mergeability pending",
 			color: "warning",
 			widget: "Run /pr to re-read GitHub mergeability",
@@ -150,7 +143,6 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "changes requested",
 			input: pullRequest({ conditions: { changesRequested: true } }),
-			nextStep: "sweep",
 			footer: "changes requested",
 			color: "error",
 			widget: "Run /pr to address review feedback",
@@ -158,7 +150,6 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "CI failure",
 			input: pullRequest({ conditions: { ci: "failure" } }),
-			nextStep: "fix-ci",
 			footer: "CI failed",
 			color: "error",
 			widget: "Run /pr to fix CI",
@@ -166,14 +157,12 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "unsupported CI failure",
 			input: pullRequest({ conditions: { ci: "failure-blocked" } }),
-			nextStep: "none",
 			footer: "CI failed",
 			color: "error",
 		},
 		{
 			name: "waiting for CI",
 			input: pullRequest({ conditions: { ci: "running" } }),
-			nextStep: "wait-ci",
 			footer: "CI running",
 			color: "warning",
 			widget: "Run /pr to wait for CI, then continue",
@@ -181,14 +170,12 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "draft before running CI",
 			input: pullRequest({ conditions: { draft: true, ci: "running" } }),
-			nextStep: "none",
 			footer: "draft",
 			color: "warning",
 		},
 		{
 			name: "merge-ready",
 			input: pullRequest({ conditions: { ci: "success" } }),
-			nextStep: "merge",
 			footer: "merge-ready",
 			color: "success",
 			widget: "Run /pr to confirm and merge pull request",
@@ -196,7 +183,6 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "waiting for the Codex review",
 			input: pullRequest({ conditions: { ci: "success", codex: { status: "running", findings: 0 } } }),
-			nextStep: "wait-review",
 			footer: "Codex review pending",
 			color: "warning",
 			widget: "Run /pr to wait for the Codex review, then continue",
@@ -204,36 +190,31 @@ test("projects normal runnable, merge, and no-action states", () => {
 		{
 			name: "approved but waiting",
 			input: pullRequest({ approved: true, conditions: { policy: "pending", mergeability: "known" } }),
-			nextStep: "none",
 			footer: "approved",
 			color: "success",
 		},
 		{
 			name: "open and waiting",
 			input: pullRequest({ conditions: { review: "pending" } }),
-			nextStep: "none",
 			footer: "open",
 			color: "accent",
 		},
 		{
 			name: "merged",
 			input: pullRequest({ lifecycle: "merged", conditions: { conflict: true, ci: "failure" } }),
-			nextStep: "none",
 			footer: "merged",
 			color: "success",
 		},
 		{
 			name: "closed",
 			input: pullRequest({ lifecycle: "closed", conditions: { changesRequested: true, ci: "failure" } }),
-			nextStep: "none",
 			footer: "closed",
 			color: "dim",
 		},
 	];
 
-	for (const { name, input, ahead, nextStep, footer, color, widget } of cases) {
+	for (const { name, input, ahead, footer, color, widget } of cases) {
 		const display = projectPrDisplay(input, ahead);
-		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);
 		assert.equal(display.widget, widget, `${name} widget`);
@@ -242,15 +223,12 @@ test("projects normal runnable, merge, and no-action states", () => {
 
 test("shows creation only for actionable pending branch state", () => {
 	assert.deepEqual(projectPrDisplay(null, 0, "dirty", "distinct-ref"), {
-		nextStep: "create",
 		widget: "Run /pr to create pull request",
 	});
 	assert.deepEqual(projectPrDisplay(null, 0, "operation", "distinct-ref"), {
-		nextStep: "none",
 		widget: undefined,
 	});
 	assert.deepEqual(projectPrDisplay(null, 0, "dirty", "same-ref"), {
-		nextStep: "none",
 		widget: undefined,
 	});
 });
@@ -259,7 +237,6 @@ test("uses visible-condition priority for combined states", () => {
 	const cases: Array<{
 		name: string;
 		input: PrDisplayInput;
-		nextStep: string;
 		footer: string;
 		color: PrStatusColor;
 		widget?: string;
@@ -273,7 +250,6 @@ test("uses visible-condition priority for combined states", () => {
 				unresolvedThreads: 3,
 				ci: "failure",
 			} }),
-			nextStep: "none",
 			footer: "draft",
 			color: "warning",
 		},
@@ -286,7 +262,6 @@ test("uses visible-condition priority for combined states", () => {
 				unresolvedThreads: 3,
 				ci: "failure",
 			} }),
-			nextStep: "update-branch",
 			footer: "merge conflict",
 			color: "error",
 			widget: "Run /pr to update the branch",
@@ -299,7 +274,6 @@ test("uses visible-condition priority for combined states", () => {
 				unresolvedThreads: 3,
 				ci: "failure",
 			} }),
-			nextStep: "update-branch",
 			footer: "base update required",
 			color: "warning",
 			widget: "Run /pr to update the branch",
@@ -310,7 +284,6 @@ test("uses visible-condition priority for combined states", () => {
 				changesRequested: true,
 				unresolvedThreads: 3,
 			} }),
-			nextStep: "sweep",
 			footer: "3 unresolved",
 			color: "warning",
 			widget: "Run /pr to address review feedback",
@@ -318,7 +291,6 @@ test("uses visible-condition priority for combined states", () => {
 		{
 			name: "CI failure before feedback",
 			input: pullRequest({ conditions: { changesRequested: true, unresolvedThreads: 3, ci: "failure" } }),
-			nextStep: "fix-ci",
 			footer: "CI failed",
 			color: "error",
 			widget: "Run /pr to fix CI",
@@ -326,7 +298,6 @@ test("uses visible-condition priority for combined states", () => {
 		{
 			name: "CI failure before waiting",
 			input: pullRequest({ conditions: { ci: "failure", review: "pending", policy: "pending", mergeability: "known" } }),
-			nextStep: "fix-ci",
 			footer: "CI failed",
 			color: "error",
 			widget: "Run /pr to fix CI",
@@ -334,16 +305,14 @@ test("uses visible-condition priority for combined states", () => {
 		{
 			name: "running CI before approved fallback",
 			input: pullRequest({ approved: true, conditions: { ci: "running" } }),
-			nextStep: "wait-ci",
 			footer: "CI running",
 			color: "warning",
 			widget: "Run /pr to wait for CI, then continue",
 		},
 	];
 
-	for (const { name, input, nextStep, footer, color, widget } of cases) {
+	for (const { name, input, footer, color, widget } of cases) {
 		const display = projectPrDisplay(input);
-		assert.equal(display.nextStep, nextStep, name);
 		assert.equal(display.footer?.text, footer, `${name} footer`);
 		assert.equal(display.footer?.color, color, `${name} color`);
 		assert.equal(display.widget, widget, `${name} widget`);
@@ -408,7 +377,7 @@ test("prefixes plain actions with themed semantic icons", () => {
 		assert.doesNotMatch(plainWidget?.[0] ?? "", /\x1b/, `${name} plain ANSI`);
 		assert.deepEqual(formatPrWidget(display, theme), [`<${color}>${icon}</${color}> ${text}`], name);
 	}
-	assert.equal(formatPrWidget({ nextStep: "none" }, undefined, 0), undefined);
+	assert.equal(formatPrWidget({}, undefined, 0), undefined);
 });
 
 test("truncates the themed action line to narrow TUI widths", () => {
@@ -427,7 +396,6 @@ test("routes dirty work before a merge conflict", () => {
 		conditions: { conflict: true },
 		local: { worktree: "dirty", head: "equal" },
 	}));
-	assert.equal(display.nextStep, "publish-work");
 	assert.equal(display.footer?.text, "merge conflict");
 	assert.equal(display.footer?.color, "error");
 	assert.equal(display.widget, "Run /pr to publish local work");

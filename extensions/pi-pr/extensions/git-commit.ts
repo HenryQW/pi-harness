@@ -7,7 +7,7 @@ import { inspectGitOperation, parseNulPaths, parseStatusSnapshot, readHead, requ
 
 export type PendingCommit = { head: string; status: string; integrity: string };
 
-export function commitPaths(input: string[]): string[] {
+function commitPaths(input: string[]): string[] {
 	const paths = validatePaths(input, "Commit paths");
 	if (!paths.length) throw new Error("Commit paths must not be empty");
 	for (const path of paths) {

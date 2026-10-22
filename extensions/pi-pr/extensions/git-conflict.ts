@@ -5,8 +5,8 @@ import { truncateHead, withFileMutationQueue } from "@earendil-works/pi-coding-a
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import { canonicalWorktree, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
-export type ConflictSide = "@ours" | "@theirs" | "@both" | "@base";
-export type ConflictResolution = { block: number; id: string; side: ConflictSide };
+type ConflictSide = "@ours" | "@theirs" | "@both" | "@base";
+type ConflictResolution = { block: number; id: string; side: ConflictSide };
 export type ConflictBlock = {
 	block: number;
 	id: string;
@@ -33,7 +33,7 @@ function marker(line: string, char: string, width: number): string | undefined {
 }
 
 /** A conflict this tool cannot address by block; the caller must resolve the whole file. */
-export class WholeFileConflict extends Error {}
+class WholeFileConflict extends Error {}
 
 /**
  * Parse complete Git conflict blocks with markers of exactly `width` characters (Git's

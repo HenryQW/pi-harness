@@ -26,7 +26,6 @@ type PrFooter = {
 };
 
 export type PrDisplay = {
-	nextStep: NextStep;
 	footer?: PrFooter;
 	widget?: string;
 };
@@ -129,12 +128,11 @@ export function projectPrDisplay(
 	discovery: PullRequestDiscovery<PrDisplayInput>,
 ): PrDisplay {
 	const nextStep = deriveNextStep(discovery);
-	if (discovery.kind === "inactive") return { nextStep };
+	if (discovery.kind === "inactive") return {};
 	if (discovery.kind === "blocked") {
 		const ambiguous = discovery.issue.kind === "candidate-remotes-ambiguous" ||
 			discovery.issue.kind === "candidate-prs-ambiguous";
 		return {
-			nextStep,
 			footer: {
 				text: ambiguous ? "target ambiguous" : "discovery blocked",
 				color: "warning",
@@ -143,14 +141,12 @@ export function projectPrDisplay(
 	}
 	if (discovery.kind === "none") {
 		return {
-			nextStep,
 			widget: nextStep === "create" ? "Run /pr to create pull request" : undefined,
 		};
 	}
 
 	const input = discovery.pullRequest;
 	return {
-		nextStep,
 		footer: {
 			number: input.number,
 			url: input.url.href,
@@ -162,7 +158,6 @@ export function projectPrDisplay(
 
 export function unavailablePrDisplay(): PrDisplay {
 	return {
-		nextStep: "none",
 		footer: { text: "status unavailable", color: "warning" },
 	};
 }

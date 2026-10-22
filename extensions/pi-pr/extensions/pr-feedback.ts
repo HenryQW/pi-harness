@@ -271,8 +271,7 @@ export function parseFeedbackSnapshot(value: unknown): FeedbackSnapshot {
 	return snapshot;
 }
 
-export function feedbackEntries(snapshotInput: FeedbackSnapshot): FeedbackEntry[] {
-	const snapshot = snapshotInput;
+export function feedbackEntries(snapshot: FeedbackSnapshot): FeedbackEntry[] {
 	const entries: FeedbackEntry[] = [];
 	for (const node of snapshot.conversationComments) entries.push({ id: node.id, kind: "conversation_comment", node });
 	for (const node of snapshot.reviews) entries.push({ id: node.id, kind: "review", node });
@@ -421,12 +420,10 @@ function rememberCursor(seen: Set<string>, page: Connection, label: string): voi
 }
 
 export async function collectPullRequestFeedback(
-	authorityInput: FeedbackAuthority,
+	authority: FeedbackAuthority,
 	options: FeedbackClientOptions,
 ): Promise<FeedbackSnapshot> {
-	const authority = parseAuthority(authorityInput);
-	const [owner, name, extra] = authority.base.repository.split("/");
-	if (!owner || !name || extra) throw new Error("base repository is invalid");
+	const [owner, name] = authority.base.repository.split("/");
 	const client = new FeedbackClient(options);
 	const targets = [
 		{ key: "conversationComments", field: "comments", cursor: "commentsCursor", label: "conversation comments" },
@@ -498,12 +495,11 @@ export async function collectPullRequestFeedback(
 }
 
 export async function replyToPullRequestThread(
-	authorityInput: FeedbackAuthority,
+	authority: FeedbackAuthority,
 	threadIdInput: string,
 	bodyInput: string,
 	options: FeedbackClientOptions,
 ): Promise<string> {
-	const authority = parseAuthority(authorityInput);
 	const threadId = requiredText(threadIdInput, "review thread ID");
 	const body = requiredText(bodyInput, "review thread reply");
 	const data = await new FeedbackClient(options).mutate(REPLY_THREAD_MUTATION, { threadId, body }, authority.host);
@@ -516,11 +512,10 @@ export async function replyToPullRequestThread(
 }
 
 export async function resolvePullRequestThread(
-	authorityInput: FeedbackAuthority,
+	authority: FeedbackAuthority,
 	threadIdInput: string,
 	options: FeedbackClientOptions,
 ): Promise<void> {
-	const authority = parseAuthority(authorityInput);
 	const threadId = requiredText(threadIdInput, "review thread ID");
 	const data = await new FeedbackClient(options).mutate(RESOLVE_THREAD_MUTATION, { threadId }, authority.host);
 	if (!isRecord(data.resolveReviewThread) || !isRecord(data.resolveReviewThread.thread)) {

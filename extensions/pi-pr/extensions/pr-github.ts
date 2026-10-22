@@ -1961,15 +1961,6 @@ async function searchPullRequests(
 	return { ...selected, pullRequest: parseLoadedPullRequest(loaded.stdout, selected.candidate.url) };
 }
 
-export async function loadCurrentPullRequest(
-	pi: Pick<ExtensionAPI, "exec">,
-	context: PullRequestLoadContext,
-	inspectedLocal?: LocalMergeSafety,
-	observed?: unknown,
-): Promise<CurrentPullRequestDiscovery> {
-	return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed);
-}
-
 // Returns the remote hosts when no remote points to github.com or to a host that gh has credentials for.
 async function readNonGitHubRemoteHosts(
 	pi: Pick<ExtensionAPI, "exec">,
@@ -2008,11 +1999,11 @@ function remoteHost(url: string): string | undefined {
 	return /^(?:[^@/]+@)?([^:/]+):/.exec(url)?.[1]?.toLowerCase();
 }
 
-async function loadCurrentPullRequestInternal(
+export async function loadCurrentPullRequest(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
-	inspectedLocal: LocalMergeSafety | undefined,
-	observed: unknown,
+	inspectedLocal?: LocalMergeSafety,
+	observed?: unknown,
 	creationIdentity?: CreationIdentity,
 ): Promise<CurrentPullRequestDiscovery> {
 	const read = await readPushTarget(pi, context);
@@ -2037,7 +2028,7 @@ async function loadCurrentPullRequestInternal(
 			const target = publicTarget(inferred.target);
 			if (creationIdentity === undefined) {
 				const captured = await captureCreationIdentity(pi, context, target);
-				return await loadCurrentPullRequestInternal(pi, context, inspectedLocal, observed, captured);
+				return await loadCurrentPullRequest(pi, context, inspectedLocal, observed, captured);
 			}
 			if (!sameCreationTarget(creationIdentity.target, target)) fail("Read creation target", "target changed");
 			if (!canLinkTarget(await readLinkConfiguration(pi, context, inferred.target), inferred.target)) {
