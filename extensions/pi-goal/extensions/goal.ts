@@ -3,16 +3,11 @@ import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-wor
 import { Type, type Static } from "typebox";
 import { Errors } from "typebox/value";
 
-export const GOAL_ENTRY = "pi-goal";
-export const CONTEXT_MESSAGE = "pi-goal-context";
+const GOAL_ENTRY = "pi-goal";
+const CONTEXT_MESSAGE = "pi-goal-context";
 export const CONTINUATION_MESSAGE = "pi-goal-continuation";
 export const MAX_CONTINUATIONS = 20;
 const OBJECTIVE_DELIVERABLE = "objective";
-
-export interface Evidence {
-	deliverable: string;
-	evidence: string;
-}
 
 export interface Goal {
 	id: string;
@@ -25,7 +20,7 @@ export interface Goal {
 	updatedAt: number;
 }
 
-export interface ContinuationDetails {
+interface ContinuationDetails {
 	goalId: string;
 	count: number;
 	activity: string;
@@ -37,6 +32,7 @@ const EvidenceItem = Type.Object({
 	deliverable: Type.String({ description: `A declared deliverable, or "${OBJECTIVE_DELIVERABLE}" when the goal has none` }),
 	evidence: Type.String({ description: "What you inspected now (file, command output, test result) and what it shows" }),
 }, CLOSED);
+type Evidence = Static<typeof EvidenceItem>;
 const Actions = {
 	create: Type.Object({
 		action: Type.Literal("create"),
@@ -51,7 +47,7 @@ const Actions = {
 type GoalInput = { [Action in keyof typeof Actions]: Static<typeof Actions[Action]> }[keyof typeof Actions];
 
 // Some providers reject a root union, so the model sees one flat object and execute checks the action variant.
-export const GoalParameters = Type.Object({
+const GoalParameters = Type.Object({
 	action: Type.Union([Type.Literal("create"), Type.Literal("get"), Type.Literal("complete"), Type.Literal("drop")]),
 	objective: Type.Optional(Type.String({ description: "create: the full user objective" })),
 	deliverables: Type.Optional(Type.Array(Type.String(), { description: "create: concrete outcomes that completion must prove" })),
@@ -59,11 +55,9 @@ export const GoalParameters = Type.Object({
 	evidence: Type.Optional(Type.Array(EvidenceItem, { description: "complete: one item for each deliverable" })),
 }, CLOSED);
 
-function checkedInput(params: unknown): GoalInput {
-	const action = (params as { action?: unknown }).action;
-	if (typeof action !== "string" || !Object.hasOwn(Actions, action)) throw new Error("action must be create, get, complete, or drop.");
-	const schema = Actions[action as keyof typeof Actions];
-	const issue = Errors(schema, params)[0];
+function checkedInput(params: Static<typeof GoalParameters>): GoalInput {
+	const { action } = params;
+	const issue = Errors(Actions[action], params)[0];
 	if (!issue) return params as GoalInput;
 	// TypeBox reports an unexpected property as a false subschema at that property's path.
 	const message = issue.keyword === "boolean" ? "is not allowed" : issue.message;
@@ -117,7 +111,7 @@ function budgetLines(goal: Goal, used: number): string[] {
 		: [`Tokens used: ${used}`, `Token budget: ${goal.tokenBudget}`, `Tokens remaining: ${Math.max(0, goal.tokenBudget - used)}`];
 }
 
-export function goalContext(goal: Goal, used: number): string {
+function goalContext(goal: Goal, used: number): string {
 	const deliverables = goal.deliverables.length
 		? ["Deliverables:", ...goal.deliverables.map((name) => `- ${name}`)]
 		: [`Deliverables: none declared; complete with one evidence item for "${OBJECTIVE_DELIVERABLE}".`];

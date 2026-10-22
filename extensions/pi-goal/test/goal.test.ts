@@ -104,7 +104,6 @@ test("tool parameters use a flat object root and execute rejects invalid action 
 	assert.equal("anyOf" in root || "oneOf" in root, false);
 	assert.equal(tool.exposure, "model-only");
 	for (const [params, error] of [
-		[{ action: "stop" }, /action must be create, get, complete, or drop/],
 		[{ action: "create" }, /Invalid goal create arguments/],
 		[{ action: "create", objective: "  " }, /\/objective must match pattern/],
 		[{ action: "create", objective: "Ship", token_budget: 0 }, /\/token_budget/],
