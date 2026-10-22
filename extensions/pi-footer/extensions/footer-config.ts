@@ -19,8 +19,6 @@ export const FOOTER_COLOR_ROLES = [
 	"separator",
 ] as const;
 
-export type FooterColorRole = (typeof FOOTER_COLOR_ROLES)[number];
-
 /** Theme foreground tokens accepted as config values. */
 const THEME_TOKENS: ReadonlySet<ThemeColor> = new Set<ThemeColor>([
 	"accent",
@@ -34,8 +32,6 @@ const THEME_TOKENS: ReadonlySet<ThemeColor> = new Set<ThemeColor>([
 ]);
 
 export type FooterColorValue = { kind: "token"; token: ThemeColor } | { kind: "color"; color: Color };
-
-export type FooterColorConfig = Partial<Record<FooterColorRole, FooterColorValue>>;
 
 /** Parses one role's color; a throw drops only that role. */
 export const parseFooterColor: FieldParser<FooterColorValue> = (raw) => {
