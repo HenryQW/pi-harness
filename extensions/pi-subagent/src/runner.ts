@@ -25,6 +25,7 @@ import {
 	formatCheckCommand,
 	stagedCheckSources,
 	RUN_STATE_VERSION,
+	TERMINAL_RUN_STATUSES,
 	type AllocationIntent,
 	type AllocationKind,
 	type CheckBatchEvidence,
@@ -735,16 +736,17 @@ function correctionEligible(request: ChangesetTaskRequest, attempt: TaskAttempt)
 }
 
 function terminal(state: RunState): boolean {
-	return state.status === "completed" || state.status === "final_failed" || state.status === "superseded" || state.status === "aborted";
+	return TERMINAL_RUN_STATUSES.some((status) => status === state.status);
 }
 
-function inventoryStatus(state: RunState): string {
+function inventoryStatus(state: RunState, orphaned = false): string {
+	if (orphaned && ["pending", "running"].includes(state.status)) return `saved ${state.status} · unverified`;
 	const retained = state.tasks.some((task) => task.kind === "changeset"
 		? task.attempts.some((attempt) => attempt.cleanup.some((step) => step.status !== "completed"))
 		: task.attempts.some((attempt) => attempt.cleanup && attempt.cleanup.outcome !== "pruned"))
 		|| state.integration.generations.some((generation) => generation.cleanup?.some((step) => step.status !== "completed")
 			|| (generation.worktree && generation.cleanup?.every((step) => step.status === "completed") !== true));
-	return ["completed", "aborted"].includes(state.status) && retained ? `${state.status} · retained` : state.status;
+	return terminal(state) && retained ? `${state.status} · retained` : state.status;
 }
 
 export type TextTaskContext = { taskId: string; text: string };
@@ -1007,7 +1009,7 @@ export class IsolatedRunner {
 		}
 		const requests: RunResponse[] = [];
 		for (const request of inventory.requests) {
-			if (["pending", "running", "needs_attention", "completed · retained", "aborted · retained"].includes(request.status)) {
+			if (["pending", "running", "needs_attention"].includes(request.status) || request.status.endsWith(" · retained")) {
 				requests.push(await this.status(request.id, root));
 			}
 		}
@@ -1021,7 +1023,7 @@ export class IsolatedRunner {
 		const owners: { label: string; text?: string; request?: PruneRequest }[] = [];
 		let lease: string | undefined;
 		const request = ({ state, path }: RunStateHandle, orphaned: boolean): PruneRequest => ({ id: state.request.id, name: state.request.goal,
-			status: inventoryStatus(state), directory: dirname(path), root: state.root, orphaned });
+			status: inventoryStatus(state, orphaned), directory: dirname(path), root: state.root, orphaned });
 		const orphans = checkouts[0] ? (await this.store.listOrphans(realpathSync.native(checkouts[0]))).states : [];
 		for (const handle of orphans) {
 			const { state } = handle;
@@ -2065,7 +2067,7 @@ export class IsolatedRunner {
 		const primary = await primaryCheckout(cwd);
 		const { states, invalidIds } = await this.store.listOrphans(primary);
 		return { invalidIds, requests: states.map((handle) => ({
-			id: handle.state.request.id, name: handle.state.request.goal, status: inventoryStatus(handle.state),
+			id: handle.state.request.id, name: handle.state.request.goal, status: inventoryStatus(handle.state, true),
 			directory: dirname(handle.path), root: handle.state.root, orphaned: true, tasks: [],
 		})) };
 	}

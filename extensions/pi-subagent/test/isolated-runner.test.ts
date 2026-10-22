@@ -679,6 +679,24 @@ test("inventory lists healthy requests beside preserved invalid state without re
 	await execution;
 });
 
+test("terminal inventory keeps unresolved cleanup visible without changing saved state", async (t) => {
+	const { root, runner, store } = await harness(t);
+	await runner.execute(request("terminal-inventory", [changesetTask("change")]), root);
+	const handle = await store.load(root, "terminal-inventory");
+	for (const status of ["final_failed", "superseded"] as const) {
+		handle.state.status = status;
+		handle.state.final.status = status;
+		for (const retained of [true, false]) {
+			for (const step of changesetState(handle.state, "change").attempts[0]!.cleanup) step.status = retained ? "pending" : "completed";
+			await handle.save();
+			const before = await readFile(handle.path);
+			assert.equal((await runner.listRequests(root)).requests[0]!.status, retained ? `${status} · retained` : status);
+			assert.equal((await runner.recoverRepository(root)).requests.length, retained ? 1 : 0);
+			assert.deepEqual(await readFile(handle.path), before);
+		}
+	}
+});
+
 test("queued follow-ups reuse the same worker before automatic readiness seals the candidate", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	let releaseInitial!: () => void;
@@ -3266,6 +3284,22 @@ test("a foreign Herdr pane, unavailable Herdr, a lease, or a stale session block
 	await assert.rejects(runner.discard(root, plan, { ...discardGuards, current: () => false }), /Session changed/);
 	assert.deepEqual(runtime.cleanupCalls, []);
 	assert.equal(await readFile(join(worker.path, "worker.txt"), "utf8"), "uncommitted work\n");
+});
+
+test("orphan inventory labels saved activity as unverified without changing recovery data", async (t) => {
+	const { root, directory, runner, store, runtime } = await discardFixture(t, true);
+	const handle = await store.loadFromDirectory(directory, "discard-request");
+	const beforeCalls = runtimeCallCounts(runtime);
+	for (const status of ["pending", "running"] as const) {
+		handle.state.status = status;
+		await handle.save();
+		const before = await readFile(handle.path);
+		const listed = (await runner.listOrphanRequests(root)).requests[0]!;
+		assert.equal(listed.status, `saved ${status} · unverified`);
+		assert.equal(listed.directory, directory);
+		assert.deepEqual(await readFile(handle.path), before);
+	}
+	assert.deepEqual(runtimeCallCounts(runtime), beforeCalls);
 });
 
 test("removed-parent requests are listed from another checkout and can be discarded; other repositories stay out", async (t) => {
