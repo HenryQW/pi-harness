@@ -4,7 +4,7 @@ import { open, readFile, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode, herdrCommandFailure, startPiAgent } from "@henryqw/pi-herdr";
 import { utf8Prefix } from "./ephemeral.ts";
 import type { PreparedRoleLaunch, ResolvedRoleLaunch } from "./index.ts";
@@ -357,8 +357,11 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 		/** `resume` reuses a stopped worker's saved session and private lease instead of a new temp directory. */
 		async start(launch: ResolvedRoleLaunch & Pick<PreparedRoleLaunch, "tools">, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath">): Promise<DirectHandle> {
 			const fileTask = Buffer.byteLength(task, "utf8") > INLINE_TASK_BYTES;
-			const reader = launch.tools.includes("read") ? "read" : launch.tools.includes("bash") ? "bash" : undefined;
-			if (fileTask && !reader) throw new Error("Large direct task packets require read or bash in the Role; no worker was launched.");
+			const longLine = fileTask && task.split("\n").some((line) => Buffer.byteLength(line, "utf8") > DEFAULT_MAX_BYTES);
+			const reader = launch.tools.includes("read") && !longLine ? "read" : launch.tools.includes("bash") ? "bash" : undefined;
+			if (fileTask && !reader) throw new Error(longLine
+				? `Large direct task packet has a line above Pi read's ${DEFAULT_MAX_BYTES}-byte limit. Add bash to the Role or use lines within that limit; no worker was launched.`
+				: "Large direct task packets require read or bash in the Role; no worker was launched.");
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
 			if (pane.pane_id !== callerPane || pane.workspace_id !== workspaceId) throw new Error("Herdr caller pane no longer matches the launching workspace.");

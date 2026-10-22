@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { Compile } from "typebox/compile";
-import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createReadTool, DEFAULT_MAX_BYTES, type ExtensionAPI, type ExtensionContext, type ReadToolDetails } from "@earendil-works/pi-coding-agent";
 import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import { registerCheckoutAdmission } from "../extensions/admission.ts";
 import roleTools from "../extensions/role-tools.ts";
@@ -1323,17 +1323,32 @@ test("an oversized exact answer in an 8-task request succeeds with a bounded, re
 	});
 });
 
-for (const reader of ["read", "bash"]) test(`a chain passes an answer above the per-argument limit through a private task file with ${reader}`, async () => {
+for (const tools of ["read", "bash", "read, bash"]) test(`a chain passes a large answer through a private task file with ${tools}`, async () => {
+	const reader = tools.includes("bash") ? "bash" : "read";
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const roleFile = join(agentDir, "config", "pi-subagent", "worker.md");
-		await writeFile(roleFile, (await readFile(roleFile, "utf8")).replace("tools: [read]", `tools: [${reader}]`));
+		await writeFile(roleFile, (await readFile(roleFile, "utf8")).replace("tools: [read]", `tools: [${tools}]`));
 		await herdrEnvironment(async (cwd) => {
-			const large = "é".repeat(80_000);
+			const large = reader === "read" ? ("é".repeat(9_999) + "x\n").repeat(8) : "x".repeat(70_000);
 			const fake = fakeHerdr(cwd, async (prompt) => {
 				if (prompt.startsWith("first")) return large;
 				const taskFile = JSON.parse(prompt.match(/complete task packet at ("[^"]+")/)![1]!);
-				assert.ok((await readFile(taskFile, "utf8")).startsWith(`next: ${large}\n\n`));
+				let packet: string;
+				if (reader === "read") {
+					const parts: string[] = [];
+					const nativeRead = createReadTool(cwd);
+					for (let offset = 1; ;) {
+						const result = await nativeRead.execute("packet", { path: taskFile, offset });
+						const truncation = (result.details as ReadToolDetails | undefined)?.truncation;
+						assert.equal(truncation?.firstLineExceedsLimit ?? false, false);
+						parts.push(truncation?.content ?? (result.content[0] as { text: string }).text);
+						if (!truncation?.truncated) break;
+						offset += truncation.outputLines;
+					}
+					packet = parts.join("\n");
+				} else packet = await readFile(taskFile, "utf8");
+				assert.ok(packet.startsWith(`next: ${large}\n\n`));
 				assert.equal((await stat(taskFile)).mode & 0o777, 0o600);
 				return "final exact";
 			});
@@ -1350,7 +1365,33 @@ for (const reader of ["read", "bash"]) test(`a chain passes an answer above the 
 			const prompts = fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt");
 			assert.ok(prompts[1]![3]!.startsWith(`Use ${reader} to read the complete task packet`));
 			assert.deepEqual(app.sentMessages[0]!.message.details.entries.map(({ status }: any) => status), ["succeeded", "succeeded"]);
-			assert.match(app.sentMessages[0]!.message.content, /Answer truncated to 20480 of 160000 bytes/);
+			assert.ok(app.sentMessages[0]!.message.content.includes(`Answer truncated to 20480 of ${Buffer.byteLength(large)} bytes`));
+		});
+	});
+});
+
+for (const extra of [0, 1]) test(`read-only task packets match the native line byte limit plus ${extra}`, async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const line = "é".repeat(DEFAULT_MAX_BYTES / 2) + "x".repeat(extra);
+			const task = `header\n${line}\n${"tail".repeat(5_000)}`;
+			const probe = join(agentDir, "packet.txt");
+			await writeFile(probe, task);
+			const fake = fakeHerdr(cwd);
+			const app = harness({ cwd, herdr: fake.exec });
+			const native = await createReadTool(cwd).execute("boundary", { path: probe, offset: 2 });
+			assert.equal((native.details as ReadToolDetails).truncation?.firstLineExceedsLimit, extra === 1);
+			const launch = app.tool.execute("boundary", { role: "worker", name: "Boundary", task, access: "read" }, undefined, undefined, app.ctx);
+			if (extra) {
+				await assert.rejects(launch, /line above Pi read's 51200-byte limit. Add bash to the Role or use lines within that limit; no worker was launched/);
+				assert.equal(fake.calls.length, 0);
+			} else {
+				await launch;
+				await waitFor(() => app.sentMessages.length === 1);
+				assert.equal(app.sentMessages[0]!.message.details.entries[0].status, "succeeded");
+				assert.ok(fake.calls.find((args) => args[1] === "prompt")![3]!.startsWith("Use read to read the complete task packet"));
+			}
 		});
 	});
 });
@@ -1364,7 +1405,7 @@ test("a large task with no Role file reader fails before tab creation", async ()
 			const fake = fakeHerdr(cwd);
 			const app = harness({ cwd, herdr: fake.exec });
 			await assert.rejects(app.tool.execute("large", {
-				role: "worker", name: "Large", task: "x".repeat(128 * 1024), access: "read",
+				role: "worker", name: "Large", task: ("x".repeat(1_000) + "\n").repeat(128), access: "read",
 			}, undefined, undefined, app.ctx), /require read or bash in the Role/);
 			assert.equal(fake.calls.length, 0);
 		});
