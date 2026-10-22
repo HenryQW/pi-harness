@@ -125,6 +125,8 @@ test("lists an ordinary conflict without check-attr --source, which Git before 2
 	await assert.rejects(new GitConflicts({ exec }).list(root), /unknown option `source'/);
 	await rm(join(root, "d"), { recursive: true });
 	execFileSync("git", ["update-index", "--assume-unchanged", ".gitattributes"], { cwd: root, env });
+	// A flagged but unchanged file, as in sparse checkouts, still needs no `--source`.
+	assert.equal((await new GitConflicts({ exec }).list(root)).files[0]!.blocks.length, 1);
 	await writeFile(join(root, ".gitattributes"), "f.txt conflict-marker-size=9\n");
 	assert.equal(git("diff", "--name-only", "HEAD").toString(), "f.txt\n");
 	await assert.rejects(new GitConflicts({ exec }).list(root), /unknown option `source'/);
