@@ -54,7 +54,7 @@ export async function toggleDependencyHook(
 	await mkdir(dirname(path), { recursive: true });
 	const temporary = `${path}.pi-deps-${process.pid}-${randomUUID()}`;
 	try {
-		await writeFile(temporary, source, { encoding: "utf8", mode: 0o755, flag: "wx" });
+		await writeFile(temporary, source, { encoding: "utf8", flag: "wx" });
 		await chmod(temporary, 0o755);
 		await link(temporary, path);
 	} catch (error) {
