@@ -11,7 +11,7 @@ export function isReservedFrameLine(line: string): boolean {
 
 export type Target = "memory" | "user";
 
-export interface StoreConfig {
+interface StoreConfig {
 	directory: string;
 	target: Target;
 	limit: number;
@@ -23,7 +23,7 @@ export interface StoreConfig {
 	statFn?: (path: string) => Promise<import("node:fs").Stats>;
 }
 
-export type LoadResult =
+type LoadResult =
 	| { entries: string[]; state: "ok"; raw: string }
 	| { entries: []; state: "absent"; raw: "" }
 	| { entries: []; state: "unreadable"; conflictWarning: string }
@@ -39,7 +39,7 @@ export type MemoryOperation =
 export const MAX_FILE_BYTES = 1_000_000;
 export const MAX_BATCH_OPERATIONS = 100;
 
-export type FileState =
+type FileState =
 	| { kind: "ok"; raw: string }
 	| { kind: "absent" }
 	| { kind: "unreadable"; confirmedPresent: boolean; reason?: string }
