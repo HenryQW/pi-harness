@@ -154,10 +154,12 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 		const blockers = notes.filter((note) => note.grade === "blocker");
 		const userIndex = branch.findLastIndex((entry) => entry.type === "message" && entry.message.role === "user");
 		const continued = branch.slice(userIndex + 1).some((entry) => entry.type === "custom_message" && entry.customType === BLOCKER_MESSAGE);
-		const capped = blockers.length > 0 && continued;
-		ctx.ui.notify(`Advisor:\n${formatNotes(notes)}${capped ? "\nThe advisor already continued once for this prompt. Send a prompt to address the blockers." : ""}`,
+		// A draft in the editor means the user is typing the next prompt; a follow-up run would capture it as a queued message.
+		const held = blockers.length > 0 && (continued || ctx.ui.getEditorText().trim() !== "");
+		const reason = continued ? "The advisor already continued once for this prompt. " : "";
+		ctx.ui.notify(`Advisor:\n${formatNotes(notes)}${held ? `\n${reason}Send a prompt to address the blockers.` : ""}`,
 			notes.some((note) => note.grade !== "nit") ? "warning" : "info");
-		if (!blockers.length || capped) return;
+		if (!blockers.length || held) return;
 		pi.sendMessage({
 			customType: BLOCKER_MESSAGE, display: true, details: { notes },
 			content: `The advisor reviewed this run and found blockers. Address each blocker, verify the fix with tools, then report the result.\n\n${formatNotes(blockers)}`,

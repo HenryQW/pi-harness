@@ -48,7 +48,7 @@ The advisor is off by default.
 2. Other extensions can continue the run. All of their turns stay in the same run.
 3. Pi settles the run. Pi Advisor does no review for a run without tool calls, an unfinished run, or a session without UI.
 4. Pi Advisor sends one tool-free request to the advisor model in the background. The request contains the latest user prompt and the run record.
-5. Pi shows the notes. For a `blocker` note, Pi Advisor sends a visible `pi-advisor-blocker` follow-up message. The message starts a new run that fixes the blockers.
+5. Pi shows the notes. For a `blocker` note when the editor is empty, Pi Advisor sends a visible `pi-advisor-blocker` follow-up message. The message starts a new run that fixes the blockers.
 6. The advisor also examines that new run. It shows the notes, but it sends no other follow-up until the next user prompt.
 
 ## State and storage
@@ -69,4 +69,5 @@ Each blocker follow-up is a visible `pi-advisor-blocker` message on the branch. 
 | Model error | Pi shows a warning. Pi shows no notes. | Run `/task-models` to examine the route, or send the next prompt. |
 | Run record size | Each item is truncated to 4,000 characters, and the prompt to 8,000. The record keeps the newest 48,000 characters and marks earlier items as omitted. | Ask for a smaller run when early steps must be examined. |
 | One follow-up | A blocker sends one follow-up message for each user prompt. | Send a prompt to fix the remaining blockers. |
+| Draft in the editor | When the editor contains text, a blocker sends no follow-up message. Pi shows all notes and tells you to send a prompt. | Send a prompt to fix the blockers. |
 | Advice only | The advisor sees only the run record. Its notes can be wrong. | Examine each note before you accept it. |
