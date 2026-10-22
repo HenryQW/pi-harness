@@ -902,16 +902,17 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							controller.signal.throwIfAborted();
 							if (writerFailed) throw new Error("Previous direct task did not complete exactly; inspect recorded tabs before new shared-checkout work.");
 							handle = entry.index === 0 ? first : await launch(entry, entrySignal(entry));
-							const answer = await handle.answer(answerBytes);
+							const { text, inline } = await handle.answer(answerBytes);
 							let usage: DirectUsage | undefined;
 							try {
 								usage = await handle.usage();
 								const item = widgetItems.get(entry.id);
 								if (item) { item.tokens = usage.tokens; item.cost = usage.cost; item.activity = handle.activity; }
 							} catch { /* Optional telemetry. */ }
-							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer, ...measured(entry.id, usage), ...await checkout(entry) });
+							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: inline, ...measured(entry.id, usage), ...await checkout(entry) });
 							finishWidgetItem(entry.id, "success");
-							return answer;
+							// A chain passes the exact answer to {previous}; only Main's transport is bounded.
+							return text;
 						} catch (error) {
 							if (writes) writerFailed = true;
 							const { assistantOutput: _partial, ...base } = states.get(entry.id)!;

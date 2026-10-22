@@ -36,7 +36,8 @@ export interface DirectHandle {
 	paneId: string;
 	sessionFile: string;
 	prompt: string;
-	answer(maxBytes: number): Promise<string>;
+	/** `text` is the exact answer; `inline` is bounded for Main, linking a private full copy when truncated. */
+	answer(maxBytes: number): Promise<{ text: string; inline: string }>;
 	usage(): Promise<DirectUsage>;
 	/** Bounded assistant text from this turn so far; failure evidence only, never completion. */
 	partialText(maxChars: number): Promise<string | undefined>;
@@ -427,11 +428,12 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 						if (info.size > SESSION_LIMIT) throw new Error(`Pi session in tab ${tabId} exceeds 16 MiB; inspect ${sessionFile} for recovery.`);
 						const text = exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, requireSuccess);
 						const bytes = Buffer.byteLength(text, "utf8");
-						if (bytes <= maxBytes) return text;
+						if (bytes <= maxBytes) return { text, inline: text };
 						// An oversized exact answer still succeeds: Main gets a bounded prefix and a private full copy.
+						// Exclusive creation refuses a worker-planted file, symlink, or FIFO at this predictable path.
 						const file = join(dirname(sessionFile), `answer-${turn}.md`);
-						await writeFile(file, text, { mode: 0o600 });
-						return `${utf8Prefix(text, maxBytes)}\n\n[Answer truncated to ${maxBytes} of ${bytes} bytes; read the full answer at ${file}]`;
+						await writeFile(file, text, { flag: "wx", mode: 0o600 });
+						return { text, inline: `${utf8Prefix(text, maxBytes)}\n\n[Answer truncated to ${maxBytes} of ${bytes} bytes; read the full answer at ${file}]` };
 					};
 					const maybeAnswer = async () => {
 						try { return await readAnswer(); } catch (error) {

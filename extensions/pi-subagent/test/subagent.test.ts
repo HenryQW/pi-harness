@@ -1321,6 +1321,50 @@ test("an oversized exact answer in an 8-task request succeeds with a bounded, re
 	});
 });
 
+test("a chain passes an oversized exact answer in full to {previous}", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const large = "é".repeat(12_000);
+			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("first") ? large : "final exact");
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("chain", { chain: [
+				{ role: "worker", name: "First", task: "first", access: "read" },
+				{ role: "worker", name: "Second", task: "next: {previous}", access: "read" },
+			] }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			const prompts = fake.calls.filter(([kind, command]) => kind === "agent" && command === "prompt");
+			assert.ok(prompts[1]![3]!.startsWith(`next: ${large}\n\n`));
+			assert.match(app.sentMessages[0]!.message.content, /Answer truncated to 20480 of 24000 bytes/);
+		});
+	});
+});
+
+test("an answer file planted at the predictable path is refused, not followed", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const victim = join(cwd, "victim.txt");
+			await writeFile(victim, "keep");
+			let fake!: ReturnType<typeof fakeHerdr>;
+			fake = fakeHerdr(cwd, async (prompt) => {
+				const start = fake.calls.find(([kind, command]) => kind === "agent" && command === "start")!;
+				const session = start[start.indexOf("--session") + 1]!;
+				await symlink(victim, join(dirname(session), `answer-${prompt.match(/Turn identity: (\w+)$/)![1]}.md`));
+				return "x".repeat(50 * 1024);
+			});
+			const app = harness({ cwd, herdr: fake.exec });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			await app.tool.execute("planted", { role: "worker", name: "Planted", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			assert.equal(app.sentMessages[0]!.message.details.entries[0].status, "rejected");
+			assert.match(app.sentMessages[0]!.message.content, /EEXIST/);
+			assert.equal(await readFile(victim, "utf8"), "keep");
+		});
+	});
+});
+
 test("repeated Herdr wait timeouts stop after idle policy without imposing a task lifetime", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
 	await environment(async (agentDir) => {

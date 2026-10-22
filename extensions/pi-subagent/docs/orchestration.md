@@ -139,7 +139,7 @@ If the extension cannot prove termination of the stopped worker, the workflow ke
 
 The extension retrieves each final answer from its exact Pi session file, not its possibly truncated screen. Idle, blocked, unknown, or malformed answers fail with recoverable tab and session identities. No whole-run deadline applies.
 
-The tasks in a request share a 40 KiB inline answer budget. Each worker prompt states its share. A longer exact answer is still a success. The result shows a UTF-8-safe prefix and a truncation marker. The marker gives the path of a private `answer-<turn>.md` file beside the session file, which holds the full answer. For a write task, the budget applies to the `answer` field of the completion object.
+The tasks in a request share a 40 KiB inline answer budget. Each worker prompt states its share. A longer exact answer is still a success. The result shows a UTF-8-safe prefix and a truncation marker. The marker gives the path of a private `answer-<turn>.md` file beside the session file, which holds the full answer. For a write task, the budget applies to the `answer` field of the completion object. A chain step receives the full answer of the previous step in `{previous}`; the budget applies only to the result for Main.
 
 The tool returns a task ID and the first Herdr tab after launch, not the answer. The extension observes each worker and sends one result to Main when the workflow finishes. If Main is busy, Pi queues the result after the current turn. If Main is idle, the result starts a turn. The extension does not report a blocked, stalled, or unknown result as success.
 
