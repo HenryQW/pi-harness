@@ -4,11 +4,11 @@ import type { BtwPayload } from "./core.ts";
 export const MERGE_PROTOCOL_VERSION = 2 as const;
 export const MERGE_REQUEST_FILE = "merge-request.json";
 export const MERGE_CUSTOM_TYPE = "pi-herdr-btw.merge";
-export const MAX_SUMMARY_BYTES = 64 * 1024;
+const MAX_SUMMARY_BYTES = 64 * 1024;
 export const MAX_PROMPT_BYTES = 16 * 1024;
 /** Transcript budget stays well under MAX_SUMMARY_BYTES for JSON overhead. */
-export const MERGE_TRANSCRIPT_BUDGET_BYTES = 48 * 1024;
-export const TRANSCRIPT_TRUNCATION_NOTE =
+const MERGE_TRANSCRIPT_BUDGET_BYTES = 48 * 1024;
+const TRANSCRIPT_TRUNCATION_NOTE =
 	"[earlier side-thread turns omitted to fit the merge budget]";
 
 export type MergeRequest = {
@@ -24,7 +24,7 @@ export type MergeRequest = {
 	prompt: string;
 };
 
-export function isMergeRequest(value: unknown): value is MergeRequest {
+function isMergeRequest(value: unknown): value is MergeRequest {
 	if (!value || typeof value !== "object") return false;
 	const request = value as Partial<MergeRequest>;
 	return (
@@ -45,7 +45,7 @@ export function isMergeRequest(value: unknown): value is MergeRequest {
 	);
 }
 
-export function isSummaryWithinBounds(summary: string): boolean {
+function isSummaryWithinBounds(summary: string): boolean {
 	const trimmed = summary.trim();
 	return trimmed.length > 0 && Buffer.byteLength(trimmed, "utf8") <= MAX_SUMMARY_BYTES;
 }
@@ -59,7 +59,7 @@ export function isPromptWithinBounds(prompt: string): boolean {
  * A merge request is trusted only when it echoes the exact launch identity,
  * capability token, and parent session binding of its own launch payload.
  */
-export function validateRequestAgainstPayload(
+function validateRequestAgainstPayload(
 	request: MergeRequest,
 	payload: BtwPayload,
 ): string | undefined {
@@ -69,7 +69,7 @@ export function validateRequestAgainstPayload(
 	return undefined;
 }
 
-export function buildMergeMessageContent(summary: string): string {
+function buildMergeMessageContent(summary: string): string {
 	return `Merged from /btw (side-thread transcript)\n\n<btw-merge>\n${summary.trim()}\n</btw-merge>`;
 }
 
@@ -81,7 +81,7 @@ type EntryLike = {
 };
 
 /** Deduplicate against an already-persisted merge custom message by requestId. */
-export function hasMergedRequestId(entries: EntryLike[], requestId: string): boolean {
+function hasMergedRequestId(entries: EntryLike[], requestId: string): boolean {
 	return entries.some(
 		(entry) =>
 			entry.type === "custom_message" &&
@@ -93,7 +93,7 @@ export function hasMergedRequestId(entries: EntryLike[], requestId: string): boo
 }
 
 /** Detect durable evidence that this merge's user prompt was persisted. */
-export function hasSubmittedPromptRequestId(
+function hasSubmittedPromptRequestId(
 	entries: EntryLike[],
 	requestId: string,
 	prompt: string,
@@ -170,14 +170,14 @@ export function buildMergeTranscript(messages: AgentMessage[]): string | undefin
 	return kept.join("\n\n");
 }
 
-export type MergeStorePort = {
+type MergeStorePort = {
 	listLaunchPayloadPaths(): Promise<string[]>;
 	read(payloadPath: string): Promise<BtwPayload>;
 	readMergeRequest(payloadPath: string): Promise<unknown>;
 	remove(payloadPath: string): Promise<void>;
 };
 
-export type ParentSessionPort = {
+type ParentSessionPort = {
 	getSessionId(): string;
 	isIdle(): boolean;
 	getBranch(): EntryLike[];
@@ -189,7 +189,7 @@ export type ParentSessionPort = {
 	notify(message: string, type: "info" | "warning" | "error"): void;
 };
 
-export type ScanResult = {
+type ScanResult = {
 	delivered: number;
 	deferred: number;
 	rejected: number;

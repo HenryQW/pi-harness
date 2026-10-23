@@ -19,9 +19,9 @@ import { MERGE_REQUEST_FILE, type MergeRequest } from "./merge.ts";
 const PAYLOAD_FILE = "payload.json";
 const LAUNCH_PREFIX = "launch-";
 const MAX_MAILBOX_FILE_BYTES = 128 * 1024;
-export const MAX_PAYLOAD_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_PAYLOAD_FILE_BYTES = 64 * 1024 * 1024;
 
-export const DEFAULT_STALE_CONTEXT_MS = 24 * 60 * 60 * 1000;
+const STALE_CONTEXT_MS = 24 * 60 * 60 * 1000;
 
 function currentUid(): number | undefined {
 	return typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -49,7 +49,7 @@ function isMissing(error: unknown): boolean {
 	return !!error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-export function defaultContextRoot(): string {
+function defaultContextRoot(): string {
 	const uid = currentUid();
 	return join(tmpdir(), uid === undefined ? "pi-herdr-btw" : `pi-herdr-btw-${uid}`);
 }
@@ -132,10 +132,8 @@ export class ContextStore {
 		}
 	}
 
-	async removeStale(
-		maxAgeMs = DEFAULT_STALE_CONTEXT_MS,
-		now = Date.now(),
-	): Promise<void> {
+	async removeStale(): Promise<void> {
+		const now = Date.now();
 		const root = await this.ensureRoot();
 		const entries = await readdir(root, { withFileTypes: true });
 		// One unsafe or foreign entry must not abort cleanup of the others.
@@ -144,14 +142,13 @@ export class ContextStore {
 				if (!entry.name.startsWith(LAUNCH_PREFIX) || !entry.isDirectory()) return;
 				const launchDir = join(root, entry.name);
 				const info = await lstat(launchDir).catch(() => undefined);
-				if (!info?.isDirectory() || info.isSymbolicLink()) return;
+				if (!info?.isDirectory()) return;
 				assertOwnedByCurrentUser(info.uid, launchDir);
-				if (info.mtimeMs < now - maxAgeMs) {
+				if (info.mtimeMs < now - STALE_CONTEXT_MS) {
 					// A heartbeat may have refreshed this launch after the first stat.
 					const current = await lstat(launchDir).catch(() => undefined);
 					if (
 						!current?.isDirectory() ||
-						current.isSymbolicLink() ||
 						current.dev !== info.dev ||
 						current.ino !== info.ino ||
 						current.ctimeMs !== info.ctimeMs ||
@@ -177,7 +174,7 @@ export class ContextStore {
 		}
 
 		const info = await lstat(this.root);
-		if (!info.isDirectory() || info.isSymbolicLink()) {
+		if (!info.isDirectory()) {
 			throw new Error(`Refusing unsafe /btw context root: ${this.root}`);
 		}
 		assertOwnedByCurrentUser(info.uid, this.root);
@@ -231,7 +228,7 @@ export class ContextStore {
 			if (fileName !== PAYLOAD_FILE && isMissing(error)) return undefined;
 			throw error;
 		}
-		if (!info.isFile() || info.isSymbolicLink()) {
+		if (!info.isFile()) {
 			throw new Error(`Refusing unsafe /btw context payload: ${candidate}`);
 		}
 		assertOwnedByCurrentUser(info.uid, candidate);
@@ -270,7 +267,7 @@ export class ContextStore {
 			if (allowMissing && isMissing(error)) return undefined;
 			throw error;
 		}
-		if (!info.isDirectory() || info.isSymbolicLink()) {
+		if (!info.isDirectory()) {
 			throw new Error(`Refusing unsafe /btw launch directory: ${launchDir}`);
 		}
 		assertOwnedByCurrentUser(info.uid, launchDir);

@@ -43,8 +43,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI): void {
 			const mainCheckout = worktreeFields[0]?.startsWith("worktree ") ? worktreeFields[0].slice("worktree ".length) : undefined;
 			if (!mainCheckout) throw new Error("git worktree list returned no main worktree.");
 			// A bare primary has no working tree to pull into.
-			const parentIsBare = mainCheckout !== checkout &&
-				worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
+			const parentIsBare = worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
 
 			const siblingTabIds = await withWorktreeLock(checkout, async () => {
 				// With --force, skip the dependents check entirely and let git remove the checkout.

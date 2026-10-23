@@ -594,12 +594,7 @@ export async function registerBtwExtension(
 					return;
 				}
 				const activeTools = pi.getActiveTools();
-				let parentSystemPrompt: string | null = null;
-				try {
-					parentSystemPrompt = ctx.getSystemPrompt();
-				} catch {
-					parentSystemPrompt = null;
-				}
+				const parentSystemPrompt = ctx.getSystemPrompt();
 				payloadPath = await store.create(
 					createPayload({
 						createdAt,

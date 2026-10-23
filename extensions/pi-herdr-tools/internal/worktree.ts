@@ -19,14 +19,14 @@ export type HerdrWorkspace = {
 	isLinkedWorktree: boolean;
 };
 
-export type CreatedWorktree = {
+type CreatedWorktree = {
 	workspaceId: string;
 	tabId: string;
 	rootPaneId: string;
 	checkoutPath: string;
 };
 
-export type LaunchTarget = { tabId: string; paneId: string };
+type LaunchTarget = { tabId: string; paneId: string };
 
 export const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -38,8 +38,7 @@ export function requiredString(value: unknown, label: string): string {
 /** Resolve the Herdr workspace that owns `paneId`, with its Git worktree identity. */
 export async function resolveWorkspace(herdr: Herdr, cwd: string, paneId: string): Promise<HerdrWorkspace> {
 	const paneResponse = await herdr.json(["pane", "get", paneId], { cwd });
-	const pane = (paneResponse as { result?: { pane?: { pane_id?: unknown; workspace_id?: unknown } } }).result?.pane;
-	requiredString(pane?.pane_id, "Herdr pane response pane_id");
+	const pane = (paneResponse as { result?: { pane?: { workspace_id?: unknown } } }).result?.pane;
 	const workspaceId = requiredString(pane?.workspace_id, "Herdr pane response workspace_id");
 	const workspaceResponse = await herdr.json(["workspace", "get", workspaceId], { cwd });
 	const workspace = (workspaceResponse as { result?: { workspace?: WorkspaceInfo } }).result?.workspace;
