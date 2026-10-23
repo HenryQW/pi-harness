@@ -86,10 +86,9 @@ export function statusNotificationsEnabled(config: BarkConfig, cwd: string): boo
  * Bark cannot send without a Device Key. A default server would receive the Device Key, and a default `null`
  * encryption would send plaintext, so each of these keys is required and a missing or invalid one disables pi-bark.
  */
-export function createBarkConfigStore(agentDir?: string) {
+export function createBarkConfigStore() {
 	return createConfigStore({
 		extensionId: "pi-bark",
-		agentDir,
 		fields: {
 			serverUrl: required(serverUrl),
 			deviceKey: required(parsers.string({ trim: true })),
@@ -102,10 +101,9 @@ export function createBarkConfigStore(agentDir?: string) {
 const REQUIRED_KEYS = ["serverUrl", "deviceKey", "encryption"] as const;
 
 /** Same file; every field has a default, so repair commands can read a disabled config. An absent or invalid required key stays undefined. */
-function createBarkDraftStore(agentDir?: string) {
+function createBarkDraftStore() {
 	return createConfigStore({
 		extensionId: "pi-bark",
-		agentDir,
 		fields: {
 			serverUrl: field<string | undefined>(serverUrl, undefined),
 			deviceKey: field<string | null | undefined>(parsers.nullable(parsers.string({ trim: true })), undefined),
@@ -122,12 +120,11 @@ function createBarkDraftStore(agentDir?: string) {
  * setting is lost or silently unset.
  */
 export async function writeBarkConfig(
-	agentDir: string | undefined,
 	replaces: readonly (keyof BarkConfig)[],
 	change: (config: BarkConfigDraft) => BarkConfigDraft,
 	report: (store: { extensionId: string; path: string }, result: ConfigLoad<unknown>) => void,
 ): Promise<void> {
-	const store = createBarkDraftStore(agentDir);
+	const store = createBarkDraftStore();
 	const current = store.loadSync();
 	report(store, current);
 	// The draft store has no disabling field, so it always loads a value.
