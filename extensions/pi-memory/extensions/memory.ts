@@ -52,7 +52,6 @@ const DISPLAY_CONTROL_CHARACTER = /[\p{Cc}\p{Cf}]/gu;
 // @henryqw/pi-herdr-tools does not export internal/core.ts from its package root.
 const BTW_CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
 const PROMPT_SECTION = "pi_memory";
-const CONSOLIDATION_FAILURE = /(?:exceed|over) the limit|would put memory|no entry matched|[Mm]ultiple entries matched|matched multiple distinct/i;
 export const MEMORY_REVIEW_TASK = {
 	id: "pi-memory/reviewCandidate",
 	label: "Memory candidate review",
@@ -1125,7 +1124,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 					// Pi tool errors are plain strings — surface match previews and usage.
 					if (result.matches?.length) error += `\nMatching entries: ${JSON.stringify(result.matches)}`;
 					if (result.usage) error += `\nUsage: ${result.usage}`;
-					if (CONSOLIDATION_FAILURE.test(error) && store.incrementFailure().done) {
+					// Only consolidation and ambiguity failures carry entry previews.
+					if ((result.currentEntries || result.matches) && store.incrementFailure().done) {
 						throw new Error("Memory consolidation failed repeatedly this turn. Stop retrying memory calls, continue replying to the user.");
 					}
 					if (result.currentEntries?.length) error += `\nCurrent entries: ${JSON.stringify(result.currentEntries)}`;
