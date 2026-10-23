@@ -76,14 +76,8 @@ const ACTIVATION_ERROR =
 	"pi-auto-compact failed to activate: Pi built-in auto-compaction is enabled. " +
 	"Set compaction.enabled to false in Pi settings, then restart Pi.";
 
-/** Estimate current request size, including Pi system transcript state. */
-function estimateMessageTokens(message: AgentMessage): number {
-	if (message.role === "system") return Math.ceil(JSON.stringify(message).length / 4);
-	return estimateTokens(message);
-}
-
 function estimateTotalTokens(messages: AgentMessage[]): number {
-	return messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
+	return messages.reduce((total, message) => total + estimateTokens(message), 0);
 }
 
 /**
@@ -120,7 +114,7 @@ function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[
 	const prefixTokens = new Array<number>(messages.length + 1).fill(0);
 	for (let i = 0; i < messages.length; i++) {
 		const nonSystem = messages[i].role !== "system";
-		const tokens = nonSystem ? estimateMessageTokens(messages[i]) : 0;
+		const tokens = nonSystem ? estimateTokens(messages[i]) : 0;
 		prefixCounts[i + 1] = prefixCounts[i] + (nonSystem ? 1 : 0);
 		prefixTokens[i + 1] = prefixTokens[i] + tokens;
 		suffixTokens[i] = tokens;
@@ -140,7 +134,7 @@ function keepRecent(messages: AgentMessage[], keepTokens: number): AgentMessage[
 			content: `[Temporary context reduction: ${removedCount} earlier messages (~${Math.round(prefixTokens[boundary] / 1000)}K tokens) are omitted from this request while compaction runs. Continue with the current task.]`,
 			timestamp: Date.now(),
 		};
-		if (systemTokens + suffixTokens[boundary] + estimateMessageTokens(notice) > keepTokens) continue;
+		if (systemTokens + suffixTokens[boundary] + estimateTokens(notice) > keepTokens) continue;
 		const retained: AgentMessage[] = [];
 		for (let i = 0; i < messages.length; i++) {
 			if (i === boundary) retained.push(notice);

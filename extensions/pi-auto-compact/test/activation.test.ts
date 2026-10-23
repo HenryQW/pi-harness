@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 import { SessionManager, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
@@ -44,972 +44,874 @@ function loadExtension(
 	return handlers;
 }
 
-test("suppresses only empty abort caused by pending extension compaction", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-abort-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+let tempRoot: string;
+let previousAgentDir: string | undefined;
+
+beforeEach(async () => {
+	tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-"));
+	previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = tempRoot;
+});
 
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
-			compaction: { enabled: false },
-		}));
-		const handlers = loadExtension();
-		const compactionAbort = new AbortController();
-		let signal = AbortSignal.abort();
-		const ctx = {
-			cwd: tempRoot,
-			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
-			compact() {},
-			ui: { notify() {} },
-			get signal() { return signal; },
-		} as unknown as ExtensionContext;
-		handlers.get("session_start")?.(
-			{ type: "session_start", reason: "startup" } as never,
-			ctx,
-		);
+afterEach(async () => {
+	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	await rm(tempRoot, { recursive: true, force: true });
+});
 
-		const aborted = {
-			type: "message_end",
-			message: {
-				role: "assistant",
-				content: [],
-				stopReason: "error",
-				errorMessage: "This operation was aborted",
-			},
-		};
-		assert.equal(handlers.get("message_end")?.(aborted as never, ctx), undefined);
+test("suppresses only empty abort caused by pending extension compaction", async () => {
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
+		compaction: { enabled: false },
+	}));
+	const handlers = loadExtension();
+	const compactionAbort = new AbortController();
+	let signal = AbortSignal.abort();
+	const ctx = {
+		cwd: tempRoot,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+		compact() {},
+		ui: { notify() {} },
+		get signal() { return signal; },
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
 
-		signal = compactionAbort.signal;
-		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-		compactionAbort.abort();
-		assert.equal(handlers.get("message_end")?.({
-			...aborted,
-			message: { ...aborted.message, content: [{ type: "text", text: "partial" }] },
-		} as never, ctx), undefined);
-		assert.equal(handlers.get("message_end")?.({
-			...aborted,
-			message: { ...aborted.message, errorMessage: "Provider failed" },
-		} as never, ctx), undefined);
-		assert.deepEqual(handlers.get("message_end")?.(aborted as never, ctx), {
-			message: {
-				...aborted.message,
-				stopReason: "stop",
-				errorMessage: undefined,
-			},
-		});
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	const aborted = {
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [],
+			stopReason: "error",
+			errorMessage: "This operation was aborted",
+		},
+	};
+	assert.equal(handlers.get("message_end")?.(aborted as never, ctx), undefined);
+
+	signal = compactionAbort.signal;
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	compactionAbort.abort();
+	assert.equal(handlers.get("message_end")?.({
+		...aborted,
+		message: { ...aborted.message, content: [{ type: "text", text: "partial" }] },
+	} as never, ctx), undefined);
+	assert.equal(handlers.get("message_end")?.({
+		...aborted,
+		message: { ...aborted.message, errorMessage: "Provider failed" },
+	} as never, ctx), undefined);
+	assert.deepEqual(handlers.get("message_end")?.(aborted as never, ctx), {
+		message: {
+			...aborted.message,
+			stopReason: "stop",
+			errorMessage: undefined,
+		},
+	});
 });
 
 test("configures threshold and warns about obsolete model fields", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-"));
 	const configFile = autoCompactConfigFile(tempRoot);
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	const legacyConfig = {
+		autoCompactThreshold: 65,
+		compactionModel: "provider/model",
+		compactionThinkingLevel: "low",
+	};
+	await writeFile(configFile, JSON.stringify(legacyConfig));
 
-	try {
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		const legacyConfig = {
-			autoCompactThreshold: 65,
-			compactionModel: "provider/model",
-			compactionThinkingLevel: "low",
-		};
-		await writeFile(configFile, JSON.stringify(legacyConfig));
+	const commands = new Map<string, Command>();
+	const handlers = loadExtension(commands);
+	let compactions = 0;
+	let input = "40";
+	const notices: string[] = [];
+	const ctx = {
+		cwd: tempRoot,
+		hasUI: true,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
+		compact: () => { compactions++; },
+		ui: {
+			input: async () => input,
+			notify: (message: string) => notices.push(message),
+		},
+	} as unknown as ExtensionContext;
 
-		const commands = new Map<string, Command>();
-		const handlers = loadExtension(commands);
-		let compactions = 0;
-		let input = "40";
-		const notices: string[] = [];
-		const ctx = {
-			cwd: tempRoot,
-			hasUI: true,
-			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
-			compact: () => { compactions++; },
-			ui: {
-				input: async () => input,
-				notify: (message: string) => notices.push(message),
-			},
-		} as unknown as ExtensionContext;
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
+	assert.deepEqual(notices, [
+		`pi-auto-compact config issues (${configFile}): compactionModel: unknown key; compactionThinkingLevel: unknown key; defaults replace invalid settings.`,
+	]);
+	assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), legacyConfig);
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	assert.equal(compactions, 0);
 
-		handlers.get("session_start")?.(
-			{ type: "session_start", reason: "startup" } as never,
-			ctx,
-		);
-		assert.deepEqual(notices, [
-			`pi-auto-compact config issues (${configFile}): compactionModel: unknown key; compactionThinkingLevel: unknown key; defaults replace invalid settings.`,
-		]);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), legacyConfig);
-		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-		assert.equal(compactions, 0);
+	await commands.get("auto-compact")?.("", ctx);
+	assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 40 });
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	assert.equal(compactions, 1);
 
-		await commands.get("auto-compact")?.("", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 40 });
-		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-		assert.equal(compactions, 1);
+	input = "20";
+	await commands.get("auto-compact")?.("", ctx);
+	assert.equal(notices.at(-1), "Threshold must be at least 25% and below 100%.");
 
-		input = "20";
-		await commands.get("auto-compact")?.("", ctx);
-		assert.equal(notices.at(-1), "Threshold must be at least 25% and below 100%.");
+	await commands.get("auto-compact")?.("model", ctx);
+	assert.equal(notices.at(-1), "Usage: /auto-compact");
 
-		await commands.get("auto-compact")?.("model", ctx);
-		assert.equal(notices.at(-1), "Usage: /auto-compact");
-
-		// A file that another session breaks while the input dialog is open is not replaced.
-		input = "50";
-		const broken = '{"autoCompactThreshold":45,"extra":1}';
-		ctx.ui.input = async () => { await writeFile(configFile, broken); return input; };
-		await commands.get("auto-compact")?.("", ctx);
-		assert.match(notices.at(-1)!, /^Couldn't save pi-auto-compact config: Config at .* has issues; fix or replace it before updating: extra: unknown key$/);
-		assert.equal(await readFile(configFile, "utf8"), broken);
-		// The command reports that file, and replaces it only while it stays unchanged.
-		ctx.ui.input = async () => { await writeFile(configFile, `${broken} `); return input; };
-		await commands.get("auto-compact")?.("", ctx);
-		assert.ok(notices.some((notice) => notice.startsWith(`pi-auto-compact config issues (${configFile}): extra: unknown key`)), notices.join("\n"));
-		assert.match(notices.at(-1)!, /changed since it was read; nothing was written/);
-		ctx.ui.input = async () => input;
-		await commands.get("auto-compact")?.("", ctx);
-		assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 50 });
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	// A file that another session breaks while the input dialog is open is not replaced.
+	input = "50";
+	const broken = '{"autoCompactThreshold":45,"extra":1}';
+	ctx.ui.input = async () => { await writeFile(configFile, broken); return input; };
+	await commands.get("auto-compact")?.("", ctx);
+	assert.match(notices.at(-1)!, /^Couldn't save pi-auto-compact config: Config at .* has issues; fix or replace it before updating: extra: unknown key$/);
+	assert.equal(await readFile(configFile, "utf8"), broken);
+	// The command reports that file, and replaces it only while it stays unchanged.
+	ctx.ui.input = async () => { await writeFile(configFile, `${broken} `); return input; };
+	await commands.get("auto-compact")?.("", ctx);
+	assert.ok(notices.some((notice) => notice.startsWith(`pi-auto-compact config issues (${configFile}): extra: unknown key`)), notices.join("\n"));
+	assert.match(notices.at(-1)!, /changed since it was read; nothing was written/);
+	ctx.ui.input = async () => input;
+	await commands.get("auto-compact")?.("", ctx);
+	assert.deepEqual(JSON.parse(await readFile(configFile, "utf8")), { autoCompactThreshold: 50 });
 });
 
 test("uses only config homes and preserves invalid local config", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-config-home-"));
 	const configFile = autoCompactConfigFile(tempRoot);
 	const legacyConfigFile = join(tempRoot, "config", "pi-auto-compact.json");
 	const sharedConfigFile = taskModelsConfigFile(tempRoot);
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
+	await mkdir(join(tempRoot, "config"), { recursive: true });
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	const legacy = JSON.stringify({ autoCompactThreshold: 65 });
+	await writeFile(legacyConfigFile, legacy);
 
-	try {
-		await mkdir(join(tempRoot, "config"), { recursive: true });
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		const legacy = JSON.stringify({ autoCompactThreshold: 65 });
-		await writeFile(legacyConfigFile, legacy);
-
-		const commands = new Map<string, Command>();
-		const handlers = loadExtension(commands);
-		const notices: Array<[string, string]> = [];
-		let prompt = "";
-		const ctx = {
-			cwd: tempRoot,
-			hasUI: true,
-			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
-			compact() {},
-			ui: {
-				input: async (message: string) => {
-					prompt = message;
-					return undefined;
-				},
-				notify: (message: string, level: string) => notices.push([message, level]),
+	const commands = new Map<string, Command>();
+	const handlers = loadExtension(commands);
+	const notices: Array<[string, string]> = [];
+	let prompt = "";
+	const ctx = {
+		cwd: tempRoot,
+		hasUI: true,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 60, contextWindow: 100, percent: 60 }),
+		compact() {},
+		ui: {
+			input: async (message: string) => {
+				prompt = message;
+				return undefined;
 			},
-		} as unknown as ExtensionContext;
+			notify: (message: string, level: string) => notices.push([message, level]),
+		},
+	} as unknown as ExtensionContext;
 
-		handlers.get("session_start")?.(
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
+	assert.equal(notices.length, 0);
+	await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
+	await assert.rejects(() => readFile(sharedConfigFile, "utf8"), { code: "ENOENT" });
+	assert.equal(await readFile(legacyConfigFile, "utf8"), legacy);
+
+	await commands.get("auto-compact")?.("", ctx);
+	assert.equal(prompt, "Auto-compact threshold (%) · current: 70");
+	assert.equal(notices.length, 0);
+	await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
+
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	for (const [invalid, reason] of [
+		["{ not json\n", "invalid JSON: "],
+		['{"autoCompactThreshold":20}', "autoCompactThreshold: must be a number >= 25 and < 100"],
+	]) {
+		await writeFile(configFile, invalid!);
+		notices.length = 0;
+		const invalidCommands = new Map<string, Command>();
+		const invalidHandlers = loadExtension(invalidCommands);
+		invalidHandlers.get("session_start")?.(
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
-		assert.equal(notices.length, 0);
-		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
-		await assert.rejects(() => readFile(sharedConfigFile, "utf8"), { code: "ENOENT" });
-		assert.equal(await readFile(legacyConfigFile, "utf8"), legacy);
-
-		await commands.get("auto-compact")?.("", ctx);
+		assert.equal(notices.length, 1);
+		const [message, level] = notices[0]!;
+		assert.equal(level, "warning");
+		assert.ok(message.startsWith(`pi-auto-compact config issues (${configFile}): ${reason}`), message);
+		await invalidCommands.get("auto-compact")?.("", ctx);
 		assert.equal(prompt, "Auto-compact threshold (%) · current: 70");
-		assert.equal(notices.length, 0);
-		await assert.rejects(() => readFile(configFile, "utf8"), { code: "ENOENT" });
-
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		for (const [invalid, reason] of [
-			["{ not json\n", "invalid JSON: "],
-			['{"autoCompactThreshold":20}', "autoCompactThreshold: must be a number >= 25 and < 100"],
-		]) {
-			await writeFile(configFile, invalid!);
-			notices.length = 0;
-			const invalidCommands = new Map<string, Command>();
-			const invalidHandlers = loadExtension(invalidCommands);
-			invalidHandlers.get("session_start")?.(
-				{ type: "session_start", reason: "startup" } as never,
-				ctx,
-			);
-			assert.equal(notices.length, 1);
-			const [message, level] = notices[0]!;
-			assert.equal(level, "warning");
-			assert.ok(message.startsWith(`pi-auto-compact config issues (${configFile}): ${reason}`), message);
-			await invalidCommands.get("auto-compact")?.("", ctx);
-			assert.equal(prompt, "Auto-compact threshold (%) · current: 70");
-			assert.equal(notices.length, 1, "the command does not repeat a shown issue");
-			assert.equal(await readFile(configFile, "utf8"), invalid);
-		}
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
+		assert.equal(notices.length, 1, "the command does not repeat a shown issue");
+		assert.equal(await readFile(configFile, "utf8"), invalid);
 	}
 });
 
 test("silences missing shared task-model config but reports present config errors", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-task-model-config-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
 	const malformed = "{ not json\\n";
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
+	const taskModelsFile = taskModelsConfigFile(tempRoot);
 
-	try {
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
-		const taskModelsFile = taskModelsConfigFile(tempRoot);
+	const handlers = loadExtension();
+	let compactionInstructions: string | undefined;
+	const notices: Array<[string, string]> = [];
+	const ctx = {
+		cwd: tempRoot,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+		compact: (options: { customInstructions?: string }) => {
+			compactionInstructions = options.customInstructions;
+		},
+		scopedModels: [],
+		modelRegistry: { getAvailable: () => [] },
+		ui: { notify(message: string, level: string) { notices.push([message, level]); } },
+	} as unknown as ExtensionContext;
 
-		const handlers = loadExtension();
-		let compactionInstructions: string | undefined;
-		const notices: Array<[string, string]> = [];
-		const ctx = {
-			cwd: tempRoot,
-			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
-			compact: (options: { customInstructions?: string }) => {
-				compactionInstructions = options.customInstructions;
-			},
-			scopedModels: [],
-			modelRegistry: { getAvailable: () => [] },
-			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
-		} as unknown as ExtensionContext;
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	const beforeCompact = () => handlers.get("session_before_compact")?.({
+		type: "session_before_compact",
+		customInstructions: compactionInstructions,
+		signal: new AbortController().signal,
+		preparation: { fileOps: { read: new Set(), written: new Set(), edited: new Set() } },
+		branchEntries: [],
+	} as never, ctx);
 
-		handlers.get("session_start")?.(
-			{ type: "session_start", reason: "startup" } as never,
-			ctx,
-		);
-		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-		const beforeCompact = () => handlers.get("session_before_compact")?.({
-			type: "session_before_compact",
-			customInstructions: compactionInstructions,
-			signal: new AbortController().signal,
-			preparation: { fileOps: { read: new Set(), written: new Set(), edited: new Set() } },
-			branchEntries: [],
-		} as never, ctx);
+	assert.equal(await beforeCompact(), undefined);
+	assert.deepEqual(notices, []);
 
-		assert.equal(await beforeCompact(), undefined);
-		assert.deepEqual(notices, []);
+	await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
+	await writeFile(taskModelsFile, malformed);
+	await beforeCompact();
+	assert.equal(notices.length, 1);
+	assert.match(notices[0]![0], /^Task model config at .*config\.json is disabled: invalid JSON: .*Fix the file or run \/task-models\. Using current session model\.$/);
+	assert.equal(notices[0]![1], "error");
+	assert.equal(await readFile(taskModelsFile, "utf8"), malformed);
 
-		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
-		await writeFile(taskModelsFile, malformed);
-		await beforeCompact();
-		assert.equal(notices.length, 1);
-		assert.match(notices[0]![0], /^Task model config at .*config\.json is disabled: invalid JSON: .*Fix the file or run \/task-models\. Using current session model\.$/);
-		assert.equal(notices[0]![1], "error");
-		assert.equal(await readFile(taskModelsFile, "utf8"), malformed);
+	await writeFile(taskModelsFile, "{}\n");
+	notices.length = 0;
+	await beforeCompact();
+	assert.deepEqual(notices, [["Task pi-auto-compact/autoCompact profile fast is not configured. Run /task-models. Using current session model.", "error"]]);
 
-		await writeFile(taskModelsFile, "{}\n");
-		notices.length = 0;
-		await beforeCompact();
-		assert.deepEqual(notices, [["Task pi-auto-compact/autoCompact profile fast is not configured. Run /task-models. Using current session model.", "error"]]);
-
-		await writeFile(taskModelsFile, JSON.stringify({
-			profiles: { fast: { primary: { model: "unavailable/model", thinkingLevel: "off" } } },
-		}));
-		notices.length = 0;
-		await beforeCompact();
-		assert.deepEqual(notices, [["No usable fast task model route; using current session model.", "error"]]);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	await writeFile(taskModelsFile, JSON.stringify({
+		profiles: { fast: { primary: { model: "unavailable/model", thinkingLevel: "off" } } },
+	}));
+	notices.length = 0;
+	await beforeCompact();
+	assert.deepEqual(notices, [["No usable fast task model route; using current session model.", "error"]]);
 });
 
 test("routes only auto compaction, carries file operations, and tries profile fallback before current model", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-model-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
-
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
-		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
-		await writeFile(taskModelsConfigFile(tempRoot), JSON.stringify({
-			profiles: {
-				fast: {
-					primary: { model: "primary/model", thinkingLevel: "off" },
-					fallback: { model: "fallback/model", thinkingLevel: "off" },
-				},
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
+	await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
+	await writeFile(taskModelsConfigFile(tempRoot), JSON.stringify({
+		profiles: {
+			fast: {
+				primary: { model: "primary/model", thinkingLevel: "off" },
+				fallback: { model: "fallback/model", thinkingLevel: "off" },
 			},
-		}));
+		},
+	}));
 
-		const handlers = loadExtension();
-		const authModels: string[] = [];
-		const notices: string[] = [];
-		let compactions = 0;
-		let autoInstructions: string | undefined;
-		const ctx = {
-			cwd: tempRoot,
-			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
-			compact: (options: { customInstructions?: string }) => {
-				compactions++;
-				autoInstructions = options.customInstructions;
-			},
-			scopedModels: [],
-			modelRegistry: {
-				getAvailable: () => [
-					{ provider: "primary", id: "model", input: ["text"] },
-					{ provider: "fallback", id: "model", input: ["text"] },
-				],
-				getApiKeyAndHeaders: async (model: { provider: string }) => {
-					authModels.push(model.provider);
-					return { ok: false, error: "missing" };
-				},
-			},
-			ui: { notify: (message: string) => notices.push(message) },
-		} as unknown as ExtensionContext;
-
-		handlers.get("session_start")?.(
-			{ type: "session_start", reason: "startup" } as never,
-			ctx,
-		);
-		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-		assert.equal(compactions, 1);
-		assert.ok(autoInstructions);
-
-		const fileOps = {
-			read: new Set(["current-read.ts"]),
-			written: new Set<string>(),
-			edited: new Set(["current-edit.ts"]),
-		};
-		const compactionEvent = {
-			type: "session_before_compact",
-			reason: "manual",
-			signal: new AbortController().signal,
-			preparation: { fileOps },
-			branchEntries: [
-				{ type: "compaction", details: { readFiles: ["stale-read.ts"], modifiedFiles: ["stale-edit.ts"] } },
-				{ type: "message" },
-				{ type: "compaction", details: { readFiles: ["prior-read.ts"], modifiedFiles: ["prior-edit.ts"] } },
+	const handlers = loadExtension();
+	const authModels: string[] = [];
+	const notices: string[] = [];
+	let compactions = 0;
+	let autoInstructions: string | undefined;
+	const ctx = {
+		cwd: tempRoot,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+		compact: (options: { customInstructions?: string }) => {
+			compactions++;
+			autoInstructions = options.customInstructions;
+		},
+		scopedModels: [],
+		modelRegistry: {
+			getAvailable: () => [
+				{ provider: "primary", id: "model", input: ["text"] },
+				{ provider: "fallback", id: "model", input: ["text"] },
 			],
-		};
-		// Manual /compact remains native even while auto compaction is pending.
-		assert.equal(await handlers.get("session_before_compact")?.(compactionEvent as never, ctx), undefined);
-		assert.deepEqual(authModels, []);
-		assert.deepEqual([...fileOps.read], ["current-read.ts"]);
-		assert.deepEqual([...fileOps.edited], ["current-edit.ts"]);
+			getApiKeyAndHeaders: async (model: { provider: string }) => {
+				authModels.push(model.provider);
+				return { ok: false, error: "missing" };
+			},
+		},
+		ui: { notify: (message: string) => notices.push(message) },
+	} as unknown as ExtensionContext;
 
-		assert.equal(await handlers.get("session_before_compact")?.({
-			...compactionEvent,
-			customInstructions: autoInstructions,
-		} as never, ctx), undefined);
-		assert.deepEqual(authModels, ["primary", "fallback"]);
-		assert.deepEqual([...fileOps.read], ["current-read.ts", "prior-read.ts"]);
-		assert.deepEqual([...fileOps.edited], ["current-edit.ts", "prior-edit.ts"]);
-		assert.deepEqual(notices, ["Configured task model routes failed; using current session model."]);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	assert.equal(compactions, 1);
+	assert.ok(autoInstructions);
+
+	const fileOps = {
+		read: new Set(["current-read.ts"]),
+		written: new Set<string>(),
+		edited: new Set(["current-edit.ts"]),
+	};
+	const compactionEvent = {
+		type: "session_before_compact",
+		reason: "manual",
+		signal: new AbortController().signal,
+		preparation: { fileOps },
+		branchEntries: [
+			{ type: "compaction", details: { readFiles: ["stale-read.ts"], modifiedFiles: ["stale-edit.ts"] } },
+			{ type: "message" },
+			{ type: "compaction", details: { readFiles: ["prior-read.ts"], modifiedFiles: ["prior-edit.ts"] } },
+		],
+	};
+	// Manual /compact remains native even while auto compaction is pending.
+	assert.equal(await handlers.get("session_before_compact")?.(compactionEvent as never, ctx), undefined);
+	assert.deepEqual(authModels, []);
+	assert.deepEqual([...fileOps.read], ["current-read.ts"]);
+	assert.deepEqual([...fileOps.edited], ["current-edit.ts"]);
+
+	assert.equal(await handlers.get("session_before_compact")?.({
+		...compactionEvent,
+		customInstructions: autoInstructions,
+	} as never, ctx), undefined);
+	assert.deepEqual(authModels, ["primary", "fallback"]);
+	assert.deepEqual([...fileOps.read], ["current-read.ts", "prior-read.ts"]);
+	assert.deepEqual([...fileOps.edited], ["current-edit.ts", "prior-edit.ts"]);
+	assert.deepEqual(notices, ["Configured task model routes failed; using current session model."]);
 });
 
 test("uses profile fallback and passes its thinking level to compaction", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-thinking-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
 	const streamed: Array<{ provider: string; reasoning: unknown }> = [];
-	try {
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
-		await writeFile(taskModelsConfigFile(tempRoot), JSON.stringify({
-			profiles: {
-				fast: {
-					primary: { model: "primary/model", thinkingLevel: "off" },
-					fallback: { model: "provider/model", thinkingLevel: "max" },
-				},
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 50 }));
+	await writeFile(taskModelsConfigFile(tempRoot), JSON.stringify({
+		profiles: {
+			fast: {
+				primary: { model: "primary/model", thinkingLevel: "off" },
+				fallback: { model: "provider/model", thinkingLevel: "max" },
 			},
-		}));
+		},
+	}));
 
-		const handlers = loadExtension();
-		let autoInstructions: string | undefined;
-		const model = {
-			id: "model",
-			name: "Model",
-			api: "openai-completions",
-			provider: "provider",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 10_000,
-			maxTokens: 1_000,
-			thinkingLevelMap: { max: "high" },
-			compat: { supportsFinishReason: true, thinkingFormat: "openai" },
-		};
-		const authModels: string[] = [];
-		const ctx = {
-			cwd: tempRoot,
-			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
-			compact: (options: { customInstructions?: string }) => {
-				autoInstructions = options.customInstructions;
+	const handlers = loadExtension();
+	let autoInstructions: string | undefined;
+	const model = {
+		id: "model",
+		name: "Model",
+		api: "openai-completions",
+		provider: "provider",
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 10_000,
+		maxTokens: 1_000,
+		thinkingLevelMap: { max: "high" },
+		compat: { supportsFinishReason: true, thinkingFormat: "openai" },
+	};
+	const authModels: string[] = [];
+	const ctx = {
+		cwd: tempRoot,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+		compact: (options: { customInstructions?: string }) => {
+			autoInstructions = options.customInstructions;
+		},
+		scopedModels: [],
+		modelRegistry: {
+			getAvailable: () => [
+				{ provider: "primary", id: "model", input: ["text"] },
+				model,
+			],
+			getApiKeyAndHeaders: async (candidate: { provider: string }) => {
+				authModels.push(candidate.provider);
+				return candidate.provider === "primary"
+					? { ok: false, error: "missing" }
+					: { ok: true, apiKey: "test-key" };
 			},
-			scopedModels: [],
-			modelRegistry: {
-				getAvailable: () => [
-					{ provider: "primary", id: "model", input: ["text"] },
-					model,
-				],
-				getApiKeyAndHeaders: async (candidate: { provider: string }) => {
-					authModels.push(candidate.provider);
-					return candidate.provider === "primary"
-						? { ok: false, error: "missing" }
-						: { ok: true, apiKey: "test-key" };
-				},
-				// Configured routes go through the registry, which routes virtual models to a physical one.
-				streamSimple: (requested: { provider: string }, _context: unknown, options: { reasoning?: unknown }) => {
-					streamed.push({ provider: requested.provider, reasoning: options.reasoning });
-					return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "summary" }],
-						api: "openai-completions", provider: requested.provider, model: "model", stopReason: "stop", timestamp: 1,
-						usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }) };
-				},
+			// Configured routes go through the registry, which routes virtual models to a physical one.
+			streamSimple: (requested: { provider: string }, _context: unknown, options: { reasoning?: unknown }) => {
+				streamed.push({ provider: requested.provider, reasoning: options.reasoning });
+				return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "summary" }],
+					api: "openai-completions", provider: requested.provider, model: "model", stopReason: "stop", timestamp: 1,
+					usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }) };
 			},
-			ui: { notify() {} },
-		} as unknown as ExtensionContext;
+		},
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
 
-		handlers.get("session_start")?.(
-			{ type: "session_start", reason: "startup" } as never,
-			ctx,
-		);
-		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-		const result = await handlers.get("session_before_compact")?.({
-			type: "session_before_compact",
-			customInstructions: autoInstructions,
-			signal: new AbortController().signal,
-			preparation: {
-				firstKeptEntryId: "kept",
-				messagesToSummarize: [{ role: "user", content: "hello", timestamp: Date.now() }],
-				turnPrefixMessages: [],
-				isSplitTurn: false,
-				tokensBefore: 10,
-				fileOps: { read: new Set(), written: new Set(), edited: new Set() },
-				settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
-			},
-			branchEntries: [],
-		} as never, ctx) as { compaction?: { summary?: string } } | undefined;
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	const result = await handlers.get("session_before_compact")?.({
+		type: "session_before_compact",
+		customInstructions: autoInstructions,
+		signal: new AbortController().signal,
+		preparation: {
+			firstKeptEntryId: "kept",
+			messagesToSummarize: [{ role: "user", content: "hello", timestamp: Date.now() }],
+			turnPrefixMessages: [],
+			isSplitTurn: false,
+			tokensBefore: 10,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+			settings: { enabled: true, reserveTokens: 1_000, keepRecentTokens: 100 },
+		},
+		branchEntries: [],
+	} as never, ctx) as { compaction?: { summary?: string } } | undefined;
 
-		assert.equal(result?.compaction?.summary, "summary");
-		assert.deepEqual(authModels, ["primary", "provider"]);
-		assert.deepEqual(streamed, [{ provider: "provider", reasoning: "max" }]);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	assert.equal(result?.compaction?.summary, "summary");
+	assert.deepEqual(authModels, ["primary", "provider"]);
+	assert.deepEqual(streamed, [{ provider: "provider", reasoning: "max" }]);
 });
 
 test("exceptional resume compaction sends a continuation after success", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-resume-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	const messages: SentMessage[] = [];
+	const handlers = loadExtension(
+		new Map(),
+		(message, options) => messages.push({ message, options }),
+	);
+	let onComplete: (() => void) | undefined;
+	const ctx = {
+		cwd: tempRoot,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+		compact: (options: { onComplete: () => void }) => { onComplete = options.onComplete; },
+		isIdle: () => true,
+		ui: { notify() {} },
+	} as unknown as ExtensionContext;
 
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		const messages: SentMessage[] = [];
-		const handlers = loadExtension(
-			new Map(),
-			(message, options) => messages.push({ message, options }),
-		);
-		let onComplete: (() => void) | undefined;
-		const ctx = {
-			cwd: tempRoot,
-			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
-			compact: (options: { onComplete: () => void }) => { onComplete = options.onComplete; },
-			isIdle: () => true,
-			ui: { notify() {} },
-		} as unknown as ExtensionContext;
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	assert.ok(onComplete, "mid-task compaction must resume after completion");
+	onComplete();
+	await new Promise<void>((resolve) => setImmediate(resolve));
 
-		handlers.get("session_start")?.(
-			{ type: "session_start", reason: "startup" } as never,
-			ctx,
-		);
-		handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-		assert.ok(onComplete, "mid-task compaction must resume after completion");
-		onComplete();
-		await new Promise<void>((resolve) => setImmediate(resolve));
-
-		assert.deepEqual(messages, [{
-			message: {
-				customType: "pi-auto-compact/resume",
-				content: "Auto-compact ran. Continue the current task.",
-				display: false,
-			},
-			options: { triggerTurn: true },
-		}]);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	assert.deepEqual(messages, [{
+		message: {
+			customType: "pi-auto-compact/resume",
+			content: "Auto-compact ran. Continue the current task.",
+			display: false,
+		},
+		options: { triggerTurn: true },
+	}]);
 });
 
 test("boundary trims an older exact read, commits branch-relative edit, and does not restart", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-boundary-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
-			compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 2_000 },
-		}));
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 25 }));
-		const handlers = loadExtension();
-		const sm = SessionManager.inMemory(tempRoot);
-		const content = [{ type: "text" as const, text: "example output ".repeat(600) }];
-		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-		const call = (id: string) => ({ role: "assistant" as const, content: [{ type: "toolCall" as const,
-			id, name: "read", arguments: { path: "src/file.ts" } }], api: "openai-completions" as const,
-			provider: "test", model: "model", usage, stopReason: "toolUse" as const, timestamp: 2 });
-		sm.appendMessage({ role: "user", content: "Read this file twice", timestamp: 1 });
-		sm.appendMessage(call("old"));
-		const olderId = sm.appendMessage({ role: "toolResult", toolCallId: "old", toolName: "read",
-			content, isError: false, timestamp: 3 });
-		const newest = call("new");
-		const callId = sm.appendMessage(newest);
-		const resultId = sm.appendMessage({ role: "toolResult", toolCallId: "new", toolName: "read",
-			content, isError: false, timestamp: 4 });
-		const initialTokens = sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
-		// A virtual model declares no window of its own; Pi reports the physical model's limits through getContextUsage.
-		const contextWindow = Math.ceil(initialTokens * 2.5);
-		const model = { id: "model", name: "Model", provider: "test", api: "pi-virtual", contextWindow: 0 };
-		const notices: string[] = [];
-		const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
-			getContextUsage: () => ({ tokens: null, contextWindow, percent: null }),
-			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => { throw new Error("no summary expected"); } },
-			ui: { notify: (message: string) => notices.push(message) }, signal: new AbortController().signal,
-		} as unknown as ExtensionContext;
-		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
-		const boundary = () => ({ type: "turn_end", outcome: "completed", entries: [], continue: false,
-			context: { ...sm.buildSessionProjection(), contextEntries: sm.buildSessionProjection().entries,
-				contextMessages: sm.buildSessionProjection().messages, pendingMessages: [], llmMessages: [], canContinue: true },
-			message: newest, messageEntryId: callId, toolResultEntryIds: [resultId], toolResults: [], turnIndex: 1 });
-		const proposed = await handlers.get("turn_end")?.(boundary() as never, ctx) as { entries?: Array<{ type: string; targetId: string; replacement: { content: unknown } }> };
-		assert.equal(proposed?.entries?.length, 1);
-		assert.equal(proposed.entries[0]?.targetId, olderId);
-		assert.match(JSON.stringify(proposed.entries[0]?.replacement), new RegExp(resultId));
-		assert.equal(sm.getEntry(olderId)?.type, "message", "raw result must remain intact");
-		const before = sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
-		const editId = sm.appendContextEdit(olderId, proposed.entries[0]!.replacement as { content: [{ type: "text"; text: string }] });
-		const after = sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
-		assert.ok(after < before);
-		const rawKeeper = sm.getEntry(resultId);
-		assert.equal(rawKeeper?.type, "message");
-		assert.deepEqual(sm.buildSessionProjection().entries.find((entry) => entry.sourceEntry.id === resultId)?.messages[0],
-			rawKeeper.message);
-		assert.equal(await handlers.get("turn_end")?.(boundary() as never, ctx), undefined);
-		sm.branch(resultId);
-		assert.equal(sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0), before,
-			"navigating before the edit restores the full read");
-		sm.branch(editId);
-		assert.equal(sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0), after);
-		assert.deepEqual(notices, []);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
+		compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 2_000 },
+	}));
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 25 }));
+	const handlers = loadExtension();
+	const sm = SessionManager.inMemory(tempRoot);
+	const content = [{ type: "text" as const, text: "example output ".repeat(600) }];
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const call = (id: string) => ({ role: "assistant" as const, content: [{ type: "toolCall" as const,
+		id, name: "read", arguments: { path: "src/file.ts" } }], api: "openai-completions" as const,
+		provider: "test", model: "model", usage, stopReason: "toolUse" as const, timestamp: 2 });
+	sm.appendMessage({ role: "user", content: "Read this file twice", timestamp: 1 });
+	sm.appendMessage(call("old"));
+	const olderId = sm.appendMessage({ role: "toolResult", toolCallId: "old", toolName: "read",
+		content, isError: false, timestamp: 3 });
+	const newest = call("new");
+	const callId = sm.appendMessage(newest);
+	const resultId = sm.appendMessage({ role: "toolResult", toolCallId: "new", toolName: "read",
+		content, isError: false, timestamp: 4 });
+	const initialTokens = sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
+	// A virtual model declares no window of its own; Pi reports the physical model's limits through getContextUsage.
+	const contextWindow = Math.ceil(initialTokens * 2.5);
+	const model = { id: "model", name: "Model", provider: "test", api: "pi-virtual", contextWindow: 0 };
+	const notices: string[] = [];
+	const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
+		getContextUsage: () => ({ tokens: null, contextWindow, percent: null }),
+		modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => { throw new Error("no summary expected"); } },
+		ui: { notify: (message: string) => notices.push(message) }, signal: new AbortController().signal,
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+	const boundary = () => ({ type: "turn_end", outcome: "completed", entries: [], continue: false,
+		context: { ...sm.buildSessionProjection(), contextEntries: sm.buildSessionProjection().entries,
+			contextMessages: sm.buildSessionProjection().messages, pendingMessages: [], llmMessages: [], canContinue: true },
+		message: newest, messageEntryId: callId, toolResultEntryIds: [resultId], toolResults: [], turnIndex: 1 });
+	const proposed = await handlers.get("turn_end")?.(boundary() as never, ctx) as { entries?: Array<{ type: string; targetId: string; replacement: { content: unknown } }> };
+	assert.equal(proposed?.entries?.length, 1);
+	assert.equal(proposed.entries[0]?.targetId, olderId);
+	assert.match(JSON.stringify(proposed.entries[0]?.replacement), new RegExp(resultId));
+	assert.equal(sm.getEntry(olderId)?.type, "message", "raw result must remain intact");
+	const before = sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
+	const editId = sm.appendContextEdit(olderId, proposed.entries[0]!.replacement as { content: [{ type: "text"; text: string }] });
+	const after = sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0);
+	assert.ok(after < before);
+	const rawKeeper = sm.getEntry(resultId);
+	assert.equal(rawKeeper?.type, "message");
+	assert.deepEqual(sm.buildSessionProjection().entries.find((entry) => entry.sourceEntry.id === resultId)?.messages[0],
+		rawKeeper.message);
+	assert.equal(await handlers.get("turn_end")?.(boundary() as never, ctx), undefined);
+	sm.branch(resultId);
+	assert.equal(sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0), before,
+		"navigating before the edit restores the full read");
+	sm.branch(editId);
+	assert.equal(sm.buildSessionProjection().messages.reduce((sum, msg) => sum + estimateTokens(msg), 0), after);
+	assert.deepEqual(notices, []);
 });
 
 test("read trim uses the first earlier call and the first protected result", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-read-order-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
-			compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 100 },
-		}));
-		const sm = SessionManager.inMemory(tempRoot);
-		const content = [{ type: "text" as const, text: "file output ".repeat(600) }];
-		const call = (id: string, path = "file") => ({ role: "assistant" as const,
-			content: [{ type: "toolCall" as const, id, name: "read", arguments: { path } }],
-			api: "openai-completions" as const, provider: "fake", model: "model", usage: {
-				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			}, stopReason: "toolUse" as const, timestamp: 2 });
-		const result = (id: string) => sm.appendMessage({ role: "toolResult", toolCallId: id,
-			toolName: "read", content, isError: false, timestamp: 3 });
-		sm.appendMessage({ role: "user", content: "Read files", timestamp: 1 });
-		result("late");
-		sm.appendMessage(call("late"));
-		sm.appendMessage(call("old"));
-		sm.appendMessage(call("old", "other"));
-		const olderId = result("old");
-		const newest = call("new");
-		const callId = sm.appendMessage(newest);
-		const firstKeeperId = result("new");
-		const secondKeeperId = result("new");
-		const projection = sm.buildSessionProjection();
-		const tokens = projection.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
-		const handlers = loadExtension();
-		const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model: { contextWindow: tokens / 0.8 }, sessionManager: sm,
-			getContextUsage: () => ({ tokens: null, contextWindow: tokens / 0.8, percent: null }),
-			ui: { notify() {} }, signal: new AbortController().signal,
-		} as unknown as ExtensionContext;
-		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
-		const proposed = await handlers.get("turn_end")?.({ type: "turn_end", outcome: "completed",
-			entries: [], message: newest, messageEntryId: callId, toolResultEntryIds: [firstKeeperId, secondKeeperId],
-			context: { contextEntries: projection.entries, contextMessages: projection.messages, pendingMessages: [] },
-		} as never, ctx);
-		assert.deepEqual(proposed, { entries: [{ type: "context_edit", targetId: olderId, replacement: {
-			content: [{ type: "text", text: `[Duplicate read; full result retained at entry ${firstKeeperId}.]` }],
-		} }] });
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
+		compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 100 },
+	}));
+	const sm = SessionManager.inMemory(tempRoot);
+	const content = [{ type: "text" as const, text: "file output ".repeat(600) }];
+	const call = (id: string, path = "file") => ({ role: "assistant" as const,
+		content: [{ type: "toolCall" as const, id, name: "read", arguments: { path } }],
+		api: "openai-completions" as const, provider: "fake", model: "model", usage: {
+			input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		}, stopReason: "toolUse" as const, timestamp: 2 });
+	const result = (id: string) => sm.appendMessage({ role: "toolResult", toolCallId: id,
+		toolName: "read", content, isError: false, timestamp: 3 });
+	sm.appendMessage({ role: "user", content: "Read files", timestamp: 1 });
+	result("late");
+	sm.appendMessage(call("late"));
+	sm.appendMessage(call("old"));
+	sm.appendMessage(call("old", "other"));
+	const olderId = result("old");
+	const newest = call("new");
+	const callId = sm.appendMessage(newest);
+	const firstKeeperId = result("new");
+	const secondKeeperId = result("new");
+	const projection = sm.buildSessionProjection();
+	const tokens = projection.messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+	const handlers = loadExtension();
+	const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model: { contextWindow: tokens / 0.8 }, sessionManager: sm,
+		getContextUsage: () => ({ tokens: null, contextWindow: tokens / 0.8, percent: null }),
+		ui: { notify() {} }, signal: new AbortController().signal,
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+	const proposed = await handlers.get("turn_end")?.({ type: "turn_end", outcome: "completed",
+		entries: [], message: newest, messageEntryId: callId, toolResultEntryIds: [firstKeeperId, secondKeeperId],
+		context: { contextEntries: projection.entries, contextMessages: projection.messages, pendingMessages: [] },
+	} as never, ctx);
+	assert.deepEqual(proposed, { entries: [{ type: "context_edit", targetId: olderId, replacement: {
+		content: [{ type: "text", text: `[Duplicate read; full result retained at entry ${firstKeeperId}.]` }],
+	} }] });
 });
 
 test("ineligible reads stay intact and branch changes discard pending boundary drafts", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-ineligible-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
-			compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 500 },
-		}));
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 25 }));
-		for (const scenario of ["changed arguments", "changed content", "failed", "image", "edited", "missing call", "switched branch"]) {
-			const handlers = loadExtension();
-			const sm = SessionManager.inMemory(tempRoot);
-			const text = "output ".repeat(900);
-			sm.appendMessage({ role: "user", content: "Read file", timestamp: 1 });
-			if (scenario !== "missing call") sm.appendMessage({ role: "assistant", content: [{ type: "toolCall",
-				id: "old", name: "read", arguments: { path: scenario === "changed arguments" ? "other" : "file" } }],
-				api: "openai-completions", provider: "fake", model: "model", usage: {
-					input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				}, stopReason: "toolUse", timestamp: 2 });
-			const oldId = sm.appendMessage({ role: "toolResult", toolCallId: "old", toolName: "read",
-				content: scenario === "image" ? [{ type: "image", data: "YWJj", mimeType: "image/png" }] :
-					[{ type: "text", text: scenario === "changed content" ? text + "different" : text }],
-				isError: scenario === "failed", timestamp: 3 });
-			if (scenario === "edited") sm.appendContextEdit(oldId, { content: [{ type: "text", text }] });
-			const newer = { role: "assistant" as const, content: [{ type: "toolCall" as const,
-				id: "new", name: "read", arguments: { path: "file" } }], api: "openai-completions" as const,
-				provider: "fake", model: "model", usage: { input: 0, output: 0, cacheRead: 0,
-					cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-				stopReason: "toolUse" as const, timestamp: 4 };
-			const newestId = sm.appendMessage(newer);
-			const newestResultId = sm.appendMessage({ role: "toolResult", toolCallId: "new", toolName: "read",
-				content: [{ type: "text", text }], isError: false, timestamp: 5 });
-			const model = { contextWindow: 3_000 };
-			const notices: string[] = [];
-			const ctx = { cwd: tempRoot, model, sessionManager: sm, isProjectTrusted: () => true,
-				getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
-				modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => {
-					if (scenario === "switched branch") sm.branch(oldId);
-					throw new Error("no model");
-				} },
-				ui: { notify: (message: string) => notices.push(message) }, signal: new AbortController().signal,
-			} as unknown as ExtensionContext;
-			handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
-			const projection = sm.buildSessionProjection();
-			const result = await handlers.get("turn_end")?.({ type: "turn_end", outcome: "completed",
-				entries: [], continue: false, message: newer, messageEntryId: newestId,
-				toolResults: [], toolResultEntryIds: [newestResultId], turnIndex: 2,
-				context: { contextEntries: projection.entries, contextMessages: projection.messages,
-					llmMessages: [], pendingMessages: [], canContinue: true },
-			} as never, ctx) as { entries?: Array<{ targetId: string }> } | undefined;
-			assert.notEqual(result?.entries?.some((entry) => entry.targetId === oldId), true, scenario);
-			if (scenario === "switched branch") {
-				assert.equal(result, undefined);
-				assert.deepEqual(notices, []);
-			} else {
-				assert.ok(notices.some((notice) => notice.includes("Auto-compaction failed")), scenario);
-			}
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
+		compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 500 },
+	}));
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 25 }));
+	for (const scenario of ["changed arguments", "changed content", "failed", "image", "edited", "missing call", "switched branch"]) {
+		const handlers = loadExtension();
+		const sm = SessionManager.inMemory(tempRoot);
+		const text = "output ".repeat(900);
+		sm.appendMessage({ role: "user", content: "Read file", timestamp: 1 });
+		if (scenario !== "missing call") sm.appendMessage({ role: "assistant", content: [{ type: "toolCall",
+			id: "old", name: "read", arguments: { path: scenario === "changed arguments" ? "other" : "file" } }],
+			api: "openai-completions", provider: "fake", model: "model", usage: {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			}, stopReason: "toolUse", timestamp: 2 });
+		const oldId = sm.appendMessage({ role: "toolResult", toolCallId: "old", toolName: "read",
+			content: scenario === "image" ? [{ type: "image", data: "YWJj", mimeType: "image/png" }] :
+				[{ type: "text", text: scenario === "changed content" ? text + "different" : text }],
+			isError: scenario === "failed", timestamp: 3 });
+		if (scenario === "edited") sm.appendContextEdit(oldId, { content: [{ type: "text", text }] });
+		const newer = { role: "assistant" as const, content: [{ type: "toolCall" as const,
+			id: "new", name: "read", arguments: { path: "file" } }], api: "openai-completions" as const,
+			provider: "fake", model: "model", usage: { input: 0, output: 0, cacheRead: 0,
+				cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			stopReason: "toolUse" as const, timestamp: 4 };
+		const newestId = sm.appendMessage(newer);
+		const newestResultId = sm.appendMessage({ role: "toolResult", toolCallId: "new", toolName: "read",
+			content: [{ type: "text", text }], isError: false, timestamp: 5 });
+		const model = { contextWindow: 3_000 };
+		const notices: string[] = [];
+		const ctx = { cwd: tempRoot, model, sessionManager: sm, isProjectTrusted: () => true,
+			getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
+			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => {
+				if (scenario === "switched branch") sm.branch(oldId);
+				throw new Error("no model");
+			} },
+			ui: { notify: (message: string) => notices.push(message) }, signal: new AbortController().signal,
+		} as unknown as ExtensionContext;
+		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+		const projection = sm.buildSessionProjection();
+		const result = await handlers.get("turn_end")?.({ type: "turn_end", outcome: "completed",
+			entries: [], continue: false, message: newer, messageEntryId: newestId,
+			toolResults: [], toolResultEntryIds: [newestResultId], turnIndex: 2,
+			context: { contextEntries: projection.entries, contextMessages: projection.messages,
+				llmMessages: [], pendingMessages: [], canContinue: true },
+		} as never, ctx) as { entries?: Array<{ targetId: string }> } | undefined;
+		assert.notEqual(result?.entries?.some((entry) => entry.targetId === oldId), true, scenario);
+		if (scenario === "switched branch") {
+			assert.equal(result, undefined);
+			assert.deepEqual(notices, []);
+		} else {
+			assert.ok(notices.some((notice) => notice.includes("Auto-compaction failed")), scenario);
 		}
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
 	}
 });
 
 test("completed final boundary persists routed summary, usage, and read tracking without a resume turn", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-checkpoint-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
-			compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 100 },
-		}));
-		await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
-		await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 25 }));
-		const sm = SessionManager.inMemory(tempRoot);
-		const firstUserId = sm.appendMessage({ role: "user", content: "Read src/file.ts", timestamp: 1 });
-		sm.appendCompaction("Earlier decisions", firstUserId, 10,
-			{ readFiles: ["prior.ts"], modifiedFiles: ["modified.ts"] }, true);
-		sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read",
-			arguments: { path: "src/file.ts" } }], api: "openai-completions", provider: "fake", model: "model",
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "toolUse", timestamp: 2 });
-		// Calls made through ctx.executeTool are recorded on the calling tool's result; oversized arguments are omitted.
-		sm.appendMessage({ role: "toolResult", toolCallId: "read-1", toolName: "read", isError: false,
-			content: [{ type: "text", text: "file contents ".repeat(900) }], timestamp: 3, nestedCalls: { complete: false, calls: [
-				{ id: "nested-1", name: "edit", arguments: { path: "src/nested.ts" }, status: "ok" },
-				{ id: "nested-2", name: "read", argumentsBytes: 40, status: "ok" },
-			] } });
-		const keptUserId = sm.appendMessage({ role: "user", content: "Now finish", timestamp: 4 });
-		const final = { role: "assistant" as const, content: [{ type: "text" as const, text: "Done" }],
-			api: "openai-completions" as const, provider: "fake", model: "model",
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-			stopReason: "stop" as const, timestamp: 5 };
-		sm.appendMessage(final);
-		const model = { id: "model", name: "Model", api: "openai-completions", provider: "fake", reasoning: false,
-			input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 6_000, maxTokens: 600 };
-		const handlers = loadExtension();
-		let requestBody = "";
-		const streamed: unknown[] = [];
-		const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
-			getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
-			// The session model goes through the registry, which routes virtual models.
-			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
-				streamSimple: (requested: unknown, context: unknown) => {
-					streamed.push(requested);
-					requestBody = JSON.stringify(context);
-					return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "A valid summary" }],
-						api: "openai-completions", provider: "fake", model: "model", stopReason: "stop", timestamp: 6,
-						usage: { input: 21, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 24,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }) };
-				} },
-			ui: { notify() {} }, signal: new AbortController().signal,
-		} as unknown as ExtensionContext;
-		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
-		const projection = sm.buildSessionProjection();
-		const result = await handlers.get("agent_before_settle")?.({ type: "agent_before_settle",
-			outcome: "completed", entries: [], continue: false, context: {
-				contextEntries: projection.entries, contextMessages: projection.messages,
-				llmMessages: [], pendingMessages: [], canContinue: false,
-			},
-		} as never, ctx) as { entries?: Array<{ type: string; summary: string; firstKeptEntryId: string;
-			details: { readFiles: string[]; modifiedFiles: string[] }; usage: { totalTokens: number } }> } | undefined;
-		const checkpoint = result?.entries?.find((entry) => entry.type === "compaction");
-		assert.ok(checkpoint);
-		assert.equal(checkpoint.firstKeptEntryId, keptUserId);
-		assert.match(checkpoint.summary, /A valid summary/);
-		assert.deepEqual(checkpoint.details.readFiles, ["prior.ts", "src/file.ts"]);
-		assert.deepEqual(checkpoint.details.modifiedFiles, ["modified.ts", "src/nested.ts"]);
-		assert.equal(checkpoint.usage.totalTokens, 24);
-		assert.deepEqual(streamed, [model]);
-		assert.match(requestBody, /Earlier decisions/);
-		assert.match(requestBody, /src\/file.ts/);
-		sm.appendCompaction(checkpoint.summary, checkpoint.firstKeptEntryId, 1, checkpoint.details, true,
-			checkpoint.usage as never);
-		assert.equal(sm.buildSessionProjection().messages.some((message) => message.role === "toolResult"), false);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({
+		compaction: { enabled: false, reserveTokens: 500, keepRecentTokens: 100 },
+	}));
+	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
+	await writeFile(autoCompactConfigFile(tempRoot), JSON.stringify({ autoCompactThreshold: 25 }));
+	const sm = SessionManager.inMemory(tempRoot);
+	const firstUserId = sm.appendMessage({ role: "user", content: "Read src/file.ts", timestamp: 1 });
+	sm.appendCompaction("Earlier decisions", firstUserId, 10,
+		{ readFiles: ["prior.ts"], modifiedFiles: ["modified.ts"] }, true);
+	sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "read-1", name: "read",
+		arguments: { path: "src/file.ts" } }], api: "openai-completions", provider: "fake", model: "model",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "toolUse", timestamp: 2 });
+	// Calls made through ctx.executeTool are recorded on the calling tool's result; oversized arguments are omitted.
+	sm.appendMessage({ role: "toolResult", toolCallId: "read-1", toolName: "read", isError: false,
+		content: [{ type: "text", text: "file contents ".repeat(900) }], timestamp: 3, nestedCalls: { complete: false, calls: [
+			{ id: "nested-1", name: "edit", arguments: { path: "src/nested.ts" }, status: "ok" },
+			{ id: "nested-2", name: "read", argumentsBytes: 40, status: "ok" },
+		] } });
+	const keptUserId = sm.appendMessage({ role: "user", content: "Now finish", timestamp: 4 });
+	const final = { role: "assistant" as const, content: [{ type: "text" as const, text: "Done" }],
+		api: "openai-completions" as const, provider: "fake", model: "model",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "stop" as const, timestamp: 5 };
+	sm.appendMessage(final);
+	const model = { id: "model", name: "Model", api: "openai-completions", provider: "fake", reasoning: false,
+		input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 6_000, maxTokens: 600 };
+	const handlers = loadExtension();
+	let requestBody = "";
+	const streamed: unknown[] = [];
+	const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
+		getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
+		// The session model goes through the registry, which routes virtual models.
+		modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
+			streamSimple: (requested: unknown, context: unknown) => {
+				streamed.push(requested);
+				requestBody = JSON.stringify(context);
+				return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "A valid summary" }],
+					api: "openai-completions", provider: "fake", model: "model", stopReason: "stop", timestamp: 6,
+					usage: { input: 21, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 24,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }) };
+			} },
+		ui: { notify() {} }, signal: new AbortController().signal,
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+	const projection = sm.buildSessionProjection();
+	const result = await handlers.get("agent_before_settle")?.({ type: "agent_before_settle",
+		outcome: "completed", entries: [], continue: false, context: {
+			contextEntries: projection.entries, contextMessages: projection.messages,
+			llmMessages: [], pendingMessages: [], canContinue: false,
+		},
+	} as never, ctx) as { entries?: Array<{ type: string; summary: string; firstKeptEntryId: string;
+		details: { readFiles: string[]; modifiedFiles: string[] }; usage: { totalTokens: number } }> } | undefined;
+	const checkpoint = result?.entries?.find((entry) => entry.type === "compaction");
+	assert.ok(checkpoint);
+	assert.equal(checkpoint.firstKeptEntryId, keptUserId);
+	assert.match(checkpoint.summary, /A valid summary/);
+	assert.deepEqual(checkpoint.details.readFiles, ["prior.ts", "src/file.ts"]);
+	assert.deepEqual(checkpoint.details.modifiedFiles, ["modified.ts", "src/nested.ts"]);
+	assert.equal(checkpoint.usage.totalTokens, 24);
+	assert.deepEqual(streamed, [model]);
+	assert.match(requestBody, /Earlier decisions/);
+	assert.match(requestBody, /src\/file.ts/);
+	sm.appendCompaction(checkpoint.summary, checkpoint.firstKeptEntryId, 1, checkpoint.details, true,
+		checkpoint.usage as never);
+	assert.equal(sm.buildSessionProjection().messages.some((message) => message.role === "toolResult"), false);
 });
 
 test("activates only when Pi built-in auto-compaction is disabled", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-activation-"));
 	const projectDir = join(tempRoot, "project");
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
 	await mkdir(join(projectDir, ".pi"), { recursive: true });
+	for (const scenario of [
+		{ name: "default enabled", global: {}, project: {}, rejects: true },
+		{
+			name: "globally disabled",
+			global: { compaction: { enabled: false } },
+			project: {},
+			rejects: false,
+		},
+		{
+			name: "project re-enabled",
+			global: { compaction: { enabled: false } },
+			project: { compaction: { enabled: true } },
+			rejects: true,
+		},
+	]) {
+		await writeFile(join(tempRoot, "settings.json"), JSON.stringify(scenario.global));
+		await writeFile(join(projectDir, ".pi", "settings.json"), JSON.stringify(scenario.project));
 
-	try {
-		for (const scenario of [
-			{ name: "default enabled", global: {}, project: {}, rejects: true },
-			{
-				name: "globally disabled",
-				global: { compaction: { enabled: false } },
-				project: {},
-				rejects: false,
-			},
-			{
-				name: "project re-enabled",
-				global: { compaction: { enabled: false } },
-				project: { compaction: { enabled: true } },
-				rejects: true,
-			},
-		]) {
-			await writeFile(join(tempRoot, "settings.json"), JSON.stringify(scenario.global));
-			await writeFile(join(projectDir, ".pi", "settings.json"), JSON.stringify(scenario.project));
-
-			const handlers = loadExtension();
-			let compactions = 0;
-			const ctx = {
-				cwd: projectDir,
-				isProjectTrusted: () => true,
-				getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
-				compact: () => { compactions++; },
-				ui: { notify() {} },
-			} as unknown as ExtensionContext;
-			const start = () => handlers.get("session_start")?.(
-				{ type: "session_start", reason: "startup" } as never,
-				ctx,
-			);
-
-			if (scenario.rejects) {
-				assert.throws(start, /failed to activate.*compaction\.enabled.*false/i, scenario.name);
-			} else {
-				assert.doesNotThrow(start, scenario.name);
-				handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
-			}
-			assert.equal(compactions, scenario.rejects ? 0 : 1, scenario.name);
-		}
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
-});
-
-test("emergency context truncation cuts on user boundary and prepends notice", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-context-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
-
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		const sent: SentMessage[] = [];
-		const handlers = loadExtension(new Map(), (message, options) => sent.push({ message, options }));
-		const big = "x".repeat(20_000);
+		const handlers = loadExtension();
 		let compactions = 0;
-		let onComplete: (() => void) | undefined;
-		const notices: string[] = [];
 		const ctx = {
-			cwd: tempRoot,
+			cwd: projectDir,
 			isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: 900, contextWindow: 10_000, percent: 90 }),
-			compact: (options: { onComplete: () => void }) => { compactions++; onComplete = options.onComplete; },
-			isIdle: () => true,
-			ui: { notify: (message: string) => notices.push(message) },
+			getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+			compact: () => { compactions++; },
+			ui: { notify() {} },
 		} as unknown as ExtensionContext;
-
-		handlers.get("session_start")?.(
+		const start = () => handlers.get("session_start")?.(
 			{ type: "session_start", reason: "startup" } as never,
 			ctx,
 		);
 
-		// Below threshold: no truncation, no compaction.
-		assert.equal(handlers.get("context_with_system")?.({
-			type: "context_with_system",
-			messages: [{ role: "user", content: "hello", timestamp: 1 }],
-		} as never, ctx), undefined);
-		assert.equal(compactions, 0);
-		assert.equal(handlers.get("context_with_system")?.({ type: "context_with_system",
-			messages: [{ role: "user", content: big.repeat(2), timestamp: 1 }],
-		} as never, ctx), undefined, "an oversized fresh input cannot be dropped");
-		assert.match(notices.at(-1) ?? "", /cannot safely reduce this first request/);
-
-		// Assistant messages without usage fall back to character estimates.
-		const leadingSystem = {
-			role: "system",
-			content: "s".repeat(600),
-			toolsAdded: [{ name: "read", description: "Read files", parameters: { type: "object" } }],
-			timestamp: 0,
-		};
-		const promptUpdate = {
-			role: "system",
-			content: "",
-			sections: { memory: "Remember this." },
-			toolsRemoved: [{ name: "read" }],
-			timestamp: 3,
-		};
-		const messages = [
-			leadingSystem,
-			{ role: "user", content: big, timestamp: 1 },
-			{ role: "assistant", content: big, timestamp: 2 },
-			promptUpdate,
-			{ role: "toolResult", content: big, timestamp: 3 },
-			{ role: "user", content: "m".repeat(6_002), timestamp: 4 },
-			{ role: "assistant", content: "m".repeat(200), timestamp: 5 },
-			{ role: "user", content: "continue", timestamp: 6 },
-			{ role: "assistant", content: "done", timestamp: 7 },
-		];
-		const result = handlers.get("context_with_system")?.({
-			type: "context_with_system",
-			messages,
-		} as never, ctx) as { messages?: typeof messages } | undefined;
-		assert.ok(result?.messages, "oversized context must be truncated");
-
-		// Transcript system state survives in order; the conversation cut lands on
-		// a user boundary and never retains half of an assistant/tool turn.
-		assert.equal(result.messages[0], leadingSystem);
-		assert.equal(result.messages[1], promptUpdate);
-		const [notice, firstKept] = result.messages.slice(2);
-		assert.equal(notice.role, "user");
-		assert.equal(notice.content, "[Temporary context reduction: 5 earlier messages (~12K tokens) are omitted from this request while compaction runs. Continue with the current task.]");
-		assert.equal(firstKept, messages[7]);
-		assert.deepEqual(result.messages.slice(3), messages.slice(7));
-
-		// Truncation schedules exactly one compaction and blocks re-entry.
-		assert.equal(compactions, 0);
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(compactions, 1);
-		assert.equal(handlers.get("context_with_system")?.({
-			type: "context_with_system",
-			messages,
-		} as never, ctx), undefined);
-		assert.equal(compactions, 1);
-		onComplete?.();
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.equal(sent.length, 1);
-		assert.equal(sent[0]?.options?.triggerTurn, true);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
+		if (scenario.rejects) {
+			assert.throws(start, /failed to activate.*compaction\.enabled.*false/i, scenario.name);
+		} else {
+			assert.doesNotThrow(start, scenario.name);
+			handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+		}
+		assert.equal(compactions, scenario.rejects ? 0 : 1, scenario.name);
 	}
 });
 
+test("emergency context truncation cuts on user boundary and prepends notice", async () => {
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	const sent: SentMessage[] = [];
+	const handlers = loadExtension(new Map(), (message, options) => sent.push({ message, options }));
+	const big = "x".repeat(20_000);
+	let compactions = 0;
+	let onComplete: (() => void) | undefined;
+	const notices: string[] = [];
+	const ctx = {
+		cwd: tempRoot,
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 900, contextWindow: 10_000, percent: 90 }),
+		compact: (options: { onComplete: () => void }) => { compactions++; onComplete = options.onComplete; },
+		isIdle: () => true,
+		ui: { notify: (message: string) => notices.push(message) },
+	} as unknown as ExtensionContext;
+
+	handlers.get("session_start")?.(
+		{ type: "session_start", reason: "startup" } as never,
+		ctx,
+	);
+
+	// Below threshold: no truncation, no compaction.
+	assert.equal(handlers.get("context_with_system")?.({
+		type: "context_with_system",
+		messages: [{ role: "user", content: "hello", timestamp: 1 }],
+	} as never, ctx), undefined);
+	assert.equal(compactions, 0);
+	assert.equal(handlers.get("context_with_system")?.({ type: "context_with_system",
+		messages: [{ role: "user", content: big.repeat(2), timestamp: 1 }],
+	} as never, ctx), undefined, "an oversized fresh input cannot be dropped");
+	assert.match(notices.at(-1) ?? "", /cannot safely reduce this first request/);
+
+	// System messages use Pi's estimate: an image counts as a fixed size, while sections and added tools count in full.
+	const imagePrompt = {
+		role: "system",
+		content: [{ type: "image", data: "i".repeat(40_000), mimeType: "image/png" }],
+		timestamp: 0,
+	};
+	const noticeCount = notices.length;
+	assert.equal(handlers.get("context_with_system")?.({ type: "context_with_system",
+		messages: [imagePrompt, { role: "user", content: "hello", timestamp: 1 }],
+	} as never, ctx), undefined);
+	assert.equal(notices.length, noticeCount, "image data length is not counted");
+	const longPrompt = {
+		...imagePrompt,
+		sections: { memory: "s".repeat(12_000) },
+		toolsAdded: [{ name: "read", description: "d".repeat(12_000), parameters: { type: "object" } }],
+	};
+	assert.equal(handlers.get("context_with_system")?.({ type: "context_with_system",
+		messages: [longPrompt, { role: "user", content: "hello", timestamp: 1 }],
+	} as never, ctx), undefined);
+	assert.equal(notices.length, noticeCount + 1, "sections and added tools are counted");
+
+	// Assistant messages without usage fall back to character estimates.
+	const leadingSystem = {
+		role: "system",
+		content: "s".repeat(600),
+		toolsAdded: [{ name: "read", description: "Read files", parameters: { type: "object" } }],
+		timestamp: 0,
+	};
+	const promptUpdate = {
+		role: "system",
+		content: "",
+		sections: { memory: "Remember this." },
+		toolsRemoved: [{ name: "read" }],
+		timestamp: 3,
+	};
+	const messages = [
+		leadingSystem,
+		{ role: "user", content: big, timestamp: 1 },
+		{ role: "assistant", content: big, timestamp: 2 },
+		promptUpdate,
+		{ role: "toolResult", content: big, timestamp: 3 },
+		{ role: "user", content: "m".repeat(6_002), timestamp: 4 },
+		{ role: "assistant", content: "m".repeat(200), timestamp: 5 },
+		{ role: "user", content: "continue", timestamp: 6 },
+		{ role: "assistant", content: "done", timestamp: 7 },
+	];
+	const result = handlers.get("context_with_system")?.({
+		type: "context_with_system",
+		messages,
+	} as never, ctx) as { messages?: typeof messages } | undefined;
+	assert.ok(result?.messages, "oversized context must be truncated");
+
+	// Transcript system state survives in order; the conversation cut lands on
+	// a user boundary and never retains half of an assistant/tool turn.
+	assert.equal(result.messages[0], leadingSystem);
+	assert.equal(result.messages[1], promptUpdate);
+	const [notice, firstKept] = result.messages.slice(2);
+	assert.equal(notice.role, "user");
+	assert.equal(notice.content, "[Temporary context reduction: 5 earlier messages (~12K tokens) are omitted from this request while compaction runs. Continue with the current task.]");
+	assert.equal(firstKept, messages[7]);
+	assert.deepEqual(result.messages.slice(3), messages.slice(7));
+
+	// Truncation schedules exactly one compaction and blocks re-entry.
+	assert.equal(compactions, 0);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(compactions, 1);
+	assert.equal(handlers.get("context_with_system")?.({
+		type: "context_with_system",
+		messages,
+	} as never, ctx), undefined);
+	assert.equal(compactions, 1);
+	onComplete?.();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0]?.options?.triggerTurn, true);
+});
+
 test("thresholds use provider usage instead of replayed thinking estimates", async () => {
-	const tempRoot = await mkdtemp(join(tmpdir(), "pi-auto-compact-usage-"));
-	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = tempRoot;
-	try {
-		await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
-		const handlers = loadExtension();
-		const ctx = { cwd: tempRoot, isProjectTrusted: () => true,
-			getContextUsage: () => ({ tokens: null, contextWindow: 10_000, percent: null }),
-			compact() {}, ui: { notify() {} },
-		} as unknown as ExtensionContext;
-		handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
-		const usage = { input: 400, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 500,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-		// The thinking block alone estimates above the 70% threshold; the provider measured 500 tokens.
-		const messages = [
-			{ role: "user", content: "start", timestamp: 2 },
-			{ role: "assistant", content: [{ type: "thinking", thinking: "t".repeat(40_000) }, { type: "text", text: "ok" }],
-				api: "openai-completions", provider: "fake", model: "model", usage, stopReason: "stop", timestamp: 3 },
-			{ role: "user", content: "next", timestamp: 4 },
-		];
-		const guard = (list: unknown[]) => handlers.get("context_with_system")?.(
-			{ type: "context_with_system", messages: list } as never, ctx) as { messages?: unknown[] } | undefined;
-		assert.equal(guard(messages), undefined);
-		// A newer preceding message, such as a compaction summary, makes that usage stale.
-		assert.ok(guard([{ role: "user", content: "summary", timestamp: 5 }, ...messages])?.messages);
-	} finally {
-		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-		await rm(tempRoot, { recursive: true, force: true });
-	}
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	const handlers = loadExtension();
+	const ctx = { cwd: tempRoot, isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: null, contextWindow: 10_000, percent: null }),
+		compact() {}, ui: { notify() {} },
+	} as unknown as ExtensionContext;
+	handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+	const usage = { input: 400, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 500,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	// The thinking block alone estimates above the 70% threshold; the provider measured 500 tokens.
+	const messages = [
+		{ role: "user", content: "start", timestamp: 2 },
+		{ role: "assistant", content: [{ type: "thinking", thinking: "t".repeat(40_000) }, { type: "text", text: "ok" }],
+			api: "openai-completions", provider: "fake", model: "model", usage, stopReason: "stop", timestamp: 3 },
+		{ role: "user", content: "next", timestamp: 4 },
+	];
+	const guard = (list: unknown[]) => handlers.get("context_with_system")?.(
+		{ type: "context_with_system", messages: list } as never, ctx) as { messages?: unknown[] } | undefined;
+	assert.equal(guard(messages), undefined);
+	// A newer preceding message, such as a compaction summary, makes that usage stale.
+	assert.ok(guard([{ role: "user", content: "summary", timestamp: 5 }, ...messages])?.messages);
 });
