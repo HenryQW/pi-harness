@@ -35,10 +35,7 @@ export type FooterColorValue = { kind: "token"; token: ThemeColor } | { kind: "c
 
 /** Parses one role's color; a throw drops only that role. */
 export const parseFooterColor: FieldParser<FooterColorValue> = (raw) => {
-	if (typeof raw === "number") {
-		if (!Number.isInteger(raw) || raw < 0 || raw > 255) throw new Error("ANSI index must be an integer from 0 to 255");
-		return { kind: "color", color: parseColor(raw) };
-	}
+	if (typeof raw === "number") return { kind: "color", color: parseColor(raw) };
 	if (typeof raw !== "string" || !raw.trim()) throw new Error("expected a theme token or a color value");
 	if (THEME_TOKENS.has(raw as ThemeColor)) return { kind: "token", token: raw as ThemeColor };
 	try {
