@@ -25,7 +25,6 @@ import {
 	type GitRuntime,
 	type InFlightTaskCandidateInspection,
 	type InFlightTaskCandidateInspector,
-	type TaskCandidateInspector,
 	type OperationContext,
 	type ReviewResult,
 	type TransientLaunchHandle,
@@ -129,7 +128,7 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
-export class CheckedGitRuntime implements GitRuntime, TaskCandidateInspector, InFlightTaskCandidateInspector {
+export class CheckedGitRuntime implements GitRuntime, InFlightTaskCandidateInspector {
 	private readonly execute: DirectProcessRunner;
 	private readonly executeReview?: ExactReviewExecutor;
 	private readonly mainOperationTails = new Map<string, Promise<void>>();

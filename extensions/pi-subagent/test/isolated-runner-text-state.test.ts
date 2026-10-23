@@ -10,7 +10,6 @@ import {
 	type CoordinatorRuntime,
 	type GitRuntime,
 	type HostRuntime,
-	type TaskCandidateInspector,
 } from "../src/runner.ts";
 import type { ExecuteRequest, RunState, TaskState, TextTaskState, WorkspaceIdentity } from "../src/schema.ts";
 import { FileRunStore } from "../src/store.ts";
@@ -74,7 +73,7 @@ function markAttention(task: TextTaskState, failure: string): void {
 	const runner = new IsolatedRunner(
 		{} as CoordinatorRuntime,
 		{} as HostRuntime,
-		{} as GitRuntime & TaskCandidateInspector,
+		{} as GitRuntime,
 		undefined,
 		unavailableTextExecutor,
 	);
@@ -138,7 +137,7 @@ test("text dispatch failure persists its failed running attempt", async (t) => {
 		{
 			inspectMain: async () => mainIdentity(root),
 			inspectMainBase: async () => mainIdentity(root),
-		} as unknown as GitRuntime & TaskCandidateInspector,
+		} as unknown as GitRuntime,
 		store,
 		unavailableTextExecutor,
 	);
@@ -190,7 +189,7 @@ for (const change of ["ignored", "tracked", "committed", "executor-failure"]) te
 		inspectMain: async () => mainIdentity(root),
 		inspectMainBase: async () => mainIdentity(root),
 		runChecks: async () => ({ results: [], identityAfter: mainIdentity(root) }),
-	} as unknown as GitRuntime & TaskCandidateInspector, store, {
+	} as unknown as GitRuntime, store, {
 		run: async (options) => {
 			checkout = (await options.prepare()).cwd;
 			for (const path of [".codegraph", "node_modules", "dist"]) {
@@ -287,7 +286,7 @@ test("text retry saves its second attempt atomically before executor launch", as
 				results: [{ command: "true", args: [], code: 0, killed: false, stdout: "", stderr: "" }],
 				identityAfter: mainIdentity(root),
 			}),
-		} as unknown as GitRuntime & TaskCandidateInspector,
+		} as unknown as GitRuntime,
 		store,
 		executor,
 	);
@@ -394,7 +393,7 @@ test("text retry runs only the selected ready task while another needs attention
 		{
 			inspectMain: async () => mainIdentity(root),
 			inspectMainBase: async () => mainIdentity(root),
-		} as unknown as GitRuntime & TaskCandidateInspector,
+		} as unknown as GitRuntime,
 		store,
 		executor,
 	);
@@ -483,7 +482,7 @@ test("mixed waves settle and attribute dispatch failures in either task order", 
 				{
 					inspectMain: async () => mainIdentity(root),
 					inspectMainBase: async () => mainIdentity(root),
-				} as unknown as GitRuntime & TaskCandidateInspector,
+				} as unknown as GitRuntime,
 				store,
 				unavailableTextExecutor,
 			);

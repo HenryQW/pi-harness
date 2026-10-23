@@ -259,10 +259,6 @@ export interface HostRuntime {
 	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }>;
 }
 
-export interface TaskCandidateInspector {
-	inspectTaskCandidate(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
-}
-
 export interface InFlightTaskCandidateInspection {
 	candidate: WorkspaceIdentity;
 	clean: boolean;
@@ -277,6 +273,7 @@ export interface InFlightTaskCandidateInspector {
 }
 
 export interface GitRuntime {
+	inspectTaskCandidate(input: { root: string; task: TaskRequest; attempt: TaskAttempt }, context: OperationContext): Promise<WorkspaceIdentity>;
 	inspectMain(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	inspectMainBase(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
 	allocateWorktree(input: {
@@ -940,7 +937,7 @@ function isDeadline(error: unknown, scope: RuntimeScope): boolean {
 export class IsolatedRunner {
 	private readonly coordinatorRuntime: CoordinatorRuntime;
 	private readonly hostRuntime: HostRuntime;
-	private readonly gitRuntime: GitRuntime & TaskCandidateInspector;
+	private readonly gitRuntime: GitRuntime;
 	private readonly store: FileRunStore;
 	private readonly integrationGit: IntegrationGit;
 	private readonly textExecutor: EphemeralSubagentExecutor;
@@ -951,7 +948,7 @@ export class IsolatedRunner {
 	constructor(
 		coordinatorRuntime: CoordinatorRuntime,
 		hostRuntime: HostRuntime,
-		gitRuntime: GitRuntime & TaskCandidateInspector,
+		gitRuntime: GitRuntime,
 		store = new FileRunStore(),
 		textExecutor: EphemeralSubagentExecutor,
 		policy: ExecutionPolicySnapshot = {

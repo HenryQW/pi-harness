@@ -224,28 +224,12 @@ class DirectSessionState {
 	}
 }
 
-function parseDirectSession(jsonl: string, prompt: string): DirectSessionState {
-	const state = new DirectSessionState(prompt);
-	for (const line of jsonl.split("\n")) if (!state.consume(line)) break;
-	return state;
-}
-
-// Ignore a partial trailing JSONL entry while the child is writing it.
-export function directSessionUsage(jsonl: string, prompt: string): DirectUsage & { activity?: DirectToolActivity } {
-	return parseDirectSession(jsonl, prompt).usage();
-}
-
-/** The last `maxChars` of assistant text in the exact prompt's turn; ignores a partial trailing entry. */
-export function directPartialText(jsonl: string, prompt: string, maxChars: number): string | undefined {
-	return parseDirectSession(jsonl, prompt).partialText(maxChars);
-}
-
 /** One reader per handle; only complete, valid lines advance the byte offset. */
 export function createDirectSessionReader(sessionFile: string, prompt: string): Pick<DirectHandle, "usage" | "partialText" | "activity"> {
 	let offset = 0;
 	let previous: Stats | undefined;
 	let state = new DirectSessionState(prompt);
-	let lastUsage: ReturnType<typeof directSessionUsage> = {};
+	let lastUsage: DirectUsage & { activity?: DirectToolActivity } = {};
 	let reading: Promise<boolean> | undefined;
 	const read = async () => {
 		const file = await open(sessionFile, "r");
