@@ -80,16 +80,19 @@ type EntryLike = {
 	message?: { role?: unknown; content?: unknown };
 };
 
+function isMergeEntry(entry: EntryLike, requestId: string): boolean {
+	return (
+		entry.type === "custom_message" &&
+		entry.customType === MERGE_CUSTOM_TYPE &&
+		!!entry.details &&
+		typeof entry.details === "object" &&
+		(entry.details as { requestId?: unknown }).requestId === requestId
+	);
+}
+
 /** Deduplicate against an already-persisted merge custom message by requestId. */
 function hasMergedRequestId(entries: EntryLike[], requestId: string): boolean {
-	return entries.some(
-		(entry) =>
-			entry.type === "custom_message" &&
-			entry.customType === MERGE_CUSTOM_TYPE &&
-			!!entry.details &&
-			typeof entry.details === "object" &&
-			(entry.details as { requestId?: unknown }).requestId === requestId,
-	);
+	return entries.some((entry) => isMergeEntry(entry, requestId));
 }
 
 /** Detect durable evidence that this merge's user prompt was persisted. */
@@ -99,13 +102,7 @@ function hasSubmittedPromptRequestId(
 	prompt: string,
 ): boolean {
 	const mergeIndex = entries.findIndex(
-		(entry) =>
-			entry.type === "custom_message" &&
-			entry.customType === MERGE_CUSTOM_TYPE &&
-			!!entry.details &&
-			typeof entry.details === "object" &&
-			(entry.details as { requestId?: unknown; prompt?: unknown }).requestId === requestId &&
-			(entry.details as { requestId?: unknown; prompt?: unknown }).prompt === prompt,
+		(entry) => isMergeEntry(entry, requestId) && (entry.details as { prompt?: unknown }).prompt === prompt,
 	);
 	return mergeIndex >= 0 && entries.slice(mergeIndex + 1).some(
 		(entry) => entry.type === "message" && entry.message?.role === "user" && textOfTurn(entry.message.content) === prompt.trim(),
