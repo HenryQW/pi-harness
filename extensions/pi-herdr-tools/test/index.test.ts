@@ -1138,11 +1138,7 @@ test("parent does not reuse auth for a model selected during authentication", as
 
 		const scan = harness.commands.get("btw")?.handler("merge", ctx);
 		await authStarted;
-		await harness.emit(
-			"model_select",
-			{ model: { provider: "other-provider", id: "other-model" } },
-			ctx,
-		);
+		ctx.model = { provider: "other-provider", id: "other-model" };
 		resolveAuth?.({ ok: true });
 		await scan;
 		harness.cleanup();

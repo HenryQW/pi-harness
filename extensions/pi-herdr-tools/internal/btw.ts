@@ -101,7 +101,6 @@ function decideCacheMode(
 	actual: { model: string | undefined; activeTools: string[]; thinkingLevel: string },
 ): boolean {
 	return (
-		payload.parentSystemPrompt !== null &&
 		actual.model === payload.metadata.model &&
 		payload.config.tools === "inherit" &&
 		sameStringArray(actual.activeTools, payload.parentActiveTools) &&
@@ -143,7 +142,7 @@ async function configureChild(
 		if (nativeCache) {
 			// Replay the parent's exact system prompt; side-pane policy moves to
 			// a suffix message so the cached prefix stays byte-identical.
-			return { systemPrompt: payload.parentSystemPrompt as string };
+			return { systemPrompt: payload.parentSystemPrompt };
 		}
 		return { systemPrompt: `${event.systemPrompt}\n\n${SIDE_PANE_INSTRUCTIONS}` };
 	});
@@ -290,9 +289,7 @@ async function configureChild(
 			// request survives teardown until the parent consumes it.
 			const ownPaneId = process.env.HERDR_PANE_ID;
 			if (ownPaneId) {
-				if (payload.parentPaneId) {
-					await herdr.run(["agent", "focus", payload.parentPaneId], { timeout: 5_000 }).catch(() => undefined);
-				}
+				await herdr.run(["agent", "focus", payload.parentPaneId], { timeout: 5_000 }).catch(() => undefined);
 				const closed = await herdr
 					.run(["pane", "close", ownPaneId], { timeout: 5_000 })
 					.then(() => true)
@@ -454,10 +451,6 @@ export async function registerBtwExtension(
 			void scanMerges();
 		});
 	});
-	pi.on("model_select", (event, ctx) => {
-		if (sessionCtx) sessionCtx = { ...sessionCtx, model: event.model };
-		notifyFn = (message, type) => ctx.ui.notify(message, type);
-	});
 	pi.on("agent_settled", async (_event, ctx) => {
 		sessionCtx = ctx;
 		notifyFn = (message, type) => ctx.ui.notify(message, type);
@@ -599,7 +592,7 @@ export async function registerBtwExtension(
 					createPayload({
 						createdAt,
 						parentSessionId: sessionId,
-						parentPaneId: process.env.HERDR_PANE_ID ?? null,
+						parentPaneId: process.env.HERDR_PANE_ID,
 						metadata: {
 							generatedAt: createdAt,
 							cwd: ctx.cwd,

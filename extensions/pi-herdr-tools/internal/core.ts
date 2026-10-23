@@ -35,10 +35,10 @@ export type BtwPayload = {
 	/** Exact parent session ID at launch; merges are bound to it. */
 	parentSessionId: string;
 	/** Herdr pane ID of the parent at launch; /btw merge refocuses it. */
-	parentPaneId: string | null;
+	parentPaneId: string;
 	metadata: ParentContextMetadata;
-	/** Exact effective parent system prompt for the native-prefix cache path, if known. */
-	parentSystemPrompt: string | null;
+	/** Exact effective parent system prompt for the native-prefix cache path. */
+	parentSystemPrompt: string;
 	/** Exact active parent tool names, in order. */
 	parentActiveTools: string[];
 	/** Parent thinking level at launch. */
@@ -194,14 +194,14 @@ export function isBtwPayload(value: unknown): value is BtwPayload {
 		payload.capability.length >= 32 &&
 		typeof payload.parentSessionId === "string" &&
 		payload.parentSessionId.length > 0 &&
-		(payload.parentPaneId === null || typeof payload.parentPaneId === "string") &&
+		typeof payload.parentPaneId === "string" &&
 		!!payload.metadata &&
 		typeof payload.metadata === "object" &&
 		typeof payload.metadata.generatedAt === "string" &&
 		typeof payload.metadata.cwd === "string" &&
 		typeof payload.metadata.session === "string" &&
 		(payload.metadata.model === null || typeof payload.metadata.model === "string") &&
-		(payload.parentSystemPrompt === null || typeof payload.parentSystemPrompt === "string") &&
+		typeof payload.parentSystemPrompt === "string" &&
 		Array.isArray(payload.parentActiveTools) &&
 		payload.parentActiveTools.every((tool) => typeof tool === "string") &&
 		typeof payload.parentThinkingLevel === "string" &&
