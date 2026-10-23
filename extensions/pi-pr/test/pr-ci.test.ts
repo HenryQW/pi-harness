@@ -185,18 +185,10 @@ function harness(scenario: Scenario) {
 				return result(JSON.stringify(payload));
 			}
 			const snapshot = scenario.snapshots[Math.min(snapshotIndex, scenario.snapshots.length - 1)]!;
-			const runListMatch = /\/actions\/runs\?check_suite_id=(\d+)&head_sha=[a-f0-9]+&per_page=(\d+)&page=(\d+)$/.exec(endpoint);
-			if (runListMatch) {
-				const suiteId = Number(runListMatch[1]);
-				const perPage = Number(runListMatch[2]);
-				const page = Number(runListMatch[3]);
-				const runIds = [...new Set(snapshot.checks
-					.filter((candidate) => candidate.check_suite.id === suiteId)
-					.map((candidate) => candidate[fixtureRunId]))];
-				return result(JSON.stringify({
-					total_count: runIds.length,
-					workflow_runs: runIds.slice((page - 1) * perPage, page * perPage).map((runId) => run(snapshot, runId)),
-				}));
+			const jobMatch = /\/actions\/jobs\/(\d+)$/.exec(endpoint);
+			if (jobMatch) {
+				const checkJob = snapshot.jobs.find((candidate) => candidate.check_run_url.endsWith(`/check-runs/${jobMatch[1]}`));
+				return checkJob ? result(JSON.stringify(checkJob)) : result("", 1, "HTTP 404");
 			}
 			const runMatch = /\/actions\/runs\/(\d+)$/.exec(endpoint);
 			if (runMatch) return result(JSON.stringify(run(snapshot, Number(runMatch[1]))));
@@ -306,6 +298,26 @@ test("sanitizes failed log diagnostics and consumes collection without retry", a
 		await assert.rejects(app.workflow.collect(), /already consumed/);
 		assert.equal(app.logReads.get(101), 1);
 	}
+});
+
+test("reopens collection after a CI read failure before any log read", async (t) => {
+	let pages = 0;
+	const app = harness({ snapshots: [oneFailure()], checkPage: (snapshot) =>
+		({ total_count: snapshot.checks.length, check_runs: ++pages === 1 ? [] : snapshot.checks }) });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	await assert.rejects(app.workflow.collect(), /ended before its declared total/);
+	assert.equal(app.workflow.state.phase, "ready");
+	assert.equal(app.logReads.size, 0);
+	assert.equal((await app.workflow.collect()).failures[0]!.job.id, 101);
+});
+
+test("blocks collection after the one reopened attempt also fails", async (t) => {
+	const app = harness({ snapshots: [oneFailure()], checkPage: (snapshot) => ({ total_count: snapshot.checks.length, check_runs: [] }) });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	await assert.rejects(app.workflow.collect(), /ended before its declared total/);
+	await assert.rejects(app.workflow.collect(), /ended before its declared total/);
+	assert.equal(app.workflow.state.phase, "blocked");
+	await assert.rejects(app.workflow.collect(), /already consumed/);
 });
 
 for (const drift of ["ahead", "base"] as const) test(`cancels ${drift} drift only at initial preflight without reading CI evidence`, async (t) => {
@@ -441,8 +453,8 @@ test("proves check-run and job pagination complete and rejects bounded overflow 
 	});
 
 	await t.test("rejects a later run's declared jobs before exceeding the global record cap", async (t) => {
-		const firstJobs = Array.from({ length: 400 }, (_, index) => job(101 + index, 10_000 + index, { runId: 71 }));
-		const secondJobs = Array.from({ length: 100 }, (_, index) => job(1_001 + index, 20_000 + index, { runId: 72 }));
+		const firstJobs = Array.from({ length: 400 }, (_, index) => job(101 + index, index ? 10_000 + index : 11, { runId: 71 }));
+		const secondJobs = Array.from({ length: 100 }, (_, index) => job(1_001 + index, index ? 20_000 + index : 12, { runId: 72 }));
 		const app = harness({ snapshots: [{
 			checks: [check(11, 101), check(12, 1_001, { runId: 72, suiteId: 62 })],
 			jobs: [...firstJobs, ...secondJobs],
@@ -521,7 +533,8 @@ test("blocks unsupported or ambiguous evidence and collects diagnosable stale fa
 		const evidence = await app.workflow.collect();
 		assert.equal(evidence.failures[0]!.run.id, 71);
 		assert.equal(evidence.failures[0]!.job.id, 101);
-		assert.ok(app.calls.some(({ args }) => /\/actions\/runs\?check_suite_id=61&head_sha=/.test(args.at(-1) ?? "")));
+		assert.ok(app.calls.some(({ args }) => /\/actions\/jobs\/11$/.test(args.at(-1) ?? "")));
+		assert.equal(app.calls.some(({ args }) => /\/actions\/runs\?/.test(args.at(-1) ?? "")), false);
 	});
 
 	await t.test("stale check and job conclusions", async (t) => {
@@ -550,7 +563,6 @@ test("blocks unsupported or ambiguous evidence and collects diagnosable stale fa
 		const ignoredJobUrls = job(101, 11);
 		ignoredJobUrls.url = "not-an-api-identity";
 		ignoredJobUrls.html_url = "not-an-html-identity";
-		ignoredJobUrls.check_run_url = "not-a-check-run-identity";
 		const app = harness({ snapshots: [{ checks: [ignoredCheckUrls], jobs: [ignoredJobUrls] }] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		const evidence = await app.workflow.collect();
@@ -564,6 +576,14 @@ test("blocks unsupported or ambiguous evidence and collects diagnosable stale fa
 		}] });
 		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
 		await assert.rejects(app.workflow.collect(), /did not resolve to exactly one workflow run/);
+	});
+
+	await t.test("unrelated job for a check run", async (t) => {
+		const unrelated = job(101, 11);
+		unrelated.check_run_url = "https://api.github.com/repos/other/project/check-runs/11";
+		const app = harness({ snapshots: [{ checks: [check(11, 101)], jobs: [unrelated] }] });
+		t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+		await assert.rejects(app.workflow.collect(), /stale or unrelated job/);
 	});
 
 	await t.test("external failed provider", async (t) => {
