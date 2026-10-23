@@ -2,17 +2,30 @@ import { randomBytes } from "node:crypto";
 import { realpathSync, type Stats } from "node:fs";
 import { open, readFile, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_BYTES, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, hasHerdrErrorCode, herdrCommandFailure, startPiAgent } from "@henryqw/pi-herdr";
-import type { ResolvedRoleLaunch } from "./index.ts";
+import { utf8Prefix } from "./ephemeral.ts";
+import type { PreparedRoleLaunch, ResolvedRoleLaunch } from "./index.ts";
 import { assertPrivateLease, PI_SUBAGENT_PROCESS_LEASE, scanProcessLease } from "./process-lease.ts";
 
 const OPERATION_MS = 30_000;
 const SESSION_LIMIT = 16 * 1024 * 1024;
-const ANSWER_LIMIT = 50 * 1024;
+// Leave room for boundary instructions below Linux's 128 KiB per-argument limit.
+const INLINE_TASK_BYTES = 64 * 1024;
 const DIRECT_OUTCOMES = ["succeeded", "failed", "blocked"] as const;
+
+/** The Role tool that reads a file-backed task packet, or undefined for an inline packet; throws when no tool can read it in full. */
+export function directTaskReader(task: string, tools: readonly string[]): "read" | "bash" | undefined {
+	if (Buffer.byteLength(task, "utf8") <= INLINE_TASK_BYTES) return;
+	const longLine = task.split("\n").some((line) => Buffer.byteLength(line, "utf8") > DEFAULT_MAX_BYTES);
+	if (tools.includes("read") && !longLine) return "read";
+	if (tools.includes("bash")) return "bash";
+	throw new Error(longLine
+		? `Large direct task packet has a line above Pi read's ${DEFAULT_MAX_BYTES}-byte limit. Add bash to the Role or use lines within that limit; no worker was launched.`
+		: "Large direct task packets require read or bash in the Role; no worker was launched.");
+}
 
 type Json = Record<string, unknown>;
 const object = (value: unknown, label: string): Json => {
@@ -36,7 +49,8 @@ export interface DirectHandle {
 	paneId: string;
 	sessionFile: string;
 	prompt: string;
-	answer(maxBytes: number): Promise<string>;
+	/** `text` is the exact answer; `inline` is bounded for Main, linking a private full copy when truncated. */
+	answer(maxBytes: number): Promise<{ text: string; inline: string; answerFile?: string }>;
 	usage(): Promise<DirectUsage>;
 	/** Bounded assistant text from this turn so far; failure evidence only, never completion. */
 	partialText(maxChars: number): Promise<string | undefined>;
@@ -107,7 +121,7 @@ export async function assertSettledDirectSession(sessionFile: string, turn: stri
 	}
 }
 
-export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSWER_LIMIT, requireSuccess = false): string {
+export function exactDirectAnswer(jsonl: string, prompt: string, requireSuccess = false): string {
 	const final = exactFinalTurn(jsonl, prompt);
 	if (!final || final.stopReason !== "stop" || !Array.isArray(final.content)) {
 		throw new Error("Pi did not persist an exact successful final answer for this prompt.");
@@ -117,7 +131,6 @@ export function exactDirectAnswer(jsonl: string, prompt: string, maxBytes = ANSW
 		return content.type === "text" && typeof content.text === "string" ? [content.text] : [];
 	}).join("\n");
 	if (!text.trim()) throw new Error("Pi persisted an empty final answer.");
-	if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`Pi final answer exceeds the ${maxBytes}-byte workflow limit; read the private session file for recovery.`);
 	if (!requireSuccess) return text;
 	let completion: Json;
 	try { completion = JSON.parse(text) as Json; }
@@ -353,7 +366,8 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			requireCurrent();
 		},
 		/** `resume` reuses a stopped worker's saved session and private lease instead of a new temp directory. */
-		async start(launch: ResolvedRoleLaunch, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath">): Promise<DirectHandle> {
+		async start(launch: ResolvedRoleLaunch & Pick<PreparedRoleLaunch, "tools">, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath">): Promise<DirectHandle> {
+			const reader = directTaskReader(task, launch.tools);
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
 			if (pane.pane_id !== callerPane || pane.workspace_id !== workspaceId) throw new Error("Herdr caller pane no longer matches the launching workspace.");
@@ -370,6 +384,11 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				await writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
 			}
 			const turn = randomBytes(16).toString("hex");
+			if (reader) {
+				const taskFile = join(dirname(sessionFile), `task-${turn}.md`);
+				await writeFile(taskFile, task, { flag: "wx", mode: 0o600 });
+				task = `Use ${reader} to read the complete task packet at ${JSON.stringify(taskFile)}. Read all parts before you act; do not use a truncated preview. The file contains the full task and chain context. If you cannot read it in full, stop and report blocked work.`;
+			}
 			// Pi's native session is the exact answer channel. Herdr screen output is diagnostic only.
 			const sessionArgs = launch.args.filter((arg) => arg !== "--no-session");
 			if (sessionArgs.length !== launch.args.length - 1) throw new Error("Role launch must contain exactly one --no-session option.");
@@ -426,7 +445,14 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 					const readAnswer = async () => {
 						const info = await stat(sessionFile);
 						if (info.size > SESSION_LIMIT) throw new Error(`Pi session in tab ${tabId} exceeds 16 MiB; inspect ${sessionFile} for recovery.`);
-						return exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, maxBytes, requireSuccess);
+						const text = exactDirectAnswer(await readFile(sessionFile, "utf8"), prompt, requireSuccess);
+						const bytes = Buffer.byteLength(text, "utf8");
+						if (bytes <= maxBytes) return { text, inline: text };
+						// An oversized exact answer still succeeds: Main gets a bounded prefix and a private full copy.
+						// Exclusive creation refuses a worker-planted file, symlink, or FIFO at this predictable path.
+						const file = join(dirname(sessionFile), `answer-${turn}.md`);
+						await writeFile(file, text, { flag: "wx", mode: 0o600 });
+						return { text, answerFile: file, inline: `${utf8Prefix(text, maxBytes)}\n\n[Answer truncated to ${maxBytes} of ${bytes} bytes; read the full answer at ${file}]` };
 					};
 					const maybeAnswer = async () => {
 						try { return await readAnswer(); } catch (error) {

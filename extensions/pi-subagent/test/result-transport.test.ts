@@ -28,6 +28,20 @@ test("formats ordered success and partial failure with exact follow-up details, 
 	assert.equal(result.details.cost, 0.1234);
 });
 
+test("full answer identity survives checkout notes that cap away answer evidence", () => {
+	const answerFile = "/private/answer-turn.md";
+	const result = formatWorkflowResult("single", [succeeded(0, "inline evidence with an answer link", {
+		answerFile,
+		checkout: { kind: "changes", report: {
+			commits: [], omittedCommits: 0, omittedPaths: 0,
+			paths: Array.from({ length: 20 }, () => ({ path: "x".repeat(3_000) })),
+		} },
+	})]);
+	assert.equal(result.text.includes("\nResults:"), false);
+	assert.match(result.text, /\[Output truncated: \d+ bytes omitted\]\nAnswer recovery \(full files\):\n- call:parallel:0 · full answer: \/private\/answer-turn.md$/);
+	assert.equal(result.details.entries[0]!.answerFile, answerFile);
+});
+
 test("bounds aggregate output on valid UTF-8 boundaries and rejects non-terminal finals", () => {
 	const result = formatWorkflowResult("parallel", Array.from({ length: 8 }, (_, index) => succeeded(index, String(index).repeat(80 * 1024))));
 	assert.ok(Buffer.byteLength(result.text, "utf8") <= MAX_OUTPUT_BYTES);

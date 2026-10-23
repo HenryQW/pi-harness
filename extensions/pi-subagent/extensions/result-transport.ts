@@ -29,6 +29,8 @@ export type WorkflowTransportEntry = {
 	elapsedMs?: number;
 	status: WorkflowTransportStatus;
 	assistantOutput?: string;
+	/** Private full answer identity, independent of capped evidence. */
+	answerFile?: string;
 	failure?: string;
 	/** Bounded assistant text produced before a failure; never success evidence. */
 	partialOutput?: string;
@@ -200,7 +202,13 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 		] : []),
 	];
 	return {
-		text: capEphemeralSubagentOutput(lines.join("\n")),
+		text: [
+			capEphemeralSubagentOutput(lines.join("\n")),
+			...(ordered.some(({ answerFile }) => answerFile !== undefined) ? [
+				"Answer recovery (full files):",
+				...ordered.flatMap(({ id, answerFile }) => answerFile === undefined ? [] : [`- ${id} · full answer: ${answerFile}`]),
+			] : []),
+		].join("\n"),
 		details: {
 			mode,
 			entries: ordered.map((entry) => {
@@ -218,6 +226,7 @@ export function formatWorkflowResult(mode: WorkflowMode, entries: readonly Workf
 					...(entry.cost === undefined ? {} : { cost: entry.cost }),
 					...(entry.elapsedMs === undefined ? {} : { elapsedMs: entry.elapsedMs }),
 					...(entry.checkout === undefined ? {} : { checkout: entry.checkout }),
+					...(entry.answerFile === undefined ? {} : { answerFile: entry.answerFile }),
 				};
 			}),
 			...(cost === undefined ? {} : { cost }),

@@ -89,6 +89,12 @@ To check a request before a launch, add `"dryRun": true`. The dry run does the l
 
 The launch returns a task ID and first Herdr tab, not the answer. One follow-up delivers results when the workflow finishes. The results show the tokens and cost of each worker and the total cost of the request. Busy Main receives it after its current turn; idle Main starts a turn. Failed partial output stays marked as partial, never success. Worker output carries no user authority.
 
+The tasks in a request share a 40 KiB answer budget, and each worker prompt states its share. A longer answer is still a success. The follow-up shows its first part and the path of a private file with the full answer. Full-answer paths also stay in structured results and recovery text, outside the output limit.
+
+A task packet above 64 KiB uses a private file, including the full previous answer in a chain. The worker must read the complete packet with its Role's tools before it acts.
+
+Pi's `read` can retrieve lines of at most 50 KiB (51,200 bytes), with line offsets for more content. If any line is longer, the worker uses `bash`, even when the Role also has `read`. Without `bash`, that task fails before tab creation; use shorter lines or a Role with `bash`. A Role with neither tool also fails before tab creation. Chain context is never cut to the inline answer budget.
+
 To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`. This opens a new tab with the saved conversation and a new reference. Continue the newest reference from the original checkout and workspace. For eligibility and stop behavior, see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).
 
 ### Review a change

@@ -11,7 +11,7 @@ import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { compactCost, compactTokens, ENTRY_STATUS_PRESENTATION, formatWorkflowResult, workerOutputForMain, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { checkoutNote, DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, snapshotCheckout, writesCheckout, type CheckoutSnapshot, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
-import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity, type DirectUsage } from "../dist/direct-herdr.js";
+import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, directTaskReader, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity, type DirectUsage } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 1_000;
@@ -648,6 +648,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			try {
 				prepared = await prepareDirectLaunch(findRole(catalog, role), ctx, {
 					...(modelClass === undefined ? {} : { modelClass }), ...(model === undefined ? {} : { model }) });
+				// A chain packet is checked without {previous}; the full packet is known only at launch.
+				directTaskReader(workflow.mode === "chain" ? delegation.task.replaceAll("{previous}", "") : delegation.task, prepared.tools);
 			} catch (error) { throw boundedError(error); }
 			entries.push({ index, name, role, access, model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel,
 				...(continueFrom === undefined ? {} : { continueFrom }), ...(workflow.mode === "chain" && index ? { after: index } : {}) });
@@ -656,6 +658,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		const notChecked = [
 			"checkout admission: a dry run takes none",
 			...(sources.size ? ["stop of each continued agent: it closes its Herdr pane"] : []),
+			...(workflow.mode === "chain" ? ["task packet reader after {previous} substitution: the previous answer is unknown"] : []),
 			"Herdr tab creation and agent start",
 		];
 		const text = [
@@ -812,6 +815,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				}
 			};
 			directTasks.set(taskId, local);
+			// Tasks share one inline budget so the combined follow-up stays bounded for Main.
+			const answerBytes = Math.floor(40 * 1024 / entries.length);
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
 				// A later worker launches after earlier ones finish; report and revalidate config edits made meanwhile.
@@ -831,7 +836,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				try {
 					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
 						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, `${directRef(display)} ${display.title}`,
-						entry.delegation.access === "read" ? `${entry.delegation.task}\n\n${READ_ACCESS_NOTICE}` : entry.delegation.task, activeSignal, (tab) => {
+						`${entry.delegation.access === "read" ? `${entry.delegation.task}\n\n${READ_ACCESS_NOTICE}` : entry.delegation.task}\n\nFinal answer budget: ${answerBytes} bytes, conclusions first. Main sees only that much inline; a longer answer is saved to a file.`, activeSignal, (tab) => {
 							const record = { taskId, entryId: entry.id, display, ...tab };
 							// Persist before agent start, or let the new session carry the exact identity after settlement.
 							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
@@ -900,16 +905,17 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 							controller.signal.throwIfAborted();
 							if (writerFailed) throw new Error("Previous direct task did not complete exactly; inspect recorded tabs before new shared-checkout work.");
 							handle = entry.index === 0 ? first : await launch(entry, entrySignal(entry));
-							const answer = await handle.answer(Math.floor(40 * 1024 / entries.length));
+							const { text, inline, answerFile } = await handle.answer(answerBytes);
 							let usage: DirectUsage | undefined;
 							try {
 								usage = await handle.usage();
 								const item = widgetItems.get(entry.id);
 								if (item) { item.tokens = usage.tokens; item.cost = usage.cost; item.activity = handle.activity; }
 							} catch { /* Optional telemetry. */ }
-							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: answer, ...measured(entry.id, usage), ...await checkout(entry) });
+							states.set(entry.id, { ...states.get(entry.id)!, status: "succeeded", assistantOutput: inline, ...(answerFile === undefined ? {} : { answerFile }), ...measured(entry.id, usage), ...await checkout(entry) });
 							finishWidgetItem(entry.id, "success");
-							return answer;
+							// A chain passes the exact answer to {previous}; only Main's transport is bounded.
+							return text;
 						} catch (error) {
 							if (writes) writerFailed = true;
 							const { assistantOutput: _partial, ...base } = states.get(entry.id)!;
