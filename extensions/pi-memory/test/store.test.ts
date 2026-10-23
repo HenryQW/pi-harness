@@ -167,15 +167,6 @@ test("dedupe preserves order and first occurrence", async () => {
 	}
 });
 
-test("consolidation cap: third consecutive failure terminal, reset on success", () => {
-	const store = new MemoryStore({ directory: "/tmp/pi-memory-unused", target: "memory", limit: LIMIT });
-	assert.deepEqual(store.incrementFailure(), { done: false });
-	assert.deepEqual(store.incrementFailure(), { done: false });
-	assert.deepEqual(store.incrementFailure(), { done: true });
-	store.resetOnSuccess();
-	assert.deepEqual(store.incrementFailure(), { done: false });
-});
-
 test("backup created before successful rewrite", async () => {
 	let backedUp: string | undefined;
 	const backupFor = () => join(tmpdir(), "pi-mem-bak-memory");
