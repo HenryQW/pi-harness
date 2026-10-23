@@ -263,7 +263,7 @@ describe("session_search entry point", () => {
 		assert.equal(top.path, s1);
 		assert.ok(top.snippet.includes("[") || top.snippet.length > 0);
 		assert.equal(top.matchMessageId, "e01");
-		assert.deepEqual(Object.keys(top).sort(), ["cwd", "matchMessageId", "path", "rank", "role", "snippet", "startedAt", "timestamp"]);
+		assert.deepEqual(Object.keys(top), ["path", "snippet", "rank", "matchMessageId", "role", "timestamp", "cwd", "startedAt"]);
 
 		// Read mode via sessionId.
 		const read = await tool.execute("t3", { sessionId: s1 }, undefined, undefined, ctx);
