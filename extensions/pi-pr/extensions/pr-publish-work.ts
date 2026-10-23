@@ -143,7 +143,7 @@ export class PullRequestWorkPublisher {
 			catch { throw new Error("Local publication outcome unknown; do not retry"); }
 			if (remote === head) {
 				this.options.run.observeRemote(head);
-				await recordRemoteTrackingRef(this.exec, this.execOptions(), this.authority.target.remote, this.authority.target.ref, head);
+				await recordRemoteTrackingRef(this.exec, this.execOptions(), this.authority.target.remote, this.authority.target.ref, head, original);
 				return { kind: "published", head };
 			}
 			if (remote === original) throw new Error(`Local publication not applied${error ? `: ${String(error)}` : ""}`);

@@ -43,6 +43,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 			repository: "acme/project", host: "github.com", fetchSource: "git@github.com:acme/project.git", remoteOid: oldHead },
 	};
 	let pushes = 0;
+	const trackingUpdates: string[][] = [];
 	let losePushResponse = false;
 	let loseCommitResponse = false;
 	let failCheck = true;
@@ -55,6 +56,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 			args = args.map((value) => value === "git@github.com:acme/project.git" ? bare : value);
 			if (args[0] === "push") pushes += 1;
 		}
+		if (command === "git" && args[0] === "update-ref") trackingUpdates.push([...args]);
 		const response = await spawnBounded(command, args, options);
 		if (command === "git" && args[0] === "push" && losePushResponse) throw new Error("push response lost");
 		if (command === "git" && args[0] === "commit" && loseCommitResponse) throw new Error("commit response lost");
@@ -86,6 +88,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	git("tag", "-a", "unpublished-release", "-m", "Local release tag");
 	assert.deepEqual(await workflow.publish(), { kind: "published", head: committed.head });
 	assert.equal(pushes, 1);
+	assert.deepEqual(trackingUpdates.splice(0), [["update-ref", "refs/remotes/origin/feature", committed.head, oldHead]]);
 	assert.equal(git("ls-remote", bare, "refs/heads/feature").split("\t")[0], committed.head);
 	assert.equal(git("ls-remote", bare, "refs/tags/unpublished-release"), "");
 	// A URL push leaves the tracking ref stale, which shows already-published commits as ahead.
@@ -104,6 +107,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	losePushResponse = true;
 	assert.deepEqual(await resumed.publish(), { kind: "published", head: second.head });
 	assert.equal(pushes, 2);
+	assert.deepEqual(trackingUpdates.splice(0), [["update-ref", "refs/remotes/origin/feature", second.head, committed.head]]);
 	assert.equal(git("rev-parse", "refs/remotes/origin/feature"), second.head);
 	await assert.rejects(resumed.publish(), /not validated/);
 	await assert.rejects(resumed.inspect(), /consumed/);

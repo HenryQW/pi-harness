@@ -1018,6 +1018,7 @@ export class PullRequestCommentSweep {
 			const attemptedHead = state.attempts.push.head;
 			if (!attemptedHead) throw new Error("Attempted push has no captured head");
 			if (remote === attemptedHead) {
+				await recordRemoteTrackingRef(this.exec, this.options(), state.authority.target.remote, state.authority.target.ref, attemptedHead, state.original.lease);
 				state.attempts.push.state = "applied";
 				state.phase = "published";
 			} else if (remote === state.original.lease) {
@@ -1246,7 +1247,7 @@ export class PullRequestCommentSweep {
 				if (await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref) !== head) {
 					throw new Error("Published remote ref did not match captured HEAD");
 				}
-				await recordRemoteTrackingRef(this.exec, this.options(), state.authority.target.remote, state.authority.target.ref, head);
+				await recordRemoteTrackingRef(this.exec, this.options(), state.authority.target.remote, state.authority.target.ref, head, state.original.lease);
 				await this.currentAuthority(state.authority, head, true);
 				state.attempts.push.state = "applied";
 				state.phase = "published";

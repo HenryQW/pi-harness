@@ -140,6 +140,7 @@ type Fixture = {
 	bare: string;
 	agentDir: string;
 	initial: string;
+	trackingUpdates: string[][];
 	world: { threadLocation: { line: number | null; startLine: number | null; isOutdated: boolean }; threadBody: string; resolved: boolean; body: string; baseOid: string; baseDriftOnRead: string | null; extraBody: string | null; replyBody: string | null; lateThreadComment: string | null; emptyReviewOnReply: boolean; concurrentBodyOnReply: string | null; failFeedbackAfterReply: boolean; replyCalls: number; loseReplyResponse: boolean; applyReply: boolean; mutationCalls: number; pushCalls: number; checkCalls: number; losePushResponse: boolean; applyPush: boolean; loseMutationResponse: boolean; applyMutation: boolean; loseCheckResponse: boolean; checkCode: number };
 	exec: Exec;
 	current: () => CurrentPullRequest;
@@ -167,7 +168,9 @@ function fixture(): Fixture {
 	git(root, "remote", "add", "origin", bare);
 	git(root, "push", "origin", `${initial}:refs/heads/feature`);
 	const world = { threadLocation: { line: 1 as number | null, startLine: null as number | null, isOutdated: false }, threadBody: "thread-1-comment", resolved: false, body: "please fix", baseOid: initial, baseDriftOnRead: null as string | null, extraBody: null as string | null, replyBody: null as string | null, lateThreadComment: null as string | null, emptyReviewOnReply: false, concurrentBodyOnReply: null as string | null, failFeedbackAfterReply: false, replyCalls: 0, loseReplyResponse: false, applyReply: true, mutationCalls: 0, pushCalls: 0, checkCalls: 0, losePushResponse: false, applyPush: true, loseMutationResponse: false, applyMutation: true, loseCheckResponse: false, checkCode: 0 };
+	const trackingUpdates: string[][] = [];
 	const exec: Exec = async (command, args, options) => {
+		if (command === "git" && args[0] === "update-ref") trackingUpdates.push([...args]);
 		if (command === "gh" && args[0] === "api" && options.stdin?.includes("addPullRequestReviewThreadReply")) {
 			world.replyCalls += 1;
 			const body = args.find((arg) => arg.startsWith("body="))?.slice(5);
@@ -255,7 +258,7 @@ function fixture(): Fixture {
 			...options,
 		});
 	};
-	return { root, bare, agentDir, initial, world, exec, current, workflow, cleanup: () => rmSync(temporary, { recursive: true, force: true }) };
+	return { root, bare, agentDir, initial, trackingUpdates, world, exec, current, workflow, cleanup: () => rmSync(temporary, { recursive: true, force: true }) };
 }
 
 async function publishRecorded(workflow: PullRequestCommentSweep, recorded: SweepStatus): Promise<SweepStatus> {
@@ -471,6 +474,8 @@ for (const mode of ["live", "triage-resume", "recorded-resume"] as const) test(`
 	await workflow.commit(state.guard, "fix: review");
 	const published = await publishRecorded(workflow, state);
 	assert.equal(app.world.pushCalls, 1);
+	assert.deepEqual(app.trackingUpdates, [["update-ref", "refs/remotes/origin/feature", published.publicationHead, app.initial]]);
+	assert.equal(git(app.root, "rev-parse", "refs/remotes/origin/feature"), published.publicationHead);
 	const path = await workflow.recoveryPath();
 	assert.equal(JSON.parse(readFileSync(path, "utf8")).authority.base.oid, app.initial, "frozen feedback keeps its base until refresh");
 	const refreshed = await workflow.refresh(published.guard);
@@ -1180,11 +1185,14 @@ test("resume reconciles a lost push response, rotates the run, and never replays
 	await workflow.validate(recorded.guard, []);
 	await assert.rejects(workflow.publish(recorded.guard), /push response lost/);
 	assert.equal(app.world.pushCalls, 1);
+	git(app.root, "update-ref", "refs/remotes/origin/feature", app.initial);
 	app.world.baseOid = "b".repeat(40);
 	const recovery = app.workflow(["33333333-3333-4333-8333-333333333333"]);
 	assert.equal(await recovery.recoveryLaunchAction(), "resume");
 	const resumed = await recovery.resume();
 	assert.equal(resumed.phase, "published");
+	assert.deepEqual(app.trackingUpdates, [["update-ref", "refs/remotes/origin/feature", resumed.publicationHead, app.initial]]);
+	assert.equal(git(app.root, "rev-parse", "refs/remotes/origin/feature"), resumed.publicationHead);
 	assert.equal(resumed.attempts.push, "applied");
 	assert.equal(resumed.guard.epoch, 2);
 	assert.notEqual(resumed.guard.runId, recorded.guard.runId);

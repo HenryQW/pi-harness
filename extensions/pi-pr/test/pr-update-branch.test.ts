@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
 import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
@@ -13,6 +13,8 @@ const oldHead = "a".repeat(40);
 const base = "b".repeat(40);
 const merged = "c".repeat(40);
 const cwd = process.cwd();
+const unexpectedCommands: string[] = [];
+afterEach(() => assert.deepEqual(unexpectedCommands.splice(0), []));
 const OPERATION_PATHS = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-no-operation-${index}`).join("\n") + "\n";
 
 function result(stdout = "", code = 0, stderr = ""): ExecResult {
@@ -80,6 +82,7 @@ test("fetches only the frozen base OID and skips merge when it is already an anc
 		if (command === "git" && args[0] === "fetch") return result();
 		if (command === "git" && args[0] === "cat-file") return result();
 		if (command === "git" && args[0] === "merge-base") return result();
+		unexpectedCommands.push(`Unexpected ${command} ${text}`);
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = updater(exec);
@@ -92,6 +95,7 @@ test("fetches only the frozen base OID and skips merge when it is already an anc
 });
 
 test("a base reported BEHIND without a conflict is updated like a conflict", async (t) => {
+	const trackingUpdates: string[][] = [];
 	const exec: Exec = async (command, args) => {
 		const inspection = cleanInspection(command, args);
 		if (inspection) return inspection;
@@ -100,7 +104,9 @@ test("a base reported BEHIND without a conflict is updated like a conflict", asy
 		if (command === "git" && args[0] === "status") return result();
 		if (command === "gh" && args[0] === "config") return result("ssh\n");
 		if (command === "git" && ["fetch", "cat-file", "merge-base"].includes(args[0]!)) return result();
+		if (command === "git" && args[0] === "update-ref") { trackingUpdates.push([...args]); return result(); }
 		if (command === "git" && args[0] === "ls-remote") return result(`${oldHead}\trefs/heads/feature\n`);
+		unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const behind = pullRequest({ conditions: { ...pullRequest().conditions, conflict: false, baseUpdateRequired: true } });
@@ -113,6 +119,7 @@ test("a base reported BEHIND without a conflict is updated like a conflict", asy
 		if (expectVerified) {
 			assert.deepEqual(await workflow.rebase(), { kind: "verified", head: oldHead });
 			assert.deepEqual(await workflow.publish(), { kind: "published", head: oldHead });
+			assert.deepEqual(trackingUpdates, [["update-ref", "refs/remotes/fork/feature", oldHead, oldHead]]);
 		} else {
 			assert.deepEqual(await workflow.rebase(), { kind: "stale", reason: "Required base update cleared; cancelled before rebase or publication", authority: settled });
 			await assert.rejects(workflow.rebase(), /already consumed/);
@@ -216,6 +223,7 @@ test("publishes one exact-OID refspec with the original lease and never replays 
 			pushes += 1;
 			throw new Error("response lost");
 		}
+		unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const app = updater(exec, [pullRequest()]);
@@ -259,6 +267,7 @@ test("does not push when HEAD or target authority changes after final base check
 				}
 				return result();
 			}
+			unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 			throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 		};
 		const app = updater(exec, loads);
@@ -347,6 +356,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 		target: { ...pullRequest().target, fetchSource: remote, remoteOid: featureHead },
 	});
 	let pushes = 0;
+	const trackingUpdates: string[][] = [];
 	let rebases = 0;
 	let stagingAttempts = 0;
 	let duringDiscovery: (() => void) | undefined;
@@ -365,6 +375,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 			args = args.map((value) => value === "git@github.com:acme/project.git" ? remote : value);
 		}
 		if (command === "git" && args[0] === "push") pushes += 1;
+		if (command === "git" && args[0] === "update-ref") trackingUpdates.push([...args]);
 		return await spawnBounded(command, args, options);
 	};
 	let liveAuthority = authority;
@@ -418,6 +429,10 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	assert.equal(pushes, 1);
 	assert.equal(git("ls-remote", remote, "refs/heads/feature").split("\t")[0], git("rev-parse", "HEAD"));
 	assert.equal(git("rev-parse", "refs/remotes/fork/feature"), verified.head);
+	assert.deepEqual(trackingUpdates.splice(0), [
+		["update-ref", "refs/remotes/fork/feature", verified.head, featureHead],
+		["update-ref", "refs/remotes/fork/feature", verified.head, ""],
+	]);
 	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), false);
 	await assert.rejects(resumed.publish(), /not ready to publish/);
 
@@ -444,6 +459,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	git("update-ref", "refs/remotes/fork/feature", featureHead);
 	assert.deepEqual(await reconciled.publish(), { kind: "published", head: verified.head });
 	assert.equal(git("rev-parse", "refs/remotes/fork/feature"), verified.head);
+	assert.deepEqual(trackingUpdates.splice(0), [["update-ref", "refs/remotes/fork/feature", verified.head, featureHead]]);
 	assert.equal(pushes, 1);
 	// Recovery appearing after route reservation must not be hidden by safe-looking drift.
 	for (const phase of ["pending", "verified"] as const) {

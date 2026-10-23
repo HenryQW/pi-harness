@@ -11,6 +11,7 @@ import {
 	inspectWorktreeState,
 	parseSingleOutputLine,
 	parseStatusSnapshot,
+	recordRemoteTrackingRef,
 	validatePaths,
 	withWorktreeLock,
 } from "../extensions/pr-execution.ts";
@@ -33,6 +34,46 @@ async function worktreeLockPath(root: string, agentDir: string): Promise<string>
 	const lockNamespace = resolve(extensionConfigDir("pi-pr", agentDir));
 	return join(lockNamespace, "worktree-locks", `${createHash("sha256").update(canonical).digest("hex")}.lock`);
 }
+
+test("tracking repair uses the saved lease and preserves concurrent fetches", async (t) => {
+	const root = await temporaryGitRepository("pi-pr-tracking-");
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const tree = (await git(root, ["mktree"])).trim();
+	const commit = async (message: string, parent?: string) => (await git(root, [
+		"-c", "user.name=Tracking Test", "-c", "user.email=tracking@example.test",
+		"commit-tree", tree, "-m", message, ...(parent ? ["-p", parent] : []),
+	])).trim();
+	const lease = await commit("original");
+	const head = await commit("published", lease);
+	const rewritten = await commit("rewritten");
+	const concurrent = await commit("concurrent", head);
+	const ref = "refs/remotes/origin/feature";
+	for (const published of [head, rewritten]) {
+		for (const initial of [lease, null]) {
+			await git(root, ["update-ref", "-d", ref]);
+			if (initial) await git(root, ["update-ref", ref, initial]);
+			await recordRemoteTrackingRef(spawnBounded, { cwd: root }, "origin", "feature", published, lease);
+			assert.equal((await git(root, ["rev-parse", ref])).trim(), published);
+		}
+	}
+	await git(root, ["update-ref", "-d", ref]);
+	await recordRemoteTrackingRef(spawnBounded, { cwd: root }, "origin", "feature", head, null);
+	assert.equal((await git(root, ["rev-parse", ref])).trim(), head);
+	for (const timing of ["before-helper", "before-update", "before-create"] as const) {
+		await git(root, ["update-ref", ref, timing === "before-helper" ? concurrent : lease]);
+		let calls = 0;
+		await recordRemoteTrackingRef(async (command, args, options) => {
+			calls += 1;
+			if (timing === "before-update" || timing === "before-create" && calls === 2) {
+				await git(root, ["update-ref", ref, concurrent]);
+			} else if (timing === "before-create" && calls === 1) {
+				await git(root, ["update-ref", "-d", ref]);
+			}
+			return await spawnBounded(command, args, options);
+		}, { cwd: root }, "origin", "feature", head, lease);
+		assert.equal((await git(root, ["rev-parse", ref])).trim(), concurrent, timing);
+	}
+});
 
 test("parses only one nonempty CRLF-normalized output line", () => {
 	assert.equal(parseSingleOutputLine("value\r\n", "sample"), "value");

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
 import { PullRequestCiFixer, StaleCiCollect } from "../extensions/pr-ci.ts";
@@ -12,6 +12,8 @@ const original = "a".repeat(40);
 const repair = "b".repeat(40);
 const base = "c".repeat(40);
 const cwd = process.cwd();
+const unexpectedCommands: string[] = [];
+afterEach(() => assert.deepEqual(unexpectedCommands.splice(0), []));
 const operationPaths = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-ci-no-operation-${index}`).join("\n") + "\n";
 const fixtureRunId = Symbol("fixtureRunId");
 
@@ -237,6 +239,7 @@ function harness(scenario: Scenario) {
 		if (command === "git" && args[0] === "ls-remote") {
 			return result(`${scenario.remoteHeads?.[remoteHeadIndex++] ?? remoteHead}\trefs/heads/feature\n`);
 		}
+		if (command === "git" && JSON.stringify(args) === JSON.stringify(["update-ref", "refs/remotes/fork/feature", repair, original])) return result();
 		if (command === "git" && args[0] === "push") {
 			if (scenario.push === "lost-applied") {
 				remoteHead = repair;
@@ -246,6 +249,7 @@ function harness(scenario: Scenario) {
 			remoteHead = repair;
 			return result("ok\n");
 		}
+		unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const workflow = new PullRequestCiFixer({
@@ -702,6 +706,8 @@ test("allows unrelated running checks and jobs to succeed before publication", a
 	await app.workflow.collect();
 	app.setLocalHead(repair);
 	assert.deepEqual(await app.workflow.publish(), { kind: "published", head: repair, attempt: "applied" });
+	assert.deepEqual(app.calls.filter(({ args }) => args[0] === "update-ref").map(({ args }) => args),
+		[["update-ref", "refs/remotes/fork/feature", repair, original]]);
 });
 
 test("rejects new failures or changed original failure evidence before publication", async (t) => {
@@ -733,6 +739,8 @@ test("classifies a lost push response as applied from the remote postcondition a
 	await app.workflow.collect();
 	app.setLocalHead(repair);
 	assert.deepEqual(await app.workflow.publish(), { kind: "published", head: repair, attempt: "applied" });
+	assert.deepEqual(app.calls.filter(({ args }) => args[0] === "update-ref").map(({ args }) => args),
+		[["update-ref", "refs/remotes/fork/feature", repair, original]]);
 	await assert.rejects(app.workflow.publish(), /unavailable or was already consumed/);
 	assert.equal(app.calls.filter(({ command, args }) => command === "git" && args[0] === "push").length, 1);
 });
@@ -743,6 +751,8 @@ test("captures repair HEAD internally and pushes one explicit OID refspec with a
 	await app.workflow.collect();
 	app.setLocalHead(repair);
 	await app.workflow.publish();
+	assert.deepEqual(app.calls.filter(({ args }) => args[0] === "update-ref").map(({ args }) => args),
+		[["update-ref", "refs/remotes/fork/feature", repair, original]]);
 	const pushes = app.calls.filter(({ command, args }) => command === "git" && args[0] === "push");
 	assert.deepEqual(pushes.map(({ args }) => args), [[
 		"push",

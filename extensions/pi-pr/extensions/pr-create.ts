@@ -357,7 +357,7 @@ export class PullRequestCreator {
 				throw new Error("Published remote ref did not match captured HEAD");
 			}
 			this.run.observeRemote(head);
-			await recordRemoteTrackingRef(this.exec, this.options(), this.target.remote, this.target.ref, head);
+			await recordRemoteTrackingRef(this.exec, this.options(), this.target.remote, this.target.ref, head, original);
 			this.state.phase = "pushed";
 			if (this.noTarget) {
 				await this.configureNoTargetUpstream(head);
