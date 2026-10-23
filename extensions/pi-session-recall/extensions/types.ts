@@ -31,12 +31,12 @@ export interface PreparationSessionRow extends SessionRow {
 /** One metadata-only FTS discovery hit. */
 export interface SearchHit {
 	path: string;
-	entryId: string;
-	role: string;
-	timestamp: string;
 	snippet: string;
 	/** BM25 rank position (0 = best). */
 	rank: number;
+	matchMessageId: string;
+	role: string;
+	timestamp: string;
 	/** Session metadata joined from the sessions table. */
 	cwd?: string;
 	name?: string;

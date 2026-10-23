@@ -456,11 +456,6 @@ export function syncSessions(
 	const batch = changed.slice(0, cap);
 	for (const { path: p, stat } of batch) {
 		try {
-			// ponytail: byte-level work bound — skip instead of streaming files that
-			// are huge enough to block the event loop; raise the cap or stream the
-			// parser if real sessions ever hit it. Optimization only: readBoundedSnapshot
-			// re-validates size/type on its own descriptor at the parse boundary.
-			if (stat.size > maxFileBytes) throw new Error("session file exceeds indexing size cap");
 			tx(p, stat);
 			filesProcessed++;
 		} catch {
@@ -630,11 +625,11 @@ export function searchIndex(
 		// before the LIMIT, so excluded or fork rows cannot starve matches.
 		const hits: SearchHit[] = (rows as RawRow[]).map((r, rank) => ({
 			path: r.path,
-			entryId: r.entry_id,
-			role: r.role,
-			timestamp: r.timestamp ?? "",
 			snippet: r.snip ?? "",
 			rank,
+			matchMessageId: r.entry_id,
+			role: r.role,
+			timestamp: r.timestamp ?? "",
 			cwd: r.cwd ?? undefined,
 			name: r.name ?? undefined,
 			startedAt: r.started_at ?? undefined,

@@ -41,12 +41,9 @@ interface Entry {
 }
 
 /** Project a boundary entry onto the shape hydration consumes. Entries without
- *  a validated id pair are dropped (they carry no hydratable position); the
- *  raw data must be a JSON object for any projection beyond id/parentId to
- *  exist at all. */
+ *  a validated id pair are dropped (they carry no hydratable position). */
 function toEntry(t: TranscriptEntry): Entry | null {
 	if (t.id === undefined) return null;
-	if (t.data === null || typeof t.data !== "object") return null;
 	const rec = t.data as Record<string, unknown>;
 	const message = rec.message !== null && typeof rec.message === "object"
 		? (rec.message as Entry["message"])
@@ -161,7 +158,7 @@ function toWindowMessage(e: Entry): WindowMessage {
 		entryId: e.id,
 		role: typeof m.role === "string" ? m.role.slice(0, 32) : "",
 		content,
-		timestamp: typeof e.timestamp === "string" ? e.timestamp.slice(0, 128) : "",
+		timestamp: e.timestamp?.slice(0, 128) ?? "",
 	};
 }
 

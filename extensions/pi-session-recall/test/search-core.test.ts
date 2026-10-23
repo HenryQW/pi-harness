@@ -101,7 +101,7 @@ describe("sync + BM25 search", () => {
 		const { hits } = searchIndex(dbPath, "deploy pipeline");
 		assert.ok(hits.length > 0, "expected at least one hit");
 		assert.equal(hits[0].path, path.join(sessionsDir, "--users-tester-proj--", "a.jsonl"));
-		assert.ok(["u1", "a1"].includes(hits[0].entryId), `unexpected entry ${hits[0].entryId}`);
+		assert.ok(["u1", "a1"].includes(hits[0].matchMessageId), `unexpected entry ${hits[0].matchMessageId}`);
 		assert.ok(hits[0].snippet.length > 0 && /[[]/.test(hits[0].snippet), "snippet should contain markers");
 
 		// thinking / toolResult / compaction absent
@@ -343,9 +343,9 @@ describe("lineage + guards", () => {
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
 		const hit = searchIndex(dbPath, "suffixid beta").hits[0];
 		assert.ok(hit, "message with #h-suffixed real id is found");
-		assert.equal(hit.entryId, "u2#h", "hit carries the exact source id");
+		assert.equal(hit.matchMessageId, "u2#h", "hit carries the exact source id");
 		// The exact hit id anchors a window (the discovery→scroll flow).
-		const w = getWindow(path.join(sessionsDir, "--suffix-ids--", "sid.jsonl"), hit.entryId, 5);
+		const w = getWindow(path.join(sessionsDir, "--suffix-ids--", "sid.jsonl"), hit.matchMessageId, 5);
 		assert.ok(w.messages.some((m) => m.entryId === "u2#h" && m.anchor === true));
 	});
 
@@ -504,7 +504,7 @@ describe("lineage + guards", () => {
 		syncSessions(sessionsDir, dbPath);
 		const { hits } = searchIndex(dbPath, "NEAR(a aaa,0)");
 		assert.equal(hits.length, 1);
-		assert.equal(hits[0].entryId, "ov-u1");
+		assert.equal(hits[0].matchMessageId, "ov-u1");
 	});
 
 	it("NEAR with hundreds of repeated common operands still matches after deduplication", () => {
@@ -520,7 +520,7 @@ describe("lineage + guards", () => {
 		syncSessions(sessionsDir, dbPath);
 		const { hits } = searchIndex(dbPath, query);
 		assert.equal(hits.length, 1);
-		assert.equal(hits[0].entryId, "dd-u1");
+		assert.equal(hits[0].matchMessageId, "dd-u1");
 		// A missing distinct operand still gates the whole NEAR expression.
 		const gated = searchIndex(dbPath, `NEAR(${Array<string>(100).fill("rs").join(" ")} zebraqqq,10)`);
 		assert.equal(gated.hits.length, 0);
@@ -538,7 +538,7 @@ describe("lineage + guards", () => {
 		assert.equal(buildFtsQueryPlan(query).forceLike, true);
 		const { hits } = searchIndex(dbPath, query);
 		assert.equal(hits.length, 1);
-		assert.equal(hits[0].entryId, "ns1");
+		assert.equal(hits[0].matchMessageId, "ns1");
 		// A missing distinct operand still gates the expression closed.
 		assert.equal(searchIndex(dbPath, "NEAR(🧪 absent🧪,0)").hits.length, 0);
 	});
@@ -779,11 +779,11 @@ describe("incompatible index schema", () => {
 			// Ordinary Boolean AND matches terms across both retained regions of one row.
 			const hit = searchIndex(dbPath, "ZqHeadStart ZqTailEnd").hits[0];
 			assert.ok(hit, "AND matches across head and tail columns");
-			assert.equal(hit.entryId, "rg1", "source entry id preserved exactly");
+			assert.equal(hit.matchMessageId, "rg1", "source entry id preserved exactly");
 			// Forced-LIKE path (every term <3 code points) must also AND across regions.
 			const likeHit = searchIndex(dbPath, "k7 AND m9").hits[0];
 			assert.ok(likeHit, "boolean LIKE fallback matches across head and tail columns");
-			assert.equal(likeHit.entryId, "rg1", "LIKE fallback preserves source entry id exactly");
+			assert.equal(likeHit.matchMessageId, "rg1", "LIKE fallback preserves source entry id exactly");
 		});
 
 		it("files over the byte cap are skipped without reading, recorded as failures", async () => {

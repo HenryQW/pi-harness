@@ -232,17 +232,6 @@ function buildPreparationResult(
 	return build(allocated, inventory, contentTruncated);
 }
 
-interface ToolParams {
-	operation?: "prepare-pattern-miner";
-	scope?: "repository" | "all";
-	query?: string;
-	sessionId?: string;
-	aroundMessageId?: string;
-	branchTip?: string;
-	window?: number;
-	limit?: number;
-}
-
 // Output schema: one variant per mode, discriminated by `mode`. Codemode scripts
 // receive this structured value; the model receives the identical JSON text.
 const Nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
@@ -430,7 +419,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 		// Failures throw: Pi marks the result as an error for the model, and
 		// codemode scripts reject instead of receiving a success-shaped value.
-		async execute(_toolCallId, params: ToolParams, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (params.scope !== undefined && params.operation === undefined) {
 				throw new Error("scope requires operation: prepare-pattern-miner.");
 			}
@@ -528,21 +517,10 @@ export default function (pi: ExtensionAPI): void {
 			});
 
 			const resultQuery = params.query!.trim().slice(0, MAX_QUERY_CHARS);
-			const results = hits.map((hit) => ({
-				path: hit.path,
-				snippet: hit.snippet,
-				rank: hit.rank,
-				matchMessageId: hit.entryId,
-				role: hit.role,
-				timestamp: hit.timestamp,
-				cwd: hit.cwd,
-				name: hit.name,
-				startedAt: hit.startedAt,
-			}));
 			return textResult({
 				mode: "discovery",
 				query: resultQuery,
-				results,
+				results: hits,
 				backlogRemaining,
 				...(syncWarning ? { syncWarning } : {}),
 			});
@@ -550,11 +528,11 @@ export default function (pi: ExtensionAPI): void {
 	});
 }
 
-function textResult(result: unknown) {
+function textResult(result: Record<string, unknown>) {
 	let bounded = result;
 	let text = JSON.stringify(bounded);
-	if (text.length > OUTPUT_CHAR_BUDGET && bounded && typeof bounded === "object" && !Array.isArray(bounded)) {
-		const copy: Record<string, unknown> = { ...(bounded as Record<string, unknown>), contentTruncated: true };
+	if (text.length > OUTPUT_CHAR_BUDGET) {
+		const copy: Record<string, unknown> = { ...bounded, contentTruncated: true };
 		for (const key of ["results", "sessions", "messages"] as const) {
 			if (Array.isArray(copy[key])) copy[key] = [...copy[key] as unknown[]];
 		}
