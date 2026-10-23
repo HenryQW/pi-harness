@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-advisor",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Opt-in second-model review of each Pi agent run after it settles, with graded notes and one blocker follow-up.",
   "keywords": [
     "pi-package",

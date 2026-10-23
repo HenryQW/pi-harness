@@ -106,7 +106,7 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 	const reportTaskModels = registerTaskModelsConfigReporting(pi);
 	// Transient state only; on/off state is always derived from the branch.
 	let malformedShown = false;
-	let runStart: { session: string; leaf: string | null } | undefined;
+	let runLeaf: string | null | undefined;
 	let active: AbortController | undefined;
 
 	/** Pi routes only: when no Task Profile route resolves, the review does not use the session model. */
@@ -184,14 +184,9 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => {
-		cancel(ctx);
-		malformedShown = false;
-		runStart = undefined;
-	});
 	// Fires once for each run that a user message or an idle triggerTurn message starts, before the message is appended.
 	pi.on("before_agent_start", (_event, ctx) => {
-		runStart = { session: ctx.sessionManager.getSessionId(), leaf: ctx.sessionManager.getLeafId() };
+		runLeaf = ctx.sessionManager.getLeafId();
 	});
 	pi.on("input", (_event, ctx) => {
 		cancel(ctx);
@@ -204,10 +199,10 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 	// Pi emits agent_settled only when no retry, compaction, or queued continuation will run, so the review never races another handler.
 	pi.on("agent_settled", (event, ctx) => {
 		cancel(ctx);
-		if (event.aborted || !ctx.hasUI || runStart?.session !== ctx.sessionManager.getSessionId()) return;
+		if (event.aborted || !ctx.hasUI || runLeaf === undefined) return;
 		const branch = ctx.sessionManager.getBranch();
 		if (!advisorEnabled(branch)) return;
-		const run = runEntries(branch, runStart.leaf);
+		const run = runEntries(branch, runLeaf);
 		const last = run?.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
 		if (last?.type !== "message" || last.message.role !== "assistant" || last.message.stopReason !== "stop") return;
 		const input = reviewInput(branch, run!);
