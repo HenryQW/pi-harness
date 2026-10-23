@@ -417,6 +417,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	assert.deepEqual(await resumed.publish(), { kind: "published", head: git("rev-parse", "HEAD") });
 	assert.equal(pushes, 1);
 	assert.equal(git("ls-remote", remote, "refs/heads/feature").split("\t")[0], git("rev-parse", "HEAD"));
+	assert.equal(git("rev-parse", "refs/remotes/fork/feature"), verified.head);
 	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), false);
 	await assert.rejects(resumed.publish(), /not ready to publish/);
 
@@ -440,7 +441,9 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: publishedAuthority }) });
 	assert.equal(await reconciled.recoveryLaunchAction(), "rebase");
 	await reconciled.rebase();
+	git("update-ref", "refs/remotes/fork/feature", featureHead);
 	assert.deepEqual(await reconciled.publish(), { kind: "published", head: verified.head });
+	assert.equal(git("rev-parse", "refs/remotes/fork/feature"), verified.head);
 	assert.equal(pushes, 1);
 	// Recovery appearing after route reservation must not be hidden by safe-looking drift.
 	for (const phase of ["pending", "verified"] as const) {
