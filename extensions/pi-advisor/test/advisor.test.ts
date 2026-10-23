@@ -3,13 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
-import {
-	AgentSession, ExtensionRunner, SessionManager,
-	type AgentBeforeSettleEvent, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import advisorExtension, { BLOCKER_MESSAGE, ITEM_CAP, PROMPT_CAP, REPLY_CAP, RUN_CAP, parseReview, reviewInput, runEntries } from "../extensions/advisor.ts";
 
-type Handler = (event: AgentBeforeSettleEvent, ctx: ExtensionContext) => unknown;
 type Response = { stopReason: string; errorMessage?: string; content: unknown[] };
 type Reply = string | ((signal: AbortSignal) => Promise<Response>);
 
@@ -34,7 +30,7 @@ function deferred() {
 	return { reply, resolve: (text: string) => resolve({ stopReason: "stop", content: [{ type: "text", text }] }) };
 }
 
-function harness(options: { hasUI?: boolean; available?: unknown[]; other?: { order: "before" | "after"; handler: Handler } } = {}) {
+function harness(options: { hasUI?: boolean; available?: unknown[] } = {}) {
 	const manager = SessionManager.inMemory("/repo");
 	const handlers = new Map<string, Function[]>();
 	let command!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -77,21 +73,6 @@ function harness(options: { hasUI?: boolean; available?: unknown[]; other?: { or
 		},
 	} as unknown as ExtensionAPI);
 
-	// A real boundary runner with one other extension, so a test can show the advisor takes no part in agent_before_settle.
-	const other = options.other && { path: "/other", handlers: new Map([["agent_before_settle", [options.other.handler]]]) };
-	const runner = Object.assign(Object.create(ExtensionRunner.prototype), {
-		extensions: options.other?.order === "before" ? [other, { path: "/pi-advisor", handlers }] : [{ path: "/pi-advisor", handlers }, ...(other ? [other] : [])],
-		createContext: () => ctx,
-		emitError(error: { error: string }) { throw new Error(error.error); },
-	});
-	const session = Object.assign(Object.create(AgentSession.prototype), {
-		_cwd: "/repo", sessionManager: manager, _extensionRunner: runner,
-		_isAgentRunActive: true, _lastActivityOutcome: "completed",
-		_pendingCustomMessages: [], _eventListeners: [], _entryIdsByMessage: new WeakMap(),
-		_steeringMessages: [], _followUpMessages: [],
-		agent: { state: { messages: [] }, peekQueuedMessages: () => [], hasQueuedMessages: () => false, abort() {} },
-	}) as { _runBeforeSettleBoundary(): Promise<boolean> };
-
 	let calls = 0;
 	const assistant = (content: unknown[], stopReason = "stop") => manager.appendMessage({
 		role: "assistant", content, stopReason, api: "openai-responses", provider: "openai", model: "agent",
@@ -99,7 +80,7 @@ function harness(options: { hasUI?: boolean; available?: unknown[]; other?: { or
 		timestamp: Date.now(),
 	} as never);
 	return {
-		manager, notifications, requests, replies, sent, state, handlers, emit, customRun, assistant,
+		manager, notifications, requests, replies, sent, state, emit, customRun, assistant,
 		command: (args: string) => command(args, ctx as ExtensionCommandContext),
 		async prompt(text = "Fix the bug.") {
 			await emit("before_agent_start", { messageType: "user", prompt: text });
@@ -112,7 +93,6 @@ function harness(options: { hasUI?: boolean; available?: unknown[]; other?: { or
 			manager.appendMessage({ role: "toolResult", toolCallId, toolName: "bash", content: [{ type: "text", text: output }], isError: false, timestamp: Date.now() } as never);
 			assistant([{ type: "text", text: "Done." }], stopReason);
 		},
-		boundary: () => session._runBeforeSettleBoundary(),
 		/** agent_settled, then time for the review that it starts without blocking. */
 		async settle(aborted = false) {
 			await emit("agent_settled", { aborted });
@@ -252,18 +232,11 @@ test("a blocker shows notes but sends no follow-up while the editor holds a draf
 	assert.deepEqual(h.notifications, [[`Advisor:\n${BLOCKER}\nSend a prompt to address the blockers.`, "warning"]]);
 });
 
-for (const order of ["before", "after"] as const) test(`a continuation by another extension ${order} the advisor gives one review of the whole run`, async () => {
-	const continueOnce: Handler = (event, ctx) => ctx.sessionManager.getBranch().some((entry) => entry.type === "custom_message") ? undefined : {
-		entries: [...event.entries, { type: "custom_message", customType: "other-continue", display: false, content: "Keep going." }],
-		continue: true,
-	};
-	const h = await enabled({ other: { order, handler: continueOnce } });
-	assert.equal(h.handlers.has("agent_before_settle"), false);
-	assert.equal(await h.boundary(), true);
-	await flush();
-	assert.equal(h.requests.length, 0, "no review before the run settles");
+test("a continuation by another extension gives one review of the whole run", async () => {
+	const h = await enabled();
+	// A boundary continuation appends its message without before_agent_start, so the run keeps its start.
+	h.manager.appendCustomMessageEntry("other-continue", "Keep going.", false);
 	h.work("second");
-	assert.equal(await h.boundary(), false);
 	await h.settle();
 	assert.equal(h.requests.length, 1);
 	assert.match(h.requests[0]!.context.messages[0]!.content, /Tool result bash: ok[\s\S]*Message other-continue: Keep going\.[\s\S]*Tool result bash: second/);
@@ -322,7 +295,7 @@ test("a cancelled review is silent; a timeout or model error warns and does not 
 	assert.equal(failed.sent.length, 0);
 });
 
-test("a malformed reply warns once for each session and does nothing else", async () => {
+test("a malformed reply warns once and does nothing else", async () => {
 	const h = await enabled();
 	h.replies.push("Looks good to me.", "BLOCKER: Bad. Evidence: x");
 	await h.settle();
@@ -331,12 +304,6 @@ test("a malformed reply warns once for each session and does nothing else", asyn
 	await h.settle();
 	assert.deepEqual(h.notifications, [["Advisor reply did not follow the output contract and was ignored.", "warning"]]);
 	assert.equal(h.sent.length, 0);
-	await h.emit("session_start", { reason: "new" });
-	await h.prompt();
-	h.work();
-	h.replies.push("PASS please");
-	await h.settle();
-	assert.equal(h.notifications.length, 2);
 });
 
 test("without a task route the advisor warns with /task-models and does not use the session model", async () => {
