@@ -11,7 +11,7 @@ export interface AddedDir {
 export interface DirContext {
 	agentsMd: string | null;
 	claudeMd: string | null;
-	skills: Set<string>;
+	skills: string[];
 }
 
 const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
@@ -95,7 +95,7 @@ export function scanDirContext(dir: string): DirContext {
 	return {
 		agentsMd: readContextFile(dir, "AGENTS.md"),
 		claudeMd: readContextFile(dir, "CLAUDE.md"),
-		skills: new Set(skillFiles(dir).map(({ name }) => name)),
+		skills: skillFiles(dir).map(({ name }) => name),
 	};
 }
 
