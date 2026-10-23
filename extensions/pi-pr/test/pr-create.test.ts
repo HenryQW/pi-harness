@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import { PullRequestCreator } from "../extensions/pr-create.ts";
 import type { BranchCreationState, PullRequestTarget } from "../extensions/pr-routing.ts";
@@ -12,6 +12,8 @@ import { PrRun } from "../extensions/pr-run.ts";
 const base = "a".repeat(40);
 const head = "b".repeat(40);
 const cwd = process.cwd();
+const unexpectedCommands: string[] = [];
+afterEach(() => assert.deepEqual(unexpectedCommands.splice(0), []));
 const url = "https://github.com/acme/project/pull/42";
 const OPERATION_PATHS = Array.from({ length: 6 }, (_, index) => `/tmp/pi-pr-create-no-operation-${index}`).join("\n") + "\n";
 
@@ -154,6 +156,7 @@ test("successful no-target upstream setup revalidates a changed configured push 
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
 		if (command === "git" && args[0] === "merge-base") return result();
 		if (command === "git" && args[0] === "push") return result("ok\n");
+		if (command === "git" && args[0] === "update-ref") return result();
 		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
 		if (command === "git" && args[0] === "fetch") {
 			tracking = true;
@@ -167,6 +170,7 @@ test("successful no-target upstream setup revalidates a changed configured push 
 			return result();
 		}
 		if (command === "git" && args[0] === "for-each-ref") return result(upstream ? "origin/feature\n" : "\n");
+		unexpectedCommands.push(`Unexpected ${command} ${text}`);
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = creator(exec, target(true));
@@ -174,6 +178,8 @@ test("successful no-target upstream setup revalidates a changed configured push 
 	// Push must compare against the original no-target authority, not the post-push discovery fixture.
 	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => ({ kind: "none", creationTarget: discoveredTarget });
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	assert.deepEqual(calls.filter(([command, args]) => command === "git" && args[0] === "update-ref").map(([, args]) => args),
+		[["update-ref", "refs/remotes/origin/feature", head, ""]]);
 	discoveredTarget = { ...target(false), ref: "renamed", remoteOid: head };
 	await assert.rejects(app.workflow.publish("feat: publish", "expected"), /Published target authority changed/);
 	assert.deepEqual(calls.find(([command, args]) => command === "git" && args[0] === "push"), ["git", [
@@ -204,6 +210,7 @@ test("a successful push remains publishable when no-target upstream setup fails"
 			pushes += 1;
 			return result("ok\n");
 		}
+		if (command === "git" && args[0] === "update-ref") return result();
 		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
 		if (command === "git" && args[0] === "fetch") return result("", 1, "upstream fetch failed\n");
 		if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
@@ -216,6 +223,7 @@ test("a successful push remains publishable when no-target upstream setup fails"
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
+		unexpectedCommands.push(`Unexpected ${command} ${text}`);
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = creator(exec, target(true));
@@ -224,6 +232,8 @@ test("a successful push remains publishable when no-target upstream setup fails"
 		kind: "none", creationTarget: target(true),
 	});
 	await assert.rejects(app.workflow.push(), /Fetch branch tracking ref failed/);
+	assert.deepEqual(calls.filter(([command, args]) => command === "git" && args[0] === "update-ref").map(([, args]) => args),
+		[["update-ref", "refs/remotes/origin/feature", head, ""]]);
 	assert.equal(app.workflow.state.phase, "pushed");
 	const callsAfterFailure = calls.length;
 	await assert.rejects(app.workflow.push(), /not ready to push/);
@@ -244,10 +254,12 @@ test("configured-target pushes never read or change upstream", async (t) => {
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
 		if (command === "git" && args[0] === "merge-base") return result();
 		if (command === "git" && args[0] === "push") return result("ok\n");
+		if (command === "git" && args[0] === "update-ref") return result();
 		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
 		if (command === "git" && (args[0] === "config" || args[0] === "fetch" || args[0] === "branch")) {
 			throw new Error("configured target must not touch upstream");
 		}
+		unexpectedCommands.push(`Unexpected ${command} ${text}`);
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = creator(exec, target(false));
@@ -255,6 +267,8 @@ test("configured-target pushes never read or change upstream", async (t) => {
 	(app.workflow as unknown as { load: () => Promise<unknown> }).load = async () => none(target(false));
 
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	assert.deepEqual(calls.filter(([command, args]) => command === "git" && args[0] === "update-ref").map(([, args]) => args),
+		[["update-ref", "refs/remotes/origin/feature", head, target(false).remoteOid]]);
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "config"), false);
 	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "fetch"), false);
 	assert.equal(calls.some(([command, args]) =>
@@ -280,6 +294,7 @@ test("creates an organization-owned same-repository PR with an unqualified head"
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
+		unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const app = creator(exec, target(false));
@@ -345,6 +360,7 @@ test("preflights and creates an organization-owned cross-repository PR through e
 			published = true;
 			return result("ok\n");
 		}
+		if (command === "git" && args[0] === "update-ref") return result();
 		if (command === "git" && args[0] === "ls-remote") {
 			return result(`${published ? head : remoteHead}\trefs/heads/feature\n`);
 		}
@@ -354,6 +370,7 @@ test("preflights and creates an organization-owned cross-repository PR through e
 				headRefOid: head, headRepository: { nameWithOwner: headRepository }, title: "feat: publish", body,
 			}));
 		}
+		unexpectedCommands.push(`Unexpected ${command} ${text}`);
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = creator(exec, creationTarget);
@@ -366,6 +383,8 @@ test("preflights and creates an organization-owned cross-repository PR through e
 		none({ ...creationTarget, remoteOid: published ? head : remoteHead });
 
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	assert.deepEqual(calls.filter(({ command, args }) => command === "git" && args[0] === "update-ref").map(({ args }) => args),
+		[["update-ref", "refs/remotes/origin/feature", head, remoteHead]]);
 	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url: prUrl });
 	const preflightIndex = calls.findIndex(({ command, args }) =>
 		command === "gh" && args.some((arg) => arg.includes("createInput:__type"))
@@ -407,6 +426,7 @@ test("rejects an unsupported organization cross-repository API before pushing", 
 		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
 		if (command === "git" && args[0] === "merge-base") return result();
+		unexpectedCommands.push(`Unexpected ${command} ${text}`);
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const app = creator(exec, creationTarget);
@@ -459,6 +479,7 @@ test("keeps user-owned fork creation on gh pr create with a qualified head", asy
 			published = true;
 			return result("ok\n");
 		}
+		if (command === "git" && args[0] === "update-ref") return result();
 		if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${prUrl}\n`);
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") {
@@ -467,6 +488,7 @@ test("keeps user-owned fork creation on gh pr create with a qualified head", asy
 				headRefOid: head, headRepository: { nameWithOwner: headRepository }, title: "feat: publish", body,
 			}));
 		}
+		unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const app = creator(exec, creationTarget);
@@ -479,6 +501,8 @@ test("keeps user-owned fork creation on gh pr create with a qualified head", asy
 		none({ ...creationTarget, remoteOid: published ? head : creationTarget.remoteOid });
 
 	assert.deepEqual(await app.workflow.push(), { kind: "pushed", head });
+	assert.deepEqual(calls.filter(({ command, args }) => command === "git" && args[0] === "update-ref").map(({ args }) => args),
+		[["update-ref", "refs/remotes/origin/feature", head, creationTarget.remoteOid]]);
 	assert.deepEqual(await app.workflow.publish("feat: publish", body), { kind: "published", url: prUrl });
 	const mutation = calls.find(({ command, args }) => command === "gh" && args[0] === "pr" && args[1] === "create");
 	assert.deepEqual(mutation?.args, [
@@ -529,6 +553,7 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 			if (command === "git" && args[0] === "rev-list" && args[1] === "--count") return result("1\n");
 			if (command === "git" && args[0] === "cat-file") return result();
 			if (command === "gh" && args[0] === "api" && args[1] === "graphql") return result(baseOutput(candidate.selected));
+			unexpectedCommands.push(`Unexpected ${command} ${text}`);
 			throw new Error(`Unexpected ${command} ${text}`);
 		};
 		const workflow = new PullRequestCreator({
@@ -598,6 +623,7 @@ test("prepare accepts untracked dirty work with no commits ahead", async (t) => 
 			if (command === "git" && args[0] === "rev-list") return result("0\n");
 			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result("?? pending.ts\n");
 			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+			unexpectedCommands.push(`Unexpected ${command} ${text}`);
 			throw new Error(`Unexpected ${command} ${text}`);
 		},
 		loadCurrentPullRequest: async () => none(creationTarget, {
@@ -638,6 +664,7 @@ test("prepare rejects dirty-only eligibility that disappears during preparation"
 			if (command === "git" && args[0] === "rev-list") return result("0\n");
 			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result("?? pending.ts\n");
 			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+			unexpectedCommands.push(`Unexpected ${command} ${text}`);
 			throw new Error(`Unexpected ${command} ${text}`);
 		},
 		loadCurrentPullRequest: async () => none(creationTarget, {
@@ -678,6 +705,7 @@ test("prepare rejects a shared preflight with no commits ahead", async (t) => {
 			if (command === "git" && args[0] === "rev-list") return result("0\n");
 			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
 			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+			unexpectedCommands.push(`Unexpected ${command} ${text}`);
 			throw new Error(`Unexpected ${command} ${text}`);
 		},
 		loadCurrentPullRequest: async () => none(creationTarget),
@@ -694,6 +722,7 @@ for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as 
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const creationTarget = target(false);
 	let pushed = false;
+	const trackingUpdates: string[][] = [];
 	let appeared = false;
 	let metadata = { title: "Existing title", body: "Existing body" };
 	const mutations: string[] = [];
@@ -706,6 +735,7 @@ for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as 
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
 		if (command === "git" && args[0] === "merge-base") return result();
 		if (command === "git" && args[0] === "push") { pushed = true; return result(); }
+		if (command === "git" && args[0] === "update-ref") { trackingUpdates.push([...args]); return result(); }
 		if (command === "git" && args[0] === "ls-remote") return result(`${pushed ? head : creationTarget.remoteOid}\trefs/heads/feature\n`);
 		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
 		if (command === "gh" && args[0] === "api") {
@@ -722,6 +752,7 @@ for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as 
 			metadata = { title: args[args.indexOf("--title") + 1]!, body: options.stdin! };
 			return result();
 		}
+		unexpectedCommands.push(`Unexpected ${command} ${text}`);
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
 	const workflow = new PullRequestCreator({ run: new PrRun(), cwd, agentDir, target: creationTarget, exec,
@@ -732,6 +763,7 @@ for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as 
 	workflow.state.verifiedHead = head;
 	workflow.state.base = { host: "github.com", repository: "acme/project", ref: "main", oid: base, fetchSource: "git@github.com:acme/project.git" };
 	await workflow.push();
+	assert.deepEqual(trackingUpdates, [["update-ref", "refs/remotes/origin/feature", head, creationTarget.remoteOid]]);
 	appeared = true; // Another actor opens this exact PR between push and metadata publication.
 	if (scenario === "base-mismatch" || scenario === "head-mismatch") {
 		await assert.rejects(workflow.publish("feat: new title", "New body"), /different base|metadata is not canonical/);
@@ -759,6 +791,7 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 			return result(`${url}\n`);
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication("changed concurrently"));
+		unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const app = creator(exec, target(false));
@@ -790,6 +823,7 @@ test("does not push when HEAD or target authority changes after final base check
 				if (race === "authority") latestTarget = { ...latestTarget, fetchSource: "git@github.com:acme/moved.git", remoteOid: "e".repeat(40) };
 				return result(`${localHead}\n`);
 			}
+			unexpectedCommands.push(`Unexpected ${command} ${text}`);
 			throw new Error(`Unexpected ${command} ${text}`);
 		};
 		const app = creator(exec, target(true));
@@ -813,6 +847,7 @@ test("creation verifies a divergent committed branch without merging or rebasing
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") return result();
 			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
 			if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+			unexpectedCommands.push(`Unexpected ${command} ${args.join(" ")}`);
 			throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 		},
 		loadCurrentPullRequest: async () => none(creationTarget, { ahead: 1, worktree: "clean", relation: "distinct-ref" }),

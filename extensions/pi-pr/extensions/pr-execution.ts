@@ -72,6 +72,19 @@ export async function runChecked(
 	return result;
 }
 
+/**
+ * Pushes target the pinned remote URL, which Git never maps to a remote-tracking ref, so ahead counts go stale.
+ * Replace only the saved pre-push lease, or create a missing ref. Do not read a new expected value after
+ * publication: a concurrent fetch may already have changed it. Cache failure must not fail publication.
+ */
+export async function recordRemoteTrackingRef(exec: Exec, options: ExecOptions, remote: string, ref: string, head: string, lease: string | null): Promise<void> {
+	const args = ["update-ref", `refs/remotes/${remote}/${ref}`, head];
+	try {
+		const result = await exec("git", [...args, lease ?? ""], options);
+		if (lease && !result.killed && result.code !== 0) await exec("git", [...args, ""], options);
+	} catch { /* Publication was verified. A later fetch can repair this cache. */ }
+}
+
 /** Return the active Git operation marker without mutating the repository. */
 export async function inspectGitOperation(exec: Exec, options: ExecOptions): Promise<string | null> {
 	const stateOutput = await runChecked(exec, "git", [
