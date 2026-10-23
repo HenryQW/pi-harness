@@ -520,7 +520,7 @@ function validateMutation(mutation: MemoryMutation): ValidatedMutation {
 	if (batch !== undefined && topLevel.length > 0) {
 		throw new Error(`Use either operations or top-level action/content/old_text, not both. Received ${batch.length} operation(s) together with top-level ${topLevel.join(", ")}; resend using one form only.`);
 	}
-	if (batch === undefined && topLevel.length === 0) {
+	if (mutation.operations?.length === 0 && topLevel.length === 0) {
 		throw new Error("operations list is empty: send at least one operation, or use top-level action/content/old_text.");
 	}
 	if (batch !== undefined && batch.length > MAX_BATCH_OPERATIONS) {

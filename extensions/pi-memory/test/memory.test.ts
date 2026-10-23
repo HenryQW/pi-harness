@@ -914,6 +914,12 @@ test("empty operations beside top-level fields runs as one change and a real bat
 			}, undefined, undefined, ctx),
 			/Received 1 operation\(s\) together with top-level action, old_text; resend using one form only/,
 		);
+		for (const params of [{}, { target: "user" }]) {
+			await assert.rejects(
+				() => tool.execute("missing-action", params, undefined, undefined, ctx),
+				/Single mutation: action must be add, replace, or remove\./,
+			);
+		}
 		await assert.rejects(
 			() => tool.execute("empty-only", { operations: [] }, undefined, undefined, ctx),
 			/operations list is empty: send at least one operation/,
