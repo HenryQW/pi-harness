@@ -21,6 +21,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+	const actual = Object.keys(value).sort();
+	const expected = [...keys].sort();
+	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
 export function requiredText(value: unknown, label: string): string {
 	if (typeof value !== "string" || !value || value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
 		throw new TypeError(`${label} must be a non-empty string`);
@@ -259,6 +265,14 @@ export async function readRemoteOid(
 		throw new Error("git ls-remote returned an unexpected ref");
 	}
 	return requiredOid(parts[0], "remote OID");
+}
+
+/** Push an exact commit only while the remote ref still equals `lease`; an empty lease requires the ref to be absent. */
+export async function pushWithLease(exec: Exec, options: ExecOptions, fetchSource: string, ref: string, lease: string, head: string): Promise<void> {
+	await runChecked(exec, "git", [
+		"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${ref}:${lease}`,
+		"--recurse-submodules=no", "--", fetchSource, `${head}:refs/heads/${ref}`,
+	], options);
 }
 
 export async function isAncestor(exec: Exec, options: ExecOptions, ancestor: string, descendant: string): Promise<boolean> {

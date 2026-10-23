@@ -7,6 +7,7 @@ import test from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
 import { inspectVerifiedRebaseRecovery, PullRequestBranchUpdater } from "../extensions/pr-update-branch.ts";
+import { PrRun } from "../extensions/pr-run.ts";
 
 const oldHead = "a".repeat(40);
 const base = "b".repeat(40);
@@ -55,6 +56,7 @@ function updater(exec: Exec, loads: CurrentPullRequest[] = [pullRequest(), pullR
 	return {
 		agentDir,
 		workflow: new PullRequestBranchUpdater({
+			run: new PrRun(),
 			cwd,
 			authority: pullRequest(),
 			exec,
@@ -106,7 +108,7 @@ test("a base reported BEHIND without a conflict is updated like a conflict", asy
 	for (const [fresh, expectVerified] of [[behind, true], [settled, false]] as const) {
 		const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-update-behind-"));
 		t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-		const workflow = new PullRequestBranchUpdater({ cwd, authority: behind, exec, agentDir,
+		const workflow = new PullRequestBranchUpdater({ run: new PrRun(), cwd, authority: behind, exec, agentDir,
 			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: fresh }) });
 		if (expectVerified) {
 			assert.deepEqual(await workflow.rebase(), { kind: "verified", head: oldHead });
@@ -179,7 +181,7 @@ for (const checkpoint of ["base", "conflict", "published"].includes(drift) ? [1,
 	};
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-authority-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const workflow = new PullRequestBranchUpdater({ cwd, authority: pullRequest(), exec, agentDir,
+	const workflow = new PullRequestBranchUpdater({ run: new PrRun(), cwd, authority: pullRequest(), exec, agentDir,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: ++loads >= checkpoint ? fresh : pullRequest() }) });
 	if (["base", "conflict", "published"].includes(drift)) {
 		const stale = await workflow.rebase();
@@ -306,7 +308,7 @@ test("refuses to rebase a merge-containing PR branch before changing HEAD", asyn
 		if (command === "git" && args.includes("rebase")) rebases++;
 		return await spawnBounded(command, args, options);
 	};
-	const workflow = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
+	const workflow = new PullRequestBranchUpdater({ run: new PrRun(), cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 	await assert.rejects(workflow.rebase(), /merge commits/);
 	assert.equal(rebases, 0);
@@ -367,6 +369,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	};
 	let liveAuthority = authority;
 	const workflow = new PullRequestBranchUpdater({
+		run: new PrRun(),
 		cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
 		loadCurrentPullRequest: async (_pi, context) => {
 			if ((context.rebaseBranch ?? git("branch", "--show-current")) !== "feature") {
@@ -406,7 +409,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	assert.equal(git("merge-base", "--is-ancestor", baseHead, git("rev-parse", "HEAD")), "");
 	assert.equal(git("status", "--porcelain"), "");
 	assert.equal(await inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
-	const resumed = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
+	const resumed = new PullRequestBranchUpdater({ run: new PrRun(), cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: liveAuthority }) });
 	assert.equal(await resumed.recoveryLaunchAction(), "rebase");
 	assert.deepEqual(await resumed.rebase(), verified);
@@ -432,7 +435,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 		conditions: { ...authority.conditions, conflict: false },
 	});
 	assert.equal(await inspectVerifiedRebaseRecovery(publishedAuthority, { cwd: worktree, agentDir: join(directory, "agent") }), true);
-	const reconciled = new PullRequestBranchUpdater({ cwd: worktree, authority: publishedAuthority, exec,
+	const reconciled = new PullRequestBranchUpdater({ run: new PrRun(), cwd: worktree, authority: publishedAuthority, exec,
 		agentDir: join(directory, "agent"),
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: publishedAuthority }) });
 	assert.equal(await reconciled.recoveryLaunchAction(), "rebase");
@@ -443,7 +446,7 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	for (const phase of ["pending", "verified"] as const) {
 		const record = `${JSON.stringify({ ...saved, phase, verified: phase === "pending" ? null : saved.verified })}\n`;
 		writeFileSync(recoveryFile, record);
-		const stale = new PullRequestBranchUpdater({ cwd: worktree, authority: publishedAuthority, exec,
+		const stale = new PullRequestBranchUpdater({ run: new PrRun(), cwd: worktree, authority: publishedAuthority, exec,
 			agentDir: join(directory, "agent"), loadCurrentPullRequest: async () => ({ kind: "current",
 				pullRequest: { ...publishedAuthority, base: { ...publishedAuthority.base, oid: "d".repeat(40) } } }) });
 		await assert.rejects(stale.rebase(), /recovery requires reconciliation.*do not replan or replay/);
@@ -496,7 +499,7 @@ test("authority change during a conflict aborts the unpublished rebase and rerou
 		return await spawnBounded(command, args, options);
 	};
 	let live = authority;
-	const workflow = new PullRequestBranchUpdater({ cwd: worktree, authority, exec, agentDir,
+	const workflow = new PullRequestBranchUpdater({ run: new PrRun(), cwd: worktree, authority, exec, agentDir,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: live }) });
 	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"] });
 	writeFileSync(join(worktree, "file.txt"), "resolved change\n");

@@ -2,9 +2,9 @@ import { validateCommitMessage, commitStagedPaths, inspectPendingCommit, require
 import { checkTimeoutMs, type PrCheck, type PrRun } from "./pr-run.ts";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { cloneCurrentPullRequest, loadCurrentPullRequest, readValidatedRemoteAuthority, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
+import { extensionExecApi, inspectWorktreeState, isAncestor, parseStatusSnapshot, pushWithLease, readHead, readRemoteOid, requiredText, runChecked, validatePaths, withWorktreeLock } from "./pr-execution.ts";
 
-type Options = { run?: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
+type Options = { run: PrRun; cwd: string; authority: CurrentPullRequest; signal?: AbortSignal; agentDir?: string; exec?: Exec; loadCurrentPullRequest?: typeof loadCurrentPullRequest };
 
 /**
  * One local publication attempt. An uncertain push consumes the run, even when a later read recovers.
@@ -105,7 +105,7 @@ export class PullRequestWorkPublisher {
 			if (!(await isAncestor(this.exec, this.execOptions(), this.authority.head.oid, head))) {
 				throw new Error("Local HEAD is not a descendant of the published PR head");
 			}
-			this.options.run?.beginChecks("publish-work", head, checks);
+			this.options.run.beginChecks("publish-work", head, checks);
 			try {
 				await runChecked(this.exec, "git", ["diff", "--check", this.authority.head.oid, head], this.execOptions());
 				for (const check of checks) await runChecked(this.exec, check.command, check.args, { ...this.execOptions(), timeoutMs: checkTimeoutMs(this.options.run) });
@@ -113,7 +113,7 @@ export class PullRequestWorkPublisher {
 				if (await readHead(this.exec, this.execOptions()) !== head || await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") throw new Error("Validation changed local HEAD or worktree");
 			} catch (error) {
 				this.status = undefined;
-				this.options.run?.checksFailed();
+				this.options.run.checksFailed();
 				throw error;
 			}
 			this.validatedHead = head;
@@ -132,18 +132,16 @@ export class PullRequestWorkPublisher {
 			}
 			const original = this.authority.head.oid;
 			if (head === original) return { kind: "published", head };
-			this.options.run?.beforePush(original, head);
+			this.options.run.beforePush(original, head);
 			this.consumed = true; // An uncertain push cannot reopen inspect, commit, or validation.
 			let error: unknown;
 			try {
-				await runChecked(this.exec, "git", ["push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
-					"--recurse-submodules=no", "--", this.authority.target.fetchSource,
-					`${head}:refs/heads/${this.authority.target.ref}`], this.execOptions());
+				await pushWithLease(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref, original, head);
 			} catch (failure) { error = failure; }
 			let remote: string | null;
 			try { remote = await readRemoteOid(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref); }
 			catch { throw new Error("Local publication outcome unknown; do not retry"); }
-			if (remote === head) { this.options.run?.observeRemote(head); return { kind: "published", head }; }
+			if (remote === head) { this.options.run.observeRemote(head); return { kind: "published", head }; }
 			if (remote === original) throw new Error(`Local publication not applied${error ? `: ${String(error)}` : ""}`);
 			throw new Error("Local publication outcome unknown; do not retry");
 		}, { agentDir: this.options.agentDir, signal: this.options.signal });

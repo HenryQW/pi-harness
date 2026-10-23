@@ -27,7 +27,7 @@ type ExecuteGitHubMergeInput = InspectLocalMergeSafetyInput & {
 	pullRequestId: string;
 	hostname: string;
 	/** Configured merge method; GitHub rejects a method the repository does not allow. */
-	mergeMethod?: MergeMethod;
+	mergeMethod: MergeMethod;
 	expectedBase: {
 		repository: string;
 		ref: string;
@@ -87,7 +87,7 @@ export async function mergeGitHubPullRequest(
 		"-F",
 		`expectedHeadOid=${input.expectedHead}`,
 		"-F",
-		`mergeMethod=${(input.mergeMethod ?? "squash").toUpperCase()}`,
+		`mergeMethod=${input.mergeMethod.toUpperCase()}`,
 	], { cwd: input.cwd });
 	const output = merged.stdout.trim();
 	if (!output) throw new Error("GitHub merge returned no output");

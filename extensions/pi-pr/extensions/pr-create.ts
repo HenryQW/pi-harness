@@ -30,6 +30,7 @@ import {
 	isRecord,
 	parseGraphQLResponse,
 	parseSingleOutputLine,
+	pushWithLease,
 	readHead,
 	readRemoteOid,
 	requiredText,
@@ -78,7 +79,7 @@ type CreatePullRequestResult =
 export type CreatePullRequestOptions = {
 	preserveExistingMetadata?: boolean;
 	expectedBase?: string;
-	run?: PrRun;
+	run: PrRun;
 	cwd: string;
 	target: PullRequestTarget;
 	signal?: AbortSignal;
@@ -150,7 +151,7 @@ export class PullRequestCreator {
 
 	private readonly preserveExistingMetadata: boolean;
 	private readonly expectedBase?: string;
-	private readonly run?: PrRun;
+	private readonly run: PrRun;
 	private readonly cwd: string;
 	private readonly target: PullRequestTarget;
 	private readonly noTarget: boolean;
@@ -347,17 +348,14 @@ export class PullRequestCreator {
 			await this.freshNone();
 			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			if (await this.requireCleanHead() !== head) throw new Error("PR creation cancelled: local HEAD changed before push");
-			this.run?.beforePush(original, head);
+			this.run.beforePush(original, head);
 			this.state.publicationHead = head;
 			this.state.phase = "blocked";
-			await runChecked(this.exec, "git", [
-				"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.target.ref}:${original ?? ""}`,
-				"--recurse-submodules=no", "--", this.target.fetchSource, `${head}:refs/heads/${this.target.ref}`,
-			], this.options());
+			await pushWithLease(this.exec, this.options(), this.target.fetchSource, this.target.ref, original ?? "", head);
 			if (await readRemoteOid(this.exec, this.options(), this.target.fetchSource, this.target.ref) !== head) {
 				throw new Error("Published remote ref did not match captured HEAD");
 			}
-			this.run?.observeRemote(head);
+			this.run.observeRemote(head);
 			this.state.phase = "pushed";
 			if (this.noTarget) {
 				await this.configureNoTargetUpstream(head);

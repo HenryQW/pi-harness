@@ -7,6 +7,7 @@ import test from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import { PullRequestCreator } from "../extensions/pr-create.ts";
 import type { BranchCreationState, PullRequestTarget } from "../extensions/pr-routing.ts";
+import { PrRun } from "../extensions/pr-run.ts";
 
 const base = "a".repeat(40);
 const head = "b".repeat(40);
@@ -121,6 +122,7 @@ function createAuthorityOutput(
 function creator(exec: Exec, creationTarget: PullRequestTarget, signal?: AbortSignal) {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
 	const workflow = new PullRequestCreator({
+		run: new PrRun(),
 		cwd,
 		target: creationTarget,
 		signal,
@@ -530,6 +532,7 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 			throw new Error(`Unexpected ${command} ${text}`);
 		};
 		const workflow = new PullRequestCreator({
+			run: new PrRun(),
 			cwd,
 			target: creationTarget,
 			expectedBase: candidate.explicit,
@@ -573,6 +576,7 @@ test("prepare accepts untracked dirty work with no commits ahead", async (t) => 
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const workflow = new PullRequestCreator({
+		run: new PrRun(),
 		cwd,
 		target: creationTarget,
 		agentDir,
@@ -612,6 +616,7 @@ test("prepare rejects dirty-only eligibility that disappears during preparation"
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	let loads = 0;
 	const workflow = new PullRequestCreator({
+		run: new PrRun(),
 		cwd,
 		target: creationTarget,
 		agentDir,
@@ -652,6 +657,7 @@ test("prepare rejects a shared preflight with no commits ahead", async (t) => {
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const calls: Array<[string, string[]]> = [];
 	const workflow = new PullRequestCreator({
+		run: new PrRun(),
 		cwd,
 		target: creationTarget,
 		agentDir,
@@ -718,7 +724,7 @@ for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as 
 		}
 		throw new Error(`Unexpected ${command} ${text}`);
 	};
-	const workflow = new PullRequestCreator({ cwd, agentDir, target: creationTarget, exec,
+	const workflow = new PullRequestCreator({ run: new PrRun(), cwd, agentDir, target: creationTarget, exec,
 		preserveExistingMetadata: bounded,
 		loadCurrentPullRequest: async () => none({ ...creationTarget, remoteOid: pushed ? head : creationTarget.remoteOid }),
 	});
@@ -799,7 +805,7 @@ test("creation verifies a divergent committed branch without merging or rebasing
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const calls: string[] = [];
 	const creationTarget = target(false);
-	const workflow = new PullRequestCreator({ cwd, target: creationTarget, agentDir,
+	const workflow = new PullRequestCreator({ run: new PrRun(), cwd, target: creationTarget, agentDir,
 		exec: async (command, args) => {
 			calls.push(`${command} ${args.join(" ")}`);
 			if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
@@ -832,7 +838,7 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	const initial = git("rev-parse", "HEAD");
 	writeFileSync(join(root, "file.txt"), "second\n");
 	const creationTarget = target(false);
-	const workflow = new PullRequestCreator({ cwd: root, target: creationTarget, agentDir: join(directory, "agent"),
+	const workflow = new PullRequestCreator({ run: new PrRun(), cwd: root, target: creationTarget, agentDir: join(directory, "agent"),
 		exec: async (command, args, options) => command === "gh" ? result(baseOutput()) : await spawnBounded(command, args, options),
 		loadCurrentPullRequest: async () => none(creationTarget, { ahead: 1, worktree: "dirty", relation: "distinct-ref" }),
 	});
@@ -852,7 +858,7 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	git("commit", "--allow-empty", "-m", "unrelated change");
 	await assert.rejects(workflow.push(), /verified HEAD changed/);
 	git("mv", "file.txt", "renamed.txt");
-	const renamed = new PullRequestCreator({ cwd: root, target: creationTarget, agentDir: join(directory, "agent"),
+	const renamed = new PullRequestCreator({ run: new PrRun(), cwd: root, target: creationTarget, agentDir: join(directory, "agent"),
 		exec: async (command, args, options) => command === "gh" ? result(baseOutput()) : await spawnBounded(command, args, options),
 		loadCurrentPullRequest: async () => none(creationTarget, { ahead: 1, worktree: "dirty", relation: "distinct-ref" }),
 	});

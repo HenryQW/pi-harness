@@ -6,6 +6,7 @@ import test from "node:test";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
 import { PullRequestCiFixer, StaleCiCollect } from "../extensions/pr-ci.ts";
+import { PrRun } from "../extensions/pr-run.ts";
 
 const original = "a".repeat(40);
 const repair = "b".repeat(40);
@@ -248,6 +249,7 @@ function harness(scenario: Scenario) {
 		throw new Error(`Unexpected ${command} ${args.join(" ")}`);
 	};
 	const workflow = new PullRequestCiFixer({
+		run: new PrRun(),
 		cwd,
 		authority: pullRequest(),
 		exec,

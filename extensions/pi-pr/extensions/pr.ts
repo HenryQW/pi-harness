@@ -447,7 +447,6 @@ export default function pullRequestExtension(
 	};
 
 	const reserveWorkflow: NonNullable<PrCommandDependencies["reserveWorkflow"]> = async (reservation, ctx, invocation) => {
-		if (!invocation) throw new Error("PR workflow command generation is unavailable");
 		invocation.assertCurrent();
 		const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
 		invocation.assertCurrent();
@@ -462,7 +461,7 @@ export default function pullRequestExtension(
 			conflictRetained: false,
 			completed: false,
 			staleRediscoveries: invocation.staleRediscoveries ?? 0,
-			run: invocation.run ?? prRun,
+			run: invocation.run,
 			publication: invocation.publication,
 			entryHead: reservation.route === "create" ? reservation.target.remoteOid : reservation.pullRequest.head.oid,
 		};
@@ -558,7 +557,7 @@ export default function pullRequestExtension(
 	const releaseWorkflow: NonNullable<PrCommandDependencies["releaseWorkflow"]> = (runId, invocation) => {
 		const selected = workflowContext;
 		if (
-			invocation && selected?.runId === runId &&
+			selected?.runId === runId &&
 			selected.sessionGeneration === invocation.sessionGeneration
 		) clearWorkflow(selected);
 	};

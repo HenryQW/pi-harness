@@ -4,7 +4,7 @@ import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { collectPullRequestFeedback, feedbackAuthorityFromCurrent, feedbackEntries, type FeedbackSnapshot } from "./pr-feedback.ts";
 import { loadCurrentPullRequest, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { canonicalWorktree, extensionExecApi, isRecord } from "./pr-execution.ts";
+import { canonicalWorktree, extensionExecApi, hasExactKeys, isRecord } from "./pr-execution.ts";
 
 // Bot conversation comments are status output (deploys, review progress); bot findings arrive as reviews and threads.
 function attentionEntries(snapshot: FeedbackSnapshot) {
@@ -34,7 +34,7 @@ async function readMarker(path: string, signal?: AbortSignal): Promise<{ url: st
 	}
 	let marker: unknown;
 	try { marker = JSON.parse(raw); } catch { throw new Error(`Invalid feedback attention marker is preserved at ${path}`); }
-	if (!isRecord(marker) || Object.keys(marker).sort().join(",") !== "fingerprint,url,version" ||
+	if (!isRecord(marker) || !hasExactKeys(marker, ["fingerprint", "url", "version"]) ||
 		marker.version !== 1 || typeof marker.url !== "string" || typeof marker.fingerprint !== "string" ||
 		!/^[0-9a-f]{64}$/.test(marker.fingerprint)) {
 		throw new Error(`Invalid feedback attention marker is preserved at ${path}`);

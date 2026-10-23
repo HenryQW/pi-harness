@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { inspectLocalMergeSafety } from "./pr-merge.ts";
 import {
 	inspectWorktreeState,
+	hasExactKeys,
 	isRecord,
 	withWorktreeLock,
 	type GitWorktreeState,
@@ -374,12 +375,6 @@ function hasRepositoryMarker(cwd: string): boolean {
 		}
 		if (dirname(directory) === directory) return false;
 	}
-}
-
-function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
-	const actual = Object.keys(value).sort();
-	const expected = [...keys].sort();
-	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
 async function invoke(

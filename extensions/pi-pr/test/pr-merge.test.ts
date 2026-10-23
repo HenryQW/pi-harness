@@ -241,7 +241,7 @@ test("final merge rejects every in-progress Git operation in a linked worktree",
 	const assertUnsafe = async (operation: string) => {
 		assert.equal(git(linked, "status", "--porcelain=v1", "--untracked-files=all"), "", operation);
 		await assert.rejects(
-			executeGitHubMerge({ ...inspectInput(exec), cwd: linked, pullRequestId, hostname }),
+			executeGitHubMerge({ mergeMethod: "squash", ...inspectInput(exec), cwd: linked, pullRequestId, hostname }),
 			/Local merge safety check failed: worktree is dirty/,
 			operation,
 		);
@@ -312,6 +312,7 @@ test("does not issue a merge mutation when fresh local safety checks fail", asyn
 		const { exec, calls } = mockExec(candidate.responses);
 		await assert.rejects(
 			executeGitHubMerge({
+				mergeMethod: "squash",
 				...inspectInput(exec),
 				pullRequestId,
 				hostname,
@@ -349,6 +350,7 @@ test("executes a squash merge with exact GraphQL variables and atomic head check
 		const { exec, calls } = mockExec(responses);
 
 		await executeGitHubMerge({
+			mergeMethod: "squash",
 			...inspectInput(exec),
 			pullRequestId,
 			hostname,
@@ -407,6 +409,7 @@ test("blocks local changes made during readiness without a second fetch or mutat
 		const { exec, calls } = mockExec(responses, result(finalStateOutput));
 		let readinessCalls = 0;
 		await assert.rejects(executeGitHubMerge({
+			mergeMethod: "squash",
 			...inspectInput(exec),
 			pullRequestId,
 			hostname,
@@ -436,6 +439,7 @@ test("runs one readiness evaluation after local inspection and stops on any read
 		let readinessCalls = 0;
 		await assert.rejects(
 			executeGitHubMerge({
+				mergeMethod: "squash",
 				...inspectInput(exec),
 				pullRequestId,
 				hostname,
@@ -495,7 +499,7 @@ test("rejects GraphQL errors and malformed or non-merged responses without retry
 			result(candidate.output),
 		]);
 		await assert.rejects(
-			executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname }),
+			executeGitHubMerge({ mergeMethod: "squash", ...inspectInput(exec), pullRequestId, hostname }),
 			candidate.error,
 			candidate.name,
 		);
@@ -517,7 +521,7 @@ test("surfaces GitHub CLI merge failures without retrying", async () => {
 	]);
 
 	await assert.rejects(
-		executeGitHubMerge({ ...inspectInput(exec), pullRequestId, hostname }),
+		executeGitHubMerge({ mergeMethod: "squash", ...inspectInput(exec), pullRequestId, hostname }),
 		/gh api graphql --hostname github\.com .* failed: merge blocked/,
 	);
 	assert.equal(calls.length, 9);

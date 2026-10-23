@@ -35,12 +35,14 @@ import {
 import {
 	canonicalWorktree,
 	extensionExecApi,
+	hasExactKeys,
 	inspectGitOperation,
 	isAncestor,
 	isRecord,
 	parseNulPaths,
 	parseSingleOutputLine,
 	parseStatusSnapshot,
+	pushWithLease,
 	readHead,
 	readRemoteOid,
 	requiredOid,
@@ -175,11 +177,7 @@ export type PullRequestCommentSweepOptions = {
 	confirmLegacyChecks?: (head: string, checks: PrCheck[]) => Promise<boolean>;
 };
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
-	const actual = Object.keys(value).sort();
-	const expected = [...keys].sort();
-	if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
-		throw new Error(`${label} has unsupported fields`);
-	}
+	if (!hasExactKeys(value, keys)) throw new Error(`${label} has unsupported fields`);
 }
 
 function integer(value: unknown, label: string): number {
@@ -1243,11 +1241,7 @@ export class PullRequestCommentSweep {
 			state.attempts.push = { state: "attempting", head };
 			await this.save(location, state);
 			try {
-				await runChecked(this.exec, "git", [
-					"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${state.authority.target.ref}:${state.original.lease}`,
-					"--recurse-submodules=no", "--", state.authority.target.fetchSource,
-					`${head}:refs/heads/${state.authority.target.ref}`,
-				], this.options());
+				await pushWithLease(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref, state.original.lease, head);
 				if (await readRemoteOid(this.exec, this.options(), state.authority.target.fetchSource, state.authority.target.ref) !== head) {
 					throw new Error("Published remote ref did not match captured HEAD");
 				}
