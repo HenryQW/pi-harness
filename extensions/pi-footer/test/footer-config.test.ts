@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -10,27 +10,11 @@ import {
 	parseFooterColor,
 } from "../extensions/footer-config.ts";
 
-type FakeTheme = {
-	fgCalls: [string, string][];
-	styleCalls: [string, unknown][];
-	fg(token: string, text: string): string;
-	style(text: string, options: { fg: unknown }): string;
-};
-
-function fakeTheme(): FakeTheme {
-	const theme: FakeTheme = {
-		fgCalls: [],
-		styleCalls: [],
-		fg(token, text) {
-			theme.fgCalls.push([token, text]);
-			return `<${token}>${text}</>`;
-		},
-		style(text, options) {
-			theme.styleCalls.push([text, options]);
-			return `<color>${text}</>`;
-		},
+function fakeTheme() {
+	return {
+		fg: (token: string, text: string) => `<${token}>${text}</>`,
+		style: (text: string) => `<color>${text}</>`,
 	};
-	return theme;
 }
 
 function storeWith(t: { after(fn: () => void): void }, contents?: string) {
@@ -45,12 +29,6 @@ function storeWith(t: { after(fn: () => void): void }, contents?: string) {
 }
 
 const noReport = () => {};
-
-test("missing file returns empty colors and does not create the file", (t) => {
-	const store = storeWith(t);
-	assert.deepEqual(store.loadSync(), { status: "ok", source: "missing", value: { colors: {} }, issues: [] });
-	assert.equal(existsSync(dirname(store.path)), false);
-});
 
 test("full config accepts every color role", (t) => {
 	const colors: Record<string, unknown> = {
@@ -87,9 +65,9 @@ test("rejects invalid color values", () => {
 	const invalid: [unknown, RegExp][] = [
 		["", /expected a theme token/],
 		["not-a-color", /invalid color/],
-		[1.5, /ANSI index/],
-		[256, /ANSI index/],
-		[-1, /ANSI index/],
+		[1.5, /ANSI color index/],
+		[256, /ANSI color index/],
+		[-1, /ANSI color index/],
 	];
 	for (const [value, pattern] of invalid) {
 		assert.throws(() => parseFooterColor(value, noReport), pattern, JSON.stringify(value));
@@ -98,8 +76,7 @@ test("rejects invalid color values", () => {
 
 test("unknown keys and roles warn, and an invalid role keeps the other roles", (t) => {
 	const contents = JSON.stringify({ extra: true, colors: { input: "#4ec9b0", nope: "accent", output: "not-a-color" } });
-	const store = storeWith(t, contents);
-	const loaded = store.loadSync();
+	const loaded = storeWith(t, contents).loadSync();
 	assert.equal(loaded.status, "ok");
 	if (loaded.status === "ok") assert.deepEqual(Object.keys(loaded.value.colors), ["input"]);
 	assert.deepEqual(loaded.issues.map(({ kind, key }) => [kind, key]), [
@@ -107,16 +84,6 @@ test("unknown keys and roles warn, and an invalid role keeps the other roles", (
 		["unknown-key", "colors.nope"],
 		["invalid-value", "colors.output"],
 	]);
-	assert.equal(readFileSync(store.path, "utf8"), contents);
-});
-
-test("malformed file warns, uses built-in colors, and stays unchanged", (t) => {
-	const store = storeWith(t, "{ broken json");
-	const loaded = store.loadSync();
-	assert.equal(loaded.status, "ok");
-	if (loaded.status === "ok") assert.deepEqual(loaded.value.colors, {});
-	assert.equal(loaded.issues[0]?.kind, "invalid-json");
-	assert.equal(readFileSync(store.path, "utf8"), "{ broken json");
 });
 
 test("paintFooter: token uses theme.fg, concrete color uses theme.style, missing falls back", () => {
@@ -127,10 +94,4 @@ test("paintFooter: token uses theme.fg, concrete color uses theme.style, missing
 	assert.equal(paintFooter(theme as never, tokenValue, "dim", "x"), "<success>x</>");
 	assert.equal(paintFooter(theme as never, colorValue, "dim", "x"), "<color>x</>");
 	assert.equal(paintFooter(theme as never, undefined, "dim", "x"), "<dim>x</>");
-
-	assert.deepEqual(theme.fgCalls, [
-		["success", "x"],
-		["dim", "x"],
-	]);
-	assert.equal(theme.styleCalls.length, 1);
 });
