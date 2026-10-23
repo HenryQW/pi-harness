@@ -16,13 +16,9 @@ export interface Goal {
 	tokenBudget?: number;
 	status: "active" | "complete" | "dropped";
 	evidence?: Evidence[];
-	createdAt: number;
-	updatedAt: number;
 }
 
 interface ContinuationDetails {
-	goalId: string;
-	count: number;
 	activity: string;
 }
 
@@ -186,7 +182,6 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			const input = checkedInput(params);
 			const state = branchGoal(ctx.sessionManager.getBranch());
 			const active = state?.goal.status === "active" ? state : undefined;
-			const now = Date.now();
 			let next: { goal: Goal; used: number };
 			if (input.action === "create") {
 				if (active) throw new Error(`Goal ${active.goal.id} is already active. Complete or drop it first.`);
@@ -195,7 +190,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				next = { used: 0, goal: {
 					id: randomUUID(), objective: input.objective.trim(), deliverables,
 					...(input.token_budget === undefined ? {} : { tokenBudget: input.token_budget }),
-					status: "active", createdAt: now, updatedAt: now,
+					status: "active",
 				} };
 			} else if (input.action === "get") {
 				if (!state) throw new Error("No goal on this branch.");
@@ -203,8 +198,8 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			} else {
 				if (!active) throw new Error("No active goal on this branch.");
 				next = { used: active.used, goal: input.action === "complete"
-					? { ...active.goal, status: "complete", evidence: checkedEvidence(active.goal, input.evidence), updatedAt: now }
-					: { ...active.goal, status: "dropped", updatedAt: now } };
+					? { ...active.goal, status: "complete", evidence: checkedEvidence(active.goal, input.evidence) }
+					: { ...active.goal, status: "dropped" } };
 			}
 			showStatus(ctx, next);
 			return { content: [{ type: "text", text: summary(next.goal, next.used) }], details: { goal: next.goal } };
@@ -227,7 +222,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 				ctx.ui.notify("No active goal on this branch.", "info");
 				return;
 			}
-			pi.appendEntry(GOAL_ENTRY, { goal: { ...state.goal, status: "dropped", updatedAt: Date.now() } });
+			pi.appendEntry(GOAL_ENTRY, { goal: { ...state.goal, status: "dropped" } });
 			refresh(ctx);
 			ctx.ui.notify("Goal dropped.", "info");
 		},
@@ -272,7 +267,7 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			stop(ctx, `idle:${branch[latest]!.id}`, "Goal continuation stopped: the last automatic turn made no new tool progress. Send a prompt to continue.");
 			return;
 		}
-		const details: ContinuationDetails = { goalId: goal.id, count: continuations.length + 1, activity: current };
+		const details: ContinuationDetails = { activity: current };
 		return {
 			entries: [...event.entries, {
 				type: "custom_message" as const, customType: CONTINUATION_MESSAGE, display: false, details,
