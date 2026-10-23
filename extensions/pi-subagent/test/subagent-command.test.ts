@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { initTheme, type KeybindingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, getKeybindings, Markdown, Spacer, stripTerminalSequences, Text, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../src/discard.ts";
 import { registerSubagentCommand, reportMarkdown, type IsolatedInventory, type PrunePlan, type Report, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
@@ -12,10 +12,12 @@ const plainLines = (component: Box, width: number) => component.render(width).ma
 
 const WORKING = "Current subagent work";
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
+type Picker = { component: Component; terminal: { rows: number }; render: (width?: number) => string[] };
 function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan; cleanup?: { failed: number; skipped: number } } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
+	const pickers: Array<((picker: Picker) => void) | undefined> = [];
 	const notices: { message: string; level: string }[] = [];
 	const queues = new Map<string, string[]>([["task", ["first", "first", "third"]], ["other", ["untouched"]]]);
 	const sent: string[] = [];
@@ -83,6 +85,34 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 			getEntries: () => entries.map((id) => ({ id })),
 		},
 		ui: {
+			custom: async (factory: Parameters<ExtensionContext["ui"]["custom"]>[0]) => {
+				const terminal = { rows: 10_000 };
+				let result: unknown;
+				let finished = false;
+				const component = await factory({ terminal, requestRender() {} } as unknown as TUI,
+					{ fg: (_color: string, text: string) => text } as ExtensionContext["ui"]["theme"], getKeybindings() as KeybindingsManager,
+					(value) => { result = value; finished = true; });
+				const render = (width = 200) => component.render(width).map(stripTerminalSequences);
+				// Read all labels for the existing command-policy tests, then drive the real component with keys.
+				const lines = render();
+				const dialog: Dialog = { kind: "select", title: lines[0]!, options: lines.slice(1, -1).map((line) => line.slice(2)) };
+				dialogs.push(dialog);
+				const interact = pickers.shift();
+				if (interact) interact({ component, terminal, render });
+				else {
+					const answer = responses.shift();
+					const selected = typeof answer === "function" ? await answer(dialog) : answer;
+					const index = dialog.options!.indexOf(selected ?? "");
+					if (index < 0) component.handleInput!("\x1b");
+					else {
+						const current = lines.findIndex((line) => line.startsWith("→ ")) - 1;
+						for (let n = 0; n < (index - current + dialog.options!.length) % dialog.options!.length; n++) component.handleInput!("\x1b[B");
+						component.handleInput!("\r");
+					}
+				}
+				assert.ok(finished, "The picker must finish or cancel");
+				return result;
+			},
 			notify: (message: string, level: string) => notices.push({ message, level }),
 			select: async (title: string, labels: string[]) => {
 				const dialog: Dialog = { kind: "select", title, options: labels }; dialogs.push(dialog);
@@ -111,7 +141,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), appended, responses,
+	return { run: (args = "") => handler(args, ctx), appended, responses, pickers,
 		renderEntry: (data: unknown) => renderEntry({ data }, {}, TAGGED)!,
 		renderMessage: (content: string) => renderMessage({ content }, { outputPad: 2 }, TAGGED)!,
 		/** Every appended report except the working report, as the Markdown that RPC and no-UI modes receive. */
@@ -130,6 +160,90 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 		shutdown: () => { epoch++; },
 	};
 }
+
+const down = (picker: Picker, count: number) => {
+	for (let n = 0; n < count; n++) picker.component.handleInput!("\x1b[B");
+};
+const screen = (picker: Picker, height: number, width = 80) => {
+	picker.terminal.rows = height;
+	const lines = picker.render(width);
+	assert.ok(lines.length <= height, `Picker exceeds ${height} rows`);
+	assert.ok(lines.every((line) => visibleWidth(line) <= width), `Picker exceeds ${width} columns`);
+	return lines.join("\n");
+};
+
+test("long single-choice menus scroll to exact same-named records and retain selection across resize", async () => {
+	const h = harness({ direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: "Same", status: "working", workers: [], tabs: [] })) });
+	h.pickers.push((picker) => {
+		assert.match(screen(picker, 12), /up\/down scroll.*select.*cancel/);
+		down(picker, 51); // One group header, then worker 50.
+		for (const [height, width] of [[12, 80], [7, 40], [30, 110], [2, 80]]) {
+			assert.match(screen(picker, height!, width), /→ .*direct-50/);
+		}
+		picker.component.handleInput!("\r");
+	}, (picker) => { picker.component.handleInput!("\x1b"); });
+	await h.run();
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-50`/);
+	assert.deepEqual(h.closed, []);
+	assert.deepEqual(h.discarded, []);
+});
+
+test("long multiple-choice menus reach bottom actions and keep focus after each toggle", async () => {
+	const h = harness({ direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: `Worker ${index}`, status: "working", canClose: true, workers: [], tabs: [] })),
+		inventory: { root: "/git", leaseLive: false, requests: [], invalidIds: [] } });
+	h.pickers.push((picker) => {
+		screen(picker, 12);
+		down(picker, 61);
+		assert.match(screen(picker, 12), /→ Select multiple/);
+		picker.component.handleInput!("\r");
+	}, (picker) => {
+		screen(picker, 12);
+		down(picker, 49);
+		assert.match(screen(picker, 12), /→ \[ \].*Worker 49/);
+		picker.component.handleInput!("\r");
+	}, (picker) => {
+		assert.match(screen(picker, 8), /→ \[x\].*Worker 49/);
+		down(picker, 1);
+		picker.component.handleInput!("\r");
+	}, (picker) => {
+		assert.match(screen(picker, 12), /→ \[x\].*Worker 50/);
+		down(picker, 12);
+		assert.match(screen(picker, 12), /→ Continue \(2 selected\)/);
+		picker.component.handleInput!("\r");
+	}, undefined, (picker) => { picker.component.handleInput!("\x1b"); });
+	h.responses.push(h.pick("Close/cancel"));
+	await h.run();
+	assert.deepEqual(h.closed, ["direct-49", "direct-50"]);
+});
+
+test("long prune menus keep Select all and Clear reachable; cancellation removes nothing", async () => {
+	const h = harness({ prune: { root: "/git", items: Array.from({ length: 40 }, (_, index) => ({
+		branch: `pi-subagent/subagent-${index}`, tip: "a".repeat(40), prunable: true, reason: "merged", blockers: [], ignored: [],
+	})) } });
+	h.pickers.push((picker) => {
+		screen(picker, 10);
+		down(picker, 41);
+		assert.match(screen(picker, 10), /→ Clear/);
+		picker.component.handleInput!("\r");
+	}, (picker) => {
+		assert.match(screen(picker, 10), /→ Clear[\s\S]*Continue \(0 selected\)/);
+		picker.component.handleInput!("\x1b[A");
+		picker.component.handleInput!("\r");
+	}, (picker) => {
+		assert.match(screen(picker, 10), /→ Select all[\s\S]*Continue \(40 selected\)/);
+		picker.component.handleInput!("\x1b");
+	});
+	await h.run("prune");
+	assert.deepEqual(h.pruned, []);
+	assert.ok(h.dialogs.every(({ kind }) => kind === "select"));
+});
+
+test("RPC uses standard selection dialogs for long lists", async () => {
+	const h = harness({ mode: "rpc", direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: `Worker ${index}`, status: "working", canClose: true, workers: [], tabs: [] })) });
+	h.responses.push(h.pick("Worker 59"), h.pick("Close/cancel"), h.pick("Close"));
+	await h.run();
+	assert.deepEqual(h.closed, ["direct-59"]);
+});
 
 test("/subagent roles shows one labeled field per line; the TUI gets a themed entry outside model context", async () => {
 	const expected = [

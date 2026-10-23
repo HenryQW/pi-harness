@@ -1,5 +1,5 @@
-import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, getSelectListTheme, keyHint, keyText, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { Box, Markdown, SelectList, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../dist/discard.js";
 import type { PruneItem } from "../dist/prune.js";
 import { TERMINAL_RUN_STATUSES } from "../dist/schema.js";
@@ -331,28 +331,59 @@ export function workingReport(direct: readonly DirectTask[], inventory: Isolated
 }
 
 type Choice<T> = { label: string; value: T };
-async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[]): Promise<T | undefined> {
+async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[], selectedIndex = 0): Promise<T | undefined> {
 	// Numeric suffixes only tell duplicate labels apart. Never parse display text into an identity.
 	const clipped = items.map((item) => clean(item.label, 145));
 	const labels = clipped.map((label, index) => clipped.indexOf(label) === clipped.lastIndexOf(label) ? label : `${label} [${index + 1}]`);
-	const selected = await ctx.ui.select(title, labels);
-	const index = labels.indexOf(selected ?? "");
-	return index < 0 ? undefined : items[index]!.value;
+	if (ctx.mode !== "tui") {
+		const selected = await ctx.ui.select(title, labels);
+		const index = labels.indexOf(selected ?? "");
+		return index < 0 ? undefined : items[index]!.value;
+	}
+	return ctx.ui.custom<T | undefined>((tui, theme, _keys, done) => {
+		const rows = labels.map((label, index) => ({ label, value: String(index) }));
+		const createList = () => {
+			// Reserve title, key hints, and the native scroll indicator. Very short terminals show only the list.
+			const height = tui.terminal.rows;
+			const list = new SelectList(rows, Math.max(1, height - (height >= 4 ? 3 : 1)), getSelectListTheme());
+			list.setSelectedIndex(selectedIndex);
+			list.onSelectionChange = ({ value }) => { selectedIndex = Number(value); };
+			list.onSelect = ({ value }) => done(items[Number(value)]!.value);
+			list.onCancel = () => done(undefined);
+			return list;
+		};
+		let list = createList();
+		return {
+			render(width) {
+				list = createList();
+				const lines = list.render(width);
+				if (tui.terminal.rows < 4) return lines.slice(0, tui.terminal.rows);
+				return [truncateToWidth(theme.fg("accent", title), width), ...lines,
+					truncateToWidth([`${keyText("tui.select.up")}/${keyText("tui.select.down")} scroll`,
+						keyHint("tui.select.confirm", "select"), keyHint("tui.select.cancel", "cancel")].join(" · "), width)];
+			},
+			handleInput(data) { list.handleInput(data); tui.requestRender(); },
+			invalidate() { list.invalidate(); },
+		};
+	}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
 }
 
-/** Multi-select on single-choice `select`: each pick toggles one row until Continue. Returns chosen values in
+/** Multi-select on single-choice menus: each pick toggles one row until Continue. Returns chosen values in
  * item order, or undefined on Cancel or a changed session. Only selectable rows are offered. */
 async function chooseMany<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[], preselected: readonly T[],
 	valid: () => boolean): Promise<T[] | undefined> {
 	type Pick = { kind: "toggle"; value: T } | { kind: "all" } | { kind: "clear" } | { kind: "continue" } | { kind: "cancel" };
 	const chosen = new Set(preselected);
+	let selectedIndex = 0;
 	for (;;) {
-		const picked = await choose<Pick>(ctx, title, [
+		const choices: Choice<Pick>[] = [
 			...items.map((item) => ({ label: `${chosen.has(item.value) ? "[x]" : "[ ]"} ${item.label}`, value: { kind: "toggle" as const, value: item.value } })),
 			{ label: "Select all", value: { kind: "all" } }, { label: "Clear", value: { kind: "clear" } },
 			{ label: `Continue (${chosen.size} selected)`, value: { kind: "continue" } }, { label: "Cancel", value: { kind: "cancel" } },
-		]);
+		];
+		const picked = await choose(ctx, title, choices, selectedIndex);
 		if (!valid() || !picked || picked.kind === "cancel") return undefined;
+		selectedIndex = choices.findIndex(({ value }) => value === picked);
 		if (picked.kind === "continue") return items.map(({ value }) => value).filter((value) => chosen.has(value));
 		if (picked.kind === "all") for (const { value } of items) chosen.add(value);
 		else if (picked.kind === "clear") chosen.clear();
