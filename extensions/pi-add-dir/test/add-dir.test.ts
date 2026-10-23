@@ -249,7 +249,7 @@ test("registers external skills without duplicating Pi's skill prompt", async ()
 
 		const added = [{ absolutePath: dir, label: "external" }];
 		assert.deepEqual(collectSkillPaths(added), [skill]);
-		assert.deepEqual([...scanDirContext(dir).skills], ["demo"]);
+		assert.deepEqual(scanDirContext(dir).skills, ["demo"]);
 		const injection = buildContextInjection(added);
 		assert.match(injection, /Follow external instructions/);
 		assert.doesNotMatch(injection, /Native Pi skill|Skills from/);

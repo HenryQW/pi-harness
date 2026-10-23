@@ -147,20 +147,11 @@ function overlaps(a: string, b: string): boolean {
 	return isWithinDir(a, b) || isWithinDir(b, a);
 }
 
-function contextDetails(dirCtx: DirContext, absolutePath: string): AddDirectoryDetails {
-	return {
-		directory: absolutePath,
-		hasAgentsMd: dirCtx.agentsMd !== null,
-		hasClaudeMd: dirCtx.claudeMd !== null,
-		skillNames: [...dirCtx.skills],
-	};
-}
-
 function contextSummary(dirCtx: DirContext): string {
 	const found: string[] = [];
 	if (dirCtx.agentsMd !== null) found.push("AGENTS.md");
 	if (dirCtx.claudeMd !== null) found.push("CLAUDE.md");
-	if (dirCtx.skills.size > 0) found.push(`${dirCtx.skills.size} skill(s)`);
+	if (dirCtx.skills.length > 0) found.push(`${dirCtx.skills.length} skill(s)`);
 	return found.length > 0 ? ` Found: ${found.join(", ")}.` : " No context files found.";
 }
 
@@ -613,15 +604,20 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			if (context.claudeMd !== null) {
 				response.push(`\nCLAUDE.md instructions from ${absolutePath}:\n${context.claudeMd}`);
 			}
-			if (context.skills.size > 0) {
-				response.push(`\nDiscovered skills: ${[...context.skills].join(", ")}`);
+			if (context.skills.length > 0) {
+				response.push(`\nDiscovered skills: ${context.skills.join(", ")}`);
 			}
 			if (result.resourcesChanged) response.push("Run /reload to update external skills.");
 			response.push(`\nYou can now access files at: ${absolutePath}`);
 
 			return {
 				content: [{ type: "text", text: response.join("\n") }],
-				details: contextDetails(context, absolutePath),
+				details: {
+					directory: absolutePath,
+					hasAgentsMd: context.agentsMd !== null,
+					hasClaudeMd: context.claudeMd !== null,
+					skillNames: context.skills,
+				} satisfies AddDirectoryDetails,
 			};
 		},
 
