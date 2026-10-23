@@ -24,9 +24,8 @@ function writeStatus(stateDir, status) {
 
 // Installer child: runs the frozen installs detached and records the outcome for watchers.
 if (process.argv[2] === installMode) {
-	const [, , , root, stateDir, commandsJson] = process.argv;
+	const [, , , stateDir, commandsJson] = process.argv;
 	try {
-		process.chdir(root);
 		for (const [command, args] of JSON.parse(commandsJson)) {
 			console.error(`pi-deps: ${command} ${args.join(" ")}`);
 			const result = spawnSync(command, args, { stdio: "inherit" });
@@ -45,13 +44,11 @@ if (process.argv[2] === installMode) {
 const [, , oldHead, , checkoutKind] = process.argv;
 if (!/^0+$/.test(oldHead ?? "") || checkoutKind !== "1") process.exit(0);
 
-const root = process.cwd();
-const path = (name) => join(root, name);
 const isFile = (name) => {
-	try { return statSync(path(name)).isFile(); } catch { return false; }
+	try { return statSync(name).isFile(); } catch { return false; }
 };
 const isDirectory = (name) => {
-	try { return statSync(path(name)).isDirectory(); } catch { return false; }
+	try { return statSync(name).isDirectory(); } catch { return false; }
 };
 
 // Validation throws synchronously so configuration mistakes still fail worktree creation fast.
@@ -68,7 +65,7 @@ function nodeCommands() {
 
 	let packageJson;
 	try {
-		packageJson = JSON.parse(readFileSync(path("package.json"), "utf8"));
+		packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 	} catch (error) {
 		throw new Error(`Cannot read package.json: ${errorMessage(error)}`);
 	}
@@ -97,7 +94,7 @@ function installCommands() {
 
 try {
 	const commands = installCommands();
-	const git = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: root, encoding: "utf8" });
+	const git = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { encoding: "utf8" });
 	if (git.error) throw new Error(`Cannot locate Git directory: ${git.error.message}`);
 	if (git.status !== 0) {
 		throw new Error(`Cannot locate Git directory: ${(git.stderr || "").trim() || `exit code ${git.status}`}`);
@@ -111,7 +108,7 @@ try {
 	mkdirSync(stateDir, { recursive: true });
 	writeStatus(stateDir, { state: "running" });
 	const log = openSync(join(stateDir, "install.log"), "a");
-	spawn(process.execPath, [fileURLToPath(import.meta.url), installMode, root, stateDir, JSON.stringify(commands)], {
+	spawn(process.execPath, [fileURLToPath(import.meta.url), installMode, stateDir, JSON.stringify(commands)], {
 		detached: true,
 		stdio: ["ignore", log, log],
 	}).unref();
