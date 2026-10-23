@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import {
 	SessionManager,
 	type ExtensionAPI,
@@ -457,7 +457,7 @@ test("manual analysis shows its candidate directly, and failure requires manual 
 		() => parseDraftOutput(JSON.stringify({ candidate: { name: "valid-name", markdown: "x".repeat(16 * 1024 + 1) } })),
 		/Draft candidate is invalid/,
 	);
-	assert.throws(() => parseDraftOutput('{"candidate":null,"extra":true}'), /unexpected keys/);
+	assert.throws(() => parseDraftOutput('{"candidate":null,"extra":true}'), /Draft output is invalid/);
 
 	await withAgentDir(async (agentDir) => {
 		const child = controlledExecutor();
@@ -559,6 +559,18 @@ test("direct save requires a reviewed draft, validates names, retries failures, 
 			assert.match(app.notifications.at(-1)!.message, /Could not save \/write-failure/);
 		} finally {
 			await chmod(promptsDir, 0o700);
+		}
+		const probe = await open(join(promptsDir, "existing-prompt.md"));
+		const failingSync = mock.method(Object.getPrototypeOf(probe), "sync", async () => {
+			throw new Error("sync failed");
+		});
+		await probe.close();
+		try {
+			await promptor("save sync-failure", app.ctx);
+			assert.match(app.notifications.at(-1)!.message, /Could not save \/sync-failure/);
+			await assert.rejects(readFile(join(promptsDir, "sync-failure.md")), /ENOENT/);
+		} finally {
+			failingSync.mock.restore();
 		}
 		await promptor("save", app.ctx);
 

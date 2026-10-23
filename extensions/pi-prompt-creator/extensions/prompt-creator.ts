@@ -75,7 +75,8 @@ interface PromptCreatorOptions {
 	executor?: EphemeralSubagentExecutor;
 }
 
-function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const actual = Object.keys(value);
 	return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 }
@@ -92,15 +93,10 @@ function isPromptMarkdown(value: unknown): value is string {
 }
 
 export function parseDraftOutput(output: string): PromptCandidate | null {
-	const parsed: unknown = JSON.parse(output);
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Draft output must be an object.");
-	const root = parsed as Record<string, unknown>;
-	if (!exactKeys(root, ["candidate"])) throw new Error("Draft output has unexpected keys.");
+	const root: unknown = JSON.parse(output);
+	if (!exactKeys(root, ["candidate"])) throw new Error("Draft output is invalid.");
 	if (root.candidate === null) return null;
-	if (!root.candidate || typeof root.candidate !== "object" || Array.isArray(root.candidate)) {
-		throw new Error("Draft candidate must be an object or null.");
-	}
-	const candidate = root.candidate as Record<string, unknown>;
+	const { candidate } = root;
 	if (!exactKeys(candidate, ["name", "markdown"]) || !isPromptName(candidate.name) || !isPromptMarkdown(candidate.markdown)) {
 		throw new Error("Draft candidate is invalid.");
 	}
@@ -209,28 +205,15 @@ ${REFINEMENT_GUIDANCE}`;
 
 async function createPromptFile(path: string, markdown: string): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
-	let file: Awaited<ReturnType<typeof open>> | undefined;
-	let created = false;
+	const file = await open(path, "wx", 0o600);
 	try {
-		file = await open(path, "wx", 0o600);
-		created = true;
 		await file.writeFile(markdown, "utf8");
 		await file.sync();
 		await file.close();
-		file = undefined;
 	} catch (error) {
-		try {
-			await file?.close();
-		} catch {
-			// Removal below is the authoritative cleanup attempt.
-		}
-		if (created) {
-			try {
-				await rm(path);
-			} catch (cleanupError) {
-				throw new AggregateError([error, cleanupError], "Could not create or clean up the prompt file.");
-			}
-		}
+		// Removal below is the authoritative cleanup attempt.
+		await file.close().catch(() => {});
+		await rm(path);
 		throw error;
 	}
 }
@@ -284,9 +267,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 		maxTurns: 3,
 		timeout: { idleMs: 2 * 60_000, maxMs: 5 * 60_000 },
 	});
-	const showCandidate = (ctx: ExtensionContext) => {
-		if (!candidate) return;
-		const shown = candidate;
+	const showCandidate = (ctx: ExtensionContext, shown: PromptCandidate) => {
 		const boundaryId = ctx.sessionManager.getLeafId();
 		candidate = undefined;
 		candidateNameHint = shown.name;
@@ -338,8 +319,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 				return;
 			}
 			candidate = drafted;
-			candidateNameHint = drafted.name;
-			if (manual) showCandidate(ctx);
+			if (manual) showCandidate(ctx, drafted);
 			else ctx.ui.setWidget(WIDGET_KEY, [READY_WIDGET]);
 		}).catch(() => {
 			if (isCurrent(run)) showFailure(ctx);
@@ -441,7 +421,7 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 			const draft = latestAssistantDraft(ctx, review);
 			const [action = "", ...values] = args.trim().split(/\s+/);
 			if (!action) {
-				if (candidate) showCandidate(ctx);
+				if (candidate) showCandidate(ctx, candidate);
 				else if (activeRun) ctx.ui.notify("Prompt analysis is already running.", "info");
 				else if (draft) ctx.ui.notify("Run /promptor save to create the reviewed prompt.", "info");
 				else startAnalysis(ctx, true);
@@ -457,7 +437,6 @@ export default function promptCreatorExtension(pi: ExtensionAPI, options: Prompt
 				if (!candidate) ctx.ui.notify("No prompt candidate is waiting.", "warning");
 				else {
 					candidate = undefined;
-					candidateNameHint = undefined;
 					clearWidget(ctx);
 				}
 				return;
