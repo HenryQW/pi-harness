@@ -163,6 +163,8 @@ The extension sends follow-ups when a candidate becomes ready, a worker needs at
 
 Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. The menu groups rows under **Direct**, **Isolated**, and **Orphaned** headers. Each isolated row shows the request ID, the status, and a short goal summary. **Refresh** or a header reloads saved status without recovery or mutation. Invalid state IDs stay preserved with a warning. Direct recovery remains available outside Git or without isolated inventory.
 
+In the terminal, use the Up and Down arrow keys to scroll through menu rows. Enter selects a row; Escape cancels the menu. The list fits the terminal height and keeps the current row visible when you resize the terminal. The menu shows your configured selection keys. In multiple-choice menus, the menu keeps the current row in view after you mark or clear it. Scroll to **Select all**, **Clear**, **Continue**, or **Cancel** below the work rows.
+
 Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. The extension calculates it from local and saved evidence without a model call. Without interactive UI, `/subagent` sends this report before the request list.
 
 A direct workflow is working only when this Pi process owns it and has a running worker. Direct work with a delivered result shows its outcome under **Completed / history** and is not in the report. Other recorded-only direct work shows as unverified. An isolated request is working only when its status is active and a live run holds the repository lease. Without a live lease, an active request shows as interrupted; run `/subagent recover`.
