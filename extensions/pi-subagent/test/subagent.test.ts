@@ -1396,7 +1396,7 @@ for (const extra of [0, 1]) test(`read-only task packets match the native line b
 	});
 });
 
-test("a large task with no Role file reader fails before tab creation", async () => {
+test("a large task with no Role file reader fails before tab creation and in a dry run", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		const roleFile = join(agentDir, "config", "pi-subagent", "worker.md");
@@ -1404,9 +1404,9 @@ test("a large task with no Role file reader fails before tab creation", async ()
 		await herdrEnvironment(async (cwd) => {
 			const fake = fakeHerdr(cwd);
 			const app = harness({ cwd, herdr: fake.exec });
-			await assert.rejects(app.tool.execute("large", {
-				role: "worker", name: "Large", task: ("x".repeat(1_000) + "\n").repeat(128), access: "read",
-			}, undefined, undefined, app.ctx), /require read or bash in the Role/);
+			const large = { role: "worker", name: "Large", task: ("x".repeat(1_000) + "\n").repeat(128), access: "read" };
+			await assert.rejects(app.tool.execute("large", large, undefined, undefined, app.ctx), /require read or bash in the Role/);
+			await assert.rejects(app.tool.execute("dry", { ...large, dryRun: true }, undefined, undefined, app.ctx), /require read or bash in the Role/);
 			assert.equal(fake.calls.length, 0);
 		});
 	});

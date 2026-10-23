@@ -11,7 +11,7 @@ import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { compactCost, compactTokens, ENTRY_STATUS_PRESENTATION, formatWorkflowResult, workerOutputForMain, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { checkoutNote, DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, snapshotCheckout, writesCheckout, type CheckoutSnapshot, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
-import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity, type DirectUsage } from "../dist/direct-herdr.js";
+import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, directTaskReader, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity, type DirectUsage } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 1_000;
@@ -648,6 +648,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			try {
 				prepared = await prepareDirectLaunch(findRole(catalog, role), ctx, {
 					...(modelClass === undefined ? {} : { modelClass }), ...(model === undefined ? {} : { model }) });
+				// A chain packet is checked without {previous}; the full packet is known only at launch.
+				directTaskReader(workflow.mode === "chain" ? delegation.task.replaceAll("{previous}", "") : delegation.task, prepared.tools);
 			} catch (error) { throw boundedError(error); }
 			entries.push({ index, name, role, access, model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel,
 				...(continueFrom === undefined ? {} : { continueFrom }), ...(workflow.mode === "chain" && index ? { after: index } : {}) });
@@ -656,6 +658,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		const notChecked = [
 			"checkout admission: a dry run takes none",
 			...(sources.size ? ["stop of each continued agent: it closes its Herdr pane"] : []),
+			...(workflow.mode === "chain" ? ["task packet reader after {previous} substitution: the previous answer is unknown"] : []),
 			"Herdr tab creation and agent start",
 		];
 		const text = [

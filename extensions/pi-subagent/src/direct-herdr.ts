@@ -16,6 +16,17 @@ const SESSION_LIMIT = 16 * 1024 * 1024;
 const INLINE_TASK_BYTES = 64 * 1024;
 const DIRECT_OUTCOMES = ["succeeded", "failed", "blocked"] as const;
 
+/** The Role tool that reads a file-backed task packet, or undefined for an inline packet; throws when no tool can read it in full. */
+export function directTaskReader(task: string, tools: readonly string[]): "read" | "bash" | undefined {
+	if (Buffer.byteLength(task, "utf8") <= INLINE_TASK_BYTES) return;
+	const longLine = task.split("\n").some((line) => Buffer.byteLength(line, "utf8") > DEFAULT_MAX_BYTES);
+	if (tools.includes("read") && !longLine) return "read";
+	if (tools.includes("bash")) return "bash";
+	throw new Error(longLine
+		? `Large direct task packet has a line above Pi read's ${DEFAULT_MAX_BYTES}-byte limit. Add bash to the Role or use lines within that limit; no worker was launched.`
+		: "Large direct task packets require read or bash in the Role; no worker was launched.");
+}
+
 type Json = Record<string, unknown>;
 const object = (value: unknown, label: string): Json => {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Malformed Herdr ${label}.`);
@@ -356,12 +367,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 		},
 		/** `resume` reuses a stopped worker's saved session and private lease instead of a new temp directory. */
 		async start(launch: ResolvedRoleLaunch & Pick<PreparedRoleLaunch, "tools">, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath">): Promise<DirectHandle> {
-			const fileTask = Buffer.byteLength(task, "utf8") > INLINE_TASK_BYTES;
-			const longLine = fileTask && task.split("\n").some((line) => Buffer.byteLength(line, "utf8") > DEFAULT_MAX_BYTES);
-			const reader = launch.tools.includes("read") && !longLine ? "read" : launch.tools.includes("bash") ? "bash" : undefined;
-			if (fileTask && !reader) throw new Error(longLine
-				? `Large direct task packet has a line above Pi read's ${DEFAULT_MAX_BYTES}-byte limit. Add bash to the Role or use lines within that limit; no worker was launched.`
-				: "Large direct task packets require read or bash in the Role; no worker was launched.");
+			const reader = directTaskReader(task, launch.tools);
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
 			if (pane.pane_id !== callerPane || pane.workspace_id !== workspaceId) throw new Error("Herdr caller pane no longer matches the launching workspace.");
@@ -378,7 +384,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				await writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
 			}
 			const turn = randomBytes(16).toString("hex");
-			if (fileTask) {
+			if (reader) {
 				const taskFile = join(dirname(sessionFile), `task-${turn}.md`);
 				await writeFile(taskFile, task, { flag: "wx", mode: 0o600 });
 				task = `Use ${reader} to read the complete task packet at ${JSON.stringify(taskFile)}. Read all parts before you act; do not use a truncated preview. The file contains the full task and chain context. If you cannot read it in full, stop and report blocked work.`;
