@@ -125,7 +125,7 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 		if (running || signal.aborted) return { reason: "A job is already running in this Pi session, or the session is shutting down." };
 		running = true;
 		try {
-			const limits = effectiveLimits(config);
+			const limits = effectiveLimits(config.limits);
 			const claim = await state.claim(job.id, jobSchedule(job), now(), {
 				owner, force, staleMs: limits.maxMinutes * 60_000 + STALE_MARGIN_MS,
 			});

@@ -161,13 +161,13 @@ const limitFields = parsers.object({
 /** A bad limit uses its default; a broken idle/max pair rejects all limits, so every limit uses its default. */
 const parseLimits: FieldParser<Limits> = (raw, report) => {
 	const limits: Limits = Object.fromEntries(Object.entries(limitFields(raw, report)).filter(([, value]) => value !== undefined));
-	const effective = effectiveLimits({ jobs: [], limits });
+	const effective = effectiveLimits(limits);
 	if (effective.maxMinutes <= effective.idleMinutes) throw new Error("maxMinutes must be greater than idleMinutes");
 	return limits;
 };
 
-export function effectiveLimits(config: CronConfig): Required<Limits> {
-	return { ...DEFAULT_LIMITS, ...config.limits };
+export function effectiveLimits(limits?: Limits): Required<Limits> {
+	return { ...DEFAULT_LIMITS, ...limits };
 }
 
 export function jobSchedule(job: Job): Schedule {
