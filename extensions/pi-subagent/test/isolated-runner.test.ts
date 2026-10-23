@@ -19,7 +19,6 @@ import {
 	type HostRuntime,
 	type OperationContext,
 	type RunResponse,
-	type TaskCandidateInspector,
 	type TransientLaunchHandle,
 	type VerifiedLaunch,
 	type WorkerResult,
@@ -69,7 +68,7 @@ type WorkerContextCall = {
 	contexts: Parameters<HostRuntime["runWorker"]>[0]["contexts"];
 };
 
-class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCandidateInspector {
+class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime {
 	clock = 1_000;
 	main = identity("a");
 	mainDirty = false;
@@ -173,7 +172,7 @@ class FakeRuntime implements CoordinatorRuntime, HostRuntime, GitRuntime, TaskCa
 	}
 
 	async inspectTaskCandidate(
-		input: Parameters<TaskCandidateInspector["inspectTaskCandidate"]>[0],
+		input: Parameters<GitRuntime["inspectTaskCandidate"]>[0],
 		_context: OperationContext,
 	): Promise<WorkspaceIdentity> {
 		this.candidateInspectionCalls.push(input.task.id);
