@@ -894,6 +894,34 @@ test("extension loads a frozen snapshot, dispatches writes, caps retries, and sk
 	}
 });
 
+test("empty operations beside top-level fields runs as one change and a real batch names the conflicting fields", async () => {
+	await withReviewFixture({ memory: "stale entry\n§\nkept entry" }, async ({ memoryDir, tool, ctx }) => {
+		const path = join(memoryDir, "MEMORY.md");
+		// Strict-tool providers emit every schema property, so a single change can
+		// arrive with an empty batch array. It names one change and must be applied.
+		const removed = await tool.execute("empty-batch", { action: "remove", old_text: "stale entry", operations: [] }, undefined, undefined, ctx);
+		const saved = JSON.parse(removed.content[0]!.text);
+		assert.equal(saved.success, true);
+		assert.equal(saved.entryCount, 1);
+		assert.match(saved.usage, /\/8,800 chars$/);
+		assert.equal(await readFile(path, "utf8"), "kept entry");
+
+		await assert.rejects(
+			() => tool.execute("named-conflict", {
+				action: "remove",
+				old_text: "kept entry",
+				operations: [{ action: "remove", old_text: "kept entry" }],
+			}, undefined, undefined, ctx),
+			/Received 1 operation\(s\) together with top-level action, old_text; resend using one form only/,
+		);
+		await assert.rejects(
+			() => tool.execute("empty-only", { operations: [] }, undefined, undefined, ctx),
+			/operations list is empty: send at least one operation/,
+		);
+		assert.equal(await readFile(path, "utf8"), "kept entry");
+	});
+});
+
 test("injects only qualification guidance in the per-turn memory check", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-memory-policy-"));
 	const agentDir = join(root, "agent");

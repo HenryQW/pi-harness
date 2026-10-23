@@ -511,22 +511,30 @@ function validateMutation(mutation: MemoryMutation): ValidatedMutation {
 	if (bytes > MAX_FILE_BYTES) {
 		throw new Error(`Complete serialized memory mutation is ${bytes.toLocaleString()} UTF-8 bytes; the limit is ${MAX_FILE_BYTES.toLocaleString()} bytes.`);
 	}
-	if (mutation.operations !== undefined && (mutation.action !== undefined || mutation.content !== undefined || mutation.old_text !== undefined)) {
-		throw new Error("Use either operations or top-level action/content/old_text, not both.");
+	// Strict-tool providers emit every schema property, so a one-change call can
+	// arrive with `operations: []` beside the top-level fields. An empty batch
+	// carries no instruction; treating it as "no batch" keeps such calls working
+	// instead of rejecting a mutation that names exactly one change.
+	const batch = mutation.operations?.length ? mutation.operations : undefined;
+	const topLevel = (["action", "content", "old_text"] as const).filter((key) => mutation[key] !== undefined);
+	if (batch !== undefined && topLevel.length > 0) {
+		throw new Error(`Use either operations or top-level action/content/old_text, not both. Received ${batch.length} operation(s) together with top-level ${topLevel.join(", ")}; resend using one form only.`);
 	}
-	if (mutation.operations !== undefined && mutation.operations.length > MAX_BATCH_OPERATIONS) {
+	if (batch === undefined && topLevel.length === 0) {
+		throw new Error("operations list is empty: send at least one operation, or use top-level action/content/old_text.");
+	}
+	if (batch !== undefined && batch.length > MAX_BATCH_OPERATIONS) {
 		throw new Error(`operations cannot contain more than ${MAX_BATCH_OPERATIONS} items.`);
 	}
-	const operations = mutation.operations ?? [{
+	const operations = batch ?? [{
 		action: mutation.action,
 		content: mutation.content,
 		old_text: mutation.old_text,
 	}];
-	if (operations.length === 0) throw new Error("operations list is empty.");
 	const validated: MemoryOperation[] = [];
 	for (let index = 0; index < operations.length; index++) {
 		const operation = operations[index]!;
-		const position = mutation.operations === undefined ? "Single mutation" : `Operation ${index + 1}`;
+		const position = batch === undefined ? "Single mutation" : `Operation ${index + 1}`;
 		if (operation.action !== "add" && operation.action !== "replace" && operation.action !== "remove") {
 			throw new Error(`${position}: action must be add, replace, or remove.`);
 		}
@@ -548,7 +556,7 @@ function validateMutation(mutation: MemoryMutation): ValidatedMutation {
 			case "remove": validated.push({ action: "remove", old_text: operation.old_text! }); break;
 		}
 	}
-	if (mutation.operations === undefined) return { kind: "single", operation: validated[0]! };
+	if (batch === undefined) return { kind: "single", operation: validated[0]! };
 	return { kind: "batch", operations: validated as [MemoryOperation, ...MemoryOperation[]] };
 }
 
