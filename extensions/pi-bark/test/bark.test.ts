@@ -4,7 +4,7 @@ import { createDecipheriv } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import barkExtension from "../extensions/bark.ts";
 import { parseServerUrl } from "../src/config.ts";
@@ -30,12 +30,22 @@ function assistantEntry(
 	} as SessionEntry;
 }
 
+// Pi resolves config from PI_CODING_AGENT_DIR, so the harness owns a temporary directory for the whole test and never touches real config.
 function harness(
-	agentDir: string,
+	t: TestContext,
 	fetchImpl: typeof fetch,
 	copy: (text: string) => Promise<void>,
 	sessionName: string | (() => string | undefined) = "Test session",
 ) {
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(agentDir, { recursive: true, force: true });
+	});
+	t.mock.method(globalThis, "fetch", fetchImpl);
 	const commands = new Map<string, Command>();
 	const lifecycleHandlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const pi = {
@@ -48,8 +58,8 @@ function harness(
 		},
 		getSessionName: () => (typeof sessionName === "function" ? sessionName() : sessionName),
 	} as unknown as ExtensionAPI;
-	barkExtension(pi, { agentDir, fetch: fetchImpl, copy });
-	return { commands, lifecycleHandlers };
+	barkExtension(pi, { copy });
+	return { agentDir, commands, lifecycleHandlers };
 }
 
 function runKeyGenerator(agentDir: string, ...args: string[]) {
@@ -142,9 +152,6 @@ test("built key generator stores, protects, replaces, and disables Bark push enc
 });
 
 test("/set-bark saves config and /copyb copies then posts the exact text", async (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-
 	const events: string[] = [];
 	let request: { url: string; init?: RequestInit } | undefined;
 	let responseStatus = 200;
@@ -153,7 +160,7 @@ test("/set-bark saves config and /copyb copies then posts the exact text", async
 		request = { url: String(input), init };
 		return new Response(responseStatus === 200 ? '{"code":200,"message":"success"}' : null, { status: responseStatus });
 	}) as typeof fetch;
-	const { commands } = harness(agentDir, fetchImpl, async (text) => {
+	const { agentDir, commands } = harness(t, fetchImpl, async (text) => {
 		events.push(`copy:${text}`);
 	});
 	const notices: string[] = [];
@@ -210,12 +217,9 @@ test("/set-bark saves config and /copyb copies then posts the exact text", async
 });
 
 test("Bark sends status-only notifications when Pi is blocked or finished", async (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-
 	const pushes: Array<Record<string, string>> = [];
-	const { commands, lifecycleHandlers } = harness(
-		agentDir,
+	const { agentDir, commands, lifecycleHandlers } = harness(
+		t,
 		(async (_input: string | URL | Request, init?: RequestInit) => {
 			pushes.push(JSON.parse(String(init?.body)) as Record<string, string>);
 			return new Response(null, { status: 200 });
@@ -282,13 +286,10 @@ test("Bark sends status-only notifications when Pi is blocked or finished", asyn
 });
 
 test("a continuation cancels a finished push after its deferred idle check", async (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-
 	let requestSignal: AbortSignal | null | undefined;
 	const notices: string[] = [];
-	const { commands, lifecycleHandlers } = harness(
-		agentDir,
+	const { agentDir, commands, lifecycleHandlers } = harness(
+		t,
 		((_input: string | URL | Request, init?: RequestInit) => {
 			requestSignal = init?.signal;
 			return new Promise<Response>((_resolve, reject) => {
@@ -318,13 +319,10 @@ test("a continuation cancels a finished push after its deferred idle check", asy
 });
 
 test("settled notifications report the run outcome without error details", async (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-
 	const pushes: Array<Record<string, string>> = [];
 	const notices: string[] = [];
-	const { commands, lifecycleHandlers } = harness(
-		agentDir,
+	const { agentDir, commands, lifecycleHandlers } = harness(
+		t,
 		(async (_input: string | URL | Request, init?: RequestInit) => {
 			init?.signal?.throwIfAborted();
 			pushes.push(JSON.parse(String(init?.body)) as Record<string, string>);
@@ -396,17 +394,14 @@ test("settled notifications report the run outcome without error details", async
 });
 
 test("automatic status pushes preserve event order and event-time state", async (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-
 	const pushes: Array<Record<string, string>> = [];
 	let finishFirst: ((response: Response) => void) | undefined;
 	const firstResponse = new Promise<Response>((resolve) => {
 		finishFirst = resolve;
 	});
 	let sessionName = "First session";
-	const { commands, lifecycleHandlers } = harness(
-		agentDir,
+	const { agentDir, commands, lifecycleHandlers } = harness(
+		t,
 		(async (_input: string | URL | Request, init?: RequestInit) => {
 			const payload = JSON.parse(String(init?.body)) as Record<string, string>;
 			pushes.push(payload);
@@ -451,12 +446,9 @@ test("automatic status pushes preserve event order and event-time state", async 
 });
 
 test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is enabled", async (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-
 	let requestBody = "";
-	const { commands, lifecycleHandlers } = harness(
-		agentDir,
+	const { agentDir, commands, lifecycleHandlers } = harness(
+		t,
 		(async (_input: string | URL | Request, init?: RequestInit) => {
 			requestBody = String(init?.body);
 			return new Response(null, { status: 200 });
@@ -514,13 +506,11 @@ test("/copyb sends Bark-compatible AES256-GCM ciphertext when push encryption is
 });
 
 test("bad config disables or warns once, and /set-bark repairs a disabled config", async (t) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-bark-test-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	let copied = false;
 	let pushes = 0;
 	const notices: Array<{ message: string; type: string }> = [];
-	const { commands, lifecycleHandlers } = harness(
-		agentDir,
+	const { agentDir, commands, lifecycleHandlers } = harness(
+		t,
 		(async () => {
 			pushes++;
 			return new Response(null, { status: 200 });

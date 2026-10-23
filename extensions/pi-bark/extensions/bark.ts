@@ -16,9 +16,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 type BarkPushContent = { body: string } & Record<string, string>;
 
 type BarkExtensionOptions = {
-	agentDir?: string;
 	copy?: (text: string) => Promise<void>;
-	fetch?: typeof globalThis.fetch;
 };
 
 function lastAssistantText(entries: readonly SessionEntry[]): string | undefined {
@@ -38,13 +36,12 @@ function lastAssistantText(entries: readonly SessionEntry[]): string | undefined
 async function sendPush(
 	config: BarkConfig,
 	content: BarkPushContent,
-	fetchImpl: typeof globalThis.fetch,
 	cancelSignal?: AbortSignal,
 ): Promise<void> {
 	const payload = config.encryption ? encryptPushContent(content, config.encryption) : content;
 	let response: Response;
 	try {
-		response = await fetchImpl(`${config.serverUrl}/push`, {
+		response = await fetch(`${config.serverUrl}/push`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json; charset=utf-8" },
 			body: JSON.stringify({ device_key: config.deviceKey, ...payload }),
@@ -60,10 +57,9 @@ async function sendPush(
 }
 
 export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOptions = {}): void {
-	const configStore = createBarkConfigStore(options.agentDir);
+	const configStore = createBarkConfigStore();
 	const configReporter = registerConfigReporting(pi, [configStore]);
 	const copy = options.copy ?? copyToClipboard;
-	const fetchImpl = options.fetch ?? globalThis.fetch;
 
 	let statusPushQueue = Promise.resolve();
 	let pendingSettledPush: AbortController | undefined;
@@ -84,7 +80,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 		const contentSnapshot = { title, body: `Pi session: ${sessionName}` };
 		const send = async () => {
 			if (shouldSend && !(await shouldSend)) return;
-			await sendPush(configSnapshot, contentSnapshot, fetchImpl, cancelSignal);
+			await sendPush(configSnapshot, contentSnapshot, cancelSignal);
 		};
 		statusPushQueue = statusPushQueue.then(send, send);
 		return statusPushQueue;
@@ -143,10 +139,10 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 			if (loaded.status === "disabled") {
 				throw new Error(`Bark is not configured (${formatConfigIssues(loaded.issues)}). Run /set-bark <device-key> [server-url] or fix ${configStore.path} first.`);
 			}
-			const report: Parameters<typeof writeBarkConfig>[3] = (store, result) => configReporter.report(ctx, store, result);
+			const report: Parameters<typeof writeBarkConfig>[2] = (store, result) => configReporter.report(ctx, store, result);
 			if (first === "default") {
 				const enabled = second === "on";
-				await writeBarkConfig(options.agentDir, [], (config) => ({
+				await writeBarkConfig([], (config) => ({
 					...config,
 					statusNotifications: { ...config.statusNotifications, defaultEnabled: enabled },
 				}), report);
@@ -154,7 +150,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 				return;
 			}
 			const cwd = resolve(ctx.cwd);
-			await writeBarkConfig(options.agentDir, [], (config) => {
+			await writeBarkConfig([], (config) => {
 				const cwdOverrides = { ...config.statusNotifications.cwdOverrides };
 				if (first === "inherit") delete cwdOverrides[cwd];
 				else cwdOverrides[cwd] = first === "on";
@@ -187,7 +183,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 			if (!text) throw new Error("No agent messages to copy yet.");
 
 			await copy(text);
-			await sendPush(config, { body: text }, fetchImpl);
+			await sendPush(config, { body: text });
 			ctx.ui.notify("Copied the last agent message and sent a Bark push notification.", "info");
 		},
 	});
@@ -198,7 +194,7 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 			const [deviceKey, serverUrl = DEFAULT_SERVER_URL, extra] = args.trim().split(/\s+/);
 			if (!deviceKey || extra) throw new Error("Usage: /set-bark <device-key> [server-url]");
 			const url = parseServerUrl(serverUrl);
-			await writeBarkConfig(options.agentDir, ["serverUrl", "deviceKey"], (config) => ({ ...config, serverUrl: url, deviceKey }), (store, result) =>
+			await writeBarkConfig(["serverUrl", "deviceKey"], (config) => ({ ...config, serverUrl: url, deviceKey }), (store, result) =>
 				configReporter.report(ctx, store, result));
 			ctx.ui.notify("Saved the Bark Device Key and server URL.", "info");
 		},
