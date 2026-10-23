@@ -218,7 +218,6 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 		throw new Error("pi-codegraph requires the default CODEGRAPH_DIR (.codegraph). Unset CODEGRAPH_DIR before launching Pi.");
 	}
 	const gitDir = await git(pi, root, ["rev-parse", "--absolute-git-dir"], signal);
-	if (!gitDir) throw new Error("Git returned an empty metadata directory.");
 	const lock = join(gitDir, "pi-codegraph-init.lock");
 	// Check the lock before the database: an in-progress/failed init can leave a partial DB.
 	const recovery = `Inspect CodeGraph in ${root}. If no initializer is running, run codegraph index in that directory, then remove ${lock} with rmdir and /reload.`;
