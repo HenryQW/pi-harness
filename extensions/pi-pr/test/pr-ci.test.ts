@@ -311,6 +311,15 @@ test("reopens collection after a CI read failure before any log read", async (t)
 	assert.equal((await app.workflow.collect()).failures[0]!.job.id, 101);
 });
 
+test("blocks collection after the one reopened attempt also fails", async (t) => {
+	const app = harness({ snapshots: [oneFailure()], checkPage: (snapshot) => ({ total_count: snapshot.checks.length, check_runs: [] }) });
+	t.after(() => rmSync(app.agentDir, { recursive: true, force: true }));
+	await assert.rejects(app.workflow.collect(), /ended before its declared total/);
+	await assert.rejects(app.workflow.collect(), /ended before its declared total/);
+	assert.equal(app.workflow.state.phase, "blocked");
+	await assert.rejects(app.workflow.collect(), /already consumed/);
+});
+
 for (const drift of ["ahead", "base"] as const) test(`cancels ${drift} drift only at initial preflight without reading CI evidence`, async (t) => {
 	const fresh = pullRequest(drift === "ahead" ? repair : original);
 	if (drift === "base") fresh.base.oid = "d".repeat(40);

@@ -310,6 +310,7 @@ export class PullRequestCiFixer {
 	private readonly load: Load;
 	private collectedFingerprint?: string;
 	private collectRetryable = false;
+	private collectReopened = false;
 
 	constructor(options: PullRequestCiFixOptions) {
 		if (options.authority.target.provenance !== "configured") {
@@ -693,7 +694,8 @@ export class PullRequestCiFixer {
 				failures,
 			};
 		} catch (error) {
-			this.state.phase = this.collectRetryable ? "ready" : "blocked";
+			this.state.phase = this.collectRetryable && !this.collectReopened ? "ready" : "blocked";
+			this.collectReopened = true;
 			throw error;
 		}
 	}
